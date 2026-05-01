@@ -1,0 +1,236 @@
+# OpenMind — Domain Context
+
+## Glossary
+
+**OpenMind** — the platform. The installable software product as a whole.
+
+**Cerebral** — the local brain. The central Python backend process that runs on the desktop/home server. All devices connect to it. The name is internal/architectural; users don't speak it.
+
+**Felix** — the default wake name. The word a user speaks to activate the assistant. Phonetically distinct, short, reliably detected by Vosk. Customisable per profile. What OpenMind calls itself in conversation.
+
+**Profile** — a user identity container. Stores who someone is (name, voice preference, wake name override, pronunciation guide, connected accounts) and their scoped long-term memory. Not a settings panel — system settings are global. Selected on launch or auto-detected after first use.
+
+**Wake** — the moment a user speaks Felix's name. Triggers: mic opens, system awaits a command. Does not read the queue aloud. Does not interrupt.
+
+**Passive mode** — the default always-on state. Vosk listens continuously for the wake name and actionable signals. No full transcription, no LLM calls, minimal CPU. The system is observing, not acting.
+
+**Active mode** — entered after a wake. faster-whisper transcribes, the LLM processes, tools execute.
+
+**5W1H extraction** — the passive pattern-matching process. When Vosk detects a potentially actionable signal in ambient audio, faster-whisper transcribes the last ~60 seconds and the LLM extracts: Who, What, When, Where, Why, How. Output is a candidate action queued for the user.
+
+**Rolling buffer** — the last ~60 seconds of ambient audio held in RAM. Never written to disk. Discarded continuously. Used only when Vosk triggers a full transcription pass.
+
+**The queue** — the list of candidate actions Felix has identified but not yet executed. Visible in the tray pulldown. Grows silently in passive mode. Acted on only when the user wakes Felix or approves via notification.
+
+**The harness** — OpenClaw. The master command and communication gateway. All external messaging channels (WhatsApp, Telegram, Slack, Discord, Teams, etc.) flow through it. Also serves as the remote access point for Felix before native mobile clients exist. Felix talks to one thing; OpenClaw talks to the services.
+
+**MCP server** — a Model Context Protocol server. The standard unit of capability in Felix. Each tool (Clock, Browser, Files, Shell, etc.) is an MCP server. The LLM calls tools via MCP regardless of what's underneath. Adding a capability = adding an MCP server.
+
+**Plugin** — an MCP server built for Felix. Lives in `/plugins`. Generated from natural language description, tested, and registered automatically. The generated code is always inspectable and editable.
+
+**The core loop** — the fundamental operation: user speaks → LLM decomposes intent into tasks → selects available tools → executes via MCP. If no tool exists, the growth loop begins.
+
+**The growth loop** — when Felix lacks a tool: identify the gap → run /grill-me to design it → build it as an MCP server → register it → Felix has it permanently.
+
+**Insights view** — the UI panel showing Felix's learned model of a user. Displays detected preferences, patterns, and behavioural adjustments per profile. Every entry is editable, deletable, or pinnable. Full transparency into what Felix has inferred.
+
+**Visualiser** — the on-screen character in advanced mode. Currently: a dark, animated abstract form (orb/waveform style). Reacts to voice activity and system state. Future: configurable — 2D avatar, 3D model, or abstract theme packs.
+
+---
+
+## Architecture
+
+### Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Backend brain | Python |
+| Frontend / tray | Node.js + web (HTML/CSS/JS) |
+| Local LLM | Ollama (default model: Gemma 4) |
+| Cloud LLM | Claude (Anthropic) |
+| Model router | OpenClaw |
+| Always-on STT | Vosk |
+| Full STT | faster-whisper |
+| TTS | Kokoro (local, changeable voices) |
+| Short-term memory | RAM (rolling buffer, never persisted) |
+| Long-term memory | ChromaDB or Qdrant (local vector DB) |
+| Structured memory | SQLite (profiles, preferences, queue) |
+| Tool protocol | MCP (Model Context Protocol) |
+| Messaging harness | OpenClaw |
+| Workflow automation | n8n (self-hosted) |
+| Primary integrations | Google (Gmail, Sheets, Drive, Calendar) |
+| Offline fallbacks | Grist (sheets), IMAP/SMTP (mail) |
+
+### Deployment topology
+
+```
+[Desktop — Cerebral]
+  ├── Python backend (AI pipeline, memory, action execution)
+  ├── Node.js frontend (system tray, dark UI, visualiser)
+  ├── Ollama (local LLM)
+  ├── OpenClaw harness (messaging + remote access)
+  ├── MCP servers / plugins
+  ├── ChromaDB / SQLite (local storage)
+  └── n8n (workflow automation)
+
+[Other devices — thin clients]
+  └── Connect to Cerebral over local network
+      (phone/glasses via OpenClaw until native clients ship)
+```
+
+### Audio pipeline
+
+```
+Ambient audio
+  → Vosk (always-on, lightweight keyword + signal detection)
+      → [no signal]: discard, loop
+      → [signal detected]: last ~60s from rolling buffer
+          → faster-whisper (full transcription)
+              → LLM (5W1H extraction → candidate action)
+                  → queue
+```
+
+### Action execution pipeline
+
+```
+User wakes Felix ("Felix, ...")
+  → faster-whisper transcribes command
+  → LLM decomposes into tasks
+  → selects MCP tools
+  → executes
+  → result spoken via Kokoro + shown in UI
+```
+
+---
+
+## Design principles
+
+1. **Open source throughout.** Every component must have an accessible, modifiable codebase. No black boxes.
+
+2. **Integration is the product.** Getting the components talking correctly is the hard work and the value. A feature that doesn't integrate cleanly doesn't ship.
+
+3. **Local first, cloud fallback.** Felix works fully offline. Cloud services (Claude, Google APIs) enhance when available; local alternatives (Ollama, Grist, IMAP) cover when they don't.
+
+4. **The growth loop over the bloat loop.** Felix does not ship every possible feature. It ships the core loop plus the ability to grow. Missing tool → design it → build it → done.
+
+5. **Passive by default, active on wake.** Felix never interrupts. It observes, queues, and waits. The user controls when it speaks.
+
+6. **Transparent intelligence.** Felix shows its work. The Insights view, the queue, the plugin directory — everything Felix knows and does is visible and editable by the user.
+
+7. **Profile = identity, not configuration.** System settings are global. Profiles store who you are, what you remember, and how Felix sounds when talking to you.
+
+---
+
+## Integration registry
+
+### Already covered by OpenClaw (do not duplicate)
+
+| | What |
+|--|------|
+| ✅ Model providers | Anthropic, Ollama, OpenAI, Google, Groq, Mistral, DeepSeek, LM Studio, HuggingFace, Qwen, and 20+ more |
+| ✅ Browser automation | Playwright (bundled) |
+| ✅ Web extraction | Mozilla Readability (bundled) |
+| ✅ PDF reading | PDF.js (bundled) |
+| ✅ Messaging channels | WhatsApp, Telegram, Discord, Slack, Teams, and more |
+| ✅ Image generation | ComfyUI (bundled) |
+| ✅ Vector SQLite | sqlite-vec (bundled) |
+
+### Starter tools (ships with Felix core)
+
+| MCP Server | Capabilities |
+|-----------|-------------|
+| Clock | Timers, alarms, reminders, world time |
+| Scheduler | Calendar events, recurring tasks |
+| Browser | Web search, open URLs, page summarisation |
+| Files | Create, open, move, search files and folders |
+| Apps | Launch, switch, close applications |
+| Clipboard | Read, write, monitor clipboard |
+| Notes | Quick capture, searchable local notes |
+| System | Volume, brightness, WiFi, screenshots, power |
+| Shell | Run terminal commands and scripts |
+| OpenClaw | All messaging channels + remote access harness |
+
+### Google Workspace (online, with local OSS fallbacks)
+
+| MCP Server | Fallback | Capabilities |
+|-----------|---------|-------------|
+| Gmail | IMAP/SMTP | Read, write, send, search, label, thread |
+| Google Calendar | Local scheduler | Events, reminders, availability, invites |
+| Google Drive | Nextcloud | Upload, download, search, organise |
+| Google Docs | LibreOffice Writer | Read, write, create, export |
+| Google Sheets | Grist | Read, write, formulas, create |
+| Google Slides | LibreOffice Impress | Read, create, export |
+| Google Contacts | Local SQLite | Read, search, create |
+| Google Maps | OpenStreetMap | Directions, places, travel time |
+| Google Tasks | Local scheduler | Create, complete, list |
+
+### Day 1 integrations
+
+| MCP Server | Category | Capabilities |
+|-----------|---------|-------------|
+| Git | Dev | Status, commit, push, pull, diff, log, branch |
+| GitHub / GitLab | Dev | Issues, PRs, repos, notifications |
+| Docker | Dev | List, start, stop, build containers |
+| Package Managers | Dev | npm, pip, winget — install, update, search |
+| SSH | Dev | Remote machines, run remote commands |
+| HTTP Client | Dev | API requests, webhooks, test endpoints |
+| Wikipedia | Information | Search, lookup, summarise articles |
+| Weather | Information | Forecast, alerts, hourly (Open-Meteo OSS) |
+| News | Information | Headlines, topic monitoring, sources |
+| Stocks / Crypto | Information | Price lookup, watchlist, read-only market data |
+| Bitwarden | Security | Read-only local vault access |
+| VPN | Security | Connect, disconnect, check status |
+| Network Scanner | Security | Devices, ports, ping, diagnostics |
+| Printer / Scanner | Hardware | Print jobs, scan to file, check status |
+| Game Launcher | Hardware | Steam — launch, library, running status |
+| Invoice / Receipt | Finance | OCR extract → Google Sheets / Grist |
+| Zoom / Google Meet | Communication | Join, schedule, manage video calls |
+| Phone Calls | Communication | Via OpenClaw channels |
+
+### Second wave (growth loop — add when needed)
+
+| MCP Server | Category |
+|-----------|---------|
+| Notion | Productivity |
+| Obsidian | Productivity |
+| Todoist / Tasks | Productivity |
+| Time Tracker | Productivity |
+| YouTube | Social / Content |
+| Reddit | Social / Content |
+| Twitter / X | Social / Content |
+| RSS Monitor | Social / Content |
+| Sports Scores | Social / Content |
+| GIMP / Darktable | Creative |
+| Blender | Creative |
+| Figma | Creative |
+| FFmpeg | Creative |
+| Home Assistant | Smart Home |
+| Dropbox / OneDrive | Cloud Storage (low priority) |
+
+### Later
+
+| MCP Server | Category |
+|-----------|---------|
+| Health (Fitbit / Garmin / Google Fit) | Health |
+
+---
+
+## Memory model
+
+| Tier | Store | Scope | Retention |
+|------|-------|-------|-----------|
+| Short-term | RAM rolling buffer | System-wide | ~60 seconds, never persisted |
+| Environmental | RAM | Per-session | Camera/GPS context (location, travel state, building) |
+| Long-term | ChromaDB (vector) | Per-profile | Indefinite, semantically searchable |
+| Structured | SQLite | Per-profile | Profiles, queue, preferences, learned patterns |
+
+---
+
+## Not in scope (yet)
+
+- Security model and per-profile permissions
+- Native mobile client (OpenClaw bridges this for now)
+- Smartglasses client
+- 2D / 3D character themes (visualiser ships first)
+- Multi-context / multi-user profiles in a shared household
+- Visual plugin builder (natural language builder ships first)

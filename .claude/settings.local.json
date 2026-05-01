@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp /c/OpenMind/.claude/skills/setup-matt-pocock-skills/issue-tracker-github.md /c/OpenMind/docs/agents/issue-tracker.md)",
+      "Bash(cp /c/OpenMind/.claude/skills/setup-matt-pocock-skills/triage-labels.md /c/OpenMind/docs/agents/triage-labels.md)",
+      "Bash(cp /c/OpenMind/.claude/skills/setup-matt-pocock-skills/domain.md /c/OpenMind/docs/agents/domain.md)"
+    ]
+  }
+}
