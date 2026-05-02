@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Felix</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0e0c1a;
+      --surface:  #181528;
+      --border:   #2a2448;
+      --purple:   #9b5cff;
+      --purple2:  #c090ff;
+      --text:     #e4e0f8;
+      --muted:    #6e6a8a;
+      --red:      #ff4f6e;
+      --green:    #4fefaa;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      overflow: hidden;
+    }
+
+    /* ── Orb ── */
+    .orb-wrap {
+      display: flex; justify-content: center;
+      padding: 28px 0 20px;
+    }
+    .orb {
+      width: 56px; height: 56px; border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, var(--purple2), var(--purple) 60%, #3a1a8a);
+      box-shadow: 0 0 24px 6px rgba(155, 92, 255, 0.35);
+      animation: pulse 2.8s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 24px 6px rgba(155,92,255,0.35); transform: scale(1); }
+      50%       { box-shadow: 0 0 36px 14px rgba(155,92,255,0.55); transform: scale(1.06); }
+    }
+
+    /* ── Greeting ── */
+    .greeting {
+      text-align: center;
+      padding: 0 24px 24px;
+    }
+    .greeting-line1 { font-size: 18px; font-weight: 700; color: var(--purple2); }
+    .greeting-line2 { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+    /* ── Questions ── */
+    .questions { padding: 0 24px; display: flex; flex-direction: column; gap: 20px; }
+
+    .q-block { display: flex; flex-direction: column; gap: 8px; }
+    .q-label  { font-size: 13px; color: var(--muted); letter-spacing: 0.02em; }
+
+    .input-row { display: flex; gap: 8px; align-items: center; }
+    input[type="text"] {
+      flex: 1;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 13px;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    input[type="text"]:focus {
+      border-color: var(--purple);
+      box-shadow: 0 0 0 3px rgba(155,92,255,0.15);
+    }
+
+    /* ── Mic button ── */
+    .mic-btn {
+      width: 36px; height: 36px; flex-shrink: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .mic-btn:hover  { border-color: var(--purple); color: var(--purple2); }
+    .mic-btn.active { border-color: var(--red); background: rgba(255,79,110,0.12); color: var(--red); }
+    .mic-btn.done   { border-color: var(--green); color: var(--green); }
+
+    /* ── Recording panel ── */
+    .rec-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .rec-panel.visible { display: flex; }
+
+    .rec-status {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--muted);
+    }
+    .rec-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--red);
+      animation: blink 0.8s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.2; } }
+    .rec-timer { color: var(--red); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    .rec-bar-wrap {
+      height: 28px; background: #12101e; border-radius: 4px;
+      overflow: hidden; position: relative;
+    }
+    canvas.rec-wave { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+    .rec-actions { display: flex; gap: 8px; }
+    .rec-play, .rec-redo {
+      flex: 1;
+      padding: 6px 0;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .rec-play:hover { border-color: var(--green);  color: var(--green); }
+    .rec-redo:hover { border-color: var(--purple); color: var(--purple2); }
+
+    /* ── Submit ── */
+    .actions { padding: 20px 24px 24px; }
+    .submit-btn {
+      width: 100%;
+      background: var(--purple);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 11px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .submit-btn:hover    { background: #7a3de0; }
+    .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Divider ── */
+    hr { border: none; border-top: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+
+  <div class="orb-wrap"><div class="orb"></div></div>
+
+  <div class="greeting">
+    <div class="greeting-line1">Hello, I'm Felix.</div>
+    <div class="greeting-line2">Let's set up your profile.</div>
+  </div>
+
+  <div class="questions">
+
+    <!-- Q1: User's name -->
+    <div class="q-block" id="block-name">
+      <div class="q-label">What should I call you?</div>
+      <div class="input-row">
+        <input type="text" id="name" placeholder="Your name" autocomplete="off" autofocus>
+        <button class="mic-btn" id="mic-name" title="Record how your name is said">🎙</button>
+      </div>
+      <div class="rec-panel" id="rec-name">
+        <div class="rec-status" id="rec-name-status">
+          <span class="rec-dot" id="dot-name"></span>
+          <span>Recording your name&hellip;</span>
+          <span class="rec-timer" id="timer-name">3s</span>
+        </div>
+        <div class="rec-bar-wrap"><canvas class="rec-wave" id="wave-name"></canvas></div>
+        <div class="rec-actions" id="rec-name-actions" style="display:none">
+          <button class="rec-play" id="play-name">▶ Play back</button>
+          <button class="rec-redo" id="redo-name">↺ Re-record</button>
+        </div>
+      </div>
+    </div>
+
+    <hr>
+
+    <!-- Q2: Wake word -->
+    <div class="q-block" id="block-wake">
+      <div class="q-label">What would you like to call me?</div>
+      <div class="input-row">
+        <input type="text" id="wake-name" value="Felix" autocomplete="off">
+        <button class="mic-btn" id="mic-wake" title="Record how to say the wake word">🎙</button>
+      </div>
+      <div class="rec-panel" id="rec-wake">
+        <div class="rec-status" id="rec-wake-status">
+          <span class="rec-dot" id="dot-wake"></span>
+          <span>Recording the wake word&hellip;</span>
+          <span class="rec-timer" id="timer-wake">3s</span>
+        </div>
+        <div class="rec-bar-wrap"><canvas class="rec-wave" id="wave-wake"></canvas></div>
+        <div class="rec-actions" id="rec-wake-actions" style="display:none">
+          <button class="rec-play" id="play-wake">▶ Play back</button>
+          <button class="rec-redo" id="redo-wake">↺ Re-record</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="actions">
+    <button class="submit-btn" id="submit">Get started</button>
+  </div>
+
+<script>
+/* nodeIntegration: true — local-only BrowserWindow */
+const { ipcRenderer } = require('electron');
+
+// ── Recorder factory ──────────────────────────────────────────────────────────
+
+function makeRecorder({ micBtn, recPanel, statusEl, dotEl, timerEl, actionsEl,
+                        playBtn, redoBtn, waveCanvas, onDone, onClear }) {
+
+  let mediaRecorder = null;
+  let chunks = [];
+  let audioBlob = null;
+  let audioUrl  = null;
+  let audioEl   = null;
+  let timerInterval = null;
+  let animFrame = null;
+  let analyser  = null;
+  let dataArray = null;
+  let stream    = null;
+
+  const ctx = waveCanvas.getContext('2d');
+
+  function drawWave() {
+    if (!analyser) return;
+    const W = waveCanvas.width  = waveCanvas.offsetWidth;
+    const H = waveCanvas.height = waveCanvas.offsetHeight;
+    analyser.getByteTimeDomainData(dataArray);
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = '#ff4f6e';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    const step = W / dataArray.length;
+    dataArray.forEach((v, i) => {
+      const y = (v / 128 - 1) * (H / 2 - 2) + H / 2;
+      i === 0 ? ctx.moveTo(0, y) : ctx.lineTo(i * step, y);
+    });
+    ctx.stroke();
+    animFrame = requestAnimationFrame(drawWave);
+  }
+
+  function startRecording() {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => {
+      stream = s;
+      chunks = [];
+      audioBlob = null; audioUrl = null; audioEl = null;
+
+      // Analyser for waveform
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaStreamSource(s);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+      source.connect(analyser);
+
+      mediaRecorder = new MediaRecorder(s);
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      mediaRecorder.onstop = () => {
+        audioBlob = new Blob(chunks, { type: 'audio/webm' });
+        audioUrl  = URL.createObjectURL(audioBlob);
+        audioEl   = new Audio(audioUrl);
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+        cancelAnimationFrame(animFrame); animFrame = null;
+        drawFlatLine();
+        setPostRecordState();
+      };
+
+      mediaRecorder.start();
+
+      // State UI
+      micBtn.classList.add('active');
+      recPanel.classList.add('visible');
+      dotEl.style.display = 'inline-block';
+      statusEl.querySelector('span:nth-child(2)').style.display = 'inline';
+      actionsEl.style.display = 'none';
+      timerEl.style.display = 'inline';
+
+      // Countdown
+      let secs = 3;
+      timerEl.textContent = secs + 's';
+      timerInterval = setInterval(() => {
+        secs -= 1;
+        timerEl.textContent = secs + 's';
+        if (secs <= 0) { clearInterval(timerInterval); stopRecording(); }
+      }, 1000);
+
+      drawWave();
+
+    }).catch((err) => {
+      console.warn('[record] Mic error:', err.message);
+    });
+  }
+
+  function stopRecording() {
+    clearInterval(timerInterval);
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  }
+
+  function drawFlatLine() {
+    const W = waveCanvas.width  = waveCanvas.offsetWidth;
+    const H = waveCanvas.height = waveCanvas.offsetHeight;
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = '#4fefaa';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, H / 2);
+    ctx.lineTo(W, H / 2);
+    ctx.stroke();
+  }
+
+  function setPostRecordState() {
+    micBtn.classList.remove('active');
+    micBtn.classList.add('done');
+    dotEl.style.display = 'none';
+    statusEl.querySelector('span:nth-child(2)').style.display = 'none';
+    timerEl.style.display = 'none';
+    actionsEl.style.display = 'flex';
+
+    // Convert to base64 for IPC
+    const reader = new FileReader();
+    reader.onload = () => { if (onDone) onDone(reader.result); };
+    reader.readAsDataURL(audioBlob);
+  }
+
+  function clear() {
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    clearInterval(timerInterval);
+    cancelAnimationFrame(animFrame);
+    micBtn.classList.remove('active', 'done');
+    recPanel.classList.remove('visible');
+    actionsEl.style.display = 'none';
+    if (onClear) onClear();
+  }
+
+  // Wire up buttons
+  micBtn.addEventListener('click', () => {
+    if (micBtn.classList.contains('active')) { stopRecording(); }
+    else if (micBtn.classList.contains('done')) { clear(); startRecording(); }
+    else { startRecording(); }
+  });
+
+  playBtn.addEventListener('click', () => { if (audioEl) { audioEl.currentTime = 0; audioEl.play(); } });
+  redoBtn.addEventListener('click', () => { clear(); startRecording(); });
+}
+
+// ── Recorder instances ────────────────────────────────────────────────────────
+
+let nameAudio = '';
+let wakeAudio = '';
+
+makeRecorder({
+  micBtn:    document.getElementById('mic-name'),
+  recPanel:  document.getElementById('rec-name'),
+  statusEl:  document.getElementById('rec-name-status'),
+  dotEl:     document.getElementById('dot-name'),
+  timerEl:   document.getElementById('timer-name'),
+  actionsEl: document.getElementById('rec-name-actions'),
+  playBtn:   document.getElementById('play-name'),
+  redoBtn:   document.getElementById('redo-name'),
+  waveCanvas: document.getElementById('wave-name'),
+  onDone:  (b64) => { nameAudio = b64; },
+  onClear: ()    => { nameAudio = ''; },
+});
+
+makeRecorder({
+  micBtn:    document.getElementById('mic-wake'),
+  recPanel:  document.getElementById('rec-wake'),
+  statusEl:  document.getElementById('rec-wake-status'),
+  dotEl:     document.getElementById('dot-wake'),
+  timerEl:   document.getElementById('timer-wake'),
+  actionsEl: document.getElementById('rec-wake-actions'),
+  playBtn:   document.getElementById('play-wake'),
+  redoBtn:   document.getElementById('redo-wake'),
+  waveCanvas: document.getElementById('wave-wake'),
+  onDone:  (b64) => { wakeAudio = b64; },
+  onClear: ()    => { wakeAudio = ''; },
+});
+
+// ── Submit ────────────────────────────────────────────────────────────────────
+
+const submitBtn = document.getElementById('submit');
+const nameInput = document.getElementById('name');
+const wakeInput = document.getElementById('wake-name');
+
+function submit() {
+  const name      = nameInput.value.trim();
+  const wake_name = wakeInput.value.trim() || 'felix';
+  if (!name) { nameInput.focus(); return; }
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Setting up…';
+  ipcRenderer.send('profile:create', {
+    name,
+    wake_name,
+    voice_sample: nameAudio,
+    wake_sample:  wakeAudio,
+  });
+}
+
+submitBtn.addEventListener('click', submit);
+[nameInput, wakeInput].forEach((el) => {
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+});
+</script>
+</body>
+</html>
