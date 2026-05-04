@@ -56,12 +56,15 @@ C:\OpenMind\
 ├── HANDOFF.md             ← this file
 ├── .gitignore
 ├── cerebral/
-│   ├── main.py            ← entry point; WS server + audio + profile + TTS
+│   ├── main.py            ← entry point; WS server + audio + profile + TTS + bridge
 │   ├── requirements.txt   ← websockets, vosk, faster-whisper, sounddevice, numpy, kokoro, soundfile
 │   ├── audio/
 │   │   ├── __init__.py
 │   │   ├── pipeline.py    ← Vosk passive listener + faster-whisper
 │   │   └── rolling_buffer.py
+│   ├── bridge/
+│   │   ├── __init__.py
+│   │   └── openclaw.py    ← ChannelBridge — Telegram/Discord/etc. via OpenClaw
 │   ├── db/
 │   │   ├── __init__.py
 │   │   └── profiles.py    ← ProfileManager + Profile dataclass; update_voice() added
@@ -360,9 +363,508 @@ All issues are at https://github.com/iggyghub/OpenMind
 | ~~15~~ | ~~OS tools MCP — Files, Shell, System, Apps, Clipboard plugins~~ | ✅ done |
 | ~~16~~ | ~~Time & Notes MCP — Clock timers/reminders, Scheduler, Notes~~ | ✅ done |
 | ~~17~~ | ~~Browser MCP — web search, navigate, summarise via OpenClaw Playwright~~ | ✅ done |
+| ~~18~~ | ~~n8n integration — MCP bridge: list_workflows, trigger_workflow, get_workflow_result~~ | ✅ done |
+| ~~19~~ | ~~n8n credential check — verify Google OAuth configured, surface status in heartbeat~~ | ✅ done |
+| ~~20~~ | ~~Google Workspace MCP — Gmail, Calendar, Drive, Sheets via n8n~~ | ✅ done |
+| ~~21~~ | ~~Local OSS fallbacks — Grist, IMAP/SMTP, Nextcloud, LibreOffice, OpenStreetMap~~ | ✅ done |
+| ~~22~~ | ~~OpenClaw channel bridge — Telegram/Discord/WhatsApp via OpenClaw harness~~ | ✅ done |
+| ~~23~~ | ~~Communication MCP — Zoom + Google Meet via n8n, phone calls via OpenClaw~~ | ✅ done |
+| ~~24~~ | ~~Dev tools MCP — Git, GitHub, Docker, SSH, Package Managers, HTTP Client~~ | ✅ done |
+| ~~25~~ | ~~Information MCP — Wikipedia, Weather (Open-Meteo), News (RSS), Stocks/Crypto~~ | ✅ done |
+| ~~26~~ | ~~Security MCP — Bitwarden read-only vault, VPN, Network Scanner~~ | ✅ done |
 | ... | (29 total) | |
 
-**Next issue: #18.** Read it with `gh issue view 18 --repo iggyghub/OpenMind` before implementing.
+**Next issue: #27.** Read it with `gh issue view 27 --repo iggyghub/OpenMind` before implementing.
+
+---
+
+### Issue #26 — Security MCP ✅
+
+Three new plugins in `plugins/`, all auto-loading via `discover_plugins()`. No
+changes to `main.py` required. Two CLI-shell plugins (bitwarden, vpn) and one
+mixed CLI/socket plugin (network_scanner). All side effects (`run_fn`,
+`socket_factory`, `http_get`) are injected so unit tests never invoke the
+real `bw`/`rasdial`/`scutil`/`nmcli`/`arp`/`ping` binaries and never open a
+real socket.
+
+- `plugins/bitwarden.py` — **BitwardenPlugin**: 3 tools — `bw_unlock(
+  master_password)`, `bw_get_item(name)`, `bw_list_items(folder?)`.
+  - **Read-only by design**: no `bw_create` / `bw_edit` / `bw_delete` tool
+    exists. The orchestrator `list_tools()` is unit-tested against an
+    explicit forbidden-name allowlist so a regression that adds a write tool
+    fails the test suite.
+  - **HITL secrets hygiene**: the master password is forwarded directly to
+    `bw unlock --raw` via stdin/env (`BW_PASSWORD`) and the local reference
+    is dropped after the call. The session token returned by `bw unlock` is
+    held in `self._session_token` (RAM-only, never persisted) and forwarded
+    to subsequent `bw` calls via the `BW_SESSION` env var. Neither the
+    password nor the session token is ever echoed back to the LLM — the
+    only thing the LLM sees from a successful unlock is `{"unlocked": true}`.
+- `plugins/vpn.py` — **VpnPlugin**: 3 tools — `vpn_connect(profile_name)`,
+  `vpn_disconnect()`, `vpn_status()`.
+  - Platform-aware via injectable `platform_name` (default `sys.platform`):
+    Windows → `rasdial`, macOS → `scutil --nc start/stop`, Linux →
+    `nmcli connection up/down`. All three branches covered by tests.
+  - `vpn_connect` requires a non-empty `profile_name` — there is no default
+    profile, no auto-connect path. The profile must already exist in the OS
+    network settings; Felix only triggers it.
+  - `vpn_status()` returns `{connected, profile, ip}`. The current public IP
+    is fetched via the same `http://ip-api.com/json/` endpoint used by
+    `cerebral/environment/context.py`; injectable `http_get` (defaults to
+    `urllib.request.urlopen`); IP fetch failures fall back to `ip=None`
+    rather than failing the whole status call.
+- `plugins/network_scanner.py` — **NetworkScannerPlugin**: 3 tools —
+  `net_list_devices()`, `net_ping(host, count?)`, `net_check_port(host,
+  port, timeout?)`.
+  - `net_list_devices` shells out to `arp -a` and parses both the Windows
+    two-column table format and the POSIX `host (ip) at mac on iface`
+    format. Hostnames are returned when known (POSIX `?` becomes `null`).
+  - `net_ping` uses the platform-correct count flag (`-n` on Windows,
+    `-c` elsewhere) via `platform_name` injection. Default count 4. Returns
+    `{stdout, stderr, exit_code}`; non-zero exit → `is_error=True`.
+  - `net_check_port` uses an injected `socket_factory(addr, timeout)` that
+    defaults to `socket.create_connection`. Returns `{open: bool}`.
+    `ConnectionRefusedError` and `socket.timeout` collapse to `open: false`
+    rather than `is_error` — a closed port is a successful check.
+
+**Tool naming:** every tool is prefixed with the plugin name (`bw_*`,
+`vpn_*`, `net_*`) — see `.learnings/LEARNINGS.md` after #23 about the
+flat-global tool-name namespace.
+
+**Tests:** one file per plugin, all side effects injected.
+- `cerebral/tests/test_plugin_bitwarden.py` — 24 unit tests, including an
+  explicit assertion that no write tools are exposed and a hygiene test
+  that walks `plugin.__dict__` to confirm the master password is never
+  retained as an attribute.
+- `cerebral/tests/test_plugin_vpn.py` — 21 unit tests, parameterised across
+  the Windows/Darwin/Linux/unknown branches.
+- `cerebral/tests/test_plugin_network_scanner.py` — 26 unit tests covering
+  both ARP formats, both ping flag conventions, and the open/refused/timeout
+  socket cases.
+
+**Plugin tool count:** 27 plugins → 93 tools total
+(+3 bitwarden +3 vpn +3 network_scanner = +9 over #25).
+
+**Required external binaries:** `bw` (Bitwarden CLI), `rasdial` (Windows) /
+`scutil` (macOS) / `nmcli` (Linux), `arp`, `ping`. All shell-outs return
+`is_error=True` if the binary is missing — same fail-loud pattern as
+`plugins/git.py` etc.
+
+**OS prerequisites:** VPN profiles must be pre-configured in the OS network
+settings (Windows: Settings → VPN; macOS: System Settings → Network → VPN;
+Linux: NetworkManager). Felix only triggers existing profiles, never
+creates them.
+
+**Python test count: 664 passing (was 593), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo paths:**
+- "Felix, am I connected to VPN?" → LLM calls `vpn_status({})` → returns
+  `{connected:false, profile:null, ip:"203.0.113.5"}` → Kokoro speaks
+  "You are not connected to a VPN; your public IP is 203.0.113.5."
+- "Felix, what's my GitHub password?" → LLM prompts for master password →
+  calls `bw_unlock({master_password:"…"})` → calls
+  `bw_get_item({name:"github"})` → reads the password aloud once.
+- "Felix, who else is on my network?" → LLM calls `net_list_devices({})` →
+  Kokoro reads back the list of IPs and hostnames.
+
+---
+
+### Issue #25 — Information MCP ✅
+
+Four new plugins in `plugins/`, all auto-loading via `discover_plugins()`. No
+changes to `main.py` required. All four are pure HTTP plugins (no CLI
+shell-outs, no API keys) — they hit public open-data endpoints and are
+fully testable with an injected `fetch_fn` / `parse_fn`.
+
+- `plugins/wikipedia.py` — **WikipediaPlugin**: 2 tools — `wiki_search(query,
+  max_results?)`, `wiki_summary(title)`. Uses the public action API
+  (`https://en.wikipedia.org/w/api.php` opensearch) for search and the REST
+  v1 endpoint (`https://en.wikipedia.org/api/rest_v1/page/summary/{title}`)
+  for article summaries. Spaces in titles are URL-encoded. Default
+  `fetch_fn` tries aiohttp then httpx — same fallback pattern as `plugins/
+  n8n.py` and `plugins/http_client.py`.
+- `plugins/weather.py` — **WeatherPlugin**: 2 tools — `weather_current(
+  location)`, `weather_forecast(location, days?)`. Uses Open-Meteo
+  (`https://api.open-meteo.com/v1/forecast`) — fully open source, no API
+  key. Free-form locations are geocoded via the Open-Meteo geocoding
+  endpoint (`https://geocoding-api.open-meteo.com/v1/search`) before the
+  forecast call. `weather_forecast` defaults to 7 days; `days` overrides
+  (max 16). Unknown locations → `is_error=True`.
+- `plugins/news.py` — **NewsPlugin**: 2 tools — `news_headlines(topic?,
+  source?, max_results?)`, `news_list_sources()`. Aggregates configurable
+  RSS feeds. Default sources injected at construction: BBC, Reuters,
+  Hacker News. Per-source failures are tolerated — a single broken feed
+  doesn't poison the aggregate; only when *all* requested sources fail
+  does the call return `is_error=True`. RSS parsing delegated to
+  `feedparser` via an injectable `parse_fn`, so tests never hit the
+  network and don't require feedparser. `feedparser>=6.0` added to
+  `cerebral/requirements.txt`.
+- `plugins/markets.py` — **MarketsPlugin**: 2 tools — `market_price(symbol,
+  asset_type?)`, `market_quote(symbol, asset_type?)` (price + 24h change
+  + market cap). Auto-detects crypto vs stock by symbol against a 24-coin
+  allowlist (BTC, ETH, DOGE, SOL, …); explicit `asset_type` of `"crypto"`
+  or `"stock"` overrides. Crypto routed to CoinGecko
+  (`https://api.coingecko.com/api/v3/coins/markets`), stocks to Yahoo
+  Finance's public chart endpoint
+  (`https://query1.finance.yahoo.com/v8/finance/chart/{symbol}`). For
+  stocks, `change_24h_pct` is computed from
+  `(regularMarketPrice - previousClose) / previousClose`. Both endpoints
+  no API key.
+
+**Tool naming:** all tools prefixed with their plugin name
+(`wiki_search`, `weather_current`, `news_headlines`, `market_price`) —
+see `.learnings/LEARNINGS.md` after #23 (zoom/meet `join_meeting`
+collision) about the flat-global tool-name namespace.
+
+**Tests:** one file per plugin, all side effects injected.
+- `cerebral/tests/test_plugin_wikipedia.py` — 15 unit tests.
+- `cerebral/tests/test_plugin_weather.py` — 12 unit tests.
+- `cerebral/tests/test_plugin_news.py` — 12 unit tests.
+- `cerebral/tests/test_plugin_markets.py` — 15 unit tests.
+
+**Plugin tool count:** 24 plugins → 84 tools total
+(+2 wiki +2 weather +2 news +2 markets = +8 over #24).
+
+**Required external services:** internet only — no API keys, no daemons.
+All four endpoints are public open-data services.
+
+**Python test count: 593 passing (was 539), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo paths:**
+- "Felix, what is the weather in London this week?" → LLM calls
+  `weather_forecast(location="London", days=7)` → Open-Meteo geocode
+  + forecast → LLM summarises → Kokoro speaks the 7-day outlook.
+- "Felix, what is the Bitcoin price?" → LLM calls
+  `market_price(symbol="BTC")` → CoinGecko returns price → Kokoro speaks
+  the current USD price.
+- "Felix, what's in today's headlines?" → LLM calls `news_headlines()` →
+  feedparser pulls BBC + Reuters + HN → LLM picks top 3 → Kokoro reads.
+- "Felix, what is general relativity?" → LLM calls
+  `wiki_search("general relativity")` → picks first result → calls
+  `wiki_summary(title)` → Kokoro speaks the lead extract.
+
+---
+
+### Issue #24 — Dev tools MCP ✅
+
+Six new plugins in `plugins/`, all auto-loading via `discover_plugins()`. No
+changes to `main.py` required.
+
+**CLI-shell plugins** (inject `run_fn` defaulting to `subprocess.run`, same
+pattern as `plugins/shell.py` and `plugins/system.py`; success path returns
+`{stdout, stderr, exit_code}`; non-zero exit → `is_error=True`):
+
+- `plugins/git.py` — **GitPlugin**: 7 tools — `git_status`, `git_commit(message)`,
+  `git_push`, `git_pull`, `git_diff`, `git_log(max_count?)`, `git_branch(name?)`.
+  All accept an optional `repo_path` (defaults to `os.getcwd()`); shells out
+  to the local `git` binary via the injected runner.
+- `plugins/docker.py` — **DockerPlugin**: 5 tools — `docker_list_containers(all?)`,
+  `docker_start_container(name_or_id)`, `docker_stop_container(name_or_id)`,
+  `docker_list_images`, `docker_build(path, tag?)`.
+- `plugins/package_manager.py` — **PackageManagerPlugin**: 3 tools, three
+  back-ends — `pkg_install(manager, name)`, `pkg_update(manager, name?)`,
+  `pkg_search(manager, query)`. `manager` validated against allowlist
+  `{npm, pip, winget}`; unknown manager → `is_error=True`. Per-manager argv
+  shaping handles the small differences (e.g. `pip install -U` for update;
+  `pip index versions` for search since `pip search` is disabled).
+- `plugins/ssh.py` — **SshPlugin**: 1 tool — `ssh_run_command(host, command,
+  port?, key_path?)`. Always sets `-o BatchMode=yes` so any auth challenge
+  fails fast rather than blocking on an interactive prompt — no keys
+  written, no passwords prompted.
+
+**HTTP plugins**:
+
+- `plugins/github.py` — **GithubPlugin**: 4 tools — `github_list_issues(repo)`,
+  `github_create_issue(repo, title, body?)`, `github_list_prs(repo)`,
+  `github_get_notifications()`. Delegates to an injected `N8nPlugin`, same
+  pattern as `GoogleWorkspacePlugin` (#20). Required n8n workflow names:
+  `Felix GitHub List Issues`, `Felix GitHub Create Issue`,
+  `Felix GitHub List PRs`, `Felix GitHub Notifications`.
+- `plugins/http_client.py` — **HttpClientPlugin**: 4 tools — `http_get`,
+  `http_post`, `http_put`, `http_delete`. Each takes `(url, headers?, body?)`
+  and returns `{status, body}`. Default `fetch_fn` tries aiohttp then httpx
+  (same fallback pattern as `plugins/n8n.py`); JSON responses are parsed,
+  non-JSON responses come back as raw text. Status outside 200-399 is
+  surfaced as `is_error=True`.
+
+**Tool naming:** all tools are prefixed with their plugin name
+(`git_status`, `docker_list_containers`, `pkg_install`, `ssh_run_command`,
+`github_list_issues`, `http_get`) — see `.learnings/LEARNINGS.md` after
+#23 (zoom/meet `join_meeting` collision).
+
+**Tests:** one file per plugin, all side effects injected.
+- `cerebral/tests/test_plugin_git.py` — 21 unit tests (parameterised across
+  the 7 subcommands with a single fake run_fn capturing argv).
+- `cerebral/tests/test_plugin_docker.py` — 16 unit tests.
+- `cerebral/tests/test_plugin_package_manager.py` — 23 unit tests.
+- `cerebral/tests/test_plugin_ssh.py` — 13 unit tests.
+- `cerebral/tests/test_plugin_github.py` — 14 unit tests.
+- `cerebral/tests/test_plugin_http_client.py` — 15 unit tests.
+
+**Plugin tool count:** 20 plugins → 76 tools total
+(+7 git +5 docker +3 pkg +1 ssh +4 github +4 http = +24 over #23).
+
+**Required external binaries:** Git/Docker/SSH/package-manager tools shell
+out to the local CLIs (`git`, `docker`, `npm`, `pip`, `winget`, `ssh`).
+They return `is_error=True` if the binary is missing from PATH.
+
+**n8n setup required:** create the 4 GitHub workflows in n8n at
+`localhost:5678` (workflow names must match exactly). The n8n GitHub
+credential needs a personal-access-token with `repo` and `notifications`
+scopes — see SETUP.md.
+
+**Python test count: 539 passing (was 437), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo path:** "Felix, what is the git status of my current repo?"
+→ LLM calls `git_status({})`
+→ shells out to `git status` in the working directory
+→ returns `{stdout, stderr, exit_code}`
+→ LLM summarises ("you have 4 modified files and 3 untracked files")
+→ Kokoro speaks the answer.
+
+---
+
+### Issue #23 — Communication MCP ✅
+
+Three new plugins in `plugins/`, all auto-loading via `discover_plugins()`. No
+changes to `main.py` required.
+
+- `plugins/zoom.py` — **ZoomPlugin**: delegates HTTP to an injected `N8nPlugin`
+  and shells out to the local Zoom client via an injectable `launch_fn`
+  (defaults to `webbrowser.open`, which honours the `zoommtg://` scheme that
+  the desktop client registers on install).
+  - `zoom_join_meeting(url? | id?, passcode?)` → triggers `"Felix Zoom Join"`
+    via n8n, then calls `launch_fn(url or zoommtg://zoom.us/join?confno=ID)`.
+    If n8n fails the launch is skipped and the error is returned — same
+    fail-loud pattern used elsewhere.
+  - `zoom_schedule_meeting(title, start, duration_minutes?, attendees?)` →
+    triggers `"Felix Zoom Schedule"` via n8n.
+  - `zoom_list_meetings(max_results?)` → triggers `"Felix Zoom List"` via n8n.
+  - `create(n8n_plugin?, launch_fn?, fetch_fn?, base_url?, api_key?)` factory
+    for orchestrator auto-registration.
+- `plugins/meet.py` — **MeetPlugin**: reuses `GoogleWorkspacePlugin` (#20) so
+  there's no duplicate n8n delegation chain — Meet links live on Google
+  Calendar event payloads.
+  - `meet_join_meeting(url)` → opens the URL via injectable
+    `webbrowser_open_fn` (defaults to `webbrowser.open`). No n8n call —
+    Meet runs in-browser.
+  - `meet_schedule_meeting(title, start, end?, attendees?, description?)` →
+    delegates to `GoogleWorkspacePlugin.calendar_create_event` with
+    `add_conference=True` so the n8n calendar workflow attaches a Meet
+    conference.
+  - `meet_get_meeting_link(event_id)` → calls
+    `GoogleWorkspacePlugin.calendar_list_events`, finds the event by id,
+    returns the `hangoutLink` (or an error if missing).
+  - `create(google_workspace_plugin?, webbrowser_open_fn?, n8n_plugin?, ...)`
+    factory; falls back to building a fresh `GoogleWorkspacePlugin` from
+    `n8n_plugin`/`fetch_fn` when nothing is injected.
+- `plugins/phone.py` — **PhonePlugin**: HTTP client to OpenClaw's voice
+  channel — no SIP/Twilio in Cerebral, same architecture as the channel
+  bridge in #22.
+  - `start_call(contact? | number?)` → POSTs to
+    `<base_url>/voice/dial` (default `http://localhost:3000`) with body
+    `{contact?, number?}`. Returns OpenClaw's response (typically a
+    `call_id` + `status`).
+  - Injectable `fetch_fn(url, body)` — defaults to aiohttp/httpx;
+    `base_url` defaults to OpenClaw's port 3000.
+  - `create(fetch_fn?, base_url?)` factory.
+
+**Tool name namespacing:** Zoom and Meet both expose join/schedule
+capabilities, but the MCP orchestrator routes by a flat tool name → plugin
+map. So tool names are prefixed (`zoom_join_meeting`, `meet_join_meeting`,
+…) — the LLM picks Zoom vs Meet by tool name. The plugin folder layout
+matches the brief; only the tool names are namespaced.
+
+**n8n setup required:** Create these 3 new workflows in n8n at
+`localhost:5678`. They reuse the same Zoom OAuth credential created during
+the n8n credentials step in #19. Workflow names must match exactly:
+`Felix Zoom Join`, `Felix Zoom Schedule`, `Felix Zoom List`.
+
+The Google OAuth credential from #19/#20 is reused for Meet via the
+`Felix Calendar Create` and `Felix Calendar List` workflows — no new
+workflows are needed for Meet.
+
+**Zoom client:** the desktop client only needs to be installed if you want
+`zoom_join_meeting` to actually open meetings (the plugin launches via the
+`zoommtg://` URL scheme it registers). Schedule/list work without the
+client installed.
+
+- `cerebral/tests/test_plugin_zoom.py` — 21 unit tests (TDD vertical slices)
+- `cerebral/tests/test_plugin_meet.py` — 20 unit tests (TDD vertical slices)
+- `cerebral/tests/test_plugin_phone.py` — 13 unit tests (TDD vertical slices)
+
+**Plugin tool count:** 14 plugins → 52 tools total
+(+3 zoom + 3 meet + 1 phone = +7 over #22).
+
+**Python test count: 437 passing (was 383), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo paths:**
+- Voice: "Felix, join my 3pm Zoom call"
+  → LLM picks `zoom_list_meetings` to find the 3pm meeting
+  → calls `zoom_join_meeting(url=...)`
+  → n8n logs the join, Zoom desktop client opens the meeting
+- Voice: "Felix, schedule a Zoom call with John tomorrow at 2pm"
+  → LLM calls `zoom_schedule_meeting(title="Call with John",
+    start="2026-05-04T14:00:00", attendees=["john@..."])`
+  → n8n creates the meeting and the calendar invite
+- Voice: "Felix, call Mum"
+  → LLM calls `start_call(contact="Mum")`
+  → POST to `localhost:3000/voice/dial`
+  → OpenClaw rings Mum's phone
+
+---
+
+### Issue #22 — OpenClaw channel bridge ✅
+
+A new module `cerebral/bridge/openclaw.py` connects Cerebral to OpenClaw's
+external-agent stream so messages from Telegram/Discord/WhatsApp/etc. flow
+through the same LLM + MCP path as voice wakes.
+
+- `cerebral/bridge/openclaw.py` — **`ChannelBridge`**
+  - **Constructor:** `ChannelBridge(process_fn, *, fetch_fn=None, ws_connect_fn=None, ws_url, outbound_url, api_key="", history_limit=16)`
+  - **`start()`** — connects to OpenClaw's `ws_url`, iterates inbound JSON
+    frames, hands each to `handle_inbound`. Logs a warning and returns
+    cleanly on `ConnectionRefusedError`/`OSError` (graceful degradation —
+    Cerebral keeps running on voice alone).
+  - **`stop()`** — closes the WS and unblocks the loop.
+  - **`handle_inbound(message: dict)`** — public entry point used by tests
+    and the WS reader. Validates `sender_id` + `text`, calls
+    `process_fn(text, history)`, appends `(user, assistant)` turns to the
+    session buffer, POSTs the reply to `outbound_url`. On `process_fn`
+    exception → falls back to a generic error reply but still posts.
+  - **Session buffer** — RAM-only `dict[str, list[{role,text}]]` keyed by
+    `f"{channel}:{sender_id}"`. Truncates to `history_limit` on append.
+    `get_history(key)` and `reset_session(key)` exposed for inspection.
+  - **Outbound** — POST to `outbound_url` with JSON body
+    `{channel, sender_id, text, message_id?}`. `Authorization: Bearer …`
+    header added when `api_key` is set; omitted otherwise. Failures are
+    logged, not raised — one bad reply doesn't kill the loop.
+  - **Default transports** — `_default_fetch` tries aiohttp then httpx;
+    `_default_ws_connect` uses `websockets.connect`. Both are injected to
+    `None` in tests via stubs/`AsyncMock`.
+- `cerebral/main.py` updated:
+  - `_bridge_process(transcript, history)` — folds recent history into the
+    prompt and calls `_router.complete(...)`. Reuses the existing router
+    so cloud/local model switching applies to channel messages too.
+  - `_bridge = ChannelBridge(process_fn=_bridge_process, ws_url=…, …)`
+    instantiated at module level. URLs and API key read from
+    `OPENCLAW_WS_URL` / `OPENCLAW_REPLY_URL` / `OPENCLAW_API_KEY` env vars
+    with sensible local defaults.
+  - `main()` starts `_bridge.start()` as a background task right before
+    the IPC server boots; on shutdown calls `await _bridge.stop()` then
+    awaits the task with a 2 s grace period.
+  - Heartbeat now includes `bridge: bool` so the tray can surface
+    "channels connected" later.
+- `cerebral/tests/test_bridge_openclaw.py` — **20 unit tests** (TDD slices):
+  inbound routing, outbound POST shape + auth, per-`(channel, sender_id)`
+  session isolation, history pass-through to `process_fn`, history-limit
+  truncation, `process_fn` error → friendly reply, outbound failure
+  swallowed, empty/whitespace text ignored, missing `sender_id` ignored,
+  WS connect URL respected, WS frames drive `handle_inbound`,
+  malformed JSON skipped, `stop()` closes the WS, graceful degradation
+  when OpenClaw is unreachable, `running` lifecycle, `reset_session`.
+
+**SETUP.md** updated with a step-by-step Telegram channel walkthrough
+(BotFather → `~/.openclaw/openclaw.json` → env vars → restart) plus a note
+that WhatsApp/Discord/Slack work the same way once enabled in OpenClaw —
+no Cerebral changes required.
+
+**New env vars (all optional):**
+
+| Name | Default | Purpose |
+|------|---------|---------|
+| `OPENCLAW_WS_URL` | `ws://localhost:3000/agent/stream` | Inbound message stream |
+| `OPENCLAW_REPLY_URL` | `http://localhost:3000/agent/reply` | Outbound reply endpoint |
+| `OPENCLAW_API_KEY` | `""` | Optional bearer token for OpenClaw |
+
+**Heartbeat field added:** `bridge: true|false` (true once the WS is connected).
+
+**Python test count: 383 passing (was 363), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo path:** "Felix, what time is it?" sent via Telegram
+→ OpenClaw receives → forwards over WS to Cerebral
+→ `ChannelBridge.handle_inbound` → `_bridge_process` → `_router.complete`
+→ reply POSTed to `http://localhost:3000/agent/reply`
+→ OpenClaw delivers it back to the Telegram chat.
+
+---
+
+### Issue #21 — Local OSS Fallbacks ✅
+
+One new plugin in `plugins/`, auto-loading via `discover_plugins()`. No changes to `main.py` required.
+
+- `plugins/google_workspace_fallback.py` — **GoogleWorkspaceFallbackPlugin**: wraps `GoogleWorkspacePlugin`; same `name`, same 8 tools, same `ToolResult` contract
+  - **Offline detection**: if primary returns `is_error=True` AND the content is not a validation error (`"is required"` / `"Unknown tool"`), treat as connectivity failure and route to OSS fallback
+  - **gmail_send → SMTP**: `smtplib.SMTP_SSL`; injectable `smtp_fn(host, port)` → mock SMTP; result `{sent, to, subject}`
+  - **gmail_search → IMAP**: `imaplib.IMAP4_SSL`; injectable `imap_fn(host, port)` → mock IMAP4; result `{messages: [{from, subject, date, snippet}]}`
+  - **sheets_read_range / write → Grist**: `GET/POST /api/docs/{docId}/tables/{tableId}/records`; injectable `fetch_fn`; `"Sheet1!A1:D10"` → `table_id="Sheet1"`
+  - **drive_list_files / upload → Nextcloud**: WebDAV `PROPFIND`/`PUT` at configurable host; `nextcloud_url=None` returns a clear "not configured" error
+  - **calendar_create_event / list_events**: no OSS fallback; primary error is returned unchanged
+  - All env vars: `IMAP_HOST`, `IMAP_PORT`, `SMTP_HOST`, `SMTP_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `GRIST_URL`, `GRIST_API_KEY`, `NEXTCLOUD_URL`, `NEXTCLOUD_USERNAME`, `NEXTCLOUD_PASSWORD`
+  - `create(primary?, fetch_fn?, imap_fn?, smtp_fn?, grist_url?, nextcloud_url?, ...)` factory
+- Helper functions exported for testing: `_parse_imap_query(gmail_query)`, `_parse_grist_range(range_str)`
+- `cerebral/tests/test_plugin_google_workspace_fallback.py` — 44 unit tests (TDD, all cycles)
+
+**Intentional omissions:**
+- Nextcloud is conditional on installation — drive tools return a clear "not configured" error when `nextcloud_url` is None
+- LibreOffice (Docs/Slides) fallback is deferred — Docs/Slides tools are not yet in `GoogleWorkspacePlugin`; the growth loop will wire `run_fn` when those tools are added
+- Nominatim (Maps) fallback is deferred — Maps tools are not yet in scope
+- Calendar OSS fallback (local Scheduler) is a growth-loop candidate
+
+**Plugin tool count:** unchanged (12 plugins, 40 tools — `google_workspace_fallback` uses the same plugin name and tool list as `google_workspace`; only one should be registered at a time)
+
+**Python test count: 363 passing (was 319), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo path (offline):** disable internet → "Felix, what emails do I have from John?"
+→ LLM calls `gmail_search(query="from:john")`
+→ `GoogleWorkspaceFallbackPlugin` tries n8n → gets `ConnectionError`
+→ falls back to IMAP → returns message list
+→ LLM summarises → Kokoro speaks
+
+---
+
+### Issue #20 — Google Workspace MCP ✅
+
+One new plugin in `plugins/`, auto-loading via `discover_plugins()`. No changes to `main.py` required.
+
+- `plugins/google_workspace.py` — **GoogleWorkspacePlugin**: delegates all HTTP to an injected `N8nPlugin`
+  - `gmail_send(to, subject, body, cc?)` → triggers `"Felix Gmail Send"` workflow
+  - `gmail_search(query, max_results?)` → triggers `"Felix Gmail Search"` workflow
+  - `calendar_create_event(title, start, end?, attendees?, description?)` → triggers `"Felix Calendar Create"`
+  - `calendar_list_events(from?, to?, max_results?)` → triggers `"Felix Calendar List"`
+  - `drive_list_files(query?, folder_id?, max_results?)` → triggers `"Felix Drive List Files"`
+  - `drive_upload_file(filename, content, folder_id?, mime_type?)` → triggers `"Felix Drive Upload"`
+  - `sheets_read_range(spreadsheet_id, range)` → triggers `"Felix Sheets Read"`
+  - `sheets_write_range(spreadsheet_id, range, data)` → triggers `"Felix Sheets Write"`
+  - `n8n_plugin` injectable (default: built from `fetch_fn`/`base_url`/`api_key` args)
+  - Returns `ToolResult(is_error=True)` on missing required args, unknown tool, or n8n failure
+  - `create(n8n_plugin?, fetch_fn?, base_url?, api_key?)` factory for orchestrator auto-registration
+- `cerebral/tests/test_plugin_google_workspace.py` — 32 unit tests (TDD, all cycles)
+
+**Intentionally omitted (growth loop candidates):** Docs, Slides, Contacts, Maps, Tasks — same delegation
+pattern, add workflows in n8n + call `call_tool` with a new workflow name.
+
+**n8n setup required:** Create these 8 workflows in n8n at `localhost:5678` using the Google OAuth credential
+configured in issue #19. Workflow names must match exactly:
+`Felix Gmail Send`, `Felix Gmail Search`, `Felix Calendar Create`, `Felix Calendar List`,
+`Felix Drive List Files`, `Felix Drive Upload`, `Felix Sheets Read`, `Felix Sheets Write`.
+
+**Plugin tool count:** 11 plugins → 40 tools total
+
+**Python test count: 319 passing (was 287), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo path:** "Felix, what emails do I have from John this week?"
+→ LLM calls `gmail_search(query="from:john newer_than:7d")`
+→ `GoogleWorkspacePlugin` triggers `"Felix Gmail Search"` via n8n
+→ n8n queries Gmail API, returns message list
+→ LLM summarises → Kokoro speaks
 
 ---
 
