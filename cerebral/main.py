@@ -12,6 +12,7 @@ Starts:
 import asyncio
 import json
 import logging
+import os
 import sys
 
 import websockets
@@ -20,6 +21,7 @@ from websockets.asyncio.server import serve
 from pathlib import Path
 
 from audio.pipeline import AudioPipeline, DEFAULT_SIGNAL_WORDS
+from bridge.openclaw import ChannelBridge
 from db.profiles import Profile, ProfileManager
 from llm.router import ModelRouter, ModelUnavailableError
 from mcp.orchestrator import MCPOrchestrator
@@ -50,6 +52,31 @@ _orc = MCPOrchestrator()
 _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
+
+
+async def _bridge_process(transcript: str, history: list[dict]) -> str:
+    """Process an inbound channel message through the LLM. Reuses the same
+    router used by voice wakes; tools are made available via the same
+    orchestrator. History is folded into a simple prefixed prompt — good
+    enough for short multi-turn conversations on Telegram/Discord/etc."""
+    if history:
+        recent = history[-8:]
+        context = "\n".join(
+            f"{('User' if turn['role'] == 'user' else 'Felix')}: {turn['text']}"
+            for turn in recent
+        )
+        prompt = f"Conversation so far:\n{context}\n\nUser: {transcript}\nFelix:"
+    else:
+        prompt = transcript
+    return await _router.complete(prompt, task_type="chat")
+
+
+_bridge = ChannelBridge(
+    process_fn=_bridge_process,
+    ws_url=os.environ.get("OPENCLAW_WS_URL", "ws://localhost:3000/agent/stream"),
+    outbound_url=os.environ.get("OPENCLAW_REPLY_URL", "http://localhost:3000/agent/reply"),
+    api_key=os.environ.get("OPENCLAW_API_KEY", ""),
+)
 
 def _get_memory() -> MemoryManager | None:
     """Return a MemoryManager for the active profile, or None if no profile loaded."""
@@ -414,6 +441,7 @@ async def _heartbeat_loop(audio_active: bool) -> None:
                 "model": _router.active_model,
                 "queue_pending": len(_queue.get_pending()),
                 "env": _env.get_context().get("city") or "unknown",
+                "bridge": _bridge.running,
             },
         })
         logger.info(
@@ -454,6 +482,8 @@ async def main() -> None:
     else:
         logger.info("[cerebral] No profiles found — will prompt on tray connection")
 
+    bridge_task = asyncio.create_task(_bridge.start())
+
     logger.info("[cerebral] Starting IPC server on ws://%s:%d", HOST, PORT)
     async with serve(_ws_handler, HOST, PORT):
         logger.info("[cerebral] Listening - waiting for tray connection")
@@ -463,6 +493,12 @@ async def main() -> None:
 
     if pipeline is not None:
         pipeline.stop()
+
+    await _bridge.stop()
+    try:
+        await asyncio.wait_for(bridge_task, timeout=2.0)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        bridge_task.cancel()
 
     logger.info("[cerebral] Shut down cleanly.")
 
