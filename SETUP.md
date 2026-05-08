@@ -328,3 +328,33 @@ binaries and require some prerequisites:
 - `network_scanner` — uses `arp` and `ping`, both standard on every
   supported OS. `net_check_port` opens a plain TCP socket via Python's
   stdlib `socket` module — no binary required.
+
+### Model switching (#29)
+
+The tray's **Model** submenu lists every model registered in
+`cerebral/llm/router.py` and lets you switch the active model at
+runtime, plus pin a different model per task type (`chat`,
+`extraction`).
+
+Default registry (real backends):
+
+| Model id | Label | Cloud? | Backend |
+|---|---|---|---|
+| `ollama/gemma4` | Gemma 4 (local) | no | `OllamaBackend` (`http://localhost:11434`) |
+| `claude/haiku`  | Claude Haiku 4.5 | yes | `ClawBackend` (`http://localhost:3000` — OpenClaw) |
+| `claude/sonnet` | Claude Sonnet 4.6 | yes | `ClawBackend` |
+
+To use the cloud models, OpenClaw must be running locally (see the
+**OpenClaw** section earlier in this file) — Felix never calls the
+Anthropic API directly. To use Gemma 4 locally, Ollama must be running
+and the `gemma4` model pulled (`ollama pull gemma4`).
+
+A `☁` next to the active model in the tray indicates that requests
+will leave the machine; `◉` indicates a local model. The visualiser
+briefly shows its `thinking` animation each time the model is
+switched.
+
+Per-task pins are useful when you want passive 5W1H extraction to
+stay local even though the active conversational model is a cloud
+one — open `Task: extraction → Gemma 4 (local)` in the Model
+submenu.
