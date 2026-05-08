@@ -373,9 +373,10 @@ All issues are at https://github.com/iggyghub/OpenMind
 | ~~25~~ | ~~Information MCP — Wikipedia, Weather (Open-Meteo), News (RSS), Stocks/Crypto~~ | ✅ done |
 | ~~26~~ | ~~Security MCP — Bitwarden read-only vault, VPN, Network Scanner~~ | ✅ done |
 | ~~27~~ | ~~Hardware MCP — Printer/Scanner + Steam launcher~~ | ✅ done |
+| ~~28~~ | ~~Finance MCP — Invoice/Receipt OCR to Google Sheets / Grist~~ | ✅ done |
 | ... | (29 total) | |
 
-**Next issue: #28.** Read it with `gh issue view 28 --repo iggyghub/OpenMind` before implementing.
+**Next issue: #29.** Read it with `gh issue view 29 --repo iggyghub/OpenMind` before implementing.
 
 ---
 
@@ -571,6 +572,114 @@ build a fake Steam library on disk).
 - "Felix, is Counter-Strike running?" → LLM calls `steam_is_running({name:
   "Counter-Strike 2"})` → returns `{running: true/false}` → Kokoro reports
   back.
+
+---
+
+### Issue #28 — Finance MCP ✅
+
+One new plugin in `plugins/`, auto-loading via `discover_plugins()`. No
+changes to `main.py` required. Pure-Python OCR plugin that delegates the
+sheet append to the existing `google_workspace` plugin's
+`sheets_write_range` tool — same delegation pattern `plugins/zoom.py`
+uses for n8n. The Grist fallback already kicks in transparently via
+`plugins/google_workspace_fallback.py`.
+
+- `plugins/finance.py` — **FinancePlugin**: 2 tools —
+  `finance_extract_receipt(image_path)` and
+  `finance_log_expense(image_path, sheet_target, confirm=False, columns?)`.
+  - **Extraction is side-effect-free.** `finance_extract_receipt`
+    OCRs the image (or page 1 of a scanned PDF) and returns
+    `{vendor, date, total, currency, line_items: [{description, amount}],
+    confidence: {vendor, date, total, currency}}`. No sheet write — the
+    LLM shows the user the result before committing.
+  - **Append requires explicit confirm.** `finance_log_expense` defaults
+    to `confirm=False`, in which case it returns the extraction and the
+    would-be row but **does not** call the workspace plugin. Tests assert
+    that `confirm=False` does not invoke `call_tool` on the workspace
+    plugin, and `confirm=True` does, with the right `{spreadsheet_id,
+    range, data}` payload. There is intentionally no autopilot path.
+  - **Field extraction is regex-only** (no LLM in the plugin):
+    - `total` — `(?i)(?:grand\s*total|total|amount|balance)\D{0,30}([0-9]+[.,][0-9]{2})`;
+      keyword-anchored = confidence 1.0; bare currency-like number = 0.5;
+      nothing = 0.0.
+    - `currency` — `$/£/€/¥` → `USD/GBP/EUR/JPY`; literal 3-letter ISO
+      4217 fallback. Default `None`, confidence 0.0.
+    - `date` — ISO `YYYY-MM-DD` (1.0), `D MMM YYYY` (1.0), and
+      `DD/MM/YYYY` / `MM/DD/YYYY` / dash variants (0.5 — locale-
+      ambiguous, flagged for review).
+    - `vendor` — first non-empty line that doesn't look like an address
+      or pure digits. Confidence 0.5 (heuristic).
+    - `line_items` — `^(.+?)\s+([0-9]+[.,][0-9]{2})\s*$`; the keyword
+      line that produced `total` is excluded.
+  - **Sheet column schema** is configurable via `sheet_target.columns`.
+    Default: `[date, vendor, total, currency, items_summary, image_path]`
+    (with `items_summary` joining line items as `desc amount; desc
+    amount`). The plugin narrows the A1 range to the column count
+    (`Sheet1!A:F` for 6 cols, `Sheet1!A:B` for 2, etc.) before forwarding
+    to `sheets_write_range`.
+  - **Sheet target shapes**: `{spreadsheet_id, sheet_name?, columns?}`
+    for Google Sheets, `{grist_table, grist_doc_id?, columns?}` for
+    Grist (the Grist fallback parses the table id from the range).
+  - **Safety**: file-path validation rejects empty `image_path` and
+    paths where `Path(image_path).is_file()` is False — surfaces the
+    path in the error message, same fail-loud pattern as
+    `plugins/printer.py`. No shelling out with the user-provided path —
+    pure Python OCR + HTTP via the workspace plugin.
+- **Injection points** (so tests never run real OCR, never read PDFs,
+  never hit n8n):
+  - `ocr_fn(image_path) -> str` defaults to
+    `pytesseract.image_to_string(Image.open(...))`.
+  - `pdf_to_image_fn(pdf_path) -> list[str]` defaults to
+    `pdf2image.convert_from_path` saving page 1 to a tempfile (multi-
+    page receipts are out of scope for v1).
+  - `google_workspace_plugin` defaults to
+    `plugins.google_workspace.create()`; tests pass a fake with a
+    recording `call_tool` (mirrors the `n8n_plugin` injection in
+    `plugins/zoom.py`).
+
+**Tool naming:** both tools prefixed with `finance_` per the flat-global
+namespace rule in `.learnings/LEARNINGS.md`.
+
+**Tests:** one file — `cerebral/tests/test_plugin_finance.py` — 40 unit
+tests covering required-arg validation, missing/empty/nonexistent image
+paths, the happy-path extraction shape, total keyword-anchored vs.
+bare-number confidence levels, currency symbol → ISO mapping (parameter-
+ised across `$/£/€/¥` plus the ISO-code fallback), date format coverage
+(ISO / D MMM / slash / dash), vendor heuristic (skipping addressy and
+digits-only first lines), line-item parsing (excluding the total line),
+the `confirm=False` non-write guarantee, the `confirm=True` payload
+shape (incl. range narrowing for custom columns), error propagation
+from the workspace plugin, the `{grist_table}` target routing through
+the same `sheets_write_range` delegation, the PDF input path calling
+`pdf_to_image_fn` then `ocr_fn`, the image input path skipping
+`pdf_to_image_fn`, and the unknown-tool error.
+
+**Plugin tool count:** 30 plugins → 102 tools total
+(+2 finance over #27).
+
+**Required external installs:**
+- **Tesseract OCR binary** on PATH (Linux: `apt install tesseract-ocr`,
+  macOS: `brew install tesseract`, Windows: UB-Mannheim build).
+- **Poppler** for `pdf2image` PDF input (Linux: `apt install
+  poppler-utils`, macOS: `brew install poppler`, Windows: poppler-windows
+  release on the PATH).
+- Python: `pytesseract`, `pdf2image`, `Pillow` — added to
+  `cerebral/requirements.txt`.
+
+**Python test count: 750 passing (was 710), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo paths:**
+- "Felix, what's on this receipt?" + image path → LLM calls
+  `finance_extract_receipt({image_path: "/path/to/receipt.png"})` →
+  Felix reads back vendor + total + low-confidence flags so the user
+  can correct anything before logging.
+- "Felix, add this receipt to my expense sheet." → LLM calls
+  `finance_log_expense({image_path, sheet_target: {spreadsheet_id,
+  sheet_name: "Expenses"}, confirm: false})` → Felix recites the row →
+  user confirms → LLM re-calls with `confirm: true` → row appended.
+- Offline → same `finance_log_expense` call; `google_workspace_fallback`
+  detects the connectivity error, routes the same args to Grist.
 
 ---
 
