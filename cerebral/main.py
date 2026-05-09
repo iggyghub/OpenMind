@@ -48,6 +48,20 @@ _pm = ProfileManager()
 _active_profile: Profile | None = _pm.get_active()
 _tts = TTSEngine()
 _router = ModelRouter()
+# Restore the user's last-chosen model if the active profile remembers one
+# (issue #37). If the saved id isn't in the current backends — e.g. that
+# Ollama model was uninstalled — fall back silently to whatever default
+# the router auto-picked.
+if _active_profile and _active_profile.active_model:
+    try:
+        _router.switch_model(_active_profile.active_model)
+        logger.info("[cerebral] Restored model from profile: %s", _active_profile.active_model)
+    except ValueError:
+        logger.warning(
+            "[cerebral] Saved model '%s' not in current backends — using default %s",
+            _active_profile.active_model,
+            _router.active_model,
+        )
 _orc = MCPOrchestrator()
 _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
@@ -238,6 +252,10 @@ async def _handle_message(msg: dict) -> None:
             try:
                 _router.switch_model(model_id)
                 logger.info("[cerebral] Model router switched to %s", model_id)
+                # Persist the choice so it survives restart (issue #37).
+                if _active_profile:
+                    _pm.update_active_model(_active_profile.id, model_id)
+                    _active_profile = _pm.get(_active_profile.id)
                 await _broadcast({
                     "type": "model_switched",
                     "data": {"model_id": model_id, "is_cloud": _router.active_is_cloud},
@@ -249,6 +267,13 @@ async def _handle_message(msg: dict) -> None:
                 logger.warning("[cerebral] switch_model failed: %s", exc)
 
     elif t == "list_models":
+        await _broadcast(_models_list_event())
+
+    elif t == "refresh_models":
+        # Re-query Ollama and rebuild the local-backend slice of the router.
+        # Cloud entries stay untouched. Issue #37.
+        new_ids = _router.refresh_local_backends()
+        logger.info("[cerebral] Refreshed installed Ollama models: %s", new_ids)
         await _broadcast(_models_list_event())
 
     elif t == "set_task_model":

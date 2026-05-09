@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Build the "Model" submenu for the tray context menu — Issue #29.
+ * Build the "Model" submenu for the tray context menu — Issue #29 + #37.
  *
  * Pure function so it can be unit-tested without spinning up Electron. Returns
  * a Menu template array (an array of entries that `Menu.buildFromTemplate`
@@ -16,6 +16,7 @@
  * @param {string[]} [opts.taskTypes]              task types to expose (default: ['chat','extraction'])
  * @param {(modelId: string) => void} opts.onSwitchModel
  * @param {(taskType: string, modelId: string|null) => void} opts.onSetTaskModel
+ * @param {() => void} [opts.onRefresh]            re-query Ollama for installed models (#37)
  * @returns {Array<object>} Electron Menu template entries
  */
 function buildModelSubmenu(opts) {
@@ -28,16 +29,21 @@ function buildModelSubmenu(opts) {
     taskTypes = ['chat', 'extraction'],
     onSwitchModel = () => {},
     onSetTaskModel = () => {},
+    onRefresh = null,
   } = opts || {};
 
   const cloudIndicator = activeIsCloud ? '☁ ' : '◉ ';
   const activeLabel = active ? `${cloudIndicator}Active: ${active}` : '◉ Active: —';
   const lastLabel = last && last !== active ? `Last used: ${last}` : null;
+  const hasLocal = models.some((m) => !m.is_cloud);
 
   const template = [
     { label: activeLabel, enabled: false },
   ];
   if (lastLabel) template.push({ label: lastLabel, enabled: false });
+  if (!hasLocal) {
+    template.push({ label: 'Ollama offline — local models unavailable', enabled: false });
+  }
   template.push({ type: 'separator' });
 
   // Switch active model — radio selection across all known models
@@ -74,6 +80,13 @@ function buildModelSubmenu(opts) {
         ],
       });
     }
+  }
+
+  // Refresh — re-query Ollama for newly-pulled models (issue #37). Always last
+  // so it lives outside any radio group.
+  if (onRefresh) {
+    template.push({ type: 'separator' });
+    template.push({ label: 'Refresh installed models', click: () => onRefresh() });
   }
 
   return template;
