@@ -376,9 +376,11 @@ All issues are at https://github.com/iggyghub/OpenMind
 | ~~27~~ | ~~Hardware MCP — Printer/Scanner + Steam launcher~~ | ✅ done |
 | ~~28~~ | ~~Finance MCP — Invoice/Receipt OCR to Google Sheets / Grist~~ | ✅ done |
 | ~~29~~ | ~~Model switching UI — model browser in tray, runtime switching, per-task mapping, cloud indicator~~ | ✅ done |
+| ~~30~~ | ~~Plugin builder — NL to generated MCP server, auto-register~~ | ✅ done |
+| ~~37~~ | ~~Persistent model selection + Ollama refresh~~ | ✅ done |
 | ... | (29 total) | |
 
-**Next issue: #30.** Read it with `gh issue view 30 --repo iggyghub/OpenMind` before implementing.
+**Queue empty.** All 29 vertical-slice issues have landed. Future scope is tracked in `CONTEXT.md` "Not in scope yet"; run `/to-issues` against one of those chunks to seed the next round.
 
 ---
 
@@ -1499,7 +1501,7 @@ hardening pass could move smoke into a subprocess.
 
 ---
 
-## Issue #37 retrospective — Persistent model selection + Ollama refresh
+### Issue #37 — Persistent model selection + Ollama refresh ✅
 
 **What changed:**
 - `cerebral/llm/router.py` — `OllamaBackend.list_installed_models(tags_fetch_fn)` discovers installed Ollama models. `_real_backends()` no longer hardcodes `ollama/gemma4`; it builds `ollama/<name>` entries from the live tags response and adds the fixed cloud entries. `ModelRouter.refresh_local_backends(tags_fetch_fn)` re-queries on demand, preserving cloud entries and reassigning `active_model` if the previous active was uninstalled. The default model is auto-picked: first `ollama/*` if any, else first cloud.
@@ -1516,5 +1518,3 @@ hardening pass could move smoke into a subprocess.
 - `tray/tests/model-menu.test.js` — refresh entry visibility/click/position, Ollama-offline indicator on/off.
 
 **Test count after #37:** 695 Python tests passing (3 integration skipped) + 75 JS tests passing.
-
-**Sequencing note:** branched off `origin/issue-29-model-switching` because PR [#34](https://github.com/iggyghub/OpenMind/pull/34) was still open at the time. After #34 merges to master, this branch should rebase onto master before its own PR merges.
