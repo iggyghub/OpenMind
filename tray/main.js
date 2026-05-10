@@ -5,6 +5,7 @@ const { VisualiserState }      = require('./lib/visualiser-state');
 const { PositionStore }        = require('./lib/position-store');
 const { SettingsStore }        = require('./lib/settings-store');
 const { NotificationManager }  = require('./lib/notification-manager');
+const { buildModelSubmenu }    = require('./lib/model-menu');
 
 const CEREBRAL_URL    = 'ws://localhost:7766';
 const ICON_PATH       = path.join(__dirname, 'assets', 'icon.png');
@@ -27,6 +28,11 @@ let visualiserWindow = null;
 let insightsWindow   = null;
 let insightsList     = [];
 let envContext       = {};
+let modelsList       = [];
+let activeModel      = null;
+let lastModel        = null;
+let activeIsCloud    = false;
+let taskModels       = {};
 
 const visState      = new VisualiserState();
 const posStore      = new PositionStore(VIS_POS_PATH);
@@ -167,6 +173,26 @@ function handleCerebralEvent(event) {
     case 'env_context_update':
       envContext = (event.data && event.data.context) || {};
       refreshMenu();
+      break;
+
+    case 'models_list': {
+      const d = event.data || {};
+      modelsList    = d.models || [];
+      activeModel   = d.active || null;
+      lastModel     = d.last || null;
+      activeIsCloud = !!d.active_is_cloud;
+      taskModels    = d.task_models || {};
+      refreshMenu();
+      break;
+    }
+
+    case 'model_switched':
+      // The follow-up models_list event will refresh the menu; route the
+      // model_switching event to the visualiser so it briefly shows thinking.
+      break;
+
+    case 'model_switching':
+      routeToVisualiser(event);
       break;
   }
 }
@@ -396,6 +422,25 @@ function buildMenu() {
       click: toggleVisualiser,
     });
     template.push({ label: 'Insights', click: openInsightsWindow });
+
+    // ── Model ─────────────────────────────────────────────────────────────────
+    const modelLabel = activeModel
+      ? `Model: ${activeIsCloud ? '☁ ' : '◉ '}${activeModel}`
+      : 'Model: —';
+    template.push({
+      label: modelLabel,
+      submenu: buildModelSubmenu({
+        models:        modelsList,
+        active:        activeModel,
+        last:          lastModel,
+        activeIsCloud,
+        taskModels,
+        taskTypes:     ['chat', 'extraction'],
+        onSwitchModel: (id) => sendToCerebral({ type: 'switch_model', data: { model_id: id } }),
+        onSetTaskModel: (taskType, modelId) =>
+          sendToCerebral({ type: 'set_task_model', data: { task_type: taskType, model_id: modelId } }),
+      }),
+    });
 
     // ── Notifications ─────────────────────────────────────────────────────────
     const notifOn = notifManager.enabled;

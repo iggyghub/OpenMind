@@ -140,6 +140,25 @@ def _env_context_event() -> dict:
     return {"type": "env_context_update", "data": {"context": _env.get_context()}}
 
 
+def _models_list_event() -> dict:
+    return {
+        "type": "models_list",
+        "data": {
+            "models": _router.list_models(),
+            "active": _router.active_model,
+            "last": _router.last_model,
+            "active_is_cloud": _router.active_is_cloud,
+            "task_models": _router.task_models(),
+        },
+    }
+
+
+async def _pulse_back_to_passive(delay: float = 1.2) -> None:
+    """Brief 'thinking' pulse on the visualiser, then back to passive."""
+    await asyncio.sleep(delay)
+    await _broadcast({"type": "passive", "data": {"status": "running"}})
+
+
 # ── TTS helpers ───────────────────────────────────────────────────────────────
 
 async def _speak(text: str) -> None:
@@ -219,9 +238,31 @@ async def _handle_message(msg: dict) -> None:
             try:
                 _router.switch_model(model_id)
                 logger.info("[cerebral] Model router switched to %s", model_id)
-                await _broadcast({"type": "model_switched", "data": {"model_id": model_id}})
+                await _broadcast({
+                    "type": "model_switched",
+                    "data": {"model_id": model_id, "is_cloud": _router.active_is_cloud},
+                })
+                await _broadcast({"type": "model_switching", "data": {"model_id": model_id}})
+                await _broadcast(_models_list_event())
+                asyncio.create_task(_pulse_back_to_passive())
             except ValueError as exc:
                 logger.warning("[cerebral] switch_model failed: %s", exc)
+
+    elif t == "list_models":
+        await _broadcast(_models_list_event())
+
+    elif t == "set_task_model":
+        d = msg.get("data", {})
+        task_type = d.get("task_type", "")
+        model_id = d.get("model_id")
+        if not task_type:
+            return
+        try:
+            _router.set_task_model(task_type, model_id)
+            logger.info("[cerebral] Task '%s' mapped to %s", task_type, model_id)
+            await _broadcast(_models_list_event())
+        except ValueError as exc:
+            logger.warning("[cerebral] set_task_model failed: %s", exc)
 
     elif t == "list_tools":
         await _broadcast({"type": "tools_list", "data": {"tools": _orc.tools_for_llm}})
@@ -365,6 +406,7 @@ async def _ws_handler(websocket) -> None:
     await _send(websocket, _queue_update_event())
     await _send(websocket, _insights_update_event())
     await _send(websocket, _env_context_event())
+    await _send(websocket, _models_list_event())
 
     try:
         async for raw in websocket:
@@ -439,6 +481,8 @@ async def _heartbeat_loop(audio_active: bool) -> None:
                 "tts": _tts.ready,
                 "profile": profile_name,
                 "model": _router.active_model,
+                "last_model": _router.last_model,
+                "active_is_cloud": _router.active_is_cloud,
                 "queue_pending": len(_queue.get_pending()),
                 "env": _env.get_context().get("city") or "unknown",
                 "bridge": _bridge.running,

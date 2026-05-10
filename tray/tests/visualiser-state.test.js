@@ -58,6 +58,12 @@ describe('state transitions', () => {
     vs.handleEvent({ type: 'passive' });
     expect(vs.state).toBe('passive');
   });
+
+  test('model_switching event → thinking', () => {
+    const vs = new VisualiserState();
+    vs.handleEvent({ type: 'model_switching', data: { model_id: 'claude/haiku' } });
+    expect(vs.state).toBe('thinking');
+  });
 });
 
 // ── handleEvent return value ───────────────────────────────────────────────────

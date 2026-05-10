@@ -127,7 +127,135 @@ def test_active_model_unchanged_after_failed_switch():
 
 
 # ---------------------------------------------------------------------------
-# Slice 6 — integration tests (real HTTP; skipped unless -m integration)
+# Slice 6 — list_models, last_model, cloud flag, per-task mapping (Issue #29)
+# ---------------------------------------------------------------------------
+
+
+def _two_model_router():
+    ollama = AsyncMock(); ollama.complete = AsyncMock(return_value="from ollama")
+    claw = AsyncMock(); claw.complete = AsyncMock(return_value="from claude")
+    return ModelRouter(
+        backends={"ollama/gemma4": ollama, "claude/haiku": claw},
+        models={
+            "ollama/gemma4": {"label": "Gemma 4 (local)", "is_cloud": False},
+            "claude/haiku": {"label": "Claude Haiku", "is_cloud": True},
+        },
+    ), ollama, claw
+
+
+def test_list_models_returns_metadata_for_each_backend():
+    router, _, _ = _two_model_router()
+    models = router.list_models()
+    ids = [m["id"] for m in models]
+    assert "ollama/gemma4" in ids and "claude/haiku" in ids
+    haiku = next(m for m in models if m["id"] == "claude/haiku")
+    assert haiku["label"] == "Claude Haiku"
+    assert haiku["is_cloud"] is True
+
+
+def test_list_models_marks_active_and_last():
+    router, _, _ = _two_model_router()
+    models = router.list_models()
+    assert next(m for m in models if m["id"] == "ollama/gemma4")["is_active"] is True
+    # No requests yet, so no last
+    assert all(m["is_last"] is False for m in models)
+
+
+async def test_last_model_tracks_who_handled_request():
+    router, _, _ = _two_model_router()
+    assert router.last_model is None
+    await router.complete("ping")
+    assert router.last_model == "ollama/gemma4"
+    router.switch_model("claude/haiku")
+    await router.complete("ping")
+    assert router.last_model == "claude/haiku"
+
+
+async def test_last_model_unchanged_on_failure():
+    offline = AsyncMock(); offline.complete.side_effect = ConnectionError("no")
+    router = ModelRouter(backends={"ollama/gemma4": offline})
+    with pytest.raises(ModelUnavailableError):
+        await router.complete("ping")
+    assert router.last_model is None
+
+
+def test_active_is_cloud_reflects_model():
+    router, _, _ = _two_model_router()
+    assert router.active_is_cloud is False
+    router.switch_model("claude/haiku")
+    assert router.active_is_cloud is True
+
+
+def test_models_metadata_defaults_when_not_supplied():
+    router = ModelRouter(backends={"ollama/gemma4": AsyncMock()})
+    models = router.list_models()
+    assert len(models) == 1
+    assert models[0]["is_cloud"] is False
+    assert models[0]["label"] == "ollama/gemma4"
+
+
+# Per-task-type mapping ------------------------------------------------------
+
+def test_set_task_model_pins_model_for_task():
+    router, _, _ = _two_model_router()
+    router.set_task_model("extraction", "claude/haiku")
+    assert router.get_task_model("extraction") == "claude/haiku"
+    # Other tasks fall back to active
+    assert router.get_task_model("chat") == "ollama/gemma4"
+
+
+def test_set_task_model_with_none_clears_mapping():
+    router, _, _ = _two_model_router()
+    router.set_task_model("extraction", "claude/haiku")
+    router.set_task_model("extraction", None)
+    assert router.get_task_model("extraction") == "ollama/gemma4"
+    assert "extraction" not in router.task_models()
+
+
+def test_set_task_model_unknown_model_raises():
+    router, _, _ = _two_model_router()
+    with pytest.raises(ValueError, match="unknown model"):
+        router.set_task_model("chat", "gpt-5/magic")
+
+
+async def test_complete_uses_task_specific_model():
+    router, ollama, claw = _two_model_router()
+    router.set_task_model("extraction", "claude/haiku")
+    result = await router.complete("classify this", task_type="extraction")
+    assert result == "from claude"
+    ollama.complete.assert_not_called()
+    claw.complete.assert_called_once_with("classify this", "extraction")
+
+
+async def test_complete_falls_back_to_active_when_no_task_mapping():
+    router, ollama, claw = _two_model_router()
+    # No mapping set — chat should go to active (ollama)
+    result = await router.complete("hi", task_type="chat")
+    assert result == "from ollama"
+    claw.complete.assert_not_called()
+
+
+async def test_per_task_mapping_persists_after_switch_model():
+    router, ollama, claw = _two_model_router()
+    router.set_task_model("extraction", "claude/haiku")
+    router.switch_model("claude/haiku")
+    # active is now claude; extraction still pinned to claude (same)
+    # but a non-mapped task uses active
+    await router.complete("hi", task_type="chat")
+    claw.complete.assert_called_with("hi", "chat")
+    assert router.get_task_model("extraction") == "claude/haiku"
+
+
+def test_task_models_returns_copy():
+    router, _, _ = _two_model_router()
+    router.set_task_model("chat", "claude/haiku")
+    snapshot = router.task_models()
+    snapshot["chat"] = "tampered"
+    assert router.get_task_model("chat") == "claude/haiku"
+
+
+# ---------------------------------------------------------------------------
+# Slice 7 — integration tests (real HTTP; skipped unless -m integration)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration
