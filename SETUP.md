@@ -353,6 +353,65 @@ prerequisites depending on platform:
   `steam://rungameid/<appid>` URL scheme registered by the Steam client
   on install.
 
+### Finance plugin (#28)
+
+The Finance plugin OCRs receipt images / scanned PDFs and (on confirm)
+appends a row to a Google Sheet or Grist table via the existing
+google_workspace `sheets_write_range` tool.
+
+- **Tesseract OCR binary** must be on PATH:
+  - Debian/Ubuntu: `sudo apt install tesseract-ocr`
+  - macOS: `brew install tesseract`
+  - Windows: install the UB-Mannheim build from
+    <https://github.com/UB-Mannheim/tesseract/wiki> and add the install
+    directory to PATH.
+- **Poppler** is required by `pdf2image` to handle scanned-PDF input
+  (single-page; multi-page receipts are out of scope for v1):
+  - Debian/Ubuntu: `sudo apt install poppler-utils`
+  - macOS: `brew install poppler`
+  - Windows: download a build from
+    <https://github.com/oschwartz10612/poppler-windows/releases> and add
+    the `bin/` directory to PATH.
+- **Python deps** (`pytesseract`, `pdf2image`, `Pillow`) are in
+  `cerebral/requirements.txt` — `pip install -r requirements.txt` picks
+  them up.
+
+**Sheet schema.** Default columns are `[date, vendor, total, currency,
+items_summary, image_path]`. Override per-call via
+`sheet_target.columns` — the plugin maps extracted fields onto your
+column order, missing fields → empty string. Example for Google Sheets:
+
+```json
+{
+  "image_path": "/Users/me/Downloads/receipt.png",
+  "sheet_target": {
+    "spreadsheet_id": "1AbC…XyZ",
+    "sheet_name": "Expenses",
+    "columns": ["date", "vendor", "total", "currency"]
+  },
+  "confirm": true
+}
+```
+
+For the Grist fallback, replace `spreadsheet_id`/`sheet_name` with
+`grist_table` (and optionally `grist_doc_id`):
+
+```json
+{
+  "image_path": "/Users/me/Downloads/receipt.pdf",
+  "sheet_target": {"grist_table": "Expenses"},
+  "confirm": true
+}
+```
+
+**Safety.** `finance_log_expense` requires `confirm: true` to actually
+write. With `confirm` omitted or false the plugin returns the extracted
+fields and the would-be row but never invokes the workspace plugin —
+the LLM is expected to confirm with the user before re-calling with
+`confirm: true`. Low-confidence fields (`confidence.<field> < 0.6`,
+notably locale-ambiguous slash-format dates and bare-number totals)
+should be flagged for the user during that confirmation.
+
 ### Model switching (#29)
 
 The tray's **Model** submenu lists every model registered in
