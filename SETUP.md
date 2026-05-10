@@ -329,6 +329,30 @@ binaries and require some prerequisites:
   supported OS. `net_check_port` opens a plain TCP socket via Python's
   stdlib `socket` module — no binary required.
 
+### Hardware plugins (#27)
+
+The Printer/Scanner and Steam plugins are auto-loading and require some
+prerequisites depending on platform:
+
+- `printer` — POSIX needs `lp` / `lpstat` / `scanimage` on PATH (CUPS for
+  printing, SANE for scanning). Install with the platform package manager
+  (e.g. `sudo apt install cups sane-utils` on Debian/Ubuntu, `brew install
+  cups sane-backends` on macOS). Windows uses built-in PowerShell cmdlets
+  (`Start-Process -Verb Print`, `Out-Printer`, `Get-PrintJob`,
+  `Get-Printer`) — no extra install required. **Windows scanning is not
+  supported** — `scan_document` returns a documented stub-error pointing
+  to Windows Fax & Scan rather than half-implementing a fragile WIA COM
+  bridge.
+- `steam` — needs Steam installed at the default location for your
+  platform: `C:\Program Files (x86)\Steam` (Windows), `~/Library/
+  Application Support/Steam` (macOS), or `~/.steam/steam` /
+  `~/.local/share/Steam` (Linux). If you've installed Steam elsewhere,
+  pass a custom `steam_root` when calling `plugins.steam.create()` or
+  symlink the default path. The plugin reads `appmanifest_*.acf` files
+  directly — no Steam CLI required. Launching uses the
+  `steam://rungameid/<appid>` URL scheme registered by the Steam client
+  on install.
+
 ### Model switching (#29)
 
 The tray's **Model** submenu lists every model registered in
