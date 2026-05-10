@@ -1390,6 +1390,100 @@ Three plugins in `plugins/`, all auto-loading via `discover_plugins()`. No chang
 
 ---
 
+### Issue #30 — Plugin builder ✅
+
+The growth loop in code. A meta-plugin at `plugins/builder.py` exposes three
+`builder_*` tools that let Felix generate, smoke-test, and register new MCP
+plugins at runtime from a natural-language description. Every side effect
+(LLM call, `pip install`, smoke runner) is injected so the entire flow runs
+hermetically in tests — no real network, no real subprocess, no real
+filesystem outside `tmp_path`.
+
+- `plugins/builder.py` — **BuilderPlugin**: 3 tools — `builder_create(
+  description, name?)`, `builder_list_generated()`, `builder_smoke_test(
+  name, tool_name?, args?)`.
+  - **Generation flow**: validate name (`^[a-z][a-z0-9_]*$`) → reject if
+    `plugins/<name>.py` or `plugins/<name>/` already exists → static-scan
+    the generated source → check pip deps against the allowlist → run pip
+    installs → stage `server.py` + `README.md` to a `tempfile.
+    TemporaryDirectory()` → in-process import → call `smoke_runner_fn(
+    plugin, smoke_tool, smoke_args)` → on pass, `shutil.move()` into
+    `plugins/<name>/` and `orc.register(plugin)`; on fail, surface the
+    error and let the temp dir auto-clean. Failed builds leave nothing
+    behind in `plugins/`.
+  - **Static guardrails (load-bearing)**: rejects code without `PLUGIN_NAME`
+    or without a `def create(...)` factory; refuses `os.system`, raw
+    `subprocess.{Popen,run,call,check_output,check_call}`, `os.popen`,
+    `from os import system`, `__import__('os')`, top-level `exec(`,
+    `eval(`, and raw `open(..., 'w'`. This is a backstop, not a sandbox —
+    the generated code still runs in-process during smoke, so the model is
+    the primary trust boundary.
+  - **pip allowlist**: the constructor takes `pip_allowlist=(...)`; deps
+    not in the allowlist are rejected before any install attempt (no
+    `pip install` is ever called speculatively). Version pins are
+    permitted — `requests==2.31.0` matches an allowlist entry of
+    `requests`. `main.py` wires a tight default of
+    `("requests","httpx","aiohttp","beautifulsoup4","lxml")`.
+  - **Survival across restarts** is delivered by extending
+    `MCPOrchestrator.discover_plugins` to load both `plugins/<name>.py`
+    (flat, original) and `plugins/<name>/server.py` (subdir, used by the
+    builder). Subdirs starting with `_` or `.` are skipped. Empty
+    subdirs are silently ignored.
+- `plugins/builder.py::create()` returns a parked `_ParkedBuilderPlugin`
+  during auto-discovery (no orchestrator handle yet). `cerebral/main.py`
+  calls `_attach_builder_plugin()` immediately after `discover_plugins`,
+  which finds the parked instance, hands it the live orchestrator, the
+  pip allowlist, and the LLM hook (currently a `NotImplementedError` stub
+  until #6's structured-output path is wired). Until then, `builder_create`
+  surfaces a clear error rather than guessing.
+
+**Tool naming:** every tool is prefixed with `builder_` per the flat-global
+namespace convention from `.learnings/LEARNINGS.md` (#23).
+
+**Tests:** one file, all side effects injected.
+- `cerebral/tests/test_plugin_builder.py` — 35 unit tests across 8 cycles:
+  happy path (5), name validation incl. path-traversal (10 parametrised),
+  smoke failure cleanup (3), pip allowlist + version pins (3), code
+  guardrails incl. 5 dangerous patterns (8), `builder_list_generated` (2),
+  tool-list shape (2), and orchestrator subdir discovery (2). Smoke runner
+  is mocked async; `pip_install_fn` is mocked to record calls; LLM
+  fixture returns a canned `WeatherbugPlugin` payload that exposes a
+  zero-arg `weatherbug_ping` smoke tool.
+- `cerebral/tests/test_orchestrator.py` — unchanged, still 20 passing
+  (subdir discovery has its own coverage in the builder file).
+
+**Plugin tool count:** 28 plugins → 96 tools total
+(+1 builder plugin = +3 tools over master). Once #27 + #28 land:
+30 plugins / 102 tools.
+
+**Python test count: 699 passing (was 664 on master), 3 skipped**
+
+**Demo paths:**
+- "Felix, I need you to be able to look up Wikipedia summaries." → LLM
+  router calls `builder_create({description: "..."})` → builder asks the
+  LLM for `{server_py, readme_md, pip_deps:["requests"], smoke_tool:
+  "wiki_summary", smoke_args:{title:"OpenMind"}}` → static scan passes →
+  `pip install requests` → smoke `wiki_summary({title:"OpenMind"})` →
+  pass → registered → `orc.list_tools()` now includes `wiki_summary` and
+  the user's next sentence "summarise the OpenMind page" routes through
+  the new tool, all in the same session.
+- After restart, `discover_plugins(plugins/)` walks `plugins/wiki/server.py`
+  and re-registers the plugin without builder involvement.
+- "Felix, what plugins did you build for me?" → LLM calls
+  `builder_list_generated({})` → `{"generated": ["wiki", "weatherbug"]}` →
+  Kokoro speaks the names back.
+
+**External deps:** none new. The builder uses only stdlib (`tempfile`,
+`shutil`, `importlib`, `re`, `subprocess` for the default `pip install`
+shell-out, which tests bypass entirely).
+
+**Trust model docstring** in `plugins/builder.py` makes explicit that the
+in-process smoke is *not* sandboxed: the static scan + pip allowlist are
+backstops; the model itself remains the primary trust boundary. A future
+hardening pass could move smoke into a subprocess.
+
+---
+
 ## Key constraints to carry forward
 
 - **Local first** — every feature must work offline. Cloud (Claude, Google) is enhancement, not requirement.

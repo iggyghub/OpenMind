@@ -127,7 +127,12 @@ class MCPOrchestrator:
     # ------------------------------------------------------------------
 
     def discover_plugins(self, plugins_dir: Path) -> None:
-        """Import every *.py in plugins_dir, call create(), register the result."""
+        """Import every *.py in plugins_dir, call create(), register the result.
+
+        Two layouts supported:
+          - plugins/<name>.py            (flat, original convention)
+          - plugins/<name>/server.py     (subdir, used by the builder for #30)
+        """
         if not plugins_dir.is_dir():
             logger.warning("[mcp] plugins_dir '%s' does not exist — skipping discovery", plugins_dir)
             return
@@ -135,6 +140,12 @@ class MCPOrchestrator:
             if path.name.startswith("_"):
                 continue
             self._load_plugin_file(path)
+        for sub in sorted(p for p in plugins_dir.iterdir() if p.is_dir()):
+            if sub.name.startswith("_") or sub.name.startswith("."):
+                continue
+            server_py = sub / "server.py"
+            if server_py.is_file():
+                self._load_plugin_file(server_py)
 
     def _load_plugin_file(self, path: Path) -> None:
         module_name = f"openmind_plugin_{path.stem}"

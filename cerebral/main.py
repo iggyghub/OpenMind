@@ -464,6 +464,40 @@ async def _process_command(transcript: str) -> None:
 
 # ── Heartbeat ─────────────────────────────────────────────────────────────────
 
+def _attach_builder_plugin() -> None:
+    """Wire the auto-discovered builder meta-plugin to the live orchestrator.
+
+    `BuilderPlugin.create()` returns a parked stand-in during discovery (no
+    orchestrator handle yet); here we hand it the real orchestrator, plus a
+    tight pip-allowlist + LLM hook so its tools become callable.
+    """
+    parked = _orc._plugins.get("builder")
+    if parked is None or not hasattr(parked, "attach"):
+        return
+    try:
+        from plugins.builder import _ParkedBuilderPlugin  # type: ignore
+    except Exception:  # pragma: no cover - import guard
+        return
+    if not isinstance(parked, _ParkedBuilderPlugin):
+        return
+
+    def _llm_fn(description: str, suggested_name: str | None = None) -> dict:
+        # Intentionally minimal — until #6 model router exposes structured-output
+        # generation, builder_create surfaces a clear error rather than guessing.
+        raise NotImplementedError(
+            "Plugin generation requires the model router's structured-output "
+            "path, which is not yet wired. Set BUILDER_LLM_FN before calling "
+            "builder_create, or call BuilderPlugin directly from a test."
+        )
+
+    parked.attach(
+        _orc,
+        llm_fn=_llm_fn,
+        pip_allowlist=("requests", "httpx", "aiohttp", "beautifulsoup4", "lxml"),
+    )
+    logger.info("[cerebral] Plugin builder attached (pip_allowlist=5 packages)")
+
+
 async def _heartbeat_loop(audio_active: bool) -> None:
     while not _shutdown.is_set():
         try:
@@ -516,6 +550,7 @@ async def main() -> None:
         logger.warning("[cerebral] TTS unavailable — install kokoro: pip install kokoro soundfile")
 
     _orc.discover_plugins(_PLUGINS_DIR)
+    _attach_builder_plugin()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))
 
     await _env.refresh_location()
