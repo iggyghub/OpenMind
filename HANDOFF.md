@@ -373,9 +373,113 @@ All issues are at https://github.com/iggyghub/OpenMind
 | ~~25~~ | ~~Information MCP — Wikipedia, Weather (Open-Meteo), News (RSS), Stocks/Crypto~~ | ✅ done |
 | ~~26~~ | ~~Security MCP — Bitwarden read-only vault, VPN, Network Scanner~~ | ✅ done |
 | ~~27~~ | ~~Hardware MCP — Printer/Scanner + Steam launcher~~ | ✅ done |
+| ~~29~~ | ~~Model switching UI — model browser in tray, runtime switching, per-task mapping, cloud indicator~~ | ✅ done |
 | ... | (29 total) | |
 
 **Next issue: #28.** Read it with `gh issue view 28 --repo iggyghub/OpenMind` before implementing.
+
+---
+
+### Issue #29 — Model switching UI ✅
+
+Backend additions to `cerebral/llm/router.py` plus a new tray submenu.
+`ModelRouter` now exposes a model registry with metadata so the tray can
+render an informed model picker, and a per-task-type override map so
+"chat" and "extraction" can be routed to different models without
+changing the active model.
+
+- `cerebral/llm/router.py` — `ModelRouter` extensions:
+  - `models` registry (id → `{label, is_cloud}`) injected alongside
+    `backends`. Defaults synthesise `{label: id, is_cloud: False}` for
+    every backend when not supplied. Real backends register
+    `ollama/gemma4` (Gemma 4, local), `claude/haiku` (Claude Haiku 4.5,
+    cloud), `claude/sonnet` (Claude Sonnet 4.6, cloud).
+  - `list_models() → list[dict]` — every model with `is_active` and
+    `is_last` flags. The tray uses this directly to build the radio
+    submenu.
+  - `last_model` property — id of the model that handled the most recent
+    `complete()` call. Set only on success — failures leave it
+    unchanged so the visible "last used" stays truthful.
+  - `active_is_cloud` — convenience flag for the tray's `☁`
+    indicator. Reflects whichever model is currently active, regardless
+    of per-task overrides.
+  - `set_task_model(task_type, model_id)` / `get_task_model(task_type)` /
+    `task_models()` — pinning per task type. `set_task_model(task,
+    None)` clears the mapping. `complete()` resolves the backend by
+    `task_models.get(task_type, active_model)`, so a per-task pin wins
+    over the active model. Unknown model id → `ValueError`.
+- `cerebral/main.py` updated:
+  - `_models_list_event()` — broadcast helper returning `{models,
+    active, last, active_is_cloud, task_models}`.
+  - `_pulse_back_to_passive(delay=1.2)` — `asyncio.create_task` after
+    `model_switching` is broadcast, so the visualiser briefly shows the
+    "thinking" animation and then returns to passive.
+  - New IPC handlers: `list_models`, `set_task_model {task_type,
+    model_id}`. Existing `switch_model` handler now also broadcasts
+    `model_switching` (visualiser pulse) + `models_list` (refresh tray).
+  - Connection greeting includes `models_list`.
+  - Heartbeat carries new fields `last_model` and `active_is_cloud`.
+- `tray/lib/model-menu.js` — new `buildModelSubmenu()` helper. Pure
+  function (no Electron import) returning a Menu template array. Drives
+  the active-model radio set, the cloud `☁` / local `◉` indicator, the
+  "(last)" marker on the most recent non-active model, and one
+  per-task-type submenu (`chat`, `extraction`) with a "Use active
+  model" entry plus one radio per known model.
+- `tray/main.js` updated:
+  - State: `modelsList`, `activeModel`, `lastModel`, `activeIsCloud`,
+    `taskModels`. Updated by the `models_list` event.
+  - Tray menu inserts a "Model: ☁/◉ {id}" entry with the model submenu
+    (between "Insights" and "Notifications").
+  - `model_switching` event → `routeToVisualiser` (state machine flips
+    to `thinking`); the follow-up `passive` broadcast 1.2 s later
+    reverts.
+- `tray/lib/visualiser-state.js` — `STATE_MAP['model_switching'] =
+  'thinking'` so the existing CSS spin animation in
+  `tray/windows/visualiser.html` runs unchanged on model switch.
+
+**Tests:**
+- `cerebral/tests/test_router.py` — 13 new unit tests: list_models
+  metadata + active/last flags, last_model tracking through
+  switch+complete, last_model unchanged on failure, active_is_cloud,
+  default metadata when not supplied, set_task_model pin/clear/unknown,
+  complete resolves task pin, complete falls back to active when no
+  pin, per-task pin survives switch_model, task_models() returns a
+  copy.
+- `tray/tests/model-menu.test.js` — 18 new unit tests: header active +
+  cloud/local indicator, last-used row visibility, radio entries (one
+  per model, active checked, click fires onSwitchModel, cloud `☁`
+  marker, `(last)` marker), per-task submenus (one per task type,
+  "Use active" + every model, default check, pinned check, click
+  routes to onSetTaskModel with correct id / null), empty-models
+  degenerate case, formatModelLabel fallback.
+- `tray/tests/visualiser-state.test.js` — 1 new test: `model_switching`
+  event resolves to `thinking` state.
+
+**Python test count: 677 passing (was 664), 3 skipped**
+**JS test count: 69 passing (was 50)**
+
+**New IPC messages:**
+
+| direction | type | data | meaning |
+|---|---|---|---|
+| Tray → Cerebral | `list_models` | — | request current model registry |
+| Tray → Cerebral | `set_task_model` | `{task_type, model_id\|null}` | pin/clear a task→model mapping |
+| Cerebral → Tray | `models_list` | `{models, active, last, active_is_cloud, task_models}` | full registry snapshot |
+| Cerebral → Tray | `model_switched` | `{model_id, is_cloud}` | acks a switch_model |
+| Cerebral → Tray | `model_switching` | `{model_id}` | visualiser cue (pulses thinking) |
+
+**Demo paths:**
+- "Felix, switch to Claude" → user picks `☁ Claude Haiku 4.5` from the
+  tray Model submenu → next request goes through `ClawBackend`. The
+  visualiser pulses `thinking` for ~1.2 s and the menu now shows
+  `Model: ☁ claude/haiku`.
+- Per-task pinning → user opens `Task: extraction` submenu and picks
+  Gemma 4 — passive 5W1H extraction stays local while ad-hoc chat
+  uses whatever's active (cloud is fine, but the always-on extractor
+  doesn't leak ambient transcripts to the cloud).
+- `Last used: …` row in the Model submenu surfaces which model
+  handled the most recent request — useful when a per-task mapping
+  routes a single request to a different model than active.
 
 ---
 

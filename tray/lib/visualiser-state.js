@@ -3,11 +3,12 @@
 const { EventEmitter } = require('events');
 
 const STATE_MAP = {
-  wake:        'active',
-  passive:     'passive',
-  tts_speaking: 'speaking',
-  tts_done:    'passive',
-  thinking:    'thinking',
+  wake:             'active',
+  passive:          'passive',
+  tts_speaking:     'speaking',
+  tts_done:         'passive',
+  thinking:         'thinking',
+  model_switching:  'thinking',
 };
 
 class VisualiserState extends EventEmitter {
