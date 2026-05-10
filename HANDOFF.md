@@ -373,6 +373,8 @@ All issues are at https://github.com/iggyghub/OpenMind
 | ~~24~~ | ~~Dev tools MCP — Git, GitHub, Docker, SSH, Package Managers, HTTP Client~~ | ✅ done |
 | ~~25~~ | ~~Information MCP — Wikipedia, Weather (Open-Meteo), News (RSS), Stocks/Crypto~~ | ✅ done |
 | ~~26~~ | ~~Security MCP — Bitwarden read-only vault, VPN, Network Scanner~~ | ✅ done |
+| ~~27~~ | ~~Hardware MCP — Printer/Scanner + Steam launcher~~ | ✅ done |
+| ~~28~~ | ~~Finance MCP — Invoice/Receipt OCR to Google Sheets / Grist~~ | ✅ done |
 | ~~29~~ | ~~Model switching UI — model browser in tray, runtime switching, per-task mapping, cloud indicator~~ | ✅ done |
 | ... | (29 total) | |
 
@@ -572,6 +574,217 @@ creates them.
   `bw_get_item({name:"github"})` → reads the password aloud once.
 - "Felix, who else is on my network?" → LLM calls `net_list_devices({})` →
   Kokoro reads back the list of IPs and hostnames.
+
+---
+
+### Issue #27 — Hardware MCP ✅
+
+Two new plugins in `plugins/`, both auto-loading via `discover_plugins()`. No
+changes to `main.py` required. One CLI-shell plugin (printer) and one
+filesystem + URL-scheme plugin (steam). All side effects (`run_fn`,
+`platform_name`, `steam_root`, `launch_fn`, `process_iter`) are injected so
+unit tests never invoke real CLI binaries (`lp`/`lpstat`/`scanimage` /
+PowerShell), never open the browser, and never read the real Steam install.
+
+- `plugins/printer.py` — **PrinterPlugin**: 4 tools — `print_file(path,
+  printer_name?)`, `print_queue(printer_name?)`, `print_list_printers()`,
+  `scan_document(output_path, format?)`.
+  - Platform-aware via injectable `platform_name` (default `sys.platform`):
+    Windows → PowerShell `Start-Process -Verb Print` (default printer) /
+    `Out-Printer -Name "..."` (named printer) / `Get-PrintJob` /
+    `Get-Printer | Select-Object -ExpandProperty Name`. POSIX → `lp` /
+    `lpstat -o` / `lpstat -p` / `scanimage --format=<png|pdf>
+    --output=<path>`. All branches covered by tests.
+  - **Output-only by design**: no `print_remove_job` / `print_cancel_job`
+    / `print_clear_queue` tool exists. The orchestrator `list_tools()` is
+    unit-tested against an explicit forbidden-name allowlist so a regression
+    that adds a destructive tool fails the test suite.
+  - **File-path validation**: `print_file` and `scan_document` both reject
+    empty paths up front, before any shell-out.
+  - **Windows scan stub**: Windows WIA scanning isn't implemented (a fragile
+    COM bridge is worse than not shipping it). The plugin returns
+    `is_error=True` with a helpful message pointing to Windows Fax & Scan,
+    documented in the docstring; tests assert this stub path.
+  - **Hardware-not-connected**: each shell-out wraps non-zero exit and
+    `FileNotFoundError` into `is_error=True` with the printer/scanner name
+    in the message — same fail-loud pattern as `plugins/git.py`.
+- `plugins/steam.py` — **SteamPlugin**: 3 tools — `steam_list_installed()`,
+  `steam_launch(name? | app_id?)`, `steam_is_running(name? | app_id?)`.
+  - Pure file parsing + URL-scheme launch — no shell-outs for the launch
+    path. Parses `<steam_root>/config/libraryfolders.vdf` to discover every
+    library, then walks `<library>/steamapps/appmanifest_*.acf` for each
+    game (regex over the top-level VDF strings — no full VDF parser
+    required).
+  - Default `steam_root` per-platform (injectable for tests): Windows
+    `C:\Program Files (x86)\Steam`, macOS `~/Library/Application
+    Support/Steam`, Linux `~/.steam/steam` with fallback to
+    `~/.local/share/Steam`. If `libraryfolders.vdf` is missing the Steam
+    root itself is treated as the only library.
+  - Launch via `steam://rungameid/<appid>` URL scheme using an injectable
+    `launch_fn` (defaults to `webbrowser.open` — same pattern as
+    `plugins/zoom.py`'s `zoommtg://` launch). Looks up the appid by name
+    when `name` is provided; unknown name → `is_error=True`.
+  - **Safety**: `steam_launch` requires an explicit `name` or `app_id`. No
+    "launch the last/default game" path. Tests assert this.
+  - `steam_is_running` matches by appid where possible; falls back to
+    matching the game's installdir / executable name in the running
+    process list (best-effort heuristic — Steam launches games as child
+    processes whose name often matches the installdir). Uses an injectable
+    `process_iter` defaulting to `psutil.process_iter` — same pattern as
+    `plugins/apps.py`.
+  - **Hardware-not-connected equivalent**: if `steam_root` doesn't exist,
+    `steam_list_installed` returns `is_error=True` with `"Steam not
+    installed at <path>"` — never crashes on missing files.
+
+**Tool naming:** every tool is prefixed with the plugin name (`print_*`,
+`scan_*`, `steam_*`) per the flat-global namespace rule in
+`.learnings/LEARNINGS.md` (after the #23 zoom/meet `join_meeting` collision).
+
+**Tests:** one file per plugin, all side effects injected (no real shell-
+outs, no real browser, no real filesystem reads — `tmp_path` is used to
+build a fake Steam library on disk).
+- `cerebral/tests/test_plugin_printer.py` — 27 unit tests covering
+  required-arg validation, the POSIX `lp`/`lpstat`/`scanimage` branch, the
+  Windows PowerShell branch (incl. the documented WIA stub-error), and
+  hardware-not-connected paths (non-zero exit + `FileNotFoundError`).
+- `cerebral/tests/test_plugin_steam.py` — 19 unit tests covering
+  libraryfolders.vdf + appmanifest_*.acf parsing across multiple
+  libraries, missing-Steam-root error, `steam_launch` URL building (incl.
+  case-insensitive name lookup), and the process-iter heuristic for
+  `steam_is_running`.
+
+**Plugin tool count:** 29 plugins → 100 tools total
+(+4 printer +3 steam = +7 over #26).
+
+**Required external binaries / installs:**
+- `lp`, `lpstat`, `scanimage` — POSIX printer/scanner (CUPS + SANE).
+  Windows uses built-in PowerShell cmdlets — no extra install.
+- Steam must be installed at the platform default location (or pass a
+  custom `steam_root` if installed elsewhere). The plugin doesn't shell
+  out to the Steam CLI — it reads `appmanifest_*.acf` files directly.
+
+**Python test count: 710 passing (was 664), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo paths:**
+- "Felix, launch Cyberpunk 2077" → LLM calls `steam_launch({name:
+  "Cyberpunk 2077"})` → resolves to appid 1091500 → opens
+  `steam://rungameid/1091500` → Steam starts the game.
+- "Felix, scan this document and save as PDF to my Desktop" → LLM calls
+  `scan_document({output_path:"~/Desktop/scan.pdf"})` → POSIX runs
+  `scanimage --format=pdf --output=~/Desktop/scan.pdf`; on Windows, returns
+  the documented Fax & Scan stub-error.
+- "Felix, is Counter-Strike running?" → LLM calls `steam_is_running({name:
+  "Counter-Strike 2"})` → returns `{running: true/false}` → Kokoro reports
+  back.
+
+---
+
+### Issue #28 — Finance MCP ✅
+
+One new plugin in `plugins/`, auto-loading via `discover_plugins()`. No
+changes to `main.py` required. Pure-Python OCR plugin that delegates the
+sheet append to the existing `google_workspace` plugin's
+`sheets_write_range` tool — same delegation pattern `plugins/zoom.py`
+uses for n8n. The Grist fallback already kicks in transparently via
+`plugins/google_workspace_fallback.py`.
+
+- `plugins/finance.py` — **FinancePlugin**: 2 tools —
+  `finance_extract_receipt(image_path)` and
+  `finance_log_expense(image_path, sheet_target, confirm=False, columns?)`.
+  - **Extraction is side-effect-free.** `finance_extract_receipt`
+    OCRs the image (or page 1 of a scanned PDF) and returns
+    `{vendor, date, total, currency, line_items: [{description, amount}],
+    confidence: {vendor, date, total, currency}}`. No sheet write — the
+    LLM shows the user the result before committing.
+  - **Append requires explicit confirm.** `finance_log_expense` defaults
+    to `confirm=False`, in which case it returns the extraction and the
+    would-be row but **does not** call the workspace plugin. Tests assert
+    that `confirm=False` does not invoke `call_tool` on the workspace
+    plugin, and `confirm=True` does, with the right `{spreadsheet_id,
+    range, data}` payload. There is intentionally no autopilot path.
+  - **Field extraction is regex-only** (no LLM in the plugin):
+    - `total` — `(?i)(?:grand\s*total|total|amount|balance)\D{0,30}([0-9]+[.,][0-9]{2})`;
+      keyword-anchored = confidence 1.0; bare currency-like number = 0.5;
+      nothing = 0.0.
+    - `currency` — `$/£/€/¥` → `USD/GBP/EUR/JPY`; literal 3-letter ISO
+      4217 fallback. Default `None`, confidence 0.0.
+    - `date` — ISO `YYYY-MM-DD` (1.0), `D MMM YYYY` (1.0), and
+      `DD/MM/YYYY` / `MM/DD/YYYY` / dash variants (0.5 — locale-
+      ambiguous, flagged for review).
+    - `vendor` — first non-empty line that doesn't look like an address
+      or pure digits. Confidence 0.5 (heuristic).
+    - `line_items` — `^(.+?)\s+([0-9]+[.,][0-9]{2})\s*$`; the keyword
+      line that produced `total` is excluded.
+  - **Sheet column schema** is configurable via `sheet_target.columns`.
+    Default: `[date, vendor, total, currency, items_summary, image_path]`
+    (with `items_summary` joining line items as `desc amount; desc
+    amount`). The plugin narrows the A1 range to the column count
+    (`Sheet1!A:F` for 6 cols, `Sheet1!A:B` for 2, etc.) before forwarding
+    to `sheets_write_range`.
+  - **Sheet target shapes**: `{spreadsheet_id, sheet_name?, columns?}`
+    for Google Sheets, `{grist_table, grist_doc_id?, columns?}` for
+    Grist (the Grist fallback parses the table id from the range).
+  - **Safety**: file-path validation rejects empty `image_path` and
+    paths where `Path(image_path).is_file()` is False — surfaces the
+    path in the error message, same fail-loud pattern as
+    `plugins/printer.py`. No shelling out with the user-provided path —
+    pure Python OCR + HTTP via the workspace plugin.
+- **Injection points** (so tests never run real OCR, never read PDFs,
+  never hit n8n):
+  - `ocr_fn(image_path) -> str` defaults to
+    `pytesseract.image_to_string(Image.open(...))`.
+  - `pdf_to_image_fn(pdf_path) -> list[str]` defaults to
+    `pdf2image.convert_from_path` saving page 1 to a tempfile (multi-
+    page receipts are out of scope for v1).
+  - `google_workspace_plugin` defaults to
+    `plugins.google_workspace.create()`; tests pass a fake with a
+    recording `call_tool` (mirrors the `n8n_plugin` injection in
+    `plugins/zoom.py`).
+
+**Tool naming:** both tools prefixed with `finance_` per the flat-global
+namespace rule in `.learnings/LEARNINGS.md`.
+
+**Tests:** one file — `cerebral/tests/test_plugin_finance.py` — 40 unit
+tests covering required-arg validation, missing/empty/nonexistent image
+paths, the happy-path extraction shape, total keyword-anchored vs.
+bare-number confidence levels, currency symbol → ISO mapping (parameter-
+ised across `$/£/€/¥` plus the ISO-code fallback), date format coverage
+(ISO / D MMM / slash / dash), vendor heuristic (skipping addressy and
+digits-only first lines), line-item parsing (excluding the total line),
+the `confirm=False` non-write guarantee, the `confirm=True` payload
+shape (incl. range narrowing for custom columns), error propagation
+from the workspace plugin, the `{grist_table}` target routing through
+the same `sheets_write_range` delegation, the PDF input path calling
+`pdf_to_image_fn` then `ocr_fn`, the image input path skipping
+`pdf_to_image_fn`, and the unknown-tool error.
+
+**Plugin tool count:** 30 plugins → 102 tools total
+(+2 finance over #27).
+
+**Required external installs:**
+- **Tesseract OCR binary** on PATH (Linux: `apt install tesseract-ocr`,
+  macOS: `brew install tesseract`, Windows: UB-Mannheim build).
+- **Poppler** for `pdf2image` PDF input (Linux: `apt install
+  poppler-utils`, macOS: `brew install poppler`, Windows: poppler-windows
+  release on the PATH).
+- Python: `pytesseract`, `pdf2image`, `Pillow` — added to
+  `cerebral/requirements.txt`.
+
+**Python test count: 750 passing (was 710), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo paths:**
+- "Felix, what's on this receipt?" + image path → LLM calls
+  `finance_extract_receipt({image_path: "/path/to/receipt.png"})` →
+  Felix reads back vendor + total + low-confidence flags so the user
+  can correct anything before logging.
+- "Felix, add this receipt to my expense sheet." → LLM calls
+  `finance_log_expense({image_path, sheet_target: {spreadsheet_id,
+  sheet_name: "Expenses"}, confirm: false})` → Felix recites the row →
+  user confirms → LLM re-calls with `confirm: true` → row appended.
+- Offline → same `finance_log_expense` call; `google_workspace_fallback`
+  detects the connectivity error, routes the same args to Grist.
 
 ---
 
@@ -1175,6 +1388,100 @@ Three plugins in `plugins/`, all auto-loading via `discover_plugins()`. No chang
 **Python test count: 80 passing (was 52), 3 skipped**
 
 **New IPC messages:** none — passive extraction flows into the existing `queue_update` broadcast
+
+---
+
+### Issue #30 — Plugin builder ✅
+
+The growth loop in code. A meta-plugin at `plugins/builder.py` exposes three
+`builder_*` tools that let Felix generate, smoke-test, and register new MCP
+plugins at runtime from a natural-language description. Every side effect
+(LLM call, `pip install`, smoke runner) is injected so the entire flow runs
+hermetically in tests — no real network, no real subprocess, no real
+filesystem outside `tmp_path`.
+
+- `plugins/builder.py` — **BuilderPlugin**: 3 tools — `builder_create(
+  description, name?)`, `builder_list_generated()`, `builder_smoke_test(
+  name, tool_name?, args?)`.
+  - **Generation flow**: validate name (`^[a-z][a-z0-9_]*$`) → reject if
+    `plugins/<name>.py` or `plugins/<name>/` already exists → static-scan
+    the generated source → check pip deps against the allowlist → run pip
+    installs → stage `server.py` + `README.md` to a `tempfile.
+    TemporaryDirectory()` → in-process import → call `smoke_runner_fn(
+    plugin, smoke_tool, smoke_args)` → on pass, `shutil.move()` into
+    `plugins/<name>/` and `orc.register(plugin)`; on fail, surface the
+    error and let the temp dir auto-clean. Failed builds leave nothing
+    behind in `plugins/`.
+  - **Static guardrails (load-bearing)**: rejects code without `PLUGIN_NAME`
+    or without a `def create(...)` factory; refuses `os.system`, raw
+    `subprocess.{Popen,run,call,check_output,check_call}`, `os.popen`,
+    `from os import system`, `__import__('os')`, top-level `exec(`,
+    `eval(`, and raw `open(..., 'w'`. This is a backstop, not a sandbox —
+    the generated code still runs in-process during smoke, so the model is
+    the primary trust boundary.
+  - **pip allowlist**: the constructor takes `pip_allowlist=(...)`; deps
+    not in the allowlist are rejected before any install attempt (no
+    `pip install` is ever called speculatively). Version pins are
+    permitted — `requests==2.31.0` matches an allowlist entry of
+    `requests`. `main.py` wires a tight default of
+    `("requests","httpx","aiohttp","beautifulsoup4","lxml")`.
+  - **Survival across restarts** is delivered by extending
+    `MCPOrchestrator.discover_plugins` to load both `plugins/<name>.py`
+    (flat, original) and `plugins/<name>/server.py` (subdir, used by the
+    builder). Subdirs starting with `_` or `.` are skipped. Empty
+    subdirs are silently ignored.
+- `plugins/builder.py::create()` returns a parked `_ParkedBuilderPlugin`
+  during auto-discovery (no orchestrator handle yet). `cerebral/main.py`
+  calls `_attach_builder_plugin()` immediately after `discover_plugins`,
+  which finds the parked instance, hands it the live orchestrator, the
+  pip allowlist, and the LLM hook (currently a `NotImplementedError` stub
+  until #6's structured-output path is wired). Until then, `builder_create`
+  surfaces a clear error rather than guessing.
+
+**Tool naming:** every tool is prefixed with `builder_` per the flat-global
+namespace convention from `.learnings/LEARNINGS.md` (#23).
+
+**Tests:** one file, all side effects injected.
+- `cerebral/tests/test_plugin_builder.py` — 35 unit tests across 8 cycles:
+  happy path (5), name validation incl. path-traversal (10 parametrised),
+  smoke failure cleanup (3), pip allowlist + version pins (3), code
+  guardrails incl. 5 dangerous patterns (8), `builder_list_generated` (2),
+  tool-list shape (2), and orchestrator subdir discovery (2). Smoke runner
+  is mocked async; `pip_install_fn` is mocked to record calls; LLM
+  fixture returns a canned `WeatherbugPlugin` payload that exposes a
+  zero-arg `weatherbug_ping` smoke tool.
+- `cerebral/tests/test_orchestrator.py` — unchanged, still 20 passing
+  (subdir discovery has its own coverage in the builder file).
+
+**Plugin tool count:** 28 plugins → 96 tools total
+(+1 builder plugin = +3 tools over master). Once #27 + #28 land:
+30 plugins / 102 tools.
+
+**Python test count: 699 passing (was 664 on master), 3 skipped**
+
+**Demo paths:**
+- "Felix, I need you to be able to look up Wikipedia summaries." → LLM
+  router calls `builder_create({description: "..."})` → builder asks the
+  LLM for `{server_py, readme_md, pip_deps:["requests"], smoke_tool:
+  "wiki_summary", smoke_args:{title:"OpenMind"}}` → static scan passes →
+  `pip install requests` → smoke `wiki_summary({title:"OpenMind"})` →
+  pass → registered → `orc.list_tools()` now includes `wiki_summary` and
+  the user's next sentence "summarise the OpenMind page" routes through
+  the new tool, all in the same session.
+- After restart, `discover_plugins(plugins/)` walks `plugins/wiki/server.py`
+  and re-registers the plugin without builder involvement.
+- "Felix, what plugins did you build for me?" → LLM calls
+  `builder_list_generated({})` → `{"generated": ["wiki", "weatherbug"]}` →
+  Kokoro speaks the names back.
+
+**External deps:** none new. The builder uses only stdlib (`tempfile`,
+`shutil`, `importlib`, `re`, `subprocess` for the default `pip install`
+shell-out, which tests bypass entirely).
+
+**Trust model docstring** in `plugins/builder.py` makes explicit that the
+in-process smoke is *not* sandboxed: the static scan + pip allowlist are
+backstops; the model itself remains the primary trust boundary. A future
+hardening pass could move smoke into a subprocess.
 
 ---
 
