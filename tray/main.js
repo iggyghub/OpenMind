@@ -439,6 +439,7 @@ function buildMenu() {
         onSwitchModel: (id) => sendToCerebral({ type: 'switch_model', data: { model_id: id } }),
         onSetTaskModel: (taskType, modelId) =>
           sendToCerebral({ type: 'set_task_model', data: { task_type: taskType, model_id: modelId } }),
+        onRefresh:     () => sendToCerebral({ type: 'refresh_models' }),
       }),
     });
 

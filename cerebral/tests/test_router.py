@@ -255,7 +255,129 @@ def test_task_models_returns_copy():
 
 
 # ---------------------------------------------------------------------------
-# Slice 7 — integration tests (real HTTP; skipped unless -m integration)
+# Slice 7 — Ollama auto-discovery (Issue #37)
+# ---------------------------------------------------------------------------
+
+
+def test_list_installed_models_returns_names_from_tags_endpoint():
+    from cerebral.llm.router import OllamaBackend
+    fake_tags = lambda url: {"models": [
+        {"name": "gemma3:latest"}, {"name": "llama3.2:3b"},
+    ]}
+    names = OllamaBackend.list_installed_models(tags_fetch_fn=fake_tags)
+    assert names == ["gemma3:latest", "llama3.2:3b"]
+
+
+def test_list_installed_models_returns_empty_when_ollama_offline(caplog):
+    from cerebral.llm.router import OllamaBackend
+    def offline_fetch(url):
+        raise ConnectionError("Ollama not running")
+    with caplog.at_level(_logging.WARNING, logger="cerebral.llm.router"):
+        names = OllamaBackend.list_installed_models(tags_fetch_fn=offline_fetch)
+    assert names == []
+    assert "Ollama unreachable" in caplog.text
+
+
+def test_list_installed_models_handles_empty_response():
+    from cerebral.llm.router import OllamaBackend
+    fake_tags = lambda url: {"models": []}
+    assert OllamaBackend.list_installed_models(tags_fetch_fn=fake_tags) == []
+
+
+def test_list_installed_models_handles_missing_models_key():
+    from cerebral.llm.router import OllamaBackend
+    fake_tags = lambda url: {}  # malformed
+    assert OllamaBackend.list_installed_models(tags_fetch_fn=fake_tags) == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 8 — Router auto-picks default from discovery (Issue #37)
+# ---------------------------------------------------------------------------
+
+
+def test_router_default_picks_first_ollama_model_when_none_specified():
+    a = AsyncMock(); b = AsyncMock()
+    router = ModelRouter(
+        backends={"ollama/gemma3:latest": a, "ollama/llama3.2": b, "claude/haiku": AsyncMock()}
+    )
+    assert router.active_model == "ollama/gemma3:latest"
+
+
+def test_router_default_falls_back_to_cloud_when_no_local_models():
+    """If Ollama has no models, default to first cloud backend so chat still works."""
+    cloud = AsyncMock()
+    router = ModelRouter(backends={"claude/haiku": cloud})
+    assert router.active_model == "claude/haiku"
+
+
+def test_router_raises_when_no_backends_at_all():
+    with pytest.raises(ValueError, match="no model backends"):
+        ModelRouter(backends={})
+
+
+def test_router_explicit_default_still_honored():
+    a = AsyncMock(); b = AsyncMock()
+    router = ModelRouter(
+        backends={"ollama/a": a, "ollama/b": b},
+        default_model="ollama/b",
+    )
+    assert router.active_model == "ollama/b"
+
+
+# ---------------------------------------------------------------------------
+# Slice 9 — refresh_local_backends() (Issue #37)
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_local_backends_adds_newly_installed_models():
+    cloud = AsyncMock()
+    router = ModelRouter(backends={"claude/haiku": cloud})
+    fake_tags = lambda url: {"models": [{"name": "gemma3:latest"}]}
+    new_ids = router.refresh_local_backends(tags_fetch_fn=fake_tags)
+    assert new_ids == ["ollama/gemma3:latest"]
+    assert "ollama/gemma3:latest" in [m["id"] for m in router.list_models()]
+
+
+def test_refresh_local_backends_drops_uninstalled_models():
+    """If user runs `ollama rm gemma3` and refreshes, the model disappears from picker."""
+    router = ModelRouter(
+        backends={"ollama/gemma3:latest": AsyncMock(), "claude/haiku": AsyncMock()},
+        models={"ollama/gemma3:latest": {"label": "Gemma 3", "is_cloud": False},
+                "claude/haiku": {"label": "Haiku", "is_cloud": True}},
+        default_model="claude/haiku",
+    )
+    fake_tags = lambda url: {"models": []}  # nothing installed
+    router.refresh_local_backends(tags_fetch_fn=fake_tags)
+    assert "ollama/gemma3:latest" not in [m["id"] for m in router.list_models()]
+    # Cloud entries preserved
+    assert "claude/haiku" in [m["id"] for m in router.list_models()]
+
+
+def test_refresh_local_backends_reassigns_active_when_active_uninstalled():
+    """If the active model was uninstalled, fall back to another available backend."""
+    router = ModelRouter(
+        backends={"ollama/gemma3:latest": AsyncMock(), "claude/haiku": AsyncMock()},
+    )
+    assert router.active_model == "ollama/gemma3:latest"
+    fake_tags = lambda url: {"models": []}
+    router.refresh_local_backends(tags_fetch_fn=fake_tags)
+    # Active had to move off the uninstalled model
+    assert router.active_model == "claude/haiku"
+
+
+def test_refresh_local_backends_keeps_active_when_still_installed():
+    cloud = AsyncMock()
+    router = ModelRouter(
+        backends={"ollama/gemma3:latest": AsyncMock(), "claude/haiku": cloud},
+        default_model="claude/haiku",
+    )
+    fake_tags = lambda url: {"models": [{"name": "gemma3:latest"}]}
+    router.refresh_local_backends(tags_fetch_fn=fake_tags)
+    assert router.active_model == "claude/haiku"  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# Slice 10 — integration tests (real HTTP; skipped unless -m integration)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration

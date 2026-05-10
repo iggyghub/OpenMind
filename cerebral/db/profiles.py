@@ -24,6 +24,7 @@ class Profile:
     connected_accounts: list = field(default_factory=list)
     voice_sample: str = ""   # base64 audio/webm — user saying their name (for TTS pronunciation)
     wake_sample:  str = ""   # base64 audio/webm — user saying the wake word (for Vosk tuning)
+    active_model: str = ""   # last ModelRouter id chosen by the user (e.g. "ollama/gemma3:latest")
     id: int | None = None
 
     def to_dict(self) -> dict:
@@ -49,6 +50,7 @@ class ProfileManager:
                 connected_accounts  TEXT    NOT NULL DEFAULT '[]',
                 voice_sample        TEXT    NOT NULL DEFAULT '',
                 wake_sample         TEXT    NOT NULL DEFAULT '',
+                active_model        TEXT    NOT NULL DEFAULT '',
                 created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_used_at        DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -58,8 +60,12 @@ class ProfileManager:
             );
         """)
         self._con.commit()
-        # Migrate pre-existing DBs that lack voice_sample
-        for col, default in [("voice_sample", "''"), ("wake_sample", "''")]:
+        # Migrate pre-existing DBs that lack newer columns
+        for col, default in [
+            ("voice_sample", "''"),
+            ("wake_sample",  "''"),
+            ("active_model", "''"),
+        ]:
             try:
                 self._con.execute(
                     f"ALTER TABLE profiles ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
@@ -125,6 +131,13 @@ class ProfileManager:
         )
         self._con.commit()
 
+    def update_active_model(self, profile_id: int, model_id: str) -> None:
+        """Persist the user's last-chosen ModelRouter model id (issue #37)."""
+        self._con.execute(
+            "UPDATE profiles SET active_model=? WHERE id=?", (model_id, profile_id)
+        )
+        self._con.commit()
+
     def delete(self, profile_id: int) -> None:
         self._con.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
         if self._get_setting("active_profile_id") == str(profile_id):
@@ -167,6 +180,7 @@ class ProfileManager:
 
 
 def _row_to_profile(row: sqlite3.Row) -> Profile:
+    keys = row.keys()
     return Profile(
         id=row["id"],
         name=row["name"],
@@ -174,6 +188,7 @@ def _row_to_profile(row: sqlite3.Row) -> Profile:
         pronunciation_guide=row["pronunciation_guide"],
         voice_id=row["voice_id"],
         connected_accounts=json.loads(row["connected_accounts"]),
-        voice_sample=row["voice_sample"] if "voice_sample" in row.keys() else "",
-        wake_sample =row["wake_sample"]  if "wake_sample"  in row.keys() else "",
+        voice_sample=row["voice_sample"] if "voice_sample" in keys else "",
+        wake_sample =row["wake_sample"]  if "wake_sample"  in keys else "",
+        active_model=row["active_model"] if "active_model" in keys else "",
     )

@@ -262,3 +262,91 @@ describe('edge cases', () => {
     expect(formatModelLabel({ id: 'x', is_cloud: false })).toContain('x');
   });
 });
+
+// ── Refresh + Ollama-offline indicator (Issue #37) ───────────────────────────
+
+describe('refresh entry', () => {
+  test('shows Refresh entry when onRefresh is provided', () => {
+    const tpl = buildModelSubmenu({
+      models: SAMPLE_MODELS,
+      active: 'ollama/gemma4',
+      taskModels: {},
+      onSwitchModel: () => {},
+      onSetTaskModel: () => {},
+      onRefresh: () => {},
+    });
+    expect(tpl.find((e) => e.label === 'Refresh installed models')).toBeDefined();
+  });
+
+  test('omits Refresh entry when onRefresh is not provided', () => {
+    const tpl = buildModelSubmenu({
+      models: SAMPLE_MODELS,
+      active: 'ollama/gemma4',
+      taskModels: {},
+      onSwitchModel: () => {},
+      onSetTaskModel: () => {},
+    });
+    expect(tpl.find((e) => e.label === 'Refresh installed models')).toBeUndefined();
+  });
+
+  test('clicking Refresh fires the callback', () => {
+    let clicked = false;
+    const tpl = buildModelSubmenu({
+      models: SAMPLE_MODELS,
+      active: 'ollama/gemma4',
+      taskModels: {},
+      onSwitchModel: () => {},
+      onSetTaskModel: () => {},
+      onRefresh: () => { clicked = true; },
+    });
+    const refresh = tpl.find((e) => e.label === 'Refresh installed models');
+    refresh.click();
+    expect(clicked).toBe(true);
+  });
+
+  test('Refresh sits below the per-task block and is not a radio', () => {
+    const tpl = buildModelSubmenu({
+      models: SAMPLE_MODELS,
+      active: 'ollama/gemma4',
+      taskModels: {},
+      onSwitchModel: () => {},
+      onSetTaskModel: () => {},
+      onRefresh: () => {},
+    });
+    const lastTaskIdx = tpl.map((e, i) => (e.label && e.label.startsWith('Task:') ? i : -1))
+                          .reduce((a, b) => (b > a ? b : a), -1);
+    const refreshIdx  = tpl.findIndex((e) => e.label === 'Refresh installed models');
+    expect(refreshIdx).toBeGreaterThan(lastTaskIdx);
+    expect(tpl[refreshIdx].type).not.toBe('radio');
+  });
+});
+
+describe('Ollama-offline indicator', () => {
+  test('shows offline note when no local models are present', () => {
+    const cloudOnly = [
+      { id: 'claude/haiku', label: 'Claude Haiku', is_cloud: true, is_active: true, is_last: false },
+    ];
+    const tpl = buildModelSubmenu({
+      models: cloudOnly,
+      active: 'claude/haiku',
+      activeIsCloud: true,
+      taskModels: {},
+      onSwitchModel: () => {},
+      onSetTaskModel: () => {},
+    });
+    const offline = tpl.find((e) => e.label && e.label.includes('Ollama offline'));
+    expect(offline).toBeDefined();
+    expect(offline.enabled).toBe(false);
+  });
+
+  test('omits offline note when at least one local model is present', () => {
+    const tpl = buildModelSubmenu({
+      models: SAMPLE_MODELS,
+      active: 'ollama/gemma4',
+      taskModels: {},
+      onSwitchModel: () => {},
+      onSetTaskModel: () => {},
+    });
+    expect(tpl.find((e) => e.label && e.label.includes('Ollama offline'))).toBeUndefined();
+  });
+});

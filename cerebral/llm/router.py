@@ -1,24 +1,25 @@
 """
-Model router — Issue #6 + Issue #29.
+Model router — Issue #6 + Issue #29 + Issue #37.
 
-Routes LLM completions to the active backend (Ollama/Gemma 4 by default, or
-Claude via OpenClaw). Backends are injected, making the router fully testable
-without live services.
+Routes LLM completions to the active backend (whichever Ollama model is
+currently installed, or Claude via OpenClaw). Backends are injected, making
+the router fully testable without live services.
 
 Public interface:
   router = ModelRouter()                                # uses real HTTP backends
   await router.complete(prompt, task_type="chat")       # → str
   router.switch_model("claude/haiku")                   # active model for any task
-  router.set_task_model("extraction", "ollama/gemma4")  # per-task override
+  router.set_task_model("extraction", "ollama/...")     # per-task override
   router.get_task_model("extraction")                   # → resolved model id
   router.list_models()                                  # → [{id,label,is_cloud,...}]
   router.active_model                                   # → current model id
   router.last_model                                     # → id of last to handle a request
   router.active_is_cloud                                # → True if active is a cloud model
+  router.refresh_local_backends(tags_fetch_fn=None)     # re-query Ollama, update picker
 """
 
 import logging
-from typing import Protocol, runtime_checkable
+from typing import Callable, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,13 @@ class Backend(Protocol):
     async def complete(self, prompt: str, task_type: str) -> str: ...
 
 
-DEFAULT_MODEL = "ollama/gemma4"
+# Cloud entries are constants; local entries are discovered at runtime.
+CLOUD_MODELS = {
+    "claude/haiku":  {"label": "Claude Haiku 4.5",  "is_cloud": True,
+                      "claw_model": "claude-haiku-4-5-20251001"},
+    "claude/sonnet": {"label": "Claude Sonnet 4.6", "is_cloud": True,
+                      "claw_model": "claude-sonnet-4-6"},
+}
 
 
 class ModelRouter:
@@ -40,12 +47,16 @@ class ModelRouter:
         self,
         backends: dict[str, Backend] | None = None,
         models: dict[str, dict] | None = None,
-        default_model: str = DEFAULT_MODEL,
+        default_model: str | None = None,
     ):
         if backends is None:
             backends = _real_backends()
             if models is None:
-                models = _real_models()
+                models = _real_models(backends)
+        if not backends:
+            raise ValueError("no model backends available")
+        if default_model is None:
+            default_model = _pick_default(backends)
         if default_model not in backends:
             raise ValueError(f"default model '{default_model}' not in backends: {list(backends)}")
         if models is None:
@@ -107,6 +118,41 @@ class ModelRouter:
     def task_models(self) -> dict[str, str]:
         return dict(self._task_models)
 
+    def refresh_local_backends(
+        self,
+        tags_fetch_fn: Callable[[str], dict] | None = None,
+        url: str = "http://localhost:11434",
+    ) -> list[str]:
+        """Re-query Ollama and update local (`ollama/*`) backends in place.
+
+        Cloud backends are preserved. If the active model was uninstalled,
+        falls back to another available backend. Returns the list of
+        currently-installed `ollama/*` model ids.
+        """
+        for mid in list(self._backends):
+            if mid.startswith("ollama/"):
+                del self._backends[mid]
+                self._models.pop(mid, None)
+
+        new_ids: list[str] = []
+        for name in OllamaBackend.list_installed_models(url=url, tags_fetch_fn=tags_fetch_fn):
+            mid = f"ollama/{name}"
+            self._backends[mid] = OllamaBackend(url=url, model=name)
+            self._models[mid] = {"label": name, "is_cloud": False}
+            new_ids.append(mid)
+
+        if self._active_model not in self._backends:
+            # Prefer a freshly-discovered local model; otherwise first remaining backend.
+            self._active_model = new_ids[0] if new_ids else next(iter(self._backends), self._active_model)
+            logger.info("[router] active model fell back to %s after refresh", self._active_model)
+
+        # Drop any per-task mappings that point to uninstalled models.
+        for task_type, mid in list(self._task_models.items()):
+            if mid not in self._backends:
+                del self._task_models[task_type]
+
+        return new_ids
+
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         model_id = self._task_models.get(task_type, self._active_model)
         backend = self._backends[model_id]
@@ -122,23 +168,40 @@ class ModelRouter:
 
 
 # ---------------------------------------------------------------------------
-# Real HTTP backends (used when no injection is supplied)
+# Default-picker + real-backend factories
 # ---------------------------------------------------------------------------
 
+def _pick_default(backends: dict[str, Backend]) -> str:
+    """Pick the first ollama/* backend if any, otherwise the first backend."""
+    for mid in backends:
+        if mid.startswith("ollama/"):
+            return mid
+    return next(iter(backends))
+
+
 def _real_backends() -> dict[str, Backend]:
-    return {
-        DEFAULT_MODEL: OllamaBackend(),
-        "claude/haiku": ClawBackend(model="claude-haiku-4-5-20251001"),
-        "claude/sonnet": ClawBackend(model="claude-sonnet-4-6"),
-    }
+    """Build backends from whatever Ollama has installed + the fixed cloud entries.
+
+    Ollama-offline path: returns just the cloud entries so cloud chat still works.
+    """
+    backends: dict[str, Backend] = {}
+    for name in OllamaBackend.list_installed_models():
+        backends[f"ollama/{name}"] = OllamaBackend(model=name)
+    for cid, info in CLOUD_MODELS.items():
+        backends[cid] = ClawBackend(model=info["claw_model"])
+    return backends
 
 
-def _real_models() -> dict[str, dict]:
-    return {
-        DEFAULT_MODEL: {"label": "Gemma 4 (local)", "is_cloud": False},
-        "claude/haiku": {"label": "Claude Haiku 4.5", "is_cloud": True},
-        "claude/sonnet": {"label": "Claude Sonnet 4.6", "is_cloud": True},
-    }
+def _real_models(backends: dict[str, Backend]) -> dict[str, dict]:
+    """Metadata for both discovered Ollama models and the fixed cloud entries."""
+    models: dict[str, dict] = {}
+    for mid in backends:
+        if mid.startswith("ollama/"):
+            models[mid] = {"label": mid.split("/", 1)[1], "is_cloud": False}
+    for cid, info in CLOUD_MODELS.items():
+        if cid in backends:
+            models[cid] = {"label": info["label"], "is_cloud": True}
+    return models
 
 
 class OllamaBackend:
@@ -158,6 +221,32 @@ class OllamaBackend:
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 raise ConnectionError(str(exc)) from exc
         return resp.json()["response"]
+
+    @staticmethod
+    def list_installed_models(
+        url: str = "http://localhost:11434",
+        tags_fetch_fn: Callable[[str], dict] | None = None,
+    ) -> list[str]:
+        """Return model names from Ollama's `/api/tags`. Empty list if unreachable."""
+        if tags_fetch_fn is None:
+            tags_fetch_fn = _http_tags_fetch
+        try:
+            payload = tags_fetch_fn(url)
+        except (OSError, ConnectionError) as exc:
+            logger.warning("[router] Ollama unreachable — no local models available (%s)", exc)
+            return []
+        return [m["name"] for m in (payload.get("models") or [])]
+
+
+def _http_tags_fetch(url: str) -> dict:
+    """Default Ollama tags fetcher — synchronous httpx call."""
+    import httpx
+    try:
+        resp = httpx.get(f"{url}/api/tags", timeout=2.0)
+        resp.raise_for_status()
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError) as exc:
+        raise ConnectionError(str(exc)) from exc
+    return resp.json()
 
 
 class ClawBackend:

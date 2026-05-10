@@ -161,7 +161,8 @@ C:\OpenMind\
 | `list_profiles` | — | request profiles_list event |
 | `list_voices` | — | request voices_list event |
 | `set_voice` | `{voice_id}` | update active profile's voice; takes effect immediately |
-| `switch_model` | `{model_id}` | change active LLM (e.g. `"claude/haiku"`) |
+| `switch_model` | `{model_id}` | change active LLM (e.g. `"claude/haiku"`); persisted to `profiles.active_model` |
+| `refresh_models` | — | re-query Ollama `/api/tags`; broadcasts `models_list` (#37) |
 | `list_tools` | — | request tools_list broadcast |
 | `call_tool` | `{name, args}` | invoke a tool by name |
 
@@ -1494,3 +1495,26 @@ hardening pass could move smoke into a subprocess.
 - **Wake name is user-configurable** — don't hardcode "felix" in new code. Always read from the active profile.
 - **Profile schema has migrations** — the `_init_schema` method uses `ALTER TABLE ... ADD COLUMN` with `try/except` to add new columns to existing DBs. Follow this pattern for any new columns.
 - **Voice ID default is `af_heart`** — the Kokoro American English female "Heart" voice. Profile records created before #5 may have `voice_id="default"` — the TTS engine falls back to `af_heart` if the id is unrecognised.
+- **Local LLM auto-detect (#37)** — there is no hardcoded `gemma4` default any more. `OllamaBackend.list_installed_models()` queries `GET http://localhost:11434/api/tags` (with a `tags_fetch_fn` injection point for tests). The router builds `ollama/<name>` entries for whatever Ollama actually has installed, falls back to cloud when Ollama is offline, and persists the user's last choice on the active profile via `profiles.active_model`.
+
+---
+
+## Issue #37 retrospective — Persistent model selection + Ollama refresh
+
+**What changed:**
+- `cerebral/llm/router.py` — `OllamaBackend.list_installed_models(tags_fetch_fn)` discovers installed Ollama models. `_real_backends()` no longer hardcodes `ollama/gemma4`; it builds `ollama/<name>` entries from the live tags response and adds the fixed cloud entries. `ModelRouter.refresh_local_backends(tags_fetch_fn)` re-queries on demand, preserving cloud entries and reassigning `active_model` if the previous active was uninstalled. The default model is auto-picked: first `ollama/*` if any, else first cloud.
+- `cerebral/db/profiles.py` — added `active_model TEXT` column with the existing `ALTER TABLE` migration pattern; `update_active_model(profile_id, model_id)` setter; `Profile.active_model` field; `_row_to_profile` reads it defensively.
+- `cerebral/main.py` — at startup, restores `_router.switch_model(_active_profile.active_model)` if the saved id is still in backends (warns and stays on the auto-picked default if not). On every `switch_model` IPC, the new id is persisted to the active profile. New `refresh_models` IPC handler calls `refresh_local_backends()` and re-broadcasts `models_list`.
+- `tray/lib/model-menu.js` — added `onRefresh` opt → "Refresh installed models" entry at the bottom (outside any radio group). Adds an "Ollama offline — local models unavailable" disabled note when no local models are present.
+- `tray/main.js` — passes `onRefresh: () => sendToCerebral({ type: 'refresh_models' })` to the submenu builder.
+
+**New IPC messages:** `refresh_models` (tray → cerebral). The reply is the existing `models_list` broadcast.
+
+**New tests:**
+- `cerebral/tests/test_router.py` — slices 7–9: `list_installed_models` (happy/offline/empty/malformed), default-picker (first ollama / first cloud / no backends / explicit honored), `refresh_local_backends` (adds/drops/reassigns active/keeps active).
+- `cerebral/tests/test_model_persistence.py` (new file, 6 tests) — defaults to empty, round-trip, overwrite, manager-restart persistence, legacy-DB migration, full-update preserves the column.
+- `tray/tests/model-menu.test.js` — refresh entry visibility/click/position, Ollama-offline indicator on/off.
+
+**Test count after #37:** 695 Python tests passing (3 integration skipped) + 75 JS tests passing.
+
+**Sequencing note:** branched off `origin/issue-29-model-switching` because PR [#34](https://github.com/iggyghub/OpenMind/pull/34) was still open at the time. After #34 merges to master, this branch should rebase onto master before its own PR merges.
