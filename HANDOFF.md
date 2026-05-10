@@ -372,9 +372,10 @@ All issues are at https://github.com/iggyghub/OpenMind
 | ~~24~~ | ~~Dev tools MCP — Git, GitHub, Docker, SSH, Package Managers, HTTP Client~~ | ✅ done |
 | ~~25~~ | ~~Information MCP — Wikipedia, Weather (Open-Meteo), News (RSS), Stocks/Crypto~~ | ✅ done |
 | ~~26~~ | ~~Security MCP — Bitwarden read-only vault, VPN, Network Scanner~~ | ✅ done |
+| ~~27~~ | ~~Hardware MCP — Printer/Scanner + Steam launcher~~ | ✅ done |
 | ... | (29 total) | |
 
-**Next issue: #27.** Read it with `gh issue view 27 --repo iggyghub/OpenMind` before implementing.
+**Next issue: #28.** Read it with `gh issue view 28 --repo iggyghub/OpenMind` before implementing.
 
 ---
 
@@ -467,6 +468,109 @@ creates them.
   `bw_get_item({name:"github"})` → reads the password aloud once.
 - "Felix, who else is on my network?" → LLM calls `net_list_devices({})` →
   Kokoro reads back the list of IPs and hostnames.
+
+---
+
+### Issue #27 — Hardware MCP ✅
+
+Two new plugins in `plugins/`, both auto-loading via `discover_plugins()`. No
+changes to `main.py` required. One CLI-shell plugin (printer) and one
+filesystem + URL-scheme plugin (steam). All side effects (`run_fn`,
+`platform_name`, `steam_root`, `launch_fn`, `process_iter`) are injected so
+unit tests never invoke real CLI binaries (`lp`/`lpstat`/`scanimage` /
+PowerShell), never open the browser, and never read the real Steam install.
+
+- `plugins/printer.py` — **PrinterPlugin**: 4 tools — `print_file(path,
+  printer_name?)`, `print_queue(printer_name?)`, `print_list_printers()`,
+  `scan_document(output_path, format?)`.
+  - Platform-aware via injectable `platform_name` (default `sys.platform`):
+    Windows → PowerShell `Start-Process -Verb Print` (default printer) /
+    `Out-Printer -Name "..."` (named printer) / `Get-PrintJob` /
+    `Get-Printer | Select-Object -ExpandProperty Name`. POSIX → `lp` /
+    `lpstat -o` / `lpstat -p` / `scanimage --format=<png|pdf>
+    --output=<path>`. All branches covered by tests.
+  - **Output-only by design**: no `print_remove_job` / `print_cancel_job`
+    / `print_clear_queue` tool exists. The orchestrator `list_tools()` is
+    unit-tested against an explicit forbidden-name allowlist so a regression
+    that adds a destructive tool fails the test suite.
+  - **File-path validation**: `print_file` and `scan_document` both reject
+    empty paths up front, before any shell-out.
+  - **Windows scan stub**: Windows WIA scanning isn't implemented (a fragile
+    COM bridge is worse than not shipping it). The plugin returns
+    `is_error=True` with a helpful message pointing to Windows Fax & Scan,
+    documented in the docstring; tests assert this stub path.
+  - **Hardware-not-connected**: each shell-out wraps non-zero exit and
+    `FileNotFoundError` into `is_error=True` with the printer/scanner name
+    in the message — same fail-loud pattern as `plugins/git.py`.
+- `plugins/steam.py` — **SteamPlugin**: 3 tools — `steam_list_installed()`,
+  `steam_launch(name? | app_id?)`, `steam_is_running(name? | app_id?)`.
+  - Pure file parsing + URL-scheme launch — no shell-outs for the launch
+    path. Parses `<steam_root>/config/libraryfolders.vdf` to discover every
+    library, then walks `<library>/steamapps/appmanifest_*.acf` for each
+    game (regex over the top-level VDF strings — no full VDF parser
+    required).
+  - Default `steam_root` per-platform (injectable for tests): Windows
+    `C:\Program Files (x86)\Steam`, macOS `~/Library/Application
+    Support/Steam`, Linux `~/.steam/steam` with fallback to
+    `~/.local/share/Steam`. If `libraryfolders.vdf` is missing the Steam
+    root itself is treated as the only library.
+  - Launch via `steam://rungameid/<appid>` URL scheme using an injectable
+    `launch_fn` (defaults to `webbrowser.open` — same pattern as
+    `plugins/zoom.py`'s `zoommtg://` launch). Looks up the appid by name
+    when `name` is provided; unknown name → `is_error=True`.
+  - **Safety**: `steam_launch` requires an explicit `name` or `app_id`. No
+    "launch the last/default game" path. Tests assert this.
+  - `steam_is_running` matches by appid where possible; falls back to
+    matching the game's installdir / executable name in the running
+    process list (best-effort heuristic — Steam launches games as child
+    processes whose name often matches the installdir). Uses an injectable
+    `process_iter` defaulting to `psutil.process_iter` — same pattern as
+    `plugins/apps.py`.
+  - **Hardware-not-connected equivalent**: if `steam_root` doesn't exist,
+    `steam_list_installed` returns `is_error=True` with `"Steam not
+    installed at <path>"` — never crashes on missing files.
+
+**Tool naming:** every tool is prefixed with the plugin name (`print_*`,
+`scan_*`, `steam_*`) per the flat-global namespace rule in
+`.learnings/LEARNINGS.md` (after the #23 zoom/meet `join_meeting` collision).
+
+**Tests:** one file per plugin, all side effects injected (no real shell-
+outs, no real browser, no real filesystem reads — `tmp_path` is used to
+build a fake Steam library on disk).
+- `cerebral/tests/test_plugin_printer.py` — 27 unit tests covering
+  required-arg validation, the POSIX `lp`/`lpstat`/`scanimage` branch, the
+  Windows PowerShell branch (incl. the documented WIA stub-error), and
+  hardware-not-connected paths (non-zero exit + `FileNotFoundError`).
+- `cerebral/tests/test_plugin_steam.py` — 19 unit tests covering
+  libraryfolders.vdf + appmanifest_*.acf parsing across multiple
+  libraries, missing-Steam-root error, `steam_launch` URL building (incl.
+  case-insensitive name lookup), and the process-iter heuristic for
+  `steam_is_running`.
+
+**Plugin tool count:** 29 plugins → 100 tools total
+(+4 printer +3 steam = +7 over #26).
+
+**Required external binaries / installs:**
+- `lp`, `lpstat`, `scanimage` — POSIX printer/scanner (CUPS + SANE).
+  Windows uses built-in PowerShell cmdlets — no extra install.
+- Steam must be installed at the platform default location (or pass a
+  custom `steam_root` if installed elsewhere). The plugin doesn't shell
+  out to the Steam CLI — it reads `appmanifest_*.acf` files directly.
+
+**Python test count: 710 passing (was 664), 3 skipped**
+**JS test count: 50 passing (unchanged)**
+
+**Demo paths:**
+- "Felix, launch Cyberpunk 2077" → LLM calls `steam_launch({name:
+  "Cyberpunk 2077"})` → resolves to appid 1091500 → opens
+  `steam://rungameid/1091500` → Steam starts the game.
+- "Felix, scan this document and save as PDF to my Desktop" → LLM calls
+  `scan_document({output_path:"~/Desktop/scan.pdf"})` → POSIX runs
+  `scanimage --format=pdf --output=~/Desktop/scan.pdf`; on Windows, returns
+  the documented Fax & Scan stub-error.
+- "Felix, is Counter-Strike running?" → LLM calls `steam_is_running({name:
+  "Counter-Strike 2"})` → returns `{running: true/false}` → Kokoro reports
+  back.
 
 ---
 
