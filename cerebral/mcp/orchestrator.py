@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from cerebral.security import Capability, CallFlags, CapabilityGate, Decision
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,10 +52,14 @@ class Plugin(Protocol):
 
 
 class MCPOrchestrator:
-    def __init__(self) -> None:
+    def __init__(self, gate: CapabilityGate | None = None) -> None:
         self._plugins: dict[str, Plugin] = {}
         # tool_name → plugin_name for fast routing
         self._tool_index: dict[str, str] = {}
+        # The capability gate enforces ADR-0005's day-1 policy.
+        # In this slice, callers opt in by passing a `capability` to call_tool;
+        # #44 will wire REQUIRED_CAPABILITIES from each plugin.
+        self._gate: CapabilityGate = gate or CapabilityGate()
 
     # ------------------------------------------------------------------
     # Registry
@@ -97,10 +103,32 @@ class MCPOrchestrator:
             tools.extend(plugin.list_tools())
         return tools
 
-    async def call_tool(self, name: str, args: dict) -> ToolResult:
+    async def call_tool(
+        self,
+        name: str,
+        args: dict,
+        capability: Capability | None = None,
+        flags: CallFlags | None = None,
+    ) -> ToolResult:
         if name not in self._tool_index:
             logger.warning("[mcp] Unknown tool '%s'", name)
             return ToolResult(content=f"Unknown tool: '{name}'", is_error=True)
+        if capability is not None:
+            decision = self._gate.check(capability, flags)
+            # ASK resolves to DENY in this slice (#43, fail-closed). The consent
+            # surface that lets ASK reach the user is #48; per-profile ACL is #45.
+            if decision is not Decision.SILENT:
+                logger.info(
+                    "[mcp] Gate denied '%s' (capability=%s, decision=%s)",
+                    name, capability.value, decision.value,
+                )
+                return ToolResult(
+                    content=(
+                        f"Denied: '{name}' requires capability "
+                        f"'{capability.value}' (policy: {decision.value})"
+                    ),
+                    is_error=True,
+                )
         plugin_name = self._tool_index[name]
         plugin = self._plugins[plugin_name]
         try:
