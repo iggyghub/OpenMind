@@ -28,6 +28,11 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "network_scanner"
 
+# ADR-0005 / Issue #44 — net_list_devices (arp scan), net_ping, and
+# net_check_port are all network reconnaissance against the local LAN /
+# arbitrary hosts.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"network_recon"})
+
 
 def _default_socket_factory(addr, timeout):
     return socket.create_connection(addr, timeout=timeout)

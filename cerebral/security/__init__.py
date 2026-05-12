@@ -16,10 +16,17 @@ from cerebral.security.gate import (
     Decision,
 )
 
+# Closed string-form view of the 16-class vocabulary. Plugin modules declare
+# REQUIRED_CAPABILITIES as frozenset[str] so they don't have to import the
+# Capability enum; the orchestrator validates declarations against this set
+# at registration time (Issue #44 / ADR-0005).
+CAPABILITY_VOCABULARY: frozenset[str] = frozenset(c.value for c in Capability)
+
 __all__ = [
     "Capability",
     "CallFlags",
     "CapabilityGate",
+    "CAPABILITY_VOCABULARY",
     "DEFAULT_POLICY",
     "Decision",
 ]

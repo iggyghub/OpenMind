@@ -31,6 +31,7 @@ _GENERATED_SERVER = textwrap.dedent('''
     from cerebral.mcp.orchestrator import Tool, ToolResult
 
     PLUGIN_NAME = "weatherbug"
+    REQUIRED_CAPABILITIES = frozenset({"external_data_read"})
 
 
     class WeatherbugPlugin:
@@ -65,6 +66,8 @@ _GENERATED_PAYLOAD = {
     "pip_deps": [],
     "smoke_tool": "weatherbug_ping",
     "smoke_args": {},
+    # Issue #44 — builder payload must include the declared capabilities.
+    "required_capabilities": ["external_data_read"],
 }
 
 
@@ -724,3 +727,148 @@ class TestSubdirDiscovery:
         orc = MCPOrchestrator()
         orc.discover_plugins(tmp_path)  # should not raise
         assert orc._plugins == {}
+
+
+# ---------------------------------------------------------------------------
+# Cycle 9 — REQUIRED_CAPABILITIES in the builder pipeline (Issue #44)
+# ---------------------------------------------------------------------------
+
+
+class TestBuilderRequiredCapabilities:
+    @pytest.mark.asyncio
+    async def test_missing_required_capabilities_in_payload_rejected(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        payload = {k: v for k, v in _GENERATED_PAYLOAD.items() if k != "required_capabilities"}
+        orc = MCPOrchestrator()
+        smoke_fn, smoke_calls = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(payload),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert result.is_error
+        assert "required_capabilities" in result.content
+        assert smoke_calls == []
+        assert not (tmp_path / "weatherbug").exists()
+
+    @pytest.mark.asyncio
+    async def test_unknown_capability_in_payload_rejected(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        payload = dict(_GENERATED_PAYLOAD, required_capabilities=["fs_read", "telepathy"])
+        orc = MCPOrchestrator()
+        smoke_fn, smoke_calls = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(payload),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert result.is_error
+        assert "telepathy" in result.content
+        assert smoke_calls == []
+        assert not (tmp_path / "weatherbug").exists()
+
+    @pytest.mark.asyncio
+    async def test_builder_injects_constant_when_llm_omits_it(self, tmp_path):
+        """If the LLM emits server.py without REQUIRED_CAPABILITIES, the
+        builder prepends a deterministic declaration from the payload so the
+        plugin survives a Cerebral restart."""
+        from plugins.builder import BuilderPlugin
+
+        server_without_constant = textwrap.dedent('''
+            from cerebral.mcp.orchestrator import Tool, ToolResult
+
+            PLUGIN_NAME = "weatherbug"
+
+            class WeatherbugPlugin:
+                name = PLUGIN_NAME
+                def list_tools(self):
+                    return [Tool(name="weatherbug_ping", description="d", plugin=PLUGIN_NAME)]
+                async def call_tool(self, tool_name, args):
+                    return ToolResult(content="pong")
+
+            def create():
+                return WeatherbugPlugin()
+        ''').strip()
+
+        payload = dict(
+            _GENERATED_PAYLOAD,
+            server_py=server_without_constant,
+            required_capabilities=["fs_read", "external_data_read"],
+        )
+        orc = MCPOrchestrator()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(payload),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert not result.is_error, result.content
+
+        written = (tmp_path / "weatherbug" / "server.py").read_text()
+        assert "REQUIRED_CAPABILITIES" in written
+        assert "external_data_read" in written
+        assert "fs_read" in written
+
+    @pytest.mark.asyncio
+    async def test_builder_passes_capabilities_to_orchestrator_on_register(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        orc = MCPOrchestrator()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert not result.is_error, result.content
+        assert orc.required_capabilities_for("weatherbug") == frozenset(
+            {"external_data_read"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_payload_with_non_iterable_required_capabilities_rejected(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        payload = dict(_GENERATED_PAYLOAD, required_capabilities=123)
+        orc = MCPOrchestrator()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(payload),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert result.is_error
+        assert "required_capabilities" in result.content
+        assert not (tmp_path / "weatherbug").exists()

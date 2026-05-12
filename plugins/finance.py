@@ -71,6 +71,14 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "finance"
 
+# ADR-0005 / Issue #44 — finance_extract_receipt reads an image/PDF from disk
+# (fs_read). finance_log_expense additionally delegates a row append to the
+# google_workspace plugin's sheets_write_range (external_data_write).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "fs_read",
+    "external_data_write",
+})
+
 OcrFn = Callable[[str], str]
 PdfToImageFn = Callable[[str], list[str]]
 

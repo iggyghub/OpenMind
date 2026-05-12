@@ -9,8 +9,16 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from cerebral.mcp.orchestrator import MCPOrchestrator, Tool, ToolResult
-from cerebral.security import Capability, CallFlags
+from cerebral.mcp.orchestrator import (
+    MCPOrchestrator,
+    PluginRegistrationError,
+    REASON_INVALID_TYPE,
+    REASON_MISSING,
+    REASON_UNKNOWN_CAPABILITY,
+    Tool,
+    ToolResult,
+)
+from cerebral.security import CAPABILITY_VOCABULARY, Capability, CallFlags
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +194,7 @@ def test_discover_plugins_loads_valid_plugin(tmp_path):
         from cerebral.mcp.orchestrator import Tool, ToolResult
 
         PLUGIN_NAME = "test_clock"
+        REQUIRED_CAPABILITIES = frozenset({"device_control"})
 
         class _ClockPlugin:
             name = "test_clock"
@@ -371,3 +380,256 @@ async def test_call_tool_unknown_tool_short_circuits_before_gate():
     )
     assert result.is_error
     assert "ghost" in result.content
+
+
+# ---------------------------------------------------------------------------
+# Slice 9 — REQUIRED_CAPABILITIES enforcement (Issue #44, ADR-0005)
+# ---------------------------------------------------------------------------
+
+def _plugin_module_source(plugin_name: str, capabilities_line: str = "") -> str:
+    """Stand-alone plugin module source with a configurable capabilities decl."""
+    return textwrap.dedent(f"""
+        from cerebral.mcp.orchestrator import Tool, ToolResult
+
+        PLUGIN_NAME = {plugin_name!r}
+        {capabilities_line}
+
+        class _P:
+            name = {plugin_name!r}
+            def list_tools(self):
+                return [Tool(name="ping", description="ping", plugin={plugin_name!r})]
+            async def call_tool(self, tool_name, args):
+                return ToolResult(content="pong")
+
+        def create():
+            return _P()
+    """)
+
+
+def test_discover_refuses_plugin_missing_required_capabilities(tmp_path):
+    (tmp_path / "broken.py").write_text(_plugin_module_source("broken"))
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+
+    assert orc.list_tools() == []
+    assert len(orc.registration_errors) == 1
+    err = orc.registration_errors[0]
+    assert err["plugin_name"] == "broken"
+    assert err["reason"] == REASON_MISSING
+    assert "REQUIRED_CAPABILITIES" in err["detail"]
+
+
+def test_discover_accepts_valid_required_capabilities(tmp_path):
+    (tmp_path / "good.py").write_text(
+        _plugin_module_source(
+            "good",
+            'REQUIRED_CAPABILITIES = frozenset({"fs_read"})',
+        )
+    )
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+
+    assert [t.name for t in orc.list_tools()] == ["ping"]
+    assert orc.registration_errors == []
+    assert orc.required_capabilities_for("good") == frozenset({"fs_read"})
+
+
+def test_discover_refuses_unknown_capability_string(tmp_path):
+    (tmp_path / "alien.py").write_text(
+        _plugin_module_source(
+            "alien",
+            'REQUIRED_CAPABILITIES = frozenset({"fs_read", "telepathy"})',
+        )
+    )
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+
+    assert orc.list_tools() == []
+    err = orc.registration_errors[0]
+    assert err["plugin_name"] == "alien"
+    assert err["reason"] == REASON_UNKNOWN_CAPABILITY
+    assert "telepathy" in err["detail"]
+
+
+def test_discover_refuses_invalid_required_capabilities_type(tmp_path):
+    (tmp_path / "wrongtype.py").write_text(
+        _plugin_module_source(
+            "wrongtype",
+            'REQUIRED_CAPABILITIES = ["fs_read"]',  # list, not frozenset
+        )
+    )
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+
+    assert orc.list_tools() == []
+    err = orc.registration_errors[0]
+    assert err["plugin_name"] == "wrongtype"
+    assert err["reason"] == REASON_INVALID_TYPE
+
+
+def test_discover_refuses_non_str_capability_value(tmp_path):
+    (tmp_path / "intval.py").write_text(
+        _plugin_module_source(
+            "intval",
+            "REQUIRED_CAPABILITIES = frozenset({1, 2, 3})",
+        )
+    )
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+
+    err = orc.registration_errors[0]
+    assert err["reason"] == REASON_INVALID_TYPE
+    assert "str" in err["detail"]
+
+
+def test_discover_accepts_empty_frozenset(tmp_path):
+    # A plugin with no capabilities is legitimate (e.g. a pure pass-through).
+    (tmp_path / "inert.py").write_text(
+        _plugin_module_source(
+            "inert",
+            "REQUIRED_CAPABILITIES = frozenset()",
+        )
+    )
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+    assert orc.required_capabilities_for("inert") == frozenset()
+    assert orc.registration_errors == []
+
+
+def test_discover_create_failure_recorded(tmp_path):
+    (tmp_path / "explodes.py").write_text(textwrap.dedent("""
+        PLUGIN_NAME = "explodes"
+        REQUIRED_CAPABILITIES = frozenset({"fs_read"})
+        def create():
+            raise RuntimeError("boom")
+    """))
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+
+    err = orc.registration_errors[0]
+    assert err["plugin_name"] == "explodes"
+    assert err["reason"] == "create_failed"
+    assert "boom" in err["detail"]
+
+
+def test_discover_does_not_call_create_when_declaration_missing(tmp_path):
+    # create() must not run when the constant is missing — otherwise a
+    # malformed plugin's side effects (DB writes, network calls) leak.
+    sentinel = tmp_path / "create_called.txt"
+    (tmp_path / "sideeffect.py").write_text(textwrap.dedent(f"""
+        from pathlib import Path
+        PLUGIN_NAME = "sideeffect"
+        def create():
+            Path({str(sentinel)!r}).write_text("called")
+    """))
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+
+    assert not sentinel.exists()
+    assert orc.registration_errors[0]["reason"] == REASON_MISSING
+
+
+def test_discover_partial_refusal_leaves_other_plugins_intact(tmp_path):
+    (tmp_path / "good.py").write_text(
+        _plugin_module_source(
+            "good",
+            'REQUIRED_CAPABILITIES = frozenset({"clipboard"})',
+        )
+    )
+    (tmp_path / "broken.py").write_text(_plugin_module_source("broken"))
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+
+    assert [t.name for t in orc.list_tools()] == ["ping"]
+    assert "broken" in {e["plugin_name"] for e in orc.registration_errors}
+    assert "good" not in {e["plugin_name"] for e in orc.registration_errors}
+
+
+def test_register_with_invalid_required_capabilities_raises():
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("phantom", ["t"])
+    with pytest.raises(PluginRegistrationError) as exc:
+        orc.register(plugin, required_capabilities=frozenset({"not_a_class"}))
+    assert exc.value.reason == REASON_UNKNOWN_CAPABILITY
+    # Plugin must not have been added to the registry.
+    assert orc.list_tools() == []
+
+
+def test_register_with_valid_required_capabilities_stores_them():
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("notes", ["save_note"])
+    orc.register(plugin, required_capabilities=frozenset({"fs_write"}))
+    assert orc.required_capabilities_for("notes") == frozenset({"fs_write"})
+
+
+def test_register_without_required_capabilities_backward_compatible():
+    # Tests / direct callers can omit the kwarg and behavior matches pre-#44.
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("clock", ["get_time"]))
+    assert [t.name for t in orc.list_tools()] == ["get_time"]
+    assert orc.required_capabilities_for("clock") is None
+
+
+def test_unregister_clears_required_capabilities():
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("notes", ["save_note"])
+    orc.register(plugin, required_capabilities=frozenset({"fs_write"}))
+    orc.unregister("notes")
+    assert orc.required_capabilities_for("notes") is None
+
+
+def test_registration_errors_is_a_copy_not_internal_list():
+    # External callers must not be able to mutate the orchestrator's record.
+    orc = MCPOrchestrator()
+    snapshot = orc.registration_errors
+    snapshot.append({"plugin_name": "fake"})
+    assert orc.registration_errors == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 10 — every real plugin module declares a valid REQUIRED_CAPABILITIES
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PLUGINS_DIR = _REPO_ROOT / "plugins"
+_PLUGIN_FILES = sorted(
+    p for p in _PLUGINS_DIR.glob("*.py") if not p.name.startswith("_")
+)
+
+
+@pytest.mark.parametrize("plugin_path", _PLUGIN_FILES, ids=lambda p: p.stem)
+def test_every_real_plugin_declares_valid_required_capabilities(plugin_path):
+    """Loading every plugin file via discover_plugins must not refuse it.
+
+    This is the migration's correctness guarantee: every module under
+    plugins/ declares REQUIRED_CAPABILITIES as a frozenset[str] whose values
+    are all in the 16-class vocabulary.
+    """
+    # Discover only this one plugin to isolate failures.
+    src_root = str(_REPO_ROOT)
+    if src_root not in sys.path:
+        sys.path.insert(0, src_root)
+
+    orc = MCPOrchestrator()
+    # We can't call discover_plugins on a single file; replicate the relevant
+    # checks here by reading the module attribute directly.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        f"openmind_audit_{plugin_path.stem}", plugin_path,
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    required = getattr(module, "REQUIRED_CAPABILITIES", None)
+    assert required is not None, (
+        f"{plugin_path.name} is missing REQUIRED_CAPABILITIES (Issue #44)"
+    )
+    assert isinstance(required, frozenset), (
+        f"{plugin_path.name}.REQUIRED_CAPABILITIES must be frozenset"
+    )
+    assert all(isinstance(c, str) for c in required), (
+        f"{plugin_path.name}.REQUIRED_CAPABILITIES must contain only str"
+    )
+    unknown = required - CAPABILITY_VOCABULARY
+    assert not unknown, (
+        f"{plugin_path.name} declares unknown capabilities: {sorted(unknown)}"
+    )

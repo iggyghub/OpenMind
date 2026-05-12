@@ -17,6 +17,12 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "n8n"
+
+# ADR-0005 / Issue #44 — list_workflows / trigger_workflow / get_workflow_result
+# all hit the local n8n REST API. n8n is the bridge to remote services but
+# the plugin itself only opens a local socket.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"network_egress_local"})
+
 _DEFAULT_API_KEY = "changeme"
 _DEFAULT_BASE_URL = "http://localhost:5678"
 

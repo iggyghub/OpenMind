@@ -47,6 +47,11 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "steam"
 
+# ADR-0005 / Issue #44 — steam_list_installed parses libraryfolders.vdf +
+# appmanifest_*.acf (fs_read). steam_launch opens a steam:// URL via the
+# system handler, steam_is_running reads the process list (device_control).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "device_control"})
+
 LaunchFn = Callable[[str], Any]
 ProcessIterFn = Callable[[], list]
 

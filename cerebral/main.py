@@ -167,6 +167,30 @@ def _models_list_event() -> dict:
     }
 
 
+def _plugins_list_event() -> dict:
+    """Snapshot of the orchestrator's plugin registry for the tray.
+
+    Each entry pairs a plugin's name with the REQUIRED_CAPABILITIES it
+    declared (Issue #44). The companion `errors` list carries plugins the
+    orchestrator refused at load time so the tray can render *why* a plugin
+    isn't there alongside the ones that are.
+    """
+    registered = []
+    for plugin_name in sorted(_orc._plugins):
+        caps = _orc.required_capabilities_for(plugin_name)
+        registered.append({
+            "name": plugin_name,
+            "required_capabilities": sorted(caps) if caps is not None else None,
+        })
+    return {
+        "type": "plugins_list",
+        "data": {
+            "plugins": registered,
+            "errors": _orc.registration_errors,
+        },
+    }
+
+
 async def _pulse_back_to_passive(delay: float = 1.2) -> None:
     """Brief 'thinking' pulse on the visualiser, then back to passive."""
     await asyncio.sleep(delay)
@@ -291,6 +315,9 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "list_tools":
         await _broadcast({"type": "tools_list", "data": {"tools": _orc.tools_for_llm}})
+
+    elif t == "list_plugins":
+        await _broadcast(_plugins_list_event())
 
     elif t == "call_tool":
         d = msg.get("data", {})
@@ -432,6 +459,7 @@ async def _ws_handler(websocket) -> None:
     await _send(websocket, _insights_update_event())
     await _send(websocket, _env_context_event())
     await _send(websocket, _models_list_event())
+    await _send(websocket, _plugins_list_event())
 
     try:
         async for raw in websocket:
@@ -577,6 +605,11 @@ async def main() -> None:
     _orc.discover_plugins(_PLUGINS_DIR)
     _attach_builder_plugin()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))
+    for err in _orc.registration_errors:
+        logger.warning(
+            "[cerebral] Plugin refused: %s — %s (%s)",
+            err["plugin_name"], err["reason"], err["detail"],
+        )
 
     await _env.refresh_location()
     logger.info("[cerebral] Environment context: %s", _env.get_context())

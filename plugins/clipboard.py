@@ -15,6 +15,10 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 PLUGIN_NAME = "clipboard"
 _HISTORY_LIMIT = 50
 
+# ADR-0005 / Issue #44 — read_clipboard / write_clipboard / list_history all
+# touch the system clipboard. The history buffer lives only in RAM.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"clipboard"})
+
 
 def _make_default_backend():
     """Return (read_fn, write_fn) using pyperclip, or tkinter fallback."""

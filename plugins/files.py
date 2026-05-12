@@ -11,6 +11,14 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "files"
 
+# ADR-0005 / Issue #44 — read_file / search_files read; create_file writes;
+# move_file removes the source and writes the destination; delete_file deletes.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "fs_read",
+    "fs_write",
+    "fs_delete",
+})
+
 
 class FilesPlugin:
     name = PLUGIN_NAME

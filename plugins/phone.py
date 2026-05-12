@@ -23,6 +23,16 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "phone"
+
+# ADR-0005 / Issue #44 — start_call POSTs a dial request to local OpenClaw
+# (network_egress_local) which then places the outbound call
+# (external_data_write — a phone call is a side-effecting write to the
+# external phone network).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "external_data_write",
+    "network_egress_local",
+})
+
 DEFAULT_BASE_URL = "http://localhost:3000"
 
 FetchFn = Callable[[str, dict], Awaitable[dict]]

@@ -15,6 +15,12 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "docker"
 
+# ADR-0005 / Issue #44 — docker_list_containers / docker_start / docker_stop
+# / docker_list_images / docker_build all manage local container state via
+# the docker CLI. The argv list is constructed from a closed set of
+# subcommands; the user controls only target names and build paths.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"device_control"})
+
 
 class DockerPlugin:
     name = PLUGIN_NAME

@@ -28,6 +28,14 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "vpn"
 
+# ADR-0005 / Issue #44 — vpn_connect / vpn_disconnect change system network
+# configuration (network_config). vpn_status additionally queries
+# ip-api.com to report the public IP (network_egress_cloud).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "network_config",
+    "network_egress_cloud",
+})
+
 _GEOLOCATION_URL = "http://ip-api.com/json/?fields=status,query"
 
 

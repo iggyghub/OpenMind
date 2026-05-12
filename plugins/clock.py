@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "clock"
 
+# ADR-0005 / Issue #44 — set_timer / set_reminder fire OS notifications via
+# the injected notify_fn (device_control). get_time / list_timers are pure
+# local introspection but the plugin's overall surface is device-level.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"device_control"})
+
 # Monotonically increasing timer id counter (per process)
 _NEXT_ID = 1
 

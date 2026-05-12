@@ -47,6 +47,17 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "google_workspace"
 
+# ADR-0005 / Issue #44 — wraps GoogleWorkspacePlugin. Adds direct IMAP/SMTP
+# (mail), Grist (sheets), and Nextcloud (drive) fallbacks. Reads and writes
+# external services; reaches both local OSS backends and remote SMTP/IMAP
+# servers.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "external_data_read",
+    "external_data_write",
+    "network_egress_local",
+    "network_egress_cloud",
+})
+
 FetchFn = Callable[..., Awaitable[dict]]
 
 # ---------------------------------------------------------------------------

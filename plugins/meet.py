@@ -27,6 +27,17 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "meet"
 
+# ADR-0005 / Issue #44 — meet_join_meeting opens a browser tab
+# (device_control); meet_schedule_meeting creates a calendar event with a
+# Meet link (external_data_write via the gws plugin → local n8n);
+# meet_get_meeting_link reads a calendar event (external_data_read).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "device_control",
+    "external_data_read",
+    "external_data_write",
+    "network_egress_local",
+})
+
 OpenFn = Callable[[str], Any]
 
 

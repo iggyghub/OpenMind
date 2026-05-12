@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "http_client"
 
+# ADR-0005 / Issue #44 — http_get / http_post / http_put / http_delete take
+# arbitrary URLs from the model. Treat every call as cloud-egress; GET/HEAD
+# read external data, POST/PUT/DELETE write it.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "external_data_read",
+    "external_data_write",
+    "network_egress_cloud",
+})
+
 FetchFn = Callable[..., Awaitable[dict]]
 
 _TOOL_TO_METHOD = {

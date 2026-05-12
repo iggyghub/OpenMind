@@ -12,9 +12,11 @@ Public interface:
   orc.list_tools()                            # → list[Tool]
   await orc.call_tool("get_time", {})         # → ToolResult (never raises)
   orc.tools_for_llm                           # → list[dict] for LLM tool use
+  orc.registration_errors                     # plugins refused at load time
 
 Plugin convention (plugins/*.py):
   PLUGIN_NAME: str = "clock"
+  REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read"})  # Issue #44
   def create() -> Plugin: ...
 """
 
@@ -24,9 +26,43 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from cerebral.security import Capability, CallFlags, CapabilityGate, Decision
+from cerebral.security import (
+    CAPABILITY_VOCABULARY,
+    Capability,
+    CallFlags,
+    CapabilityGate,
+    Decision,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# Sentinel for "attribute missing" — distinguishes from a plugin that
+# legitimately set REQUIRED_CAPABILITIES = frozenset() (no capabilities used).
+_MISSING = object()
+
+
+# Refusal reason codes — stable strings consumed by the tray's plugin list.
+REASON_MISSING = "missing_required_capabilities"
+REASON_INVALID_TYPE = "invalid_required_capabilities"
+REASON_UNKNOWN_CAPABILITY = "unknown_capability"
+REASON_CREATE_FAILED = "create_failed"
+REASON_LOAD_FAILED = "load_failed"
+
+
+class PluginRegistrationError(Exception):
+    """A plugin was refused at registration time (ADR-0005, Issue #44).
+
+    Carries a structured `reason` code so the tray can render a stable
+    message regardless of the underlying detail string.
+    """
+
+    def __init__(self, plugin_name: str, reason: str, detail: str = "") -> None:
+        self.plugin_name = plugin_name
+        self.reason = reason
+        self.detail = detail
+        suffix = f" — {detail}" if detail else ""
+        super().__init__(f"Refused plugin {plugin_name!r}: {reason}{suffix}")
 
 
 @dataclass
@@ -51,6 +87,43 @@ class Plugin(Protocol):
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult: ...
 
 
+def _validate_required_capabilities(
+    plugin_name: str, required: object
+) -> PluginRegistrationError | None:
+    """Validate a REQUIRED_CAPABILITIES declaration against the closed vocab.
+
+    Returns None when valid, or a PluginRegistrationError describing the gap.
+    The error is *returned* (not raised) so callers can record it without a
+    try/except dance.
+    """
+    if required is _MISSING:
+        return PluginRegistrationError(
+            plugin_name,
+            REASON_MISSING,
+            "module has no REQUIRED_CAPABILITIES declaration",
+        )
+    if not isinstance(required, frozenset):
+        return PluginRegistrationError(
+            plugin_name,
+            REASON_INVALID_TYPE,
+            f"REQUIRED_CAPABILITIES must be a frozenset[str], got {type(required).__name__}",
+        )
+    if not all(isinstance(item, str) for item in required):
+        return PluginRegistrationError(
+            plugin_name,
+            REASON_INVALID_TYPE,
+            "REQUIRED_CAPABILITIES must contain only str values",
+        )
+    unknown = set(required) - CAPABILITY_VOCABULARY
+    if unknown:
+        return PluginRegistrationError(
+            plugin_name,
+            REASON_UNKNOWN_CAPABILITY,
+            f"not in 16-class vocabulary: {sorted(unknown)}",
+        )
+    return None
+
+
 class MCPOrchestrator:
     def __init__(self, gate: CapabilityGate | None = None) -> None:
         self._plugins: dict[str, Plugin] = {}
@@ -60,12 +133,37 @@ class MCPOrchestrator:
         # In this slice, callers opt in by passing a `capability` to call_tool;
         # #44 will wire REQUIRED_CAPABILITIES from each plugin.
         self._gate: CapabilityGate = gate or CapabilityGate()
+        # Module-level REQUIRED_CAPABILITIES per registered plugin (Issue #44).
+        # Used by the tray UI and (later) by #46/#47 to decide per-tool gates.
+        self._plugin_capabilities: dict[str, frozenset[str]] = {}
+        # Plugins refused at load time, ordered by discovery order.
+        # Each entry is {plugin_name, reason, detail, path}. Surfaced to the
+        # tray so the user sees *why* a plugin didn't load.
+        self._registration_errors: list[dict] = []
 
     # ------------------------------------------------------------------
     # Registry
     # ------------------------------------------------------------------
 
-    def register(self, plugin: Plugin) -> None:
+    def register(
+        self,
+        plugin: Plugin,
+        *,
+        required_capabilities: frozenset[str] | None = None,
+    ) -> None:
+        """Register a plugin.
+
+        When `required_capabilities` is provided, the orchestrator validates
+        it against the closed 16-class vocabulary (ADR-0005, Issue #44) and
+        raises ``PluginRegistrationError`` on mismatch. ``discover_plugins``
+        always passes the module's declaration; direct callers (the builder,
+        tests) may omit it for backward compatibility.
+        """
+        if required_capabilities is not None:
+            err = _validate_required_capabilities(plugin.name, required_capabilities)
+            if err is not None:
+                raise err
+            self._plugin_capabilities[plugin.name] = required_capabilities
         if plugin.name in self._plugins:
             logger.warning("[mcp] Plugin '%s' already registered — replacing", plugin.name)
             self._remove_from_index(plugin.name)
@@ -86,7 +184,28 @@ class MCPOrchestrator:
             return
         self._remove_from_index(plugin_name)
         del self._plugins[plugin_name]
+        self._plugin_capabilities.pop(plugin_name, None)
         logger.info("[mcp] Unregistered plugin '%s'", plugin_name)
+
+    # ------------------------------------------------------------------
+    # Registration-error surface (Issue #44 — tray plugin list)
+    # ------------------------------------------------------------------
+
+    @property
+    def registration_errors(self) -> list[dict]:
+        """Plugins refused at load time, oldest first.
+
+        Each entry: ``{plugin_name, reason, detail, path}`` where ``reason``
+        is one of the ``REASON_*`` constants. Stable shape — the tray's
+        plugin-list renderer reads this verbatim.
+        """
+        return list(self._registration_errors)
+
+    def required_capabilities_for(self, plugin_name: str) -> frozenset[str] | None:
+        """The REQUIRED_CAPABILITIES set the named plugin declared at load
+        time, or None if it was registered without one (legacy register()
+        path; tests)."""
+        return self._plugin_capabilities.get(plugin_name)
 
     def _remove_from_index(self, plugin_name: str) -> None:
         to_remove = [k for k, v in self._tool_index.items() if v == plugin_name]
@@ -179,20 +298,63 @@ class MCPOrchestrator:
         module_name = f"openmind_plugin_{path.stem}"
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
-            logger.warning("[mcp] Could not load spec for '%s'", path)
+            self._record_registration_error(
+                path.stem, REASON_LOAD_FAILED,
+                f"could not create import spec for {path}", path,
+            )
             return
         module = importlib.util.module_from_spec(spec)
         try:
             spec.loader.exec_module(module)
         except Exception as exc:
-            logger.error("[mcp] Failed to load plugin '%s': %s", path.name, exc)
+            self._record_registration_error(
+                path.stem, REASON_LOAD_FAILED, f"module exec failed: {exc}", path,
+            )
             return
         if not hasattr(module, "create"):
-            logger.warning("[mcp] Plugin '%s' has no create() — skipping", path.name)
+            self._record_registration_error(
+                path.stem, REASON_LOAD_FAILED,
+                "module has no create() factory",
+                path,
+            )
             return
+
+        # ADR-0005 / Issue #44: validate the plugin's REQUIRED_CAPABILITIES
+        # against the closed 16-class vocabulary BEFORE calling create().
+        # Refused plugins surface to the tray via registration_errors and
+        # never produce side effects from their factory.
+        plugin_name = getattr(module, "PLUGIN_NAME", path.stem)
+        required = getattr(module, "REQUIRED_CAPABILITIES", _MISSING)
+        err = _validate_required_capabilities(plugin_name, required)
+        if err is not None:
+            self._record_registration_error(err.plugin_name, err.reason, err.detail, path)
+            return
+
         try:
             plugin = module.create()
         except Exception as exc:
-            logger.error("[mcp] create() failed in '%s': %s", path.name, exc)
+            self._record_registration_error(
+                plugin_name, REASON_CREATE_FAILED, f"create() raised: {exc}", path,
+            )
             return
-        self.register(plugin)
+        try:
+            self.register(plugin, required_capabilities=required)
+        except PluginRegistrationError as exc:
+            # Belt-and-suspenders — _validate_required_capabilities already
+            # passed, so register() should not raise. Record anyway.
+            self._record_registration_error(exc.plugin_name, exc.reason, exc.detail, path)
+
+    def _record_registration_error(
+        self, plugin_name: str, reason: str, detail: str, path: Path,
+    ) -> None:
+        entry = {
+            "plugin_name": plugin_name,
+            "reason": reason,
+            "detail": detail,
+            "path": str(path),
+        }
+        self._registration_errors.append(entry)
+        logger.warning(
+            "[mcp] Refused plugin %r at %s — %s: %s",
+            plugin_name, path, reason, detail,
+        )

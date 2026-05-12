@@ -28,6 +28,18 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "zoom"
 
+# ADR-0005 / Issue #44 — zoom_join_meeting launches the desktop Zoom client
+# via the system URL handler (device_control) and triggers an n8n workflow
+# first (network_egress_local + external_data_read for any join-side logging).
+# zoom_schedule_meeting writes a new meeting via n8n (external_data_write).
+# zoom_list_meetings reads upcoming meetings (external_data_read).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "device_control",
+    "external_data_read",
+    "external_data_write",
+    "network_egress_local",
+})
+
 FetchFn = Callable[..., Awaitable[dict]]
 LaunchFn = Callable[[str], Any]
 

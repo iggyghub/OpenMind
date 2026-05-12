@@ -34,6 +34,11 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "bitwarden"
 
+# ADR-0005 / Issue #44 — bw_unlock unlocks the vault; bw_get_item and
+# bw_list_items read secrets out of it. READ-ONLY by design (the docstring
+# above forbids a bw_create/edit/delete tool).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"vault_unlock", "secrets_read"})
+
 
 class BitwardenPlugin:
     name = PLUGIN_NAME

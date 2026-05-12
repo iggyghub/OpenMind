@@ -19,6 +19,15 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "news"
+
+# ADR-0005 / Issue #44 — news_headlines fetches RSS feeds from the public
+# internet (network_egress_cloud + external_data_read). news_list_sources is
+# pure local introspection but the plugin's overall surface is cloud-read.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "external_data_read",
+    "network_egress_cloud",
+})
+
 _DEFAULT_LIMIT = 10
 
 _DEFAULT_SOURCES: dict[str, str] = {

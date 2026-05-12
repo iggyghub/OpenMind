@@ -21,6 +21,14 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "markets"
+
+# ADR-0005 / Issue #44 — market_price / market_quote read price data from
+# CoinGecko or Yahoo Finance over the public internet.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "external_data_read",
+    "network_egress_cloud",
+})
+
 _COINGECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
 _YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/"
 
