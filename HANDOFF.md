@@ -1518,3 +1518,21 @@ hardening pass could move smoke into a subprocess.
 - `tray/tests/model-menu.test.js` — refresh entry visibility/click/position, Ollama-offline indicator on/off.
 
 **Test count after #37:** 695 Python tests passing (3 integration skipped) + 75 JS tests passing.
+
+---
+
+### Issue #43 — capability vocabulary + orchestrator gate skeleton ✅
+
+1. `cerebral/security/gate.py` — closed 16-class `Capability` `Enum` (exact ADR-0005 names), `Decision` (`SILENT`/`ASK`/`DENY`), frozen `CallFlags(passive=False, irreversible=False)`, immutable `DEFAULT_POLICY` (`MappingProxyType`) covering every class, and `CapabilityGate.check(capability, flags) → Decision`.
+2. `cerebral/security/__init__.py` — re-exports the public surface (`Capability`, `CallFlags`, `CapabilityGate`, `DEFAULT_POLICY`, `Decision`).
+3. `cerebral/mcp/orchestrator.py` — `MCPOrchestrator.__init__` takes an optional injected `gate` (default-constructs one). `call_tool(name, args, capability=None, flags=None)` runs `gate.check` before plugin dispatch when a capability is supplied; non-`SILENT` short-circuits with an error `ToolResult` and the plugin is never invoked. Pre-#44 call sites pass no capability and proceed unchanged.
+4. **Escalation rule** — `passive=True` moves one notch: `SILENT → ASK`, `ASK → DENY`, `DENY → DENY` (terminal).
+5. **Fail-closed in this slice** — `ASK` resolves to `DENY` at the orchestrator. The gate itself returns the verbatim policy verdict; the consent surface that lets `ASK` reach the user lands in #48, and per-profile ACL lands in #45.
+6. **`irreversible` is representable but inert** — accepted on `CallFlags`, no decision change in #43. The modal that consumes it lands in #49.
+7. **Closed-vocabulary enforcement** — `CapabilityGate.check` rejects non-`Capability` args with `TypeError`; the constructor rejects partial policies with `ValueError` so a new ADR-added class can't silently fall through.
+8. **Why the gate stays a pure lookup** — `gate.check` returns SILENT/ASK/DENY verbatim. The orchestrator (today) and future resolvers (#45 ACL, #48 consent surface) layer on top without re-architecting the gate.
+9. **New tests:**
+   - `cerebral/tests/test_capability_gate.py` — 48 unit tests across 6 slices: closed-vocabulary shape, day-1 defaults parametrised over every class, passive escalation across every class, irreversible-is-inert, `CallFlags` frozenness/defaults, gate-side type and policy-completeness errors.
+   - `cerebral/tests/test_orchestrator.py` — +8 integration tests on the call path: silent dispatches, ask denies fail-closed, deny blocks, `passive=True` escalates, plugin never invoked when blocked, no-capability calls behave as before, unknown-tool short-circuit precedes the gate.
+10. **Test count after #43:** 872 Python tests passing (3 integration skipped) + 75 JS tests passing.
+11. **What this slice intentionally leaves to follow-up issues** — `REQUIRED_CAPABILITIES` declaration + registration enforcement (#44), per-profile ACL + `profile_acl` table (#45), consent surface that lets `ASK` reach the user (#48), modal consumer of `irreversible` (#49), voice consent grammar (#50), queue admission verb-heuristic that flips `passive=True` on queued items (#52), Permissions settings UI (#53).
