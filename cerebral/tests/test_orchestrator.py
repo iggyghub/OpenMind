@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from cerebral.mcp.orchestrator import MCPOrchestrator, Tool, ToolResult
+from cerebral.security import Capability, CallFlags
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +261,113 @@ def test_tools_for_llm_has_required_fields():
 def test_tools_for_llm_empty_when_no_plugins():
     orc = MCPOrchestrator()
     assert orc.tools_for_llm == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 8 — capability gate on the call path (Issue #43, ADR-0005)
+# ---------------------------------------------------------------------------
+
+async def test_call_tool_without_capability_proceeds_unchanged():
+    # Existing call sites (pre-#44) pass no capability — behaviour preserved.
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("notes", ["save_note"])
+    orc.register(plugin)
+
+    result = await orc.call_tool("save_note", {"text": "hi"})
+
+    assert not result.is_error
+    plugin.call_tool.assert_called_once_with("save_note", {"text": "hi"})
+
+
+async def test_call_tool_silent_capability_dispatches():
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("files", ["read_file"])
+    orc.register(plugin)
+
+    result = await orc.call_tool(
+        "read_file", {"path": "x"}, capability=Capability.FS_READ
+    )
+
+    assert not result.is_error
+    plugin.call_tool.assert_called_once_with("read_file", {"path": "x"})
+
+
+async def test_call_tool_ask_capability_denies_fail_closed():
+    # In this slice ASK resolves to DENY — the consent surface lands in #48.
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("files", ["write_file"])
+    orc.register(plugin)
+
+    result = await orc.call_tool(
+        "write_file", {"path": "x"}, capability=Capability.FS_WRITE
+    )
+
+    assert result.is_error
+    assert "fs_write" in result.content
+    plugin.call_tool.assert_not_called()
+
+
+async def test_call_tool_deny_capability_blocks_dispatch():
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("shell", ["run"])
+    orc.register(plugin)
+
+    result = await orc.call_tool("run", {"cmd": "ls"}, capability=Capability.SHELL_EXEC)
+
+    assert result.is_error
+    assert "shell_exec" in result.content
+    plugin.call_tool.assert_not_called()
+
+
+async def test_call_tool_passive_escalates_silent_to_deny():
+    # passive=True on a silent class escalates to ASK; ASK→DENY in this slice.
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("files", ["read_file"])
+    orc.register(plugin)
+
+    result = await orc.call_tool(
+        "read_file", {"path": "x"},
+        capability=Capability.FS_READ,
+        flags=CallFlags(passive=True),
+    )
+
+    assert result.is_error
+    plugin.call_tool.assert_not_called()
+
+
+async def test_call_tool_passive_escalates_ask_to_deny():
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("net", ["scan"])
+    orc.register(plugin)
+
+    result = await orc.call_tool(
+        "scan", {},
+        capability=Capability.NETWORK_RECON,
+        flags=CallFlags(passive=True),
+    )
+
+    assert result.is_error
+    plugin.call_tool.assert_not_called()
+
+
+async def test_call_tool_gate_error_does_not_invoke_plugin():
+    # Regression guard: if the gate blocks, the plugin never sees the args.
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("shell", ["run"])
+    plugin.call_tool.side_effect = AssertionError("plugin must not be called")
+    orc.register(plugin)
+
+    result = await orc.call_tool("run", {}, capability=Capability.SHELL_EXEC)
+
+    assert result.is_error
+    plugin.call_tool.assert_not_called()
+
+
+async def test_call_tool_unknown_tool_short_circuits_before_gate():
+    # Unknown tool returns its existing error without consulting the gate.
+    orc = MCPOrchestrator()
+    result = await orc.call_tool(
+        "ghost", {}, capability=Capability.SHELL_EXEC
+    )
+    assert result.is_error
+    assert "ghost" in result.content
