@@ -18,7 +18,12 @@ from cerebral.mcp.orchestrator import (
     Tool,
     ToolResult,
 )
-from cerebral.security import CAPABILITY_VOCABULARY, Capability, CallFlags
+from cerebral.security import (
+    CAPABILITY_VOCABULARY,
+    Capability,
+    CallFlags,
+    Decision,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +600,115 @@ _PLUGINS_DIR = _REPO_ROOT / "plugins"
 _PLUGIN_FILES = sorted(
     p for p in _PLUGINS_DIR.glob("*.py") if not p.name.startswith("_")
 )
+
+
+# ---------------------------------------------------------------------------
+# Slice 11 — ACL resolver integration on the call path (Issue #45)
+# ---------------------------------------------------------------------------
+
+
+def _build_acl(tmp_path):
+    """Construct a ProfileACL with its own ephemeral profile."""
+    from cerebral.db.profiles import ProfileManager
+    from cerebral.security import ProfileACL
+    pm = ProfileManager(db_path=tmp_path / "openmind.db")
+    profile = pm.create(name="Test")
+    return ProfileACL(
+        profile_id=profile.id,
+        profile_manager=pm,
+        defaults_snapshot=profile.acl_defaults_snapshot,
+    ), pm, profile
+
+
+async def test_orchestrator_consults_acl_when_set(tmp_path):
+    """When an ACL is wired in, call_tool resolves through it (not the
+    bare gate). Per-tool overrides at SILENT let ASK-class calls through."""
+    acl, _, _ = _build_acl(tmp_path)
+    acl.set_tool_override("write_file", Decision.SILENT)
+    orc = MCPOrchestrator(acl=acl)
+    plugin = _make_plugin("files", ["write_file"])
+    orc.register(plugin)
+    result = await orc.call_tool(
+        "write_file", {"path": "x"}, capability=Capability.FS_WRITE,
+    )
+    assert not result.is_error
+    plugin.call_tool.assert_called_once()
+
+
+async def test_orchestrator_acl_blocks_persistent_deny(tmp_path):
+    """A persistent class-level DENY blocks even when the default would
+    have been SILENT."""
+    acl, _, _ = _build_acl(tmp_path)
+    acl.set_persistent_class(Capability.FS_READ, Decision.DENY)
+    orc = MCPOrchestrator(acl=acl)
+    plugin = _make_plugin("files", ["read_file"])
+    orc.register(plugin)
+    result = await orc.call_tool(
+        "read_file", {"path": "x"}, capability=Capability.FS_READ,
+    )
+    assert result.is_error
+    plugin.call_tool.assert_not_called()
+
+
+async def test_orchestrator_acl_consumes_once_grant(tmp_path):
+    """A once-grant lets one call through, then the next call falls back."""
+    acl, _, _ = _build_acl(tmp_path)
+    acl.grant_once(Capability.FS_WRITE, Decision.SILENT)
+    orc = MCPOrchestrator(acl=acl)
+    plugin = _make_plugin("files", ["write_file"])
+    orc.register(plugin)
+    # First call: silent, dispatches.
+    r1 = await orc.call_tool(
+        "write_file", {"path": "x"}, capability=Capability.FS_WRITE,
+    )
+    assert not r1.is_error
+    # Second call: once-grant consumed, default ASK → DENY at orchestrator.
+    r2 = await orc.call_tool(
+        "write_file", {"path": "x"}, capability=Capability.FS_WRITE,
+    )
+    assert r2.is_error
+    assert plugin.call_tool.call_count == 1
+
+
+async def test_orchestrator_acl_passive_escalation_defeats_persistent_silent(tmp_path):
+    """Regression: even a persistent SILENT grant for the class doesn't let
+    a queue-originated (passive=True) call through silently."""
+    acl, _, _ = _build_acl(tmp_path)
+    acl.set_persistent_class(Capability.FS_WRITE, Decision.SILENT)
+    orc = MCPOrchestrator(acl=acl)
+    plugin = _make_plugin("files", ["write_file"])
+    orc.register(plugin)
+    result = await orc.call_tool(
+        "write_file", {"path": "x"},
+        capability=Capability.FS_WRITE,
+        flags=CallFlags(passive=True),
+    )
+    assert result.is_error
+    plugin.call_tool.assert_not_called()
+
+
+def test_orchestrator_set_acl_replaces_resolver(tmp_path):
+    """set_acl swaps the resolver — used on profile switch."""
+    acl1, _, _ = _build_acl(tmp_path)
+    orc = MCPOrchestrator(acl=acl1)
+    assert orc.acl is acl1
+    acl2, _, _ = _build_acl(tmp_path / "alt")
+    orc.set_acl(acl2)
+    assert orc.acl is acl2
+    orc.set_acl(None)
+    assert orc.acl is None
+
+
+async def test_orchestrator_without_acl_falls_back_to_gate(tmp_path):
+    """Backward compat: no ACL → call path uses the bare gate (pre-#45)."""
+    orc = MCPOrchestrator()
+    assert orc.acl is None
+    plugin = _make_plugin("files", ["read_file"])
+    orc.register(plugin)
+    result = await orc.call_tool(
+        "read_file", {"path": "x"}, capability=Capability.FS_READ,
+    )
+    assert not result.is_error
 
 
 @pytest.mark.parametrize("plugin_path", _PLUGIN_FILES, ids=lambda p: p.stem)

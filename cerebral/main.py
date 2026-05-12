@@ -31,6 +31,7 @@ from action_queue.manager import QueueManager
 from insights.engine import InsightsEngine
 from tts.engine import TTSEngine
 from environment.context import EnvironmentContext
+from cerebral.security import ProfileACL
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
 
@@ -66,6 +67,22 @@ _orc = MCPOrchestrator()
 _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
+
+
+def _build_acl(profile) -> ProfileACL:
+    """Construct a ProfileACL bound to the given profile's snapshot."""
+    return ProfileACL(
+        profile_id=profile.id,
+        profile_manager=_pm,
+        defaults_snapshot=profile.acl_defaults_snapshot,
+    )
+
+
+# Wire the active profile's ACL into the orchestrator (Issue #45). On
+# profile switch we rebuild it so once/session grants are cleared and the
+# new profile's persistent grants are consulted from then on.
+if _active_profile:
+    _orc.set_acl(_build_acl(_active_profile))
 
 
 async def _bridge_process(transcript: str, history: list[dict]) -> str:
@@ -229,6 +246,7 @@ async def _handle_message(msg: dict) -> None:
         )
         _pm.set_active(p.id)
         _active_profile = p
+        _orc.set_acl(_build_acl(p))
         logger.info("[cerebral] Profile created: %s (id=%d)", p.name, p.id)
         await _broadcast(_profile_event(p))
         await _broadcast(_profiles_list_event())
@@ -240,6 +258,9 @@ async def _handle_message(msg: dict) -> None:
             if p:
                 _pm.set_active(p.id)
                 _active_profile = p
+                # Rebuild the ACL on profile switch — Issue #45 / ADR-0005
+                # mandates that once + session grants clear on switch.
+                _orc.set_acl(_build_acl(p))
                 logger.info("[cerebral] Switched to profile: %s", p.name)
                 await _broadcast(_profile_event(p))
 
@@ -250,8 +271,10 @@ async def _handle_message(msg: dict) -> None:
             logger.info("[cerebral] Profile %d deleted", pid)
             _active_profile = _pm.get_active()
             if _active_profile:
+                _orc.set_acl(_build_acl(_active_profile))
                 await _broadcast(_profile_event(_active_profile))
             else:
+                _orc.set_acl(None)
                 await _broadcast({"type": "first_run"})
             await _broadcast(_profiles_list_event())
 
