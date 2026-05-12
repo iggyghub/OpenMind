@@ -32,6 +32,7 @@ from cerebral.security import (
     CallFlags,
     CapabilityGate,
     Decision,
+    ProfileACL,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,14 +126,21 @@ def _validate_required_capabilities(
 
 
 class MCPOrchestrator:
-    def __init__(self, gate: CapabilityGate | None = None) -> None:
+    def __init__(
+        self,
+        gate: CapabilityGate | None = None,
+        *,
+        acl: ProfileACL | None = None,
+    ) -> None:
         self._plugins: dict[str, Plugin] = {}
         # tool_name → plugin_name for fast routing
         self._tool_index: dict[str, str] = {}
-        # The capability gate enforces ADR-0005's day-1 policy.
-        # In this slice, callers opt in by passing a `capability` to call_tool;
-        # #44 will wire REQUIRED_CAPABILITIES from each plugin.
+        # The capability gate enforces ADR-0005's day-1 policy. The optional
+        # ACL resolver (Issue #45) layers per-profile overrides + RAM-only
+        # once/session grants on top; when present, the gate's lookup is
+        # only consulted indirectly via the ACL's snapshot fallback.
         self._gate: CapabilityGate = gate or CapabilityGate()
+        self._acl: ProfileACL | None = acl
         # Module-level REQUIRED_CAPABILITIES per registered plugin (Issue #44).
         # Used by the tray UI and (later) by #46/#47 to decide per-tool gates.
         self._plugin_capabilities: dict[str, frozenset[str]] = {}
@@ -140,6 +148,19 @@ class MCPOrchestrator:
         # Each entry is {plugin_name, reason, detail, path}. Surfaced to the
         # tray so the user sees *why* a plugin didn't load.
         self._registration_errors: list[dict] = []
+
+    def set_acl(self, acl: ProfileACL | None) -> None:
+        """Swap the active profile's ACL resolver.
+
+        Called by main.py on profile switch (Issue #45). Passing None falls
+        back to the bare capability gate (useful for tests and for the
+        no-profile bootstrap state).
+        """
+        self._acl = acl
+
+    @property
+    def acl(self) -> ProfileACL | None:
+        return self._acl
 
     # ------------------------------------------------------------------
     # Registry
@@ -233,9 +254,17 @@ class MCPOrchestrator:
             logger.warning("[mcp] Unknown tool '%s'", name)
             return ToolResult(content=f"Unknown tool: '{name}'", is_error=True)
         if capability is not None:
-            decision = self._gate.check(capability, flags)
-            # ASK resolves to DENY in this slice (#43, fail-closed). The consent
-            # surface that lets ASK reach the user is #48; per-profile ACL is #45.
+            # Issue #45 — the per-profile ACL resolver (when set) layers
+            # per-tool overrides + once/session grants on top of the gate's
+            # default-policy lookup. Without an ACL we fall back to the
+            # gate directly; the resolved decision is the same shape either
+            # way (SILENT / ASK / DENY).
+            if self._acl is not None:
+                decision = self._acl.resolve(capability, name, flags)
+            else:
+                decision = self._gate.check(capability, flags)
+            # ASK resolves to DENY in this slice (#43/#45, fail-closed).
+            # The consent surface that lets ASK reach the user is #48.
             if decision is not Decision.SILENT:
                 logger.info(
                     "[mcp] Gate denied '%s' (capability=%s, decision=%s)",

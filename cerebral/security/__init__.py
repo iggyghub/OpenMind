@@ -8,6 +8,7 @@ orchestrator decides what to do with each (ASK resolves to DENY in this slice;
 the consent surface lands in #48).
 """
 
+from cerebral.security.acl import ProfileACL
 from cerebral.security.gate import (
     Capability,
     CallFlags,
@@ -29,4 +30,5 @@ __all__ = [
     "CAPABILITY_VOCABULARY",
     "DEFAULT_POLICY",
     "Decision",
+    "ProfileACL",
 ]
