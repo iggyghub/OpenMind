@@ -1536,3 +1536,44 @@ hardening pass could move smoke into a subprocess.
    - `cerebral/tests/test_orchestrator.py` — +8 integration tests on the call path: silent dispatches, ask denies fail-closed, deny blocks, `passive=True` escalates, plugin never invoked when blocked, no-capability calls behave as before, unknown-tool short-circuit precedes the gate.
 10. **Test count after #43:** 872 Python tests passing (3 integration skipped) + 75 JS tests passing.
 11. **What this slice intentionally leaves to follow-up issues** — `REQUIRED_CAPABILITIES` declaration + registration enforcement (#44), per-profile ACL + `profile_acl` table (#45), consent surface that lets `ASK` reach the user (#48), modal consumer of `irreversible` (#49), voice consent grammar (#50), queue admission verb-heuristic that flips `passive=True` on queued items (#52), Permissions settings UI (#53).
+
+---
+
+### Issue #44 — declare REQUIRED_CAPABILITIES + registration enforcement ✅
+
+1. Every plugin module under `plugins/` declares `REQUIRED_CAPABILITIES: frozenset[str]` with the minimum capability classes (ADR-0005 16-class vocab) its tools intend. 32 plugins, all declarations stored as frozensets of value-strings (not enum members) so plugin modules never need to import `cerebral.security`.
+2. `cerebral/security/__init__.py` — exposes `CAPABILITY_VOCABULARY: frozenset[str]` (the canonical string-form view of the `Capability` enum). Plugins validate against this set; the orchestrator and the builder validate against the same set.
+3. `cerebral/mcp/orchestrator.py` — new `PluginRegistrationError(plugin_name, reason, detail)` with stable reason codes (`REASON_MISSING`, `REASON_INVALID_TYPE`, `REASON_UNKNOWN_CAPABILITY`, `REASON_CREATE_FAILED`, `REASON_LOAD_FAILED`). `_validate_required_capabilities()` returns the error (does not raise) so `discover_plugins` can record it on `registration_errors` without a try/except dance.
+4. `MCPOrchestrator.register(plugin, *, required_capabilities=None)` gains an optional kwarg. When provided, the orchestrator validates and stores the declaration on `self._plugin_capabilities`. When omitted (legacy / test path), behaviour matches pre-#44. `discover_plugins` always reads from the module; the builder always passes the validated payload value.
+5. `discover_plugins` validates the constant **before** calling `module.create()` — `create()` may have side effects (SQLite file creation in notes/scheduler, etc.), and a malformed plugin must not leak them. Tests cover that the factory is never invoked when the declaration is missing.
+6. `MCPOrchestrator.registration_errors` is a read-only copy of structured refusal records `{plugin_name, reason, detail, path}`. `required_capabilities_for(name)` returns the declared set or `None`. `unregister(name)` clears the capability record.
+7. **Builder migration** — `plugins/builder.py` requires `payload["required_capabilities"]: list[str]`, validates against `CAPABILITY_VOCABULARY` (rejects unknown / non-iterable / non-string), prepends a deterministic `REQUIRED_CAPABILITIES = frozenset({...})` line to generated `server.py` when the LLM omitted it (guarantees the plugin survives a Cerebral restart), and passes the validated frozenset through `orc.register(plugin, required_capabilities=...)`. The static scan in `_scan_generated_code` now also requires `REQUIRED_CAPABILITIES` to appear in the source.
+8. `cerebral/main.py` — new `_plugins_list_event()` builds `{plugins: [{name, required_capabilities}], errors: [...]}`. Sent on every new tray connection alongside the other state broadcasts; on-demand via the new `list_plugins` IPC message. Refused plugins also logged at startup via `[cerebral] Plugin refused: ...`.
+9. **Capability map per plugin** (intent-level, not implementation primitives — wrapped subprocess calls map to their semantic class; #47's AST check will tighten the call-site mapping):
+   - `apps`, `clock`, `docker`, `printer` → `device_control`
+   - `clipboard` → `clipboard`
+   - `bitwarden` → `vault_unlock`, `secrets_read`
+   - `browser` → `external_data_read`, `network_egress_local`
+   - `files`, `notes` → `fs_read`, `fs_write`, `fs_delete`
+   - `scheduler` → `fs_read`, `fs_write` (SQLite rows, not files)
+   - `finance` → `fs_read`, `external_data_write`
+   - `git` → `fs_read`, `fs_write`, `network_egress_cloud`
+   - `github`, `google_workspace`, `meet`, `zoom` → `external_data_read`, `external_data_write`, `network_egress_local` (+ `device_control` for meet/zoom)
+   - `google_workspace_fallback` → adds `network_egress_cloud` to the above
+   - `http_client` → `external_data_read`, `external_data_write`, `network_egress_cloud`
+   - `markets`, `news`, `weather`, `wikipedia` → `external_data_read`, `network_egress_cloud`
+   - `n8n` → `network_egress_local`
+   - `network_scanner` → `network_recon`
+   - `package_manager` → `code_install`, `network_egress_cloud`
+   - `phone` → `external_data_write`, `network_egress_local`
+   - `shell` → `shell_exec`
+   - `ssh` → `shell_exec`, `network_egress_cloud`
+   - `steam` → `fs_read`, `device_control`
+   - `system` → `device_control`, `screen_capture`
+   - `vpn` → `network_config`, `network_egress_cloud`
+   - `builder` → `code_install`
+10. **New tests:**
+    - `cerebral/tests/test_orchestrator.py` — Slice 9 (registration enforcement): missing constant / wrong type / unknown class / non-str values / empty frozenset / `create()` failure / partial refusal across mixed dirs / `register()` validation raises and does not add the plugin / `register()` without kwarg behaves as pre-#44 / `unregister()` clears the cap record / `registration_errors` returns a copy / `create()` never invoked when declaration missing. Slice 10 (real-plugin audit): parametrized over every file in `plugins/`, asserts declaration exists, is `frozenset[str]`, and only contains vocab classes (32/32).
+    - `cerebral/tests/test_plugin_builder.py` — Cycle 9: missing `required_capabilities` rejected; unknown class string rejected; non-iterable payload rejected; LLM omits constant → builder injects it into staged `server.py`; orchestrator's `required_capabilities_for(name)` reflects what the builder declared.
+11. **Test count after #44:** 923 Python tests passing (3 integration skipped) + 75 JS tests passing.
+12. **What this slice intentionally leaves to follow-up issues** — per-profile ACL + `profile_acl` table (#45), static-pattern inspectability scan + `plugins/_trusted/` escape hatch (#46), AST-completeness check that maps call sites to capability classes (#47), tray UI that renders the `plugins_list` broadcast (lands alongside #53).
