@@ -13,6 +13,12 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "apps"
 
+# ADR-0005 / Issue #44 — minimum capability classes this plugin's tools use.
+# list_running / launch_app / close_app all manage local application processes
+# (read process list, spawn, terminate). The subprocess.Popen call site in
+# launch_app is restricted to user-named apps; the intent is device_control.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"device_control"})
+
 
 def _default_process_iter():
     try:

@@ -16,6 +16,14 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "ssh"
 
+# ADR-0005 / Issue #44 — ssh_run_command takes a user-supplied command and
+# runs it on a remote host over SSH. This is both arbitrary shell execution
+# (shell_exec) and remote network egress (network_egress_cloud).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "shell_exec",
+    "network_egress_cloud",
+})
+
 
 class SshPlugin:
     name = PLUGIN_NAME

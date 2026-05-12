@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 PLUGIN_NAME = "browser"
 OPENCLAW_BASE = "http://localhost:3000"
 
+# ADR-0005 / Issue #44 — web_search / navigate / read_pdf all POST to the
+# local OpenClaw bridge (network_egress_local) which fetches and returns
+# external web/PDF content (external_data_read).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "external_data_read",
+    "network_egress_local",
+})
+
 
 async def _default_fetch(url: str, body: dict) -> dict:
     """POST body to url and return parsed JSON response."""

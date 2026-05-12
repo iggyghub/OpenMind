@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "notes"
 
+# ADR-0005 / Issue #44 — search_notes / list_recent read the SQLite index
+# (fs_read); create_note writes both the index row and a markdown file on
+# disk (fs_write); delete_note removes both (fs_delete).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "fs_read",
+    "fs_write",
+    "fs_delete",
+})
+
 _DEFAULT_NOTES_DIR = Path(__file__).parent.parent / "cerebral" / "data" / "notes"
 _DEFAULT_DB = Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db"
 

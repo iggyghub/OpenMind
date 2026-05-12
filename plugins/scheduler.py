@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "scheduler"
 
+# ADR-0005 / Issue #44 — list_events reads SQLite (fs_read); create_event /
+# update_event / delete_event mutate the events table (fs_write). The DB
+# file itself is never unlinked, so fs_delete is not needed.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write"})
+
 _DEFAULT_DB = Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db"
 
 _VALID_RECURRENCES = {"daily", "weekly", "monthly"}

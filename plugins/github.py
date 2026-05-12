@@ -23,6 +23,16 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "github"
 
+# ADR-0005 / Issue #44 — github_list_issues / github_list_prs /
+# github_get_notifications read remote state via the local n8n bridge
+# (network_egress_local + external_data_read). github_create_issue mutates
+# the repo (external_data_write).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "external_data_read",
+    "external_data_write",
+    "network_egress_local",
+})
+
 FetchFn = Callable[..., Awaitable[dict]]
 
 _WORKFLOWS = {

@@ -11,6 +11,11 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "shell"
 
+# ADR-0005 / Issue #44 — run_command runs arbitrary user-supplied shell. This
+# is the canonical shell_exec tool; the default policy denies it unless the
+# user opts in via a one-time settings flag.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"shell_exec"})
+
 
 class ShellPlugin:
     name = PLUGIN_NAME

@@ -20,6 +20,14 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "wikipedia"
+
+# ADR-0005 / Issue #44 — wiki_search / wiki_summary fetch article data from
+# en.wikipedia.org over the public internet.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "external_data_read",
+    "network_egress_cloud",
+})
+
 _ACTION_API = "https://en.wikipedia.org/w/api.php"
 _REST_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 _DEFAULT_LIMIT = 5

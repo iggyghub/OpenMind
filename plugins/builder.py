@@ -41,10 +41,15 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 
 from cerebral.mcp.orchestrator import MCPOrchestrator, Plugin, Tool, ToolResult
+from cerebral.security import CAPABILITY_VOCABULARY
 
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "builder"
+
+# ADR-0005 / Issue #44 — builder_create installs new plugin source on disk
+# and may pip-install third-party packages. Both are code_install.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"code_install"})
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _DEP_NAME_RE = re.compile(r"^([A-Za-z0-9_.\-]+)")  # captures package name from `name==1.2.3`
@@ -122,7 +127,9 @@ class BuilderPlugin:
                     "Generate a new MCP plugin from a natural-language description, "
                     "smoke-test it, and register it with the running orchestrator. "
                     "Use this when the user says 'I need you to be able to X' and no "
-                    "existing tool covers X."
+                    "existing tool covers X. The LLM payload must include "
+                    "'required_capabilities' (list of class names from the 16-class "
+                    "vocabulary) — see ADR-0005."
                 ),
                 plugin=PLUGIN_NAME,
                 schema={
@@ -221,6 +228,42 @@ class BuilderPlugin:
         smoke_tool = payload.get("smoke_tool")
         smoke_args = payload.get("smoke_args") or {}
 
+        # ----- ADR-0005 / Issue #44 — capability declaration -----
+        required_capabilities_raw = payload.get("required_capabilities")
+        if required_capabilities_raw is None:
+            return ToolResult(
+                content=(
+                    "LLM payload missing 'required_capabilities' — every "
+                    "generated plugin must declare its minimum capability "
+                    "classes (ADR-0005)."
+                ),
+                is_error=True,
+            )
+        try:
+            required_capabilities = frozenset(str(c) for c in required_capabilities_raw)
+        except TypeError:
+            return ToolResult(
+                content="'required_capabilities' must be an iterable of strings",
+                is_error=True,
+            )
+        unknown_caps = required_capabilities - CAPABILITY_VOCABULARY
+        if unknown_caps:
+            return ToolResult(
+                content=(
+                    "Generated plugin declares unknown capability classes: "
+                    f"{sorted(unknown_caps)}. Allowed: "
+                    f"{sorted(CAPABILITY_VOCABULARY)}"
+                ),
+                is_error=True,
+            )
+
+        # The orchestrator reads REQUIRED_CAPABILITIES at module load. If the
+        # LLM omitted the constant, inject it from the validated payload so
+        # the generated plugin survives a Cerebral restart.
+        server_py = self._ensure_required_capabilities_constant(
+            server_py, required_capabilities,
+        )
+
         # ----- Static guardrails on generated code -----
         ok, reason = self._scan_generated_code(server_py)
         if not ok:
@@ -284,7 +327,7 @@ class BuilderPlugin:
             self._plugins_dir.mkdir(parents=True, exist_ok=True)
             shutil.move(str(stage_dir), str(target_dir))
 
-        self._orc.register(plugin)
+        self._orc.register(plugin, required_capabilities=required_capabilities)
         self._generated.add(name)
 
         return ToolResult(
@@ -349,12 +392,40 @@ class BuilderPlugin:
     def _scan_generated_code(source: str) -> tuple[bool, str]:
         if "PLUGIN_NAME" not in source:
             return False, "missing PLUGIN_NAME constant"
+        if "REQUIRED_CAPABILITIES" not in source:
+            return False, "missing REQUIRED_CAPABILITIES constant"
         if not re.search(r"^\s*def\s+create\s*\(", source, re.MULTILINE):
             return False, "missing create() factory"
         for pattern, label in _FORBIDDEN_PATTERNS:
             if re.search(pattern, source, re.MULTILINE):
                 return False, f"forbidden / unsafe pattern: {label}"
         return True, ""
+
+    @staticmethod
+    def _ensure_required_capabilities_constant(
+        source: str, required_capabilities: frozenset[str],
+    ) -> str:
+        """Inject REQUIRED_CAPABILITIES into generated source if absent.
+
+        Builder-generated plugins must carry the module-level constant so
+        they reload cleanly on Cerebral restart. The LLM may emit it
+        already; if not, prepend a deterministic declaration so the source
+        matches the validated payload exactly.
+        """
+        if "REQUIRED_CAPABILITIES" in source:
+            return source
+        literal = (
+            "frozenset()"
+            if not required_capabilities
+            else "frozenset({" + ", ".join(
+                repr(c) for c in sorted(required_capabilities)
+            ) + "})"
+        )
+        injected = (
+            "# Issue #44 — capability declaration injected by the builder.\n"
+            f"REQUIRED_CAPABILITIES: frozenset[str] = {literal}\n\n"
+        )
+        return injected + source
 
     @staticmethod
     def _import_module(server_path: Path, plugin_name: str) -> Plugin:

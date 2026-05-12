@@ -20,6 +20,17 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "git"
 
+# ADR-0005 / Issue #44 — git_status / git_diff / git_log read the local repo
+# (fs_read); git_commit / git_branch modify the working tree and ref store
+# (fs_write); git_push / git_pull talk to the configured upstream
+# (network_egress_cloud). The git CLI argv is restricted to a closed set of
+# subcommands.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "fs_read",
+    "fs_write",
+    "network_egress_cloud",
+})
+
 
 class GitPlugin:
     name = PLUGIN_NAME

@@ -20,6 +20,16 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "package_manager"
 
+# ADR-0005 / Issue #44 — pkg_install / pkg_update install code from the
+# configured registry (code_install). pkg_search hits the registry over the
+# public internet (network_egress_cloud). Both install paths also reach the
+# registry to fetch the package itself, so the cloud-egress declaration
+# applies to every tool.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "code_install",
+    "network_egress_cloud",
+})
+
 _ALLOWED_MANAGERS = {"npm", "pip", "winget"}
 
 

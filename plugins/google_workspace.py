@@ -36,6 +36,17 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "google_workspace"
 
+# ADR-0005 / Issue #44 — gmail_search / calendar_list_events /
+# drive_list_files / sheets_read_range read remote state (external_data_read);
+# gmail_send / calendar_create_event / drive_upload_file / sheets_write_range
+# mutate it (external_data_write). All traffic flows through the local n8n
+# bridge (network_egress_local).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "external_data_read",
+    "external_data_write",
+    "network_egress_local",
+})
+
 FetchFn = Callable[..., Awaitable[dict]]
 
 # Workflow name registry — one place to update if workflow names change in n8n

@@ -17,6 +17,16 @@ from typing import Callable
 from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "system"
+
+# ADR-0005 / Issue #44 — get_volume / set_volume / get_wifi_status / shutdown
+# / restart all touch local device state (device_control). take_screenshot
+# captures the active display (screen_capture, which is in the ask-class
+# default policy so the user is prompted before each capture).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
+    "device_control",
+    "screen_capture",
+})
+
 _PLATFORM = platform.system()
 
 

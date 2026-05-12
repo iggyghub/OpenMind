@@ -38,6 +38,11 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "printer"
 
+# ADR-0005 / Issue #44 — print_file / print_queue / print_list_printers /
+# scan_document all manage local print/scan hardware via the system spooler
+# and SANE.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"device_control"})
+
 _WINDOWS_SCAN_STUB = (
     "WIA scanning is not implemented on Windows. "
     "Use Windows Fax & Scan to scan documents manually, "
