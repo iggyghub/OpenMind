@@ -32,7 +32,13 @@ from cerebral.security import (
     CallFlags,
     CapabilityGate,
     Decision,
+    INSPECTED,
+    REASON_FORBIDDEN_PATTERN,
+    REASON_NON_TEXT,
+    REASON_NOT_INSPECTABLE_PATH,
     ProfileACL,
+    TRUSTED,
+    scan_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +50,9 @@ _MISSING = object()
 
 
 # Refusal reason codes — stable strings consumed by the tray's plugin list.
+# REASON_FORBIDDEN_PATTERN / REASON_NON_TEXT / REASON_NOT_INSPECTABLE_PATH
+# live in cerebral.security.inspectability and are re-exported here as part
+# of the public refusal-reason vocabulary (Issue #46).
 REASON_MISSING = "missing_required_capabilities"
 REASON_INVALID_TYPE = "invalid_required_capabilities"
 REASON_UNKNOWN_CAPABILITY = "unknown_capability"
@@ -142,8 +151,14 @@ class MCPOrchestrator:
         self._gate: CapabilityGate = gate or CapabilityGate()
         self._acl: ProfileACL | None = acl
         # Module-level REQUIRED_CAPABILITIES per registered plugin (Issue #44).
-        # Used by the tray UI and (later) by #46/#47 to decide per-tool gates.
+        # Used by the tray UI and (later) by #47 to decide per-tool gates.
         self._plugin_capabilities: dict[str, frozenset[str]] = {}
+        # Per-plugin inspectability mark — "inspected" or "trusted" (Issue #46).
+        # Set during discover_plugins; the tray uses this to render the red
+        # "trusted, unverified" badge on plugins/_trusted/<name>/server.py.
+        # Plugins registered directly via register() (tests, parked builder)
+        # default to "inspected" — they bypass on-disk discovery entirely.
+        self._plugin_inspectability: dict[str, str] = {}
         # Plugins refused at load time, ordered by discovery order.
         # Each entry is {plugin_name, reason, detail, path}. Surfaced to the
         # tray so the user sees *why* a plugin didn't load.
@@ -206,6 +221,7 @@ class MCPOrchestrator:
         self._remove_from_index(plugin_name)
         del self._plugins[plugin_name]
         self._plugin_capabilities.pop(plugin_name, None)
+        self._plugin_inspectability.pop(plugin_name, None)
         logger.info("[mcp] Unregistered plugin '%s'", plugin_name)
 
     # ------------------------------------------------------------------
@@ -227,6 +243,17 @@ class MCPOrchestrator:
         time, or None if it was registered without one (legacy register()
         path; tests)."""
         return self._plugin_capabilities.get(plugin_name)
+
+    def inspectability_for(self, plugin_name: str) -> str | None:
+        """The inspectability mark recorded at discovery time (Issue #46).
+
+        Returns ``"inspected"`` for the default text-Python form, ``"trusted"``
+        for plugins loaded from ``plugins/_trusted/``, or ``None`` for plugins
+        registered directly via ``register()`` (tests / the parked builder
+        instance) — those bypass on-disk discovery and therefore have no
+        inspectability mark.
+        """
+        return self._plugin_inspectability.get(plugin_name)
 
     def _remove_from_index(self, plugin_name: str) -> None:
         to_remove = [k for k, v in self._tool_index.items() if v == plugin_name]
@@ -305,9 +332,15 @@ class MCPOrchestrator:
     def discover_plugins(self, plugins_dir: Path) -> None:
         """Import every *.py in plugins_dir, call create(), register the result.
 
-        Two layouts supported:
+        Conforming layouts (ADR-0005, Issue #46):
           - plugins/<name>.py            (flat, original convention)
           - plugins/<name>/server.py     (subdir, used by the builder for #30)
+          - plugins/_trusted/<name>/server.py  (escape hatch — scan skipped,
+                                                tray flags as "trusted, unverified")
+
+        Subdirs that don't match any of these (e.g. a folder with no server.py)
+        are recorded as ``REASON_NOT_INSPECTABLE_PATH`` so the tray can flag
+        the layout error rather than silently hiding the plugin.
         """
         if not plugins_dir.is_dir():
             logger.warning("[mcp] plugins_dir '%s' does not exist — skipping discovery", plugins_dir)
@@ -315,15 +348,85 @@ class MCPOrchestrator:
         for path in sorted(plugins_dir.glob("*.py")):
             if path.name.startswith("_"):
                 continue
-            self._load_plugin_file(path)
+            self._load_plugin_file(path, inspectability=INSPECTED)
         for sub in sorted(p for p in plugins_dir.iterdir() if p.is_dir()):
-            if sub.name.startswith("_") or sub.name.startswith("."):
+            if sub.name.startswith("."):
+                continue
+            if sub.name == "__pycache__":
+                continue
+            if sub.name == "_trusted":
+                self._discover_trusted_subtree(sub)
+                continue
+            if sub.name.startswith("_"):
+                # Other underscored dirs are reserved scaffolding; ignore.
                 continue
             server_py = sub / "server.py"
             if server_py.is_file():
-                self._load_plugin_file(server_py)
+                self._load_plugin_file(server_py, inspectability=INSPECTED)
+            else:
+                self._record_registration_error(
+                    sub.name,
+                    REASON_NOT_INSPECTABLE_PATH,
+                    (
+                        f"plugin folder {sub.name!r} has no server.py — expected "
+                        "plugins/<name>/server.py"
+                    ),
+                    sub,
+                )
 
-    def _load_plugin_file(self, path: Path) -> None:
+    def _discover_trusted_subtree(self, trusted_dir: Path) -> None:
+        """Walk ``plugins/_trusted/`` (Issue #46 escape hatch).
+
+        Trusted plugins skip the static-pattern scan but still:
+          - must live at ``plugins/_trusted/<name>/server.py``
+          - must declare ``REQUIRED_CAPABILITIES``
+          - are gated at call time exactly like inspected plugins
+          - render with a permanent red "trusted, unverified" badge in the tray
+        """
+        for sub in sorted(p for p in trusted_dir.iterdir() if p.is_dir()):
+            if sub.name.startswith(".") or sub.name.startswith("_"):
+                continue
+            server_py = sub / "server.py"
+            if server_py.is_file():
+                self._load_plugin_file(server_py, inspectability=TRUSTED)
+            else:
+                self._record_registration_error(
+                    sub.name,
+                    REASON_NOT_INSPECTABLE_PATH,
+                    (
+                        f"trusted plugin folder {sub.name!r} has no server.py — "
+                        "expected plugins/_trusted/<name>/server.py"
+                    ),
+                    sub,
+                )
+
+    def _load_plugin_file(self, path: Path, *, inspectability: str = INSPECTED) -> None:
+        # ADR-0005 / Issue #46 — static-pattern scan runs BEFORE module import
+        # so a hostile plugin's import-time side effects never fire on a
+        # refused plugin. Trusted plugins skip the scan but still go through
+        # REQUIRED_CAPABILITIES validation and the runtime capability gate.
+        if inspectability == INSPECTED:
+            try:
+                source = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                self._record_registration_error(
+                    path.stem, REASON_NON_TEXT,
+                    f"plugin source is not valid UTF-8 text: {exc}", path,
+                )
+                return
+            except OSError as exc:
+                self._record_registration_error(
+                    path.stem, REASON_LOAD_FAILED,
+                    f"could not read plugin source: {exc}", path,
+                )
+                return
+            issue = scan_source(source)
+            if issue is not None:
+                self._record_registration_error(
+                    path.stem, issue.reason, issue.detail, path,
+                )
+                return
+
         module_name = f"openmind_plugin_{path.stem}"
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
@@ -372,6 +475,8 @@ class MCPOrchestrator:
             # Belt-and-suspenders — _validate_required_capabilities already
             # passed, so register() should not raise. Record anyway.
             self._record_registration_error(exc.plugin_name, exc.reason, exc.detail, path)
+            return
+        self._plugin_inspectability[plugin.name] = inspectability
 
     def _record_registration_error(
         self, plugin_name: str, reason: str, detail: str, path: Path,

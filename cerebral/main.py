@@ -187,10 +187,16 @@ def _models_list_event() -> dict:
 def _plugins_list_event() -> dict:
     """Snapshot of the orchestrator's plugin registry for the tray.
 
-    Each entry pairs a plugin's name with the REQUIRED_CAPABILITIES it
-    declared (Issue #44). The companion `errors` list carries plugins the
-    orchestrator refused at load time so the tray can render *why* a plugin
-    isn't there alongside the ones that are.
+    Each entry pairs a plugin's name with:
+      - the REQUIRED_CAPABILITIES it declared (Issue #44)
+      - its inspectability mark — "inspected" or "trusted" (Issue #46)
+        so the tray can render the red "trusted, unverified" badge on
+        plugins loaded from plugins/_trusted/.
+
+    The companion `errors` list carries plugins the orchestrator refused at
+    load time (forbidden patterns, non-conforming paths, missing
+    REQUIRED_CAPABILITIES, …) so the tray can render *why* a plugin isn't
+    there alongside the ones that are.
     """
     registered = []
     for plugin_name in sorted(_orc._plugins):
@@ -198,6 +204,7 @@ def _plugins_list_event() -> dict:
         registered.append({
             "name": plugin_name,
             "required_capabilities": sorted(caps) if caps is not None else None,
+            "inspectability": _orc.inspectability_for(plugin_name),
         })
     return {
         "type": "plugins_list",

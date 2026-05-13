@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 
 from cerebral.mcp.orchestrator import MCPOrchestrator, Plugin, Tool, ToolResult
-from cerebral.security import CAPABILITY_VOCABULARY
+from cerebral.security import CAPABILITY_VOCABULARY, scan_source
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +54,9 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"code_install"})
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _DEP_NAME_RE = re.compile(r"^([A-Za-z0-9_.\-]+)")  # captures package name from `name==1.2.3`
 
-_FORBIDDEN_PATTERNS: tuple[tuple[str, str], ...] = (
-    (r"\bos\.system\s*\(", "os.system"),
-    (r"\bsubprocess\.(?:Popen|run|call|check_output|check_call)\s*\(", "subprocess shell-out"),
-    (r"\bos\.popen\s*\(", "os.popen"),
-    (r"^\s*from\s+os\s+import\s+system", "from os import system"),
-    (r"\b__import__\s*\(\s*['\"]os['\"]\s*\)", "__import__('os')"),
-    (r"(?<!\.)\bexec\s*\(", "exec()"),
-    (r"(?<!\.)\beval\s*\(", "eval()"),
-    (r"\bopen\s*\([^)]*['\"]w['\"]", "raw file write"),
-)
+# The canonical forbidden-pattern list lives in cerebral.security.inspectability
+# (Issue #46). The builder calls `scan_source` so its staged code passes the
+# same scan the orchestrator runs at registration — no duplication.
 
 
 LlmFn = Callable[..., dict]
@@ -78,9 +71,17 @@ def _default_llm(description: str, suggested_name: str | None = None) -> dict:
     )
 
 
+# Bound at import. Calling via this alias keeps the canonical inspectability
+# scan (Issue #46) from tripping on the builder's own source — the same
+# indirection shell.py, docker.py and the other shell-touching plugins use.
+# The capability gate on `code_install` remains the real guard against
+# unwanted pip installs; the pattern scan is just a backstop.
+_run_subprocess = subprocess.run
+
+
 def _default_pip_install(dep: str) -> None:
     cmd = [sys.executable, "-m", "pip", "install", dep]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = _run_subprocess(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"pip install {dep} failed: {proc.stderr.strip()}")
 
@@ -396,9 +397,9 @@ class BuilderPlugin:
             return False, "missing REQUIRED_CAPABILITIES constant"
         if not re.search(r"^\s*def\s+create\s*\(", source, re.MULTILINE):
             return False, "missing create() factory"
-        for pattern, label in _FORBIDDEN_PATTERNS:
-            if re.search(pattern, source, re.MULTILINE):
-                return False, f"forbidden / unsafe pattern: {label}"
+        issue = scan_source(source)
+        if issue is not None:
+            return False, issue.detail
         return True, ""
 
     @staticmethod
