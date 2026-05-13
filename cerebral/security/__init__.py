@@ -16,6 +16,17 @@ from cerebral.security.gate import (
     DEFAULT_POLICY,
     Decision,
 )
+from cerebral.security.inspectability import (
+    FORBIDDEN_PATTERNS,
+    INSPECTED,
+    TRUSTED,
+    InspectabilityIssue,
+    REASON_FORBIDDEN_PATTERN,
+    REASON_NON_TEXT,
+    REASON_NOT_INSPECTABLE_PATH,
+    classify_path as classify_plugin_path,
+    scan_source,
+)
 
 # Closed string-form view of the 16-class vocabulary. Plugin modules declare
 # REQUIRED_CAPABILITIES as frozenset[str] so they don't have to import the
@@ -30,5 +41,14 @@ __all__ = [
     "CAPABILITY_VOCABULARY",
     "DEFAULT_POLICY",
     "Decision",
+    "FORBIDDEN_PATTERNS",
+    "INSPECTED",
+    "InspectabilityIssue",
     "ProfileACL",
+    "REASON_FORBIDDEN_PATTERN",
+    "REASON_NON_TEXT",
+    "REASON_NOT_INSPECTABLE_PATH",
+    "TRUSTED",
+    "classify_plugin_path",
+    "scan_source",
 ]
