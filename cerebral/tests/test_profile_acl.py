@@ -402,3 +402,180 @@ def test_deleting_profile_cascades_acl_rows(pm):
     pm.set_acl_grant(p.id, scope="class", target="fs_read", policy="deny")
     pm.delete(p.id)
     assert pm.list_acl_grants(p.id) == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 11 — plugin_flags table (Issue #51, ADR-0005)
+# ---------------------------------------------------------------------------
+
+
+def test_plugin_flag_defaults_to_false_when_no_row(pm):
+    assert pm.get_plugin_new_flag("weatherbug") is False
+
+
+def test_set_plugin_new_flag_persists(pm):
+    pm.set_plugin_new_flag("weatherbug", True)
+    assert pm.get_plugin_new_flag("weatherbug") is True
+
+
+def test_set_plugin_new_flag_overwrites_existing(pm):
+    pm.set_plugin_new_flag("weatherbug", True)
+    pm.set_plugin_new_flag("weatherbug", False)
+    assert pm.get_plugin_new_flag("weatherbug") is False
+
+
+def test_remove_plugin_flag_drops_row(pm):
+    pm.set_plugin_new_flag("weatherbug", True)
+    assert pm.remove_plugin_flag("weatherbug") is True
+    assert pm.get_plugin_new_flag("weatherbug") is False
+    # Second remove finds nothing.
+    assert pm.remove_plugin_flag("weatherbug") is False
+
+
+def test_list_plugin_flags_returns_only_rows_present(pm):
+    pm.set_plugin_new_flag("weatherbug", True)
+    pm.set_plugin_new_flag("ambient", False)
+    listed = pm.list_plugin_flags()
+    assert listed == {"weatherbug": True, "ambient": False}
+
+
+# ---------------------------------------------------------------------------
+# Slice 12 — uninstall ACL cleanup (Issue #51, ADR-0005)
+# ---------------------------------------------------------------------------
+
+
+def test_remove_plugin_acl_rows_drops_only_per_tool_rows(pm):
+    alice = pm.create(name="Alice")
+    bob = pm.create(name="Bob")
+
+    # Alice grants class-scope FS_WRITE persistently, plus per-tool overrides
+    # for two tools that belong to "weatherbug".
+    pm.set_acl_grant(alice.id, scope="class", target="fs_write", policy="silent")
+    pm.set_acl_grant(alice.id, scope="tool", target="weatherbug_ping", policy="silent")
+    pm.set_acl_grant(alice.id, scope="tool", target="weatherbug_report", policy="deny")
+    # Plus an unrelated per-tool override on a different plugin.
+    pm.set_acl_grant(alice.id, scope="tool", target="other_tool", policy="deny")
+    # Bob has a per-tool override on a weatherbug tool too.
+    pm.set_acl_grant(bob.id, scope="tool", target="weatherbug_ping", policy="silent")
+
+    dropped = pm.remove_plugin_acl_rows(
+        "weatherbug", tool_names=["weatherbug_ping", "weatherbug_report"],
+    )
+    # 3 rows: alice's two weatherbug overrides + bob's one weatherbug override.
+    assert dropped == 3
+
+    alice_rows = pm.list_acl_grants(alice.id)
+    alice_targets = {(r["scope"], r["target"]) for r in alice_rows}
+    # Class-scope FS_WRITE survives — per the sharpener, class-scope rows
+    # live across plugins.
+    assert ("class", "fs_write") in alice_targets
+    # The unrelated tool override survives.
+    assert ("tool", "other_tool") in alice_targets
+    # Weatherbug overrides are gone.
+    assert ("tool", "weatherbug_ping") not in alice_targets
+    assert ("tool", "weatherbug_report") not in alice_targets
+
+    bob_rows = pm.list_acl_grants(bob.id)
+    bob_targets = {(r["scope"], r["target"]) for r in bob_rows}
+    assert ("tool", "weatherbug_ping") not in bob_targets
+
+
+def test_remove_plugin_acl_rows_returns_zero_when_no_match(pm):
+    alice = pm.create(name="Alice")
+    pm.set_acl_grant(alice.id, scope="class", target="fs_read", policy="silent")
+    assert pm.remove_plugin_acl_rows("weatherbug", tool_names=[]) == 0
+    assert pm.remove_plugin_acl_rows("weatherbug", tool_names=["never_existed"]) == 0
+    # Class grant untouched.
+    assert pm.list_acl_grants(alice.id) == [
+        {"scope": "class", "target": "fs_read", "policy": "silent",
+         "granted_at": pm.list_acl_grants(alice.id)[0]["granted_at"]},
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Slice 13 — ProfileACL new-plugin-flag carve-out (Issue #51, ADR-0005)
+# ---------------------------------------------------------------------------
+
+
+def test_new_plugin_flag_skips_persistent_class_grant(pm, profile):
+    """While a plugin's new_plugin flag is set, ProfileACL.resolve ignores
+    the per-tool override, persistent class grant, session, and once grants
+    on that tool's class — every call asks fresh."""
+    pm.set_acl_grant(profile.id, scope="class", target="fs_write", policy="silent")
+    pm.set_plugin_new_flag("weatherbug", True)
+
+    # ACL hook: weatherbug_ping belongs to weatherbug (which is new-flagged).
+    def _new_flag(tool_name: str) -> bool:
+        return tool_name.startswith("weatherbug_") and pm.get_plugin_new_flag("weatherbug")
+
+    acl = ProfileACL(
+        profile_id=profile.id,
+        profile_manager=pm,
+        defaults_snapshot=profile.acl_defaults_snapshot,
+        new_plugin_flag_for_tool=_new_flag,
+    )
+    # With the flag on, the persistent SILENT grant is invisible: we fall
+    # through to the default policy for FS_WRITE which is ASK.
+    assert acl.resolve(Capability.FS_WRITE, "weatherbug_ping") is Decision.ASK
+
+
+def test_new_plugin_flag_does_not_affect_other_plugins(pm, profile):
+    pm.set_acl_grant(profile.id, scope="class", target="fs_write", policy="silent")
+    pm.set_plugin_new_flag("weatherbug", True)
+
+    def _new_flag(tool_name: str) -> bool:
+        return tool_name.startswith("weatherbug_") and pm.get_plugin_new_flag("weatherbug")
+
+    acl = ProfileACL(
+        profile_id=profile.id,
+        profile_manager=pm,
+        defaults_snapshot=profile.acl_defaults_snapshot,
+        new_plugin_flag_for_tool=_new_flag,
+    )
+    # A tool from a *different* plugin sees the normal class grant.
+    assert acl.resolve(Capability.FS_WRITE, "files_write") is Decision.SILENT
+
+
+def test_new_plugin_flag_off_means_normal_resolution(pm, profile):
+    """Hand-authored plugins (no flag set) resolve through the full chain."""
+    pm.set_acl_grant(profile.id, scope="class", target="fs_write", policy="silent")
+    # No flag set for "files" plugin.
+
+    def _new_flag(tool_name: str) -> bool:
+        return False  # nothing is flagged
+
+    acl = ProfileACL(
+        profile_id=profile.id,
+        profile_manager=pm,
+        defaults_snapshot=profile.acl_defaults_snapshot,
+        new_plugin_flag_for_tool=_new_flag,
+    )
+    assert acl.resolve(Capability.FS_WRITE, "files_write") is Decision.SILENT
+
+
+def test_new_plugin_flag_skips_per_tool_override_too(pm, profile):
+    pm.set_acl_grant(profile.id, scope="tool", target="weatherbug_ping", policy="silent")
+    pm.set_plugin_new_flag("weatherbug", True)
+
+    def _new_flag(tool_name: str) -> bool:
+        return tool_name.startswith("weatherbug_") and pm.get_plugin_new_flag("weatherbug")
+
+    acl = ProfileACL(
+        profile_id=profile.id,
+        profile_manager=pm,
+        defaults_snapshot=profile.acl_defaults_snapshot,
+        new_plugin_flag_for_tool=_new_flag,
+    )
+    # Per-tool SILENT override is also bypassed.
+    assert acl.resolve(Capability.FS_WRITE, "weatherbug_ping") is Decision.ASK
+
+
+def test_new_plugin_flag_resolver_default_hook_is_no_op(pm, profile):
+    """Omitting new_plugin_flag_for_tool keeps pre-#51 resolution behaviour."""
+    pm.set_acl_grant(profile.id, scope="class", target="fs_write", policy="silent")
+    acl = ProfileACL(
+        profile_id=profile.id,
+        profile_manager=pm,
+        defaults_snapshot=profile.acl_defaults_snapshot,
+    )
+    assert acl.resolve(Capability.FS_WRITE, "weatherbug_ping") is Decision.SILENT

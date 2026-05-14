@@ -20,6 +20,39 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from cerebral.mcp.orchestrator import MCPOrchestrator, Plugin, Tool, ToolResult
+from cerebral.security import Decision
+
+
+# ---------------------------------------------------------------------------
+# Auto-allow consent surface (Issue #51 — every builder install now consumes
+# `code_install` via the orchestrator's consent surface; tests that aren't
+# specifically exercising the prompt path inject this fake so the gate
+# resolves to SILENT without ceremony).
+# ---------------------------------------------------------------------------
+
+
+class _AutoAllowConsent:
+    """Duck-typed ConsentSurface that auto-allows every prompt."""
+
+    def __init__(self) -> None:
+        self.received: list[dict] = []
+
+    async def request(self, capability, tool_name, args, flags=None):
+        self.received.append({
+            "capability": capability,
+            "tool_name": tool_name,
+            "args": dict(args or {}),
+            "flags": flags,
+        })
+        return Decision.SILENT
+
+    def set_acl(self, acl) -> None:
+        pass
+
+
+def _make_orc():
+    """Test-default orchestrator with an auto-allow consent surface."""
+    return MCPOrchestrator(consent=_AutoAllowConsent())
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +101,8 @@ _GENERATED_PAYLOAD = {
     "smoke_args": {},
     # Issue #44 — builder payload must include the declared capabilities.
     "required_capabilities": ["external_data_read"],
+    # Issue #51 — and a user-facing description for the install prompt.
+    "description": "Reports a single pong message — minimal smoke target.",
 }
 
 
@@ -120,7 +155,7 @@ class TestBuilderCreateHappyPath:
     async def test_create_writes_server_and_readme(self, tmp_path):
         from plugins.builder import BuilderPlugin
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -149,7 +184,7 @@ class TestBuilderCreateHappyPath:
         from plugins.builder import BuilderPlugin
 
         payload = dict(_GENERATED_PAYLOAD, pip_deps=["requests", "beautifulsoup4"])
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, pip_calls = _make_recording_pip()
 
@@ -170,7 +205,7 @@ class TestBuilderCreateHappyPath:
     async def test_create_runs_smoke_test_against_generated_plugin(self, tmp_path):
         from plugins.builder import BuilderPlugin
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, smoke_calls = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -194,7 +229,7 @@ class TestBuilderCreateHappyPath:
     async def test_create_registers_with_orchestrator_on_smoke_pass(self, tmp_path):
         from plugins.builder import BuilderPlugin
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -218,7 +253,7 @@ class TestBuilderCreateHappyPath:
     async def test_create_returns_plugin_name_and_tool_count(self, tmp_path):
         from plugins.builder import BuilderPlugin
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -262,7 +297,7 @@ class TestBuilderNameValidation:
         from plugins.builder import BuilderPlugin
 
         payload = dict(_GENERATED_PAYLOAD, name=bad_name)
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, smoke_calls = _make_recording_smoke()
         pip_fn, pip_calls = _make_recording_pip()
 
@@ -293,7 +328,7 @@ class TestBuilderNameValidation:
         (tmp_path / "weatherbug").mkdir()
         (tmp_path / "weatherbug" / "server.py").write_text("# already here")
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, smoke_calls = _make_recording_smoke()
         pip_fn, pip_calls = _make_recording_pip()
 
@@ -319,7 +354,7 @@ class TestBuilderNameValidation:
         # Pre-existing flat-style plugin
         (tmp_path / "weatherbug.py").write_text("PLUGIN_NAME = 'weatherbug'\n")
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -346,7 +381,7 @@ class TestBuilderSmokeFailure:
     async def test_smoke_failure_does_not_register(self, tmp_path):
         from plugins.builder import BuilderPlugin
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke(passes=False)
         pip_fn, _ = _make_recording_pip()
 
@@ -367,7 +402,7 @@ class TestBuilderSmokeFailure:
     async def test_smoke_failure_does_not_persist_plugin_files(self, tmp_path):
         from plugins.builder import BuilderPlugin
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke(passes=False)
         pip_fn, _ = _make_recording_pip()
 
@@ -388,7 +423,7 @@ class TestBuilderSmokeFailure:
     async def test_smoke_failure_returns_error_message_with_reason(self, tmp_path):
         from plugins.builder import BuilderPlugin
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke(passes=False)
         pip_fn, _ = _make_recording_pip()
 
@@ -417,7 +452,7 @@ class TestBuilderPipInstall:
         from plugins.builder import BuilderPlugin
 
         payload = dict(_GENERATED_PAYLOAD, pip_deps=["requests"])
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, smoke_calls = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip(success=False)
 
@@ -442,7 +477,7 @@ class TestBuilderPipInstall:
 
         # Dep not in allowlist
         payload = dict(_GENERATED_PAYLOAD, pip_deps=["sketchy-malware-package"])
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, pip_calls = _make_recording_pip()
 
@@ -466,7 +501,7 @@ class TestBuilderPipInstall:
         from plugins.builder import BuilderPlugin
 
         payload = dict(_GENERATED_PAYLOAD, pip_deps=["requests==2.31.0"])
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, pip_calls = _make_recording_pip()
 
@@ -504,7 +539,7 @@ class TestBuilderCodeGuardrails:
         ''').strip()
 
         payload = dict(_GENERATED_PAYLOAD, server_py=bad_server)
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -533,7 +568,7 @@ class TestBuilderCodeGuardrails:
         ''').strip()
 
         payload = dict(_GENERATED_PAYLOAD, server_py=bad_server)
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -577,7 +612,7 @@ class TestBuilderCodeGuardrails:
         ''').strip()
 
         payload = dict(_GENERATED_PAYLOAD, server_py=bad_server)
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, smoke_calls = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -607,7 +642,7 @@ class TestBuilderListGenerated:
         from plugins.builder import BuilderPlugin
 
         builder = BuilderPlugin(
-            orchestrator=MCPOrchestrator(),
+            orchestrator=_make_orc(),
             plugins_dir=tmp_path,
             llm_fn=_make_llm_fn(),
             pip_install_fn=_make_recording_pip()[0],
@@ -627,7 +662,7 @@ class TestBuilderListGenerated:
         (tmp_path / "ambient.py").write_text("PLUGIN_NAME='ambient'\n")
 
         builder = BuilderPlugin(
-            orchestrator=MCPOrchestrator(),
+            orchestrator=_make_orc(),
             plugins_dir=tmp_path,
             llm_fn=_make_llm_fn(),
             pip_install_fn=_make_recording_pip()[0],
@@ -652,7 +687,7 @@ class TestBuilderToolList:
         from plugins.builder import BuilderPlugin
 
         builder = BuilderPlugin(
-            orchestrator=MCPOrchestrator(),
+            orchestrator=_make_orc(),
             plugins_dir=Path("/tmp/x"),
             llm_fn=_make_llm_fn(),
             pip_install_fn=_make_recording_pip()[0],
@@ -670,7 +705,7 @@ class TestBuilderToolList:
         from plugins.builder import BuilderPlugin
 
         builder = BuilderPlugin(
-            orchestrator=MCPOrchestrator(),
+            orchestrator=_make_orc(),
             plugins_dir=Path("/tmp/x"),
             llm_fn=_make_llm_fn(),
             pip_install_fn=_make_recording_pip()[0],
@@ -693,7 +728,7 @@ class TestSubdirDiscovery:
         sub.mkdir()
         (sub / "server.py").write_text(_GENERATED_SERVER)
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         orc.discover_plugins(tmp_path)
 
         names = [p.name for p in orc._plugins.values()]
@@ -713,7 +748,7 @@ class TestSubdirDiscovery:
             "weatherbug", "subbed"
         ).replace("WeatherbugPlugin", "SubbedPlugin"))
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         orc.discover_plugins(tmp_path)
         names = sorted(p.name for p in orc._plugins.values())
         assert "flatone" in names
@@ -724,7 +759,7 @@ class TestSubdirDiscovery:
         (tmp_path / "_cache").mkdir()
         (tmp_path / "empty_subdir").mkdir()
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         orc.discover_plugins(tmp_path)  # should not raise
         assert orc._plugins == {}
 
@@ -740,7 +775,7 @@ class TestBuilderRequiredCapabilities:
         from plugins.builder import BuilderPlugin
 
         payload = {k: v for k, v in _GENERATED_PAYLOAD.items() if k != "required_capabilities"}
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, smoke_calls = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -763,7 +798,7 @@ class TestBuilderRequiredCapabilities:
         from plugins.builder import BuilderPlugin
 
         payload = dict(_GENERATED_PAYLOAD, required_capabilities=["fs_read", "telepathy"])
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, smoke_calls = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -809,7 +844,7 @@ class TestBuilderRequiredCapabilities:
             server_py=server_without_constant,
             required_capabilities=["fs_read", "external_data_read"],
         )
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -833,7 +868,7 @@ class TestBuilderRequiredCapabilities:
     async def test_builder_passes_capabilities_to_orchestrator_on_register(self, tmp_path):
         from plugins.builder import BuilderPlugin
 
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -856,7 +891,7 @@ class TestBuilderRequiredCapabilities:
         from plugins.builder import BuilderPlugin
 
         payload = dict(_GENERATED_PAYLOAD, required_capabilities=123)
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -942,7 +977,7 @@ class TestBuilderAstCompleteness:
             server_py=_under_declared_server_py(),
             required_capabilities=["external_data_read"],
         )
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, smoke_calls = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -977,7 +1012,7 @@ class TestBuilderAstCompleteness:
             server_py=_under_declared_server_py(),
             required_capabilities=["external_data_read", "fs_delete"],
         )
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, smoke_calls = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -1014,7 +1049,7 @@ class TestBuilderAstCompleteness:
                 "clipboard",
             ],
         )
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -1045,7 +1080,7 @@ class TestBuilderAstCompleteness:
             def half_open(:  # syntax error
         ''').strip()
         payload = dict(_GENERATED_PAYLOAD, server_py=broken_source)
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, _ = _make_recording_pip()
 
@@ -1074,7 +1109,7 @@ class TestBuilderAstCompleteness:
             required_capabilities=["external_data_read"],
             pip_deps=["requests"],
         )
-        orc = MCPOrchestrator()
+        orc = _make_orc()
         smoke_fn, _ = _make_recording_smoke()
         pip_fn, pip_calls = _make_recording_pip()
 
@@ -1090,3 +1125,732 @@ class TestBuilderAstCompleteness:
         result = await builder.call_tool("builder_create", {"description": "x"})
         assert result.is_error
         assert pip_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Cycle 11 — install-time consent prompt (Issue #51, ADR-0005)
+#
+# Generated plugins now ride through the consent surface (#48) so the user
+# sees one prompt per build for the whole `code_install` capability. The
+# prompt's args_preview carries the six fields from the AC: name,
+# description, capabilities-in-user-language, pip deps, source preview link,
+# and the verb shown by the surface itself (the four Once/Session/
+# Persistent/Deny buttons live in the surface, not the builder).
+# ---------------------------------------------------------------------------
+
+
+class _ScriptedConsent:
+    """Test fake: returns whatever the caller queues, in order.
+
+    Snapshots whether `args["preview_path"]` resolves to a real file *at
+    the moment of the request* — the builder stages source into a
+    TemporaryDirectory that's gone by the time the test inspects `received`,
+    so the file check has to happen inline.
+    """
+
+    def __init__(self, *decisions) -> None:
+        self.decisions = list(decisions)
+        self.received: list[dict] = []
+
+    async def request(self, capability, tool_name, args, flags=None):
+        args_snap = dict(args or {})
+        preview = args_snap.get("preview_path")
+        args_snap["preview_path_is_file_at_request"] = bool(
+            preview and Path(preview).is_file()
+        )
+        self.received.append({
+            "capability": capability,
+            "tool_name": tool_name,
+            "args": args_snap,
+            "flags": flags,
+        })
+        if not self.decisions:
+            raise AssertionError("no scripted decision for this prompt")
+        return self.decisions.pop(0)
+
+    def set_acl(self, acl) -> None:
+        pass
+
+
+class TestBuilderInstallPrompt:
+    @pytest.mark.asyncio
+    async def test_install_prompt_fires_for_code_install_capability(self, tmp_path):
+        """One prompt per build, capability=CODE_INSTALL, tool_name names the
+        builder so the tray's preview disambiguates from real `builder_create`
+        calls inside the orchestrator."""
+        from cerebral.security import Capability
+        from plugins.builder import BuilderPlugin
+
+        consent = _ScriptedConsent(Decision.SILENT)
+        orc = MCPOrchestrator(consent=consent)
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert not result.is_error, result.content
+        assert len(consent.received) == 1
+        prompt = consent.received[0]
+        assert prompt["capability"] is Capability.CODE_INSTALL
+        assert prompt["tool_name"] == "builder.install"
+
+    @pytest.mark.asyncio
+    async def test_install_prompt_carries_user_facing_fields(self, tmp_path):
+        """args_preview must include name, description, user-facing
+        capability labels, pip deps, and a source preview path."""
+        from plugins.builder import BuilderPlugin
+
+        payload = dict(
+            _GENERATED_PAYLOAD,
+            pip_deps=["requests"],
+            required_capabilities=["external_data_read", "fs_write"],
+        )
+        consent = _ScriptedConsent(Decision.SILENT)
+        orc = MCPOrchestrator(consent=consent)
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(payload),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            pip_allowlist=("requests",),
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert not result.is_error, result.content
+        args = consent.received[0]["args"]
+        assert args["plugin_name"] == "weatherbug"
+        assert args["description"].startswith("Reports a single pong")
+        # User-facing labels, not the raw vocabulary strings.
+        labels = args["capability_labels"]
+        assert "Write files on disk" in labels
+        assert "Read data from an external account" in labels
+        assert args["pip_deps"] == ["requests"]
+        # Source preview path (the tray opens it; we just verify a string
+        # pointing at a real file on disk at the moment of the prompt).
+        preview_path = Path(args["preview_path"])
+        assert preview_path.name == "server.py"
+        assert args["preview_path_is_file_at_request"] is True
+
+    @pytest.mark.asyncio
+    async def test_install_prompt_deny_blocks_persistence_and_registration(self, tmp_path):
+        """User clicks Deny → no pip install, no file move, no orchestrator
+        registration, error returned to caller."""
+        from plugins.builder import BuilderPlugin
+
+        consent = _ScriptedConsent(Decision.DENY)
+        orc = MCPOrchestrator(consent=consent)
+        smoke_fn, smoke_calls = _make_recording_smoke()
+        pip_fn, pip_calls = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(dict(_GENERATED_PAYLOAD, pip_deps=["requests"])),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            pip_allowlist=("requests",),
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert result.is_error
+        assert "cancel" in result.content.lower() or "denied" in result.content.lower()
+        assert pip_calls == [], "Deny must not install pip deps"
+        assert smoke_calls == [], "Deny must not run smoke"
+        assert not (tmp_path / "weatherbug").exists()
+        assert "weatherbug" not in orc._plugins
+
+    @pytest.mark.asyncio
+    async def test_install_prompt_runs_before_pip_install(self, tmp_path):
+        """pip install only fires after the user has consented (sharpener
+        #1: 'single install-time prompt consumes code_install once for the
+        whole build')."""
+        from plugins.builder import BuilderPlugin
+
+        consent = _ScriptedConsent(Decision.SILENT)
+        orc = MCPOrchestrator(consent=consent)
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, pip_calls = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(dict(_GENERATED_PAYLOAD, pip_deps=["requests"])),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            pip_allowlist=("requests",),
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert not result.is_error
+        # Consent prompt before pip install (received before call recorded).
+        assert len(consent.received) == 1
+        assert pip_calls == ["requests"]
+
+    @pytest.mark.asyncio
+    async def test_install_with_no_consent_surface_fails_closed(self, tmp_path):
+        """ADR-0005 fail-closed rule: orchestrator has no consent surface
+        wired → builder refuses to install."""
+        from plugins.builder import BuilderPlugin
+
+        orc = MCPOrchestrator()  # No consent surface.
+        smoke_fn, smoke_calls = _make_recording_smoke()
+        pip_fn, pip_calls = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert result.is_error
+        assert "consent" in result.content.lower()
+        assert pip_calls == []
+        assert smoke_calls == []
+        assert not (tmp_path / "weatherbug").exists()
+
+
+# ---------------------------------------------------------------------------
+# Cycle 12 — description field required (Issue #51, ADR-0005)
+# ---------------------------------------------------------------------------
+
+
+class TestBuilderDescriptionField:
+    @pytest.mark.asyncio
+    async def test_missing_description_in_payload_rejected(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        payload = {k: v for k, v in _GENERATED_PAYLOAD.items() if k != "description"}
+        orc = _make_orc()
+        smoke_fn, smoke_calls = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(payload),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert result.is_error
+        assert "description" in result.content.lower()
+        assert smoke_calls == []
+        assert not (tmp_path / "weatherbug").exists()
+
+    @pytest.mark.asyncio
+    async def test_empty_description_rejected(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        payload = dict(_GENERATED_PAYLOAD, description="   ")  # whitespace
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(payload),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert result.is_error
+        assert "description" in result.content.lower()
+
+
+# ---------------------------------------------------------------------------
+# Cycle 13 — builder marks installs with the new-plugin flag (Issue #51).
+# ---------------------------------------------------------------------------
+
+
+def _make_pm(tmp_path):
+    """Cheap ProfileManager + profile, returned together."""
+    from cerebral.db.profiles import ProfileManager
+    pm = ProfileManager(db_path=tmp_path / "openmind.db")
+    profile = pm.create(name="Alice")
+    return pm, profile
+
+
+class TestBuilderNewPluginFlag:
+    @pytest.mark.asyncio
+    async def test_install_sets_new_plugin_flag(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        pm, _ = _make_pm(tmp_path)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=plugins_dir,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            profile_manager=pm,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert not result.is_error, result.content
+        assert pm.get_plugin_new_flag("weatherbug") is True
+
+    @pytest.mark.asyncio
+    async def test_install_without_profile_manager_leaves_flag_unset(self, tmp_path):
+        """Tests that don't bring a ProfileManager (legacy paths) still work;
+        the flag is simply not recorded. Production wiring always supplies pm."""
+        from plugins.builder import BuilderPlugin
+
+        pm, _ = _make_pm(tmp_path)  # Used only to verify nothing landed.
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=plugins_dir,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            # No profile_manager kwarg.
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert not result.is_error, result.content
+        assert pm.get_plugin_new_flag("weatherbug") is False
+
+    @pytest.mark.asyncio
+    async def test_new_plugin_flag_forces_ask_through_orchestrator(self, tmp_path):
+        """Regression: persistent SILENT class grant on FS_WRITE + new-plugin
+        flag on `weatherbug` → ACL.resolve returns ASK for weatherbug_ping,
+        because the new-plugin carve-out skips the persistent grant.
+
+        This is the AC#4 sharpener pin assertion: 'persistent SILENT grant
+        on FS_WRITE + new-plugin-flag-on plugin -> ACL still returns ASK'.
+        """
+        from cerebral.security import Capability, ProfileACL
+        from plugins.builder import BuilderPlugin
+
+        pm, profile = _make_pm(tmp_path)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        # 1. User has already granted FS_WRITE persistently at SILENT.
+        pm.set_acl_grant(
+            profile.id, scope="class", target="fs_write", policy="silent",
+        )
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=plugins_dir,
+            llm_fn=_make_llm_fn(dict(
+                _GENERATED_PAYLOAD,
+                required_capabilities=["external_data_read", "fs_write"],
+            )),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            profile_manager=pm,
+        )
+
+        # 2. Install the plugin. The new_plugin flag should be set.
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert not result.is_error, result.content
+
+        # 3. Build an ACL with the orchestrator+pm wiring (mirrors what
+        #    cerebral/main.py:_build_acl does).
+        def _new_flag(tool_name):
+            plugin = orc.plugin_for_tool(tool_name)
+            return bool(plugin) and pm.get_plugin_new_flag(plugin)
+
+        acl = ProfileACL(
+            profile_id=profile.id,
+            profile_manager=pm,
+            defaults_snapshot=profile.acl_defaults_snapshot,
+            new_plugin_flag_for_tool=_new_flag,
+        )
+        assert acl.resolve(Capability.FS_WRITE, "weatherbug_ping") is Decision.ASK
+
+
+# ---------------------------------------------------------------------------
+# Cycle 14 — "uninstall first" error on re-install (Issue #51).
+# ---------------------------------------------------------------------------
+
+
+class TestBuilderUninstallFirst:
+    @pytest.mark.asyncio
+    async def test_existing_subdir_error_names_uninstall(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        (tmp_path / "weatherbug").mkdir()
+        (tmp_path / "weatherbug" / "server.py").write_text("# already")
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert result.is_error
+        assert "uninstall first" in result.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_existing_flat_file_error_names_uninstall(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        (tmp_path / "weatherbug.py").write_text("PLUGIN_NAME = 'weatherbug'\n")
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+        )
+
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert result.is_error
+        assert "uninstall first" in result.content.lower()
+
+
+# ---------------------------------------------------------------------------
+# Cycle 15 — builder_uninstall removes files, ACL rows, and the flag (Issue #51).
+# ---------------------------------------------------------------------------
+
+
+class TestBuilderUninstall:
+    @pytest.mark.asyncio
+    async def test_uninstall_drops_per_tool_acl_rows_only(self, tmp_path):
+        """Per the sharpener: per-tool overrides for the plugin's tools are
+        dropped; class-scope rows survive (a user who granted FS_WRITE
+        persistently to one plugin probably wants it for the next one too)."""
+        from plugins.builder import BuilderPlugin
+
+        pm, profile = _make_pm(tmp_path)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=plugins_dir,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            profile_manager=pm,
+        )
+
+        await builder.call_tool("builder_create", {"description": "x"})
+
+        # User adds a per-tool override on a weatherbug tool, plus a class
+        # grant on the FS_WRITE class (unrelated to weatherbug — it's a
+        # capability-level grant).
+        pm.set_acl_grant(
+            profile.id, scope="tool", target="weatherbug_ping", policy="deny",
+        )
+        pm.set_acl_grant(
+            profile.id, scope="class", target="fs_write", policy="silent",
+        )
+
+        result = await builder.call_tool(
+            "builder_uninstall", {"name": "weatherbug"},
+        )
+        assert not result.is_error, result.content
+
+        # Per-tool override gone; class-scope FS_WRITE grant survives.
+        targets = {(r["scope"], r["target"]) for r in pm.list_acl_grants(profile.id)}
+        assert ("tool", "weatherbug_ping") not in targets
+        assert ("class", "fs_write") in targets
+
+    @pytest.mark.asyncio
+    async def test_uninstall_removes_plugin_directory(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        pm, _ = _make_pm(tmp_path)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=plugins_dir,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            profile_manager=pm,
+        )
+
+        await builder.call_tool("builder_create", {"description": "x"})
+        assert (plugins_dir / "weatherbug").exists()
+
+        await builder.call_tool("builder_uninstall", {"name": "weatherbug"})
+        assert not (plugins_dir / "weatherbug").exists()
+
+    @pytest.mark.asyncio
+    async def test_uninstall_clears_new_plugin_flag(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        pm, _ = _make_pm(tmp_path)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=plugins_dir,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            profile_manager=pm,
+        )
+
+        await builder.call_tool("builder_create", {"description": "x"})
+        assert pm.get_plugin_new_flag("weatherbug") is True
+
+        await builder.call_tool("builder_uninstall", {"name": "weatherbug"})
+        assert pm.get_plugin_new_flag("weatherbug") is False
+
+    @pytest.mark.asyncio
+    async def test_uninstall_unregisters_from_orchestrator(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        pm, _ = _make_pm(tmp_path)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=plugins_dir,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            profile_manager=pm,
+        )
+
+        await builder.call_tool("builder_create", {"description": "x"})
+        assert "weatherbug" in orc._plugins
+        await builder.call_tool("builder_uninstall", {"name": "weatherbug"})
+        assert "weatherbug" not in orc._plugins
+        assert orc.plugin_for_tool("weatherbug_ping") is None
+
+    @pytest.mark.asyncio
+    async def test_uninstall_then_recreate_succeeds(self, tmp_path):
+        """The full uninstall → reinstall cycle is the user-facing 'update'
+        path (the builder refuses to overwrite, so updates go this way)."""
+        from plugins.builder import BuilderPlugin
+
+        pm, _ = _make_pm(tmp_path)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        orc = _make_orc()
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=plugins_dir,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            profile_manager=pm,
+        )
+
+        await builder.call_tool("builder_create", {"description": "x"})
+        await builder.call_tool("builder_uninstall", {"name": "weatherbug"})
+        result = await builder.call_tool("builder_create", {"description": "x"})
+        assert not result.is_error, result.content
+
+    @pytest.mark.asyncio
+    async def test_uninstall_unknown_plugin_fails_cleanly(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        pm, _ = _make_pm(tmp_path)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        orc = _make_orc()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=plugins_dir,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=_make_recording_pip()[0],
+            smoke_runner_fn=_make_recording_smoke()[0],
+            profile_manager=pm,
+        )
+
+        result = await builder.call_tool("builder_uninstall", {"name": "neverexisted"})
+        assert result.is_error
+        assert "not found" in result.content.lower() or "no plugin" in result.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_uninstall_invalid_name_rejected(self, tmp_path):
+        from plugins.builder import BuilderPlugin
+
+        pm, _ = _make_pm(tmp_path)
+        builder = BuilderPlugin(
+            orchestrator=_make_orc(),
+            plugins_dir=tmp_path,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=_make_recording_pip()[0],
+            smoke_runner_fn=_make_recording_smoke()[0],
+            profile_manager=pm,
+        )
+        result = await builder.call_tool("builder_uninstall", {"name": "../escape"})
+        assert result.is_error
+        assert "name" in result.content.lower()
+
+    def test_builder_uninstall_tool_listed(self):
+        from plugins.builder import BuilderPlugin
+
+        builder = BuilderPlugin(
+            orchestrator=_make_orc(),
+            plugins_dir=Path("/tmp/x"),
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=_make_recording_pip()[0],
+            smoke_runner_fn=_make_recording_smoke()[0],
+        )
+        names = [t.name for t in builder.list_tools()]
+        assert "builder_uninstall" in names
+
+
+# ---------------------------------------------------------------------------
+# Cycle 16 — second install after the first picks Persistent rides through
+# silently on Capability.CODE_INSTALL (Issue #51 sharpener Cycle N).
+# ---------------------------------------------------------------------------
+
+
+class TestBuilderPersistentGrant:
+    @pytest.mark.asyncio
+    async def test_persistent_grant_makes_second_install_silent(self, tmp_path):
+        """User picks Persistent on first install. A second install of a
+        DIFFERENT plugin name no longer triggers the prompt because the
+        ACL now carries a persistent SILENT grant for code_install.
+
+        We model the ACL+consent integration with a real ProfileACL +
+        a thin fake consent surface that mutates the ACL on Persistent
+        (mirroring the production ConsentSurface._apply_choice path).
+        """
+        from cerebral.security import Capability, ProfileACL
+        from plugins.builder import BuilderPlugin
+
+        pm, profile = _make_pm(tmp_path)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+
+        # Build the ACL the way main.py does.
+        def _new_flag(tool_name):
+            plugin = orc.plugin_for_tool(tool_name)
+            return bool(plugin) and pm.get_plugin_new_flag(plugin)
+
+        acl = ProfileACL(
+            profile_id=profile.id,
+            profile_manager=pm,
+            defaults_snapshot=profile.acl_defaults_snapshot,
+            new_plugin_flag_for_tool=_new_flag,
+        )
+
+        # Fake consent surface: first call mutates ACL with Persistent
+        # SILENT for the requested class then returns SILENT; subsequent
+        # calls short-circuit on the persistent grant (no longer ASK).
+        prompt_count = {"n": 0}
+
+        class _PersistThenSilent:
+            async def request(self, capability, tool_name, args, flags=None):
+                # Simulate the real surface: resolve via the ACL first.
+                resolved = acl.resolve(capability, tool_name, flags)
+                if resolved is Decision.SILENT:
+                    return Decision.SILENT
+                if resolved is Decision.DENY:
+                    return Decision.DENY
+                # Was ASK — the user is being prompted. First time pick
+                # Persistent; subsequent prompts shouldn't happen.
+                prompt_count["n"] += 1
+                acl.set_persistent_class(capability, Decision.SILENT)
+                return Decision.SILENT
+
+            def set_acl(self, _acl):
+                pass
+
+        consent = _PersistThenSilent()
+        orc = MCPOrchestrator(acl=acl, consent=consent)
+        smoke_fn, _ = _make_recording_smoke()
+        pip_fn, _ = _make_recording_pip()
+
+        builder = BuilderPlugin(
+            orchestrator=orc,
+            plugins_dir=plugins_dir,
+            llm_fn=_make_llm_fn(),
+            pip_install_fn=pip_fn,
+            smoke_runner_fn=smoke_fn,
+            profile_manager=pm,
+        )
+
+        # First install.
+        r1 = await builder.call_tool("builder_create", {"description": "x"})
+        assert not r1.is_error, r1.content
+        assert prompt_count["n"] == 1
+
+        # Second install — different plugin name, same code_install class.
+        # The persistent grant from install #1 should resolve to SILENT
+        # without re-prompting. The generated source must match the new
+        # name (PLUGIN_NAME and class name) so the orchestrator actually
+        # registers it under "other" and doesn't collide with "weatherbug".
+        other_source = (
+            _GENERATED_SERVER
+            .replace("weatherbug", "other")
+            .replace("WeatherbugPlugin", "OtherPlugin")
+        )
+        builder._llm = _make_llm_fn(dict(
+            _GENERATED_PAYLOAD,
+            name="other",
+            server_py=other_source,
+            smoke_tool="other_ping",
+        ))
+        r2 = await builder.call_tool("builder_create", {"description": "x"})
+        assert not r2.is_error, r2.content
+        assert prompt_count["n"] == 1, (
+            "Second install must not re-prompt — the persistent SILENT grant "
+            "on code_install rides through."
+        )
+        # Both plugins are registered.
+        assert "weatherbug" in orc._plugins
+        assert "other" in orc._plugins

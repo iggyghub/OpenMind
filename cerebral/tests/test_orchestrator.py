@@ -711,6 +711,34 @@ async def test_orchestrator_without_acl_falls_back_to_gate(tmp_path):
     assert not result.is_error
 
 
+# ---------------------------------------------------------------------------
+# Slice 12 — plugin_for_tool lookup (Issue #51, ADR-0005)
+# ---------------------------------------------------------------------------
+
+
+def test_plugin_for_tool_returns_owning_plugin_name():
+    """The orchestrator owns the tool→plugin mapping; the ACL's new-plugin
+    flag hook depends on it to translate a tool name back to its plugin."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("weatherbug", ["weatherbug_ping", "weatherbug_report"])
+    orc.register(plugin)
+    assert orc.plugin_for_tool("weatherbug_ping") == "weatherbug"
+    assert orc.plugin_for_tool("weatherbug_report") == "weatherbug"
+
+
+def test_plugin_for_tool_returns_none_for_unknown_tool():
+    orc = MCPOrchestrator()
+    assert orc.plugin_for_tool("never_existed") is None
+
+
+def test_plugin_for_tool_drops_mapping_on_unregister():
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("weatherbug", ["weatherbug_ping"])
+    orc.register(plugin)
+    orc.unregister("weatherbug")
+    assert orc.plugin_for_tool("weatherbug_ping") is None
+
+
 @pytest.mark.parametrize("plugin_path", _PLUGIN_FILES, ids=lambda p: p.stem)
 def test_every_real_plugin_declares_valid_required_capabilities(plugin_path):
     """Loading every plugin file via discover_plugins must not refuse it.

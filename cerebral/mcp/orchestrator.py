@@ -268,6 +268,16 @@ class MCPOrchestrator:
         path; tests)."""
         return self._plugin_capabilities.get(plugin_name)
 
+    def plugin_for_tool(self, tool_name: str) -> str | None:
+        """Return the registered plugin that owns the given tool, or None.
+
+        Used by the ACL's new-plugin-flag carve-out (Issue #51) to translate
+        a tool name back to its plugin so the per-plugin flag can be looked
+        up in SQLite. Stable lookup — backed by the same `_tool_index` that
+        routes calls.
+        """
+        return self._tool_index.get(tool_name)
+
     def inspectability_for(self, plugin_name: str) -> str | None:
         """The inspectability mark recorded at discovery time (Issue #46).
 

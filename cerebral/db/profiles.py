@@ -11,6 +11,7 @@ import json
 import sqlite3
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Iterable
 
 DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
 
@@ -74,6 +75,17 @@ class ProfileManager:
                 granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (profile_id, scope, target),
                 FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+            );
+            -- Per-plugin install metadata (Issue #51, ADR-0005). The
+            -- builder sets new_plugin=1 on install; the Permissions UI
+            -- clears it. While set, ProfileACL.resolve skips session/
+            -- persistent/per-tool bypasses on this plugin's tools.
+            -- Hand-authored plugins have no row here — get_plugin_new_flag
+            -- returns False by default.
+            CREATE TABLE IF NOT EXISTS plugin_flags (
+                plugin_name   TEXT    PRIMARY KEY,
+                new_plugin    INTEGER NOT NULL DEFAULT 0 CHECK (new_plugin IN (0, 1)),
+                installed_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         """)
         self._con.commit()
@@ -237,6 +249,76 @@ class ProfileManager:
             (profile_id, scope, target),
         ).fetchone()
         return row["policy"] if row else None
+
+    # ── Plugin flags + uninstall ACL cleanup (Issue #51) ──────────────────────
+
+    def set_plugin_new_flag(self, plugin_name: str, value: bool) -> None:
+        """Set the 'new plugin' flag for a builder-installed plugin.
+
+        While True, ``ProfileACL.resolve`` short-circuits the plugin's tools
+        to step 5 (default policy) so session/persistent bypasses cannot
+        silently fire. The Permissions UI flips it to False once the user
+        has reviewed the plugin (issue #53)."""
+        self._con.execute(
+            """INSERT INTO plugin_flags (plugin_name, new_plugin)
+               VALUES (?, ?)
+               ON CONFLICT(plugin_name)
+               DO UPDATE SET new_plugin=excluded.new_plugin""",
+            (plugin_name, 1 if value else 0),
+        )
+        self._con.commit()
+
+    def get_plugin_new_flag(self, plugin_name: str) -> bool:
+        """Return the 'new plugin' flag for a plugin (False if no row)."""
+        row = self._con.execute(
+            "SELECT new_plugin FROM plugin_flags WHERE plugin_name=?",
+            (plugin_name,),
+        ).fetchone()
+        return bool(row["new_plugin"]) if row else False
+
+    def remove_plugin_flag(self, plugin_name: str) -> bool:
+        """Drop the plugin_flags row for a plugin. Returns True iff a row existed."""
+        cur = self._con.execute(
+            "DELETE FROM plugin_flags WHERE plugin_name=?", (plugin_name,),
+        )
+        self._con.commit()
+        return cur.rowcount > 0
+
+    def list_plugin_flags(self) -> dict[str, bool]:
+        """Map of plugin_name → new_plugin flag for every row present.
+
+        Plugins with no row default to False at lookup time — they don't
+        appear here. The tray's plugins_list uses this to render the
+        "new plugin" badge (Issue #51 / Issue #53)."""
+        rows = self._con.execute(
+            "SELECT plugin_name, new_plugin FROM plugin_flags"
+        ).fetchall()
+        return {r["plugin_name"]: bool(r["new_plugin"]) for r in rows}
+
+    def remove_plugin_acl_rows(
+        self, plugin_name: str, tool_names: Iterable[str],
+    ) -> int:
+        """Drop per-tool ``profile_acl`` rows for a plugin's tools, across all profiles.
+
+        v1 (per #51 sharpener pin #5): only per-tool overrides are dropped.
+        Class-scope rows (``scope='class'``) survive — a user who granted
+        a capability persistently to one plugin probably wants it for the
+        next one too. Returns the number of rows deleted.
+
+        ``plugin_name`` is currently informational (logging only) — we
+        match per-tool overrides by the explicit ``tool_names`` list,
+        which the orchestrator computes from the plugin before unregister.
+        """
+        tools = [name for name in tool_names if name]
+        if not tools:
+            return 0
+        placeholders = ",".join("?" * len(tools))
+        cur = self._con.execute(
+            f"DELETE FROM profile_acl WHERE scope='tool' AND target IN ({placeholders})",
+            tools,
+        )
+        self._con.commit()
+        return cur.rowcount
 
     # ── Active profile ────────────────────────────────────────────────────────
 
