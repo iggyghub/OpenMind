@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Felix — Confirm</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #12101e;
+      color: #e2e0f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    .header {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid #5c1f3c;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      background: linear-gradient(180deg, #1a1426 0%, #12101e 100%);
+    }
+
+    .warning-icon {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #ff6b9d;
+      box-shadow: 0 0 10px #ff6b9d88;
+    }
+    .header-title {
+      font-size: 14px; font-weight: 700;
+      color: #ffc4d8; letter-spacing: 0.02em;
+    }
+    .irreversible-pill {
+      margin-left: 6px;
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 9px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: #5c1f3c;
+      color: #ffc4d8;
+    }
+
+    .body {
+      padding: 16px 20px;
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .body::-webkit-scrollbar { width: 4px; }
+    .body::-webkit-scrollbar-thumb { background: #3a3460; border-radius: 2px; }
+
+    .capability-label {
+      font-size: 17px; font-weight: 600; color: #f0eefc;
+      margin-bottom: 6px;
+    }
+    .tool-name {
+      font-size: 12px; color: #8c87b3;
+      font-family: SFMono-Regular, Consolas, monospace;
+      margin-bottom: 14px;
+      word-break: break-all;
+    }
+
+    .args-block {
+      background: #1a1730;
+      border-left: 3px solid #ff6b9d;
+      border-radius: 4px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+    }
+    .args-label {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #ffc4d8;
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+    .args-preview {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 13px;
+      color: #f0eefc;
+      line-height: 1.5;
+    }
+    .args-preview .arg { padding: 2px 0; word-break: break-all; }
+    .args-preview .arg-key { color: #ff6b9d; font-weight: 600; }
+    .args-preview .arg-empty { color: #5c5880; font-style: italic; font-size: 12px; }
+
+    .description {
+      font-size: 12px;
+      color: #c4c0e0;
+      line-height: 1.5;
+      margin-top: 8px;
+    }
+
+    .footer {
+      padding: 14px 16px 16px;
+      border-top: 1px solid #2a2640;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    button {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 11px 12px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background 120ms, border-color 120ms, filter 120ms;
+    }
+
+    .btn-cancel { background: #2a2640; color: #e2e0f0;  border-color: #3a3460; }
+    .btn-accept { background: #8a1f4a; color: #ffe4ec;  border-color: #b03060; }
+
+    button:hover    { filter: brightness(1.15); }
+    button:focus    { outline: 2px solid #ff6b9d; outline-offset: 1px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="warning-icon"></div>
+    <div class="header-title">Felix wants to do something irreversible</div>
+    <span class="irreversible-pill">cannot undo</span>
+  </div>
+
+  <div class="body">
+    <div class="capability-label" id="capability-label">Capability</div>
+    <div class="tool-name" id="tool-name">tool</div>
+
+    <div class="args-block">
+      <div class="args-label">Action</div>
+      <div class="args-preview" id="args-preview"></div>
+    </div>
+
+    <div class="description" id="capability-description"></div>
+  </div>
+
+  <div class="footer">
+    <button class="btn-cancel" data-choice="cancel">Cancel</button>
+    <button class="btn-accept" data-choice="accept" id="accept-btn">Accept</button>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+
+    const labelEl  = document.getElementById('capability-label');
+    const toolEl   = document.getElementById('tool-name');
+    const descEl   = document.getElementById('capability-description');
+    const argsEl   = document.getElementById('args-preview');
+    const acceptBtn = document.getElementById('accept-btn');
+
+    let currentId = null;
+
+    function render(req) {
+      currentId = req.request_id;
+      labelEl.textContent = req.capability_label || req.capability;
+      toolEl.textContent  = req.tool_name;
+      descEl.textContent  = req.capability_description || '';
+
+      argsEl.innerHTML = '';
+      const entries = Object.entries(req.args_preview || {});
+      if (entries.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'arg arg-empty';
+        empty.textContent = '(no arguments declared)';
+        argsEl.appendChild(empty);
+      } else {
+        for (const [k, v] of entries) {
+          const row = document.createElement('div');
+          row.className = 'arg';
+          const key = document.createElement('span');
+          key.className = 'arg-key';
+          key.textContent = k + ': ';
+          const val = document.createElement('span');
+          val.textContent = typeof v === 'string' ? v : JSON.stringify(v);
+          row.appendChild(key);
+          row.appendChild(val);
+          argsEl.appendChild(row);
+        }
+      }
+    }
+
+    for (const btn of document.querySelectorAll('button[data-choice]')) {
+      btn.addEventListener('click', () => {
+        if (currentId === null) return;
+        ipcRenderer.send('irreversible-modal:choose', {
+          request_id: currentId, choice: btn.dataset.choice,
+        });
+      });
+    }
+
+    // Escape key: Cancel. Enter: Accept (but only after the user has
+    // tabbed to the Accept button — we don't auto-focus it, to keep the
+    // user from confirming an irreversible action by reflex.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && currentId !== null) {
+        ipcRenderer.send('irreversible-modal:choose', {
+          request_id: currentId, choice: 'cancel',
+        });
+      }
+    });
+
+    ipcRenderer.on('irreversible-modal:show', (_evt, payload) => render(payload));
+
+    // Ask main for the payload after load (in case it raced the show event).
+    ipcRenderer.send('irreversible-modal:ready');
+  </script>
+</body>
+</html>

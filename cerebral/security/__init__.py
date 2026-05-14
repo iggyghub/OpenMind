@@ -51,6 +51,13 @@ from cerebral.security.labels import (
     description_for,
     label_for,
 )
+from cerebral.security.modal import (
+    CHOICE_ACCEPT,
+    CHOICE_CANCEL,
+    ModalRequest,
+    ModalSurface,
+    is_valid_modal_choice,
+)
 
 # Closed string-form view of the 16-class vocabulary. Plugin modules declare
 # REQUIRED_CAPABILITIES as frozenset[str] so they don't have to import the
@@ -62,6 +69,8 @@ __all__ = [
     "CAPABILITY_DESCRIPTION",
     "CAPABILITY_LABEL",
     "CAPABILITY_VOCABULARY",
+    "CHOICE_ACCEPT",
+    "CHOICE_CANCEL",
     "CHOICE_DENY",
     "CHOICE_ONCE",
     "CHOICE_PERSISTENT",
@@ -78,6 +87,8 @@ __all__ = [
     "FORBIDDEN_PATTERNS",
     "INSPECTED",
     "InspectabilityIssue",
+    "ModalRequest",
+    "ModalSurface",
     "ProfileACL",
     "REASON_FORBIDDEN_PATTERN",
     "REASON_NON_TEXT",
@@ -91,6 +102,7 @@ __all__ = [
     "description_for",
     "format_findings",
     "is_valid_choice",
+    "is_valid_modal_choice",
     "label_for",
     "scan_source",
 ]
