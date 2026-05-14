@@ -21,7 +21,7 @@ session/persistent bypasses cannot silently actuate queue-originated calls
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 
 from cerebral.db.profiles import ProfileManager
 from cerebral.security.gate import (
@@ -30,6 +30,13 @@ from cerebral.security.gate import (
     DEFAULT_POLICY,
     Decision,
 )
+
+
+# Type of the function the ACL calls to ask "is this tool's plugin
+# new-plugin-flagged?" (Issue #51). Receives the tool name; returns True if
+# the owning plugin currently carries `new_plugin=1`. When the hook is
+# absent or returns False, ACL resolution follows the pre-#51 5-step chain.
+NewPluginFlagFn = Callable[[str], bool]
 
 
 # One-notch escalation for `passive` calls — identical to gate._ESCALATE, but
@@ -59,6 +66,7 @@ class ProfileACL:
         profile_id: int,
         profile_manager: ProfileManager,
         defaults_snapshot: Mapping[str, str] | None = None,
+        new_plugin_flag_for_tool: NewPluginFlagFn | None = None,
     ) -> None:
         self._profile_id = profile_id
         self._pm = profile_manager
@@ -77,6 +85,14 @@ class ProfileACL:
         self._session_class_grants: dict[str, Decision] = {}
         # once[class_] is a queue of grants to be consumed on the next call.
         self._once_class_grants: dict[str, list[Decision]] = {}
+        # Issue #51: a hook back to the orchestrator + ProfileManager that
+        # tells us when the tool's owning plugin currently carries the
+        # "new plugin" flag. When True we skip steps 1-4 of resolution so
+        # session/persistent bypasses cannot silently fire for an
+        # unreviewed builder-installed plugin.
+        self._new_plugin_flag_for_tool: NewPluginFlagFn = (
+            new_plugin_flag_for_tool or (lambda _tool_name: False)
+        )
 
     @property
     def profile_id(self) -> int:
@@ -114,6 +130,16 @@ class ProfileACL:
         self, capability: Capability, tool_name: str,
     ) -> Decision:
         class_target = capability.value
+
+        # Issue #51 — new-plugin-flag carve-out. While set, skip steps 1-4
+        # (per-tool override, persistent class, session, once) and go
+        # straight to the profile's default-policy snapshot. The intent is
+        # to force every call on an unreviewed builder-installed plugin to
+        # ask fresh, regardless of any pre-existing bypass on the
+        # capability class. Once cleared via the Permissions UI (#53),
+        # normal resolution resumes.
+        if self._new_plugin_flag_for_tool(tool_name):
+            return self._defaults.get(class_target, DEFAULT_POLICY[capability])
 
         # Step 1 — per-tool override (most specific).
         tool_policy = self._pm.get_acl_grant(

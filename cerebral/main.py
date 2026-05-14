@@ -74,12 +74,25 @@ _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
 
 
+def _new_plugin_flag_for_tool(tool_name: str) -> bool:
+    """ACL hook (Issue #51): translate a tool name → owning plugin → flag.
+
+    When the plugin currently carries the 'new plugin' flag, ProfileACL
+    skips its session/persistent/per-tool bypass layers so every call on
+    that plugin's tools asks fresh. The flag is set by the builder on
+    install and cleared by the user via the Permissions UI (#53).
+    """
+    plugin = _orc.plugin_for_tool(tool_name)
+    return bool(plugin) and _pm.get_plugin_new_flag(plugin)
+
+
 def _build_acl(profile) -> ProfileACL:
     """Construct a ProfileACL bound to the given profile's snapshot."""
     return ProfileACL(
         profile_id=profile.id,
         profile_manager=_pm,
         defaults_snapshot=profile.acl_defaults_snapshot,
+        new_plugin_flag_for_tool=_new_plugin_flag_for_tool,
     )
 
 
@@ -255,6 +268,10 @@ def _plugins_list_event() -> dict:
             "name": plugin_name,
             "required_capabilities": sorted(caps) if caps is not None else None,
             "inspectability": _orc.inspectability_for(plugin_name),
+            # Issue #51 — the tray surfaces a "new plugin" badge on
+            # builder-installed plugins whose flag is still set. Cleared
+            # via the Permissions UI (#53).
+            "new_plugin_flag": _pm.get_plugin_new_flag(plugin_name),
         })
     return {
         "type": "plugins_list",
@@ -397,6 +414,21 @@ async def _handle_message(msg: dict) -> None:
         await _broadcast({"type": "tools_list", "data": {"tools": _orc.tools_for_llm}})
 
     elif t == "list_plugins":
+        await _broadcast(_plugins_list_event())
+
+    elif t == "clear_new_plugin_flag":
+        # Issue #51 — the Permissions UI's "I've reviewed this plugin"
+        # affordance flips new_plugin to 0 and re-broadcasts plugins_list
+        # so the tray's badge drops on every connected client. The flag is
+        # the only thing standing between this plugin's tools and the
+        # ACL's normal session/persistent bypasses (#53 owns the UI).
+        d = msg.get("data") or {}
+        plugin_name = (d.get("name") or "").strip()
+        if not plugin_name:
+            logger.warning("[cerebral] clear_new_plugin_flag missing 'name'")
+            return
+        _pm.set_plugin_new_flag(plugin_name, False)
+        logger.info("[cerebral] Cleared new_plugin flag for %r", plugin_name)
         await _broadcast(_plugins_list_event())
 
     elif t == "consent_response":
@@ -653,6 +685,7 @@ def _attach_builder_plugin() -> None:
         _orc,
         llm_fn=_llm_fn,
         pip_allowlist=("requests", "httpx", "aiohttp", "beautifulsoup4", "lxml"),
+        profile_manager=_pm,
     )
     logger.info("[cerebral] Plugin builder attached (pip_allowlist=5 packages)")
 

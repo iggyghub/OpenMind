@@ -40,11 +40,16 @@ import tempfile
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 
+from cerebral.db.profiles import ProfileManager
 from cerebral.mcp.orchestrator import MCPOrchestrator, Plugin, Tool, ToolResult
 from cerebral.security import (
     CAPABILITY_VOCABULARY,
+    CallFlags,
+    Capability,
+    Decision,
     check_completeness,
     format_findings,
+    label_for,
     scan_source,
 )
 
@@ -52,14 +57,17 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "builder"
 
-# ADR-0005 / Issue #44 / #47 — builder_create:
+# ADR-0005 / Issue #44 / #47 / #51 — builder_create + builder_uninstall:
 #   - pip-installs third-party packages → code_install
 #   - writes generated plugin source + README to plugins/<name>/ → fs_write
+#   - removes plugins/<name>/ on uninstall → fs_delete
 # The intent-level capability the user prompt asks about is code_install
 # (issue #48's consent surface unifies "install a new plugin"); the AST
 # completeness check (#47) verifies the actual filesystem touches are
-# declared, hence both classes appear here.
-REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"code_install", "fs_write"})
+# declared, hence all three classes appear here.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset(
+    {"code_install", "fs_write", "fs_delete"}
+)
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _DEP_NAME_RE = re.compile(r"^([A-Za-z0-9_.\-]+)")  # captures package name from `name==1.2.3`
@@ -116,6 +124,7 @@ class BuilderPlugin:
         pip_install_fn: PipInstallFn | None = None,
         smoke_runner_fn: SmokeRunnerFn | None = None,
         pip_allowlist: Iterable[str] = (),
+        profile_manager: ProfileManager | None = None,
     ) -> None:
         self._orc = orchestrator
         self._plugins_dir = Path(plugins_dir)
@@ -125,6 +134,11 @@ class BuilderPlugin:
         self._pip_allowlist = {dep.strip().lower() for dep in pip_allowlist}
         # Plugin names produced by *this* builder (process-local).
         self._generated: set[str] = set()
+        # Issue #51 — the ProfileManager owns the `plugin_flags` table and
+        # the uninstall ACL cleanup path. Tests that don't bring one are
+        # legacy paths; production wiring always supplies it. When absent,
+        # the new-plugin flag is simply not recorded.
+        self._pm = profile_manager
 
     # ------------------------------------------------------------------
     # Plugin protocol
@@ -189,6 +203,26 @@ class BuilderPlugin:
                     "required": ["name"],
                 },
             ),
+            Tool(
+                name="builder_uninstall",
+                description=(
+                    "Remove a builder-installed plugin: unregister it from "
+                    "the orchestrator, delete its plugins/<name>/ directory, "
+                    "drop its per-tool ACL overrides, and clear the "
+                    "'new plugin' flag. Class-scope ACL grants survive. "
+                    "This is the user-facing 'update' path — the builder "
+                    "refuses to overwrite, so updates are uninstall + "
+                    "re-create (ADR-0005)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Plugin name to remove."},
+                    },
+                    "required": ["name"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -198,6 +232,8 @@ class BuilderPlugin:
             return self._list_generated()
         if tool_name == "builder_smoke_test":
             return await self._smoke_test(args)
+        if tool_name == "builder_uninstall":
+            return await self._uninstall(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -228,8 +264,15 @@ class BuilderPlugin:
         target_dir = self._plugins_dir / name
         flat_path = self._plugins_dir / f"{name}.py"
         if target_dir.exists() or flat_path.exists():
+            # ADR-0005 / Issue #51: the builder refuses to overwrite an
+            # existing plugin. Updates are uninstall + re-create so ACL
+            # never carries across versions. The "uninstall first" phrase
+            # is the affordance the tray surfaces to the user.
             return ToolResult(
-                content=f"Plugin {name!r} already exists in {self._plugins_dir}",
+                content=(
+                    f"Plugin {name!r} already exists in {self._plugins_dir} "
+                    f"— uninstall first."
+                ),
                 is_error=True,
             )
 
@@ -238,6 +281,24 @@ class BuilderPlugin:
         pip_deps: list[str] = list(payload.get("pip_deps") or [])
         smoke_tool = payload.get("smoke_tool")
         smoke_args = payload.get("smoke_args") or {}
+
+        # ----- ADR-0005 / Issue #51 — user-facing description -----
+        plugin_description_raw = payload.get("description")
+        if plugin_description_raw is None:
+            return ToolResult(
+                content=(
+                    "LLM payload missing 'description' — every generated "
+                    "plugin must include a user-facing description for the "
+                    "install prompt (ADR-0005)."
+                ),
+                is_error=True,
+            )
+        plugin_description = str(plugin_description_raw).strip()
+        if not plugin_description:
+            return ToolResult(
+                content="LLM payload's 'description' must be non-empty",
+                is_error=True,
+            )
 
         # ----- ADR-0005 / Issue #44 — capability declaration -----
         required_capabilities_raw = payload.get("required_capabilities")
@@ -305,7 +366,7 @@ class BuilderPlugin:
                 is_error=True,
             )
 
-        # ----- pip allowlist + install -----
+        # ----- pip allowlist (validated up-front, install runs post-consent) -----
         for dep in pip_deps:
             pkg = self._dep_root_name(dep)
             if pkg.lower() not in self._pip_allowlist:
@@ -318,25 +379,74 @@ class BuilderPlugin:
                     is_error=True,
                 )
 
-        for dep in pip_deps:
-            try:
-                self._pip_install(dep)
-            except Exception as exc:
-                return ToolResult(
-                    content=f"pip install failed for {dep!r}: {exc}",
-                    is_error=True,
-                )
-
-        # ----- Stage to a temp dir, smoke-test, then move -----
+        # ----- Stage to a temp dir; prompt for consent against a real file -----
         with tempfile.TemporaryDirectory(prefix="builder_") as staging_str:
             staging = Path(staging_str)
             stage_dir = staging / name
             stage_dir.mkdir()
-            (stage_dir / "server.py").write_text(server_py, encoding="utf-8")
+            staged_server = stage_dir / "server.py"
+            staged_server.write_text(server_py, encoding="utf-8")
             (stage_dir / "README.md").write_text(readme_md, encoding="utf-8")
 
+            # ----- ADR-0005 / Issue #51 — install-time consent prompt -----
+            # One prompt per build consumes `code_install` for the whole
+            # transaction. We pre-stage so the tray's preview link points
+            # at a real file on disk; on Deny/timeout/no-surface the temp
+            # dir is torn down and nothing is moved or registered.
+            consent = self._orc.consent_surface if self._orc is not None else None
+            if consent is None:
+                return ToolResult(
+                    content=(
+                        "Refusing to install: no consent surface is wired "
+                        "(fail-closed per ADR-0005). main.py must call "
+                        "MCPOrchestrator.set_consent_surface before the "
+                        "builder runs."
+                    ),
+                    is_error=True,
+                )
+            install_args = {
+                "plugin_name": name,
+                "description": plugin_description,
+                "capability_labels": sorted(
+                    label_for(Capability(c)) for c in required_capabilities
+                ),
+                "capabilities": sorted(required_capabilities),
+                "pip_deps": list(pip_deps),
+                "preview_path": str(staged_server),
+            }
             try:
-                plugin = self._import_module(stage_dir / "server.py", name)
+                decision = await consent.request(
+                    Capability.CODE_INSTALL,
+                    "builder.install",
+                    install_args,
+                    CallFlags(),
+                )
+            except Exception as exc:
+                return ToolResult(
+                    content=f"Consent surface raised: {exc}",
+                    is_error=True,
+                )
+            if decision is not Decision.SILENT:
+                return ToolResult(
+                    content=(
+                        f"Install cancelled for plugin {name!r} "
+                        f"(consent: {decision.value})."
+                    ),
+                    is_error=True,
+                )
+
+            # ----- pip install (only after consent) -----
+            for dep in pip_deps:
+                try:
+                    self._pip_install(dep)
+                except Exception as exc:
+                    return ToolResult(
+                        content=f"pip install failed for {dep!r}: {exc}",
+                        is_error=True,
+                    )
+
+            try:
+                plugin = self._import_module(staged_server, name)
             except Exception as exc:
                 return ToolResult(
                     content=f"Could not import generated plugin: {exc}",
@@ -366,6 +476,13 @@ class BuilderPlugin:
         self._orc.register(plugin, required_capabilities=required_capabilities)
         self._generated.add(name)
 
+        # ADR-0005 / Issue #51 — mark this plugin "new" so the ACL's
+        # per-(profile, capability) bypasses are inert on its tools until
+        # the user clears the flag in the Permissions UI (#53). Tests that
+        # don't bring a ProfileManager are legacy paths.
+        if self._pm is not None:
+            self._pm.set_plugin_new_flag(name, True)
+
         return ToolResult(
             content=json.dumps(
                 {
@@ -373,6 +490,7 @@ class BuilderPlugin:
                     "tool_count": len(tools),
                     "registered": True,
                     "path": str(target_dir),
+                    "new_plugin_flag": self._pm is not None,
                 }
             )
         )
@@ -411,6 +529,68 @@ class BuilderPlugin:
         return ToolResult(
             content=json.dumps(
                 {"name": name, "tool": tool_name, "result": result.content}
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # builder_uninstall — ADR-0005 / Issue #51
+    # ------------------------------------------------------------------
+
+    async def _uninstall(self, args: dict) -> ToolResult:
+        """Remove a builder-installed plugin and its per-tool ACL rows.
+
+        The dual of `_create`: unregisters the plugin from the orchestrator,
+        deletes plugins/<name>/, drops per-tool overrides from profile_acl
+        (across all profiles), and clears the new_plugin flag. Class-scope
+        ACL rows survive (the sharpener's pin: a user who granted FS_WRITE
+        persistently to one plugin probably wants it for the next one too).
+
+        ``builder_uninstall`` is the user-facing update path — the builder
+        refuses to overwrite, so updates go: uninstall → builder_create.
+        """
+        name = (args or {}).get("name", "").strip()
+        if not _NAME_RE.match(name):
+            return ToolResult(
+                content=f"Invalid plugin name {name!r}", is_error=True,
+            )
+
+        target_dir = self._plugins_dir / name
+        flat_path = self._plugins_dir / f"{name}.py"
+        registered = self._orc is not None and name in getattr(self._orc, "_plugins", {})
+        if not (target_dir.exists() or flat_path.exists() or registered):
+            return ToolResult(
+                content=f"No plugin {name!r} found in {self._plugins_dir}",
+                is_error=True,
+            )
+
+        # Capture the tool list before we unregister so we know which
+        # profile_acl per-tool rows to drop.
+        tool_names: list[str] = []
+        if registered and self._orc is not None:
+            plugin = self._orc._plugins.get(name)
+            if plugin is not None:
+                tool_names = [t.name for t in plugin.list_tools()]
+            self._orc.unregister(name)
+
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        if flat_path.exists():
+            flat_path.unlink()
+
+        dropped_rows = 0
+        if self._pm is not None:
+            self._pm.remove_plugin_flag(name)
+            dropped_rows = self._pm.remove_plugin_acl_rows(name, tool_names)
+
+        self._generated.discard(name)
+        return ToolResult(
+            content=json.dumps(
+                {
+                    "name": name,
+                    "unregistered": registered,
+                    "files_removed": True,
+                    "acl_tool_rows_dropped": dropped_rows,
+                }
             )
         )
 
@@ -513,6 +693,7 @@ class _ParkedBuilderPlugin(BuilderPlugin):
         self._smoke = _default_smoke_runner
         self._pip_allowlist = set()
         self._generated = set()
+        self._pm = None
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         return ToolResult(
@@ -527,7 +708,8 @@ class _ParkedBuilderPlugin(BuilderPlugin):
                llm_fn: LlmFn | None = None,
                pip_install_fn: PipInstallFn | None = None,
                smoke_runner_fn: SmokeRunnerFn | None = None,
-               pip_allowlist: Iterable[str] = ()) -> None:
+               pip_allowlist: Iterable[str] = (),
+               profile_manager: ProfileManager | None = None) -> None:
         self._orc = orchestrator
         if llm_fn is not None:
             self._llm = llm_fn
@@ -536,5 +718,7 @@ class _ParkedBuilderPlugin(BuilderPlugin):
         if smoke_runner_fn is not None:
             self._smoke = smoke_runner_fn
         self._pip_allowlist = {dep.strip().lower() for dep in pip_allowlist}
+        if profile_manager is not None:
+            self._pm = profile_manager
         # Restore real call_tool (drop our parked override):
         self.call_tool = BuilderPlugin.call_tool.__get__(self, BuilderPlugin)  # type: ignore[method-assign]
