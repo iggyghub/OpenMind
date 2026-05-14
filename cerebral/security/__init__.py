@@ -9,6 +9,14 @@ the consent surface lands in #48).
 """
 
 from cerebral.security.acl import ProfileACL
+from cerebral.security.call_site_capabilities import (
+    CompletenessError,
+    Finding,
+    REASON_UNDER_DECLARED,
+    assert_complete,
+    check_completeness,
+    format_findings,
+)
 from cerebral.security.gate import (
     Capability,
     CallFlags,
@@ -39,8 +47,10 @@ __all__ = [
     "CallFlags",
     "CapabilityGate",
     "CAPABILITY_VOCABULARY",
+    "CompletenessError",
     "DEFAULT_POLICY",
     "Decision",
+    "Finding",
     "FORBIDDEN_PATTERNS",
     "INSPECTED",
     "InspectabilityIssue",
@@ -48,7 +58,11 @@ __all__ = [
     "REASON_FORBIDDEN_PATTERN",
     "REASON_NON_TEXT",
     "REASON_NOT_INSPECTABLE_PATH",
+    "REASON_UNDER_DECLARED",
     "TRUSTED",
+    "assert_complete",
+    "check_completeness",
     "classify_plugin_path",
+    "format_findings",
     "scan_source",
 ]
