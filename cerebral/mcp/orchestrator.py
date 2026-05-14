@@ -31,6 +31,7 @@ from cerebral.security import (
     Capability,
     CallFlags,
     CapabilityGate,
+    ConsentSurface,
     Decision,
     INSPECTED,
     REASON_FORBIDDEN_PATTERN,
@@ -140,6 +141,7 @@ class MCPOrchestrator:
         gate: CapabilityGate | None = None,
         *,
         acl: ProfileACL | None = None,
+        consent: ConsentSurface | None = None,
     ) -> None:
         self._plugins: dict[str, Plugin] = {}
         # tool_name → plugin_name for fast routing
@@ -150,6 +152,10 @@ class MCPOrchestrator:
         # only consulted indirectly via the ACL's snapshot fallback.
         self._gate: CapabilityGate = gate or CapabilityGate()
         self._acl: ProfileACL | None = acl
+        # Tray consent surface (Issue #48). When wired, an ASK decision
+        # routes to the user via a tray notification with inline buttons.
+        # When None, ASK continues to fail-closed to DENY (pre-#48 behaviour).
+        self._consent: ConsentSurface | None = consent
         # Module-level REQUIRED_CAPABILITIES per registered plugin (Issue #44).
         # Used by the tray UI and (later) by #47 to decide per-tool gates.
         self._plugin_capabilities: dict[str, frozenset[str]] = {}
@@ -172,10 +178,28 @@ class MCPOrchestrator:
         no-profile bootstrap state).
         """
         self._acl = acl
+        # The consent surface is profile-scoped (it mutates the ACL it
+        # holds). Keep it in sync so it grants against the right profile.
+        if self._consent is not None:
+            self._consent.set_acl(acl)
+
+    def set_consent_surface(self, consent: ConsentSurface | None) -> None:
+        """Wire (or unwire) the tray consent surface (Issue #48).
+
+        main.py wires this at startup after the WebSocket server is up.
+        Tests inject a fake surface directly via the constructor.
+        """
+        self._consent = consent
+        if consent is not None:
+            consent.set_acl(self._acl)
 
     @property
     def acl(self) -> ProfileACL | None:
         return self._acl
+
+    @property
+    def consent_surface(self) -> ConsentSurface | None:
+        return self._consent
 
     # ------------------------------------------------------------------
     # Registry
@@ -290,8 +314,15 @@ class MCPOrchestrator:
                 decision = self._acl.resolve(capability, name, flags)
             else:
                 decision = self._gate.check(capability, flags)
-            # ASK resolves to DENY in this slice (#43/#45, fail-closed).
-            # The consent surface that lets ASK reach the user is #48.
+            # Issue #48 — ASK routes to the tray via the consent surface
+            # (when wired). The surface returns SILENT (user allowed) or
+            # DENY (user refused, timeout, no subscriber, irreversible).
+            # When no surface is wired we keep the pre-#48 fail-closed
+            # behaviour: ASK → DENY.
+            if decision is Decision.ASK and self._consent is not None:
+                decision = await self._consent.request(
+                    capability, name, args, flags,
+                )
             if decision is not Decision.SILENT:
                 logger.info(
                     "[mcp] Gate denied '%s' (capability=%s, decision=%s)",

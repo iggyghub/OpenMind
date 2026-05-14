@@ -17,6 +17,16 @@ from cerebral.security.call_site_capabilities import (
     check_completeness,
     format_findings,
 )
+from cerebral.security.consent import (
+    CHOICE_DENY,
+    CHOICE_ONCE,
+    CHOICE_PERSISTENT,
+    CHOICE_SESSION,
+    ConsentRequest,
+    ConsentSurface,
+    build_args_preview,
+    is_valid_choice,
+)
 from cerebral.security.gate import (
     Capability,
     CallFlags,
@@ -35,6 +45,12 @@ from cerebral.security.inspectability import (
     classify_path as classify_plugin_path,
     scan_source,
 )
+from cerebral.security.labels import (
+    CAPABILITY_DESCRIPTION,
+    CAPABILITY_LABEL,
+    description_for,
+    label_for,
+)
 
 # Closed string-form view of the 16-class vocabulary. Plugin modules declare
 # REQUIRED_CAPABILITIES as frozenset[str] so they don't have to import the
@@ -43,11 +59,19 @@ from cerebral.security.inspectability import (
 CAPABILITY_VOCABULARY: frozenset[str] = frozenset(c.value for c in Capability)
 
 __all__ = [
+    "CAPABILITY_DESCRIPTION",
+    "CAPABILITY_LABEL",
+    "CAPABILITY_VOCABULARY",
+    "CHOICE_DENY",
+    "CHOICE_ONCE",
+    "CHOICE_PERSISTENT",
+    "CHOICE_SESSION",
     "Capability",
     "CallFlags",
     "CapabilityGate",
-    "CAPABILITY_VOCABULARY",
     "CompletenessError",
+    "ConsentRequest",
+    "ConsentSurface",
     "DEFAULT_POLICY",
     "Decision",
     "Finding",
@@ -61,8 +85,12 @@ __all__ = [
     "REASON_UNDER_DECLARED",
     "TRUSTED",
     "assert_complete",
+    "build_args_preview",
     "check_completeness",
     "classify_plugin_path",
+    "description_for",
     "format_findings",
+    "is_valid_choice",
+    "label_for",
     "scan_source",
 ]

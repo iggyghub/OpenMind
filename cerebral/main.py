@@ -31,7 +31,12 @@ from action_queue.manager import QueueManager
 from insights.engine import InsightsEngine
 from tts.engine import TTSEngine
 from environment.context import EnvironmentContext
-from cerebral.security import ProfileACL
+from cerebral.security import (
+    ConsentRequest,
+    ConsentSurface,
+    ProfileACL,
+    is_valid_choice,
+)
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
 
@@ -83,6 +88,51 @@ def _build_acl(profile) -> ProfileACL:
 # new profile's persistent grants are consulted from then on.
 if _active_profile:
     _orc.set_acl(_build_acl(_active_profile))
+
+
+# ── Consent surface (Issue #48) ───────────────────────────────────────────────
+#
+# When the ACL resolves to ASK, the orchestrator calls into the consent
+# surface which:
+#   1. Sends a `consent_request` event to all connected tray clients.
+#   2. Awaits a matching `consent_response` keyed by request_id.
+#   3. Returns SILENT (allow) or DENY (deny / timeout / no-subscriber).
+#
+# Pending responses live here so the IPC dispatcher (a synchronous-looking
+# function called per inbound message) can fulfil them via asyncio futures.
+_pending_consents: dict[str, asyncio.Future[str]] = {}
+
+
+def _consent_has_subscriber() -> bool:
+    """True when at least one tray client is connected on the IPC channel.
+
+    Used by the consent surface to short-circuit to DENY without emitting a
+    prompt event into the void (ADR-0005 fail-closed rule)."""
+    return len(_connected) > 0
+
+
+async def _consent_prompt(req: ConsentRequest) -> str:
+    """Bridge from `ConsentSurface` to the tray over WebSocket IPC.
+
+    Emits the `consent_request` event, registers a future under the
+    request_id, and awaits the matching `consent_response`. The surface
+    wraps this in `asyncio.wait_for(..., timeout=...)` so timeouts are
+    handled there (we just clean up the pending future on cancel)."""
+    fut: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+    _pending_consents[req.request_id] = fut
+    try:
+        await _broadcast(req.to_ipc())
+        return await fut
+    finally:
+        _pending_consents.pop(req.request_id, None)
+
+
+_consent_surface = ConsentSurface(
+    prompt_fn=_consent_prompt,
+    has_subscriber_fn=_consent_has_subscriber,
+    acl=_orc.acl,
+)
+_orc.set_consent_surface(_consent_surface)
 
 
 async def _bridge_process(transcript: str, history: list[dict]) -> str:
@@ -348,6 +398,32 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "list_plugins":
         await _broadcast(_plugins_list_event())
+
+    elif t == "consent_response":
+        d = msg.get("data") or {}
+        request_id = d.get("request_id")
+        choice = d.get("choice")
+        if not request_id:
+            logger.warning("[cerebral] consent_response missing request_id")
+            return
+        fut = _pending_consents.get(request_id)
+        if fut is None:
+            # Late arrival — surface already timed out and cleaned up.
+            logger.info(
+                "[cerebral] consent_response for unknown request_id=%s (ignored)",
+                request_id,
+            )
+            return
+        if not is_valid_choice(choice):
+            logger.warning(
+                "[cerebral] consent_response invalid choice=%r for %s",
+                choice, request_id,
+            )
+            if not fut.done():
+                fut.set_result("deny")
+            return
+        if not fut.done():
+            fut.set_result(choice)
 
     elif t == "call_tool":
         d = msg.get("data", {})
