@@ -41,15 +41,25 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 
 from cerebral.mcp.orchestrator import MCPOrchestrator, Plugin, Tool, ToolResult
-from cerebral.security import CAPABILITY_VOCABULARY, scan_source
+from cerebral.security import (
+    CAPABILITY_VOCABULARY,
+    check_completeness,
+    format_findings,
+    scan_source,
+)
 
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "builder"
 
-# ADR-0005 / Issue #44 — builder_create installs new plugin source on disk
-# and may pip-install third-party packages. Both are code_install.
-REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"code_install"})
+# ADR-0005 / Issue #44 / #47 — builder_create:
+#   - pip-installs third-party packages → code_install
+#   - writes generated plugin source + README to plugins/<name>/ → fs_write
+# The intent-level capability the user prompt asks about is code_install
+# (issue #48's consent surface unifies "install a new plugin"); the AST
+# completeness check (#47) verifies the actual filesystem touches are
+# declared, hence both classes appear here.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"code_install", "fs_write"})
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _DEP_NAME_RE = re.compile(r"^([A-Za-z0-9_.\-]+)")  # captures package name from `name==1.2.3`
@@ -269,6 +279,31 @@ class BuilderPlugin:
         ok, reason = self._scan_generated_code(server_py)
         if not ok:
             return ToolResult(content=f"Generated code rejected: {reason}", is_error=True)
+
+        # ----- ADR-0005 / Issue #47 — AST completeness check (mandatory) -----
+        # The static scan catches dangerous primitives; this catches
+        # under-declaration. A plugin that walks `shutil.rmtree(...)` but
+        # declares only `fs_read` would pass the static scan and still be
+        # under-declared. Mandatory here; hand-authored plugins sign off via
+        # their declaration and the check is exposed as a callable utility
+        # for them to use on demand.
+        try:
+            findings = check_completeness(
+                server_py, required_capabilities, source_path=f"{name}/server.py",
+            )
+        except SyntaxError as exc:
+            return ToolResult(
+                content=f"Generated code has a syntax error: {exc}",
+                is_error=True,
+            )
+        if findings:
+            return ToolResult(
+                content=(
+                    "Generated code rejected: "
+                    + format_findings(findings, source_path=f"{name}/server.py")
+                ),
+                is_error=True,
+            )
 
         # ----- pip allowlist + install -----
         for dep in pip_deps:
