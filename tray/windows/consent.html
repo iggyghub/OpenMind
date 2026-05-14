@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Felix — Permission</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #12101e;
+      color: #e2e0f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    .header {
+      padding: 14px 18px 10px;
+      border-bottom: 1px solid #2a2640;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .orb {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #7c5cfc; box-shadow: 0 0 8px #7c5cfc88;
+    }
+    .header-title {
+      font-size: 13px; font-weight: 600;
+      color: #c8c4e8; letter-spacing: 0.02em;
+    }
+    .passive-pill, .irreversible-pill {
+      margin-left: 6px;
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 9px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      display: none;
+    }
+    .passive-pill      { background: #3a3460; color: #c5bff5; }
+    .irreversible-pill { background: #5c1f3c; color: #ffc4d8; }
+    .passive-pill.show, .irreversible-pill.show { display: inline-block; }
+
+    .body {
+      padding: 14px 18px;
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .body::-webkit-scrollbar { width: 4px; }
+    .body::-webkit-scrollbar-thumb { background: #3a3460; border-radius: 2px; }
+
+    .capability-label {
+      font-size: 16px; font-weight: 600; color: #f0eefc;
+      margin-bottom: 6px;
+    }
+    .tool-name {
+      font-size: 12px; color: #8c87b3;
+      font-family: SFMono-Regular, Consolas, monospace;
+      margin-bottom: 12px;
+      word-break: break-all;
+    }
+
+    .why-toggle {
+      cursor: pointer;
+      font-size: 12px;
+      color: #9b8cfd;
+      margin-top: 8px;
+      display: inline-block;
+    }
+    .why-toggle:hover { color: #b8a8ff; }
+
+    .why-body {
+      display: none;
+      margin-top: 10px;
+      padding: 10px 12px;
+      background: #1a1730;
+      border-left: 2px solid #7c5cfc;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #c4c0e0;
+      line-height: 1.5;
+    }
+    .why-body.open { display: block; }
+
+    .args-preview {
+      margin-top: 10px;
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 11px;
+      color: #a8a3cc;
+    }
+    .args-preview .arg { padding: 2px 0; word-break: break-all; }
+    .args-preview .arg-key { color: #7c5cfc; }
+    .args-preview .arg-empty { color: #5c5880; font-style: italic; }
+
+    .footer {
+      padding: 12px 14px 14px;
+      border-top: 1px solid #2a2640;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    button {
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 9px 10px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background 120ms, border-color 120ms;
+    }
+
+    .btn-once       { background: #2a2640; color: #e2e0f0;  border-color: #3a3460; }
+    .btn-session    { background: #2a2640; color: #e2e0f0;  border-color: #3a3460; }
+    .btn-persistent { background: #4a3df0; color: #fff; }
+    .btn-deny       { background: #401a2a; color: #ffc4d8;  border-color: #5c1f3c; }
+
+    button:hover    { filter: brightness(1.15); }
+    button:focus    { outline: 2px solid #7c5cfc; outline-offset: 1px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="orb"></div>
+    <div class="header-title">Felix needs permission</div>
+    <span class="passive-pill" id="passive-pill">queued action</span>
+    <span class="irreversible-pill" id="irreversible-pill">irreversible</span>
+  </div>
+
+  <div class="body">
+    <div class="capability-label" id="capability-label">Capability</div>
+    <div class="tool-name" id="tool-name">tool</div>
+
+    <span class="why-toggle" id="why-toggle">Why?</span>
+    <div class="why-body" id="why-body">
+      <div id="capability-description"></div>
+      <div class="args-preview" id="args-preview"></div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <button class="btn-once"       data-choice="once">Allow once</button>
+    <button class="btn-session"    data-choice="session">Allow this session</button>
+    <button class="btn-persistent" data-choice="persistent">Always allow</button>
+    <button class="btn-deny"       data-choice="deny">Deny</button>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+
+    const labelEl       = document.getElementById('capability-label');
+    const toolEl        = document.getElementById('tool-name');
+    const descEl        = document.getElementById('capability-description');
+    const argsEl        = document.getElementById('args-preview');
+    const whyToggle     = document.getElementById('why-toggle');
+    const whyBody       = document.getElementById('why-body');
+    const passivePill   = document.getElementById('passive-pill');
+    const irrevPill     = document.getElementById('irreversible-pill');
+
+    let currentId = null;
+
+    function render(req) {
+      currentId = req.request_id;
+      labelEl.textContent = req.capability_label || req.capability;
+      toolEl.textContent  = req.tool_name;
+      descEl.textContent  = req.capability_description || '';
+
+      // Args preview as a key: value list.
+      argsEl.innerHTML = '';
+      const entries = Object.entries(req.args_preview || {});
+      if (entries.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'arg arg-empty';
+        empty.textContent = '(no arguments)';
+        argsEl.appendChild(empty);
+      } else {
+        for (const [k, v] of entries) {
+          const row = document.createElement('div');
+          row.className = 'arg';
+          const key = document.createElement('span');
+          key.className = 'arg-key';
+          key.textContent = k + ': ';
+          const val = document.createElement('span');
+          val.textContent = typeof v === 'string' ? v : JSON.stringify(v);
+          row.appendChild(key);
+          row.appendChild(val);
+          argsEl.appendChild(row);
+        }
+      }
+
+      const f = req.flags || {};
+      passivePill.classList.toggle('show', !!f.passive);
+      irrevPill.classList.toggle('show',  !!f.irreversible);
+    }
+
+    whyToggle.addEventListener('click', () => {
+      whyBody.classList.toggle('open');
+      whyToggle.textContent = whyBody.classList.contains('open') ? 'Hide' : 'Why?';
+    });
+
+    for (const btn of document.querySelectorAll('button[data-choice]')) {
+      btn.addEventListener('click', () => {
+        if (currentId === null) return;
+        ipcRenderer.send('consent:choose', { request_id: currentId, choice: btn.dataset.choice });
+      });
+    }
+
+    // Escape key: equivalent to Deny so the prompt is dismissable from
+    // the keyboard.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && currentId !== null) {
+        ipcRenderer.send('consent:choose', { request_id: currentId, choice: 'deny' });
+      }
+    });
+
+    ipcRenderer.on('consent:show', (_evt, payload) => render(payload));
+
+    // Ask main for the payload after load (in case it raced the show event).
+    ipcRenderer.send('consent:ready');
+  </script>
+</body>
+</html>

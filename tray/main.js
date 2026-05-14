@@ -5,6 +5,7 @@ const { VisualiserState }      = require('./lib/visualiser-state');
 const { PositionStore }        = require('./lib/position-store');
 const { SettingsStore }        = require('./lib/settings-store');
 const { NotificationManager }  = require('./lib/notification-manager');
+const { ConsentManager }       = require('./lib/consent-manager');
 const { buildModelSubmenu }    = require('./lib/model-menu');
 
 const CEREBRAL_URL    = 'ws://localhost:7766';
@@ -26,6 +27,10 @@ let setupWindow      = null;
 let queueWindow      = null;
 let visualiserWindow = null;
 let insightsWindow   = null;
+// request_id → BrowserWindow for the consent prompt (Issue #48). Each
+// outstanding ASK from Cerebral gets its own window so per-class prompts
+// can be shown side-by-side.
+const consentWindows = new Map();
 let insightsList     = [];
 let envContext       = {};
 let modelsList       = [];
@@ -55,6 +60,12 @@ const notifManager = new NotificationManager({
   onNotificationClick:  () => openQueueWindow(),
 });
 
+const consentManager = new ConsentManager({
+  send:         (event) => sendToCerebral(event),
+  openPrompt:   (record) => openConsentWindow(record),
+  closePrompt:  (request_id) => closeConsentWindow(request_id),
+});
+
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 
 function connectToCerebral() {
@@ -82,6 +93,10 @@ function connectToCerebral() {
 
   ws.on('close', () => {
     isConnected = false;
+    // Cerebral disconnected — any open consent prompts can no longer be
+    // satisfied (the request will time out on the Cerebral side and DENY).
+    // Close them so the user isn't left clicking buttons that go nowhere.
+    consentManager.reset();
     if (!isQuitting) {
       console.log(`[tray] Disconnected — retrying in ${RECONNECT_DELAY_MS}ms`);
       refreshMenu();
@@ -193,6 +208,10 @@ function handleCerebralEvent(event) {
 
     case 'model_switching':
       routeToVisualiser(event);
+      break;
+
+    case 'consent_request':
+      consentManager.handleConsentRequest(event.data || {});
       break;
   }
 }
@@ -320,6 +339,80 @@ ipcMain.on('insights:delete', (_e, id) => sendToCerebral({ type: 'delete_insight
 ipcMain.on('insights:edit',   (_e, { id, description }) =>
   sendToCerebral({ type: 'edit_insight', data: { insight_id: id, description } })
 );
+
+// ── Consent prompt window (Issue #48) ─────────────────────────────────────────
+//
+// One BrowserWindow per outstanding ASK. The ConsentManager owns the
+// pending-request map; this function just renders the UI and forwards
+// the user's choice back to the manager.
+
+function openConsentWindow(record) {
+  // Reuse if a window for this request_id already exists (shouldn't
+  // happen — the manager keys by request_id and ignores duplicates —
+  // but guard anyway so a refresh from Cerebral doesn't spawn a clone).
+  const existing = consentWindows.get(record.request_id);
+  if (existing && !existing.isDestroyed()) {
+    existing.webContents.send('consent:show', record);
+    existing.focus();
+    return;
+  }
+
+  const win = new BrowserWindow({
+    width:           360,
+    height:          340,
+    resizable:       false,
+    title:           'Felix — Permission',
+    backgroundColor: '#12101e',
+    alwaysOnTop:     true,
+    skipTaskbar:     true,
+    webPreferences: {
+      nodeIntegration:  true,
+      contextIsolation: false,
+    },
+  });
+
+  win.setMenuBarVisibility(false);
+  consentWindows.set(record.request_id, win);
+
+  win.webContents.once('did-finish-load', () => {
+    win.webContents.send('consent:show', record);
+  });
+  win.loadFile(path.join(__dirname, 'windows', 'consent.html'));
+
+  win.on('closed', () => {
+    consentWindows.delete(record.request_id);
+    // If the window was closed externally (user hit the OS close button)
+    // and we hadn't already received a choice, treat it as a deny so
+    // the manager cleans up and Cerebral gets a response promptly.
+    if (consentManager.get(record.request_id)) {
+      consentManager.respond(record.request_id, 'deny');
+    }
+  });
+}
+
+function closeConsentWindow(request_id) {
+  const win = consentWindows.get(request_id);
+  if (win && !win.isDestroyed()) {
+    consentWindows.delete(request_id);
+    win.close();
+  }
+}
+
+ipcMain.on('consent:choose', (_event, { request_id, choice }) => {
+  consentManager.respond(request_id, choice);
+});
+
+ipcMain.on('consent:ready', (event) => {
+  // A renderer just finished loading. Find which window the event came
+  // from and re-send the payload, in case the ipc race lost the first one.
+  for (const [request_id, win] of consentWindows.entries()) {
+    if (!win.isDestroyed() && win.webContents === event.sender) {
+      const record = consentManager.get(request_id);
+      if (record) win.webContents.send('consent:show', record);
+      return;
+    }
+  }
+});
 
 // ── Visualiser window ─────────────────────────────────────────────────────────
 
