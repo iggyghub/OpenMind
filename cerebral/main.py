@@ -34,8 +34,11 @@ from environment.context import EnvironmentContext
 from cerebral.security import (
     ConsentRequest,
     ConsentSurface,
+    ModalRequest,
+    ModalSurface,
     ProfileACL,
     is_valid_choice,
+    is_valid_modal_choice,
 )
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
@@ -146,6 +149,40 @@ _consent_surface = ConsentSurface(
     acl=_orc.acl,
 )
 _orc.set_consent_surface(_consent_surface)
+
+
+# ── Irreversible-flag modal surface (Issue #49) ──────────────────────────────
+#
+# When a call sets `flags.irreversible=True` AND the gate/ACL didn't
+# already DENY, the orchestrator routes through this surface instead of
+# the consent surface — even when a Session/Persistent grant would
+# otherwise cover the class. Acceptance is one-shot, never persisted
+# (ADR-0005 / AC#4); no ACL mutation lives here.
+_pending_modals: dict[str, asyncio.Future[str]] = {}
+
+
+async def _modal_prompt(req: ModalRequest) -> str:
+    """Bridge from `ModalSurface` to the tray over WebSocket IPC.
+
+    Emits the `irreversible_modal_request` event, registers a future
+    under the request_id, and awaits the matching
+    `irreversible_modal_response`. The surface wraps this in
+    `asyncio.wait_for(..., timeout=...)` so timeouts are handled there;
+    we just clean up the pending future on cancel."""
+    fut: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+    _pending_modals[req.request_id] = fut
+    try:
+        await _broadcast(req.to_ipc())
+        return await fut
+    finally:
+        _pending_modals.pop(req.request_id, None)
+
+
+_modal_surface = ModalSurface(
+    prompt_fn=_modal_prompt,
+    has_subscriber_fn=_consent_has_subscriber,
+)
+_orc.set_modal_surface(_modal_surface)
 
 
 async def _bridge_process(transcript: str, history: list[dict]) -> str:
@@ -453,6 +490,34 @@ async def _handle_message(msg: dict) -> None:
             )
             if not fut.done():
                 fut.set_result("deny")
+            return
+        if not fut.done():
+            fut.set_result(choice)
+
+    elif t == "irreversible_modal_response":
+        # Issue #49 — Accept dispatches the call, Cancel refuses. The
+        # ModalSurface treats any non-accept choice as DENY, so a garbled
+        # message is safely refused without us second-guessing here.
+        d = msg.get("data") or {}
+        request_id = d.get("request_id")
+        choice = d.get("choice")
+        if not request_id:
+            logger.warning("[cerebral] irreversible_modal_response missing request_id")
+            return
+        fut = _pending_modals.get(request_id)
+        if fut is None:
+            logger.info(
+                "[cerebral] irreversible_modal_response for unknown request_id=%s (ignored)",
+                request_id,
+            )
+            return
+        if not is_valid_modal_choice(choice):
+            logger.warning(
+                "[cerebral] irreversible_modal_response invalid choice=%r for %s",
+                choice, request_id,
+            )
+            if not fut.done():
+                fut.set_result("cancel")
             return
         if not fut.done():
             fut.set_result(choice)

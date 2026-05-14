@@ -6,6 +6,7 @@ const { PositionStore }        = require('./lib/position-store');
 const { SettingsStore }        = require('./lib/settings-store');
 const { NotificationManager }  = require('./lib/notification-manager');
 const { ConsentManager }       = require('./lib/consent-manager');
+const { ModalManager }         = require('./lib/modal-manager');
 const { buildModelSubmenu }    = require('./lib/model-menu');
 
 const CEREBRAL_URL    = 'ws://localhost:7766';
@@ -31,6 +32,9 @@ let insightsWindow   = null;
 // outstanding ASK from Cerebral gets its own window so per-class prompts
 // can be shown side-by-side.
 const consentWindows = new Map();
+// request_id → BrowserWindow for the irreversible-flag modal (Issue #49).
+// Separate map from the consent windows so the two surfaces never collide.
+const modalWindows = new Map();
 let insightsList     = [];
 let envContext       = {};
 let modelsList       = [];
@@ -66,6 +70,12 @@ const consentManager = new ConsentManager({
   closePrompt:  (request_id) => closeConsentWindow(request_id),
 });
 
+const modalManager = new ModalManager({
+  send:         (event) => sendToCerebral(event),
+  openPrompt:   (record) => openModalWindow(record),
+  closePrompt:  (request_id) => closeModalWindow(request_id),
+});
+
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 
 function connectToCerebral() {
@@ -93,10 +103,12 @@ function connectToCerebral() {
 
   ws.on('close', () => {
     isConnected = false;
-    // Cerebral disconnected — any open consent prompts can no longer be
-    // satisfied (the request will time out on the Cerebral side and DENY).
-    // Close them so the user isn't left clicking buttons that go nowhere.
+    // Cerebral disconnected — any open consent prompts or irreversible
+    // modals can no longer be satisfied (the request will time out on
+    // the Cerebral side and DENY). Close them so the user isn't left
+    // clicking buttons that go nowhere.
     consentManager.reset();
+    modalManager.reset();
     if (!isQuitting) {
       console.log(`[tray] Disconnected — retrying in ${RECONNECT_DELAY_MS}ms`);
       refreshMenu();
@@ -212,6 +224,10 @@ function handleCerebralEvent(event) {
 
     case 'consent_request':
       consentManager.handleConsentRequest(event.data || {});
+      break;
+
+    case 'irreversible_modal_request':
+      modalManager.handleModalRequest(event.data || {});
       break;
   }
 }
@@ -409,6 +425,78 @@ ipcMain.on('consent:ready', (event) => {
     if (!win.isDestroyed() && win.webContents === event.sender) {
       const record = consentManager.get(request_id);
       if (record) win.webContents.send('consent:show', record);
+      return;
+    }
+  }
+});
+
+// ── Irreversible-flag modal (Issue #49) ───────────────────────────────────────
+//
+// Sibling to the consent prompt above but with a strictly two-button
+// vocabulary (Accept / Cancel) and a louder visual treatment. Per the
+// sharpener: the visualiser is a 200x200 transparent click-through
+// window that can't host a modal, so this opens a dedicated 420x320
+// BrowserWindow anchored to the visualiser UX but standalone in
+// practice. Acceptance is one-shot, never persisted (AC#4).
+
+function openModalWindow(record) {
+  const existing = modalWindows.get(record.request_id);
+  if (existing && !existing.isDestroyed()) {
+    existing.webContents.send('irreversible-modal:show', record);
+    existing.focus();
+    return;
+  }
+
+  const win = new BrowserWindow({
+    width:           420,
+    height:          320,
+    resizable:       false,
+    title:           'Felix — Confirm',
+    backgroundColor: '#12101e',
+    alwaysOnTop:     true,
+    skipTaskbar:     true,
+    webPreferences: {
+      nodeIntegration:  true,
+      contextIsolation: false,
+    },
+  });
+
+  win.setMenuBarVisibility(false);
+  modalWindows.set(record.request_id, win);
+
+  win.webContents.once('did-finish-load', () => {
+    win.webContents.send('irreversible-modal:show', record);
+  });
+  win.loadFile(path.join(__dirname, 'windows', 'irreversible-modal.html'));
+
+  win.on('closed', () => {
+    modalWindows.delete(record.request_id);
+    // External close (user hit the OS X button) before the user picked
+    // a button — treat as Cancel so the manager cleans up and Cerebral
+    // gets a response promptly.
+    if (modalManager.get(record.request_id)) {
+      modalManager.respond(record.request_id, 'cancel');
+    }
+  });
+}
+
+function closeModalWindow(request_id) {
+  const win = modalWindows.get(request_id);
+  if (win && !win.isDestroyed()) {
+    modalWindows.delete(request_id);
+    win.close();
+  }
+}
+
+ipcMain.on('irreversible-modal:choose', (_event, { request_id, choice }) => {
+  modalManager.respond(request_id, choice);
+});
+
+ipcMain.on('irreversible-modal:ready', (event) => {
+  for (const [request_id, win] of modalWindows.entries()) {
+    if (!win.isDestroyed() && win.webContents === event.sender) {
+      const record = modalManager.get(request_id);
+      if (record) win.webContents.send('irreversible-modal:show', record);
       return;
     }
   }

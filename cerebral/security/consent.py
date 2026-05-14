@@ -15,8 +15,14 @@ been mutated for Session/Persistent by the time the call returns) or
 
 Fail-closed rules (ADR-0005):
   1. No subscriber to the consent channel → DENY without emitting a prompt.
-  2. `irreversible=True` → DENY in v1 (the modal lands in #49).
-  3. 30s timeout (OPENMIND_CONSENT_TIMEOUT_SEC) → DENY, no ACL mutation.
+  2. 30s timeout (OPENMIND_CONSENT_TIMEOUT_SEC) → DENY, no ACL mutation.
+
+Irreversible-flagged calls are routed by the orchestrator to a separate
+``ModalSurface`` (#49) *before* reaching this surface — see
+``MCPOrchestrator.call_tool``. This surface deliberately does not
+re-check ``flags.irreversible``: the orchestrator's routing rule is
+the single source of truth, and a defensive double-check here would
+just hide a future routing bug.
 
 Concurrency:
   Per-(profile_id, capability) prompt serialisation. A second call of the
@@ -201,18 +207,13 @@ class ConsentSurface:
         args: Mapping[str, object] | None,
         flags: CallFlags | None = None,
     ) -> Decision:
-        """Ask the user. Returns SILENT on allow, DENY on refuse/timeout/no-surface."""
-        flags = flags or CallFlags()
+        """Ask the user. Returns SILENT on allow, DENY on refuse/timeout/no-surface.
 
-        # Sharpener #2: irreversible-flagged calls route to the modal in
-        # #49. v1 treats them as DENY here so this surface is the right
-        # shape for #48 only.
-        if flags.irreversible:
-            logger.info(
-                "[consent] Refusing irreversible-flagged call '%s' (modal lands in #49)",
-                tool_name,
-            )
-            return Decision.DENY
+        Irreversible-flagged calls never reach this method: the
+        orchestrator's ``call_tool`` ladder routes them to ``ModalSurface``
+        before consulting this surface (Issue #49).
+        """
+        flags = flags or CallFlags()
 
         # Sharpener #5: no UI surface attached → fail-closed without
         # ever emitting a prompt. ACL is not mutated.

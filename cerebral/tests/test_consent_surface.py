@@ -134,19 +134,6 @@ async def test_no_subscriber_denies_without_prompting(surface_factory):
 
 
 @pytest.mark.asyncio
-async def test_irreversible_flag_denies_without_prompting(surface_factory):
-    prompt = _FakePrompt(CHOICE_PERSISTENT)
-    s = surface_factory(prompt)
-    d = await s.request(
-        Capability.FS_DELETE, "files.delete", {"path": "/x"},
-        flags=CallFlags(irreversible=True),
-    )
-    # v1: irreversible routes to the modal (#49) — surface fail-closes.
-    assert d is Decision.DENY
-    assert prompt.received == []
-
-
-@pytest.mark.asyncio
 async def test_timeout_denies_and_does_not_mutate_acl(surface_factory, acl, monkeypatch):
     monkeypatch.setenv("OPENMIND_CONSENT_TIMEOUT_SEC", "0.05")
     prompt = _NeverPrompt()

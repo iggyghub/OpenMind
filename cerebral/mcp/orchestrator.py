@@ -34,6 +34,7 @@ from cerebral.security import (
     ConsentSurface,
     Decision,
     INSPECTED,
+    ModalSurface,
     REASON_FORBIDDEN_PATTERN,
     REASON_NON_TEXT,
     REASON_NOT_INSPECTABLE_PATH,
@@ -142,6 +143,7 @@ class MCPOrchestrator:
         *,
         acl: ProfileACL | None = None,
         consent: ConsentSurface | None = None,
+        modal: ModalSurface | None = None,
     ) -> None:
         self._plugins: dict[str, Plugin] = {}
         # tool_name → plugin_name for fast routing
@@ -156,6 +158,12 @@ class MCPOrchestrator:
         # routes to the user via a tray notification with inline buttons.
         # When None, ASK continues to fail-closed to DENY (pre-#48 behaviour).
         self._consent: ConsentSurface | None = consent
+        # Irreversible-flag modal surface (Issue #49). When wired, a call
+        # with ``flags.irreversible=True`` that wasn't already DENY'd by
+        # the gate/ACL routes through the modal — even if a Session or
+        # Persistent grant would otherwise cover the class. When None,
+        # irreversible fails closed to DENY regardless of any grant.
+        self._modal: ModalSurface | None = modal
         # Module-level REQUIRED_CAPABILITIES per registered plugin (Issue #44).
         # Used by the tray UI and (later) by #47 to decide per-tool gates.
         self._plugin_capabilities: dict[str, frozenset[str]] = {}
@@ -193,6 +201,15 @@ class MCPOrchestrator:
         if consent is not None:
             consent.set_acl(self._acl)
 
+    def set_modal_surface(self, modal: ModalSurface | None) -> None:
+        """Wire (or unwire) the tray irreversible-modal surface (Issue #49).
+
+        The modal carries no ACL — irreversible acceptance is one-shot,
+        never persisted — so unlike ``set_consent_surface`` this is a
+        flat assignment with no rebinding to do.
+        """
+        self._modal = modal
+
     @property
     def acl(self) -> ProfileACL | None:
         return self._acl
@@ -200,6 +217,10 @@ class MCPOrchestrator:
     @property
     def consent_surface(self) -> ConsentSurface | None:
         return self._consent
+
+    @property
+    def modal_surface(self) -> ModalSurface | None:
+        return self._modal
 
     # ------------------------------------------------------------------
     # Registry
@@ -324,12 +345,26 @@ class MCPOrchestrator:
                 decision = self._acl.resolve(capability, name, flags)
             else:
                 decision = self._gate.check(capability, flags)
-            # Issue #48 — ASK routes to the tray via the consent surface
-            # (when wired). The surface returns SILENT (user allowed) or
-            # DENY (user refused, timeout, no subscriber, irreversible).
-            # When no surface is wired we keep the pre-#48 fail-closed
-            # behaviour: ASK → DENY.
-            if decision is Decision.ASK and self._consent is not None:
+            # Issue #49 — irreversible-flagged calls route to a separate
+            # modal surface, overriding any SILENT/ASK from the ACL. The
+            # gate/ACL is consulted first so an already-DENY decision
+            # short-circuits without bothering the user (sharpener #2).
+            # When the modal is unwired, irreversible fails closed
+            # regardless of grant: an unsupervised Cerebral cannot
+            # dispatch an irreversible call.
+            if flags is not None and flags.irreversible and decision is not Decision.DENY:
+                if self._modal is not None:
+                    decision = await self._modal.request(
+                        capability, name, args, flags,
+                    )
+                else:
+                    decision = Decision.DENY
+            # Issue #48 — ASK (for non-irreversible calls) routes to the
+            # tray via the consent surface (when wired). The surface
+            # returns SILENT (user allowed) or DENY (user refused,
+            # timeout, no subscriber). When no surface is wired we keep
+            # the pre-#48 fail-closed behaviour: ASK → DENY.
+            elif decision is Decision.ASK and self._consent is not None:
                 decision = await self._consent.request(
                     capability, name, args, flags,
                 )
