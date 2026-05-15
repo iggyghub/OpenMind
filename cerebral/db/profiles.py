@@ -31,6 +31,11 @@ class Profile:
     # system defaults do not propagate; the profile keeps its frozen view.
     # Maps capability value-string → "silent" | "ask" | "deny".
     acl_defaults_snapshot: dict = field(default_factory=dict)
+    # Per-profile one-way unlock for the shell_exec capability (Issue #53,
+    # ADR-0005). Defaults to False; the Permissions UI surfaces a one-time
+    # confirmation modal that flips it to True and persists. Once unlocked,
+    # the capability obeys whatever the user sets the class policy to.
+    shell_exec_unlocked: bool = False
     id: int | None = None
 
     def to_dict(self) -> dict:
@@ -58,6 +63,7 @@ class ProfileManager:
                 wake_sample              TEXT    NOT NULL DEFAULT '',
                 active_model             TEXT    NOT NULL DEFAULT '',
                 acl_defaults_snapshot    TEXT    NOT NULL DEFAULT '{}',
+                shell_exec_unlocked      INTEGER NOT NULL DEFAULT 0 CHECK (shell_exec_unlocked IN (0, 1)),
                 created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_used_at             DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -90,15 +96,16 @@ class ProfileManager:
         """)
         self._con.commit()
         # Migrate pre-existing DBs that lack newer columns
-        for col, default in [
-            ("voice_sample", "''"),
-            ("wake_sample",  "''"),
-            ("active_model", "''"),
-            ("acl_defaults_snapshot", "'{}'"),
+        for col, col_type, default in [
+            ("voice_sample", "TEXT", "''"),
+            ("wake_sample",  "TEXT", "''"),
+            ("active_model", "TEXT", "''"),
+            ("acl_defaults_snapshot", "TEXT", "'{}'"),
+            ("shell_exec_unlocked", "INTEGER", "0"),
         ]:
             try:
                 self._con.execute(
-                    f"ALTER TABLE profiles ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
+                    f"ALTER TABLE profiles ADD COLUMN {col} {col_type} NOT NULL DEFAULT {default}"
                 )
                 self._con.commit()
             except sqlite3.OperationalError:
@@ -176,6 +183,20 @@ class ProfileManager:
         """Persist the user's last-chosen ModelRouter model id (issue #37)."""
         self._con.execute(
             "UPDATE profiles SET active_model=? WHERE id=?", (model_id, profile_id)
+        )
+        self._con.commit()
+
+    def unlock_shell_exec(self, profile_id: int) -> None:
+        """One-way flip of the per-profile shell_exec lock (Issue #53).
+
+        ``shell_exec`` defaults to ``deny`` in the day-1 ACL because it is
+        the highest-blast-radius capability. Power users explicitly opt in
+        via the Permissions UI's one-time confirmation modal; this setter
+        records the opt-in. Reverting to locked is intentionally not a
+        single click — clear the row by deleting and recreating the profile.
+        """
+        self._con.execute(
+            "UPDATE profiles SET shell_exec_unlocked=1 WHERE id=?", (profile_id,)
         )
         self._con.commit()
 
@@ -373,4 +394,5 @@ def _row_to_profile(row: sqlite3.Row) -> Profile:
         wake_sample =row["wake_sample"]  if "wake_sample"  in keys else "",
         active_model=row["active_model"] if "active_model" in keys else "",
         acl_defaults_snapshot=snapshot,
+        shell_exec_unlocked=bool(row["shell_exec_unlocked"]) if "shell_exec_unlocked" in keys else False,
     )

@@ -32,8 +32,12 @@ from insights.engine import InsightsEngine
 from tts.engine import TTSEngine
 from environment.context import EnvironmentContext
 from cerebral.security import (
+    CAPABILITY_DESCRIPTION,
+    CAPABILITY_LABEL,
+    Capability,
     ConsentRequest,
     ConsentSurface,
+    Decision,
     ModalRequest,
     ModalSurface,
     ProfileACL,
@@ -284,6 +288,90 @@ def _models_list_event() -> dict:
     }
 
 
+def _permissions_state_event() -> dict:
+    """Snapshot of the active profile's ACL state for the Permissions UI (#53).
+
+    Payload:
+      capability_vocabulary — the closed 16-class enum, paired with the
+        user-language label, the one-sentence description (#48 labels.py)
+        and the day-1 default policy. The tray renders one row per entry
+        in the Capabilities tab and is forbidden by ADR-0005 from inventing
+        new classes (AC#7).
+      class_defaults — capability → policy from the profile's frozen
+        snapshot (#45). The tray uses this as the row's fallback when
+        no persistent_class_grant overrides it.
+      persistent_class_grants — capability → policy. The user's overrides
+        on the snapshot, persisted in the profile_acl table.
+      persistent_tool_overrides — tool_name → policy. Per-tool overrides
+        from the same table.
+      session_class_grants — capability → policy. RAM-only grants from
+        the consent surface's Session button; cleared on profile switch.
+      shell_exec_unlocked — bool. Has the user opted into editing the
+        shell_exec row? (default False; one-way flip via unlock_shell_exec)
+      profile_id — for sanity-checking on the tray side that a stale
+        broadcast doesn't overwrite a freshly-switched profile.
+
+    Returns an empty payload (everything zeroed) when no profile is loaded;
+    the tray's Permissions menu entry should be hidden in that state.
+    """
+    if _active_profile is None or _orc.acl is None:
+        return {
+            "type": "permissions_state",
+            "data": {
+                "profile_id": None,
+                "capability_vocabulary": _capability_vocabulary(),
+                "class_defaults": {},
+                "persistent_class_grants": {},
+                "persistent_tool_overrides": {},
+                "session_class_grants": {},
+                "shell_exec_unlocked": False,
+            },
+        }
+    acl = _orc.acl
+    persistent = acl.list_persistent_grants()
+    class_grants: dict[str, str] = {}
+    tool_overrides: dict[str, str] = {}
+    for row in persistent:
+        if row["scope"] == "class":
+            class_grants[row["target"]] = row["policy"]
+        elif row["scope"] == "tool":
+            tool_overrides[row["target"]] = row["policy"]
+    session_grants = {
+        row["capability"]: row["policy"] for row in acl.list_session_grants()
+    }
+    return {
+        "type": "permissions_state",
+        "data": {
+            "profile_id": _active_profile.id,
+            "capability_vocabulary": _capability_vocabulary(),
+            "class_defaults": dict(_active_profile.acl_defaults_snapshot),
+            "persistent_class_grants": class_grants,
+            "persistent_tool_overrides": tool_overrides,
+            "session_class_grants": session_grants,
+            "shell_exec_unlocked": _active_profile.shell_exec_unlocked,
+        },
+    }
+
+
+def _capability_vocabulary() -> list[dict]:
+    """Closed 16-class vocabulary projected for the tray (#53 sharpener #6).
+
+    The tray is forbidden from inventing classes; this list IS the source
+    of truth it renders. Stable order: enum-declaration order, which is
+    the ADR-0005 ordering grouped by sensitivity bucket.
+    """
+    from cerebral.security import DEFAULT_POLICY
+    return [
+        {
+            "value":       cap.value,
+            "label":       CAPABILITY_LABEL[cap],
+            "description": CAPABILITY_DESCRIPTION[cap],
+            "default":     DEFAULT_POLICY[cap].value,
+        }
+        for cap in Capability
+    ]
+
+
 def _plugins_list_event() -> dict:
     """Snapshot of the orchestrator's plugin registry for the tray.
 
@@ -361,6 +449,7 @@ async def _handle_message(msg: dict) -> None:
         logger.info("[cerebral] Profile created: %s (id=%d)", p.name, p.id)
         await _broadcast(_profile_event(p))
         await _broadcast(_profiles_list_event())
+        await _broadcast(_permissions_state_event())
 
     elif t == "switch_profile":
         pid = msg.get("data", {}).get("id")
@@ -374,6 +463,11 @@ async def _handle_message(msg: dict) -> None:
                 _orc.set_acl(_build_acl(p))
                 logger.info("[cerebral] Switched to profile: %s", p.name)
                 await _broadcast(_profile_event(p))
+                # Issue #53 — re-read ACL state for the switched profile.
+                # The session-grant store is RAM-only and the just-built
+                # ACL has none, so the tray's session-grants sub-panel
+                # will correctly empty out.
+                await _broadcast(_permissions_state_event())
 
     elif t == "delete_profile":
         pid = msg.get("data", {}).get("id")
@@ -388,6 +482,7 @@ async def _handle_message(msg: dict) -> None:
                 _orc.set_acl(None)
                 await _broadcast({"type": "first_run"})
             await _broadcast(_profiles_list_event())
+            await _broadcast(_permissions_state_event())
 
     elif t == "list_profiles":
         await _broadcast(_profiles_list_event())
@@ -452,6 +547,116 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "list_plugins":
         await _broadcast(_plugins_list_event())
+
+    elif t == "list_permissions":
+        # Issue #53 — Permissions UI requesting a fresh state snapshot.
+        # The same payload is broadcast on connect alongside other state
+        # events, but a re-open of the Permissions window asks for a fresh
+        # read in case the user changed profiles in between.
+        await _broadcast(_permissions_state_event())
+
+    elif t == "set_class_policy":
+        # Issue #53 — Capabilities tab toggle. {capability, decision}.
+        d = msg.get("data") or {}
+        cap_value = (d.get("capability") or "").strip()
+        decision = (d.get("decision") or "").strip()
+        if not cap_value or not decision:
+            logger.warning("[cerebral] set_class_policy missing capability/decision")
+            return
+        if _orc.acl is None or _active_profile is None:
+            logger.warning("[cerebral] set_class_policy with no active profile")
+            return
+        try:
+            cap = Capability(cap_value)
+            dec = Decision(decision)
+        except ValueError as exc:
+            logger.warning("[cerebral] set_class_policy invalid value: %s", exc)
+            return
+        # shell_exec is locked until the user explicitly opts in (#53 AC#2).
+        if cap is Capability.SHELL_EXEC and not _active_profile.shell_exec_unlocked:
+            logger.warning(
+                "[cerebral] set_class_policy refused: shell_exec is locked for profile %d",
+                _active_profile.id,
+            )
+            return
+        # Default-matching writes still create a row — the user's
+        # explicit click is meaningful even when it equals the snapshot
+        # default. Revoking back to the snapshot is a separate IPC
+        # (revoke_class_policy) so the toggle's three-state UI maps
+        # cleanly to one verb per user action.
+        _orc.acl.set_persistent_class(cap, dec)
+        logger.info(
+            "[cerebral] set_class_policy %s=%s for profile %d",
+            cap.value, dec.value, _active_profile.id,
+        )
+        await _broadcast(_permissions_state_event())
+
+    elif t == "revoke_class_policy":
+        # Issue #53 — clears a persistent class grant so the snapshot
+        # default applies again. Used when the user resets a Capabilities
+        # row to its inherited default.
+        d = msg.get("data") or {}
+        cap_value = (d.get("capability") or "").strip()
+        if not cap_value or _orc.acl is None:
+            return
+        try:
+            cap = Capability(cap_value)
+        except ValueError:
+            return
+        _orc.acl.revoke_persistent_class(cap)
+        logger.info("[cerebral] revoke_class_policy %s", cap.value)
+        await _broadcast(_permissions_state_event())
+
+    elif t == "set_tool_override":
+        # Issue #53 — Tools tab dropdown. {tool, decision}. decision of
+        # "inherit" clears the override (revoke_tool_override).
+        d = msg.get("data") or {}
+        tool_name = (d.get("tool") or "").strip()
+        decision = (d.get("decision") or "").strip()
+        if not tool_name or not decision or _orc.acl is None:
+            logger.warning("[cerebral] set_tool_override missing field")
+            return
+        if decision == "inherit":
+            _orc.acl.revoke_tool_override(tool_name)
+            logger.info("[cerebral] set_tool_override %s=inherit (revoked)", tool_name)
+        else:
+            try:
+                dec = Decision(decision)
+            except ValueError as exc:
+                logger.warning("[cerebral] set_tool_override invalid decision: %s", exc)
+                return
+            _orc.acl.set_tool_override(tool_name, dec)
+            logger.info("[cerebral] set_tool_override %s=%s", tool_name, dec.value)
+        await _broadcast(_permissions_state_event())
+
+    elif t == "revoke_session_grant":
+        # Issue #53 — Capabilities tab session-grant Revoke button.
+        d = msg.get("data") or {}
+        cap_value = (d.get("capability") or "").strip()
+        if not cap_value or _orc.acl is None:
+            return
+        try:
+            cap = Capability(cap_value)
+        except ValueError:
+            return
+        revoked = _orc.acl.revoke_session(cap)
+        logger.info(
+            "[cerebral] revoke_session_grant %s (existed=%s)", cap.value, revoked,
+        )
+        await _broadcast(_permissions_state_event())
+
+    elif t == "unlock_shell_exec":
+        # Issue #53 — one-way flip. The Permissions UI shows a confirmation
+        # modal first; this handler trusts the click as the confirmation.
+        if _active_profile is None:
+            logger.warning("[cerebral] unlock_shell_exec with no active profile")
+            return
+        _pm.unlock_shell_exec(_active_profile.id)
+        _active_profile = _pm.get(_active_profile.id)
+        logger.info(
+            "[cerebral] shell_exec unlocked for profile %s", _active_profile.name,
+        )
+        await _broadcast(_permissions_state_event())
 
     elif t == "clear_new_plugin_flag":
         # Issue #51 — the Permissions UI's "I've reviewed this plugin"
@@ -663,6 +868,7 @@ async def _ws_handler(websocket) -> None:
     await _send(websocket, _env_context_event())
     await _send(websocket, _models_list_event())
     await _send(websocket, _plugins_list_event())
+    await _send(websocket, _permissions_state_event())
 
     try:
         async for raw in websocket:

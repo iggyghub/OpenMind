@@ -7,6 +7,7 @@ const { SettingsStore }        = require('./lib/settings-store');
 const { NotificationManager }  = require('./lib/notification-manager');
 const { ConsentManager }       = require('./lib/consent-manager');
 const { ModalManager }         = require('./lib/modal-manager');
+const { PermissionsStore }     = require('./lib/permissions-store');
 const { buildModelSubmenu }    = require('./lib/model-menu');
 
 const CEREBRAL_URL    = 'ws://localhost:7766';
@@ -25,9 +26,17 @@ let activeProfile = null;
 let allProfiles   = [];
 let pendingItems  = [];
 let setupWindow      = null;
-let queueWindow      = null;
-let visualiserWindow = null;
-let insightsWindow   = null;
+let queueWindow       = null;
+let visualiserWindow  = null;
+let insightsWindow    = null;
+let permissionsWindow = null;
+// Latest snapshots from Cerebral, kept up-to-date so a freshly-opened
+// Permissions window doesn't render a blank state while it waits for
+// the next broadcast. The store inside the window is fed by these on
+// `permissions:ready` and re-fed on every subsequent broadcast.
+let permissionsState  = null;
+let toolsList         = [];
+let pluginsList       = [];
 // request_id → BrowserWindow for the consent prompt (Issue #48). Each
 // outstanding ASK from Cerebral gets its own window so per-class prompts
 // can be shown side-by-side.
@@ -229,6 +238,27 @@ function handleCerebralEvent(event) {
     case 'irreversible_modal_request':
       modalManager.handleModalRequest(event.data || {});
       break;
+
+    case 'permissions_state':
+      permissionsState = event.data || null;
+      if (permissionsWindow && !permissionsWindow.isDestroyed()) {
+        permissionsWindow.webContents.send('permissions:state', permissionsState);
+      }
+      break;
+
+    case 'tools_list':
+      toolsList = (event.data && event.data.tools) || [];
+      if (permissionsWindow && !permissionsWindow.isDestroyed()) {
+        permissionsWindow.webContents.send('permissions:tools', toolsList);
+      }
+      break;
+
+    case 'plugins_list':
+      pluginsList = (event.data && event.data.plugins) || [];
+      if (permissionsWindow && !permissionsWindow.isDestroyed()) {
+        permissionsWindow.webContents.send('permissions:plugins', pluginsList);
+      }
+      break;
   }
 }
 
@@ -349,6 +379,62 @@ function openInsightsWindow() {
 ipcMain.on('insights:request', (e) => {
   e.sender.send('insights:data', insightsList);
   sendToCerebral({ type: 'list_insights' });
+});
+
+// ── Permissions window (Issue #53) ────────────────────────────────────────────
+
+function openPermissionsWindow() {
+  if (permissionsWindow && !permissionsWindow.isDestroyed()) {
+    permissionsWindow.focus();
+    pushPermissionsToWindow();
+    return;
+  }
+
+  permissionsWindow = new BrowserWindow({
+    width: 480,
+    height: 560,
+    resizable: true,
+    title: 'Felix — Permissions',
+    backgroundColor: '#12101e',
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  });
+
+  permissionsWindow.setMenuBarVisibility(false);
+  permissionsWindow.loadFile(path.join(__dirname, 'windows', 'permissions.html'));
+  permissionsWindow.on('closed', () => { permissionsWindow = null; });
+}
+
+function pushPermissionsToWindow() {
+  if (!permissionsWindow || permissionsWindow.isDestroyed()) return;
+  if (permissionsState) {
+    permissionsWindow.webContents.send('permissions:state', permissionsState);
+  }
+  permissionsWindow.webContents.send('permissions:tools',   toolsList);
+  permissionsWindow.webContents.send('permissions:plugins', pluginsList);
+}
+
+// Renderer just finished loading: send what we have and ask Cerebral
+// to refresh, in case the snapshot is stale (e.g. profile switched
+// while the window was closed).
+ipcMain.on('permissions:ready', (event) => {
+  if (!permissionsWindow || permissionsWindow.isDestroyed()) return;
+  if (event.sender !== permissionsWindow.webContents) return;
+  pushPermissionsToWindow();
+  sendToCerebral({ type: 'list_permissions' });
+  sendToCerebral({ type: 'list_tools' });
+  sendToCerebral({ type: 'list_plugins' });
+});
+
+// Outbound from the Permissions renderer — the store wraps every user
+// action in a single envelope so the main process is just a thin
+// forwarder.
+ipcMain.on('permissions:send', (_event, envelope) => {
+  if (envelope && typeof envelope === 'object' && envelope.type) {
+    sendToCerebral(envelope);
+  }
 });
 ipcMain.on('insights:pin',    (_e, id) => sendToCerebral({ type: 'pin_insight',    data: { insight_id: id } }));
 ipcMain.on('insights:delete', (_e, id) => sendToCerebral({ type: 'delete_insight', data: { insight_id: id } }));
@@ -603,6 +689,7 @@ function buildMenu() {
       click: toggleVisualiser,
     });
     template.push({ label: 'Insights', click: openInsightsWindow });
+    template.push({ label: 'Permissions', click: openPermissionsWindow });
 
     // ── Model ─────────────────────────────────────────────────────────────────
     const modelLabel = activeModel
