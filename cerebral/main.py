@@ -24,7 +24,7 @@ from audio.pipeline import AudioPipeline, DEFAULT_SIGNAL_WORDS
 from bridge.openclaw import ChannelBridge
 from db.profiles import Profile, ProfileManager
 from llm.router import ModelRouter, ModelUnavailableError
-from mcp.orchestrator import MCPOrchestrator
+from mcp.orchestrator import MCPOrchestrator, ToolResult
 from memory.manager import MemoryManager
 from passive.extractor import FiveW1HExtractor
 from action_queue.manager import QueueManager
@@ -34,6 +34,7 @@ from environment.context import EnvironmentContext
 from cerebral.security import (
     CAPABILITY_DESCRIPTION,
     CAPABILITY_LABEL,
+    CallFlags,
     Capability,
     ConsentRequest,
     ConsentSurface,
@@ -754,9 +755,53 @@ async def _handle_message(msg: dict) -> None:
             if new_insight:
                 logger.info("[cerebral] New insight: %s", new_insight.description)
                 await _broadcast(_insights_update_event())
-        # Execute the associated tool if one was recorded
+        # Execute the associated tool if one was recorded.
+        #
+        # Issue #52 — queue-originated calls run with ``passive=True`` so the
+        # ACL escalates SILENT → ASK and ASK → DENY, defeating any session or
+        # persistent grant the user holds on the class. The check runs across
+        # ALL of the plugin's declared capabilities (AND semantics) before
+        # dispatching exactly once. ``check_capabilities`` IS the gate for
+        # this call — we dispatch via ``call_tool`` without a capability so
+        # the consent surface isn't prompted a second time.
         if item.tool_name:
-            result = await _orc.call_tool(item.tool_name, item.tool_args or {})
+            plugin_name = _orc.plugin_for_tool(item.tool_name)
+            caps = (
+                _orc.required_capabilities_for(plugin_name)
+                if plugin_name is not None
+                else None
+            )
+            if caps:
+                decision = await _orc.check_capabilities(
+                    item.tool_name, caps, CallFlags(passive=True),
+                )
+            else:
+                # No declared capabilities (legacy register() path or
+                # capability-free tool) → no gate constraint; dispatch.
+                decision = Decision.SILENT
+
+            if decision is Decision.SILENT:
+                # ``check_capabilities`` already routed through ACL +
+                # consent. Dispatch without re-invoking the gate inside
+                # ``call_tool`` (capability=None, flags=None).
+                result = await _orc.call_tool(
+                    item.tool_name, item.tool_args or {},
+                )
+            else:
+                # ASK is never returned (check_capabilities collapses it to
+                # SILENT or DENY); treat everything non-SILENT as a refusal.
+                logger.info(
+                    "[cerebral] Queue approval denied: %s (decision=%s)",
+                    item.tool_name, decision.value,
+                )
+                result = ToolResult(
+                    content=(
+                        f"Denied: '{item.tool_name}' was refused by the "
+                        f"capability gate (decision: {decision.value})"
+                    ),
+                    is_error=True,
+                )
+
             logger.info("[cerebral] Tool result for %s: %s", item.tool_name, result.content[:80])
             await _broadcast({
                 "type": "queue_item_result",

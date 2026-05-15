@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from cerebral.action_queue.risky_verbs import is_risky
+
 DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
 
 
@@ -37,6 +39,10 @@ class QueueItem:
     tool_name: Optional[str] = None
     tool_args: Optional[dict] = field(default=None)
     created_at: str = ""
+    # Issue #52: derived from the title via the verb denylist. Drives the
+    # 🛑 badge + collapsed-by-default row in the tray. Computed on read so
+    # vocabulary changes apply to existing rows without a schema migration.
+    risky: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -47,6 +53,7 @@ class QueueItem:
             "tool_name": self.tool_name,
             "tool_args": self.tool_args,
             "created_at": self.created_at,
+            "risky": self.risky,
         }
 
 
@@ -99,6 +106,7 @@ class QueueManager:
             tool_name=tool_name,
             tool_args=tool_args,
             created_at=created_at,
+            risky=is_risky(title),
         )
 
     def approve_item(self, item_id: str) -> Optional[QueueItem]:
@@ -143,12 +151,14 @@ class QueueManager:
     @staticmethod
     def _row_to_item(row: sqlite3.Row) -> QueueItem:
         raw_args = row["tool_args"]
+        title = row["title"]
         return QueueItem(
             id=row["id"],
-            title=row["title"],
+            title=title,
             summary=row["summary"],
             status=row["status"],
             tool_name=row["tool_name"],
             tool_args=json.loads(raw_args) if raw_args else None,
             created_at=row["created_at"],
+            risky=is_risky(title),
         )

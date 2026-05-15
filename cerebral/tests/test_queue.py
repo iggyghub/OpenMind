@@ -199,3 +199,59 @@ def test_approval_persists_across_instances(tmp_path):
 
     mgr2 = QueueManager(str(db))
     assert mgr2.get_pending() == []
+
+
+# ── Slice 8: risky flag from title (Issue #52) ───────────────────────────────
+
+def test_add_item_with_risky_verb_sets_risky_true():
+    mgr = _mgr()
+    item = mgr.add_item("Send John a message", "phone plugin send")
+    assert item.risky is True
+
+
+def test_add_item_without_risky_verb_sets_risky_false():
+    mgr = _mgr()
+    item = mgr.add_item("Read my notes", "notes plugin read")
+    assert item.risky is False
+
+
+def test_add_item_risky_defaults_false_when_title_is_empty():
+    mgr = _mgr()
+    item = mgr.add_item("", "empty title")
+    assert item.risky is False
+
+
+def test_to_dict_includes_risky_field():
+    mgr = _mgr()
+    item = mgr.add_item("Send the email", "draft to Bob")
+    d = item.to_dict()
+    assert "risky" in d
+    assert d["risky"] is True
+
+
+def test_get_pending_preserves_risky_flag_across_restart(tmp_path):
+    # Sharpener #6 in #52 claimed the queue is RAM-only — it's actually
+    # SQLite-backed. The `risky` flag is computed on read in _row_to_item
+    # so existing rows gain the badge after restart without a migration.
+    db = tmp_path / "test.db"
+    mgr1 = QueueManager(str(db))
+    mgr1.add_item("Send the email", "summary")
+    mgr1.add_item("Read my notes", "summary")
+
+    mgr2 = QueueManager(str(db))
+    pending = mgr2.get_pending()
+    risk_by_title = {p.title: p.risky for p in pending}
+    assert risk_by_title["Send the email"] is True
+    assert risk_by_title["Read my notes"] is False
+
+
+def test_risky_recomputed_on_read_for_existing_rows(tmp_path):
+    # If a future change rewords the verb list, existing queued rows
+    # immediately reflect the new vocabulary — derived, not stored.
+    db = tmp_path / "test.db"
+    mgr = QueueManager(str(db))
+    item = mgr.add_item("Delete the old logs", "cleanup")
+    assert item.risky is True
+    # Verify the get_pending read also computes it.
+    pending = mgr.get_pending()
+    assert pending[0].risky is True
