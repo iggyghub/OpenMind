@@ -569,6 +569,55 @@ async def test_modal_fail_closed_no_subscriber_via_orchestrator(acl):
 
 
 @pytest.mark.asyncio
+async def test_voice_consent_never_invoked_for_irreversible(acl):
+    """Issue #50 / AC#7 — the voice consent path must not fire for
+    ``irreversible=True`` calls. The orchestrator's ``call_tool`` ladder
+    routes irreversible to the modal *before* reaching the consent
+    surface, so the surface's ``voice_prompt_fn`` is never asked.
+
+    Pinning the invariant here (full orchestrator round-trip with all
+    three surfaces wired) is the right belt-and-suspenders — adding a
+    defensive check inside the voice path would just hide a future
+    routing bug.
+    """
+    plugin = _StubPlugin()
+    voice_calls: list[object] = []
+
+    async def voice_fn(req):
+        voice_calls.append(req)
+        return "once"  # CHOICE_ONCE, would normally allow
+
+    consent_prompt = _FakePrompt()  # would assert if called
+
+    consent = ConsentSurface(
+        prompt_fn=consent_prompt,
+        has_subscriber_fn=lambda: True,
+        acl=acl,
+        request_id_fn=lambda: "c1",
+        voice_prompt_fn=voice_fn,
+    )
+    modal_prompt = _FakePrompt(CHOICE_ACCEPT)
+    modal = ModalSurface(
+        prompt_fn=modal_prompt, has_subscriber_fn=lambda: True,
+        request_id_fn=lambda: "m1",
+    )
+    orc = MCPOrchestrator(acl=acl, consent=consent, modal=modal)
+    orc.register(plugin, required_capabilities=frozenset({"fs_delete"}))
+
+    r = await orc.call_tool(
+        "stub.act", {"path": "/x"},
+        capability=Capability.FS_DELETE,
+        flags=CallFlags(irreversible=True),
+    )
+    assert not r.is_error
+    assert plugin.calls == [("stub.act", {"path": "/x"})]
+    # Modal accepted; voice + consent prompts were never reached.
+    assert len(modal_prompt.received) == 1
+    assert voice_calls == []
+    assert consent_prompt.received == []
+
+
+@pytest.mark.asyncio
 async def test_set_modal_surface_late_binding(acl):
     plugin = _StubPlugin()
     orc = MCPOrchestrator(acl=acl)

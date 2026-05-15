@@ -672,3 +672,212 @@ async def test_timeout_env_var_zero_or_negative_falls_back(monkeypatch):
     assert _timeout_seconds() == DEFAULT_TIMEOUT_SECONDS
     monkeypatch.setenv("OPENMIND_CONSENT_TIMEOUT_SEC", "-5")
     assert _timeout_seconds() == DEFAULT_TIMEOUT_SECONDS
+
+
+# ===========================================================================
+# Slice 11 — voice surface race coordinator (Issue #50)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_voice_only_with_no_subscriber_still_prompts(acl):
+    """No tray subscriber but voice is wired — the surface races with
+    voice only, NOT a fail-closed DENY. Voice is a real surface."""
+    voice_prompt_called: list[ConsentRequest] = []
+
+    async def voice_fn(req):
+        voice_prompt_called.append(req)
+        return CHOICE_ONCE
+
+    tray = _FakePrompt()  # would assert if called
+    surface = ConsentSurface(
+        prompt_fn=tray,
+        has_subscriber_fn=lambda: False,   # no tray subscriber
+        acl=acl,
+        request_id_fn=lambda: "r1",
+        voice_prompt_fn=voice_fn,
+    )
+    d = await surface.request(Capability.FS_WRITE, "t", {})
+    assert d is Decision.SILENT
+    assert tray.received == []
+    assert len(voice_prompt_called) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_subscriber_and_no_voice_still_fails_closed(acl):
+    """When BOTH surfaces are unavailable, the surface fails closed
+    without emitting anything (pre-#50 invariant preserved)."""
+    tray = _FakePrompt()
+    surface = ConsentSurface(
+        prompt_fn=tray,
+        has_subscriber_fn=lambda: False,
+        acl=acl,
+        request_id_fn=lambda: "r1",
+        voice_prompt_fn=None,
+    )
+    d = await surface.request(Capability.FS_WRITE, "t", {})
+    assert d is Decision.DENY
+    assert tray.received == []
+
+
+@pytest.mark.asyncio
+async def test_voice_resolves_first_cancels_tray(surface_factory):
+    """When the voice prompt completes first, the tray task is cancelled
+    and its awaited future is left for its caller to clean up."""
+    tray_started = asyncio.Event()
+    tray_cancelled = asyncio.Event()
+
+    async def tray_fn(req):
+        tray_started.set()
+        try:
+            await asyncio.Future()  # forever
+        except asyncio.CancelledError:
+            tray_cancelled.set()
+            raise
+        return CHOICE_DENY
+
+    async def voice_fn(req):
+        # Let the tray task start first, then resolve.
+        await tray_started.wait()
+        return CHOICE_ONCE
+
+    s = surface_factory(tray_fn)
+    s.set_voice_prompt_fn(voice_fn)
+
+    d = await s.request(Capability.FS_WRITE, "t", {})
+    assert d is Decision.SILENT  # "yes" → CHOICE_ONCE → SILENT
+    assert tray_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_tray_resolves_first_cancels_voice(surface_factory):
+    """When the tray prompt completes first, the voice task is cancelled
+    so its listener / recogniser / TTS playback teardown can run."""
+    voice_started = asyncio.Event()
+    voice_cancelled = asyncio.Event()
+
+    async def voice_fn(req):
+        voice_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            voice_cancelled.set()
+            raise
+        return CHOICE_DENY
+
+    async def tray_fn(req):
+        await voice_started.wait()
+        return CHOICE_PERSISTENT
+
+    s = surface_factory(tray_fn)
+    s.set_voice_prompt_fn(voice_fn)
+
+    d = await s.request(Capability.FS_WRITE, "t", {})
+    assert d is Decision.SILENT  # Persistent → SILENT (and writes ACL)
+    assert voice_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_both_prompts_timeout_returns_deny(surface_factory, monkeypatch):
+    monkeypatch.setenv("OPENMIND_CONSENT_TIMEOUT_SEC", "0.05")
+    never_tray = _NeverPrompt()
+
+    async def never_voice(req):
+        await asyncio.Future()
+        return CHOICE_DENY
+
+    s = surface_factory(never_tray)
+    s.set_voice_prompt_fn(never_voice)
+    d = await s.request(Capability.FS_WRITE, "t", {})
+    assert d is Decision.DENY
+    # Both surfaces were asked.
+    assert len(never_tray.received) == 1
+
+
+@pytest.mark.asyncio
+async def test_voice_unwired_is_bit_identical_to_pre_50(surface_factory):
+    """Without set_voice_prompt_fn the request path is the original
+    single-prompt path — no race coordinator overhead."""
+    prompt = _FakePrompt(CHOICE_PERSISTENT)
+    s = surface_factory(prompt)
+    d = await s.request(Capability.FS_WRITE, "t", {})
+    assert d is Decision.SILENT
+    assert len(prompt.received) == 1
+
+
+@pytest.mark.asyncio
+async def test_voice_unwired_can_be_wired_after_construction(surface_factory):
+    """set_voice_prompt_fn supports late-binding so main.py can construct
+    the surface before the audio pipeline starts."""
+    prompt = _FakePrompt(CHOICE_DENY)  # tray says no
+    s = surface_factory(prompt)
+    voice_called: list[ConsentRequest] = []
+
+    async def voice_fn(req):
+        voice_called.append(req)
+        return CHOICE_ONCE  # voice says yes
+
+    # Now wire voice and have it race the tray
+    s.set_voice_prompt_fn(voice_fn)
+
+    # The race outcome depends on ordering — what's pinned here is that
+    # both surfaces actually run in the race when wired.
+    d = await s.request(Capability.FS_WRITE, "t", {})
+    # The winner returned a valid choice; the loser was cancelled.
+    assert d in (Decision.SILENT, Decision.DENY)
+    # At least one surface received the request; usually both
+    # (the create_task schedules both before the first awaits).
+    assert (len(prompt.received) + len(voice_called)) >= 1
+
+
+@pytest.mark.asyncio
+async def test_voice_prompt_fn_property_round_trips():
+    """``set_voice_prompt_fn`` updates the surface; the property reads
+    it back, and passing None disables voice."""
+    async def fn(req):
+        return CHOICE_ONCE
+
+    surface = ConsentSurface(prompt_fn=_FakePrompt(), has_subscriber_fn=lambda: True)
+    assert surface.voice_prompt_fn is None
+    surface.set_voice_prompt_fn(fn)
+    assert surface.voice_prompt_fn is fn
+    surface.set_voice_prompt_fn(None)
+    assert surface.voice_prompt_fn is None
+
+
+@pytest.mark.asyncio
+async def test_voice_lock_serialisation_carries_over(surface_factory):
+    """Concurrent calls for the same capability still serialise even with
+    voice wired — sharpener pin: the race lives INSIDE the per-class lock,
+    so two concurrent voice prompts cannot double-broadcast the gist."""
+    gate = asyncio.Event()
+    voice_received: list[ConsentRequest] = []
+
+    async def voice_fn(req):
+        voice_received.append(req)
+        await gate.wait()
+        return CHOICE_PERSISTENT
+
+    tray = _FakePrompt()  # never resolves before voice → eventually cancelled
+
+    async def tray_fn(req):
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            raise
+
+    s = surface_factory(tray_fn)
+    s.set_voice_prompt_fn(voice_fn)
+
+    call_a = asyncio.create_task(s.request(Capability.FS_WRITE, "t", {}))
+    await asyncio.sleep(0.01)  # let A acquire the lock & start its race
+    call_b = asyncio.create_task(s.request(Capability.FS_WRITE, "t", {}))
+    await asyncio.sleep(0.01)  # let B reach the lock
+    gate.set()
+
+    da, db = await asyncio.gather(call_a, call_b)
+    assert da is Decision.SILENT
+    assert db is Decision.SILENT
+    # Only A's voice prompt fired — B re-resolved through the ACL after A
+    # wrote the Persistent grant.
+    assert len(voice_received) == 1

@@ -58,6 +58,12 @@ from cerebral.security.modal import (
     ModalSurface,
     is_valid_modal_choice,
 )
+from cerebral.security.voice_consent import (
+    DEFAULT_MAX_LISTEN_SECONDS,
+    VOICE_VOCAB,
+    VoiceConsent,
+    VoskRecognizer,
+)
 
 # Closed string-form view of the 16-class vocabulary. Plugin modules declare
 # REQUIRED_CAPABILITIES as frozenset[str] so they don't have to import the
@@ -81,6 +87,7 @@ __all__ = [
     "CompletenessError",
     "ConsentRequest",
     "ConsentSurface",
+    "DEFAULT_MAX_LISTEN_SECONDS",
     "DEFAULT_POLICY",
     "Decision",
     "Finding",
@@ -95,6 +102,9 @@ __all__ = [
     "REASON_NOT_INSPECTABLE_PATH",
     "REASON_UNDER_DECLARED",
     "TRUSTED",
+    "VOICE_VOCAB",
+    "VoiceConsent",
+    "VoskRecognizer",
     "assert_complete",
     "build_args_preview",
     "check_completeness",

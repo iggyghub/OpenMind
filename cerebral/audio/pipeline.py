@@ -6,6 +6,13 @@ Passive mode  — Vosk listens with a constrained grammar ("[felix, [unk]]")
 Active mode   — On wake: snapshot the 60s buffer, collect a 5s post-wake
                window, transcribe everything with faster-whisper, emit the
                transcript over IPC, then return to passive.
+
+Audio-chunk listeners (Issue #50): a sidecar fan-out lets other parts of
+Cerebral share the single ``sd.InputStream`` without opening a second one
+(which would conflict with the exclusive Windows stream and double-read
+on macOS/Linux). Voice consent registers a listener while it is waiting
+for "yes"/"no"/"later" and unregisters when the prompt resolves. Listeners
+run *on the audio callback thread* — they must be tiny and exception-safe.
 """
 
 from __future__ import annotations
@@ -74,10 +81,14 @@ class AudioPipeline:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stream = None
         self._rec = None
+        self._vosk_model = None  # Shared with voice consent (Issue #50)
         self._running = False
         self._active = False
         self._passive_active = False
         self._post_wake_chunks: list[np.ndarray] | None = None
+        # Audio-chunk listeners (Issue #50). Snapshot-copied for iteration in
+        # the callback so a listener can unregister itself without raising.
+        self._listeners: list[Callable[[np.ndarray], None]] = []
 
     # ── Public ───────────────────────────────────────────────────────────────
 
@@ -98,6 +109,7 @@ class AudioPipeline:
         self._running = True
 
         model = Model(str(VOSK_MODEL_PATH))
+        self._vosk_model = model
         # Constrained grammar: only detect the wake word — very low CPU
         self._rec = KaldiRecognizer(model, SAMPLE_RATE, f'["{WAKE_WORD}", "[unk]"]')
 
@@ -126,6 +138,42 @@ class AudioPipeline:
             self._stream = None
         logger.info("[audio] Pipeline stopped")
 
+    def register_listener(self, listener: Callable[[np.ndarray], None]) -> None:
+        """Register a chunk listener (Issue #50).
+
+        Each registered callable is invoked from the audio callback thread
+        on every chunk with the raw int16 mono ``np.ndarray``. Idempotent —
+        re-registering the same listener is a no-op so callers can register
+        in setup paths without lifecycle bookkeeping.
+
+        Listeners must be tiny and exception-safe: a slow or raising listener
+        backs up the sounddevice callback queue. Exceptions are caught and
+        logged but do not unregister the listener.
+        """
+        if listener not in self._listeners:
+            self._listeners.append(listener)
+
+    def unregister_listener(self, listener: Callable[[np.ndarray], None]) -> None:
+        """Remove a previously registered listener. Idempotent — silently
+        no-ops if the listener was never registered, so the consent path
+        can call this in a ``finally`` block without ordering worries."""
+        try:
+            self._listeners.remove(listener)
+        except ValueError:
+            pass
+
+    @property
+    def vosk_model(self):
+        """The loaded Vosk ``Model`` instance, or None before ``start()``.
+
+        Shared with voice consent (Issue #50) so its KaldiRecognizer can
+        reuse the same in-memory model (~40 MB) rather than loading a
+        second copy. The pipeline owns the model's lifecycle — voice
+        consent must not call ``Model.__del__`` or hold a reference past
+        pipeline ``stop()``.
+        """
+        return self._vosk_model
+
     # ── Internals ────────────────────────────────────────────────────────────
 
     def _audio_callback(
@@ -138,6 +186,17 @@ class AudioPipeline:
 
         # Always keep the rolling buffer up to date
         self._buffer.extend(chunk)
+
+        # Fan out to registered listeners (Issue #50). Snapshot via tuple so
+        # a listener can register/unregister itself without mutating-during-
+        # iteration errors. Listeners run on this audio thread, so exceptions
+        # must not propagate or sounddevice will stop the stream.
+        if self._listeners:
+            for listener in tuple(self._listeners):
+                try:
+                    listener(chunk)
+                except Exception:
+                    logger.exception("[audio] chunk listener raised — continuing")
 
         # Collect post-wake audio while active; skip wake detection
         if self._post_wake_chunks is not None:

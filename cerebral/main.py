@@ -42,6 +42,7 @@ from cerebral.security import (
     ModalRequest,
     ModalSurface,
     ProfileACL,
+    VoiceConsent,
     is_valid_choice,
     is_valid_modal_choice,
 )
@@ -1056,6 +1057,32 @@ async def main() -> None:
 
     if not _tts.ready:
         logger.warning("[cerebral] TTS unavailable — install kokoro: pip install kokoro soundfile")
+
+    # Voice consent surface (Issue #50). Constructed AFTER the audio
+    # pipeline starts so VoiceConsent can reach the loaded Vosk model
+    # via ``pipeline.vosk_model``. Wired onto the consent surface only
+    # when both TTS and the pipeline are ready — per AC#6, missing either
+    # is a graceful degradation to tray-only, not an error.
+    if pipeline is not None and _tts.ready:
+        _voice_consent = VoiceConsent(
+            tts=_tts,
+            audio_pipeline=pipeline,
+            voice_id_fn=lambda: _active_profile.voice_id if _active_profile else None,
+            plugin_name_for_tool=_orc.plugin_for_tool,
+        )
+        if _voice_consent.ready:
+            _consent_surface.set_voice_prompt_fn(_voice_consent.prompt)
+            logger.info("[cerebral] Voice consent wired (Vosk + Kokoro ready)")
+        else:
+            logger.info(
+                "[cerebral] Voice consent not ready — tray-only consent surface"
+            )
+    else:
+        logger.info(
+            "[cerebral] Voice consent skipped (audio_pipeline=%s, tts.ready=%s) — "
+            "tray-only consent surface",
+            pipeline is not None, _tts.ready,
+        )
 
     _orc.discover_plugins(_PLUGINS_DIR)
     _attach_builder_plugin()
