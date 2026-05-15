@@ -51,6 +51,20 @@ logger = logging.getLogger(__name__)
 _MISSING = object()
 
 
+# Decision strictness order for the AND-across-capabilities check (#52).
+# A higher rank means "more restrictive" — DENY trumps ASK trumps SILENT.
+_DECISION_RANK: dict[Decision, int] = {
+    Decision.SILENT: 0,
+    Decision.ASK: 1,
+    Decision.DENY: 2,
+}
+
+
+def _worse(a: Decision, b: Decision) -> bool:
+    """True iff ``a`` is strictly more restrictive than ``b``."""
+    return _DECISION_RANK[a] > _DECISION_RANK[b]
+
+
 # Refusal reason codes — stable strings consumed by the tray's plugin list.
 # REASON_FORBIDDEN_PATTERN / REASON_NON_TEXT / REASON_NOT_INSPECTABLE_PATH
 # live in cerebral.security.inspectability and are re-exported here as part
@@ -324,6 +338,88 @@ class MCPOrchestrator:
         for plugin in self._plugins.values():
             tools.extend(plugin.list_tools())
         return tools
+
+    async def check_capabilities(
+        self,
+        tool_name: str,
+        capabilities: frozenset[str],
+        flags: CallFlags | None,
+    ) -> Decision:
+        """Resolve the worst Decision across a tool's declared capabilities
+        without invoking the tool (Issue #52).
+
+        ``call_tool`` takes exactly one capability per invocation and
+        DISPATCHES the tool when the resolved decision is SILENT. That
+        makes a per-capability loop unsafe — a SILENT cap would execute
+        the tool side-effectfully before the next cap was checked,
+        defeating the AND semantics the queue admission overlay relies
+        on.
+
+        This method resolves each capability through the ACL/gate pipeline
+        (including the post-ACL ``passive`` escalation), takes the worst
+        Decision across the set (DENY > ASK > SILENT), and *then* routes
+        through the modal (for ``irreversible``) or consent surface (for
+        ASK) — at most once per call. The caller (``approve_item``) uses
+        the returned Decision to decide whether to dispatch and, if so,
+        invokes ``call_tool`` exactly once.
+
+        Returns:
+            ``Decision.SILENT`` when every capability resolves silently
+            (after any modal/consent acceptance) — the caller may dispatch.
+            ``Decision.DENY`` otherwise — the caller must not dispatch.
+            ``Decision.ASK`` is never returned from this method: ASK is
+            either upgraded to SILENT/DENY by the consent surface, or
+            (when no surface is wired) fails closed to DENY.
+        """
+        # Defensive — never silently allow an unknown tool. The queue may
+        # hold a tool_name whose plugin was unregistered between add and
+        # approve; we must not dispatch it.
+        if tool_name not in self._tool_index:
+            return Decision.DENY
+
+        if not capabilities:
+            # No declared capabilities → no gate constraint. Mirror
+            # call_tool's "capability is None" branch.
+            return Decision.SILENT
+
+        # Resolve each capability through ACL/gate (with the passive
+        # escalation already applied inside resolve()). Skip the modal
+        # and consent surfaces here — we'll route the worst Decision
+        # through them at most once below.
+        worst = Decision.SILENT
+        worst_cap: Capability | None = None
+        for cap_str in capabilities:
+            try:
+                cap = Capability(cap_str)
+            except ValueError:
+                # An unknown cap on a registered plugin would have been
+                # caught at registration time. Defensive fail-closed.
+                return Decision.DENY
+            if self._acl is not None:
+                decision = self._acl.resolve(cap, tool_name, flags)
+            else:
+                decision = self._gate.check(cap, flags)
+            if worst_cap is None or _worse(decision, worst):
+                worst = decision
+                worst_cap = cap
+
+        # Now route the worst Decision through the modal/consent surfaces
+        # exactly once. Mirrors the ordering in call_tool: irreversible
+        # routes to the modal regardless of grant (unless already DENY);
+        # otherwise ASK routes to the consent surface.
+        assert worst_cap is not None  # unreachable: capabilities non-empty
+        if flags is not None and flags.irreversible and worst is not Decision.DENY:
+            if self._modal is not None:
+                worst = await self._modal.request(worst_cap, tool_name, {}, flags)
+            else:
+                worst = Decision.DENY
+        elif worst is Decision.ASK:
+            if self._consent is not None:
+                worst = await self._consent.request(worst_cap, tool_name, {}, flags)
+            else:
+                worst = Decision.DENY
+
+        return worst
 
     async def call_tool(
         self,

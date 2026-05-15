@@ -775,3 +775,235 @@ def test_every_real_plugin_declares_valid_required_capabilities(plugin_path):
     assert not unknown, (
         f"{plugin_path.name} declares unknown capabilities: {sorted(unknown)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Slice 10 — check_capabilities() (Issue #52)
+#
+# Looping `call_tool` per declared capability would dispatch the side-
+# effectful tool the moment the first SILENT cap resolves, before the
+# remaining caps are checked. `check_capabilities` runs the ACL / gate /
+# modal / consent stack across the full set and returns the worst Decision
+# WITHOUT invoking the tool, so the caller can AND the caps cleanly and
+# then dispatch exactly once.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingConsent:
+    """Duck-typed ConsentSurface. Returns the queued decision, records calls."""
+
+    def __init__(self, *decisions) -> None:
+        self.decisions = list(decisions) or [Decision.SILENT]
+        self.received: list[dict] = []
+
+    async def request(self, capability, tool_name, args, flags=None):
+        self.received.append({"capability": capability, "tool_name": tool_name})
+        return self.decisions.pop(0) if self.decisions else Decision.SILENT
+
+    def set_acl(self, acl) -> None:
+        pass
+
+
+class _RecordingModal:
+    """Duck-typed ModalSurface. Returns the queued decision, records calls."""
+
+    def __init__(self, *decisions) -> None:
+        self.decisions = list(decisions) or [Decision.SILENT]
+        self.received: list[dict] = []
+
+    async def request(self, capability, tool_name, args, flags=None):
+        self.received.append({"capability": capability, "tool_name": tool_name})
+        return self.decisions.pop(0) if self.decisions else Decision.SILENT
+
+
+async def test_check_capabilities_empty_set_returns_silent():
+    # An unconstrained call (no declared capabilities) is SILENT.
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("notes", ["save_note"]))
+
+    decision = await orc.check_capabilities("save_note", frozenset(), None)
+
+    assert decision is Decision.SILENT
+
+
+async def test_check_capabilities_unknown_tool_denies():
+    # Defensive — never invoke and never silently allow a tool that no
+    # plugin owns. (approve_item routes through here; a stale queue
+    # item must not slip through.)
+    orc = MCPOrchestrator()
+
+    decision = await orc.check_capabilities("ghost_tool", frozenset({"fs_read"}), None)
+
+    assert decision is Decision.DENY
+
+
+async def test_check_capabilities_silent_cap_returns_silent():
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("files", ["read_file"]))
+
+    decision = await orc.check_capabilities(
+        "read_file", frozenset({"fs_read"}), None,
+    )
+
+    assert decision is Decision.SILENT
+
+
+async def test_check_capabilities_deny_cap_returns_deny():
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("shell", ["run"]))
+
+    decision = await orc.check_capabilities(
+        "run", frozenset({"shell_exec"}), None,
+    )
+
+    assert decision is Decision.DENY
+
+
+async def test_check_capabilities_takes_worst_across_set():
+    # AND semantics: a SILENT + an ASK cap → ASK (worst wins).
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("mix", ["mixed_tool"]))
+
+    decision = await orc.check_capabilities(
+        "mixed_tool", frozenset({"fs_read", "fs_write"}), None,
+    )
+
+    # fs_read is SILENT, fs_write is ASK → worst is ASK (fail-closed
+    # to DENY when no consent surface wired).
+    assert decision is Decision.DENY
+
+
+async def test_check_capabilities_deny_beats_ask_and_silent():
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("mix", ["t"]))
+
+    decision = await orc.check_capabilities(
+        "t",
+        frozenset({"fs_read", "fs_write", "shell_exec"}),
+        None,
+    )
+
+    assert decision is Decision.DENY
+
+
+async def test_check_capabilities_does_not_invoke_plugin():
+    # The whole point — a tool with a SILENT cap must NOT execute when
+    # we're only checking. (Loop-call_tool would have dispatched it.)
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("files", ["read_file"])
+    plugin.call_tool.side_effect = AssertionError("plugin must not run during check")
+    orc.register(plugin)
+
+    decision = await orc.check_capabilities(
+        "read_file", frozenset({"fs_read"}), None,
+    )
+
+    assert decision is Decision.SILENT
+    plugin.call_tool.assert_not_called()
+
+
+async def test_check_capabilities_does_not_invoke_plugin_for_silent_subset():
+    # AND-semantics regression: even when the FIRST cap iterated is SILENT,
+    # the worst-across-set wins and the plugin still doesn't run.
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("mix", ["t"])
+    plugin.call_tool.side_effect = AssertionError("plugin must not run during check")
+    orc.register(plugin)
+
+    decision = await orc.check_capabilities(
+        "t", frozenset({"fs_read", "shell_exec"}), None,
+    )
+
+    assert decision is Decision.DENY
+    plugin.call_tool.assert_not_called()
+
+
+async def test_check_capabilities_passive_escalates_per_cap():
+    # passive=True flag must propagate into each per-cap resolve().
+    # fs_read (SILENT) with passive → ASK; consent surface answers DENY.
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("files", ["read_file"]))
+
+    decision = await orc.check_capabilities(
+        "read_file",
+        frozenset({"fs_read"}),
+        CallFlags(passive=True),
+    )
+
+    # No consent surface → ASK fails closed.
+    assert decision is Decision.DENY
+
+
+async def test_check_capabilities_consent_routed_once_for_ask():
+    # The consent surface must be called at most once per check_capabilities
+    # invocation — we don't pester the user with one prompt per cap.
+    consent = _RecordingConsent(Decision.SILENT)
+    orc = MCPOrchestrator(consent=consent)
+    orc.register(_make_plugin("files", ["write_file"]))
+
+    decision = await orc.check_capabilities(
+        "write_file", frozenset({"fs_write"}), None,
+    )
+
+    assert decision is Decision.SILENT
+    assert len(consent.received) == 1
+
+
+async def test_check_capabilities_consent_called_once_even_with_multiple_ask_caps():
+    consent = _RecordingConsent(Decision.SILENT)
+    orc = MCPOrchestrator(consent=consent)
+    orc.register(_make_plugin("mix", ["t"]))
+
+    decision = await orc.check_capabilities(
+        "t", frozenset({"fs_write", "external_data_write"}), None,
+    )
+
+    assert decision is Decision.SILENT
+    # Worst is ASK; consent prompts ONCE with the worst cap.
+    assert len(consent.received) == 1
+
+
+async def test_check_capabilities_irreversible_routes_to_modal():
+    modal = _RecordingModal(Decision.SILENT)
+    consent = _RecordingConsent(Decision.SILENT)
+    orc = MCPOrchestrator(consent=consent, modal=modal)
+    orc.register(_make_plugin("files", ["delete_file"]))
+
+    decision = await orc.check_capabilities(
+        "delete_file",
+        frozenset({"fs_delete"}),
+        CallFlags(irreversible=True),
+    )
+
+    assert decision is Decision.SILENT
+    assert len(modal.received) == 1
+    # Modal supersedes consent — surface must NOT also prompt.
+    assert len(consent.received) == 0
+
+
+async def test_check_capabilities_irreversible_skipped_when_already_deny():
+    # If the worst cap is DENY, irreversible doesn't even reach the modal.
+    modal = _RecordingModal()
+    orc = MCPOrchestrator(modal=modal)
+    orc.register(_make_plugin("shell", ["run"]))
+
+    decision = await orc.check_capabilities(
+        "run",
+        frozenset({"shell_exec"}),
+        CallFlags(irreversible=True),
+    )
+
+    assert decision is Decision.DENY
+    assert len(modal.received) == 0
+
+
+async def test_check_capabilities_consent_denial_propagates():
+    consent = _RecordingConsent(Decision.DENY)
+    orc = MCPOrchestrator(consent=consent)
+    orc.register(_make_plugin("files", ["write_file"]))
+
+    decision = await orc.check_capabilities(
+        "write_file", frozenset({"fs_write"}), None,
+    )
+
+    assert decision is Decision.DENY
