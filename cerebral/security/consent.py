@@ -14,8 +14,16 @@ been mutated for Session/Persistent by the time the call returns) or
 `Decision.DENY` on Deny / no surface / timeout.
 
 Fail-closed rules (ADR-0005):
-  1. No subscriber to the consent channel → DENY without emitting a prompt.
+  1. No tray subscriber AND no voice surface → DENY without emitting a
+     prompt.
   2. 30s timeout (OPENMIND_CONSENT_TIMEOUT_SEC) → DENY, no ACL mutation.
+
+Voice surface (Issue #50):
+  When ``voice_prompt_fn`` is wired (TTS + Vosk ready), the surface races
+  the tray prompt against a voice prompt inside the same per-class lock.
+  Whichever resolves first wins; the loser is cancelled. When only one
+  surface is available (e.g. no tray subscriber but voice is up), only
+  that surface is used — voice does NOT require a tray subscriber.
 
 Irreversible-flagged calls are routed by the orchestrator to a separate
 ``ModalSurface`` (#49) *before* reaching this surface — see
@@ -155,9 +163,18 @@ PromptFn = Callable[[ConsentRequest], Awaitable[str]]
 
 # Type of the function that reports whether the tray (or any consent
 # subscriber) is connected at the moment a prompt would fire. When this
-# returns False the surface DENIES without emitting a request — that's the
-# "no surface" fail-closed path from ADR-0005.
+# returns False AND no voice prompt is wired the surface DENIES without
+# emitting a request — that's the "no surface" fail-closed path from
+# ADR-0005.
 HasSubscriberFn = Callable[[], bool]
+
+
+# Type of an optional voice prompt (Issue #50). Returns the same four-verb
+# vocabulary (typically "once" or "deny" — voice does not offer Session
+# or Persistent), so the surface's choice validation and ACL-mutation
+# logic stay untouched. Implementations live in ``voice_consent.py``;
+# tests inject a fake.
+VoicePromptFn = Callable[[ConsentRequest], Awaitable[str]]
 
 
 class ConsentSurface:
@@ -178,11 +195,16 @@ class ConsentSurface:
         has_subscriber_fn: HasSubscriberFn | None = None,
         acl: ProfileACL | None = None,
         request_id_fn: Callable[[], str] | None = None,
+        voice_prompt_fn: VoicePromptFn | None = None,
     ) -> None:
         self._prompt = prompt_fn
         self._has_subscriber = has_subscriber_fn or (lambda: True)
         self._acl = acl
         self._request_id_fn = request_id_fn or (lambda: str(uuid.uuid4()))
+        # Optional voice prompt (Issue #50). When set, ``request`` races
+        # the tray prompt against the voice prompt inside the per-class
+        # lock and returns whichever resolves first.
+        self._voice_prompt_fn = voice_prompt_fn
         # Per-(profile_id, capability) serialisation. The lock guards the
         # window between "decide to prompt" and "ACL has the new grant" so
         # a second call sees the freshly written grant.
@@ -196,9 +218,22 @@ class ConsentSurface:
         # profile's resolution. Fresh locks form for the new profile.
         self._locks.clear()
 
+    def set_voice_prompt_fn(self, fn: VoicePromptFn | None) -> None:
+        """Wire (or unwire) the voice surface (Issue #50).
+
+        main.py calls this after the audio pipeline starts — voice consent
+        depends on the pipeline's loaded Vosk model. Passing ``None``
+        disables voice and reverts to tray-only behaviour.
+        """
+        self._voice_prompt_fn = fn
+
     @property
     def acl(self) -> ProfileACL | None:
         return self._acl
+
+    @property
+    def voice_prompt_fn(self) -> VoicePromptFn | None:
+        return self._voice_prompt_fn
 
     async def request(
         self,
@@ -215,12 +250,20 @@ class ConsentSurface:
         """
         flags = flags or CallFlags()
 
-        # Sharpener #5: no UI surface attached → fail-closed without
-        # ever emitting a prompt. ACL is not mutated.
-        if not self._has_subscriber():
+        tray_available = self._has_subscriber()
+        # Snapshot the voice fn so a concurrent set_voice_prompt_fn(None)
+        # during our lock-acquisition window cannot strip us mid-flight.
+        voice_fn = self._voice_prompt_fn
+        voice_available = voice_fn is not None
+
+        # Sharpener #5 (extended by #50): if BOTH surfaces are unavailable
+        # we fail closed without emitting anything. Voice does NOT require
+        # a tray subscriber, so a Cerebral with no tray client but a
+        # working mic+speakers still prompts via voice.
+        if not tray_available and not voice_available:
             logger.info(
-                "[consent] No tray subscriber for '%s' (capability=%s) — fail-closed DENY",
-                tool_name, capability.value,
+                "[consent] No consent surface available for '%s' (capability=%s) — "
+                "fail-closed DENY", tool_name, capability.value,
             )
             return Decision.DENY
 
@@ -248,17 +291,7 @@ class ConsentSurface:
                 args_preview=build_args_preview(args),
             )
 
-            try:
-                choice = await asyncio.wait_for(
-                    self._prompt(req), timeout=_timeout_seconds(),
-                )
-            except asyncio.TimeoutError:
-                logger.info(
-                    "[consent] Timeout waiting on '%s' (capability=%s) — DENY",
-                    tool_name, capability.value,
-                )
-                return Decision.DENY
-
+            choice = await self._collect_choice(req, tray_available, voice_fn)
             if choice not in _VALID_CHOICES:
                 logger.warning(
                     "[consent] Unknown choice %r for request %s — DENY",
@@ -267,6 +300,81 @@ class ConsentSurface:
                 return Decision.DENY
 
             return self._apply_choice(capability, choice)
+
+    async def _collect_choice(
+        self,
+        req: ConsentRequest,
+        tray_available: bool,
+        voice_fn: VoicePromptFn | None,
+    ) -> str:
+        """Run the tray prompt and (optionally) the voice prompt in parallel.
+
+        Returns the first valid choice string emitted, or ``CHOICE_DENY``
+        on timeout / both surfaces failing. The losing task is always
+        cancelled inside this function — callers do not need to know
+        about either surface's underlying lifecycle.
+
+        Race semantics (sharpener #50.1, #50.5):
+          - If only one surface is available, that surface's ``wait_for``
+            is the only path — same shape as the pre-#50 single-prompt
+            behaviour.
+          - If both are available, ``asyncio.wait`` with FIRST_COMPLETED
+            picks whichever returns first; the loser is cancelled and
+            awaited (swallowing ``CancelledError``) so its cleanup
+            ``finally`` blocks run before this returns.
+        """
+        timeout = _timeout_seconds()
+        tasks: dict[str, asyncio.Task[str]] = {}
+        if tray_available:
+            tasks["tray"] = asyncio.create_task(self._prompt(req))
+        if voice_fn is not None:
+            tasks["voice"] = asyncio.create_task(voice_fn(req))
+
+        if len(tasks) == 1:
+            (label, task), = tasks.items()
+            try:
+                return await asyncio.wait_for(task, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.info(
+                    "[consent] Timeout on %s prompt for '%s' (capability=%s) — DENY",
+                    label, req.tool_name, req.capability.value,
+                )
+                return CHOICE_DENY
+
+        # Race both surfaces. The first completed task wins; the other
+        # is cancelled so its listener / IPC future / etc. can clean up.
+        done, pending = await asyncio.wait(
+            set(tasks.values()),
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                # Loser cleanup must not derail the winner. CancelledError
+                # is expected; other exceptions are logged at debug only —
+                # they don't affect the user-facing decision.
+                pass
+
+        if not done:
+            logger.info(
+                "[consent] Both prompts timed out for '%s' (capability=%s) — DENY",
+                req.tool_name, req.capability.value,
+            )
+            return CHOICE_DENY
+
+        winner = next(iter(done))
+        try:
+            return winner.result()
+        except Exception:
+            logger.exception(
+                "[consent] Winner task raised for '%s' (capability=%s) — DENY",
+                req.tool_name, req.capability.value,
+            )
+            return CHOICE_DENY
 
     def _apply_choice(self, capability: Capability, choice: str) -> Decision:
         """Mutate the ACL based on the user's choice; return the decision.
