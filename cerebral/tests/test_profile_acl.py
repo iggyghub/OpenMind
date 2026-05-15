@@ -579,3 +579,72 @@ def test_new_plugin_flag_resolver_default_hook_is_no_op(pm, profile):
         defaults_snapshot=profile.acl_defaults_snapshot,
     )
     assert acl.resolve(Capability.FS_WRITE, "weatherbug_ping") is Decision.SILENT
+
+
+# ---------------------------------------------------------------------------
+# Slice 11 — list_session_grants (Issue #53; surfaced for the Permissions UI)
+# ---------------------------------------------------------------------------
+
+
+def test_list_session_grants_returns_empty_for_fresh_acl(acl):
+    assert acl.list_session_grants() == []
+
+
+def test_list_session_grants_after_grant_session(acl):
+    acl.grant_session(Capability.FS_WRITE, Decision.SILENT)
+    rows = acl.list_session_grants()
+    assert rows == [{"capability": "fs_write", "policy": "silent"}]
+
+
+def test_list_session_grants_does_not_include_once_grants(acl):
+    """Once-grants are consumed on next call; surfacing them in a UI
+    list would race the consumer. Only session class grants appear."""
+    acl.grant_once(Capability.FS_WRITE, Decision.SILENT)
+    acl.grant_session(Capability.FS_READ, Decision.DENY)
+    rows = {row["capability"] for row in acl.list_session_grants()}
+    assert rows == {"fs_read"}
+
+
+def test_list_session_grants_clears_after_revoke(acl):
+    acl.grant_session(Capability.FS_WRITE, Decision.SILENT)
+    acl.revoke_session(Capability.FS_WRITE)
+    assert acl.list_session_grants() == []
+
+
+def test_list_session_grants_clears_on_clear_transient(acl):
+    acl.grant_session(Capability.FS_WRITE, Decision.SILENT)
+    acl.grant_session(Capability.SHELL_EXEC, Decision.ASK)
+    acl.clear_transient()
+    assert acl.list_session_grants() == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 12 — shell_exec_unlocked profile column (Issue #53)
+# ---------------------------------------------------------------------------
+
+
+def test_profile_shell_exec_locked_by_default(pm):
+    p = pm.create(name="LockedAlice")
+    assert p.shell_exec_unlocked is False
+
+
+def test_unlock_shell_exec_persists(pm):
+    p = pm.create(name="ShellAlice")
+    pm.unlock_shell_exec(p.id)
+    refreshed = pm.get(p.id)
+    assert refreshed.shell_exec_unlocked is True
+
+
+def test_unlock_shell_exec_idempotent(pm):
+    p = pm.create(name="DoubleAlice")
+    pm.unlock_shell_exec(p.id)
+    pm.unlock_shell_exec(p.id)
+    assert pm.get(p.id).shell_exec_unlocked is True
+
+
+def test_unlock_shell_exec_only_affects_target_profile(pm):
+    a = pm.create(name="A")
+    b = pm.create(name="B")
+    pm.unlock_shell_exec(a.id)
+    assert pm.get(a.id).shell_exec_unlocked is True
+    assert pm.get(b.id).shell_exec_unlocked is False

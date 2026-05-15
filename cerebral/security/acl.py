@@ -225,3 +225,17 @@ class ProfileACL:
     def list_persistent_grants(self) -> list[dict]:
         """All persistent rows for this profile — used by the Permissions UI."""
         return self._pm.list_acl_grants(self._profile_id)
+
+    def list_session_grants(self) -> list[dict]:
+        """RAM-only session class grants for this profile.
+
+        Used by the Permissions UI's session-grant revoke list (#53). Each
+        entry mirrors the persistent-grant shape so the tray can render
+        both with the same row template: ``{capability, policy}``.
+        Once-grants are intentionally not surfaced — they're consumed on
+        the next call and listing them would race the consumer.
+        """
+        return [
+            {"capability": cap, "policy": decision.value}
+            for cap, decision in self._session_class_grants.items()
+        ]
