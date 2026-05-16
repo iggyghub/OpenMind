@@ -193,3 +193,95 @@ def test_preferences_persist_across_instances(tmp_path, chroma):
 
     mgr2 = MemoryManager(profile_id=1, db_path=db, chroma_client=chroma)
     assert mgr2.get_preference("wake_name") == "felix"
+
+
+# ── Slice 9: list_all() — the tray review surface (Issue #82) ─────────────────
+
+def test_list_all_empty_when_nothing_stored(mgr):
+    assert mgr.list_all() == []
+
+
+async def test_list_all_returns_all_stored(mgr):
+    await mgr.remember("Fact one")
+    await mgr.remember("Fact two")
+    await mgr.remember("Fact three")
+    facts = {m.fact for m in mgr.list_all()}
+    assert facts == {"Fact one", "Fact two", "Fact three"}
+
+
+async def test_list_all_returns_memory_objects_with_fields(mgr):
+    await mgr.remember("I drive a blue car")
+    mems = mgr.list_all()
+    assert len(mems) == 1
+    m = mems[0]
+    assert isinstance(m, Memory)
+    assert m.fact == "I drive a blue car"
+    assert m.profile_id == 1
+    assert m.created_at != ""
+    assert m.distance == 0.0
+
+
+def test_list_all_newest_first(mgr):
+    # Insert with controlled timestamps so ordering is deterministic
+    # regardless of clock resolution.
+    mgr._collection.add(
+        documents=["oldest", "middle", "newest"],
+        ids=["a", "b", "c"],
+        metadatas=[
+            {"profile_id": 1, "created_at": "2026-01-01T00:00:00+00:00"},
+            {"profile_id": 1, "created_at": "2026-03-01T00:00:00+00:00"},
+            {"profile_id": 1, "created_at": "2026-05-01T00:00:00+00:00"},
+        ],
+    )
+    assert [m.fact for m in mgr.list_all()] == ["newest", "middle", "oldest"]
+
+
+async def test_list_all_is_profile_scoped(chroma):
+    mgr_a = MemoryManager(profile_id=1, db_path=":memory:", chroma_client=chroma)
+    mgr_b = MemoryManager(profile_id=2, db_path=":memory:", chroma_client=chroma)
+    await mgr_a.remember("Profile A fact")
+    await mgr_b.remember("Profile B fact")
+    assert [m.fact for m in mgr_a.list_all()] == ["Profile A fact"]
+    assert [m.fact for m in mgr_b.list_all()] == ["Profile B fact"]
+
+
+# ── Slice 10: edit() — in-place fact update (Issue #82) ──────────────────────
+
+async def test_edit_returns_true_and_updates_fact(mgr):
+    memory_id = await mgr.remember("My phone is an Android")
+    ok = await mgr.edit(memory_id, "My phone is an iPhone")
+    assert ok is True
+    mems = mgr.list_all()
+    assert len(mems) == 1
+    assert mems[0].fact == "My phone is an iPhone"
+
+
+async def test_edit_keeps_same_id(mgr):
+    memory_id = await mgr.remember("original")
+    await mgr.edit(memory_id, "updated")
+    assert mgr.list_all()[0].id == memory_id
+
+
+async def test_edit_preserves_created_at(mgr):
+    memory_id = await mgr.remember("preserve my timestamp")
+    before = mgr.list_all()[0].created_at
+    await mgr.edit(memory_id, "timestamp must not change")
+    assert mgr.list_all()[0].created_at == before
+
+
+async def test_edit_unknown_id_returns_false(mgr):
+    assert await mgr.edit("no-such-id", "whatever") is False
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "\t\n"])
+async def test_edit_blank_fact_returns_false(mgr, bad):
+    memory_id = await mgr.remember("keep me")
+    assert await mgr.edit(memory_id, bad) is False
+    assert mgr.list_all()[0].fact == "keep me"
+
+
+async def test_edited_fact_is_recallable(mgr):
+    memory_id = await mgr.remember("I have a goldfish")
+    await mgr.edit(memory_id, "I have a parrot named Kiwi")
+    results = await mgr.recall("parrot")
+    assert any("Kiwi" in m.fact for m in results)

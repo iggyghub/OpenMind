@@ -282,6 +282,14 @@ def _insights_update_event() -> dict:
     return {"type": "insights_update", "data": {"insights": [i.to_dict() for i in insights]}}
 
 
+def _memory_update_event() -> dict:
+    mgr = _get_memory()
+    memories = mgr.list_all() if mgr else []
+    return {"type": "memory_update", "data": {"memories": [
+        {"id": m.id, "fact": m.fact, "created_at": m.created_at} for m in memories
+    ]}}
+
+
 def _env_context_event() -> dict:
     return {"type": "env_context_update", "data": {"context": _env.get_context()}}
 
@@ -892,6 +900,22 @@ async def _handle_message(msg: dict) -> None:
         if ok:
             await _broadcast(_insights_update_event())
 
+    elif t == "list_memories":
+        await _broadcast(_memory_update_event())
+
+    elif t == "edit_memory":
+        d = msg.get("data", {})
+        mgr = _get_memory()
+        ok = await mgr.edit(d.get("memory_id", ""), d.get("fact", "")) if mgr else False
+        if ok:
+            await _broadcast(_memory_update_event())
+
+    elif t == "delete_memory":
+        mgr = _get_memory()
+        ok = await mgr.forget(msg.get("data", {}).get("memory_id", "")) if mgr else False
+        if ok:
+            await _broadcast(_memory_update_event())
+
     elif t == "set_camera_enabled":
         enabled = msg.get("data", {}).get("enabled", False)
         if enabled:
@@ -920,6 +944,7 @@ async def _ws_handler(websocket) -> None:
     await _send(websocket, _voices_list_event())
     await _send(websocket, _queue_update_event())
     await _send(websocket, _insights_update_event())
+    await _send(websocket, _memory_update_event())
     await _send(websocket, _env_context_event())
     await _send(websocket, _models_list_event())
     await _send(websocket, _plugins_list_event())

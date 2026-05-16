@@ -29,6 +29,7 @@ let setupWindow      = null;
 let queueWindow       = null;
 let visualiserWindow  = null;
 let insightsWindow    = null;
+let memoryWindow      = null;
 let permissionsWindow = null;
 // Latest snapshots from Cerebral, kept up-to-date so a freshly-opened
 // Permissions window doesn't render a blank state while it waits for
@@ -45,6 +46,7 @@ const consentWindows = new Map();
 // Separate map from the consent windows so the two surfaces never collide.
 const modalWindows = new Map();
 let insightsList     = [];
+let memoryList       = [];
 let envContext       = {};
 let modelsList       = [];
 let activeModel      = null;
@@ -204,6 +206,13 @@ function handleCerebralEvent(event) {
       insightsList = (event.data && event.data.insights) || [];
       if (insightsWindow && !insightsWindow.isDestroyed()) {
         insightsWindow.webContents.send('insights:data', insightsList);
+      }
+      break;
+
+    case 'memory_update':
+      memoryList = (event.data && event.data.memories) || [];
+      if (memoryWindow && !memoryWindow.isDestroyed()) {
+        memoryWindow.webContents.send('memory:data', memoryList);
       }
       break;
     case 'env_context_update':
@@ -381,6 +390,37 @@ ipcMain.on('insights:request', (e) => {
   sendToCerebral({ type: 'list_insights' });
 });
 
+// ── Memory window ─────────────────────────────────────────────────────────────
+
+function openMemoryWindow() {
+  if (memoryWindow && !memoryWindow.isDestroyed()) {
+    memoryWindow.focus();
+    memoryWindow.webContents.send('memory:data', memoryList);
+    return;
+  }
+
+  memoryWindow = new BrowserWindow({
+    width: 360,
+    height: 500,
+    resizable: false,
+    title: 'Felix — Memory',
+    backgroundColor: '#12101e',
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  });
+
+  memoryWindow.setMenuBarVisibility(false);
+  memoryWindow.loadFile(path.join(__dirname, 'windows', 'memory.html'));
+  memoryWindow.on('closed', () => { memoryWindow = null; });
+}
+
+ipcMain.on('memory:request', (e) => {
+  e.sender.send('memory:data', memoryList);
+  sendToCerebral({ type: 'list_memories' });
+});
+
 // ── Permissions window (Issue #53) ────────────────────────────────────────────
 
 function openPermissionsWindow() {
@@ -440,6 +480,10 @@ ipcMain.on('insights:pin',    (_e, id) => sendToCerebral({ type: 'pin_insight', 
 ipcMain.on('insights:delete', (_e, id) => sendToCerebral({ type: 'delete_insight', data: { insight_id: id } }));
 ipcMain.on('insights:edit',   (_e, { id, description }) =>
   sendToCerebral({ type: 'edit_insight', data: { insight_id: id, description } })
+);
+ipcMain.on('memory:delete', (_e, id) => sendToCerebral({ type: 'delete_memory', data: { memory_id: id } }));
+ipcMain.on('memory:edit',   (_e, { id, fact }) =>
+  sendToCerebral({ type: 'edit_memory', data: { memory_id: id, fact } })
 );
 
 // ── Consent prompt window (Issue #48) ─────────────────────────────────────────
@@ -689,6 +733,7 @@ function buildMenu() {
       click: toggleVisualiser,
     });
     template.push({ label: 'Insights', click: openInsightsWindow });
+    template.push({ label: 'Memory', click: openMemoryWindow });
     template.push({ label: 'Permissions', click: openPermissionsWindow });
 
     // ── Model ─────────────────────────────────────────────────────────────────

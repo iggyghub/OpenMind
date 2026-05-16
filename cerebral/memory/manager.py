@@ -12,7 +12,9 @@ Public interface:
 
   memory_id = await mgr.remember("My sister's name is Alice")
   memories  = await mgr.recall("sister")                   # → list[Memory]
+  ok        = await mgr.edit(memory_id, "Alice is my cousin")  # → bool
   ok        = await mgr.forget(memory_id)                  # → bool
+  all_mems  = mgr.list_all()                               # → list[Memory] (sync, newest-first)
 
   mgr.set_preference("theme", "dark")
   mgr.get_preference("theme")                              # → "dark"
@@ -135,6 +137,42 @@ class MemoryManager:
         except Exception:
             logger.exception("[memory] forget() failed for id %s", memory_id)
             return False
+
+    async def edit(self, memory_id: str, new_fact: str) -> bool:
+        if not new_fact or not new_fact.strip():
+            return False
+        try:
+            existing = self._collection.get(ids=[memory_id])
+            if not existing["ids"]:
+                return False
+            # chroma >=1.5 update() leaves unspecified fields (metadata,
+            # hence created_at) unchanged and re-embeds the new document.
+            self._collection.update(ids=[memory_id], documents=[new_fact])
+            logger.info("[memory] Edited memory %s", memory_id)
+            return True
+        except Exception:
+            logger.exception("[memory] edit() failed for id %s", memory_id)
+            return False
+
+    def list_all(self) -> list[Memory]:
+        if self._collection.count() == 0:
+            return []
+        # collection.get() with no id filter returns flat lists, unlike
+        # collection.query() which nests results per query string.
+        res = self._collection.get()
+        memories = [
+            Memory(
+                id=mem_id,
+                fact=doc,
+                profile_id=self._profile_id,
+                created_at=(meta or {}).get("created_at", ""),
+            )
+            for mem_id, doc, meta in zip(
+                res["ids"], res["documents"], res["metadatas"]
+            )
+        ]
+        memories.sort(key=lambda m: m.created_at, reverse=True)
+        return memories
 
     # ── Structured preferences ────────────────────────────────────────────────
 
