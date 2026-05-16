@@ -229,6 +229,15 @@ def _get_insights() -> InsightsEngine | None:
     return InsightsEngine(profile_id=_active_profile.id)
 
 
+# Issue #79 — wire _get_memory() into the memory MCP plugin so the LLM can
+# call memory_remember/recall/forget against the active profile's Chroma
+# collection. Same lifecycle as the modal-surface wiring: orchestrator
+# discovers + create()s the plugin at module load; this setter binds the
+# factory before any LLM call can land.
+import plugins.memory as _memory_plugin
+_memory_plugin.set_memory_factory(_get_memory)
+
+
 # ── IPC helpers ───────────────────────────────────────────────────────────────
 
 async def _broadcast(event: dict) -> None:
