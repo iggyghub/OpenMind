@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Felix — Memory</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #12101e;
+      color: #e2e0f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── header ─────────────────────────────────────────────── */
+    .header {
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid #2a2640;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .orb {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #5cb8fc;
+      box-shadow: 0 0 8px #5cb8fc88;
+      flex-shrink: 0;
+    }
+
+    .header-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #c8c4e8;
+      letter-spacing: 0.02em;
+    }
+
+    .badge {
+      margin-left: auto;
+      background: #5cb8fc;
+      color: #12101e;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 10px;
+      padding: 2px 7px;
+      min-width: 20px;
+      text-align: center;
+      display: none;
+    }
+
+    .badge.visible { display: block; }
+
+    /* ── list ────────────────────────────────────────────────── */
+    .list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+    }
+
+    .list::-webkit-scrollbar { width: 4px; }
+    .list::-webkit-scrollbar-track { background: transparent; }
+    .list::-webkit-scrollbar-thumb { background: #3a3460; border-radius: 2px; }
+
+    /* ── empty state ─────────────────────────────────────────── */
+    .empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 8px;
+      color: #5c5880;
+      user-select: none;
+    }
+
+    .empty-icon { font-size: 28px; opacity: 0.5; }
+    .empty-text { font-size: 13px; }
+
+    /* ── memory card ─────────────────────────────────────────── */
+    .item {
+      padding: 10px 14px;
+      border-bottom: 1px solid #1e1c30;
+      animation: fadeIn 0.15s ease;
+    }
+
+    .item:last-child { border-bottom: none; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .item-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+
+    .item-description {
+      font-size: 13px;
+      font-weight: 600;
+      color: #d8d4f0;
+      line-height: 1.3;
+      flex: 1;
+    }
+
+    .item-description.editing {
+      display: none;
+    }
+
+    .edit-input {
+      display: none;
+      flex: 1;
+      background: #1e1c30;
+      border: 1px solid #3a3460;
+      border-radius: 4px;
+      color: #e2e0f0;
+      font-size: 13px;
+      font-family: inherit;
+      padding: 3px 6px;
+      outline: none;
+    }
+
+    .edit-input.visible {
+      display: block;
+    }
+
+    .edit-input:focus { border-color: #5cb8fc; }
+
+    .item-meta {
+      font-size: 11px;
+      color: #5a5680;
+      margin-bottom: 8px;
+      font-family: 'Courier New', monospace;
+    }
+
+    .item-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .btn {
+      padding: 4px 10px;
+      border: none;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.1s, background 0.1s;
+      letter-spacing: 0.01em;
+    }
+
+    .btn:active { opacity: 0.75; }
+
+    .btn-edit {
+      background: #1e1c30;
+      color: #8882aa;
+      border: 1px solid #2a2640;
+    }
+
+    .btn-edit:hover { color: #c8c4e8; border-color: #4a4670; }
+
+    .btn-save {
+      background: #5cb8fc;
+      color: #12101e;
+    }
+
+    .btn-save:hover { background: #7ac8fc; }
+
+    .btn-delete {
+      background: #1e1c30;
+      color: #5c5880;
+      border: 1px solid #2a2640;
+      margin-left: auto;
+    }
+
+    .btn-delete:hover { color: #e05555; border-color: #e05555; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="orb"></div>
+    <span class="header-title">What Felix remembers</span>
+    <span class="badge" id="badge">0</span>
+  </div>
+
+  <div class="list" id="list">
+    <div class="empty" id="empty">
+      <div class="empty-icon">✦</div>
+      <div class="empty-text">No memories yet</div>
+    </div>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+
+    const listEl  = document.getElementById('list');
+    const emptyEl = document.getElementById('empty');
+    const badgeEl = document.getElementById('badge');
+
+    let memories = [];
+
+    function fmtDate(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? iso : d.toLocaleString();
+    }
+
+    // ── render ──────────────────────────────────────────────────────────────
+    function render() {
+      listEl.querySelectorAll('.item').forEach(el => el.remove());
+
+      if (memories.length === 0) {
+        emptyEl.style.display = 'flex';
+        badgeEl.classList.remove('visible');
+        return;
+      }
+
+      emptyEl.style.display = 'none';
+      badgeEl.textContent = memories.length;
+      badgeEl.classList.add('visible');
+
+      memories.forEach(mem => {
+        const el = document.createElement('div');
+        el.className = 'item';
+        el.dataset.id = mem.id;
+
+        el.innerHTML = `
+          <div class="item-header">
+            <span class="item-description">${esc(mem.fact)}</span>
+            <input class="edit-input" value="${esc(mem.fact)}" />
+          </div>
+          <div class="item-meta">⧗ ${esc(fmtDate(mem.created_at))}</div>
+          <div class="item-actions">
+            <button class="btn btn-edit" data-id="${mem.id}">Edit</button>
+            <button class="btn btn-save" data-id="${mem.id}" style="display:none">Save</button>
+            <button class="btn btn-delete" data-id="${mem.id}">Delete</button>
+          </div>
+        `;
+
+        listEl.insertBefore(el, emptyEl);
+      });
+    }
+
+    function esc(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // ── button interactions ─────────────────────────────────────────────────
+    listEl.addEventListener('click', e => {
+      const btn = e.target.closest('.btn');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      const card = listEl.querySelector(`.item[data-id="${id}"]`);
+
+      if (btn.classList.contains('btn-edit')) {
+        const descEl  = card.querySelector('.item-description');
+        const inputEl = card.querySelector('.edit-input');
+        const saveBtn = card.querySelector('.btn-save');
+        descEl.classList.add('editing');
+        inputEl.classList.add('visible');
+        inputEl.value = descEl.textContent;
+        saveBtn.style.display = 'inline-block';
+        btn.style.display = 'none';
+        inputEl.focus();
+
+      } else if (btn.classList.contains('btn-save')) {
+        const inputEl = card.querySelector('.edit-input');
+        const newFact = inputEl.value.trim();
+        if (newFact) ipcRenderer.send('memory:edit', { id, fact: newFact });
+
+      } else if (btn.classList.contains('btn-delete')) {
+        ipcRenderer.send('memory:delete', id);
+        memories = memories.filter(m => m.id !== id);
+        render();
+      }
+    });
+
+    // ── IPC from main process ───────────────────────────────────────────────
+    ipcRenderer.on('memory:data', (_e, newMemories) => {
+      memories = newMemories;
+      render();
+    });
+
+    // Request initial memories on load
+    ipcRenderer.send('memory:request');
+  </script>
+</body>
+</html>
