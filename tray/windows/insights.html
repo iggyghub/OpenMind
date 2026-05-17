@@ -140,6 +140,13 @@
     .item-example {
       font-size: 11px;
       color: #5a5680;
+      margin-bottom: 4px;
+      font-family: 'Courier New', monospace;
+    }
+
+    .item-meta {
+      font-size: 11px;
+      color: #5a5680;
       margin-bottom: 8px;
       font-family: 'Courier New', monospace;
     }
@@ -246,6 +253,7 @@
             <input class="edit-input" value="${esc(ins.description)}" />
           </div>
           <div class="item-example">⚙ ${esc(ins.example)}</div>
+          <div class="item-meta">⧗ ${esc(fmtDate(ins.created_at))}</div>
           <div class="item-actions">
             <button class="btn btn-pin" data-id="${ins.id}">${ins.pinned ? '📌 Pinned' : '📌 Pin'}</button>
             <button class="btn btn-edit" data-id="${ins.id}">Edit</button>
@@ -264,6 +272,11 @@
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
+    }
+
+    function fmtDate(iso) {
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? iso : d.toLocaleString();
     }
 
     // ── button interactions ─────────────────────────────────────────────────
@@ -296,6 +309,30 @@
         ipcRenderer.send('insights:delete', id);
         insights = insights.filter(i => i.id !== id);
         render();
+      }
+    });
+
+    listEl.addEventListener('keydown', e => {
+      const inputEl = e.target.closest('.edit-input');
+      if (!inputEl) return;
+      const card = listEl.querySelector(`.item[data-id="${inputEl.closest('.item').dataset.id}"]`);
+      const id = card.dataset.id;
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const newDesc = inputEl.value.trim();
+        if (newDesc) ipcRenderer.send('insights:edit', { id, description: newDesc });
+
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        const descEl  = card.querySelector('.item-description');
+        const editBtn = card.querySelector('.btn-edit');
+        const saveBtn = card.querySelector('.btn-save');
+        descEl.classList.remove('editing');
+        inputEl.classList.remove('visible');
+        inputEl.value = descEl.textContent;
+        saveBtn.style.display = 'none';
+        editBtn.style.display = 'inline-block';
       }
     });
 

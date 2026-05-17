@@ -160,7 +160,8 @@ class InsightsEngine:
 
     def list_insights(self) -> list[Insight]:
         rows = self._con.execute(
-            "SELECT * FROM insights WHERE profile_id=? ORDER BY created_at ASC",
+            "SELECT * FROM insights WHERE profile_id=?"
+            " ORDER BY pinned DESC, created_at ASC, id ASC",
             (self._profile_id,),
         ).fetchall()
         return [self._row_to_insight(r) for r in rows]
@@ -209,6 +210,8 @@ class InsightsEngine:
         return True
 
     def edit_insight(self, insight_id: str, description: str) -> bool:
+        if not description.strip():
+            return False
         cur = self._con.execute(
             "UPDATE insights SET description=?, updated_at=? WHERE id=? AND profile_id=?",
             (description, self._now(), insight_id, self._profile_id),

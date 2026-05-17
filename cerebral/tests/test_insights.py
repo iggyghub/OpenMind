@@ -271,3 +271,73 @@ def test_pin_persists_across_instances(tmp_path):
 
     eng2 = InsightsEngine(1, db_path=str(db))
     assert eng2.list_insights()[0].pinned is True
+
+
+# ── Slice 10: list_insights ordering — pinned-first (Issue #88) ───────────────
+
+
+def _with_monotonic_clock(eng: InsightsEngine) -> None:
+    """Force strictly-increasing created_at so ordering assertions are
+    deterministic regardless of wall-clock microsecond collisions."""
+    import itertools
+
+    counter = itertools.count()
+    eng._now = lambda: f"2026-01-01T00:00:00.{next(counter):06d}+00:00"
+
+
+def _make(eng: InsightsEngine, example: str) -> str:
+    _fill_signals(eng, 3, title=example, tool_name=example)
+    return next(i.id for i in eng.list_insights() if i.example == example)
+
+
+def test_list_insights_pinned_floats_to_top():
+    eng = _eng()
+    _with_monotonic_clock(eng)
+    _make(eng, "a")
+    _make(eng, "b")
+    c_id = _make(eng, "c")
+    assert [i.example for i in eng.list_insights()] == ["a", "b", "c"]
+
+    eng.pin_insight(c_id)
+    ins = eng.list_insights()
+    assert ins[0].id == c_id and ins[0].pinned is True
+    assert [i.example for i in ins[1:]] == ["a", "b"]
+
+
+def test_list_insights_two_pinned_stay_created_asc():
+    eng = _eng()
+    _with_monotonic_clock(eng)
+    a_id = _make(eng, "a")
+    _make(eng, "b")
+    c_id = _make(eng, "c")
+    eng.pin_insight(c_id)
+    eng.pin_insight(a_id)
+    assert [i.example for i in eng.list_insights()] == ["a", "c", "b"]
+
+
+def test_list_insights_deterministic_across_calls():
+    eng = _eng()
+    for n in range(8):
+        _make(eng, f"t{n}")
+    assert [i.id for i in eng.list_insights()] == [i.id for i in eng.list_insights()]
+
+
+# ── Slice 11: edit_insight blank guard (Issue #88) ────────────────────────────
+
+
+def test_edit_insight_blank_returns_false():
+    eng = _eng()
+    _fill_signals(eng, 3)
+    insight = eng.list_insights()[0]
+    assert eng.edit_insight(insight.id, "") is False
+    assert eng.list_insights()[0].description == insight.description
+
+
+def test_edit_insight_whitespace_returns_false_no_updated_at_bump():
+    eng = _eng()
+    _fill_signals(eng, 3)
+    insight = eng.list_insights()[0]
+    assert eng.edit_insight(insight.id, "   \t\n ") is False
+    after = eng.list_insights()[0]
+    assert after.description == insight.description
+    assert after.updated_at == insight.updated_at
