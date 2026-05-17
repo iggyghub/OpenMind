@@ -909,7 +909,10 @@ async def _handle_message(msg: dict) -> None:
             eng = _get_insights()
             if eng:
                 eng.record_signal("dismiss", item.title, tool_name=item.tool_name)
-                eng.maybe_create_insight(item.title, tool_name=item.tool_name)
+                new_insight = eng.maybe_create_insight(item.title, tool_name=item.tool_name)
+                if new_insight:
+                    logger.info("[cerebral] New insight: %s", new_insight.description)
+                    await _broadcast(_insights_update_event())
         await _broadcast(_queue_update_event())
 
     elif t == "list_insights":
