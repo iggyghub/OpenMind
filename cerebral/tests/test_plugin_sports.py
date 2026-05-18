@@ -1,7 +1,7 @@
 """
-Sports Scores MCP plugin tests — Issue #100.
+Sports Scores MCP plugin tests — Issue #100, extended in Issue #103.
 
-Tools: sports_scoreboard, sports_team.
+Tools: sports_scoreboard, sports_team, sports_standings.
 
 Stateless, read-only over ESPN's public site API. All HTTP calls are injected
 via fetch_fn so tests never hit the network. ESPN serves JSON to default
@@ -65,16 +65,52 @@ def _competitor(team="Team", score="0", home_away="home") -> dict:
     }
 
 
+def _standings(*children: dict) -> dict:
+    """Wrap child dicts in ESPN's standings envelope."""
+    return {"children": list(children)}
+
+
+def _group(name="Eastern Conference", abbreviation="East",
+           entries=None) -> dict:
+    return {
+        "name": name,
+        "abbreviation": abbreviation,
+        "standings": {"entries": entries or []},
+    }
+
+
+def _entry(*, team="Detroit Pistons", abbr="DET", wins="60", losses="22",
+           winpercent=".732", gamesbehind="-", streak="W3",
+           playoffseed="1", total="60-22") -> dict:
+    return {
+        "team": {"displayName": team, "abbreviation": abbr},
+        "stats": [
+            {"name": "wins", "type": "wins", "displayValue": wins},
+            {"name": "losses", "type": "losses", "displayValue": losses},
+            {"name": "winPercent", "type": "winpercent",
+             "displayValue": winpercent},
+            {"name": "gamesBehind", "type": "gamesbehind",
+             "displayValue": gamesbehind},
+            {"name": "streak", "type": "streak", "displayValue": streak},
+            {"name": "playoffSeed", "type": "playoffseed",
+             "displayValue": playoffseed},
+            {"name": "overall", "type": "total", "displayValue": total},
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Cycle 1 — list_tools, create() factory, capabilities
 # ---------------------------------------------------------------------------
 
 class TestListTools:
-    def test_list_tools_exposes_two(self):
+    def test_list_tools_exposes_three(self):
         from plugins.sports import create
 
         names = {t.name for t in create().list_tools()}
-        assert names == {"sports_scoreboard", "sports_team"}
+        assert names == {
+            "sports_scoreboard", "sports_team", "sports_standings"
+        }
 
     def test_create_plugin_named_sports(self):
         from plugins.sports import create
@@ -96,6 +132,9 @@ class TestListTools:
         assert "sport" in sb_req and "league" in sb_req
         tm_req = tools["sports_team"].schema.get("required", [])
         assert "sport" in tm_req and "league" in tm_req and "team" in tm_req
+        st_req = tools["sports_standings"].schema.get("required", [])
+        assert "sport" in st_req and "league" in st_req
+        assert "team" not in st_req
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +167,26 @@ class TestRequiredArgs:
         plugin = SportsPlugin(fetch_fn=_make_fetch())
         result = await plugin.call_tool(
             "sports_team", {"sport": "basketball", "league": "nba"}
+        )
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_standings_missing_sport_returns_error(self):
+        from plugins.sports import SportsPlugin
+
+        plugin = SportsPlugin(fetch_fn=_make_fetch())
+        result = await plugin.call_tool(
+            "sports_standings", {"league": "nba"}
+        )
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_standings_missing_league_returns_error(self):
+        from plugins.sports import SportsPlugin
+
+        plugin = SportsPlugin(fetch_fn=_make_fetch())
+        result = await plugin.call_tool(
+            "sports_standings", {"sport": "basketball"}
         )
         assert result.is_error
 
@@ -319,6 +378,166 @@ class TestTeam:
         result = await plugin.call_tool(
             "sports_team",
             {"sport": "basketball", "league": "nba", "team": "lal"},
+        )
+        assert result.is_error
+
+
+# ---------------------------------------------------------------------------
+# Cycle 4b — sports_standings (Issue #103)
+# ---------------------------------------------------------------------------
+
+class TestStandings:
+    @pytest.mark.asyncio
+    async def test_standings_shapes_grouped_entries(self):
+        from plugins.sports import SportsPlugin
+
+        captured: dict = {}
+        plugin = SportsPlugin(
+            fetch_fn=_make_fetch(
+                response=_standings(
+                    _group("Eastern Conference", "East", entries=[
+                        _entry(team="Detroit Pistons", abbr="DET"),
+                    ]),
+                    _group("Western Conference", "West", entries=[
+                        _entry(team="Oklahoma City Thunder", abbr="OKC",
+                               wins="58", losses="24", winpercent=".707",
+                               gamesbehind="2", streak="L1",
+                               playoffseed="1", total="58-24"),
+                    ]),
+                ),
+                captured=captured,
+            )
+        )
+        result = await plugin.call_tool(
+            "sports_standings", {"sport": "basketball", "league": "nba"}
+        )
+        assert not result.is_error
+        assert captured["method"] == "GET"
+        assert captured["url"] == (
+            "https://site.api.espn.com/apis/v2/sports/basketball/nba/standings"
+        )
+        groups = json.loads(result.content)["standings"]
+        assert len(groups) == 2
+        assert groups[0]["group"] == "Eastern Conference"
+        assert groups[0]["abbreviation"] == "East"
+        assert groups[0]["entries"][0] == {
+            "team": "Detroit Pistons",
+            "abbreviation": "DET",
+            "wins": "60",
+            "losses": "22",
+            "winPercent": ".732",
+            "gamesBehind": "-",
+            "streak": "W3",
+            "playoffSeed": "1",
+            "summary": "60-22",
+        }
+        assert groups[1]["group"] == "Western Conference"
+        assert groups[1]["entries"][0]["team"] == "Oklahoma City Thunder"
+        assert groups[1]["entries"][0]["summary"] == "58-24"
+
+    @pytest.mark.asyncio
+    async def test_standings_season_sets_season_param(self):
+        from plugins.sports import SportsPlugin
+
+        captured: dict = {}
+        plugin = SportsPlugin(
+            fetch_fn=_make_fetch(response=_standings(), captured=captured)
+        )
+        await plugin.call_tool(
+            "sports_standings",
+            {"sport": "basketball", "league": "nba", "season": "2025"},
+        )
+        assert (captured["params"] or {}).get("season") == "2025"
+
+    @pytest.mark.asyncio
+    async def test_standings_no_season_omits_season_param(self):
+        from plugins.sports import SportsPlugin
+
+        captured: dict = {}
+        plugin = SportsPlugin(
+            fetch_fn=_make_fetch(response=_standings(), captured=captured)
+        )
+        await plugin.call_tool(
+            "sports_standings", {"sport": "basketball", "league": "nba"}
+        )
+        assert "season" not in (captured["params"] or {})
+
+    @pytest.mark.asyncio
+    async def test_standings_max_results_caps_per_group(self):
+        from plugins.sports import SportsPlugin
+
+        plugin = SportsPlugin(
+            fetch_fn=_make_fetch(
+                response=_standings(
+                    _group("East", "East", entries=[
+                        _entry(team="A"), _entry(team="B"), _entry(team="C"),
+                    ]),
+                    _group("West", "West", entries=[
+                        _entry(team="D"), _entry(team="E"), _entry(team="F"),
+                    ]),
+                )
+            )
+        )
+        result = await plugin.call_tool(
+            "sports_standings",
+            {"sport": "basketball", "league": "nba", "max_results": 2},
+        )
+        groups = json.loads(result.content)["standings"]
+        assert len(groups[0]["entries"]) == 2
+        assert len(groups[1]["entries"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_standings_missing_stat_is_blank(self):
+        from plugins.sports import SportsPlugin
+
+        plugin = SportsPlugin(
+            fetch_fn=_make_fetch(
+                response=_standings(_group(entries=[{
+                    "team": {"displayName": "X", "abbreviation": "X"},
+                    "stats": [
+                        {"name": "wins", "type": "wins", "displayValue": "1"},
+                    ],
+                }]))
+            )
+        )
+        result = await plugin.call_tool(
+            "sports_standings", {"sport": "basketball", "league": "nba"}
+        )
+        assert not result.is_error
+        entry = json.loads(result.content)["standings"][0]["entries"][0]
+        assert entry["wins"] == "1"
+        assert entry["losses"] == ""
+        assert entry["summary"] == ""
+        assert entry["playoffSeed"] == ""
+
+    @pytest.mark.asyncio
+    async def test_standings_empty_children_returns_empty(self):
+        from plugins.sports import SportsPlugin
+
+        plugin = SportsPlugin(fetch_fn=_make_fetch(response=_standings()))
+        result = await plugin.call_tool(
+            "sports_standings", {"sport": "basketball", "league": "nba"}
+        )
+        assert not result.is_error
+        assert json.loads(result.content)["standings"] == []
+
+    @pytest.mark.asyncio
+    async def test_standings_non_dict_response_is_error(self):
+        from plugins.sports import SportsPlugin
+
+        plugin = SportsPlugin(fetch_fn=_make_fetch(response=["nope"]))
+        result = await plugin.call_tool(
+            "sports_standings", {"sport": "basketball", "league": "nba"}
+        )
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_standings_network_error_is_error(self):
+        from plugins.sports import SportsPlugin
+
+        plugin = SportsPlugin(fetch_fn=_error_fetch())
+        result = await plugin.call_tool(
+            "sports_standings", {"sport": "basketball", "league": "nba"}
         )
         assert result.is_error
 
