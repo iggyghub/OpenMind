@@ -1114,6 +1114,109 @@ async def _heartbeat_loop(audio_active: bool) -> None:
         )
 
 
+# ── RSS poller (Issue #94) ────────────────────────────────────────────────────
+#
+# Producer-only: a background loop drives the existing rss_monitor `rss_check`
+# tool and surfaces new entries as passive queue items (tool_name=None) — the
+# `_on_passive` pattern. Nothing auto-executes; actioning still requires a wake.
+# This is an application of ADR-0005's "liberal queue, strict execution," not a
+# deviation (threat #3 is not engaged). Off by default — opt in via
+# RSS_POLL_INTERVAL_SECONDS (passive-by-default: a background network loop is
+# not started unless the user asks for it).
+
+RSS_POLL_INTERVAL_ENV = "RSS_POLL_INTERVAL_SECONDS"
+RSS_POLL_MIN_INTERVAL = 60  # floor — never poll feeds faster than this
+
+
+def _rss_poll_interval() -> int | None:
+    """Parse RSS_POLL_INTERVAL_SECONDS → clamped interval, or None (poller off).
+
+    None when unset / non-integer / <= 0. A positive value below the floor is
+    clamped up to RSS_POLL_MIN_INTERVAL. Every disabling/clamping path logs at
+    INFO so startup always carries a clear signal.
+    """
+    raw = os.environ.get(RSS_POLL_INTERVAL_ENV)
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.info(
+            "[cerebral] %s=%r is not an integer — RSS poller disabled",
+            RSS_POLL_INTERVAL_ENV, raw,
+        )
+        return None
+    if value <= 0:
+        logger.info(
+            "[cerebral] %s=%d — RSS poller disabled",
+            RSS_POLL_INTERVAL_ENV, value,
+        )
+        return None
+    if value < RSS_POLL_MIN_INTERVAL:
+        logger.info(
+            "[cerebral] %s=%d below the %ds floor — clamping to %ds",
+            RSS_POLL_INTERVAL_ENV, value, RSS_POLL_MIN_INTERVAL,
+            RSS_POLL_MIN_INTERVAL,
+        )
+        return RSS_POLL_MIN_INTERVAL
+    return value
+
+
+async def _rss_poll_once() -> None:
+    """One poll cycle: check every subscribed feed, surface new entries as
+    passive queue items (tool_name=None).
+
+    Never raises — a failed cycle logs and returns so the loop survives. The
+    per-feed cursor is owned by `rss_check` (a manual rss_check after a poll
+    returns empty by design; the queue is the surface for poller-found
+    entries).
+    """
+    try:
+        result = await _orc.call_tool("rss_check", {})
+    except Exception as exc:
+        logger.warning("[cerebral] RSS poll: rss_check raised: %s", exc)
+        return
+    if result.is_error:
+        logger.warning("[cerebral] RSS poll: rss_check error: %s", result.content)
+        return
+    try:
+        payload = json.loads(result.content)
+    except (TypeError, ValueError) as exc:
+        logger.warning("[cerebral] RSS poll: bad rss_check JSON: %s", exc)
+        return
+
+    results = payload.get("results", []) if isinstance(payload, dict) else []
+    queued = 0
+    for feed in results:
+        name = feed.get("name", "feed")
+        for entry in feed.get("new", []):
+            title = entry.get("title") or f"{name} update"
+            url = entry.get("url", "")
+            summary = f"{name} — {url}" if url else name
+            _queue.add_item(title=title, summary=summary)
+            queued += 1
+
+    if queued:
+        logger.info(
+            "[cerebral] RSS poll: queued %d new entr%s across %d feed(s)",
+            queued, "y" if queued == 1 else "ies", len(results),
+        )
+        await _broadcast(_queue_update_event())
+
+
+async def _rss_poll_loop(interval: int) -> None:
+    """Periodic RSS poll, mirroring `_heartbeat_loop`'s _shutdown-aware shape."""
+    logger.info("[cerebral] RSS poller started (every %ds)", interval)
+    while not _shutdown.is_set():
+        try:
+            await asyncio.wait_for(_shutdown.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
+        if _shutdown.is_set():
+            break
+        await _rss_poll_once()
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def main() -> None:
@@ -1184,8 +1287,19 @@ async def main() -> None:
     async with serve(_ws_handler, HOST, PORT):
         logger.info("[cerebral] Listening - waiting for tray connection")
         heartbeat = asyncio.create_task(_heartbeat_loop(audio_active))
+        rss_interval = _rss_poll_interval()
+        if rss_interval is not None:
+            rss_task = asyncio.create_task(_rss_poll_loop(rss_interval))
+        else:
+            rss_task = None
+            logger.info(
+                "[cerebral] RSS poller disabled (set %s to enable)",
+                RSS_POLL_INTERVAL_ENV,
+            )
         await _shutdown.wait()
         heartbeat.cancel()
+        if rss_task is not None:
+            rss_task.cancel()
 
     if pipeline is not None:
         pipeline.stop()
