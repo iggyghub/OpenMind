@@ -312,6 +312,56 @@ def _get_oauth_flow(store: CredentialStore) -> GoogleOAuthFlow:
     return GoogleOAuthFlow(store)
 
 
+class _GmailTokenProvider:
+    """Per-active-profile bearer-token handle for plugins/gmail.py.
+
+    `current()` reads the stored access token from the #112 store (no
+    network); `refresh()` exchanges the stored refresh token for a fresh
+    access token via #113 (the gmail plugin's one 401 -> retry path)."""
+
+    def __init__(self, store: CredentialStore, flow: GoogleOAuthFlow,
+                 profile_id: int) -> None:
+        self._store = store
+        self._flow = flow
+        self._profile_id = profile_id
+
+    def current(self) -> str | None:
+        return self._store.get_secret(
+            self._profile_id, "google", "access_token"
+        )
+
+    def refresh(self) -> str:
+        return self._flow.refresh_access_token(self._profile_id)
+
+
+def _get_gmail_token_provider() -> _GmailTokenProvider | None:
+    """Resolve the active profile's Gmail bearer-token provider, or None
+    when no profile is active or it has no connected Google account.
+
+    Mirrors `_get_memory`: re-resolved on every tool call (the active
+    profile can switch). Tests patch plugins.gmail's provider directly."""
+    if _active_profile is None:
+        return None
+    store = _get_credential_store()
+    meta = store.get_credential(_active_profile.id, "google")
+    if not meta or meta.get("status") != "connected":
+        return None
+    return _GmailTokenProvider(
+        store, _get_oauth_flow(store), _active_profile.id
+    )
+
+
+# Issue #115 — wire _get_gmail_token_provider() into the gmail MCP plugin so
+# gmail_search can call the real Gmail API with the active profile's OAuth
+# bearer (refreshed on demand via #113). Same lifecycle/precedent as the
+# memory wiring above (set_memory_factory): the orchestrator discovers +
+# create()s the plugin at module load; this setter binds the factory before
+# any LLM call can land. #112 owns storage, #113 owns the flow — this never
+# touches the keyring or OAuth transport directly.
+import plugins.gmail as _gmail_plugin
+_gmail_plugin.set_token_provider(_get_gmail_token_provider)
+
+
 def _credentials_state_event(
     *, transient: str | None = None, error: str | None = None
 ) -> dict:
