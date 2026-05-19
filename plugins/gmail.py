@@ -1,12 +1,21 @@
 """
-Gmail MCP plugin -- Issue #115, ADR-0005.
+Gmail MCP plugin -- Issues #115 / #116, ADR-0005.
 
-One tool: ``gmail_search`` hitting the **real Gmail API**
-(``users.messages.list`` + ``users.messages.get`` in ``metadata`` format),
-authorized by the active profile's OAuth **access token** read from the
-#112 credential store (refreshed on demand via #113). This is the
-end-to-end tracer bullet: #112 store -> #113 OAuth token -> real
-``gmail.googleapis.com`` call -> shaped ``ToolResult``.
+Two tools, both hitting the **real Gmail API**, authorized by the active
+profile's OAuth **access token** read from the #112 credential store
+(refreshed on demand via #113):
+
+  - ``gmail_search`` (#115) -- ``users.messages.list`` + ``users.messages.get``
+    in ``metadata`` format. Read-only.
+  - ``gmail_send`` (#116) -- ``users.messages.send`` with an RFC822 /
+    base64url ``{"raw": ...}`` body. Write (ask-class
+    ``external_data_write``).
+
+#115 is the end-to-end tracer bullet: #112 store -> #113 OAuth token ->
+real ``gmail.googleapis.com`` call -> shaped ``ToolResult``. #116 reuses
+that exact spine (same token seam, same one-401->refresh->retry, same
+scrub) -- the only new surface is the RFC822/base64url build + the
+``users.messages.send`` POST.
 
 This is the **real Gmail API path, OAuth bearer from the per-profile
 credential store (#112), not the n8n bridge**. Runtime priority is
@@ -23,8 +32,10 @@ constructor: no real network, OAuth, keyring or browser in the suite.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
+from email.message import EmailMessage
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
@@ -33,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "gmail"
 
-# ADR-0005 / Issue #115.
+# ADR-0005 / Issues #115, #116.
 #   - external_data_read + network_egress_cloud: gmail_search fetches the
 #     user's mail from gmail.googleapis.com over the internet (the
 #     youtube.py/reddit.py surface). network_egress_cloud is what the AST
@@ -51,9 +62,19 @@ PLUGIN_NAME = "gmail"
 #     pass is the wrong default (ADR-0005 threats T1/T4). Do not "tidy this
 #     away" -- over-declaration is intentional and audit-safe (_inspect only
 #     fails on *under*-declaration).
+#   - external_data_write (Issue #116): gmail_send mutates an external
+#     account (it sends mail via users.messages.send). This is the correct
+#     *required* ask-class semantic class (ADR-0005 day-1 ACL, line 34) --
+#     NOT an over-declaration like secrets_read above. Like external_data_read
+#     it is hand-declared: external_data_* is absent from the AST capability
+#     map AND the bare-attr fallback (call_site_capabilities.py:148-199 maps
+#     only fs/clipboard/network/secrets/screen/device/code primitives), so
+#     the per-file AST audit never auto-requires it -- a semantic capability
+#     declared because the tool's effect IS the write, audit-safe.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
     "secrets_read",
     "external_data_read",
+    "external_data_write",
     "network_egress_cloud",
 })
 
@@ -64,6 +85,7 @@ _METADATA_HEADERS = ("From", "To", "Subject", "Date")
 _FACTORY_NOT_WIRED_MSG = "Gmail is not available -- token provider not wired"
 _NO_ACCOUNT_MSG = "no Google account connected"
 _BLANK_QUERY_MSG = "'query' is required for gmail_search"
+_MISSING_SEND_ARG_MSG = "missing required arg(s) for gmail_send: {}"
 
 
 class TokenProvider(Protocol):
@@ -201,6 +223,18 @@ def _shape_message(msg: Any) -> dict:
     }
 
 
+def _build_raw(to: str, subject: str, body: str, cc: str | None) -> str:
+    """Build an RFC822 message (stdlib ``email``) and base64url-encode it
+    for the Gmail ``users.messages.send`` ``{"raw": ...}`` body."""
+    msg = EmailMessage()
+    msg["To"] = to
+    msg["Subject"] = subject
+    if cc:
+        msg["Cc"] = cc
+    msg.set_content(body)
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+
+
 class GmailPlugin:
     name = PLUGIN_NAME
 
@@ -245,11 +279,44 @@ class GmailPlugin:
                     "required": ["query"],
                 },
             ),
+            Tool(
+                name="gmail_send",
+                description=(
+                    "Send an email from the active profile's Gmail account "
+                    "via the real Gmail API. Plain-text body. Returns the "
+                    "sent message id, thread id and status."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "to": {
+                            "type": "string",
+                            "description": "Recipient email address.",
+                        },
+                        "subject": {
+                            "type": "string",
+                            "description": "Email subject line.",
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Email body (plain text).",
+                        },
+                        "cc": {
+                            "type": "string",
+                            "description": "CC email address (optional).",
+                        },
+                    },
+                    "required": ["to", "subject", "body"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         if tool_name == "gmail_search":
             return await self._search(args)
+        if tool_name == "gmail_send":
+            return await self._send(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -360,6 +427,68 @@ class GmailPlugin:
             )
 
         return ToolResult(content=json.dumps({"results": results}))
+
+    async def _post_send(self, token: str, raw: str) -> Any:
+        """POST the base64url RFC822 message to users.messages.send.
+
+        Sibling of _request (which is GET-only): reuses self._fetch -- the
+        default transport already accepts method + a json body -- with the
+        same Bearer header. No new transport.
+        """
+        return await self._fetch(
+            "POST",
+            f"{_BASE}/messages/send",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"raw": raw},
+        )
+
+    async def _send(self, args: dict) -> ToolResult:
+        missing = [
+            name
+            for name in ("to", "subject", "body")
+            if not args.get(name) or not isinstance(args.get(name), str)
+        ]
+        if missing:
+            return ToolResult(
+                content=_MISSING_SEND_ARG_MSG.format(", ".join(missing)),
+                is_error=True,
+            )
+        cc = args.get("cc")
+        cc = cc if isinstance(cc, str) and cc else None
+        raw = _build_raw(args["to"], args["subject"], args["body"], cc)
+
+        provider, err = self._resolve_provider()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+
+        try:
+            token = self._take_token(provider, force=False)
+            try:
+                resp = await self._post_send(token, raw)
+            except GmailAPIError as exc:
+                if exc.status != 401:
+                    raise
+                # One 401 -> refresh -> retry only; no backoff loop.
+                token = self._take_token(provider, force=True)
+                resp = await self._post_send(token, raw)
+        except Exception as exc:
+            logger.error(
+                "[gmail] gmail_send failed: %s", self._scrub(str(exc))
+            )
+            return ToolResult(
+                content=self._scrub(f"Gmail send failed: {exc}"),
+                is_error=True,
+            )
+
+        if not isinstance(resp, dict):
+            return ToolResult(
+                content="unexpected Gmail send response", is_error=True
+            )
+        return ToolResult(content=json.dumps({
+            "id": resp.get("id", ""),
+            "thread_id": resp.get("threadId", ""),
+            "status": "sent",
+        }))
 
 
 def create(fetch_fn: FetchFn | None = None) -> GmailPlugin:

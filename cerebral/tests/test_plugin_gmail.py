@@ -1,10 +1,10 @@
 """
-Gmail MCP plugin tests -- Issue #115.
+Gmail MCP plugin tests -- Issues #115 / #116.
 
-Tool: gmail_search (real Gmail API, OAuth bearer from the #112 store via
-#113, not the n8n bridge). All HTTP is injected via fetch_fn and the bearer
-token via a stub provider, so tests never read the keyring, run OAuth, or
-hit the network.
+Tools: gmail_search (#115, read) + gmail_send (#116, write -- real Gmail API,
+OAuth bearer from the #112 store via #113, not the n8n bridge). All HTTP is
+injected via fetch_fn and the bearer token via a stub provider, so tests
+never read the keyring, run OAuth, or hit the network.
 
 learning-#15 POSITIVE case: Gmail auth is an `Authorization: Bearer` HEADER
 built by the plugin + an on-demand refresh -- the transport carries
@@ -103,20 +103,31 @@ def _msg_resp(mid, *, frm="a@x.com", to="b@y.com", subj="Hi",
 # ---------------------------------------------------------------------------
 
 class TestListTools:
-    def test_list_tools_exposes_one(self):
+    def test_list_tools_exposes_search_and_send(self):
         names = {t.name for t in create().list_tools()}
-        assert names == {"gmail_search"}
+        assert names == {"gmail_search", "gmail_send"}
 
     def test_create_plugin_named_gmail(self):
         assert create().name == "gmail"
 
-    def test_required_capabilities_overdeclare_secrets_read(self):
+    def test_required_capabilities(self):
         # secrets_read is a DELIBERATE over-declaration (youtube.py
-        # posture-B): the plugin never calls keyring.* directly, so the
-        # per-file AST audit does not auto-require it.
-        assert REQUIRED_CAPABILITIES == frozenset(
-            {"secrets_read", "external_data_read", "network_egress_cloud"}
+        # posture-B); external_data_write is the correct *required*
+        # ask-class semantic class for gmail_send (#116). Both are
+        # hand-declared -- the per-file AST audit maps neither.
+        assert REQUIRED_CAPABILITIES == frozenset({
+            "secrets_read",
+            "external_data_read",
+            "external_data_write",
+            "network_egress_cloud",
+        })
+
+    def test_send_args_schema_required(self):
+        tool = next(
+            t for t in create().list_tools() if t.name == "gmail_send"
         )
+        assert tool.schema.get("required", []) == ["to", "subject", "body"]
+        assert "cc" in tool.schema["properties"]
 
     def test_query_is_schema_required(self):
         tool = create().list_tools()[0]
@@ -429,3 +440,202 @@ class TestDispatch:
 
     def test_create_is_module_level_factory(self):
         assert isinstance(create(), GmailPlugin)
+
+
+# ---------------------------------------------------------------------------
+# Cycle 8 -- gmail_send: RFC822/base64url build + users.messages.send POST
+# ---------------------------------------------------------------------------
+
+import base64 as _b64  # noqa: E402
+from email import message_from_bytes  # noqa: E402
+from email.policy import default as _email_policy  # noqa: E402
+
+_SEND = "/messages/send"
+_SEND_OK = {"id": "sent-1", "threadId": "thr-1"}
+
+
+def _decode_raw(captured_call):
+    raw = captured_call["json"]["raw"]
+    return message_from_bytes(
+        _b64.urlsafe_b64decode(raw), policy=_email_policy
+    )
+
+
+def _route_send(routes, captured):
+    """Like _route_fetch but also records the POST json body."""
+    async def fake_fetch(method, url, *, headers=None, params=None, json=None):
+        captured.append({
+            "method": method, "url": url,
+            "headers": headers or {}, "params": params or {},
+            "json": json or {},
+        })
+        for needle, resp in routes.items():
+            if needle in url:
+                if callable(resp) and not isinstance(resp, BaseException):
+                    resp = resp()
+                if isinstance(resp, BaseException):
+                    raise resp
+                return resp
+        raise AssertionError(f"no route for {url}")
+    return fake_fetch
+
+
+class TestSend:
+    @pytest.mark.asyncio
+    async def test_send_builds_rfc822_and_posts(self):
+        captured: list = []
+        plugin = GmailPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_send({_SEND: _SEND_OK}, captured),
+        )
+        result = await plugin.call_tool("gmail_send", {
+            "to": "a@x.com", "subject": "Hi there",
+            "body": "the body", "cc": "c@x.com",
+        })
+        assert not result.is_error
+        assert json.loads(result.content) == {
+            "id": "sent-1", "thread_id": "thr-1", "status": "sent",
+        }
+        call = captured[0]
+        assert call["method"] == "POST"
+        assert call["url"] == f"{_BASE}/messages/send"
+        assert call["headers"]["Authorization"] == "Bearer tok"
+        msg = _decode_raw(call)
+        assert msg["To"] == "a@x.com"
+        assert msg["Subject"] == "Hi there"
+        assert msg["Cc"] == "c@x.com"
+        assert msg.get_content().strip() == "the body"
+
+    @pytest.mark.asyncio
+    async def test_cc_is_optional(self):
+        captured: list = []
+        plugin = GmailPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_send({_SEND: _SEND_OK}, captured),
+        )
+        result = await plugin.call_tool("gmail_send", {
+            "to": "a@x.com", "subject": "S", "body": "B",
+        })
+        assert not result.is_error
+        assert _decode_raw(captured[0])["Cc"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("omit", ["to", "subject", "body"])
+    async def test_missing_required_arg_is_error(self, omit):
+        args = {"to": "a@x.com", "subject": "S", "body": "B"}
+        del args[omit]
+        plugin = GmailPlugin(token_provider=_StubProvider("t"),
+                             fetch_fn=_route_send({}, []))
+        result = await plugin.call_tool("gmail_send", args)
+        assert result.is_error
+        assert omit in result.content
+
+    @pytest.mark.asyncio
+    async def test_blank_string_arg_is_error(self):
+        plugin = GmailPlugin(token_provider=_StubProvider("t"),
+                             fetch_fn=_route_send({}, []))
+        result = await plugin.call_tool("gmail_send", {
+            "to": "", "subject": "S", "body": "B",
+        })
+        assert result.is_error
+        assert "to" in result.content
+
+    @pytest.mark.asyncio
+    async def test_no_account_is_lazy_error(self, monkeypatch):
+        import plugins.gmail as gmail_mod
+        monkeypatch.setattr(gmail_mod, "_token_provider_factory",
+                            lambda: None)
+        plugin = create()
+        result = await plugin.call_tool("gmail_send", {
+            "to": "a@x.com", "subject": "S", "body": "B",
+        })
+        assert result.is_error
+        assert "no Google account connected" in result.content
+
+    @pytest.mark.asyncio
+    async def test_401_triggers_one_refresh_then_succeeds(self):
+        state = {"first": True}
+
+        def send_route():
+            if state["first"]:
+                state["first"] = False
+                raise GmailAPIError("401 Unauthorized", status=401)
+            return _SEND_OK
+
+        prov = _StubProvider(current_token="stale",
+                             refresh_tokens=("fresh",))
+        captured: list = []
+        plugin = GmailPlugin(
+            token_provider=prov,
+            fetch_fn=_route_send({_SEND: send_route}, captured),
+        )
+        result = await plugin.call_tool("gmail_send", {
+            "to": "a@x.com", "subject": "S", "body": "B",
+        })
+        assert not result.is_error
+        assert prov.refresh_calls == 1
+        assert captured[-1]["headers"]["Authorization"] == "Bearer fresh"
+
+    @pytest.mark.asyncio
+    async def test_persistent_401_refreshes_once_then_errors(self):
+        prov = _StubProvider(current_token="stale",
+                             refresh_tokens=("fresh",))
+        plugin = GmailPlugin(
+            token_provider=prov,
+            fetch_fn=_route_send(
+                {_SEND: GmailAPIError("401", status=401)}, []
+            ),
+        )
+        result = await plugin.call_tool("gmail_send", {
+            "to": "a@x.com", "subject": "S", "body": "B",
+        })
+        assert result.is_error
+        assert prov.refresh_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_non_401_does_not_refresh(self):
+        prov = _StubProvider(current_token="tok")
+        plugin = GmailPlugin(
+            token_provider=prov,
+            fetch_fn=_route_send(
+                {_SEND: GmailAPIError("500", status=500)}, []
+            ),
+        )
+        result = await plugin.call_tool("gmail_send", {
+            "to": "a@x.com", "subject": "S", "body": "B",
+        })
+        assert result.is_error
+        assert prov.refresh_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_token_never_in_toolresult_or_logs(self, caplog):
+        sentinel = "SENTINEL_SEND_TOKEN"
+        exc = GmailAPIError(
+            f"401 for {_BASE}/messages/send "
+            f"(Authorization: Bearer {sentinel})",
+            status=401,
+        )
+        plugin = GmailPlugin(
+            token_provider=_StubProvider(sentinel,
+                                         refresh_tokens=(sentinel,)),
+            fetch_fn=_route_send({_SEND: exc}, []),
+        )
+        with caplog.at_level(logging.ERROR):
+            result = await plugin.call_tool("gmail_send", {
+                "to": "a@x.com", "subject": "S", "body": "B",
+            })
+        assert result.is_error
+        assert sentinel not in result.content
+        assert sentinel not in caplog.text
+        assert "***" in result.content
+
+    @pytest.mark.asyncio
+    async def test_non_dict_send_response_is_error(self):
+        plugin = GmailPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_send({_SEND: [1, 2]}, []),
+        )
+        result = await plugin.call_tool("gmail_send", {
+            "to": "a@x.com", "subject": "S", "body": "B",
+        })
+        assert result.is_error
