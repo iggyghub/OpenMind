@@ -362,6 +362,55 @@ import plugins.gmail as _gmail_plugin
 _gmail_plugin.set_token_provider(_get_gmail_token_provider)
 
 
+class _CalendarTokenProvider:
+    """Per-active-profile bearer-token handle for plugins/calendar.py.
+
+    Parallel to `_GmailTokenProvider` above: same #112 store + #113 flow,
+    same per-active-profile lifecycle. Re-resolved on every tool call
+    because the active profile can switch. The `calendar` scope is already
+    in `_GOOGLE_SCOPES` (#114) — no separate consent."""
+
+    def __init__(self, store: CredentialStore, flow: GoogleOAuthFlow,
+                 profile_id: int) -> None:
+        self._store = store
+        self._flow = flow
+        self._profile_id = profile_id
+
+    def current(self) -> str | None:
+        return self._store.get_secret(
+            self._profile_id, "google", "access_token"
+        )
+
+    def refresh(self) -> str:
+        return self._flow.refresh_access_token(self._profile_id)
+
+
+def _get_calendar_token_provider() -> _CalendarTokenProvider | None:
+    """Resolve the active profile's Calendar bearer-token provider, or None
+    when no profile is active or it has no connected Google account.
+
+    Mirrors `_get_gmail_token_provider`: re-resolved on every tool call
+    (the active profile can switch). Tests patch plugins.calendar's
+    provider directly."""
+    if _active_profile is None:
+        return None
+    store = _get_credential_store()
+    meta = store.get_credential(_active_profile.id, "google")
+    if not meta or meta.get("status") != "connected":
+        return None
+    return _CalendarTokenProvider(
+        store, _get_oauth_flow(store), _active_profile.id
+    )
+
+
+# Issue #117 — wire _get_calendar_token_provider() into the calendar MCP
+# plugin so calendar_list_events / calendar_create_event can call the real
+# Google Calendar API with the active profile's OAuth bearer (refreshed on
+# demand via #113). Same lifecycle/precedent as the gmail wiring above.
+import plugins.calendar as _cal_plugin
+_cal_plugin.set_token_provider(_get_calendar_token_provider)
+
+
 def _credentials_state_event(
     *, transient: str | None = None, error: str | None = None
 ) -> dict:
