@@ -82,3 +82,18 @@ The ☁ cloud-traffic indicator from issue #29 remains a visibility cue only; it
 - The fail-closed default means a headless or surface-less Cerebral cannot grant `ask`-class capabilities at all. That is the intended behaviour: better a refused action than a silent one.
 - Per-profile ACL means a guest profile cannot inherit the owner's persistent grants. This is the foundation the multi-user/household case (T5) will build on later; the schema does not need to change to support it.
 - `shell_exec` is denied by default. Power users will hit this on first run and have to flip it in settings. That friction is intentional: shell is the highest-blast-radius class in the vocabulary.
+
+## Amendment (2026-05-18) — Connected-account credential storage mechanics
+
+**Context.** The original decision named `secrets_read` as the class for credential reads (the AST completeness check maps it only to `keyring.*`) and put persistent grants in SQLite `profile_acl`, but never said *where* external-account credentials (OAuth client secrets, refresh/access tokens) are stored. The real Gmail/Calendar API arc forces the decision, and CONTEXT.md now defines a **Connected account** as per-profile identity (consent belongs with identity, like memory and ACL — never global).
+
+**Decision.** A Connected account's credential is split by sensitivity:
+
+- **Secret material** (OAuth `client_secret`, `refresh_token`, `access_token`) → the OS keyring via the `keyring` library, namespaced per profile (`service="openmind"`, `username="profile_<id>/<provider>/<field>"`). This operationalizes the mechanism the capability audit already sanctions — keyring moves from audit-mapped-but-unused to a real runtime dependency.
+- **Non-secret metadata** (`client_id`, connected account email, granted scopes, connection status, timestamps) → a new per-profile SQLite table adjacent to `profiles`.
+
+Credentials are per-profile, never global, never written to plaintext `felix-settings.json`. Reading a refresh/access token at tool-call time is a `secrets_read` (ask-class) call; because the read goes through `keyring.get_password`, the AST completeness check *requires* the declaration (it is not an over-declaration).
+
+**Considered and rejected.** Plaintext `felix-settings.json` (cleartext secrets — wrong default). SQLite-only with bespoke at-rest encryption (re-implements what the OS keyring already provides; keyring is already the audit-sanctioned path). Env vars (the status quo being replaced — not user-manageable, not per-profile).
+
+**Consequences.** `keyring` becomes a real dependency (first actual use). A keyring-unavailable host fails closed for connected-account tools — consistent with the fail-closed stance above. The 16-class vocabulary is **unchanged**: `secrets_read` already covers this; no new class, this amendment is mechanics only.

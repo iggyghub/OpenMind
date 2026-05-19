@@ -1,0 +1,215 @@
+"""
+Per-profile connected-account credential store — Issue #112, ADR-0005
+Amendment (2026-05-18).
+
+A **Connected account** (CONTEXT.md) is an external account a profile has
+authorized Felix to act as. Its credential is split by sensitivity:
+
+  - Secret material (OAuth ``client_secret``, ``refresh_token``,
+    ``access_token``) → the OS keyring via the ``keyring`` library,
+    namespaced per profile: ``service="openmind"``,
+    ``username="profile_<id>/<provider>/<field>"``.
+  - Non-secret metadata (``client_id``, connected-account email, granted
+    scopes, status, timestamps) → a per-profile SQLite table adjacent to
+    ``profiles`` in ``cerebral/data/openmind.db``.
+
+Credentials are per-profile, never global, never written to plaintext
+``felix-settings.json``, and secret values are never logged.
+
+The keyring dependency is injectable: production uses the real ``keyring``
+library (lazy-imported, so the test suite never requires it); tests pass a
+dict-backed stub exposing ``get_password`` / ``set_password`` /
+``delete_password``.
+
+Public interface:
+  cs = CredentialStore()                                    # production
+  cs = CredentialStore(db_path=":memory:", keyring_backend=stub)  # tests
+
+  cs.set_credential(1, "google", client_id="x", email="a@b.c",
+                    scopes=["gmail.readonly"], status="connected")
+  cs.get_credential(1, "google")          # → dict (NO secrets) | None
+  cs.set_secret(1, "google", "refresh_token", "tok")
+  cs.get_secret(1, "google", "refresh_token")   # → "tok" | None
+  cs.delete_credential(1, "google")       # metadata row + all keyring entries
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
+
+# The canonical secret fields a Connected account stores in the keyring.
+# delete_credential iterates this set to guarantee no orphaned keyring
+# entries survive (the keyring API has no per-namespace enumeration), so
+# set_secret rejects any field outside it — an un-deletable secret would
+# break the delete-completeness invariant (ADR-0005 amendment).
+SECRET_FIELDS: tuple[str, ...] = ("client_secret", "refresh_token", "access_token")
+
+_KEYRING_SERVICE = "openmind"
+
+
+def _keyring_username(profile_id: int, provider: str, field: str) -> str:
+    return f"profile_{profile_id}/{provider}/{field}"
+
+
+class CredentialStore:
+    def __init__(self, db_path: str | Path = DB_PATH, keyring_backend: Any = None) -> None:
+        path = str(db_path)
+        if path != ":memory:":
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self._con = sqlite3.connect(path, check_same_thread=False)
+        self._con.row_factory = sqlite3.Row
+        self._init_schema()
+        self._kr = keyring_backend
+
+    def _init_schema(self) -> None:
+        self._con.executescript("""
+            -- Per-profile Connected-account NON-SECRET metadata (Issue #112,
+            -- ADR-0005 amendment). Secret material lives in the OS keyring,
+            -- never here. Adjacent to `profiles`; FK cascades on profile
+            -- delete, matching `profile_acl`.
+            CREATE TABLE IF NOT EXISTS connected_account_credentials (
+                profile_id  INTEGER NOT NULL,
+                provider    TEXT    NOT NULL,
+                client_id   TEXT    NOT NULL DEFAULT '',
+                email       TEXT    NOT NULL DEFAULT '',
+                scopes      TEXT    NOT NULL DEFAULT '[]',
+                status      TEXT    NOT NULL DEFAULT '',
+                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (profile_id, provider),
+                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+            );
+        """)
+        self._con.commit()
+
+    # ── keyring backend ───────────────────────────────────────────────────────
+
+    def _keyring(self) -> Any:
+        """Injected stub, else the real ``keyring`` lib (lazy — the suite
+        always injects a stub, so ``keyring`` need not be installed to run
+        tests; learning #12 lazy-import seam applied to cerebral-core)."""
+        if self._kr is not None:
+            return self._kr
+        import keyring  # lazy: real dependency only on the production path
+        self._kr = keyring
+        return self._kr
+
+    # ── non-secret metadata (SQLite) ──────────────────────────────────────────
+
+    def set_credential(
+        self,
+        profile_id: int,
+        provider: str,
+        *,
+        client_id: str = "",
+        email: str = "",
+        scopes: list[str] | None = None,
+        status: str = "",
+    ) -> None:
+        """Upsert the non-secret metadata row for (profile, provider)."""
+        self._con.execute(
+            """INSERT INTO connected_account_credentials
+                   (profile_id, provider, client_id, email, scopes, status)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(profile_id, provider)
+               DO UPDATE SET client_id=excluded.client_id,
+                             email=excluded.email,
+                             scopes=excluded.scopes,
+                             status=excluded.status,
+                             updated_at=CURRENT_TIMESTAMP""",
+            (profile_id, provider, client_id, email,
+             json.dumps(scopes or []), status),
+        )
+        self._con.commit()
+        logger.debug(
+            "[credentials] metadata upserted profile=%d provider=%s status=%s",
+            profile_id, provider, status,
+        )
+
+    def get_credential(self, profile_id: int, provider: str) -> dict | None:
+        """Return the non-secret metadata row (NO secrets), or None."""
+        row = self._con.execute(
+            """SELECT profile_id, provider, client_id, email, scopes,
+                      status, created_at, updated_at
+                 FROM connected_account_credentials
+                WHERE profile_id=? AND provider=?""",
+            (profile_id, provider),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            scopes = json.loads(row["scopes"])
+        except (ValueError, TypeError):
+            scopes = []
+        return {
+            "profile_id": row["profile_id"],
+            "provider": row["provider"],
+            "client_id": row["client_id"],
+            "email": row["email"],
+            "scopes": scopes,
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    # ── secret material (OS keyring) ──────────────────────────────────────────
+
+    def set_secret(self, profile_id: int, provider: str, field: str, value: str) -> None:
+        """Store one secret field for (profile, provider) in the keyring."""
+        if field not in SECRET_FIELDS:
+            raise ValueError(
+                f"field must be one of {SECRET_FIELDS}, got {field!r}"
+            )
+        self._keyring().set_password(
+            _KEYRING_SERVICE, _keyring_username(profile_id, provider, field), value
+        )
+        # value is never logged.
+        logger.debug(
+            "[credentials] secret set profile=%d provider=%s field=%s",
+            profile_id, provider, field,
+        )
+
+    def get_secret(self, profile_id: int, provider: str, field: str) -> str | None:
+        """Return one secret field from the keyring, or None if absent."""
+        if field not in SECRET_FIELDS:
+            raise ValueError(
+                f"field must be one of {SECRET_FIELDS}, got {field!r}"
+            )
+        return self._keyring().get_password(
+            _KEYRING_SERVICE, _keyring_username(profile_id, provider, field)
+        )
+
+    # ── delete ────────────────────────────────────────────────────────────────
+
+    def delete_credential(self, profile_id: int, provider: str) -> None:
+        """Remove the metadata row AND every keyring entry for (profile,
+        provider). Idempotent — missing keyring entries are ignored so the
+        delete-completeness invariant holds even on a partial credential."""
+        self._con.execute(
+            """DELETE FROM connected_account_credentials
+                WHERE profile_id=? AND provider=?""",
+            (profile_id, provider),
+        )
+        self._con.commit()
+        kr = self._keyring()
+        for field in SECRET_FIELDS:
+            try:
+                kr.delete_password(
+                    _KEYRING_SERVICE,
+                    _keyring_username(profile_id, provider, field),
+                )
+            except Exception:
+                # keyring raises PasswordDeleteError when the entry is
+                # absent; a partial credential must still fully delete.
+                pass
+        logger.debug(
+            "[credentials] deleted profile=%d provider=%s", profile_id, provider
+        )

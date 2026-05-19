@@ -8,7 +8,11 @@
 
 **Felix** — the default wake name. The word a user speaks to activate the assistant. Phonetically distinct, short, reliably detected by Vosk. Customisable per profile. What OpenMind calls itself in conversation.
 
-**Profile** — a user identity container. Stores who someone is (name, voice preference, wake name override, pronunciation guide, connected accounts) and their scoped long-term memory. Not a settings panel — system settings are global. Selected on launch or auto-detected after first use.
+**Profile** — a user identity container. Stores who someone is (name, voice preference, wake name override, pronunciation guide, **connected accounts**) and their scoped long-term memory. Selected on launch or auto-detected after first use.
+
+**System setting** — a non-identity machine-wide preference (notifications, reminder interval, camera). Global, shared by every profile, not part of a profile. _Avoid_: calling credentials or connected accounts "settings".
+
+**Connected account** — an external account (e.g. Google) a profile has authorized Felix to act as, plus the stored credential that authorizes it. Belongs to one **Profile** (consent belongs with identity, like memory and ACL), never global. _Avoid_: "linked account", "integration login".
 
 **Wake** — the moment a user speaks Felix's name. Triggers: mic opens, system awaits a command. Does not read the queue aloud. Does not interrupt.
 
