@@ -31,11 +31,16 @@ let visualiserWindow  = null;
 let insightsWindow    = null;
 let memoryWindow      = null;
 let permissionsWindow = null;
+let credentialsWindow = null;
 // Latest snapshots from Cerebral, kept up-to-date so a freshly-opened
 // Permissions window doesn't render a blank state while it waits for
 // the next broadcast. The store inside the window is fed by these on
 // `permissions:ready` and re-fed on every subsequent broadcast.
 let permissionsState  = null;
+// Latest connected-account status (Issue #114). Cached so a re-opened
+// Credentials window renders immediately rather than waiting for the
+// next Cerebral broadcast.
+let credentialsState  = null;
 let toolsList         = [];
 let pluginsList       = [];
 // request_id → BrowserWindow for the consent prompt (Issue #48). Each
@@ -268,6 +273,13 @@ function handleCerebralEvent(event) {
         permissionsWindow.webContents.send('permissions:plugins', pluginsList);
       }
       break;
+
+    case 'credentials_state':
+      credentialsState = event.data || null;
+      if (credentialsWindow && !credentialsWindow.isDestroyed()) {
+        credentialsWindow.webContents.send('credentials:state', credentialsState);
+      }
+      break;
   }
 }
 
@@ -485,6 +497,53 @@ ipcMain.on('memory:delete', (_e, id) => sendToCerebral({ type: 'delete_memory', 
 ipcMain.on('memory:edit',   (_e, { id, fact }) =>
   sendToCerebral({ type: 'edit_memory', data: { memory_id: id, fact } })
 );
+
+// ── Credentials window (Issue #114) ───────────────────────────────────────────
+//
+// Per-active-profile connected-account status from the #112 store + a
+// Connect-Google action driving #113's OAuth flow. Mirrors the Memory/
+// Insights window pattern: the renderer talks ipcRenderer directly and
+// main.js is a thin forwarder (no lib store — there is no client-side
+// state resolution to unit-test, unlike Permissions).
+
+function openCredentialsWindow() {
+  if (credentialsWindow && !credentialsWindow.isDestroyed()) {
+    credentialsWindow.focus();
+    if (credentialsState) {
+      credentialsWindow.webContents.send('credentials:state', credentialsState);
+    }
+    return;
+  }
+
+  credentialsWindow = new BrowserWindow({
+    width: 380,
+    height: 460,
+    resizable: false,
+    title: 'Felix — Credentials',
+    backgroundColor: '#12101e',
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  });
+
+  credentialsWindow.setMenuBarVisibility(false);
+  credentialsWindow.loadFile(path.join(__dirname, 'windows', 'credentials.html'));
+  credentialsWindow.on('closed', () => { credentialsWindow = null; });
+}
+
+ipcMain.on('credentials:request', (e) => {
+  if (credentialsState) e.sender.send('credentials:state', credentialsState);
+  sendToCerebral({ type: 'list_credentials' });
+});
+ipcMain.on('credentials:set-client', (_e, { client_id, client_secret }) =>
+  sendToCerebral({
+    type: 'set_credential_client',
+    data: { client_id, client_secret },
+  })
+);
+ipcMain.on('credentials:connect',    () => sendToCerebral({ type: 'connect_google' }));
+ipcMain.on('credentials:disconnect', () => sendToCerebral({ type: 'disconnect_credential' }));
 
 // ── Consent prompt window (Issue #48) ─────────────────────────────────────────
 //
@@ -735,6 +794,7 @@ function buildMenu() {
     template.push({ label: 'Insights', click: openInsightsWindow });
     template.push({ label: 'Memory', click: openMemoryWindow });
     template.push({ label: 'Permissions', click: openPermissionsWindow });
+    template.push({ label: 'Credentials', click: openCredentialsWindow });
 
     // ── Model ─────────────────────────────────────────────────────────────────
     const modelLabel = activeModel

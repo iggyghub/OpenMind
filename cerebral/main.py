@@ -46,6 +46,8 @@ from cerebral.security import (
     is_valid_choice,
     is_valid_modal_choice,
 )
+from cerebral.db.credentials import CredentialStore
+from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
 
@@ -275,6 +277,82 @@ def _get_insights() -> InsightsEngine | None:
 # factory before any LLM call can land.
 import plugins.memory as _memory_plugin
 _memory_plugin.set_memory_factory(_get_memory)
+
+
+# ── Connected-account credentials (Issue #114, ADR-0005) ──────────────────────
+#
+# The tray Credentials window reads per-active-profile Google connection
+# status from the #112 store and triggers #113's installed-app OAuth flow.
+# Both helpers are module-level so the IPC tests can patch them to a
+# :memory:-backed store + a stub flow (the established inject-a-stub seam,
+# mirroring `_get_memory`). The handlers never touch the keyring or OAuth
+# transport directly — #112 owns storage, #113 owns the flow.
+
+# Requested once for the whole Gmail/Calendar arc so the user consents a
+# single time for #115 (gmail_search) / #116 (gmail_send) / #117 (Calendar).
+_GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/calendar",
+]
+
+
+def _get_credential_store() -> CredentialStore:
+    """Return a CredentialStore over the production DB + OS keyring.
+
+    Tests patch this to a :memory: store with a dict-backed keyring stub."""
+    return CredentialStore()
+
+
+def _get_oauth_flow(store: CredentialStore) -> GoogleOAuthFlow:
+    """Return the #113 installed-app OAuth flow bound to `store`.
+
+    Tests patch this to a stub exposing `start_consent` so the suite runs
+    with no real browser/socket/network."""
+    return GoogleOAuthFlow(store)
+
+
+def _credentials_state_event(
+    *, transient: str | None = None, error: str | None = None
+) -> dict:
+    """Active profile's Google connected-account status for the tray.
+
+    Reads #112 metadata only (never a secret). `transient` overlays a
+    non-persisted in-progress status ("connecting"); `error` overlays a
+    failure message from a #113 GoogleOAuthError. Empty/no-profile payload
+    when no profile is loaded (the tray hides the window in that state)."""
+    if _active_profile is None:
+        return {
+            "type": "credentials_state",
+            "data": {
+                "profile_id": None,
+                "google": {"status": "not configured", "email": "",
+                           "client_id": "", "detail": ""},
+            },
+        }
+    meta = _get_credential_store().get_credential(_active_profile.id, "google")
+    if error is not None:
+        status, detail = "error", error
+    elif transient is not None:
+        status, detail = transient, ""
+    elif meta is None:
+        status, detail = "not configured", ""
+    elif meta.get("status") == "connected":
+        status, detail = "connected", ""
+    else:
+        status, detail = "client set", ""
+    return {
+        "type": "credentials_state",
+        "data": {
+            "profile_id": _active_profile.id,
+            "google": {
+                "status": status,
+                "email": (meta or {}).get("email", ""),
+                "client_id": (meta or {}).get("client_id", ""),
+                "detail": detail,
+            },
+        },
+    }
 
 
 # ── IPC helpers ───────────────────────────────────────────────────────────────
@@ -731,6 +809,84 @@ async def _handle_message(msg: dict) -> None:
         logger.info("[cerebral] Cleared new_plugin flag for %r", plugin_name)
         await _broadcast(_plugins_list_event())
 
+    elif t == "list_credentials":
+        # Issue #114 — Credentials window asking for a fresh status read.
+        await _broadcast(_credentials_state_event())
+
+    elif t == "set_credential_client":
+        # Issue #114 — user entered the Google OAuth client_id/secret. The
+        # secret goes to the keyring via #112; client_id is non-secret
+        # metadata. A new client invalidates any prior connected email/
+        # scopes (re-consent required), so we write an explicit full row —
+        # set_credential overwrites every column it is given and omitted
+        # args default to ""/[], so status MUST be passed explicitly or it
+        # silently blanks (the #112 upsert-blanking trap, #113 §5).
+        if _active_profile is None:
+            logger.warning("[cerebral] set_credential_client with no active profile")
+            return
+        d = msg.get("data") or {}
+        client_id = (d.get("client_id") or "").strip()
+        client_secret = (d.get("client_secret") or "").strip()
+        if not client_id or not client_secret:
+            logger.warning("[cerebral] set_credential_client missing client_id/secret")
+            return
+        store = _get_credential_store()
+        store.set_secret(_active_profile.id, "google", "client_secret", client_secret)
+        store.set_credential(
+            _active_profile.id, "google",
+            client_id=client_id, email="", scopes=[], status="client set",
+        )
+        # client_secret is never logged or echoed back to the renderer.
+        logger.info(
+            "[cerebral] Google client credentials set for profile %d",
+            _active_profile.id,
+        )
+        await _broadcast(_credentials_state_event())
+
+    elif t == "connect_google":
+        # Issue #114 — trigger #113's installed-app consent. start_consent
+        # blocks (loopback listener, up to consent_timeout=300s), so it runs
+        # off the event loop in a thread inside a background task: broadcast
+        # an interim "connecting", then the terminal connected/error status.
+        # The loop (heartbeat/audio/IPC) stays responsive throughout.
+        if _active_profile is None:
+            logger.warning("[cerebral] connect_google with no active profile")
+            return
+        profile_id = _active_profile.id
+        flow = _get_oauth_flow(_get_credential_store())
+        await _broadcast(_credentials_state_event(transient="connecting"))
+
+        async def _run_consent(pid: int = profile_id) -> None:
+            try:
+                await asyncio.to_thread(
+                    flow.start_consent, pid, scopes=_GOOGLE_SCOPES
+                )
+            except GoogleOAuthError as exc:
+                logger.warning("[cerebral] Google consent failed: %s", exc)
+                await _broadcast(_credentials_state_event(error=str(exc)))
+                return
+            except Exception as exc:  # never leak transport internals
+                logger.warning("[cerebral] Google consent error: %s", exc)
+                await _broadcast(_credentials_state_event(error="connection failed"))
+                return
+            logger.info("[cerebral] Google connected for profile %d", pid)
+            await _broadcast(_credentials_state_event())
+
+        asyncio.create_task(_run_consent())
+
+    elif t == "disconnect_credential":
+        # Issue #114 — drop the metadata row + every keyring secret for the
+        # active profile's Google account (#112 delete is idempotent).
+        if _active_profile is None:
+            logger.warning("[cerebral] disconnect_credential with no active profile")
+            return
+        _get_credential_store().delete_credential(_active_profile.id, "google")
+        logger.info(
+            "[cerebral] Google credentials disconnected for profile %d",
+            _active_profile.id,
+        )
+        await _broadcast(_credentials_state_event())
+
     elif t == "consent_response":
         d = msg.get("data") or {}
         request_id = d.get("request_id")
@@ -991,6 +1147,7 @@ async def _ws_handler(websocket) -> None:
     await _send(websocket, _models_list_event())
     await _send(websocket, _plugins_list_event())
     await _send(websocket, _permissions_state_event())
+    await _send(websocket, _credentials_state_event())
 
     try:
         async for raw in websocket:
