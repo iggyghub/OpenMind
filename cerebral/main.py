@@ -450,6 +450,47 @@ import plugins.todoist as _todoist_plugin
 _todoist_plugin.set_token_provider(_get_todoist_token_provider)
 
 
+class _NotionTokenProvider:
+    """Static-API-token handle for plugins/notion.py.
+
+    Notion auth is a STATIC user-rotated Internal Integration Token
+    (Notion workspace settings -> Connections -> Develop or build
+    integrations -> Internal Integration), not OAuth. The Protocol on
+    plugins/notion.py carries only ``current()`` -- there is no refresh
+    capability to describe -- so this provider class is intentionally
+    narrower than `_GmailTokenProvider` / `_CalendarTokenProvider` and
+    mirrors `_TodoistTokenProvider` exactly. The token is system-wide
+    via the ``NOTION_API_TOKEN`` env var; a future per-profile or
+    settings-UI-backed slice would be additive, not a rewrite."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def current(self) -> str | None:
+        return self._token or None
+
+
+def _get_notion_token_provider() -> _NotionTokenProvider | None:
+    """Return a Notion token provider iff NOTION_API_TOKEN is set, else
+    None. Re-resolved on every tool call so a freshly-set env var picks
+    up without a Cerebral restart."""
+    token = os.environ.get("NOTION_API_TOKEN", "").strip()
+    if not token:
+        return None
+    return _NotionTokenProvider(token)
+
+
+# Issue #136 — wire _get_notion_token_provider() into the notion MCP
+# plugin so notion_search / notion_retrieve_page /
+# notion_retrieve_block_children / notion_create_page can call the
+# real Notion REST API with a static Internal Integration Token from
+# the user's NOTION_API_TOKEN env var. Same lifecycle/precedent as the
+# todoist wiring above (Protocol carries only current() -- no refresh
+# path).
+import plugins.notion as _notion_plugin
+_notion_plugin.set_token_provider(_get_notion_token_provider)
+
+
 def _credentials_state_event(
     *, transient: str | None = None, error: str | None = None
 ) -> dict:
