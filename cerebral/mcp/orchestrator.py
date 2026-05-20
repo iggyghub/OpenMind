@@ -97,6 +97,13 @@ class Tool:
     description: str
     plugin: str
     schema: dict = field(default_factory=dict)
+    # Per-tool irreversible declaration (Issue #139, ADR-0005 amendment
+    # 2026-05-20). Defaults to False; plugins opt in for write-class tools
+    # whose effect cannot be undone (e.g. ``gmail_send``). The orchestrator
+    # ORs this into ``CallFlags`` at dispatch so the call routes through the
+    # ModalSurface even when a Session/Persistent grant would otherwise
+    # cover the class. The 16-class capability vocabulary is unchanged.
+    irreversible: bool = False
 
 
 @dataclass
@@ -162,6 +169,13 @@ class MCPOrchestrator:
         self._plugins: dict[str, Plugin] = {}
         # tool_name → plugin_name for fast routing
         self._tool_index: dict[str, str] = {}
+        # tool_name → Tool object for per-tool metadata lookup at dispatch
+        # (Issue #139). Populated alongside ``_tool_index`` in ``register``
+        # and cleared in ``_remove_from_index``. Today the only consumer is
+        # the ``irreversible`` flag merge in ``call_tool`` /
+        # ``check_capabilities``; future per-tool metadata reads share this
+        # cache rather than re-walking ``plugin.list_tools()`` each call.
+        self._tool_lookup: dict[str, Tool] = {}
         # The capability gate enforces ADR-0005's day-1 policy. The optional
         # ACL resolver (Issue #45) layers per-profile overrides + RAM-only
         # once/session grants on top; when present, the gate's lookup is
@@ -271,6 +285,7 @@ class MCPOrchestrator:
                     tool.name, existing, plugin.name,
                 )
             self._tool_index[tool.name] = plugin.name
+            self._tool_lookup[tool.name] = tool
         logger.info("[mcp] Registered plugin '%s' with %d tool(s)", plugin.name, len(plugin.list_tools()))
 
     def unregister(self, plugin_name: str) -> None:
@@ -328,6 +343,7 @@ class MCPOrchestrator:
         to_remove = [k for k, v in self._tool_index.items() if v == plugin_name]
         for key in to_remove:
             del self._tool_index[key]
+            self._tool_lookup.pop(key, None)
 
     # ------------------------------------------------------------------
     # Tool access
@@ -377,6 +393,14 @@ class MCPOrchestrator:
         if tool_name not in self._tool_index:
             return Decision.DENY
 
+        # Issue #139 — OR per-tool declaration into the effective flags
+        # before any gate/ACL/modal routing reads them. Symmetric with
+        # ``call_tool``; the queue's ``approve_item`` path benefits the
+        # most from this because the LLM-driven tray-IPC ``call_tool``
+        # path at ``cerebral/main.py:1127`` currently bypasses the gate
+        # entirely (separate-slice concern, out of scope for #139).
+        flags = self._merge_irreversible(flags, tool_name)
+
         if not capabilities:
             # No declared capabilities → no gate constraint. Mirror
             # call_tool's "capability is None" branch.
@@ -421,6 +445,27 @@ class MCPOrchestrator:
 
         return worst
 
+    def _merge_irreversible(
+        self, flags: CallFlags | None, tool_name: str,
+    ) -> CallFlags | None:
+        """OR the per-tool ``Tool.irreversible`` declaration (Issue #139)
+        into the caller-supplied flags.
+
+        Returns ``flags`` unchanged when the tool's declaration is False —
+        no allocation in the common case. Returns a fresh ``CallFlags``
+        with ``irreversible=True`` when the declaration is True (preserving
+        the caller's ``passive`` setting). The merge is one-way: a caller
+        that explicitly passes ``irreversible=True`` keeps it.
+        """
+        tool = self._tool_lookup.get(tool_name)
+        if tool is None or not tool.irreversible:
+            return flags
+        if flags is None:
+            return CallFlags(irreversible=True)
+        if flags.irreversible:
+            return flags
+        return CallFlags(passive=flags.passive, irreversible=True)
+
     async def call_tool(
         self,
         name: str,
@@ -431,6 +476,11 @@ class MCPOrchestrator:
         if name not in self._tool_index:
             logger.warning("[mcp] Unknown tool '%s'", name)
             return ToolResult(content=f"Unknown tool: '{name}'", is_error=True)
+        # Issue #139 — OR per-tool declaration into the effective flags
+        # before any gate/ACL/modal routing reads them. Tools that opt in
+        # via ``Tool(irreversible=True)`` route through the modal even when
+        # the caller passed ``flags=None``.
+        flags = self._merge_irreversible(flags, name)
         if capability is not None:
             # Issue #45 — the per-profile ACL resolver (when set) layers
             # per-tool overrides + once/session grants on top of the gate's

@@ -287,6 +287,11 @@ class GmailPlugin:
                     "sent message id, thread id and status."
                 ),
                 plugin=PLUGIN_NAME,
+                # Issue #139 — first marked irreversible tool. The orchestrator
+                # ORs this into ``CallFlags`` at dispatch so a queued send-mail
+                # candidate routes through the modal even when a Session or
+                # Persistent grant covers ``external_data_write``.
+                irreversible=True,
                 schema={
                     "type": "object",
                     "properties": {

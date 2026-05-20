@@ -1007,3 +1007,238 @@ async def test_check_capabilities_consent_denial_propagates():
     )
 
     assert decision is Decision.DENY
+
+
+# ---------------------------------------------------------------------------
+# Slice 12 — per-tool irreversible declaration (Issue #139, ADR-0005)
+#
+# Tools opt in to the modal-routing branch by setting Tool(irreversible=True).
+# The orchestrator OR-merges the declaration into CallFlags at the start of
+# call_tool and check_capabilities, so the modal fires even when the caller
+# passes flags=None. Caller-supplied irreversible=True is never lost (it OR's
+# into the declaration). The 16-class vocabulary and modal mechanism are
+# unchanged — this slice only wires per-tool metadata to the flag.
+# ---------------------------------------------------------------------------
+
+
+def _make_plugin_with_tool(plugin_name: str, tool: Tool) -> MagicMock:
+    """Build a fake plugin whose list_tools returns the given Tool object
+    verbatim — needed when the test sets tool-shape fields like irreversible
+    that the simpler ``_make_plugin`` helper hard-codes to defaults."""
+    plugin = MagicMock()
+    plugin.name = plugin_name
+    plugin.list_tools.return_value = [tool]
+    plugin.call_tool = AsyncMock(return_value=ToolResult(content="ok"))
+    return plugin
+
+
+def test_tool_defaults_irreversible_false():
+    # Pre-#139 callers construct Tool with four positional/keyword args.
+    # The new field defaults to False so every existing call site keeps
+    # working unmodified.
+    t = Tool(name="t", description="d", plugin="p")
+    assert t.irreversible is False
+
+
+def test_tool_accepts_irreversible_true():
+    t = Tool(name="t", description="d", plugin="p", irreversible=True)
+    assert t.irreversible is True
+
+
+def test_tool_lookup_populated_on_register():
+    # The dispatch path reads ``_tool_lookup[name].irreversible`` so the
+    # register loop must populate it alongside ``_tool_index``.
+    orc = MCPOrchestrator()
+    tool = Tool(name="send", description="d", plugin="mail", irreversible=True)
+    orc.register(_make_plugin_with_tool("mail", tool))
+    assert orc._tool_lookup["send"] is tool
+    assert orc._tool_lookup["send"].irreversible is True
+
+
+def test_tool_lookup_cleared_on_unregister():
+    orc = MCPOrchestrator()
+    tool = Tool(name="send", description="d", plugin="mail", irreversible=True)
+    orc.register(_make_plugin_with_tool("mail", tool))
+    orc.unregister("mail")
+    assert "send" not in orc._tool_lookup
+
+
+def test_merge_irreversible_unchanged_when_declaration_false():
+    # No allocation in the common case: declaration is False so the caller's
+    # flags pass through unchanged (identity).
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("notes", ["save_note"]))
+    flags_in = CallFlags(passive=True)
+    flags_out = orc._merge_irreversible(flags_in, "save_note")
+    assert flags_out is flags_in
+
+
+def test_merge_irreversible_none_flags_when_declared():
+    # flags=None + declaration=True → fresh CallFlags(irreversible=True).
+    orc = MCPOrchestrator()
+    tool = Tool(name="send", description="d", plugin="mail", irreversible=True)
+    orc.register(_make_plugin_with_tool("mail", tool))
+    flags_out = orc._merge_irreversible(None, "send")
+    assert flags_out is not None
+    assert flags_out.irreversible is True
+    assert flags_out.passive is False
+
+
+def test_merge_irreversible_preserves_passive_when_declared():
+    # Caller passes passive=True; declaration is True → both set on the
+    # returned flags. Neither field is dropped.
+    orc = MCPOrchestrator()
+    tool = Tool(name="send", description="d", plugin="mail", irreversible=True)
+    orc.register(_make_plugin_with_tool("mail", tool))
+    flags_out = orc._merge_irreversible(CallFlags(passive=True), "send")
+    assert flags_out.irreversible is True
+    assert flags_out.passive is True
+
+
+def test_merge_irreversible_caller_true_passes_through():
+    # Caller already opted in; declaration is False → flags returned
+    # unchanged. The merge is one-way (caller can opt in even if the
+    # declaration is False).
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("notes", ["save_note"]))
+    flags_in = CallFlags(irreversible=True)
+    flags_out = orc._merge_irreversible(flags_in, "save_note")
+    assert flags_out is flags_in
+
+
+def test_merge_irreversible_unknown_tool_passes_flags_unchanged():
+    # Defensive — a tool name that isn't in _tool_lookup must not raise;
+    # the dispatch path's later "unknown tool" branch handles refusal.
+    orc = MCPOrchestrator()
+    flags_in = CallFlags(passive=True)
+    assert orc._merge_irreversible(flags_in, "ghost") is flags_in
+    assert orc._merge_irreversible(None, "ghost") is None
+
+
+async def test_call_tool_declared_irreversible_routes_to_modal():
+    # End-to-end through call_tool: the caller passes flags=None and a
+    # capability; the modal fires because the Tool declares irreversible.
+    modal = _RecordingModal(Decision.SILENT)
+    orc = MCPOrchestrator(modal=modal)
+    tool = Tool(name="send", description="d", plugin="mail", irreversible=True)
+    orc.register(
+        _make_plugin_with_tool("mail", tool),
+        required_capabilities=frozenset({"external_data_write"}),
+    )
+
+    result = await orc.call_tool(
+        "send", {"to": "x"}, capability=Capability.EXTERNAL_DATA_WRITE,
+    )
+
+    assert not result.is_error
+    assert len(modal.received) == 1
+
+
+async def test_call_tool_no_modal_wired_declared_irreversible_fails_closed():
+    # With the declaration set but no modal surface attached, the modal
+    # routing branch in call_tool fails closed to DENY — the same
+    # invariant as for caller-supplied flags.irreversible=True.
+    orc = MCPOrchestrator()
+    tool = Tool(name="send", description="d", plugin="mail", irreversible=True)
+    plugin = _make_plugin_with_tool("mail", tool)
+    orc.register(plugin, required_capabilities=frozenset({"external_data_write"}))
+
+    result = await orc.call_tool(
+        "send", {"to": "x"}, capability=Capability.EXTERNAL_DATA_WRITE,
+    )
+
+    assert result.is_error
+    plugin.call_tool.assert_not_called()
+
+
+async def test_call_tool_undeclared_tool_does_not_route_to_modal():
+    # Sanity: a Tool that does NOT declare irreversible AND a caller that
+    # passes flags=None must NOT trigger the modal even if a surface is
+    # wired. ASK → DENY via the normal consent-fail-closed path.
+    modal = _RecordingModal(Decision.SILENT)
+    orc = MCPOrchestrator(modal=modal)
+    plugin = _make_plugin("files", ["write_file"])
+    orc.register(plugin, required_capabilities=frozenset({"fs_write"}))
+
+    result = await orc.call_tool(
+        "write_file", {"path": "x"}, capability=Capability.FS_WRITE,
+    )
+
+    assert result.is_error  # ASK with no consent surface → DENY
+    assert len(modal.received) == 0
+
+
+async def test_check_capabilities_declared_irreversible_routes_to_modal():
+    # Queue-path symmetry: check_capabilities ORs the declaration in
+    # before the irreversible-routing branch fires. The handoff's most
+    # production-relevant path because main.py:1167-1168 calls this with
+    # CallFlags(passive=True) and benefits from the merge.
+    modal = _RecordingModal(Decision.SILENT)
+    consent = _RecordingConsent(Decision.SILENT)
+    orc = MCPOrchestrator(consent=consent, modal=modal)
+    tool = Tool(name="send", description="d", plugin="mail", irreversible=True)
+    orc.register(
+        _make_plugin_with_tool("mail", tool),
+        required_capabilities=frozenset({"external_data_write"}),
+    )
+
+    decision = await orc.check_capabilities(
+        "send", frozenset({"external_data_write"}), None,
+    )
+
+    assert decision is Decision.SILENT
+    assert len(modal.received) == 1
+    assert len(consent.received) == 0
+
+
+async def test_check_capabilities_declared_irreversible_passive_merges():
+    # Queue calls run with passive=True today; the merge must produce
+    # CallFlags(passive=True, irreversible=True). The ACL escalation
+    # (passive→ASK) and the irreversible-modal routing both fire.
+    modal = _RecordingModal(Decision.SILENT)
+    orc = MCPOrchestrator(modal=modal)
+    tool = Tool(name="send", description="d", plugin="mail", irreversible=True)
+    orc.register(
+        _make_plugin_with_tool("mail", tool),
+        required_capabilities=frozenset({"external_data_write"}),
+    )
+
+    decision = await orc.check_capabilities(
+        "send", frozenset({"external_data_write"}),
+        CallFlags(passive=True),
+    )
+
+    # external_data_write is ASK; passive escalates ASK → DENY. The
+    # irreversible-routing branch only fires when the gate did NOT
+    # already DENY (sharpener #2 in #50), so the modal does NOT fire here.
+    assert decision is Decision.DENY
+    assert len(modal.received) == 0
+
+
+# ---------------------------------------------------------------------------
+# Slice 13 — repo-wide single-marked-tool guard (Issue #139)
+#
+# Catches accidental future drift: if a contributor marks a new tool
+# without thinking through the modal-prompt UX cost, this test fails
+# until the marking gets its own deliberate slice or amendment.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("plugin_path", _PLUGIN_FILES, ids=lambda p: p.stem)
+def test_only_gmail_plugin_declares_irreversible_tool(plugin_path):
+    """Exactly one shipped plugin (gmail.py) marks a tool irreversible
+    in #139's slice scope. Future per-tool marking is a one-line edit
+    per plugin AND a deliberate update to this guard."""
+    source = plugin_path.read_text(encoding="utf-8")
+    has_decl = "irreversible=True" in source
+    if plugin_path.name == "gmail.py":
+        assert has_decl, (
+            "plugins/gmail.py must declare irreversible=True on gmail_send "
+            "(Issue #139 mark)"
+        )
+    else:
+        assert not has_decl, (
+            f"plugins/{plugin_path.name} declares irreversible=True; #139's "
+            "slice scope marks only gmail_send. Update this guard explicitly "
+            "when marking another tool."
+        )

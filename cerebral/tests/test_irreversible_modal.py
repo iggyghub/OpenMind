@@ -617,6 +617,129 @@ async def test_voice_consent_never_invoked_for_irreversible(acl):
     assert consent_prompt.received == []
 
 
+# ===========================================================================
+# Slice 8 — per-tool `Tool.irreversible` declaration (Issue #139)
+#
+# After #139 a tool can mark itself irreversible at the schema level. The
+# orchestrator ORs the declaration into CallFlags at dispatch so the modal
+# fires even when the caller passes flags=None. The 22 tests above stay
+# green unchanged — they all pass flags=CallFlags(irreversible=True)
+# explicitly, which the merge leaves alone. The tests here add the new
+# declaration-driven dispatch path.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_declared_irreversible_routes_to_modal_via_call_tool(acl):
+    """End-to-end: a Tool with irreversible=True triggers the modal even
+    when the caller passes flags=None — the #139 headline behaviour."""
+    prompt = _FakePrompt(CHOICE_ACCEPT)
+    modal = ModalSurface(
+        prompt_fn=prompt, has_subscriber_fn=lambda: True,
+        request_id_fn=lambda: "m1",
+    )
+
+    class _IrreversiblePlugin:
+        name = "mail"
+
+        def list_tools(self):
+            return [Tool(
+                name="send", description="d", plugin=self.name,
+                irreversible=True,
+            )]
+
+        async def call_tool(self, tool_name, args):
+            return ToolResult(content="sent")
+
+    orc = MCPOrchestrator(acl=acl, modal=modal)
+    orc.register(
+        _IrreversiblePlugin(),
+        required_capabilities=frozenset({"external_data_write"}),
+    )
+
+    r = await orc.call_tool(
+        "send", {"to": "x"},
+        capability=Capability.EXTERNAL_DATA_WRITE,
+        # No flags — declaration alone drives the modal.
+    )
+    assert not r.is_error
+    assert r.content == "sent"
+    assert len(prompt.received) == 1
+
+
+@pytest.mark.asyncio
+async def test_declared_irreversible_fails_closed_without_modal(acl):
+    """No modal wired + declared irreversible → DENY without dispatch.
+    Preserves the pre-#139 invariant from #49: an unwired Cerebral
+    cannot grant irreversible-class capabilities, regardless of whether
+    the flag came from the declaration or the caller."""
+
+    class _IrreversiblePlugin:
+        name = "mail"
+
+        def list_tools(self):
+            return [Tool(
+                name="send", description="d", plugin=self.name,
+                irreversible=True,
+            )]
+
+        async def call_tool(self, tool_name, args):
+            raise AssertionError("plugin must not run when modal is unwired")
+
+    orc = MCPOrchestrator(acl=acl)  # no modal
+    orc.register(
+        _IrreversiblePlugin(),
+        required_capabilities=frozenset({"external_data_write"}),
+    )
+
+    r = await orc.call_tool(
+        "send", {"to": "x"},
+        capability=Capability.EXTERNAL_DATA_WRITE,
+    )
+    assert r.is_error
+
+
+@pytest.mark.asyncio
+async def test_declared_irreversible_via_check_capabilities(acl):
+    """Queue-path symmetry: check_capabilities ORs in the declaration
+    too, so a queued candidate for a declared-irreversible tool routes
+    through the modal even though the queue path passes only
+    CallFlags(passive=True). This is the most production-relevant path
+    after #139 because cerebral/main.py:1167-1168 is the only existing
+    dispatch site that supplies a capability today."""
+    prompt = _FakePrompt(CHOICE_ACCEPT)
+    modal = ModalSurface(
+        prompt_fn=prompt, has_subscriber_fn=lambda: True,
+        request_id_fn=lambda: "m1",
+    )
+
+    class _IrreversiblePlugin:
+        name = "mail"
+
+        def list_tools(self):
+            return [Tool(
+                name="send", description="d", plugin=self.name,
+                irreversible=True,
+            )]
+
+        async def call_tool(self, tool_name, args):
+            return ToolResult(content="sent")
+
+    orc = MCPOrchestrator(acl=acl, modal=modal)
+    orc.register(
+        _IrreversiblePlugin(),
+        required_capabilities=frozenset({"external_data_write"}),
+    )
+
+    # No flags passed — check_capabilities should still route through
+    # the modal because the Tool declares irreversible.
+    decision = await orc.check_capabilities(
+        "send", frozenset({"external_data_write"}), None,
+    )
+    assert decision is Decision.SILENT
+    assert len(prompt.received) == 1
+
+
 @pytest.mark.asyncio
 async def test_set_modal_surface_late_binding(acl):
     plugin = _StubPlugin()
