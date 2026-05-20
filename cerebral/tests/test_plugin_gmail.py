@@ -133,6 +133,24 @@ class TestListTools:
         tool = create().list_tools()[0]
         assert "query" in tool.schema.get("required", [])
 
+    def test_gmail_send_is_declared_irreversible(self):
+        # Issue #139 -- gmail_send is the first marked irreversible tool.
+        # The orchestrator ORs this declaration into CallFlags at dispatch
+        # so a queued send-mail candidate routes through the modal even
+        # when a Session/Persistent grant covers external_data_write.
+        send = next(
+            t for t in create().list_tools() if t.name == "gmail_send"
+        )
+        assert send.irreversible is True
+
+    def test_gmail_search_is_not_irreversible(self):
+        # Read-only tools never carry the flag -- the modal cost is for
+        # write-class effects that cannot be undone.
+        search = next(
+            t for t in create().list_tools() if t.name == "gmail_search"
+        )
+        assert search.irreversible is False
+
 
 # ---------------------------------------------------------------------------
 # Cycle 2 -- no provider / no connected account (constructs, lazy error)
