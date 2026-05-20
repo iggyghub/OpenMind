@@ -411,6 +411,45 @@ import plugins.calendar as _cal_plugin
 _cal_plugin.set_token_provider(_get_calendar_token_provider)
 
 
+class _TodoistTokenProvider:
+    """Static-API-token handle for plugins/todoist.py.
+
+    Todoist auth is a STATIC user-rotated API token (Todoist settings ->
+    Integrations -> Developer -> API token), not OAuth. The Protocol on
+    plugins/todoist.py carries only ``current()`` -- there is no
+    refresh capability to describe -- so this provider class is
+    intentionally narrower than `_GmailTokenProvider` /
+    `_CalendarTokenProvider`. The token is system-wide via the
+    ``TODOIST_API_TOKEN`` env var; future per-profile OAuth would be
+    additive, not a rewrite."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def current(self) -> str | None:
+        return self._token or None
+
+
+def _get_todoist_token_provider() -> _TodoistTokenProvider | None:
+    """Return a Todoist token provider iff TODOIST_API_TOKEN is set, else
+    None. Re-resolved on every tool call so a freshly-set env var picks
+    up without a Cerebral restart."""
+    token = os.environ.get("TODOIST_API_TOKEN", "").strip()
+    if not token:
+        return None
+    return _TodoistTokenProvider(token)
+
+
+# Issue #130 — wire _get_todoist_token_provider() into the todoist MCP
+# plugin so todoist_list_tasks / todoist_create_task can call the real
+# Todoist REST API with a static API token from the user's
+# TODOIST_API_TOKEN env var. Same lifecycle/precedent as the gmail /
+# calendar wiring above, but the Protocol carries only current() (no
+# refresh path -- Todoist tokens are static).
+import plugins.todoist as _todoist_plugin
+_todoist_plugin.set_token_provider(_get_todoist_token_provider)
+
+
 def _credentials_state_event(
     *, transient: str | None = None, error: str | None = None
 ) -> dict:
