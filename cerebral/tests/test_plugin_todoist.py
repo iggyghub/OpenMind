@@ -1,11 +1,18 @@
 """
-Todoist MCP plugin tests -- Issue #130.
+Todoist MCP plugin tests -- Issue #130 + Issue #133.
 
-Tools: todoist_list_tasks (read, GET /tasks) + todoist_create_task
-(write, POST /tasks -- real Todoist REST API v1, static API token from
-the TODOIST_API_TOKEN env var via the provider seam). All HTTP is
-injected via fetch_fn and the API token via a stub provider, so tests
-never read os.environ, hit the keyring, or touch the network.
+Tools (six):
+  - todoist_list_tasks (read, GET /tasks)
+  - todoist_create_task (write, POST /tasks)
+  - todoist_update_task (write, POST /tasks/{id}, PATCH-semantic)
+  - todoist_complete_task (write, POST /tasks/{id}/close, 204 empty)
+  - todoist_reopen_task (write, POST /tasks/{id}/reopen, 204 empty)
+  - todoist_delete_task (write, DELETE /tasks/{id}, 204 empty)
+
+All hit the real Todoist REST API v1 with a static API token from the
+TODOIST_API_TOKEN env var via the provider seam. HTTP is injected via
+fetch_fn and the token via a stub provider, so tests never read
+os.environ, hit the keyring, or touch the network.
 
 Learning-#15 substitution case (Bearer transport, plugin-specific
 value = secret handling): the suite asserts the Bearer header IS
@@ -108,9 +115,16 @@ _CREATE_OK = _task("task-1", content="Created task", priority=2,
 # ---------------------------------------------------------------------------
 
 class TestListTools:
-    def test_list_tools_exposes_list_and_create(self):
+    def test_list_tools_exposes_six_tools(self):
         names = {t.name for t in create().list_tools()}
-        assert names == {"todoist_list_tasks", "todoist_create_task"}
+        assert names == {
+            "todoist_list_tasks",
+            "todoist_create_task",
+            "todoist_update_task",
+            "todoist_complete_task",
+            "todoist_reopen_task",
+            "todoist_delete_task",
+        }
 
     def test_create_plugin_named_todoist(self):
         assert create().name == "todoist"
@@ -118,9 +132,9 @@ class TestListTools:
     def test_required_capabilities(self):
         # secrets_read is a DELIBERATE over-declaration (gmail.py /
         # youtube.py posture-B); external_data_write is the correct
-        # *required* ask-class semantic class for todoist_create_task.
-        # Both external_data_* are hand-declared -- the per-file AST
-        # audit maps neither.
+        # *required* ask-class semantic class for the create / update /
+        # complete / reopen / delete tools. Both external_data_* are
+        # hand-declared -- the per-file AST audit maps neither.
         assert REQUIRED_CAPABILITIES == frozenset({
             "secrets_read",
             "external_data_read",
@@ -147,6 +161,30 @@ class TestListTools:
         assert tool.schema.get("required", []) == []
         for opt in ("filter", "project_id", "label", "max_results"):
             assert opt in tool.schema["properties"]
+
+    def test_update_args_schema_required_id_others_optional(self):
+        tool = next(
+            t for t in create().list_tools()
+            if t.name == "todoist_update_task"
+        )
+        assert tool.schema.get("required", []) == ["id"]
+        for opt in (
+            "content", "description", "due_string", "priority",
+            "project_id", "labels",
+        ):
+            assert opt in tool.schema["properties"]
+
+    @pytest.mark.parametrize("tool_name", [
+        "todoist_complete_task",
+        "todoist_reopen_task",
+        "todoist_delete_task",
+    ])
+    def test_lifecycle_tools_require_only_id(self, tool_name):
+        tool = next(
+            t for t in create().list_tools() if t.name == tool_name
+        )
+        assert tool.schema.get("required", []) == ["id"]
+        assert "id" in tool.schema["properties"]
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +224,24 @@ class TestNoToken:
         result = await plugin.call_tool("todoist_create_task", {
             "content": "Hi",
         })
+        assert result.is_error
+        assert "no Todoist API token configured" in result.content
+
+    @pytest.mark.parametrize("tool_name,args", [
+        ("todoist_update_task", {"id": "t1", "content": "x"}),
+        ("todoist_complete_task", {"id": "t1"}),
+        ("todoist_reopen_task", {"id": "t1"}),
+        ("todoist_delete_task", {"id": "t1"}),
+    ])
+    @pytest.mark.asyncio
+    async def test_no_token_lazy_error_across_lifecycle_tools(
+            self, monkeypatch, tool_name, args):
+        import plugins.todoist as td_mod
+        monkeypatch.setattr(
+            td_mod, "_token_provider_factory", lambda: None
+        )
+        plugin = create()
+        result = await plugin.call_tool(tool_name, args)
         assert result.is_error
         assert "no Todoist API token configured" in result.content
 
@@ -245,6 +301,28 @@ class TestRequiredArgs:
         })
         assert result.is_error
         assert "content" in result.content
+
+    @pytest.mark.parametrize("tool_name", [
+        "todoist_update_task",
+        "todoist_complete_task",
+        "todoist_reopen_task",
+        "todoist_delete_task",
+    ])
+    @pytest.mark.parametrize("bad_args", [
+        {},  # id missing
+        {"id": ""},  # id blank
+        {"id": 12345},  # id non-string
+    ])
+    @pytest.mark.asyncio
+    async def test_missing_id_is_error(self, tool_name, bad_args):
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("t"),
+            fetch_fn=_route_fetch({}, []),
+        )
+        result = await plugin.call_tool(tool_name, dict(bad_args))
+        assert result.is_error
+        assert "id" in result.content
+        assert tool_name in result.content
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +622,281 @@ class TestCreate:
 
 
 # ---------------------------------------------------------------------------
+# Cycle 5b -- todoist_update_task (PATCH-semantic, full-shape response)
+# ---------------------------------------------------------------------------
+
+_UPDATE_OK = _task("t-upd", content="Updated content", priority=3,
+                   labels=["work"], due={
+                       "date": "2026-05-25", "string": "next monday",
+                   })
+
+
+class TestUpdate:
+    @pytest.mark.asyncio
+    async def test_update_minimal_id_only_posts_empty_body(self):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks/t-upd": _UPDATE_OK}, captured),
+        )
+        result = await plugin.call_tool("todoist_update_task", {
+            "id": "t-upd",
+        })
+        assert not result.is_error
+        call = captured[0]
+        assert call["method"] == "POST"
+        assert call["url"] == f"{_BASE}/tasks/t-upd"
+        # Empty body -- no other args supplied
+        assert call["json"] == {}
+
+    @pytest.mark.asyncio
+    async def test_update_all_optionals_passthrough(self):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks/t-upd": _UPDATE_OK}, captured),
+        )
+        await plugin.call_tool("todoist_update_task", {
+            "id": "t-upd",
+            "content": "New title",
+            "description": "Long form",
+            "due_string": "next monday",
+            "priority": 3,
+            "project_id": "proj-x",
+            "labels": ["a", "b"],
+        })
+        body = captured[0]["json"]
+        assert body == {
+            "content": "New title",
+            "description": "Long form",
+            "due_string": "next monday",
+            "priority": 3,
+            "project_id": "proj-x",
+            "labels": ["a", "b"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_update_blank_strings_dropped(self):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks/t-upd": _UPDATE_OK}, captured),
+        )
+        await plugin.call_tool("todoist_update_task", {
+            "id": "t-upd",
+            "content": "",
+            "description": "",
+            "due_string": "",
+            "project_id": "",
+        })
+        # PATCH-semantic: blank-string optionals must NOT be forwarded.
+        # The LLM "omit" vs "clear" distinction is conservatively "omit".
+        assert captured[0]["json"] == {}
+
+    @pytest.mark.parametrize("bad_priority", [0, 5, "high", True])
+    @pytest.mark.asyncio
+    async def test_update_invalid_priority_dropped(self, bad_priority):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks/t-upd": _UPDATE_OK}, captured),
+        )
+        await plugin.call_tool("todoist_update_task", {
+            "id": "t-upd",
+            "priority": bad_priority,
+        })
+        assert "priority" not in captured[0]["json"]
+
+    @pytest.mark.asyncio
+    async def test_update_blank_labels_filtered(self):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks/t-upd": _UPDATE_OK}, captured),
+        )
+        await plugin.call_tool("todoist_update_task", {
+            "id": "t-upd",
+            "labels": ["", "home", None, "", "work", 5],
+        })
+        # blanks/non-strings dropped, real strings preserved in order
+        assert captured[0]["json"]["labels"] == ["home", "work"]
+
+    @pytest.mark.asyncio
+    async def test_update_empty_labels_list_dropped(self):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks/t-upd": _UPDATE_OK}, captured),
+        )
+        await plugin.call_tool("todoist_update_task", {
+            "id": "t-upd",
+            "labels": ["", None],
+        })
+        # All blanks filter out -> no labels key in body
+        assert "labels" not in captured[0]["json"]
+
+    @pytest.mark.asyncio
+    async def test_update_response_is_single_shaped_task(self):
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks/t-upd": _UPDATE_OK}, []),
+        )
+        result = await plugin.call_tool("todoist_update_task", {
+            "id": "t-upd",
+            "content": "x",
+        })
+        assert not result.is_error
+        data = json.loads(result.content)
+        # Mirrors _shape_task -- the same flat shape create returns.
+        assert data["id"] == "t-upd"
+        assert data["content"] == "Updated content"
+        assert data["priority"] == 3
+        assert data["labels"] == ["work"]
+        assert data["due_date"] == "2026-05-25"
+        assert data["due_string"] == "next monday"
+
+    @pytest.mark.asyncio
+    async def test_update_non_dict_response_is_error(self):
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks/t-upd": ["bogus"]}, []),
+        )
+        result = await plugin.call_tool("todoist_update_task", {
+            "id": "t-upd", "content": "x",
+        })
+        assert result.is_error
+        assert "unexpected Todoist update response" in result.content
+
+
+# ---------------------------------------------------------------------------
+# Cycle 5c -- todoist_complete / reopen / delete (204 synthesized response)
+# ---------------------------------------------------------------------------
+
+class TestLifecycleTools:
+    @pytest.mark.parametrize("tool_name,suffix,status", [
+        ("todoist_complete_task", "/close", "completed"),
+        ("todoist_reopen_task", "/reopen", "reopened"),
+    ])
+    @pytest.mark.asyncio
+    async def test_close_reopen_endpoint_and_synthesized_body(
+            self, tool_name, suffix, status):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({f"/tasks/t-1{suffix}": None}, captured),
+        )
+        result = await plugin.call_tool(tool_name, {"id": "t-1"})
+        assert not result.is_error
+        # URL + method correct
+        call = captured[0]
+        assert call["method"] == "POST"
+        assert call["url"] == f"{_BASE}/tasks/t-1{suffix}"
+        # Plugin synthesizes the summary dict (Todoist returns 204 empty)
+        assert json.loads(result.content) == {"id": "t-1", "status": status}
+
+    @pytest.mark.asyncio
+    async def test_delete_endpoint_and_synthesized_body(self):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks/t-1": None}, captured),
+        )
+        result = await plugin.call_tool("todoist_delete_task", {"id": "t-1"})
+        assert not result.is_error
+        call = captured[0]
+        assert call["method"] == "DELETE"
+        assert call["url"] == f"{_BASE}/tasks/t-1"
+        assert json.loads(result.content) == {
+            "id": "t-1", "status": "deleted",
+        }
+
+    @pytest.mark.parametrize("tool_name,suffix,error", [
+        ("todoist_complete_task", "/close", TodoistAPIError(
+            "404 Not Found", status=404)),
+        ("todoist_reopen_task", "/reopen", TodoistAPIError(
+            "404 Not Found", status=404)),
+        ("todoist_delete_task", "", TodoistAPIError(
+            "400 Invalid", status=400)),
+    ])
+    @pytest.mark.asyncio
+    async def test_api_errors_surface_with_scrubbed_message(
+            self, tool_name, suffix, error):
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({f"/tasks/t-1{suffix}": error}, []),
+        )
+        result = await plugin.call_tool(tool_name, {"id": "t-1"})
+        assert result.is_error
+        assert "Todoist request failed" in result.content
+
+
+# ---------------------------------------------------------------------------
+# Cycle 5d -- _default_fetch 204 handling (transport-level)
+# ---------------------------------------------------------------------------
+
+class TestTransport204:
+    @pytest.mark.asyncio
+    async def test_aiohttp_204_returns_none(self, monkeypatch):
+        """_default_fetch must return None on HTTP 204 (close/reopen/
+        delete return an empty body). Stubs aiohttp at module scope."""
+        from plugins.todoist import _default_fetch
+        import plugins.todoist as td_mod
+
+        class _Resp:
+            status = 204
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            def raise_for_status(self): pass
+            async def json(self):  # pragma: no cover -- must NOT be called
+                raise AssertionError("json() should not be called for 204")
+
+        class _Session:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            def request(self, *a, **k): return _Resp()
+
+        class _StubAiohttp:
+            ClientSession = _Session
+
+            class ClientResponseError(Exception): pass
+
+        monkeypatch.setitem(sys.modules, "aiohttp", _StubAiohttp)
+        result = await _default_fetch(
+            "POST", "https://x/y", headers={}, params=None, json=None,
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_httpx_204_returns_none(self, monkeypatch):
+        from plugins.todoist import _default_fetch
+
+        # Force the aiohttp branch to fall through.
+        monkeypatch.setitem(sys.modules, "aiohttp", None)
+
+        class _Resp:
+            status_code = 204
+            def raise_for_status(self): pass
+            def json(self):  # pragma: no cover -- must NOT be called
+                raise AssertionError("json() should not be called for 204")
+
+        class _Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def request(self, *a, **k): return _Resp()
+
+        class _StubHttpx:
+            AsyncClient = _Client
+
+            class HTTPStatusError(Exception): pass
+
+        monkeypatch.setitem(sys.modules, "httpx", _StubHttpx)
+        result = await _default_fetch(
+            "POST", "https://x/y", headers={}, params=None, json=None,
+        )
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # Cycle 6 -- BEARER HEADER + token scrub (learning-#15 substitution)
 # ---------------------------------------------------------------------------
 
@@ -620,6 +973,51 @@ class TestBearerHeaderAndScrub:
         assert sentinel not in caplog.text
         assert "***" in result.content
 
+    @pytest.mark.parametrize("tool_name,args,route_needle,success_resp", [
+        ("todoist_update_task", {"id": "t-1", "content": "x"},
+         "/tasks/t-1", _UPDATE_OK),
+        ("todoist_complete_task", {"id": "t-1"},
+         "/tasks/t-1/close", None),
+        ("todoist_reopen_task", {"id": "t-1"},
+         "/tasks/t-1/reopen", None),
+        ("todoist_delete_task", {"id": "t-1"},
+         "/tasks/t-1", None),
+    ])
+    @pytest.mark.asyncio
+    async def test_bearer_header_attached_on_lifecycle_tools(
+            self, tool_name, args, route_needle, success_resp):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("life-tok"),
+            fetch_fn=_route_fetch({route_needle: success_resp}, captured),
+        )
+        await plugin.call_tool(tool_name, dict(args))
+        assert captured[0]["headers"]["Authorization"] == "Bearer life-tok"
+
+    @pytest.mark.parametrize("tool_name,args,route_needle", [
+        ("todoist_update_task", {"id": "t-1", "content": "x"}, "/tasks/t-1"),
+        ("todoist_complete_task", {"id": "t-1"}, "/tasks/t-1/close"),
+        ("todoist_reopen_task", {"id": "t-1"}, "/tasks/t-1/reopen"),
+        ("todoist_delete_task", {"id": "t-1"}, "/tasks/t-1"),
+    ])
+    @pytest.mark.asyncio
+    async def test_token_never_in_toolresult_or_logs_on_lifecycle_tools(
+            self, caplog, tool_name, args, route_needle):
+        sentinel = f"SENTINEL_{tool_name.upper()}_TOKEN"
+        exc = TodoistAPIError(
+            f"500 boom Bearer {sentinel}", status=500,
+        )
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider(sentinel),
+            fetch_fn=_route_fetch({route_needle: exc}, []),
+        )
+        with caplog.at_level(logging.ERROR):
+            result = await plugin.call_tool(tool_name, dict(args))
+        assert result.is_error
+        assert sentinel not in result.content
+        assert sentinel not in caplog.text
+        assert "***" in result.content
+
 
 # ---------------------------------------------------------------------------
 # Cycle 7 -- 401 propagates with NO retry (Protocol narrowing)
@@ -685,6 +1083,30 @@ class TestNoRetryOn401:
         assert result.is_error
         assert len(captured) == 1
 
+    @pytest.mark.parametrize("tool_name,args,route_needle", [
+        ("todoist_update_task", {"id": "t-1", "content": "x"}, "/tasks/t-1"),
+        ("todoist_complete_task", {"id": "t-1"}, "/tasks/t-1/close"),
+        ("todoist_reopen_task", {"id": "t-1"}, "/tasks/t-1/reopen"),
+        ("todoist_delete_task", {"id": "t-1"}, "/tasks/t-1"),
+    ])
+    @pytest.mark.asyncio
+    async def test_lifecycle_tool_401_propagates_no_retry(
+            self, tool_name, args, route_needle):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch(
+                {route_needle: TodoistAPIError(
+                    "401 Unauthorized", status=401)},
+                captured,
+            ),
+        )
+        result = await plugin.call_tool(tool_name, dict(args))
+        assert result.is_error
+        assert "Todoist request failed" in result.content
+        # Exactly ONE outbound request -- no refresh, no retry
+        assert len(captured) == 1
+
 
 # ---------------------------------------------------------------------------
 # Cycle 8 -- dispatch + module-level factory
@@ -700,6 +1122,29 @@ class TestDispatch:
         result = await plugin.call_tool("todoist_bogus", {})
         assert result.is_error
         assert "Unknown tool: 'todoist_bogus'" in result.content
+
+    @pytest.mark.parametrize("tool_name,args,route_needle,resp", [
+        ("todoist_update_task", {"id": "t-1", "content": "x"},
+         "/tasks/t-1", _UPDATE_OK),
+        ("todoist_complete_task", {"id": "t-1"},
+         "/tasks/t-1/close", None),
+        ("todoist_reopen_task", {"id": "t-1"},
+         "/tasks/t-1/reopen", None),
+        ("todoist_delete_task", {"id": "t-1"},
+         "/tasks/t-1", None),
+    ])
+    @pytest.mark.asyncio
+    async def test_dispatch_routes_each_lifecycle_tool(
+            self, tool_name, args, route_needle, resp):
+        captured: list = []
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("t"),
+            fetch_fn=_route_fetch({route_needle: resp}, captured),
+        )
+        result = await plugin.call_tool(tool_name, dict(args))
+        assert not result.is_error
+        # Exactly one outbound request -- proves dispatch reached the method
+        assert len(captured) == 1
 
     def test_create_is_module_level_factory(self):
         assert isinstance(create(), TodoistPlugin)
