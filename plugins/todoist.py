@@ -1,14 +1,29 @@
 """
-Todoist MCP plugin -- Issue #130, ADR-0005.
+Todoist MCP plugin -- Issue #130 / Issue #133, ADR-0005.
 
-Two tools, both hitting the **real Todoist REST API v1**, authorized by
-a STATIC API token read from the ``TODOIST_API_TOKEN`` environment
+Six tools, all hitting the **real Todoist REST API v1**, authorized
+by a STATIC API token read from the ``TODOIST_API_TOKEN`` environment
 variable via the provider seam:
 
   - ``todoist_list_tasks`` -- ``GET /tasks`` with optional filter /
     project_id / label / max_results query params. Read-only.
   - ``todoist_create_task`` -- ``POST /tasks`` with a JSON body. Write
     (ask-class ``external_data_write``).
+  - ``todoist_update_task`` -- ``POST /tasks/{id}`` with a JSON body.
+    PATCH-semantic: id required, other args optional, only non-empty
+    values forwarded. Write.
+  - ``todoist_complete_task`` -- ``POST /tasks/{id}/close`` (204 empty
+    response synthesized as ``{"id":..., "status":"completed"}``).
+    Write.
+  - ``todoist_reopen_task`` -- ``POST /tasks/{id}/reopen`` (204 empty
+    response synthesized as ``{"id":..., "status":"reopened"}``).
+    Write.
+  - ``todoist_delete_task`` -- ``DELETE /tasks/{id}`` (204 empty
+    response synthesized as ``{"id":..., "status":"deleted"}``).
+    Write. Server-side soft-delete (the task remains queryable with
+    ``is_deleted:true``); no REST un-delete endpoint exists so this
+    is practically irreversible from a tool perspective, gated by
+    the ``external_data_write`` ask-class consent surface.
 
 Clones the ``plugins/gmail.py`` spine: same ``Authorization: Bearer``
 header transport, same injectable ``fetch_fn`` + module-level
@@ -82,6 +97,7 @@ _MIN_LIMIT = 1
 _FACTORY_NOT_WIRED_MSG = "Todoist is not available -- token provider not wired"
 _NO_TOKEN_MSG = "no Todoist API token configured"
 _MISSING_CREATE_ARG_MSG = "missing required arg(s) for todoist_create_task: {}"
+_MISSING_ID_MSG = "missing required arg(s) for {}: id"
 
 
 class TokenProvider(Protocol):
@@ -138,7 +154,8 @@ FetchFn = Callable[..., Awaitable[Any]]
 async def _default_fetch(method: str, url: str, *, headers: dict | None = None,
                          params: dict | None = None,
                          json: dict | None = None) -> Any:
-    """Default transport: aiohttp -> httpx fallback. Returns parsed JSON.
+    """Default transport: aiohttp -> httpx fallback. Returns parsed JSON
+    or ``None`` for HTTP 204 (close/reopen/delete return an empty body).
 
     HTTP errors are mapped to TodoistAPIError carrying the status code;
     transport/other errors carry status=None. Deps lazy-imported here
@@ -154,6 +171,8 @@ async def _default_fetch(method: str, url: str, *, headers: dict | None = None,
                 async with session.request(method, url, headers=headers,
                                             params=params, json=json) as resp:
                     resp.raise_for_status()
+                    if resp.status == 204:
+                        return None
                     return await resp.json()
         except aiohttp.ClientResponseError as exc:  # type: ignore[attr-defined]
             raise TodoistAPIError(str(exc), status=exc.status) from exc
@@ -172,6 +191,8 @@ async def _default_fetch(method: str, url: str, *, headers: dict | None = None,
                 resp = await client.request(method, url, headers=headers,
                                             params=params, json=json)
                 resp.raise_for_status()
+                if resp.status_code == 204:
+                    return None
                 return resp.json()
         except httpx.HTTPStatusError as exc:  # type: ignore[attr-defined]
             raise TodoistAPIError(
@@ -328,6 +349,133 @@ class TodoistPlugin:
                     "required": ["content"],
                 },
             ),
+            Tool(
+                name="todoist_update_task",
+                description=(
+                    "Update an existing active task in the user's "
+                    "Todoist account. PATCH-semantic: only the fields "
+                    "supplied (and non-empty) are forwarded to Todoist; "
+                    "every other field is preserved server-side. "
+                    "Returns the updated task's id, content, "
+                    "description, priority, due_date, due_string, "
+                    "labels, project_id and url."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": (
+                                "Todoist task id to update."
+                            ),
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "New task content / title.",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": (
+                                "New long-form task description."
+                            ),
+                        },
+                        "due_string": {
+                            "type": "string",
+                            "description": (
+                                "New natural-language due (e.g. "
+                                "'tomorrow at 5pm')."
+                            ),
+                        },
+                        "priority": {
+                            "type": "integer",
+                            "description": (
+                                "New priority 1 (normal) to 4 (urgent)."
+                            ),
+                        },
+                        "project_id": {
+                            "type": "string",
+                            "description": (
+                                "Move the task to this project."
+                            ),
+                        },
+                        "labels": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Replace the task's labels with this "
+                                "list."
+                            ),
+                        },
+                    },
+                    "required": ["id"],
+                },
+            ),
+            Tool(
+                name="todoist_complete_task",
+                description=(
+                    "Mark an active task as completed in the user's "
+                    "Todoist account. Returns {id, status: "
+                    "'completed'}."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": (
+                                "Todoist task id to mark completed."
+                            ),
+                        },
+                    },
+                    "required": ["id"],
+                },
+            ),
+            Tool(
+                name="todoist_reopen_task",
+                description=(
+                    "Reopen a completed task in the user's Todoist "
+                    "account (inverse of todoist_complete_task). "
+                    "Returns {id, status: 'reopened'}."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": (
+                                "Todoist task id to reopen."
+                            ),
+                        },
+                    },
+                    "required": ["id"],
+                },
+            ),
+            Tool(
+                name="todoist_delete_task",
+                description=(
+                    "Delete a task in the user's Todoist account. "
+                    "Todoist soft-deletes server-side (recoverable via "
+                    "the Todoist UI's deleted-tasks view); no REST "
+                    "un-delete endpoint exists. Returns {id, status: "
+                    "'deleted'}."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": (
+                                "Todoist task id to delete."
+                            ),
+                        },
+                    },
+                    "required": ["id"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -335,6 +483,20 @@ class TodoistPlugin:
             return await self._list_tasks(args)
         if tool_name == "todoist_create_task":
             return await self._create_task(args)
+        if tool_name == "todoist_update_task":
+            return await self._update_task(args)
+        if tool_name == "todoist_complete_task":
+            return await self._lifecycle_task(
+                args, tool_name="todoist_complete_task",
+                endpoint_suffix="close", status="completed",
+            )
+        if tool_name == "todoist_reopen_task":
+            return await self._lifecycle_task(
+                args, tool_name="todoist_reopen_task",
+                endpoint_suffix="reopen", status="reopened",
+            )
+        if tool_name == "todoist_delete_task":
+            return await self._delete_task(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -475,6 +637,124 @@ class TodoistPlugin:
                 content="unexpected Todoist create response", is_error=True,
             )
         return ToolResult(content=json.dumps(_shape_task(resp)))
+
+    @staticmethod
+    def _require_id(args: dict, tool_name: str) -> tuple[str | None, ToolResult | None]:
+        """Return (id, None) on success or (None, error_ToolResult)."""
+        task_id = args.get("id")
+        if not isinstance(task_id, str) or not task_id:
+            return None, ToolResult(
+                content=_MISSING_ID_MSG.format(tool_name),
+                is_error=True,
+            )
+        return task_id, None
+
+    async def _update_task(self, args: dict) -> ToolResult:
+        task_id, err_result = self._require_id(args, "todoist_update_task")
+        if err_result is not None:
+            return err_result
+
+        # PATCH-semantic: same body-builder posture as _create_task, but
+        # content is also OPTIONAL on update (no required check) -- so
+        # the body can be {} for a no-op update; Todoist returns the
+        # task unchanged with updated_at bumped.
+        body: dict = {}
+        for key in ("content", "description", "due_string", "project_id"):
+            value = args.get(key)
+            if isinstance(value, str) and value:
+                body[key] = value
+        priority = args.get("priority")
+        if isinstance(priority, int) and not isinstance(priority, bool) \
+                and 1 <= priority <= 4:
+            body["priority"] = priority
+        labels = args.get("labels")
+        if isinstance(labels, list):
+            cleaned = [l for l in labels if isinstance(l, str) and l]
+            if cleaned:
+                body["labels"] = cleaned
+
+        provider, err = self._resolve_provider()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+
+        try:
+            token = self._take_token(provider)
+            resp = await self._request(
+                "POST", f"tasks/{task_id}", token, json=body,
+            )
+        except Exception as exc:
+            logger.error(
+                "[todoist] todoist_update_task failed: %s",
+                self._scrub(str(exc)),
+            )
+            return ToolResult(
+                content=self._scrub(f"Todoist request failed: {exc}"),
+                is_error=True,
+            )
+
+        if not isinstance(resp, dict):
+            return ToolResult(
+                content="unexpected Todoist update response", is_error=True,
+            )
+        return ToolResult(content=json.dumps(_shape_task(resp)))
+
+    async def _lifecycle_task(self, args: dict, *, tool_name: str,
+                              endpoint_suffix: str, status: str) -> ToolResult:
+        """Shared implementation for close / reopen.
+
+        Both return 204 empty body on success; the plugin synthesizes
+        ``{"id": <id>, "status": <status>}``.
+        """
+        task_id, err_result = self._require_id(args, tool_name)
+        if err_result is not None:
+            return err_result
+
+        provider, err = self._resolve_provider()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+
+        try:
+            token = self._take_token(provider)
+            await self._request(
+                "POST", f"tasks/{task_id}/{endpoint_suffix}", token,
+            )
+        except Exception as exc:
+            logger.error(
+                "[todoist] %s failed: %s",
+                tool_name, self._scrub(str(exc)),
+            )
+            return ToolResult(
+                content=self._scrub(f"Todoist request failed: {exc}"),
+                is_error=True,
+            )
+
+        return ToolResult(content=json.dumps({"id": task_id, "status": status}))
+
+    async def _delete_task(self, args: dict) -> ToolResult:
+        task_id, err_result = self._require_id(args, "todoist_delete_task")
+        if err_result is not None:
+            return err_result
+
+        provider, err = self._resolve_provider()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+
+        try:
+            token = self._take_token(provider)
+            await self._request("DELETE", f"tasks/{task_id}", token)
+        except Exception as exc:
+            logger.error(
+                "[todoist] todoist_delete_task failed: %s",
+                self._scrub(str(exc)),
+            )
+            return ToolResult(
+                content=self._scrub(f"Todoist request failed: {exc}"),
+                is_error=True,
+            )
+
+        return ToolResult(
+            content=json.dumps({"id": task_id, "status": "deleted"}),
+        )
 
 
 def create(fetch_fn: FetchFn | None = None) -> TodoistPlugin:
