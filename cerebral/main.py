@@ -491,6 +491,49 @@ import plugins.notion as _notion_plugin
 _notion_plugin.set_token_provider(_get_notion_token_provider)
 
 
+class _TogglTokenProvider:
+    """Static-API-token handle for plugins/toggl.py.
+
+    Toggl Track auth is a STATIC user-rotated API token (Toggl
+    profile -> API Token), not OAuth. The Protocol on plugins/toggl.py
+    carries only ``current()`` -- there is no refresh capability to
+    describe -- so this provider class is intentionally narrower than
+    `_GmailTokenProvider` / `_CalendarTokenProvider` and mirrors
+    `_TodoistTokenProvider` / `_NotionTokenProvider` exactly. The
+    token is system-wide via the ``TOGGL_API_TOKEN`` env var; a
+    future per-profile or settings-UI-backed slice would be additive,
+    not a rewrite. The auth transport on the plugin side (HTTP Basic
+    with the literal 'api_token' as password) is invisible to this
+    provider -- the provider just hands the raw token over."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def current(self) -> str | None:
+        return self._token or None
+
+
+def _get_toggl_token_provider() -> _TogglTokenProvider | None:
+    """Return a Toggl token provider iff TOGGL_API_TOKEN is set, else
+    None. Re-resolved on every tool call so a freshly-set env var picks
+    up without a Cerebral restart."""
+    token = os.environ.get("TOGGL_API_TOKEN", "").strip()
+    if not token:
+        return None
+    return _TogglTokenProvider(token)
+
+
+# Issue #142 — wire _get_toggl_token_provider() into the toggl MCP
+# plugin so toggl_list_time_entries / toggl_create_time_entry /
+# toggl_stop_running_entry / toggl_list_workspaces / toggl_list_projects
+# can call the real Toggl Track API v9 with a static API token from
+# the user's TOGGL_API_TOKEN env var. Same lifecycle/precedent as the
+# todoist / notion wiring above (Protocol carries only current() --
+# no refresh path).
+import plugins.toggl as _toggl_plugin
+_toggl_plugin.set_token_provider(_get_toggl_token_provider)
+
+
 def _credentials_state_event(
     *, transient: str | None = None, error: str | None = None
 ) -> dict:
