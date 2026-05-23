@@ -545,6 +545,22 @@ ipcMain.on('credentials:set-client', (_e, { client_id, client_secret }) =>
 ipcMain.on('credentials:connect',    () => sendToCerebral({ type: 'connect_google' }));
 ipcMain.on('credentials:disconnect', () => sendToCerebral({ type: 'disconnect_credential' }));
 
+// Issue #148 — static-token settings UI. Two new channels for the API-keys
+// section (one row per static-token plugin). Write-only contract: the
+// renderer NEVER receives the token value back, only {status, source}.
+ipcMain.on('credentials:set-static-token', (_e, { provider, value }) =>
+  sendToCerebral({
+    type: 'set_static_token',
+    data: { provider, value },
+  })
+);
+ipcMain.on('credentials:clear-static-token', (_e, { provider }) =>
+  sendToCerebral({
+    type: 'clear_static_token',
+    data: { provider },
+  })
+);
+
 // ── Consent prompt window (Issue #48) ─────────────────────────────────────────
 //
 // One BrowserWindow per outstanding ASK. The ConsentManager owns the

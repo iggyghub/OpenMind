@@ -1,17 +1,20 @@
 """
 Per-profile connected-account credential store — Issue #112, ADR-0005
-Amendment (2026-05-18).
+Amendments (2026-05-18 OAuth + 2026-05-23 static tokens).
 
 A **Connected account** (CONTEXT.md) is an external account a profile has
 authorized Felix to act as. Its credential is split by sensitivity:
 
   - Secret material (OAuth ``client_secret``, ``refresh_token``,
-    ``access_token``) → the OS keyring via the ``keyring`` library,
-    namespaced per profile: ``service="openmind"``,
+    ``access_token`` and static-API ``api_token``) → the OS keyring
+    via the ``keyring`` library, namespaced per profile:
+    ``service="openmind"``,
     ``username="profile_<id>/<provider>/<field>"``.
   - Non-secret metadata (``client_id``, connected-account email, granted
     scopes, status, timestamps) → a per-profile SQLite table adjacent to
-    ``profiles`` in ``cerebral/data/openmind.db``.
+    ``profiles`` in ``cerebral/data/openmind.db``. Static-token providers
+    write a degenerate row (empty ``client_id``/``email``/``scopes``,
+    ``status="connected"``) per the 2026-05-23 amendment.
 
 Credentials are per-profile, never global, never written to plaintext
 ``felix-settings.json``, and secret values are never logged.
@@ -50,7 +53,11 @@ DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
 # entries survive (the keyring API has no per-namespace enumeration), so
 # set_secret rejects any field outside it — an un-deletable secret would
 # break the delete-completeness invariant (ADR-0005 amendment).
-SECRET_FIELDS: tuple[str, ...] = ("client_secret", "refresh_token", "access_token")
+# Three OAuth fields (2026-05-18) + one static-API field (2026-05-23);
+# the same per-profile keyring/SQLite split applies to both shapes.
+SECRET_FIELDS: tuple[str, ...] = (
+    "client_secret", "refresh_token", "access_token", "api_token",
+)
 
 _KEYRING_SERVICE = "openmind"
 
