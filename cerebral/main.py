@@ -534,6 +534,50 @@ import plugins.toggl as _toggl_plugin
 _toggl_plugin.set_token_provider(_get_toggl_token_provider)
 
 
+class _ClockifyTokenProvider:
+    """Static-API-key handle for plugins/clockify.py.
+
+    Clockify auth is a STATIC user-rotated API key (Clockify profile ->
+    API key), not OAuth. The Protocol on plugins/clockify.py carries
+    only ``current()`` -- there is no refresh capability to describe --
+    so this provider class is intentionally narrower than
+    `_GmailTokenProvider` / `_CalendarTokenProvider` and mirrors
+    `_TodoistTokenProvider` / `_NotionTokenProvider` / `_TogglTokenProvider`
+    exactly. The key is system-wide via the ``CLOCKIFY_API_KEY`` env
+    var; a future per-profile or settings-UI-backed slice would be
+    additive, not a rewrite. The auth transport on the plugin side
+    (X-Api-Key custom header with the raw key as the value -- the FIRST
+    custom-header static-token plugin) is invisible to this provider --
+    the provider just hands the raw key over."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def current(self) -> str | None:
+        return self._token or None
+
+
+def _get_clockify_token_provider() -> _ClockifyTokenProvider | None:
+    """Return a Clockify token provider iff CLOCKIFY_API_KEY is set,
+    else None. Re-resolved on every tool call so a freshly-set env var
+    picks up without a Cerebral restart."""
+    token = os.environ.get("CLOCKIFY_API_KEY", "").strip()
+    if not token:
+        return None
+    return _ClockifyTokenProvider(token)
+
+
+# Issue #145 — wire _get_clockify_token_provider() into the clockify
+# MCP plugin so clockify_list_time_entries / clockify_create_time_entry /
+# clockify_stop_running_entry / clockify_list_workspaces /
+# clockify_list_projects can call the real Clockify API v1 with a
+# static API key from the user's CLOCKIFY_API_KEY env var. Same
+# lifecycle/precedent as the toggl wiring above (Protocol carries only
+# current() -- no refresh path).
+import plugins.clockify as _clockify_plugin
+_clockify_plugin.set_token_provider(_get_clockify_token_provider)
+
+
 def _credentials_state_event(
     *, transient: str | None = None, error: str | None = None
 ) -> dict:
