@@ -1,5 +1,5 @@
 """
-YouTube MCP plugin — Issue #109.
+YouTube MCP plugin — Issue #109 / Issue #148.
 
 Tools: youtube_search, youtube_video, youtube_channel.
 
@@ -12,13 +12,23 @@ refresh, no SQLite, no state:
 
 Clones the plugins/wikipedia.py transport posture (public JSON API, injectable
 async fetch_fn, no auth header — the key is a query param assembled by the
-tool methods, not a transport concern). Tests inject a stub fetch_fn and an
-explicit api_key so they never read the real environment or hit the network.
+tool methods, not a transport concern).
+
+Issue #148 — the API key reaches the plugin via a module-level
+``set_token_provider`` seam mirroring plugins/todoist.py / plugins/notion.py
+/ plugins/toggl.py / plugins/clockify.py. The TokenProvider Protocol carries
+only ``current()`` (static key, no refresh). Tests inject a stub provider
+via the constructor + a stub fetch_fn so they never read the real
+environment or hit the network. Before #148 this plugin read the
+``YOUTUBE_API_KEY`` env var directly in ``__init__`` (one-shot at
+construction); after #148 the key comes from per-profile keyring (via
+#112's CredentialStore) with the env var as a fallback, and is
+re-resolved on every tool call so a freshly-set key picks up without a
+Cerebral restart.
 """
 import json
 import logging
-import os
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
 
@@ -47,7 +57,38 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
 _BASE = "https://www.googleapis.com/youtube/v3"
 _DEFAULT_LIMIT = 10
 
+_FACTORY_NOT_WIRED_MSG = "YouTube is not available — token provider not wired"
+_NO_TOKEN_MSG = "YOUTUBE_API_KEY is not configured"
+
 FetchFn = Callable[..., Awaitable[Any]]
+
+
+class TokenProvider(Protocol):
+    """Per-active-profile API-key handle wired from main.py.
+
+    Carries ONLY ``current()`` because YouTube's API key is a STATIC
+    user-rotated value (Google Cloud Console → Credentials → API key).
+    There is no OAuth refresh capability to describe, so the Protocol
+    does not pretend one exists. Mirrors plugins/todoist.py /
+    plugins/notion.py / plugins/toggl.py / plugins/clockify.py."""
+
+    def current(self) -> Optional[str]: ...
+
+
+TokenProviderFactory = Callable[[], Optional[TokenProvider]]
+
+_token_provider_factory: Optional[TokenProviderFactory] = None
+
+
+def set_token_provider(fn: TokenProviderFactory) -> None:
+    """Wire main.py's _get_youtube_token_provider() — called once at
+    startup after the orchestrator has discovered the plugin.
+
+    The factory must return ``TokenProvider | None``: ``None`` when no
+    key is configured (neither per-profile keyring nor YOUTUBE_API_KEY
+    env), a fresh handle otherwise."""
+    global _token_provider_factory
+    _token_provider_factory = fn
 
 
 async def _default_fetch(method: str, url: str, *, headers: dict | None = None,
@@ -138,10 +179,19 @@ def _shape_channel(item: dict) -> dict:
 class YouTubePlugin:
     name = PLUGIN_NAME
 
-    def __init__(self, api_key: str | None = None,
+    def __init__(self, token_provider: Optional[TokenProvider] = None,
                  fetch_fn: FetchFn | None = None) -> None:
-        self._api_key = api_key or os.environ.get("YOUTUBE_API_KEY") or ""
+        # Constructor-injected provider wins over the module-level setter.
+        # Tests pass directly; production leaves this None and main.py
+        # wires the module-level _token_provider_factory at startup
+        # (Issue #148 — was os.environ.get("YOUTUBE_API_KEY") in __init__
+        # before the TokenProvider migration).
+        self._provider = token_provider
         self._fetch = fetch_fn or _default_fetch
+        # Every key ever held this call, so _scrub strips it from any log
+        # line / ToolResult (the key is a ?key= query param; aiohttp/httpx
+        # status errors embed the full request URL in their message).
+        self._seen_tokens: set[str] = set()
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -199,10 +249,6 @@ class YouTubePlugin:
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
-        if not self._api_key:
-            return ToolResult(
-                content="YOUTUBE_API_KEY is not configured", is_error=True
-            )
         if tool_name == "youtube_search":
             return await self._search(args)
         if tool_name == "youtube_video":
@@ -211,17 +257,48 @@ class YouTubePlugin:
             return await self._channel(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
+    def _resolve_provider(self) -> tuple[Optional[TokenProvider], Optional[str]]:
+        """Return ``(provider, error_string)``. Exactly one is non-None.
+
+        Mirrors plugins/todoist.py / plugins/notion.py / plugins/toggl.py /
+        plugins/clockify.py."""
+        if self._provider is not None:
+            return self._provider, None
+        factory = self._token_factory()
+        if factory is None:
+            return None, _FACTORY_NOT_WIRED_MSG
+        provider = factory()
+        if provider is None:
+            return None, _NO_TOKEN_MSG
+        return provider, None
+
+    @staticmethod
+    def _token_factory() -> Optional[TokenProviderFactory]:
+        return _token_provider_factory
+
     def _scrub(self, text: str) -> str:
-        """Strip the API key from any text bound for a log or ToolResult.
+        """Strip every API key seen this call from text bound for a log or
+        ToolResult.
 
-        The key is a query param; aiohttp/httpx status errors embed the full
-        request URL (key included) in their message, so the key can reach an
-        exception string even though we never format the URL ourselves.
-        """
-        return text.replace(self._api_key, "***") if self._api_key else text
+        The key is a ?key= query param; aiohttp/httpx status errors embed
+        the full request URL (key included) in their message, so the key
+        can reach an exception string even though we never format the URL
+        ourselves."""
+        for tok in self._seen_tokens:
+            if tok:
+                text = text.replace(tok, "***")
+        return text
 
-    async def _request(self, endpoint: str, params: dict) -> Any:
-        params = {**params, "key": self._api_key}
+    def _take_token(self, provider: TokenProvider) -> str:
+        """Get the static API key from the provider. Records it for
+        scrubbing. No refresh path -- YouTube's key is static."""
+        token = provider.current() or ""
+        if token:
+            self._seen_tokens.add(token)
+        return token
+
+    async def _request(self, endpoint: str, params: dict, token: str) -> Any:
+        params = {**params, "key": token}
         return await self._fetch("GET", f"{_BASE}/{endpoint}", params=params)
 
     async def _search(self, args: dict) -> ToolResult:
@@ -231,6 +308,10 @@ class YouTubePlugin:
                 content="'query' is required for youtube_search", is_error=True
             )
         max_results = int(args.get("max_results") or _DEFAULT_LIMIT)
+        provider, err = self._resolve_provider()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+        token = self._take_token(provider)
         params = {
             "part": "snippet",
             "type": "video",
@@ -238,7 +319,7 @@ class YouTubePlugin:
             "maxResults": max_results,
         }
         try:
-            response = await self._request("search", params)
+            response = await self._request("search", params, token)
         except Exception as exc:
             logger.error("[youtube] youtube_search failed: %s", self._scrub(str(exc)))
             return ToolResult(
@@ -256,9 +337,13 @@ class YouTubePlugin:
             return ToolResult(
                 content="'video_id' is required for youtube_video", is_error=True
             )
+        provider, err = self._resolve_provider()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+        token = self._take_token(provider)
         params = {"part": "snippet,statistics", "id": video_id}
         try:
-            response = await self._request("videos", params)
+            response = await self._request("videos", params, token)
         except Exception as exc:
             logger.error("[youtube] youtube_video failed: %s", self._scrub(str(exc)))
             return ToolResult(
@@ -284,6 +369,10 @@ class YouTubePlugin:
                 ),
                 is_error=True,
             )
+        provider, err = self._resolve_provider()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+        token = self._take_token(provider)
         params: dict = {"part": "snippet,statistics"}
         if channel_id:
             params["id"] = channel_id
@@ -292,7 +381,7 @@ class YouTubePlugin:
             params["forHandle"] = handle.lstrip("@")
             ref = f"handle '{handle}'"
         try:
-            response = await self._request("channels", params)
+            response = await self._request("channels", params, token)
         except Exception as exc:
             logger.error("[youtube] youtube_channel failed: %s", self._scrub(str(exc)))
             return ToolResult(
@@ -308,6 +397,11 @@ class YouTubePlugin:
         return ToolResult(content=json.dumps(_shape_channel(items[0])))
 
 
-def create(api_key: str | None = None,
-           fetch_fn: FetchFn | None = None) -> YouTubePlugin:
-    return YouTubePlugin(api_key=api_key, fetch_fn=fetch_fn)
+def create(fetch_fn: FetchFn | None = None) -> YouTubePlugin:
+    """Zero-arg-by-default factory the orchestrator discovers.
+
+    `fetch_fn` is for tests; production leaves it None (uses
+    _default_fetch's aiohttp→httpx fallback). The token provider is
+    wired separately via the module-level `set_token_provider` setter
+    from `cerebral/main.py` (Issue #148)."""
+    return YouTubePlugin(fetch_fn=fetch_fn)

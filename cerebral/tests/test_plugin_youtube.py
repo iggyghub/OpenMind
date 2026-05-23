@@ -1,14 +1,16 @@
 """
-YouTube MCP plugin tests — Issue #109.
+YouTube MCP plugin tests — Issue #109 / Issue #148.
 
 Tools: youtube_search, youtube_video, youtube_channel.
 
-Stateless, read-only over the YouTube Data API v3 public-read endpoints. All
-HTTP is injected via fetch_fn and the API key is injected explicitly so tests
-never read the real environment or hit the network. The learning-#15
-fake-transport cycle is replaced by a key-scrub cycle: YouTube's auth is a
-?key= URL param built by the tool methods (not a transport header), so the
-plugin-specific value to protect is the secret, not the transport.
+Stateless, read-only over the YouTube Data API v3 public-read endpoints.
+All HTTP is injected via fetch_fn and the API key is injected via a
+constructor-injected `TokenProvider` stub (#148 — was a positional
+`api_key` arg before the TokenProvider migration). The learning-#15
+fake-transport cycle is replaced by a key-scrub cycle: YouTube's auth is
+a ?key= URL param built by the tool methods (not a transport header),
+so the plugin-specific value to protect is the secret, not the
+transport.
 """
 import json
 import logging
@@ -23,6 +25,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
+
+
+class _StubProvider:
+    """One-method TokenProvider stub mirroring the production Protocol."""
+
+    def __init__(self, token: str | None) -> None:
+        self._token = token
+
+    def current(self) -> str | None:
+        return self._token
+
 
 def _make_fetch(*, response=None, captured: dict | None = None):
     """Build an injectable fetch_fn that records calls and returns a canned dict."""
@@ -51,15 +64,17 @@ class TestListTools:
     def test_list_tools_exposes_three(self):
         from plugins.youtube import create
 
-        names = {t.name for t in create(api_key="k").list_tools()}
+        names = {t.name for t in create().list_tools()}
         assert names == {"youtube_search", "youtube_video", "youtube_channel"}
 
     def test_create_plugin_named_youtube(self):
         from plugins.youtube import create
 
-        assert create(api_key="k").name == "youtube"
+        assert create().name == "youtube"
 
     def test_required_capabilities_overdeclare_secrets_read(self):
+        """Issue #148 carries the posture-B declaration unchanged — the
+        TokenProvider migration does NOT alter the capability set."""
         from plugins.youtube import REQUIRED_CAPABILITIES
 
         assert REQUIRED_CAPABILITIES == frozenset(
@@ -69,7 +84,7 @@ class TestListTools:
     def test_tools_have_required_args_in_schema(self):
         from plugins.youtube import create
 
-        tools = {t.name: t for t in create(api_key="k").list_tools()}
+        tools = {t.name: t for t in create().list_tools()}
         assert "query" in tools["youtube_search"].schema.get("required", [])
         assert "video_id" in tools["youtube_video"].schema.get("required", [])
         # channel takes exactly-one-of; neither is schema-required.
@@ -77,43 +92,76 @@ class TestListTools:
 
 
 # ---------------------------------------------------------------------------
-# Cycle 2 — unconfigured API key
+# Cycle 2 — no provider / no token (constructs, lazy error) + setter seam
 # ---------------------------------------------------------------------------
 
-class TestUnconfiguredKey:
+class TestNoToken:
     @pytest.mark.asyncio
-    async def test_no_key_no_env_constructs_but_calls_error(self, monkeypatch):
-        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
-        from plugins.youtube import create
+    async def test_factory_not_wired_constructs_but_errors(self, monkeypatch):
+        import plugins.youtube as yt_mod
+        monkeypatch.setattr(yt_mod, "_token_provider_factory", None)
 
-        plugin = create()  # must not raise
+        plugin = yt_mod.create()  # must not raise
         for tool in ("youtube_search", "youtube_video", "youtube_channel"):
-            result = await plugin.call_tool(tool, {})
+            args = (
+                {"query": "x"} if tool == "youtube_search"
+                else {"video_id": "v"} if tool == "youtube_video"
+                else {"channel_id": "c"}
+            )
+            result = await plugin.call_tool(tool, args)
             assert result.is_error
-            assert "YOUTUBE_API_KEY is not configured" in result.content
+            assert "not wired" in result.content
 
     @pytest.mark.asyncio
-    async def test_env_var_supplies_key(self, monkeypatch):
-        monkeypatch.setenv("YOUTUBE_API_KEY", "env-key")
-        from plugins.youtube import create
+    async def test_factory_returns_none_is_no_token(self, monkeypatch):
+        import plugins.youtube as yt_mod
+        monkeypatch.setattr(
+            yt_mod, "_token_provider_factory", lambda: None
+        )
 
-        captured: dict = {}
-        plugin = create(fetch_fn=_make_fetch(response={"items": []}, captured=captured))
-        await plugin.call_tool("youtube_search", {"query": "x"})
-        assert captured["params"]["key"] == "env-key"
+        plugin = yt_mod.create()
+        result = await plugin.call_tool("youtube_search", {"query": "x"})
+        assert result.is_error
+        assert "YOUTUBE_API_KEY is not configured" in result.content
 
     @pytest.mark.asyncio
-    async def test_explicit_key_overrides_env(self, monkeypatch):
-        monkeypatch.setenv("YOUTUBE_API_KEY", "env-key")
-        from plugins.youtube import create
+    async def test_module_setter_is_the_wiring_seam(self, monkeypatch):
+        import plugins.youtube as yt_mod
+        monkeypatch.setattr(yt_mod, "_token_provider_factory", None)
+
+        prov = _StubProvider("seam-token")
+        yt_mod.set_token_provider(lambda: prov)
+        try:
+            captured: dict = {}
+            plugin = yt_mod.YouTubePlugin(
+                fetch_fn=_make_fetch(response={"items": []}, captured=captured)
+            )
+            await plugin.call_tool("youtube_search", {"query": "x"})
+            assert captured["params"]["key"] == "seam-token"
+        finally:
+            monkeypatch.setattr(
+                yt_mod, "_token_provider_factory", None
+            )
+
+    @pytest.mark.asyncio
+    async def test_constructor_provider_wins_over_module_factory(self, monkeypatch):
+        """A provider passed to the constructor wins over a wired factory
+        — mirrors the todoist / notion / toggl / clockify precedent so
+        tests stay self-contained."""
+        import plugins.youtube as yt_mod
+        # Wire a module factory returning a different token.
+        monkeypatch.setattr(
+            yt_mod, "_token_provider_factory",
+            lambda: _StubProvider("from-module-factory"),
+        )
 
         captured: dict = {}
-        plugin = create(
-            api_key="explicit-key",
+        plugin = yt_mod.YouTubePlugin(
+            token_provider=_StubProvider("from-constructor"),
             fetch_fn=_make_fetch(response={"items": []}, captured=captured),
         )
         await plugin.call_tool("youtube_search", {"query": "x"})
-        assert captured["params"]["key"] == "explicit-key"
+        assert captured["params"]["key"] == "from-constructor"
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +173,9 @@ class TestRequiredArgs:
     async def test_search_missing_query_returns_error(self):
         from plugins.youtube import YouTubePlugin
 
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch())
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"), fetch_fn=_make_fetch(),
+        )
         result = await plugin.call_tool("youtube_search", {})
         assert result.is_error
         assert "'query' is required" in result.content
@@ -134,7 +184,9 @@ class TestRequiredArgs:
     async def test_video_missing_id_returns_error(self):
         from plugins.youtube import YouTubePlugin
 
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch())
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"), fetch_fn=_make_fetch(),
+        )
         result = await plugin.call_tool("youtube_video", {})
         assert result.is_error
         assert "'video_id' is required" in result.content
@@ -143,7 +195,9 @@ class TestRequiredArgs:
     async def test_channel_neither_arg_returns_error(self):
         from plugins.youtube import YouTubePlugin
 
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch())
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"), fetch_fn=_make_fetch(),
+        )
         result = await plugin.call_tool("youtube_channel", {})
         assert result.is_error
         assert "exactly one" in result.content
@@ -152,7 +206,9 @@ class TestRequiredArgs:
     async def test_channel_both_args_returns_error(self):
         from plugins.youtube import YouTubePlugin
 
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch())
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"), fetch_fn=_make_fetch(),
+        )
         result = await plugin.call_tool(
             "youtube_channel", {"channel_id": "c", "handle": "@h"}
         )
@@ -180,7 +236,7 @@ class TestSearch:
             },
         }]}
         plugin = YouTubePlugin(
-            api_key="k",
+            token_provider=_StubProvider("k"),
             fetch_fn=_make_fetch(response=payload, captured=captured),
         )
         result = await plugin.call_tool("youtube_search", {"query": "hello"})
@@ -205,7 +261,7 @@ class TestSearch:
 
         captured: dict = {}
         plugin = YouTubePlugin(
-            api_key="k",
+            token_provider=_StubProvider("k"),
             fetch_fn=_make_fetch(response={"items": []}, captured=captured),
         )
         await plugin.call_tool("youtube_search", {"query": "x"})
@@ -222,7 +278,8 @@ class TestSearch:
             for i in range(5)
         ]
         plugin = YouTubePlugin(
-            api_key="k", fetch_fn=_make_fetch(response={"items": items})
+            token_provider=_StubProvider("k"),
+            fetch_fn=_make_fetch(response={"items": items}),
         )
         result = await plugin.call_tool(
             "youtube_search", {"query": "x", "max_results": 2}
@@ -234,7 +291,7 @@ class TestSearch:
         from plugins.youtube import YouTubePlugin
 
         plugin = YouTubePlugin(
-            api_key="k",
+            token_provider=_StubProvider("k"),
             fetch_fn=_make_fetch(response={"items": [{"id": {"videoId": "v"}}]}),
         )
         result = await plugin.call_tool("youtube_search", {"query": "x"})
@@ -247,7 +304,10 @@ class TestSearch:
     async def test_search_non_dict_response_is_error(self):
         from plugins.youtube import YouTubePlugin
 
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch(response=[1, 2]))
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"),
+            fetch_fn=_make_fetch(response=[1, 2]),
+        )
         result = await plugin.call_tool("youtube_search", {"query": "x"})
         assert result.is_error
 
@@ -273,7 +333,7 @@ class TestVideo:
             },
         }]}
         plugin = YouTubePlugin(
-            api_key="k",
+            token_provider=_StubProvider("k"),
             fetch_fn=_make_fetch(response=payload, captured=captured),
         )
         result = await plugin.call_tool("youtube_video", {"video_id": "vid42"})
@@ -299,7 +359,10 @@ class TestVideo:
 
         payload = {"items": [{"id": "v", "snippet": {"title": "T"},
                               "statistics": {"viewCount": "9"}}]}
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch(response=payload))
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"),
+            fetch_fn=_make_fetch(response=payload),
+        )
         result = await plugin.call_tool("youtube_video", {"video_id": "v"})
         data = json.loads(result.content)
         assert data["view_count"] == "9"
@@ -310,7 +373,10 @@ class TestVideo:
     async def test_video_empty_items_is_error(self):
         from plugins.youtube import YouTubePlugin
 
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch(response={"items": []}))
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"),
+            fetch_fn=_make_fetch(response={"items": []}),
+        )
         result = await plugin.call_tool("youtube_video", {"video_id": "nope"})
         assert result.is_error
         assert "No video found for id 'nope'" in result.content
@@ -319,7 +385,10 @@ class TestVideo:
     async def test_video_non_dict_response_is_error(self):
         from plugins.youtube import YouTubePlugin
 
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch(response="bad"))
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"),
+            fetch_fn=_make_fetch(response="bad"),
+        )
         result = await plugin.call_tool("youtube_video", {"video_id": "v"})
         assert result.is_error
 
@@ -343,7 +412,7 @@ class TestChannel:
             },
         }]}
         plugin = YouTubePlugin(
-            api_key="k",
+            token_provider=_StubProvider("k"),
             fetch_fn=_make_fetch(response=payload, captured=captured),
         )
         result = await plugin.call_tool("youtube_channel", {"channel_id": "chan1"})
@@ -367,7 +436,7 @@ class TestChannel:
 
         captured: dict = {}
         plugin = YouTubePlugin(
-            api_key="k",
+            token_provider=_StubProvider("k"),
             fetch_fn=_make_fetch(
                 response={"items": [{"id": "c", "snippet": {"title": "n"}}]},
                 captured=captured,
@@ -383,7 +452,7 @@ class TestChannel:
 
         captured: dict = {}
         plugin = YouTubePlugin(
-            api_key="k",
+            token_provider=_StubProvider("k"),
             fetch_fn=_make_fetch(
                 response={"items": [{"id": "c", "snippet": {"title": "n"}}]},
                 captured=captured,
@@ -396,7 +465,10 @@ class TestChannel:
     async def test_channel_empty_items_is_error(self):
         from plugins.youtube import YouTubePlugin
 
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch(response={"items": []}))
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"),
+            fetch_fn=_make_fetch(response={"items": []}),
+        )
         result = await plugin.call_tool("youtube_channel", {"handle": "@gone"})
         assert result.is_error
         assert "No channel found for handle '@gone'" in result.content
@@ -407,7 +479,10 @@ class TestChannel:
 
         payload = {"items": [{"id": "c", "snippet": {"title": "n"},
                               "statistics": {"videoCount": "5", "viewCount": "7"}}]}
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch(response=payload))
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"),
+            fetch_fn=_make_fetch(response=payload),
+        )
         result = await plugin.call_tool("youtube_channel", {"channel_id": "c"})
         data = json.loads(result.content)
         assert data["subscriber_count"] == ""
@@ -423,7 +498,9 @@ class TestErrorsAndKeyScrub:
     async def test_transport_exception_is_error(self):
         from plugins.youtube import YouTubePlugin
 
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_error_fetch())
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"), fetch_fn=_error_fetch(),
+        )
         result = await plugin.call_tool("youtube_search", {"query": "x"})
         assert result.is_error
 
@@ -438,7 +515,9 @@ class TestErrorsAndKeyScrub:
             "403 Client Error for url: "
             f"https://www.googleapis.com/youtube/v3/search?q=x&key={sentinel}"
         )
-        plugin = YouTubePlugin(api_key=sentinel, fetch_fn=_error_fetch(exc))
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider(sentinel), fetch_fn=_error_fetch(exc),
+        )
         for tool, args in (
             ("youtube_search", {"query": "x"}),
             ("youtube_video", {"video_id": "v"}),
@@ -455,7 +534,9 @@ class TestErrorsAndKeyScrub:
 
         sentinel = "SENTINEL_KEY_DO_NOT_LEAK"
         exc = RuntimeError(f"boom key={sentinel}")
-        plugin = YouTubePlugin(api_key=sentinel, fetch_fn=_error_fetch(exc))
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider(sentinel), fetch_fn=_error_fetch(exc),
+        )
         with caplog.at_level(logging.ERROR):
             await plugin.call_tool("youtube_search", {"query": "x"})
         assert sentinel not in caplog.text
@@ -471,7 +552,9 @@ class TestDispatch:
     async def test_unknown_tool_returns_error(self):
         from plugins.youtube import YouTubePlugin
 
-        plugin = YouTubePlugin(api_key="k", fetch_fn=_make_fetch())
+        plugin = YouTubePlugin(
+            token_provider=_StubProvider("k"), fetch_fn=_make_fetch(),
+        )
         result = await plugin.call_tool("youtube_bogus", {})
         assert result.is_error
         assert "Unknown tool: 'youtube_bogus'" in result.content
@@ -489,7 +572,7 @@ class TestDispatch:
         ):
             captured: dict = {}
             plugin = YouTubePlugin(
-                api_key="my-key",
+                token_provider=_StubProvider("my-key"),
                 fetch_fn=_make_fetch(response=resp, captured=captured),
             )
             await plugin.call_tool(tool, args)
@@ -498,4 +581,4 @@ class TestDispatch:
     def test_create_is_module_level_factory(self):
         from plugins.youtube import create, YouTubePlugin
 
-        assert isinstance(create(api_key="k"), YouTubePlugin)
+        assert isinstance(create(), YouTubePlugin)

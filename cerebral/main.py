@@ -411,6 +411,63 @@ import plugins.calendar as _cal_plugin
 _cal_plugin.set_token_provider(_get_calendar_token_provider)
 
 
+# Issue #148 / ADR-0005 amendment 2026-05-23 — Static-token settings UI.
+#
+# Static-API-token credentials are per-profile and live in the #112
+# CredentialStore under the secret field "api_token" (see ADR-0005
+# 2026-05-23 amendment). The token reaches each plugin via a
+# `_get_<provider>_token_provider()` factory below that calls
+# `_static_token_from_store_or_env(provider, env_var)` — keyring takes
+# precedence; the env var stays as a fallback so existing setups keep
+# working transparently.
+#
+# Canonical list of static-token providers in (provider, env_var) form;
+# the tray Credentials window iterates this list for the "API keys"
+# section, and _credentials_state_event reports per-provider status from
+# it. The order is the canonical UI render order.
+_STATIC_TOKEN_PROVIDERS: list[tuple[str, str]] = [
+    ("youtube",  "YOUTUBE_API_KEY"),
+    ("todoist",  "TODOIST_API_TOKEN"),
+    ("notion",   "NOTION_API_TOKEN"),
+    ("toggl",    "TOGGL_API_TOKEN"),
+    ("clockify", "CLOCKIFY_API_KEY"),
+]
+
+_STATIC_TOKEN_PROVIDER_NAMES: frozenset[str] = frozenset(
+    p for p, _ in _STATIC_TOKEN_PROVIDERS
+)
+
+
+def _static_token_from_store_or_env(
+    provider: str, env_var: str
+) -> tuple[str | None, str]:
+    """Resolve a static API token for `provider`. Returns (token, source).
+
+    Source is one of:
+      - "keyring": pulled from the active profile's CredentialStore
+        (the canonical config surface — written from the tray UI).
+      - "env": fell back to the named env var (the migration ramp).
+      - "none": neither source had a value.
+
+    Re-resolved on every tool call. When no profile is active (first
+    launch, profile switch in flight) skips the CredentialStore and
+    goes straight to env — matches `_credentials_state_event`'s
+    no-profile behavior."""
+    if _active_profile is not None:
+        try:
+            tok = _get_credential_store().get_secret(
+                _active_profile.id, provider, "api_token"
+            )
+        except ValueError:
+            tok = None  # unknown field — defensive
+        if tok:
+            return tok, "keyring"
+    env_tok = os.environ.get(env_var, "").strip()
+    if env_tok:
+        return env_tok, "env"
+    return None, "none"
+
+
 class _TodoistTokenProvider:
     """Static-API-token handle for plugins/todoist.py.
 
@@ -419,9 +476,9 @@ class _TodoistTokenProvider:
     plugins/todoist.py carries only ``current()`` -- there is no
     refresh capability to describe -- so this provider class is
     intentionally narrower than `_GmailTokenProvider` /
-    `_CalendarTokenProvider`. The token is system-wide via the
-    ``TODOIST_API_TOKEN`` env var; future per-profile OAuth would be
-    additive, not a rewrite."""
+    `_CalendarTokenProvider`. The token is per-profile via #112's
+    CredentialStore (api_token field) with TODOIST_API_TOKEN as the
+    env-var fallback (Issue #148 / ADR-0005 2026-05-23 amendment)."""
 
     def __init__(self, token: str) -> None:
         self._token = token
@@ -431,10 +488,11 @@ class _TodoistTokenProvider:
 
 
 def _get_todoist_token_provider() -> _TodoistTokenProvider | None:
-    """Return a Todoist token provider iff TODOIST_API_TOKEN is set, else
-    None. Re-resolved on every tool call so a freshly-set env var picks
-    up without a Cerebral restart."""
-    token = os.environ.get("TODOIST_API_TOKEN", "").strip()
+    """Return a Todoist token provider iff a token is configured (per-
+    profile keyring or TODOIST_API_TOKEN env), else None. Re-resolved
+    on every tool call so a freshly-set key picks up without a Cerebral
+    restart."""
+    token, _ = _static_token_from_store_or_env("todoist", "TODOIST_API_TOKEN")
     if not token:
         return None
     return _TodoistTokenProvider(token)
@@ -459,9 +517,10 @@ class _NotionTokenProvider:
     plugins/notion.py carries only ``current()`` -- there is no refresh
     capability to describe -- so this provider class is intentionally
     narrower than `_GmailTokenProvider` / `_CalendarTokenProvider` and
-    mirrors `_TodoistTokenProvider` exactly. The token is system-wide
-    via the ``NOTION_API_TOKEN`` env var; a future per-profile or
-    settings-UI-backed slice would be additive, not a rewrite."""
+    mirrors `_TodoistTokenProvider` exactly. The token is per-profile
+    via #112's CredentialStore (api_token field) with NOTION_API_TOKEN
+    as the env-var fallback (Issue #148 / ADR-0005 2026-05-23
+    amendment)."""
 
     def __init__(self, token: str) -> None:
         self._token = token
@@ -471,10 +530,11 @@ class _NotionTokenProvider:
 
 
 def _get_notion_token_provider() -> _NotionTokenProvider | None:
-    """Return a Notion token provider iff NOTION_API_TOKEN is set, else
-    None. Re-resolved on every tool call so a freshly-set env var picks
-    up without a Cerebral restart."""
-    token = os.environ.get("NOTION_API_TOKEN", "").strip()
+    """Return a Notion token provider iff a token is configured (per-
+    profile keyring or NOTION_API_TOKEN env), else None. Re-resolved on
+    every tool call so a freshly-set key picks up without a Cerebral
+    restart."""
+    token, _ = _static_token_from_store_or_env("notion", "NOTION_API_TOKEN")
     if not token:
         return None
     return _NotionTokenProvider(token)
@@ -500,11 +560,12 @@ class _TogglTokenProvider:
     describe -- so this provider class is intentionally narrower than
     `_GmailTokenProvider` / `_CalendarTokenProvider` and mirrors
     `_TodoistTokenProvider` / `_NotionTokenProvider` exactly. The
-    token is system-wide via the ``TOGGL_API_TOKEN`` env var; a
-    future per-profile or settings-UI-backed slice would be additive,
-    not a rewrite. The auth transport on the plugin side (HTTP Basic
-    with the literal 'api_token' as password) is invisible to this
-    provider -- the provider just hands the raw token over."""
+    token is per-profile via #112's CredentialStore (api_token field)
+    with TOGGL_API_TOKEN as the env-var fallback (Issue #148 /
+    ADR-0005 2026-05-23 amendment). The auth transport on the plugin
+    side (HTTP Basic with the literal 'api_token' as password) is
+    invisible to this provider -- the provider just hands the raw
+    token over."""
 
     def __init__(self, token: str) -> None:
         self._token = token
@@ -514,10 +575,11 @@ class _TogglTokenProvider:
 
 
 def _get_toggl_token_provider() -> _TogglTokenProvider | None:
-    """Return a Toggl token provider iff TOGGL_API_TOKEN is set, else
-    None. Re-resolved on every tool call so a freshly-set env var picks
-    up without a Cerebral restart."""
-    token = os.environ.get("TOGGL_API_TOKEN", "").strip()
+    """Return a Toggl token provider iff a token is configured (per-
+    profile keyring or TOGGL_API_TOKEN env), else None. Re-resolved on
+    every tool call so a freshly-set key picks up without a Cerebral
+    restart."""
+    token, _ = _static_token_from_store_or_env("toggl", "TOGGL_API_TOKEN")
     if not token:
         return None
     return _TogglTokenProvider(token)
@@ -543,12 +605,13 @@ class _ClockifyTokenProvider:
     so this provider class is intentionally narrower than
     `_GmailTokenProvider` / `_CalendarTokenProvider` and mirrors
     `_TodoistTokenProvider` / `_NotionTokenProvider` / `_TogglTokenProvider`
-    exactly. The key is system-wide via the ``CLOCKIFY_API_KEY`` env
-    var; a future per-profile or settings-UI-backed slice would be
-    additive, not a rewrite. The auth transport on the plugin side
-    (X-Api-Key custom header with the raw key as the value -- the FIRST
-    custom-header static-token plugin) is invisible to this provider --
-    the provider just hands the raw key over."""
+    exactly. The key is per-profile via #112's CredentialStore
+    (api_token field) with CLOCKIFY_API_KEY as the env-var fallback
+    (Issue #148 / ADR-0005 2026-05-23 amendment). The auth transport
+    on the plugin side (X-Api-Key custom header with the raw key as
+    the value -- the FIRST custom-header static-token plugin) is
+    invisible to this provider -- the provider just hands the raw key
+    over."""
 
     def __init__(self, token: str) -> None:
         self._token = token
@@ -558,10 +621,11 @@ class _ClockifyTokenProvider:
 
 
 def _get_clockify_token_provider() -> _ClockifyTokenProvider | None:
-    """Return a Clockify token provider iff CLOCKIFY_API_KEY is set,
-    else None. Re-resolved on every tool call so a freshly-set env var
-    picks up without a Cerebral restart."""
-    token = os.environ.get("CLOCKIFY_API_KEY", "").strip()
+    """Return a Clockify token provider iff a key is configured (per-
+    profile keyring or CLOCKIFY_API_KEY env), else None. Re-resolved on
+    every tool call so a freshly-set key picks up without a Cerebral
+    restart."""
+    token, _ = _static_token_from_store_or_env("clockify", "CLOCKIFY_API_KEY")
     if not token:
         return None
     return _ClockifyTokenProvider(token)
@@ -571,22 +635,73 @@ def _get_clockify_token_provider() -> _ClockifyTokenProvider | None:
 # MCP plugin so clockify_list_time_entries / clockify_create_time_entry /
 # clockify_stop_running_entry / clockify_list_workspaces /
 # clockify_list_projects can call the real Clockify API v1 with a
-# static API key from the user's CLOCKIFY_API_KEY env var. Same
-# lifecycle/precedent as the toggl wiring above (Protocol carries only
-# current() -- no refresh path).
+# static API key from per-profile keyring (#148) or the user's
+# CLOCKIFY_API_KEY env var.
 import plugins.clockify as _clockify_plugin
 _clockify_plugin.set_token_provider(_get_clockify_token_provider)
+
+
+class _YouTubeTokenProvider:
+    """Static-API-key handle for plugins/youtube.py.
+
+    YouTube Data API v3 auth is a STATIC user-rotated API key (Google
+    Cloud Console -> Credentials -> API key), passed as a ``?key=``
+    query parameter (no header). The Protocol on plugins/youtube.py
+    carries only ``current()`` -- there is no refresh capability to
+    describe -- so this provider class mirrors the other static-token
+    providers exactly. The key is per-profile via #112's
+    CredentialStore (api_token field) with YOUTUBE_API_KEY as the
+    env-var fallback (Issue #148 / ADR-0005 2026-05-23 amendment).
+    Before #148, youtube.py read the env var directly in __init__
+    (one-shot at construction). The TokenProvider seam fixes that —
+    a freshly-set key now picks up without a Cerebral restart."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def current(self) -> str | None:
+        return self._token or None
+
+
+def _get_youtube_token_provider() -> _YouTubeTokenProvider | None:
+    """Return a YouTube token provider iff a key is configured (per-
+    profile keyring or YOUTUBE_API_KEY env), else None. Re-resolved on
+    every tool call so a freshly-set key picks up without a Cerebral
+    restart."""
+    token, _ = _static_token_from_store_or_env("youtube", "YOUTUBE_API_KEY")
+    if not token:
+        return None
+    return _YouTubeTokenProvider(token)
+
+
+# Issue #148 — wire _get_youtube_token_provider() into the youtube
+# MCP plugin so youtube_search / youtube_video / youtube_channel pick
+# up a per-profile key from the tray Credentials window (#114) or the
+# user's YOUTUBE_API_KEY env var. youtube.py joined the TokenProvider
+# seam here (was the lone holdout reading env in __init__).
+import plugins.youtube as _youtube_plugin
+_youtube_plugin.set_token_provider(_get_youtube_token_provider)
 
 
 def _credentials_state_event(
     *, transient: str | None = None, error: str | None = None
 ) -> dict:
-    """Active profile's Google connected-account status for the tray.
+    """Active profile's connected-account status for the tray.
 
-    Reads #112 metadata only (never a secret). `transient` overlays a
-    non-persisted in-progress status ("connecting"); `error` overlays a
-    failure message from a #113 GoogleOAuthError. Empty/no-profile payload
-    when no profile is loaded (the tray hides the window in that state)."""
+    Carries TWO blocks:
+      - ``google``: the #114 OAuth credential state (status / email /
+        client_id / detail). Reads #112 metadata only (never a secret).
+        `transient` overlays a non-persisted in-progress status
+        ("connecting"); `error` overlays a #113 GoogleOAuthError message.
+      - ``static_tokens``: per-provider status for each of the five
+        static-token plugins (#148). Each entry is
+        ``{"status": "connected"|"not configured", "source":
+        "keyring"|"env"|"none"}``. NEVER carries the actual token value
+        (write-only contract). Empty dict when no profile is loaded.
+
+    The transient/error overlays apply ONLY to the Google block; static-
+    token writes are synchronous (no consent flow), so an error there
+    falls through to the metadata's reported status next read."""
     if _active_profile is None:
         return {
             "type": "credentials_state",
@@ -594,9 +709,11 @@ def _credentials_state_event(
                 "profile_id": None,
                 "google": {"status": "not configured", "email": "",
                            "client_id": "", "detail": ""},
+                "static_tokens": {},
             },
         }
-    meta = _get_credential_store().get_credential(_active_profile.id, "google")
+    store = _get_credential_store()
+    meta = store.get_credential(_active_profile.id, "google")
     if error is not None:
         status, detail = "error", error
     elif transient is not None:
@@ -617,8 +734,28 @@ def _credentials_state_event(
                 "client_id": (meta or {}).get("client_id", ""),
                 "detail": detail,
             },
+            "static_tokens": _static_tokens_state(),
         },
     }
+
+
+def _static_tokens_state() -> dict[str, dict[str, str]]:
+    """Per-provider {status, source} for the active profile's static tokens.
+
+    Iterates ``_STATIC_TOKEN_PROVIDERS`` (canonical UI render order) and
+    reports presence in keyring vs env (keyring wins). Never returns the
+    token value — the IPC contract is write-only from the renderer's
+    perspective. Returns an empty dict when no profile is active."""
+    if _active_profile is None:
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for provider, env_var in _STATIC_TOKEN_PROVIDERS:
+        token, source = _static_token_from_store_or_env(provider, env_var)
+        out[provider] = {
+            "status": "connected" if token else "not configured",
+            "source": source,
+        }
+    return out
 
 
 # ── IPC helpers ───────────────────────────────────────────────────────────────
@@ -1150,6 +1287,65 @@ async def _handle_message(msg: dict) -> None:
         logger.info(
             "[cerebral] Google credentials disconnected for profile %d",
             _active_profile.id,
+        )
+        await _broadcast(_credentials_state_event())
+
+    elif t == "set_static_token":
+        # Issue #148 — user entered a static API token for one of the five
+        # static-token plugins via the tray Credentials window's API-keys
+        # section. The value goes to the keyring under field "api_token"
+        # via #112; a degenerate metadata row marks status="connected".
+        # The value is NEVER logged or echoed back to the renderer.
+        if _active_profile is None:
+            logger.warning("[cerebral] set_static_token with no active profile")
+            return
+        d = msg.get("data") or {}
+        provider = (d.get("provider") or "").strip()
+        value = (d.get("value") or "").strip()
+        if provider not in _STATIC_TOKEN_PROVIDER_NAMES:
+            logger.warning(
+                "[cerebral] set_static_token unknown provider=%r", provider
+            )
+            return
+        if not value:
+            logger.warning(
+                "[cerebral] set_static_token empty value for provider=%s", provider
+            )
+            return
+        store = _get_credential_store()
+        store.set_secret(_active_profile.id, provider, "api_token", value)
+        # Explicit full row — set_credential defaults to ""/[] for omitted
+        # columns and would silently blank a future metadata extension
+        # (the #112 upsert-blanking trap, carried from #113 §5 / #114 §4).
+        store.set_credential(
+            _active_profile.id, provider,
+            client_id="", email="", scopes=[], status="connected",
+        )
+        logger.info(
+            "[cerebral] Static API token set for profile %d provider=%s",
+            _active_profile.id, provider,
+        )
+        await _broadcast(_credentials_state_event())
+
+    elif t == "clear_static_token":
+        # Issue #148 — drop the metadata row + the keyring "api_token"
+        # entry for one of the five static-token providers (#112 delete is
+        # idempotent and iterates SECRET_FIELDS — the extended set now
+        # includes "api_token").
+        if _active_profile is None:
+            logger.warning("[cerebral] clear_static_token with no active profile")
+            return
+        d = msg.get("data") or {}
+        provider = (d.get("provider") or "").strip()
+        if provider not in _STATIC_TOKEN_PROVIDER_NAMES:
+            logger.warning(
+                "[cerebral] clear_static_token unknown provider=%r", provider
+            )
+            return
+        _get_credential_store().delete_credential(_active_profile.id, provider)
+        logger.info(
+            "[cerebral] Static API token cleared for profile %d provider=%s",
+            _active_profile.id, provider,
         )
         await _broadcast(_credentials_state_event())
 

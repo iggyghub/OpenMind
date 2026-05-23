@@ -194,3 +194,64 @@ def test_secret_value_never_logged(caplog):
         cs.get_secret(1, "google", "refresh_token")
         cs.delete_credential(1, "google")
     assert "DO-NOT-LOG-ME" not in caplog.text
+
+
+# ── 14–17 api_token field (Issue #148, ADR-0005 2026-05-23 amendment) ────────
+
+def test_api_token_in_secret_fields():
+    """api_token is the fourth canonical secret field (after the three
+    OAuth fields). delete_credential must iterate it; set/get must accept."""
+    assert "api_token" in SECRET_FIELDS
+    assert SECRET_FIELDS == (
+        "client_secret", "refresh_token", "access_token", "api_token",
+    )
+
+
+@pytest.mark.parametrize("provider", [
+    "youtube", "todoist", "notion", "toggl", "clockify",
+])
+def test_set_get_api_token_roundtrip(provider):
+    cs, kr = _cs()
+    cs.set_secret(1, provider, "api_token", f"key-for-{provider}")
+    assert cs.get_secret(1, provider, "api_token") == f"key-for-{provider}"
+    # Keyring namespacing matches the OAuth fields' shape.
+    assert ("openmind", f"profile_1/{provider}/api_token") in kr.store
+
+
+def test_delete_credential_wipes_api_token_alongside_oauth():
+    """delete_credential iterates SECRET_FIELDS — extending the tuple to
+    include api_token must keep delete-completeness for the new field."""
+    cs, kr = _cs()
+    cs.set_credential(1, "todoist", status="connected")
+    cs.set_secret(1, "todoist", "api_token", "todoist-key")
+    cs.set_secret(1, "google", "refresh_token", "rt")
+    cs.set_secret(1, "google", "client_secret", "cs")
+    cs.delete_credential(1, "todoist")
+    # The Todoist api_token entry is gone.
+    assert cs.get_secret(1, "todoist", "api_token") is None
+    assert ("openmind", "profile_1/todoist/api_token") not in kr.store
+    # The Google secrets under the same profile are untouched.
+    assert cs.get_secret(1, "google", "refresh_token") == "rt"
+    assert cs.get_secret(1, "google", "client_secret") == "cs"
+
+
+def test_api_token_value_never_logged(caplog):
+    cs, _ = _cs()
+    with caplog.at_level("DEBUG"):
+        cs.set_secret(1, "clockify", "api_token", "DO-NOT-LOG-API-KEY")
+        cs.get_secret(1, "clockify", "api_token")
+    assert "DO-NOT-LOG-API-KEY" not in caplog.text
+
+
+def test_static_token_metadata_row_is_degenerate():
+    """Static-token providers write a degenerate row: empty client_id /
+    email / scopes, status='connected'. The row exists so the per-profile
+    FK cascade wipes the keyring entry on profile delete."""
+    cs, _ = _cs()
+    cs.set_credential(1, "todoist", client_id="", email="",
+                      scopes=[], status="connected")
+    row = cs.get_credential(1, "todoist")
+    assert row["status"] == "connected"
+    assert row["client_id"] == ""
+    assert row["email"] == ""
+    assert row["scopes"] == []

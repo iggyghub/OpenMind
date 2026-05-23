@@ -302,3 +302,220 @@ async def test_disconnect_no_profile_no_op(cred_rig):
     await cred_rig.handle({"type": "disconnect_credential"})
     # Untouched — the handler bailed before delete.
     assert cred_rig.store.get_credential(1, "google") is not None
+
+
+# ── Issue #148 — static-token state in the credentials_state payload ─────────
+
+def _last_static(cred_rig):
+    return cred_rig.states()[-1]["data"]["static_tokens"]
+
+
+@pytest.mark.parametrize("provider", [
+    "youtube", "todoist", "notion", "toggl", "clockify",
+])
+async def test_static_tokens_payload_per_provider_shape(cred_rig, monkeypatch, provider):
+    """Each provider's entry has exactly {status, source}; value is NEVER
+    present. The five providers are in canonical render order."""
+    # Clear every env var to isolate the no-source case.
+    for _, env_var in cred_rig.module._STATIC_TOKEN_PROVIDERS:
+        monkeypatch.delenv(env_var, raising=False)
+    await cred_rig.handle({"type": "list_credentials"})
+    static = _last_static(cred_rig)
+    assert list(static.keys()) == [
+        p for p, _ in cred_rig.module._STATIC_TOKEN_PROVIDERS
+    ]
+    entry = static[provider]
+    assert set(entry.keys()) == {"status", "source"}
+    assert entry["status"] == "not configured"
+    assert entry["source"] == "none"
+
+
+async def test_static_token_source_keyring_when_only_keyring(cred_rig, monkeypatch):
+    monkeypatch.delenv("TODOIST_API_TOKEN", raising=False)
+    cred_rig.store.set_secret(1, "todoist", "api_token", "k-from-keyring")
+    await cred_rig.handle({"type": "list_credentials"})
+    e = _last_static(cred_rig)["todoist"]
+    assert e == {"status": "connected", "source": "keyring"}
+
+
+async def test_static_token_source_env_when_only_env(cred_rig, monkeypatch):
+    monkeypatch.setenv("NOTION_API_TOKEN", "k-from-env")
+    await cred_rig.handle({"type": "list_credentials"})
+    e = _last_static(cred_rig)["notion"]
+    assert e == {"status": "connected", "source": "env"}
+
+
+async def test_static_token_keyring_wins_when_both_set(cred_rig, monkeypatch):
+    monkeypatch.setenv("CLOCKIFY_API_KEY", "from-env")
+    cred_rig.store.set_secret(1, "clockify", "api_token", "from-keyring")
+    await cred_rig.handle({"type": "list_credentials"})
+    e = _last_static(cred_rig)["clockify"]
+    assert e["source"] == "keyring"
+    assert e["status"] == "connected"
+
+
+async def test_static_tokens_empty_when_no_profile(cred_rig):
+    cred_rig.no_profile()
+    await cred_rig.handle({"type": "list_credentials"})
+    data = cred_rig.states()[-1]["data"]
+    assert data["static_tokens"] == {}
+
+
+async def test_static_token_payload_never_carries_value(cred_rig, monkeypatch):
+    """Write-only contract: a real token in keyring or env is never
+    surfaced in the state event."""
+    monkeypatch.setenv("YOUTUBE_API_KEY", "ENV-KEY-MUST-NOT-LEAK")
+    cred_rig.store.set_secret(1, "toggl", "api_token", "KEYRING-KEY-MUST-NOT-LEAK")
+    await cred_rig.handle({"type": "list_credentials"})
+    blob = repr(cred_rig.states()[-1])
+    assert "ENV-KEY-MUST-NOT-LEAK" not in blob
+    assert "KEYRING-KEY-MUST-NOT-LEAK" not in blob
+
+
+# ── Issue #148 — set_static_token ─────────────────────────────────────────────
+
+async def test_set_static_token_persists_to_keyring(cred_rig):
+    await cred_rig.handle({
+        "type": "set_static_token",
+        "data": {"provider": "todoist", "value": "todoist-key"},
+    })
+    assert cred_rig.store.get_secret(1, "todoist", "api_token") == "todoist-key"
+
+
+async def test_set_static_token_writes_status_metadata(cred_rig):
+    """A degenerate metadata row anchors the per-profile FK cascade so a
+    profile delete wipes the keyring entry too (#112 invariant)."""
+    await cred_rig.handle({
+        "type": "set_static_token",
+        "data": {"provider": "notion", "value": "k"},
+    })
+    meta = cred_rig.store.get_credential(1, "notion")
+    assert meta["status"] == "connected"
+    assert meta["client_id"] == ""
+    assert meta["email"] == ""
+    assert meta["scopes"] == []
+
+
+async def test_set_static_token_broadcasts_state(cred_rig, monkeypatch):
+    for _, ev in cred_rig.module._STATIC_TOKEN_PROVIDERS:
+        monkeypatch.delenv(ev, raising=False)
+    await cred_rig.handle({
+        "type": "set_static_token",
+        "data": {"provider": "toggl", "value": "toggl-key"},
+    })
+    assert _last_static(cred_rig)["toggl"] == {
+        "status": "connected", "source": "keyring",
+    }
+
+
+async def test_set_static_token_value_never_broadcast(cred_rig):
+    await cred_rig.handle({
+        "type": "set_static_token",
+        "data": {"provider": "clockify", "value": "WRITE-ONLY-VALUE"},
+    })
+    assert "WRITE-ONLY-VALUE" not in repr(cred_rig.sent)
+
+
+async def test_set_static_token_value_never_logged(cred_rig, caplog):
+    with caplog.at_level("INFO"):
+        await cred_rig.handle({
+            "type": "set_static_token",
+            "data": {"provider": "youtube", "value": "LOG-FORBIDDEN-VALUE"},
+        })
+    assert "LOG-FORBIDDEN-VALUE" not in caplog.text
+
+
+async def test_set_static_token_unknown_provider_no_op(cred_rig):
+    await cred_rig.handle({
+        "type": "set_static_token",
+        "data": {"provider": "googol", "value": "k"},
+    })
+    assert cred_rig.store.get_secret(1, "googol", "api_token") is None
+    assert cred_rig.states() == []
+
+
+async def test_set_static_token_empty_value_no_op(cred_rig):
+    await cred_rig.handle({
+        "type": "set_static_token",
+        "data": {"provider": "todoist", "value": "   "},
+    })
+    assert cred_rig.store.get_secret(1, "todoist", "api_token") is None
+    assert cred_rig.states() == []
+
+
+async def test_set_static_token_no_profile_no_op(cred_rig):
+    cred_rig.no_profile()
+    await cred_rig.handle({
+        "type": "set_static_token",
+        "data": {"provider": "todoist", "value": "k"},
+    })
+    assert cred_rig.store.get_secret(1, "todoist", "api_token") is None
+
+
+@pytest.mark.parametrize("provider", [
+    "youtube", "todoist", "notion", "toggl", "clockify",
+])
+async def test_set_static_token_each_provider(cred_rig, provider):
+    await cred_rig.handle({
+        "type": "set_static_token",
+        "data": {"provider": provider, "value": f"k-{provider}"},
+    })
+    assert cred_rig.store.get_secret(1, provider, "api_token") == f"k-{provider}"
+    assert cred_rig.store.get_credential(1, provider)["status"] == "connected"
+
+
+# ── Issue #148 — clear_static_token ───────────────────────────────────────────
+
+async def test_clear_static_token_deletes_keyring_and_metadata(cred_rig):
+    cred_rig.store.set_secret(1, "notion", "api_token", "k")
+    cred_rig.store.set_credential(1, "notion", status="connected")
+    await cred_rig.handle({
+        "type": "clear_static_token",
+        "data": {"provider": "notion"},
+    })
+    assert cred_rig.store.get_secret(1, "notion", "api_token") is None
+    assert cred_rig.store.get_credential(1, "notion") is None
+
+
+async def test_clear_static_token_idempotent(cred_rig):
+    await cred_rig.handle({
+        "type": "clear_static_token",
+        "data": {"provider": "toggl"},
+    })
+    await cred_rig.handle({
+        "type": "clear_static_token",
+        "data": {"provider": "toggl"},
+    })
+    # Two state broadcasts, no exception.
+    assert len(cred_rig.states()) == 2
+
+
+async def test_clear_static_token_unknown_provider_no_op(cred_rig):
+    cred_rig.store.set_secret(1, "todoist", "api_token", "k")
+    await cred_rig.handle({
+        "type": "clear_static_token",
+        "data": {"provider": "googol"},
+    })
+    assert cred_rig.store.get_secret(1, "todoist", "api_token") == "k"
+    assert cred_rig.states() == []
+
+
+async def test_clear_static_token_no_profile_no_op(cred_rig):
+    cred_rig.store.set_secret(1, "todoist", "api_token", "k")
+    cred_rig.no_profile()
+    await cred_rig.handle({
+        "type": "clear_static_token",
+        "data": {"provider": "todoist"},
+    })
+    assert cred_rig.store.get_secret(1, "todoist", "api_token") == "k"
+
+
+async def test_clear_static_token_leaves_other_providers_intact(cred_rig):
+    cred_rig.store.set_secret(1, "youtube", "api_token", "y-key")
+    cred_rig.store.set_secret(1, "todoist", "api_token", "t-key")
+    await cred_rig.handle({
+        "type": "clear_static_token",
+        "data": {"provider": "youtube"},
+    })
+    assert cred_rig.store.get_secret(1, "youtube", "api_token") is None
+    assert cred_rig.store.get_secret(1, "todoist", "api_token") == "t-key"
