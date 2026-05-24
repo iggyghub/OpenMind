@@ -243,6 +243,114 @@ def test_discover_plugins_nonexistent_dir_does_not_raise():
 
 
 # ---------------------------------------------------------------------------
+# Issue #153 — get_plugin_module exposes the orchestrator-loaded instance
+# ---------------------------------------------------------------------------
+# Background: `cerebral/main.py` previously wired per-plugin injection seams
+# (set_token_provider, set_memory_factory) via `import plugins.X` at module
+# scope. The orchestrator loads the same file via
+# importlib.util.spec_from_file_location under a DIFFERENT module name
+# (openmind_plugin_<stem>), creating a second module object with its own
+# module-level globals. The wiring landed on instance A; tool dispatch ran
+# instance B; every set_*_provider call was silently a no-op for the
+# production path. The #153 fix routes wiring through
+# orc.get_plugin_module(name) so it targets the module the orchestrator
+# actually dispatches against.
+
+async def test_get_plugin_module_returns_dispatch_module(tmp_path):
+    """The module returned by get_plugin_module must be the SAME object
+    the dispatched tool reads from — proves seam wiring lands where tool
+    dispatch can see it. Mutating a module global through get_plugin_module
+    is observable at call_tool time."""
+    plugin_code = textwrap.dedent("""
+        from cerebral.mcp.orchestrator import Tool, ToolResult
+
+        PLUGIN_NAME = "wired_probe"
+        REQUIRED_CAPABILITIES = frozenset()
+
+        _factory = None
+
+        def set_factory(fn):
+            global _factory
+            _factory = fn
+
+        class _Probe:
+            name = "wired_probe"
+            def list_tools(self):
+                return [Tool(name="probe_read", description="reads factory", plugin="wired_probe")]
+            async def call_tool(self, tool_name, args):
+                if _factory is None:
+                    return ToolResult(content="UNWIRED", is_error=True)
+                return ToolResult(content=_factory())
+
+        def create():
+            return _Probe()
+    """)
+    (tmp_path / "wired_probe.py").write_text(plugin_code)
+
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+
+    module = orc.get_plugin_module("wired_probe")
+    module.set_factory(lambda: "WIRED")
+
+    result = await orc.call_tool("probe_read", {})
+    assert result.content == "WIRED", (
+        "Tool dispatch read the factory from the same module instance "
+        "main.py would wire — proves #153 fix targets the dispatch path"
+    )
+
+
+def test_get_plugin_module_unknown_plugin_raises_keyerror():
+    """A wiring attempt against a missing/refused plugin must surface
+    loudly via KeyError — silently no-op wiring is exactly the #153
+    failure mode this seam exists to prevent."""
+    orc = MCPOrchestrator()
+    with pytest.raises(KeyError, match="wired_probe"):
+        orc.get_plugin_module("wired_probe")
+
+
+def test_get_plugin_module_register_only_plugin_raises_keyerror():
+    """Plugins added via the direct `register()` API (no on-disk file —
+    tests, parked builder) have no source module to inject into; the seam
+    must surface that as KeyError, not silently return None."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("inline", ["t"])
+    orc.register(plugin)
+    with pytest.raises(KeyError, match="inline"):
+        orc.get_plugin_module("inline")
+
+
+def test_unregister_drops_module(tmp_path):
+    """Bookkeeping: unregister tears down the module reference so a
+    later get_plugin_module call doesn't return a stale ModuleType."""
+    plugin_code = textwrap.dedent("""
+        from cerebral.mcp.orchestrator import Tool, ToolResult
+
+        PLUGIN_NAME = "ephemeral"
+        REQUIRED_CAPABILITIES = frozenset()
+
+        class _E:
+            name = "ephemeral"
+            def list_tools(self):
+                return [Tool(name="e_tool", description="x", plugin="ephemeral")]
+            async def call_tool(self, tool_name, args):
+                return ToolResult(content="ok")
+
+        def create():
+            return _E()
+    """)
+    (tmp_path / "ephemeral.py").write_text(plugin_code)
+
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+    assert orc.get_plugin_module("ephemeral") is not None
+
+    orc.unregister("ephemeral")
+    with pytest.raises(KeyError):
+        orc.get_plugin_module("ephemeral")
+
+
+# ---------------------------------------------------------------------------
 # Slice 7 — tools_for_llm formats tool list for model router
 # ---------------------------------------------------------------------------
 
