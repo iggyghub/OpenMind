@@ -497,6 +497,76 @@ class TestList:
         assert result.is_error
         assert "unexpected Todoist list response" in result.content
 
+    @pytest.mark.asyncio
+    async def test_list_accepts_v2_envelope(self):
+        # Issue #155: Todoist REST returns GET /tasks wrapped in a
+        # ``{"results": [...], "next_cursor": ...}`` envelope. The
+        # plugin must round-trip the envelope shape identically to the
+        # legacy bare-array shape.
+        tasks = [
+            _task("t1", content="First", priority=4,
+                  due={"date": "2026-05-20", "string": "tomorrow"}),
+            _task("t2", content="Second", labels=["home"]),
+        ]
+        envelope = {"results": tasks, "next_cursor": None}
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks": envelope}, []),
+        )
+        result = await plugin.call_tool("todoist_list_tasks", {})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert len(data["tasks"]) == 2
+        assert data["tasks"][0]["id"] == "t1"
+        assert data["tasks"][0]["content"] == "First"
+        assert data["tasks"][1]["labels"] == ["home"]
+
+    @pytest.mark.asyncio
+    async def test_list_bare_array_legacy_still_works(self):
+        # Regression guard for #155: the fix must keep the legacy bare-
+        # array shape working (older Todoist instances + the
+        # gmail/youtube-style transport stubs in this suite).
+        tasks = [_task("t1", content="Legacy")]
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch({"/tasks": tasks}, []),
+        )
+        result = await plugin.call_tool("todoist_list_tasks", {})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["tasks"][0]["id"] == "t1"
+
+    @pytest.mark.asyncio
+    async def test_envelope_with_non_list_results_is_error(self):
+        # An envelope whose ``results`` is not a list should still error
+        # cleanly — the unwrap helper only accepts list-shaped results.
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch(
+                {"/tasks": {"results": {"oops": True}}}, [],
+            ),
+        )
+        result = await plugin.call_tool("todoist_list_tasks", {})
+        assert result.is_error
+        assert "unexpected Todoist list response" in result.content
+
+    @pytest.mark.asyncio
+    async def test_unexpected_shape_logs_type_and_snippet(self, caplog):
+        # Per issue #155: when the response shape doesn't match either
+        # the bare array or the envelope, the WARN log must carry the
+        # raw type + a snippet so future drifts diagnose in minutes.
+        plugin = TodoistPlugin(
+            token_provider=_StubProvider("tok"),
+            fetch_fn=_route_fetch(
+                {"/tasks": {"unexpected": "shape"}}, [],
+            ),
+        )
+        with caplog.at_level(logging.WARNING):
+            result = await plugin.call_tool("todoist_list_tasks", {})
+        assert result.is_error
+        assert "type=dict" in caplog.text
+        assert "unexpected" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Cycle 5 -- todoist_create_task: POST body shape + response
