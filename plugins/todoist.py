@@ -209,6 +209,23 @@ async def _default_fetch(method: str, url: str, *, headers: dict | None = None,
     )
 
 
+def _unwrap_list_payload(payload: Any) -> Optional[list]:
+    """Normalize the two ``GET /tasks`` response shapes Todoist returns.
+
+    Returns the bare task list on success, or ``None`` if the payload is
+    neither a list nor a ``{"results": [...]}`` envelope. Callers log the
+    raw type + a snippet on ``None`` so future drifts diagnose in minutes
+    (see [insight] entry from #155 fix).
+    """
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        results = payload.get("results")
+        if isinstance(results, list):
+            return results
+    return None
+
+
 def _shape_task(t: Any) -> dict:
     """Flatten one Todoist task response row.
 
@@ -584,12 +601,18 @@ class TodoistPlugin:
                 is_error=True,
             )
 
-        if not isinstance(tasks, list):
+        unwrapped = _unwrap_list_payload(tasks)
+        if unwrapped is None:
+            snippet = self._scrub(repr(tasks))[:200]
+            logger.warning(
+                "[todoist] unexpected list response shape: type=%s snippet=%s",
+                type(tasks).__name__, snippet,
+            )
             return ToolResult(
                 content="unexpected Todoist list response", is_error=True,
             )
 
-        shaped = [_shape_task(t) for t in tasks[:max_results]]
+        shaped = [_shape_task(t) for t in unwrapped[:max_results]]
         return ToolResult(content=json.dumps({"tasks": shaped}))
 
     async def _create_task(self, args: dict) -> ToolResult:
