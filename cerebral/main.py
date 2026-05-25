@@ -270,15 +270,6 @@ def _get_insights() -> InsightsEngine | None:
     return InsightsEngine(profile_id=_active_profile.id)
 
 
-# Issue #79 — wire _get_memory() into the memory MCP plugin so the LLM can
-# call memory_remember/recall/forget against the active profile's Chroma
-# collection. Same lifecycle as the modal-surface wiring: orchestrator
-# discovers + create()s the plugin at module load; this setter binds the
-# factory before any LLM call can land.
-import plugins.memory as _memory_plugin
-_memory_plugin.set_memory_factory(_get_memory)
-
-
 # ── Connected-account credentials (Issue #114, ADR-0005) ──────────────────────
 #
 # The tray Credentials window reads per-active-profile Google connection
@@ -351,17 +342,6 @@ def _get_gmail_token_provider() -> _GmailTokenProvider | None:
     )
 
 
-# Issue #115 — wire _get_gmail_token_provider() into the gmail MCP plugin so
-# gmail_search can call the real Gmail API with the active profile's OAuth
-# bearer (refreshed on demand via #113). Same lifecycle/precedent as the
-# memory wiring above (set_memory_factory): the orchestrator discovers +
-# create()s the plugin at module load; this setter binds the factory before
-# any LLM call can land. #112 owns storage, #113 owns the flow — this never
-# touches the keyring or OAuth transport directly.
-import plugins.gmail as _gmail_plugin
-_gmail_plugin.set_token_provider(_get_gmail_token_provider)
-
-
 class _CalendarTokenProvider:
     """Per-active-profile bearer-token handle for plugins/calendar.py.
 
@@ -401,14 +381,6 @@ def _get_calendar_token_provider() -> _CalendarTokenProvider | None:
     return _CalendarTokenProvider(
         store, _get_oauth_flow(store), _active_profile.id
     )
-
-
-# Issue #117 — wire _get_calendar_token_provider() into the calendar MCP
-# plugin so calendar_list_events / calendar_create_event can call the real
-# Google Calendar API with the active profile's OAuth bearer (refreshed on
-# demand via #113). Same lifecycle/precedent as the gmail wiring above.
-import plugins.calendar as _cal_plugin
-_cal_plugin.set_token_provider(_get_calendar_token_provider)
 
 
 # Issue #148 / ADR-0005 amendment 2026-05-23 — Static-token settings UI.
@@ -498,16 +470,6 @@ def _get_todoist_token_provider() -> _TodoistTokenProvider | None:
     return _TodoistTokenProvider(token)
 
 
-# Issue #130 — wire _get_todoist_token_provider() into the todoist MCP
-# plugin so todoist_list_tasks / todoist_create_task can call the real
-# Todoist REST API with a static API token from the user's
-# TODOIST_API_TOKEN env var. Same lifecycle/precedent as the gmail /
-# calendar wiring above, but the Protocol carries only current() (no
-# refresh path -- Todoist tokens are static).
-import plugins.todoist as _todoist_plugin
-_todoist_plugin.set_token_provider(_get_todoist_token_provider)
-
-
 class _NotionTokenProvider:
     """Static-API-token handle for plugins/notion.py.
 
@@ -538,17 +500,6 @@ def _get_notion_token_provider() -> _NotionTokenProvider | None:
     if not token:
         return None
     return _NotionTokenProvider(token)
-
-
-# Issue #136 — wire _get_notion_token_provider() into the notion MCP
-# plugin so notion_search / notion_retrieve_page /
-# notion_retrieve_block_children / notion_create_page can call the
-# real Notion REST API with a static Internal Integration Token from
-# the user's NOTION_API_TOKEN env var. Same lifecycle/precedent as the
-# todoist wiring above (Protocol carries only current() -- no refresh
-# path).
-import plugins.notion as _notion_plugin
-_notion_plugin.set_token_provider(_get_notion_token_provider)
 
 
 class _TogglTokenProvider:
@@ -583,17 +534,6 @@ def _get_toggl_token_provider() -> _TogglTokenProvider | None:
     if not token:
         return None
     return _TogglTokenProvider(token)
-
-
-# Issue #142 — wire _get_toggl_token_provider() into the toggl MCP
-# plugin so toggl_list_time_entries / toggl_create_time_entry /
-# toggl_stop_running_entry / toggl_list_workspaces / toggl_list_projects
-# can call the real Toggl Track API v9 with a static API token from
-# the user's TOGGL_API_TOKEN env var. Same lifecycle/precedent as the
-# todoist / notion wiring above (Protocol carries only current() --
-# no refresh path).
-import plugins.toggl as _toggl_plugin
-_toggl_plugin.set_token_provider(_get_toggl_token_provider)
 
 
 class _ClockifyTokenProvider:
@@ -631,16 +571,6 @@ def _get_clockify_token_provider() -> _ClockifyTokenProvider | None:
     return _ClockifyTokenProvider(token)
 
 
-# Issue #145 — wire _get_clockify_token_provider() into the clockify
-# MCP plugin so clockify_list_time_entries / clockify_create_time_entry /
-# clockify_stop_running_entry / clockify_list_workspaces /
-# clockify_list_projects can call the real Clockify API v1 with a
-# static API key from per-profile keyring (#148) or the user's
-# CLOCKIFY_API_KEY env var.
-import plugins.clockify as _clockify_plugin
-_clockify_plugin.set_token_provider(_get_clockify_token_provider)
-
-
 class _YouTubeTokenProvider:
     """Static-API-key handle for plugins/youtube.py.
 
@@ -672,15 +602,6 @@ def _get_youtube_token_provider() -> _YouTubeTokenProvider | None:
     if not token:
         return None
     return _YouTubeTokenProvider(token)
-
-
-# Issue #148 — wire _get_youtube_token_provider() into the youtube
-# MCP plugin so youtube_search / youtube_video / youtube_channel pick
-# up a per-profile key from the tray Credentials window (#114) or the
-# user's YOUTUBE_API_KEY env var. youtube.py joined the TokenProvider
-# seam here (was the lone holdout reading env in __init__).
-import plugins.youtube as _youtube_plugin
-_youtube_plugin.set_token_provider(_get_youtube_token_provider)
 
 
 def _credentials_state_event(
@@ -1703,6 +1624,52 @@ def _attach_builder_plugin() -> None:
     logger.info("[cerebral] Plugin builder attached (pip_allowlist=5 packages)")
 
 
+def _wire_plugin_seams() -> None:
+    """Inject per-plugin factories into the orchestrator-loaded modules.
+
+    Each entry below names a plugin that exposes a module-level seam
+    (``set_token_provider`` for the OAuth / static-token chain,
+    ``set_memory_factory`` for the memory plugin). We must target the
+    SAME module instance the orchestrator dispatches tool calls against
+    — the one loaded via ``importlib.util.spec_from_file_location`` as
+    ``openmind_plugin_<stem>``. ``import plugins.X`` from this file
+    would create a SECOND module instance with its own module-level
+    globals; the wiring would land on the second instance and tool
+    dispatch would silently fail with "factory not wired" (Issue #153).
+
+    Plugins absent from the orchestrator (discovery refused them, or
+    their file is missing) skip their seam with a warning rather than
+    crashing — keeps a partial-discovery state recoverable.
+    """
+    seams: list[tuple[str, str, object]] = [
+        # plugin name, seam method, factory
+        ("memory",   "set_memory_factory",  _get_memory),                   # #79
+        ("gmail",    "set_token_provider",  _get_gmail_token_provider),     # #115
+        ("calendar", "set_token_provider",  _get_calendar_token_provider),  # #117
+        ("todoist",  "set_token_provider",  _get_todoist_token_provider),   # #130
+        ("notion",   "set_token_provider",  _get_notion_token_provider),    # #136
+        ("toggl",    "set_token_provider",  _get_toggl_token_provider),     # #142
+        ("clockify", "set_token_provider",  _get_clockify_token_provider),  # #145
+        ("youtube",  "set_token_provider",  _get_youtube_token_provider),   # #148
+    ]
+    for name, seam, factory in seams:
+        try:
+            module = _orc.get_plugin_module(name)
+        except KeyError:
+            logger.warning(
+                "[cerebral] Plugin %r not loaded — %s wiring skipped", name, seam,
+            )
+            continue
+        setter = getattr(module, seam, None)
+        if setter is None:
+            logger.warning(
+                "[cerebral] Plugin %r missing %s seam — wiring skipped", name, seam,
+            )
+            continue
+        setter(factory)
+    logger.info("[cerebral] Plugin seams wired (%d plugin(s))", len(seams))
+
+
 async def _heartbeat_loop(audio_active: bool) -> None:
     while not _shutdown.is_set():
         try:
@@ -1885,6 +1852,7 @@ async def main() -> None:
 
     _orc.discover_plugins(_PLUGINS_DIR)
     _attach_builder_plugin()
+    _wire_plugin_seams()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))
     for err in _orc.registration_errors:
         logger.warning(

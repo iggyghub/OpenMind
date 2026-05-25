@@ -24,6 +24,7 @@ import importlib.util
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Protocol, runtime_checkable
 
 from cerebral.security import (
@@ -205,6 +206,19 @@ class MCPOrchestrator:
         # Each entry is {plugin_name, reason, detail, path}. Surfaced to the
         # tray so the user sees *why* a plugin didn't load.
         self._registration_errors: list[dict] = []
+        # plugin_name → the actual loaded ModuleType from _load_plugin
+        # (Issue #153). main.py's seam-injection calls
+        # (set_token_provider, set_memory_factory) must target THIS module
+        # instance — the one the orchestrator dispatches against — not the
+        # separate instance Python would create for `import plugins.<name>`.
+        # spec_from_file_location's `openmind_plugin_<stem>` module name was
+        # chosen to avoid sys.modules conflicts with the rest of the import
+        # graph; the trade-off is that the canonical name route produces a
+        # second instance with its own module-level globals, which silently
+        # broke every set_*_provider wiring until this seam was added.
+        # Plugins registered directly via register() (tests, parked builder)
+        # have no source file and are absent from this map by design.
+        self._plugin_modules: dict[str, ModuleType] = {}
 
     def set_acl(self, acl: ProfileACL | None) -> None:
         """Swap the active profile's ACL resolver.
@@ -296,7 +310,33 @@ class MCPOrchestrator:
         del self._plugins[plugin_name]
         self._plugin_capabilities.pop(plugin_name, None)
         self._plugin_inspectability.pop(plugin_name, None)
+        self._plugin_modules.pop(plugin_name, None)
         logger.info("[mcp] Unregistered plugin '%s'", plugin_name)
+
+    def get_plugin_module(self, plugin_name: str) -> ModuleType:
+        """Return the ``ModuleType`` the orchestrator loaded for ``plugin_name``.
+
+        This is the same module instance the orchestrator dispatches tool
+        calls against — `main.py` uses it to invoke per-plugin injection
+        seams (``set_token_provider``, ``set_memory_factory``) on the
+        correct module so the wiring actually reaches the dispatch path.
+
+        Raises ``KeyError`` when the plugin failed to register or was
+        registered via the direct ``register()`` API (no on-disk module
+        — tests, the parked builder). Callers in `main.py` should treat
+        a missing module as a configuration error and let it propagate;
+        a silently-skipped wire is exactly the #153 failure mode this
+        seam exists to prevent.
+        """
+        try:
+            return self._plugin_modules[plugin_name]
+        except KeyError:
+            raise KeyError(
+                f"plugin '{plugin_name}' has no loaded module — either "
+                f"discovery failed (check `registration_errors`) or the "
+                f"plugin was registered without on-disk discovery (tests, "
+                f"parked builder)."
+            )
 
     # ------------------------------------------------------------------
     # Registration-error surface (Issue #44 — tray plugin list)
@@ -699,6 +739,12 @@ class MCPOrchestrator:
             self._record_registration_error(exc.plugin_name, exc.reason, exc.detail, path)
             return
         self._plugin_inspectability[plugin.name] = inspectability
+        # Issue #153 — record the loaded module so main.py can target the
+        # correct module instance for set_token_provider / set_memory_factory
+        # wiring. Keyed by plugin.name (the orchestrator-canonical name),
+        # NOT path.stem — these usually match but a plugin is free to set
+        # PLUGIN_NAME to something else.
+        self._plugin_modules[plugin.name] = module
 
     def _record_registration_error(
         self, plugin_name: str, reason: str, detail: str, path: Path,
