@@ -1512,25 +1512,45 @@ async def _handle_message(msg: dict) -> None:
 
 # ── WebSocket handler ─────────────────────────────────────────────────────────
 
+async def _greet(websocket) -> None:
+    """Send the welcome snapshot. Each event is isolated: if one state
+    builder raises (e.g., a transiently broken keyring backend), the
+    failure is logged and the remaining events still flow — a bad state
+    builder must not poison the handshake or close the connection.
+    Per-event recovery is the dispatcher-isolation invariant (#151)
+    applied to the greeting phase."""
+    if _active_profile:
+        greetings: list = [lambda: _profile_event(_active_profile)]
+    else:
+        greetings = [lambda: {"type": "first_run"}]
+    greetings += [
+        _profiles_list_event,
+        _voices_list_event,
+        _queue_update_event,
+        _insights_update_event,
+        _memory_update_event,
+        _env_context_event,
+        _models_list_event,
+        _plugins_list_event,
+        _permissions_state_event,
+        _credentials_state_event,
+    ]
+    for build in greetings:
+        try:
+            event = build()
+        except Exception:
+            logger.exception(
+                "[cerebral] Greeting state builder failed: %s", getattr(build, "__name__", "<lambda>")
+            )
+            continue
+        await _send(websocket, event)
+
+
 async def _ws_handler(websocket) -> None:
     _connected.add(websocket)
     logger.info("[cerebral] Client connected  (%d total)", len(_connected))
 
-    # Greet new connection with current state
-    if _active_profile:
-        await _send(websocket, _profile_event(_active_profile))
-    else:
-        await _send(websocket, {"type": "first_run"})
-    await _send(websocket, _profiles_list_event())
-    await _send(websocket, _voices_list_event())
-    await _send(websocket, _queue_update_event())
-    await _send(websocket, _insights_update_event())
-    await _send(websocket, _memory_update_event())
-    await _send(websocket, _env_context_event())
-    await _send(websocket, _models_list_event())
-    await _send(websocket, _plugins_list_event())
-    await _send(websocket, _permissions_state_event())
-    await _send(websocket, _credentials_state_event())
+    await _greet(websocket)
 
     try:
         async for raw in websocket:
@@ -1538,7 +1558,23 @@ async def _ws_handler(websocket) -> None:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
                 continue
-            await _handle_message(msg)
+            try:
+                await _handle_message(msg)
+            except Exception as exc:
+                # Issue #151 — isolate per-message exceptions so one bad
+                # handler can't wedge the WS server. The dispatcher has
+                # ~50 elif branches; any raise here would otherwise
+                # propagate, exit the async-for, and trigger a 1011
+                # close. Reply to the offending client only (broadcast
+                # would alarm everyone else), then keep serving.
+                handler = msg.get("type") if isinstance(msg, dict) else None
+                logger.exception(
+                    "[cerebral] Dispatcher handler %r raised; isolating", handler
+                )
+                await _send(websocket, {
+                    "type": "error",
+                    "data": {"handler": handler, "message": str(exc)},
+                })
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
