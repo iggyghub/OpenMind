@@ -19,10 +19,12 @@ Slices:
   12. secret material never lands in the SQLite DB
   13. secret value is never logged
 """
+import logging
 import sqlite3
 
 import pytest
 
+from cerebral.db import credentials as cred_mod
 from cerebral.db.credentials import SECRET_FIELDS, CredentialStore
 
 
@@ -255,3 +257,68 @@ def test_static_token_metadata_row_is_degenerate():
     assert row["client_id"] == ""
     assert row["email"] == ""
     assert row["scopes"] == []
+
+
+# ── 18–22 keyring missing → env-only fallback (Issue #157) ────────────────────
+
+@pytest.fixture
+def keyring_missing(monkeypatch):
+    """Simulate `keyring` not installed in Cerebral's env. Construct a
+    CredentialStore *without* a stub backend so `_keyring()` exercises
+    the real soft-import branch."""
+    monkeypatch.setattr(cred_mod, "_KEYRING_AVAILABLE", False)
+    monkeypatch.setattr(cred_mod, "_keyring_lib", None)
+    monkeypatch.setattr(cred_mod, "_warned_keyring_missing", False)
+
+
+def test_get_secret_returns_none_when_keyring_missing(keyring_missing):
+    """The env-fallback path in `_static_token_from_store_or_env` triggers
+    on `get_secret() is None`, so the keyring-missing branch must return
+    None (not raise) for env-fallback to kick in."""
+    cs = CredentialStore(db_path=":memory:")  # no stub injected
+    assert cs.get_secret(1, "todoist", "api_token") is None
+
+
+def test_set_secret_raises_clear_error_when_keyring_missing(keyring_missing):
+    """The error the user sees IS the fix — silently no-op'ing would
+    create a confusing UX where the tray Save click *appears* to succeed
+    while nothing persists."""
+    cs = CredentialStore(db_path=":memory:")  # no stub injected
+    with pytest.raises(RuntimeError, match="pip install keyring"):
+        cs.set_secret(1, "todoist", "api_token", "tok-value")
+
+
+def test_keyring_missing_warn_fires_exactly_once(keyring_missing, caplog):
+    """One module-level WARN per Cerebral lifetime regardless of how
+    many resolver calls hit the keyring-missing branch."""
+    cs = CredentialStore(db_path=":memory:")  # no stub injected
+    with caplog.at_level(logging.WARNING, logger=cred_mod.logger.name):
+        for _ in range(5):
+            assert cs.get_secret(1, "todoist", "api_token") is None
+    warn_lines = [
+        r for r in caplog.records
+        if "keyring not installed" in r.getMessage()
+    ]
+    assert len(warn_lines) == 1
+
+
+def test_delete_credential_no_op_on_keyring_when_missing(keyring_missing):
+    """Metadata row still deleted; the keyring sweep is silently skipped
+    (no entries can exist to orphan when keyring isn't installed)."""
+    cs = CredentialStore(db_path=":memory:")  # no stub injected
+    # Insert a metadata row directly; set_secret would raise here.
+    cs.set_credential(1, "todoist", status="connected")
+    cs.delete_credential(1, "todoist")          # must not raise
+    assert cs.get_credential(1, "todoist") is None
+    # Second call is still idempotent.
+    cs.delete_credential(1, "todoist")
+
+
+def test_injected_stub_overrides_missing_keyring(keyring_missing):
+    """The injected-backend seam still works even when the real keyring
+    lib is missing — tests don't need keyring installed."""
+    cs, kr = _cs()  # injects FakeKeyring
+    cs.set_secret(1, "todoist", "api_token", "stubbed")
+    assert cs.get_secret(1, "todoist", "api_token") == "stubbed"
+    # Stub backend should NOT have triggered the missing-keyring warn.
+    assert cred_mod._warned_keyring_missing is False

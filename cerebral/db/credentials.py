@@ -20,9 +20,17 @@ Credentials are per-profile, never global, never written to plaintext
 ``felix-settings.json``, and secret values are never logged.
 
 The keyring dependency is injectable: production uses the real ``keyring``
-library (lazy-imported, so the test suite never requires it); tests pass a
-dict-backed stub exposing ``get_password`` / ``set_password`` /
-``delete_password``.
+library (soft-imported at module scope, so a missing keyring is handled
+gracefully — Issue #157); tests pass a dict-backed stub exposing
+``get_password`` / ``set_password`` / ``delete_password``.
+
+When ``keyring`` is not installed and no stub is injected, the store
+degrades to "env-only" mode: ``get_secret`` returns ``None`` so the
+static-token resolver in ``cerebral/main.py`` falls through to the env-var
+fallback (the documented Issue #148 / ADR-0005 ramp), and ``set_secret``
+raises ``RuntimeError("keyring not installed — run: pip install keyring")``
+so a tray Save click surfaces the one-line fix rather than silently
+succeeding. A one-shot WARN logs on the first miss.
 
 Public interface:
   cs = CredentialStore()                                    # production
@@ -45,6 +53,34 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Issue #157 — soft-import keyring at module scope. A missing keyring used
+# to crash every static-token plugin in lockstep with an opaque
+# ``ModuleNotFoundError`` instead of falling back to env vars. The flag
+# lets `_keyring()` distinguish "no stub injected, real lib unavailable"
+# (degrade to env-only) from "real lib available" (use it).
+try:
+    import keyring as _keyring_lib  # type: ignore[import-not-found]
+    _KEYRING_AVAILABLE = True
+except ImportError:
+    _keyring_lib = None  # type: ignore[assignment]
+    _KEYRING_AVAILABLE = False
+
+# Module-level guard so the missing-keyring WARN fires exactly once across
+# many resolver calls. Reset in tests via monkeypatch.
+_warned_keyring_missing = False
+
+
+def _warn_keyring_missing_once() -> None:
+    global _warned_keyring_missing
+    if _warned_keyring_missing:
+        return
+    _warned_keyring_missing = True
+    logger.warning(
+        "[cred] keyring not installed — per-profile secret storage "
+        "disabled; using env vars only. To enable: pip install keyring"
+    )
+
 
 DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
 
@@ -99,14 +135,19 @@ class CredentialStore:
 
     # ── keyring backend ───────────────────────────────────────────────────────
 
-    def _keyring(self) -> Any:
-        """Injected stub, else the real ``keyring`` lib (lazy — the suite
-        always injects a stub, so ``keyring`` need not be installed to run
-        tests; learning #12 lazy-import seam applied to cerebral-core)."""
+    def _keyring(self) -> Any | None:
+        """Injected stub, else the real ``keyring`` lib, else ``None``
+        when the lib isn't installed.
+
+        Callers must treat ``None`` as "keyring unavailable": reads degrade
+        to ``None`` (env-fallback path), writes raise a clear RuntimeError
+        pointing at ``pip install keyring`` (Issue #157)."""
         if self._kr is not None:
             return self._kr
-        import keyring  # lazy: real dependency only on the production path
-        self._kr = keyring
+        if not _KEYRING_AVAILABLE:
+            _warn_keyring_missing_once()
+            return None
+        self._kr = _keyring_lib
         return self._kr
 
     # ── non-secret metadata (SQLite) ──────────────────────────────────────────
@@ -170,12 +211,22 @@ class CredentialStore:
     # ── secret material (OS keyring) ──────────────────────────────────────────
 
     def set_secret(self, profile_id: int, provider: str, field: str, value: str) -> None:
-        """Store one secret field for (profile, provider) in the keyring."""
+        """Store one secret field for (profile, provider) in the keyring.
+
+        Raises ``RuntimeError`` when the ``keyring`` library is missing
+        and no stub was injected (Issue #157): writes can't silently
+        no-op or the tray Save click would *appear* to succeed while
+        nothing persists — the error frame the user sees IS the fix."""
         if field not in SECRET_FIELDS:
             raise ValueError(
                 f"field must be one of {SECRET_FIELDS}, got {field!r}"
             )
-        self._keyring().set_password(
+        kr = self._keyring()
+        if kr is None:
+            raise RuntimeError(
+                "keyring not installed — run: pip install keyring"
+            )
+        kr.set_password(
             _KEYRING_SERVICE, _keyring_username(profile_id, provider, field), value
         )
         # value is never logged.
@@ -185,12 +236,20 @@ class CredentialStore:
         )
 
     def get_secret(self, profile_id: int, provider: str, field: str) -> str | None:
-        """Return one secret field from the keyring, or None if absent."""
+        """Return one secret field from the keyring, or None if absent.
+
+        Also returns ``None`` when the ``keyring`` library is missing and
+        no stub was injected (Issue #157) so the static-token resolver in
+        ``cerebral/main.py`` falls through to the env-var fallback rather
+        than crashing the entire static-token chain on a missing dep."""
         if field not in SECRET_FIELDS:
             raise ValueError(
                 f"field must be one of {SECRET_FIELDS}, got {field!r}"
             )
-        return self._keyring().get_password(
+        kr = self._keyring()
+        if kr is None:
+            return None
+        return kr.get_password(
             _KEYRING_SERVICE, _keyring_username(profile_id, provider, field)
         )
 
@@ -199,7 +258,11 @@ class CredentialStore:
     def delete_credential(self, profile_id: int, provider: str) -> None:
         """Remove the metadata row AND every keyring entry for (profile,
         provider). Idempotent — missing keyring entries are ignored so the
-        delete-completeness invariant holds even on a partial credential."""
+        delete-completeness invariant holds even on a partial credential.
+
+        When the ``keyring`` library is missing and no stub was injected
+        (Issue #157) the keyring sweep is a no-op (there are no entries
+        to orphan) and only the SQLite metadata row is removed."""
         self._con.execute(
             """DELETE FROM connected_account_credentials
                 WHERE profile_id=? AND provider=?""",
@@ -207,6 +270,12 @@ class CredentialStore:
         )
         self._con.commit()
         kr = self._keyring()
+        if kr is None:
+            logger.debug(
+                "[credentials] deleted profile=%d provider=%s "
+                "(keyring unavailable; sqlite-only)", profile_id, provider,
+            )
+            return
         for field in SECRET_FIELDS:
             try:
                 kr.delete_password(
