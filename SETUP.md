@@ -15,12 +15,18 @@ OpenMind runs as two cooperating processes. Start them in order:
 
 ### 1. Cerebral (Python backend)
 
+From the project root:
+
 ```bash
-cd cerebral
-pip install -r requirements.txt
-python scripts/download_models.py   # downloads Vosk small EN model (~40 MB) — one time only
-python main.py
+pip install -e .
+python -m cerebral.scripts.download_models   # downloads Vosk small EN model (~40 MB) — one time only
+python -m cerebral.main
 ```
+
+`pip install -e .` reads `pyproject.toml` at the project root and installs
+the `cerebral` package in editable mode, so subsequent edits take effect
+without reinstalling. From then on, anywhere on PATH can run
+`python -m cerebral.main`.
 
 Expected output:
 ```

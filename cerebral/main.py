@@ -20,17 +20,17 @@ from websockets.asyncio.server import serve
 
 from pathlib import Path
 
-from audio.pipeline import AudioPipeline, DEFAULT_SIGNAL_WORDS
-from bridge.openclaw import ChannelBridge
-from db.profiles import Profile, ProfileManager
-from llm.router import ModelRouter, ModelUnavailableError
-from mcp.orchestrator import MCPOrchestrator, ToolResult
-from memory.manager import MemoryManager
-from passive.extractor import FiveW1HExtractor
-from action_queue.manager import QueueManager
-from insights.engine import InsightsEngine
-from tts.engine import TTSEngine
-from environment.context import EnvironmentContext
+from cerebral.audio.pipeline import AudioPipeline, DEFAULT_SIGNAL_WORDS
+from cerebral.bridge.openclaw import ChannelBridge
+from cerebral.db.profiles import Profile, ProfileManager
+from cerebral.llm.router import ModelRouter, ModelUnavailableError
+from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
+from cerebral.memory.manager import MemoryManager
+from cerebral.passive.extractor import FiveW1HExtractor
+from cerebral.action_queue.manager import QueueManager
+from cerebral.insights.engine import InsightsEngine
+from cerebral.tts.engine import TTSEngine
+from cerebral.environment.context import EnvironmentContext
 from cerebral.security import (
     CAPABILITY_DESCRIPTION,
     CAPABILITY_LABEL,
