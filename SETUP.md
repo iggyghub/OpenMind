@@ -114,6 +114,48 @@ openclaw start
 Cerebral connects to OpenClaw at startup. If OpenClaw is not running, the
 channel bridge logs a warning and Cerebral keeps running — voice still works.
 
+#### Auto-start OpenClaw on login (recommended)
+
+Running `openclaw start` in a spare terminal works, but isn't reproducible
+across reboots. Use the bundled installer to drop a shortcut into your
+Windows Startup folder:
+
+```powershell
+.\scripts\install-openclaw-autostart.ps1
+```
+
+What it does:
+
+- Locates the `openclaw` CLI on your PATH (fails fast if missing).
+- Creates `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\OpenClaw.lnk`.
+- The shortcut runs `cmd.exe /c openclaw start` minimised on every login.
+
+After running the installer once, OpenClaw comes up automatically next time
+you log in. Verify by rebooting and then looking at the taskbar for a
+minimised `cmd` window, or by checking the process:
+
+```powershell
+Get-Process openclaw -ErrorAction SilentlyContinue
+```
+
+Then start Cerebral the normal way (`python -m cerebral.main`) and confirm
+the bridge connects — you should see this line in the Cerebral log:
+
+```
+[bridge] Connected to OpenClaw at ws://localhost:3000/agent/stream
+```
+
+Cerebral itself is **not** auto-started by this script — keep launching it
+manually. Auto-starting Cerebral on login is a separate follow-up.
+
+Remove the auto-start later with:
+
+```powershell
+.\scripts\uninstall-openclaw-autostart.ps1
+```
+
+(or delete `OpenClaw.lnk` from `shell:startup` by hand).
+
 #### Configure a Telegram channel (recommended first channel)
 
 Telegram is the easiest channel to bring up: bots are free, BotFather is the
