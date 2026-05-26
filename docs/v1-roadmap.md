@@ -6,13 +6,15 @@
 
 **At a glance.** 35/45 PRD stories ✅, 9 🟡, 1 ❌-deferred. Remaining v1 work fits in **~18 slices** across 4 buckets:
 
-| Bucket | Slices | Unblocks |
-|---|:-:|---|
-| A — OpenClaw harness running end-to-end | 2 | stories 40, 41, 42 |
-| B — Real Google plugins + PRD amendment + cleanup | 8 | stories 30, 31 |
-| B-fallback — OSS fallback parity (direct calls) | 5 | story 32 |
-| C — Profile auto-detect | 1 | story 19 |
-| D — Daily-driver stability + tray-IPC gate fix | 2 | DoD criterion 2 |
+| Order | Bucket | Slices | Unblocks |
+|:-:|---|:-:|---|
+| **▶ 1st** | **A — OpenClaw harness running end-to-end** | **2** | **stories 40, 41, 42** |
+| 2nd | B — Real Google plugins + PRD amendment + cleanup | 8 | stories 30, 31 |
+| 3rd | B-fallback — OSS fallback parity (direct calls) | 5 | story 32 |
+| 4th | C — Profile auto-detect | 1 | story 19 |
+| running | D — Daily-driver stability + tray-IPC gate fix | 2 | DoD criterion 2 |
+
+**Current phase: Bucket A.** Once A.1 (install + auto-start) and A.2 (live-verify Discord + WhatsApp/Telegram + phone) land, stories 40/41/42 tick ✅ and the channel bridge becomes a real surface that Bucket D's stability run can exercise.
 
 Story 45 (native mobile/smartglasses) is **not** in v1 — see § 4 Post-v1.
 
