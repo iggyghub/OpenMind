@@ -30,7 +30,11 @@
 
 **MCP server** — a Model Context Protocol server. The standard unit of capability in Felix. Each tool (Clock, Browser, Files, Shell, etc.) is an MCP server. The LLM calls tools via MCP regardless of what's underneath. Adding a capability = adding an MCP server.
 
-**Plugin** — an MCP server built for Felix. Lives in `/plugins`. Generated from natural language description, tested, and registered automatically. The generated code is always inspectable and editable.
+**Plugin** — an MCP server built for Felix. Lives in `/plugins`. The unit of capability — **every** tool Felix uses is a plugin, regardless of what's underneath. A plugin's implementation may call an external API directly (e.g. `gmail.py` → Google), proxy through n8n (e.g. `google_workspace.py` → n8n → Google), call a local OSS tool (e.g. `notes.py` → SQLite), or wrap an OpenClaw integration. Whether the backed service is open-source or proprietary is **orthogonal** to whether something is a plugin. Generated from natural language description by the builder, or hand-authored. Code is always inspectable and editable. _Avoid_: using "plugin" to mean "proprietary integration" — the OSS plugins are still plugins.
+
+**Direct plugin** — a plugin whose implementation calls the target service directly (no n8n hop). Per-profile credentials, one HTTP hop. Preferred for daily-used services.
+
+**n8n-backed plugin** — a plugin whose implementation posts to a local n8n workflow, which then calls the target. Shared credentials across profiles, two hops, plus n8n daemon as a runtime dependency. Acceptable for occasional-use services or where Cerebral has no first-class client for the target.
 
 **The core loop** — the fundamental operation: user speaks → LLM decomposes intent into tasks → selects available tools → executes via MCP. If no tool exists, the growth loop begins.
 
@@ -227,6 +231,17 @@ User wakes Felix ("Felix, ...")
 | Environmental | RAM | Per-session | Camera/GPS context (location, travel state, building) |
 | Long-term | ChromaDB (vector) | Per-profile | Indefinite, semantically searchable |
 | Structured | SQLite | Per-profile | Profiles, queue, preferences, learned patterns |
+
+---
+
+## v1 ship criteria
+
+OpenMind ships v1 when **both** are true:
+
+1. **Feature complete against PRD #1.** Every one of PRD #1's 45 user stories has its full implementation delivered. Stand-in implementations (e.g. n8n-bridge wrappers used as placeholders for first-class OAuth plugins) do not count as delivered unless n8n was the deliberate target architecture for that story.
+2. **Daily-driver stable for the author.** The author uses Cerebral every day as their primary assistant. The core wake → queue → approve loop does not break for daily-use stretches. Crashes, regressions, and broken plugins on the daily path are bugs that block v1.
+
+Installable-on-a-friend's-machine, public release, PyPI/installer artefacts, marketing surface, and a v1.0.0 tag are **explicitly post-v1**. They become the v2 ship criteria.
 
 ---
 
