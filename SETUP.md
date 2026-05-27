@@ -150,6 +150,39 @@ or use whatever uninstall command OpenClaw exposes in your version
 Cerebral itself is **not** auto-started — keep launching it manually. Auto-starting
 Cerebral on login is a separate follow-up.
 
+#### Approve the gateway scope upgrade (required before first Cerebral launch)
+
+Cerebral's `openclaw_channels` plugin drives an `events_wait` long-poll
+against the gateway as soon as the subscriber starts. **`events_wait` is
+itself a privileged call** — even with no channels configured, the first
+Cerebral boot against a freshly-paired gateway will file a scope-upgrade
+request and the gateway will close the WebSocket until the request is
+approved.
+
+Approve it once from any shell BEFORE the first `python -m cerebral.main`:
+
+```powershell
+openclaw devices list-pending   # surface the pending requestId
+openclaw devices approve --latest
+```
+
+`--latest` resolves the most recent pending request automatically. The
+scopes requested cover reading channel transcripts (`operator.read`) and
+sending replies (`operator.write`); approve once per Cerebral install.
+Re-pairing (`openclaw devices clear`) requires re-approval.
+
+If you skip this step and start Cerebral, you'll see one rate-limited
+WARN line per subscriber start:
+
+```
+[openclaw_channels] events_wait raised (likely scope upgrade pending) --
+approve via `openclaw devices approve --latest` (use `openclaw devices
+list-pending` to surface the requestId; see SETUP.md). Detail: ...
+```
+
+Run the approve command and the subscriber recovers on the next
+iteration — no Cerebral restart required.
+
 #### Configure a Telegram channel (recommended first channel)
 
 Telegram is the easiest channel to bring up: bots are free, BotFather is the
@@ -198,19 +231,16 @@ in `~/.openclaw/openclaw.json`.
    (Repeat for any other channel Cerebral should drive: `--bind discord`,
    `--bind whatsapp`, etc.)
 
-4. **Approve Cerebral's scope-upgrade request.** The first time the plugin
-   tries to read channel events, the gateway files a *device scope-upgrade*
-   request. Approve it from any terminal:
+4. **Approve Cerebral's scope-upgrade request** if you haven't already —
+   see the **Approve the gateway scope upgrade** section above. The
+   `events_wait` long-poll triggers the same scope upgrade with or
+   without a configured channel, so the prerequisite is the same; this
+   step is a no-op if you already approved.
 
    ```powershell
-   openclaw devices list           # find the pending requestId
+   openclaw devices list-pending   # find the pending requestId
    openclaw devices approve --latest
    ```
-
-   `--latest` resolves the most recent pending request automatically. The
-   scopes requested cover reading channel transcripts (`operator.read`)
-   and sending replies (`operator.write`); approve once per Cerebral
-   install. Re-pairing (`openclaw devices clear`) requires re-approval.
 
 5. **(Optional) Override the gateway URL or token.** Cerebral reads
    `gateway.auth.token` from `~/.openclaw/openclaw.json` by default. To
@@ -225,10 +255,11 @@ in `~/.openclaw/openclaw.json`.
 
 6. **Restart Cerebral.** In your Cerebral terminal you should see
    `[openclaw_channels] Connected to OpenClaw -- subscriber loop running`.
-   If you skipped step 4 you'll instead see
-   `[openclaw_channels] gateway requires scope upgrade -- approve via
-   openclaw devices approve <requestId>` — run the approve command and
-   the loop picks up on the next iteration without a restart.
+   If you skipped step 4 you'll instead see a single rate-limited
+   `[openclaw_channels] events_wait raised (likely scope upgrade pending)
+   -- approve via \`openclaw devices approve --latest\`` line — run the
+   approve command and the loop picks up on the next iteration without
+   a restart.
 
 7. **Test it.** Open Telegram, find your bot, send `Felix, what time is it?`
    — Felix should reply through the channel within a few seconds.

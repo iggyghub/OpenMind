@@ -721,10 +721,46 @@ class OpenClawChannelsPlugin:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.warning(
-                        "[openclaw_channels] events_wait raised: %s "
-                        "-- backing off", self._scrub(str(exc)),
-                    )
+                    # Per the 2026-05-27 "scope-upgrade rejection
+                    # surfaces as a closed WS" learning: the 2026.4.29
+                    # gateway closes the WebSocket when a privileged
+                    # call (events_wait included) hits an unapproved
+                    # scope, instead of returning a structured
+                    # ``isError=True`` result. The mcp SDK then raises
+                    # ``McpError("Connection closed")`` (CONNECTION_CLOSED
+                    # code) on the next read. The actionable WARN in the
+                    # ``_is_error`` branch below is therefore unreachable
+                    # on this path -- handle the actionable hint here
+                    # for the FIRST raise after subscriber start. The
+                    # ``_scope_warned`` flag rate-limits subsequent
+                    # raises so the operator log doesn't flood.
+                    scrubbed = self._scrub(str(exc))
+                    if not self._scope_warned:
+                        logger.warning(
+                            "[openclaw_channels] events_wait raised "
+                            "(likely scope upgrade pending) -- approve "
+                            "via `openclaw devices approve --latest` "
+                            "(use `openclaw devices list-pending` to "
+                            "surface the requestId; see SETUP.md). "
+                            "Detail: %s",
+                            scrubbed or "<no exception text>",
+                        )
+                        self._scope_warned = True
+                    else:
+                        logger.warning(
+                            "[openclaw_channels] events_wait raised: %s "
+                            "-- backing off",
+                            scrubbed or "<no exception text>",
+                        )
+                    # Session-killing raises invalidate the cached MCP
+                    # session. Without this, _ensure_session keeps
+                    # returning the dead reference and every subsequent
+                    # call_tool raises with empty exception text; even
+                    # after the operator approves the scope out-of-band
+                    # the bridge never recovers without a Cerebral
+                    # restart. Reset and let the next iteration spawn a
+                    # fresh ``openclaw mcp serve`` child.
+                    await self._invalidate_session()
                     await self._sleep_or_stop(self._error_backoff_seconds)
                     continue
 
@@ -779,6 +815,36 @@ class OpenClawChannelsPlugin:
             await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
         except asyncio.TimeoutError:
             pass
+
+    async def _invalidate_session(self) -> None:
+        """Tear down the cached MCP session so the next ``_ensure_session``
+        call respawns a fresh ``openclaw mcp serve`` child.
+
+        Used by the events_wait loop after a session-killing raise: the
+        2026.4.29 gateway closes the WebSocket on scope-upgrade
+        rejection (and other transport failures), but the cached
+        ``ClientSession`` reference stays around. Without this, the
+        operator approving the scope out-of-band still requires a full
+        Cerebral restart -- the loop never reconnects.
+
+        Idempotent; swallows shutdown exceptions per the same posture
+        as ``stop_subscriber`` (the upstream mcp SDK can emit an
+        ExceptionGroup on stdio_client teardown when openclaw mcp
+        serve writes a non-JSON line to stdout during close).
+        """
+        async with self._session_lock:
+            stack = self._exit_stack
+            self._exit_stack = None
+            self._session = None
+            if stack is None:
+                return
+            try:
+                await stack.aclose()
+            except Exception as exc:  # pragma: no cover -- defensive
+                logger.debug(
+                    "[openclaw_channels] session invalidate ignored: %s",
+                    exc,
+                )
 
     @staticmethod
     def _normalize_events(payload: Any) -> list[dict]:
