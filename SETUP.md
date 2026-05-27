@@ -103,16 +103,60 @@ Verify: `openclaw --version`
 
 OpenClaw is a multi-channel AI gateway (WhatsApp, Telegram, Slack, Discord, Teams, voice/video). Docs: https://github.com/openclaw/openclaw
 
-#### Run OpenClaw alongside Cerebral
+#### Auto-start the OpenClaw gateway on login (recommended)
 
-OpenClaw listens on `http://localhost:3000` by default. Start it in a third terminal:
+OpenClaw 2026.4.29 ships its own native installer for Windows login auto-start.
+Run these four commands from any shell (PowerShell or `cmd`):
 
-```bash
-openclaw start
+```powershell
+openclaw gateway install
+openclaw config set gateway.mode local
+openclaw gateway start
+openclaw gateway status
 ```
 
-Cerebral connects to OpenClaw at startup. If OpenClaw is not running, the
-channel bridge logs a warning and Cerebral keeps running — voice still works.
+What each step does:
+
+1. **`openclaw gateway install`** registers a Startup-folder login item at
+   `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\OpenClaw Gateway.cmd`,
+   generates a per-machine gateway token, and writes config to
+   `~/.openclaw/openclaw.json`. **Important:** this **overwrites** any existing
+   `openclaw.json`. A `.bak` is saved next to the new file — if you had
+   channel credentials (e.g. a Telegram bot token) configured, restore them
+   from the `.bak` before the next step.
+2. **`openclaw config set gateway.mode local`** sets the gateway to local mode.
+   Without this, `gateway start` will refuse to launch. (`openclaw doctor`
+   catches this if you skip it.)
+3. **`openclaw gateway start`** launches the gateway in the background. After
+   login it will be started automatically by the Startup-folder item from step 1.
+4. **`openclaw gateway status`** confirms it's running. Expect
+   `Runtime: running` and a listener on `127.0.0.1:18789`. Note: status can be
+   racy for the first few seconds after `start` — re-check after ~5s if the
+   first run shows `stopped`.
+
+To verify the gateway comes back up automatically after a reboot, run:
+
+```powershell
+.\scripts\verify-openclaw-running.ps1
+```
+
+The script checks that `127.0.0.1:18789` is listening post-boot and prints
+PASS/FAIL with evidence to paste into issue #162.
+
+> **Note:** Cerebral's channel bridge does not yet connect to OpenClaw 2026.4.29
+> out of the box — the bridge code still defaults to the old port `3000` and
+> doesn't send the auto-generated gateway token. That work is tracked in
+> [#167](https://github.com/iggyghub/OpenMind/issues/167). Until #167 lands,
+> the gateway is up but Cerebral's `[bridge] Connected to OpenClaw` log line
+> won't appear unless you override `OPENCLAW_WS_URL` / `OPENCLAW_REPLY_URL` /
+> `OPENCLAW_API_KEY` to match your installed OpenClaw.
+
+To remove auto-start: delete `OpenClaw Gateway.cmd` from `shell:startup` by hand,
+or use whatever uninstall command OpenClaw exposes in your version
+(`openclaw gateway --help`).
+
+Cerebral itself is **not** auto-started — keep launching it manually. Auto-starting
+Cerebral on login is a separate follow-up.
 
 #### Configure a Telegram channel (recommended first channel)
 
