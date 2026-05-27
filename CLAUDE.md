@@ -31,3 +31,12 @@ Using canonical defaults: `needs-triage`, `needs-info`, `ready-for-agent`, `read
 ### Domain docs
 
 Single-context repo — one `CONTEXT.md` + `docs/adr/` at the root. See `docs/agents/domain.md`.
+
+## Operator scripts (PowerShell)
+
+Setup / verify / diagnostic scripts under `scripts/*.ps1` are run by the end user on Windows, often by double-clicking from Explorer. Two non-obvious gotchas (both hit during the #162 verification — see `.learnings/LEARNINGS.md`):
+
+1. **ASCII-only script bodies.** Windows PowerShell 5.1 reads `.ps1` files in the ANSI codepage when no BOM is present. UTF-8 em-dashes (`—`), smart quotes, etc. in **string literals** get mojibake'd into characters that break the parser. Comments are usually safe but keep them ASCII too for consistency. Sanity-check with `Grep "[^\x00-\x7F]"` before pushing.
+2. **Pause on exit.** Double-click invocation spawns a transient `powershell.exe -File ...` console that closes the instant the script returns, hiding all output. Wrap the body in `try { ... } catch { ... } finally { Read-Host "Press Enter to close" \| Out-Null }`. The `finally` runs even when `exit` is called inside `try`. Print explicit `SUCCESS` / `FAILED` markers in colour at the end so the user sees a clear outcome.
+
+Doesn't apply to scripts meant only for CI / chaining — those need a clean exit code with no prompt. If a script serves both audiences, use a `-NoPause` switch.
