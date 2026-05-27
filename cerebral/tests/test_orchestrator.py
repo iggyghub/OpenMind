@@ -1324,29 +1324,43 @@ async def test_check_capabilities_declared_irreversible_passive_merges():
 
 
 # ---------------------------------------------------------------------------
-# Slice 13 — repo-wide single-marked-tool guard (Issue #139)
+# Slice 13 — repo-wide irreversible-tool allowlist (Issue #139)
 #
 # Catches accidental future drift: if a contributor marks a new tool
 # without thinking through the modal-prompt UX cost, this test fails
 # until the marking gets its own deliberate slice or amendment.
+#
+# Current allowlist:
+#   - plugins/gmail.py          (gmail_send -- Issue #139 original slice)
+#   - plugins/openclaw_channels.py (openclaw_permissions_respond -- Issue
+#     #168; allow-once / allow-always to a gateway exec or plugin approval
+#     cannot be undone, so the modal is the only consent surface that
+#     matches the semantics)
 # ---------------------------------------------------------------------------
+
+_IRREVERSIBLE_PLUGINS: frozenset[str] = frozenset({
+    "gmail.py",
+    "openclaw_channels.py",
+})
 
 
 @pytest.mark.parametrize("plugin_path", _PLUGIN_FILES, ids=lambda p: p.stem)
-def test_only_gmail_plugin_declares_irreversible_tool(plugin_path):
-    """Exactly one shipped plugin (gmail.py) marks a tool irreversible
-    in #139's slice scope. Future per-tool marking is a one-line edit
-    per plugin AND a deliberate update to this guard."""
+def test_irreversible_marking_is_allowlisted(plugin_path):
+    """Only plugins on the deliberate allowlist may declare irreversible=True.
+
+    Future per-tool marking is a one-line edit per plugin AND a
+    deliberate addition to ``_IRREVERSIBLE_PLUGINS`` above."""
     source = plugin_path.read_text(encoding="utf-8")
     has_decl = "irreversible=True" in source
-    if plugin_path.name == "gmail.py":
+    if plugin_path.name in _IRREVERSIBLE_PLUGINS:
         assert has_decl, (
-            "plugins/gmail.py must declare irreversible=True on gmail_send "
-            "(Issue #139 mark)"
+            f"plugins/{plugin_path.name} is on the irreversible allowlist "
+            "but no longer declares irreversible=True -- update the "
+            "allowlist or restore the marking"
         )
     else:
         assert not has_decl, (
-            f"plugins/{plugin_path.name} declares irreversible=True; #139's "
-            "slice scope marks only gmail_send. Update this guard explicitly "
-            "when marking another tool."
+            f"plugins/{plugin_path.name} declares irreversible=True but is "
+            "not on the irreversible allowlist. Add it deliberately to "
+            "_IRREVERSIBLE_PLUGINS above when marking another tool."
         )
