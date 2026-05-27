@@ -118,11 +118,14 @@ channel bridge logs a warning and Cerebral keeps running — voice still works.
 
 Running `openclaw start` in a spare terminal works, but isn't reproducible
 across reboots. Use the bundled installer to drop a shortcut into your
-Windows Startup folder:
+Windows Startup folder. Run from a PowerShell prompt at the repo root:
 
 ```powershell
 .\scripts\install-openclaw-autostart.ps1
 ```
+
+(All three OpenClaw scripts pause at the end and prompt you for Enter, so
+double-clicking from Explorer also works — the window won't close on you.)
 
 What it does:
 
