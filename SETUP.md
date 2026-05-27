@@ -131,15 +131,18 @@ What it does:
 - The shortcut runs `cmd.exe /c openclaw start` minimised on every login.
 
 After running the installer once, OpenClaw comes up automatically next time
-you log in. Verify by rebooting and then looking at the taskbar for a
-minimised `cmd` window, or by checking the process:
+you log in. To verify the full chain end-to-end, reboot and then run:
 
 ```powershell
-Get-Process openclaw -ErrorAction SilentlyContinue
+.\scripts\verify-openclaw-autostart.ps1
 ```
 
-Then start Cerebral the normal way (`python -m cerebral.main`) and confirm
-the bridge connects — you should see this line in the Cerebral log:
+The verify script checks all three acceptance criteria — OpenClaw listening
+on `:3000` post-boot, Cerebral connecting through the bridge, and the
+graceful warning path firing when OpenClaw is stopped — and prints
+PASS/FAIL for each. For a quick manual check instead, look for a minimised
+`cmd` window in the taskbar, or run `Get-Process openclaw`, then start
+Cerebral (`python -m cerebral.main`) and watch for:
 
 ```
 [bridge] Connected to OpenClaw at ws://localhost:3000/agent/stream
