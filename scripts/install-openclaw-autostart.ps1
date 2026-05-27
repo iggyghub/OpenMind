@@ -4,7 +4,7 @@
 # to already be on PATH (`npm install -g openclaw@latest`). Pair with
 # uninstall-openclaw-autostart.ps1 to remove.
 #
-# Safe to double-click from Explorer — pauses at the end so you can read the
+# Safe to double-click from Explorer -- pauses at the end so you can read the
 # output before the window closes.
 
 $ErrorActionPreference = "Stop"

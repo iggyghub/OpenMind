@@ -4,13 +4,13 @@
 #   1. OpenClaw is listening on :3000 after boot (auto-start worked).
 #   2. Cerebral connects: log line "[bridge] Connected to OpenClaw..."
 #   3. With OpenClaw stopped, Cerebral still boots and logs the graceful
-#      "[bridge] OpenClaw unreachable ... — channel bridge disabled" warning.
+#      "[bridge] OpenClaw unreachable ... -- channel bridge disabled" warning.
 #
 # Side effects: spawns two short-lived Cerebral instances (up to 60s each)
-# and kills them. Leaves OpenClaw stopped at the end — restart with
+# and kills them. Leaves OpenClaw stopped at the end -- restart with
 # `openclaw start` or reboot.
 #
-# Safe to double-click — pauses at the end so you can read the result.
+# Safe to double-click -- pauses at the end so you can read the result.
 
 $ErrorActionPreference = "Stop"
 
@@ -117,7 +117,7 @@ try {
     }
     Start-Sleep -Seconds 2
     if (Test-OpenClawPort) {
-        throw "Could not stop OpenClaw — port 3000 still listening."
+        throw "Could not stop OpenClaw - port 3000 still listening."
     }
     $logB = Join-Path $env:TEMP "verify-openclaw-B.log"
     $cerebralB = Start-Cerebral $logB

@@ -1,7 +1,7 @@
 # Remove the OpenClaw Startup-folder shortcut created by
 # install-openclaw-autostart.ps1.
 #
-# Safe to double-click from Explorer — pauses at the end so you can read
+# Safe to double-click from Explorer -- pauses at the end so you can read
 # the output before the window closes.
 
 $ErrorActionPreference = "Stop"
@@ -16,7 +16,7 @@ try {
         Write-Host "REMOVED: $lnkPath" -ForegroundColor Green
     } else {
         Write-Host ""
-        Write-Host "Nothing to remove — no shortcut at: $lnkPath" -ForegroundColor Yellow
+        Write-Host "Nothing to remove - no shortcut at: $lnkPath" -ForegroundColor Yellow
     }
 }
 catch {
