@@ -21,7 +21,6 @@ from websockets.asyncio.server import serve
 from pathlib import Path
 
 from cerebral.audio.pipeline import AudioPipeline, DEFAULT_SIGNAL_WORDS
-from cerebral.bridge.openclaw import ChannelBridge
 from cerebral.db.profiles import Profile, ProfileManager
 from cerebral.llm.router import ModelRouter, ModelUnavailableError
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
@@ -210,13 +209,6 @@ async def _bridge_process(transcript: str, history: list[dict]) -> str:
     prompt = await _memory_preamble(transcript) + prompt
     return await _router.complete(prompt, task_type="chat")
 
-
-_bridge = ChannelBridge(
-    process_fn=_bridge_process,
-    ws_url=os.environ.get("OPENCLAW_WS_URL", "ws://localhost:3000/agent/stream"),
-    outbound_url=os.environ.get("OPENCLAW_REPLY_URL", "http://localhost:3000/agent/reply"),
-    api_key=os.environ.get("OPENCLAW_API_KEY", ""),
-)
 
 def _get_memory() -> MemoryManager | None:
     """Return a MemoryManager for the active profile, or None if no profile loaded."""
@@ -602,6 +594,80 @@ def _get_youtube_token_provider() -> _YouTubeTokenProvider | None:
     if not token:
         return None
     return _YouTubeTokenProvider(token)
+
+
+# ── OpenClaw gateway token provider (Issue #168) ──────────────────────────────
+#
+# OpenClaw's gateway auth lives at ``gateway.auth.token`` inside
+# ``~/.openclaw/openclaw.json`` -- not in CredentialStore / keyring and not
+# bound to a Cerebral profile (the gateway is a machine-wide service, not a
+# per-identity integration). So this provider's resolution chain diverges
+# from the static-API-key chain above: env override first, then a JSON-file
+# read, no keyring path.
+
+OPENCLAW_TOKEN_ENV = "OPENCLAW_GATEWAY_TOKEN"
+OPENCLAW_CONFIG_ENV = "OPENCLAW_GATEWAY_CONFIG"
+_OPENCLAW_DEFAULT_CONFIG = Path.home() / ".openclaw" / "openclaw.json"
+
+
+class _OpenClawTokenProvider:
+    """Static gateway-token handle for plugins/openclaw_channels.py.
+
+    The token is the bare ``gateway.auth.token`` operator credential; the
+    plugin forwards it to ``openclaw mcp serve --token <token>`` which
+    completes the WebSocket connect.params.auth.token handshake on
+    Cerebral's behalf. ``current()`` only -- if the token is rotated, the
+    user relaunches Cerebral (same posture as todoist/notion/etc.)."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def current(self) -> str | None:
+        return self._token or None
+
+
+def _get_openclaw_token_provider() -> _OpenClawTokenProvider | None:
+    """Return an OpenClaw gateway-token provider, or ``None`` when no
+    token can be resolved. Re-resolved on every connect so a token
+    rotated in-place picks up without a Cerebral restart.
+
+    Resolution order:
+      1. ``OPENCLAW_GATEWAY_TOKEN`` env var -- the explicit override.
+      2. ``gateway.auth.token`` from the OpenClaw config file
+         (``OPENCLAW_GATEWAY_CONFIG`` env override, else
+         ``~/.openclaw/openclaw.json``).
+    """
+    token = os.environ.get(OPENCLAW_TOKEN_ENV)
+    if not token:
+        config_path = Path(os.environ.get(
+            OPENCLAW_CONFIG_ENV, str(_OPENCLAW_DEFAULT_CONFIG),
+        ))
+        token = _read_openclaw_config_token(config_path)
+    if not token:
+        return None
+    return _OpenClawTokenProvider(token)
+
+
+def _read_openclaw_config_token(config_path: Path) -> str | None:
+    """Read ``gateway.auth.token`` from an OpenClaw JSON config file.
+
+    Returns ``None`` if the file is missing, unreadable, malformed, or
+    doesn't contain the key. A missing file is the expected state on a
+    box that hasn't installed OpenClaw yet -- silent fallback is correct.
+    """
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    gateway = cfg.get("gateway") if isinstance(cfg, dict) else None
+    if not isinstance(gateway, dict):
+        return None
+    auth = gateway.get("auth")
+    if not isinstance(auth, dict):
+        return None
+    token = auth.get("token")
+    return token if isinstance(token, str) and token else None
 
 
 def _credentials_state_event(
@@ -1687,6 +1753,8 @@ def _wire_plugin_seams() -> None:
         ("toggl",    "set_token_provider",  _get_toggl_token_provider),     # #142
         ("clockify", "set_token_provider",  _get_clockify_token_provider),  # #145
         ("youtube",  "set_token_provider",  _get_youtube_token_provider),   # #148
+        ("openclaw_channels", "set_token_provider", _get_openclaw_token_provider),  # #168
+        ("openclaw_channels", "set_inbound_callback", _bridge_process),     # #168
     ]
     for name, seam, factory in seams:
         try:
@@ -1704,6 +1772,66 @@ def _wire_plugin_seams() -> None:
             continue
         setter(factory)
     logger.info("[cerebral] Plugin seams wired (%d plugin(s))", len(seams))
+
+
+# ── OpenClaw channels subscriber lifecycle (Issue #168) ───────────────────────
+#
+# The plugin's events_wait inbound loop replaces the deleted ChannelBridge's
+# WebSocket subscribe loop. Lifecycle is driven by main.py against the
+# orchestrator-loaded module instance (the Issue #153 seam-wiring concern --
+# see _wire_plugin_seams for context).
+
+async def _start_openclaw_subscriber() -> None:
+    try:
+        module = _orc.get_plugin_module("openclaw_channels")
+    except KeyError:
+        logger.warning(
+            "[cerebral] Plugin 'openclaw_channels' not loaded -- "
+            "channel bridge disabled",
+        )
+        return
+    start = getattr(module, "start_subscriber", None)
+    if start is None:
+        logger.warning(
+            "[cerebral] Plugin 'openclaw_channels' missing start_subscriber",
+        )
+        return
+    try:
+        await start()
+    except Exception as exc:  # pragma: no cover -- defensive
+        logger.warning(
+            "[cerebral] OpenClaw subscriber start failed: %s", exc,
+        )
+
+
+async def _stop_openclaw_subscriber() -> None:
+    try:
+        module = _orc.get_plugin_module("openclaw_channels")
+    except KeyError:
+        return
+    stop = getattr(module, "stop_subscriber", None)
+    if stop is None:
+        return
+    try:
+        await stop()
+    except Exception as exc:  # pragma: no cover -- defensive
+        logger.warning(
+            "[cerebral] OpenClaw subscriber stop failed: %s", exc,
+        )
+
+
+def _openclaw_subscriber_running() -> bool:
+    try:
+        module = _orc.get_plugin_module("openclaw_channels")
+    except KeyError:
+        return False
+    fn = getattr(module, "subscriber_running", None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn())
+    except Exception:  # pragma: no cover -- defensive
+        return False
 
 
 async def _heartbeat_loop(audio_active: bool) -> None:
@@ -1727,7 +1855,7 @@ async def _heartbeat_loop(audio_active: bool) -> None:
                 "active_is_cloud": _router.active_is_cloud,
                 "queue_pending": len(_queue.get_pending()),
                 "env": _env.get_context().get("city") or "unknown",
-                "bridge": _bridge.running,
+                "bridge": _openclaw_subscriber_running(),
             },
         })
         logger.info(
@@ -1904,7 +2032,7 @@ async def main() -> None:
     else:
         logger.info("[cerebral] No profiles found — will prompt on tray connection")
 
-    bridge_task = asyncio.create_task(_bridge.start())
+    await _start_openclaw_subscriber()
 
     logger.info("[cerebral] Starting IPC server on ws://%s:%d", HOST, PORT)
     async with serve(_ws_handler, HOST, PORT):
@@ -1927,11 +2055,7 @@ async def main() -> None:
     if pipeline is not None:
         pipeline.stop()
 
-    await _bridge.stop()
-    try:
-        await asyncio.wait_for(bridge_task, timeout=2.0)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        bridge_task.cancel()
+    await _stop_openclaw_subscriber()
 
     logger.info("[cerebral] Shut down cleanly.")
 

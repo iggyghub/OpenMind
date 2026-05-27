@@ -66,7 +66,7 @@ Legend: ✅ delivered · 🟡 partial · ❌ not started
 | 38 | OCR invoice/receipt → Sheets/Grist | ✅ | #28 |
 | 39 | Zoom + Meet | ✅ | #23 |
 | 40 | Phone calls via OpenClaw | 🟡 | plugins/phone.py exists; OpenClaw daemon not running — bridge unreachable |
-| 41 | WhatsApp/Telegram via OpenClaw | 🟡 | ChannelBridge wired (#22, cerebral/bridge/openclaw.py); OpenClaw daemon not running |
+| 41 | WhatsApp/Telegram via OpenClaw | 🟡 | MCP-client plugin wired (#168, plugins/openclaw_channels.py); live-verify pending (#163) |
 | 42 | OpenClaw handles all channels | 🟡 | Same as #41 — code path live, daemon not connected |
 | 43 | Fully open source | ✅ | All in this repo |
 | 44 | MCP service-agnostic | ✅ | ADR-0001 + #7 |

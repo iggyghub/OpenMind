@@ -30,6 +30,7 @@ dependencies = [
     "pdf2image>=1.17.0",
     "Pillow>=10.0.0",
     "keyring>=24.0",
+    "mcp>=1.26.0",
 ]
 
 [project.optional-dependencies]
