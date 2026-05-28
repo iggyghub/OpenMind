@@ -724,15 +724,17 @@ def _get_discord_user_token_provider() -> _DiscordUserTokenProvider | None:
 
 
 async def _surface_discord_draft(event: dict) -> None:
-    """Slice-1 draft surface for plugins/discord_user.py.
+    """Slice-2 inbound dispatcher for plugins/discord_user.py.
 
-    The plugin's subscriber loop calls this for each inbound DM from a
-    real human. No auto-reply yet (that's slice 2) -- we just push the
-    message into the queue as a draft for manual approval. The queue
-    item has no ``tool_name`` so approving it doesn't auto-execute
-    anything; the user reads it, decides what to do, and (in slice 2+)
-    the auto-reply allowlist will decide whether the LLM drafts a
-    response.
+    Slice 1 routed every inbound DM straight into the queue as a draft
+    for manual approval. Slice 2 forks: when the sender is on the
+    per-profile allowlist and the detection-mitigation gauntlet
+    (sleep-hours, per-channel rate budget) accepts the event, the
+    auto-reply controller drives the LLM pipeline and emits a real
+    reply via the plugin's internal send path. Otherwise (allowlist
+    miss, sleep-hours, rate-limit) we fall through to the slice-1
+    draft surface -- byte-identical behaviour to slice 1 when the
+    allowlist is empty (the no-regression criterion in #177).
 
     Never raises -- the plugin's handler logs+continues on callback
     exceptions, but we keep this defensive so a queue/SQLite hiccup
@@ -740,16 +742,34 @@ async def _surface_discord_draft(event: dict) -> None:
     """
     if not isinstance(event, dict):
         return
+
+    controller = _get_discord_auto_reply_controller()
+    if controller is not None:
+        try:
+            consumed = await controller.handle_inbound(event)
+        except Exception:
+            logger.exception(
+                "[discord_user] auto-reply controller raised -- falling "
+                "back to draft surface",
+            )
+            consumed = False
+        if consumed:
+            return
+
+    await _surface_discord_draft_legacy(event)
+
+
+async def _surface_discord_draft_legacy(event: dict) -> None:
+    """The slice-1 draft surface -- still the fallback path when the
+    auto-reply controller declines (allowlist miss, sleep-hours,
+    rate-limit) or isn't wired (no active profile, no plugin module).
+    """
     author = event.get("author_name") or "<unknown>"
     text = event.get("text") or ""
     channel_id = event.get("channel_id") or ""
     if not text:
         return
     title = f"Discord DM from {author}"
-    # Keep the summary terse so the tray cell stays readable; truncate
-    # at 280 chars (Twitter-ish). The full payload is recoverable via
-    # discord_get_messages when the user (or a later slice's auto-
-    # reply) wants context.
     snippet = text if len(text) <= 280 else (text[:277] + "...")
     summary = f"{snippet} (channel_id={channel_id})" if channel_id else snippet
     try:
@@ -765,6 +785,69 @@ async def _surface_discord_draft(event: dict) -> None:
         await _broadcast(_queue_update_event())
     except Exception:
         logger.exception("[discord_user] queue_update broadcast failed")
+
+
+# ── Discord auto-reply controller (Issue #177 / ADR-0006) ────────────────────
+#
+# Lazy singleton: needs the orchestrator-loaded plugin module + an active
+# profile + the SQLite ProfileManager handles. Building it any earlier would
+# either deadlock on ``_orc.discover_plugins`` (which runs after the
+# ProfileManager initialisation in main()) or pin a stale profile id when
+# the user switches profiles. Re-resolving the active-profile binding inside
+# the seam keeps switch-profile-and-auto-reply correct without restart.
+
+_discord_auto_reply_controller = None  # type: ignore[var-annotated]
+
+
+def _get_discord_auto_reply_controller():
+    """Return the cached DiscordAutoReplyController, building one if every
+    dependency is in place: active profile, plugin module loaded, plugin
+    instance present. Otherwise None -- caller falls back to draft."""
+    global _discord_auto_reply_controller
+    if _active_profile is None:
+        return None
+    try:
+        module = _orc.get_plugin_module("discord_user")
+    except KeyError:
+        return None
+    plugin = getattr(module, "_active_plugin", None)
+    if plugin is None:
+        return None
+
+    if _discord_auto_reply_controller is not None:
+        cached_pid, cached = _discord_auto_reply_controller
+        if cached_pid == _active_profile.id:
+            return cached
+
+    from cerebral.discord_auto_reply import (  # local import: avoid top-level cycle
+        DiscordAutoReplyController, settings_from_overrides,
+    )
+    from datetime import datetime
+
+    profile_id = _active_profile.id
+
+    def _is_allowlisted(author_id: str) -> bool:
+        return _pm.is_discord_allowlisted(profile_id, author_id)
+
+    def _get_settings():
+        overrides = _pm.list_discord_settings(profile_id)
+        return settings_from_overrides(overrides)
+
+    async def _reply_generator(event: dict) -> str:
+        text = str(event.get("text") or "")
+        if not text:
+            return ""
+        return await _bridge_process(text, [])
+
+    controller = DiscordAutoReplyController(
+        sender=plugin,
+        reply_generator=_reply_generator,
+        is_allowlisted=_is_allowlisted,
+        get_settings=_get_settings,
+        local_hour=lambda: datetime.now().hour,
+    )
+    _discord_auto_reply_controller = (profile_id, controller)
+    return controller
 
 
 def _credentials_state_event(

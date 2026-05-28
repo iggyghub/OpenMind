@@ -9,7 +9,7 @@ independent of ``plugins/openclaw_channels.py`` (#168 / PR #171) and
 does NOT consume OpenClaw's bot-channel surface. See ADR-0006 for the
 ToS-violation acknowledgement.
 
-Slice 1 (this file) ships:
+Slice 1 (PR #176) shipped:
   - Tool surface (LLM-callable):
       * ``discord_list_conversations`` -- recent DM threads, summary view.
       * ``discord_get_messages``       -- channel/DM history.
@@ -23,10 +23,13 @@ Slice 1 (this file) ships:
     factory lazy-imports ``discord.py-self``). On each inbound DM the
     plugin invokes the wired ``draft_callback`` (today's
     ``cerebral/main.py:_surface_discord_draft``) with a draft event
-    dict. **No auto-reply** -- that is slice 2.
+    dict.
 
-Slice 2 (later PR) adds the per-sender auto-reply allowlist, human-
-shaped reply delays, typing indicators, and rate limits.
+Slice 2 (Issue #177) adds the slice-2 internal sender surface
+(``trigger_typing`` + ``send_dm``) the auto-reply controller in
+``cerebral/discord_auto_reply.py`` drives when an inbound DM lands
+from an allowlisted sender. The controller lives Cerebral-side -- the
+plugin stays focused on Discord I/O.
 
 Architecture
 ------------
@@ -640,6 +643,67 @@ class DiscordUserPlugin:
             "note": "subscriber not running -- status will apply on "
                     "next connect",
         }))
+
+    # ------------------------------------------------------------------
+    # Slice-2 internal-only send surface (Issue #177)
+    # ------------------------------------------------------------------
+    #
+    # ``discord_send_message`` (above) is the LLM-callable surface. Its
+    # ``confirm`` gate is the policy boundary for LLM-initiated sends:
+    # the LLM proposes, the user/system confirms. Auto-reply is a DIFFERENT
+    # policy decision -- the user has already opted in by putting the
+    # sender on the allowlist (#177), and the gate exercise belongs to
+    # the auto-reply controller (cerebral/discord_auto_reply.py), not
+    # to each individual send. These two helpers expose the underlying
+    # REST endpoints without the LLM-tool ceremony.
+
+    async def trigger_typing(self, channel_id: str) -> None:
+        """Emit a Discord typing indicator on a channel.
+        Discord auto-decays the indicator after ~10s; the controller's
+        delay distribution is clamped well below that, so one call per
+        outbound reply is enough. Failure is non-fatal -- the indicator
+        is a UX nicety, not a correctness gate."""
+        if not channel_id:
+            return
+        token, err = self._resolve_token()
+        if err is not None:
+            return
+        try:
+            await self._request("POST", f"channels/{channel_id}/typing", token)
+        except Exception as exc:
+            logger.debug(
+                "[discord_user] trigger_typing failed: %s",
+                self._scrub(str(exc)),
+            )
+
+    async def send_dm(self, channel_id: str, content: str) -> bool:
+        """Slice-2 internal sender used by the auto-reply controller.
+
+        Returns True iff the send was accepted by Discord. Logs (scrubbed)
+        and returns False on any transport / HTTP failure -- the
+        controller has already decided to send, so an exception bubbling
+        up would leak past the per-channel lock and confuse the legacy
+        draft-fallback path."""
+        if not channel_id or not content:
+            return False
+        token, err = self._resolve_token()
+        if err is not None:
+            logger.warning(
+                "[discord_user] auto-reply send aborted: %s", err,
+            )
+            return False
+        try:
+            await self._request(
+                "POST", f"channels/{channel_id}/messages", token,
+                json={"content": content},
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[discord_user] auto-reply send_dm failed: %s",
+                self._scrub(str(exc)),
+            )
+            return False
 
     # ------------------------------------------------------------------
     # Subscriber lifecycle
