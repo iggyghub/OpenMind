@@ -1336,11 +1336,18 @@ async def test_check_capabilities_declared_irreversible_passive_merges():
 #     #168; allow-once / allow-always to a gateway exec or plugin approval
 #     cannot be undone, so the modal is the only consent surface that
 #     matches the semantics)
+#   - plugins/discord_user.py   (discord_send_message -- Issue #175 / ADR-0006;
+#     a DM sent under the user's PERSONAL Discord account is irreversible:
+#     once a real human reads it, no API edit/delete restores the prior
+#     state of the conversation. The self-bot posture also makes mistaken
+#     sends a detection signal, raising the ban probability. Modal-gating
+#     is correct on top of the per-call ``confirm`` arg.)
 # ---------------------------------------------------------------------------
 
 _IRREVERSIBLE_PLUGINS: frozenset[str] = frozenset({
     "gmail.py",
     "openclaw_channels.py",
+    "discord_user.py",
 })
 
 
