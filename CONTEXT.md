@@ -278,7 +278,12 @@ Nitro, purchase history -- all lost, no recovery). The user filing
 shaped reply delays sampled from a log-normal distribution, typing
 indicators, per-sender allowlist, sleep-hours, per-channel rate
 limits, per-channel serialisation) reduce detection probability but
-do not eliminate it.
+do not eliminate it. Slice 3 adds reactions / edits / deletes and
+auto-presence, all of which are themselves detection vectors (timing
+distributions of these actions are more characteristic of automation
+than text composition is) -- the auto-presence machinery tracks the
+real Discord desktop client's 5-minute idle timer to keep the
+behavioural fingerprint plausibly human.
 
 **No contributor should run `plugins/discord_user.py` against a
 Discord account they are not prepared to lose.** See ADR-0006 for
@@ -308,10 +313,19 @@ form).
   (rate limit, delay distribution, typing indicator, sleep-hours
   window). Live verification against a real recipient is the user's
   acceptance gate.
-- **Slice 3** (Issue #178, blocked-on-slice-2): `discord_react` /
-  `discord_edit` / `discord_delete` + dynamic presence automation
-  (auto-idle / auto-online driven by LLM activity, with slice-2's
-  sleep-hours window winning over presence transitions).
+- **Slice 3** (Issue #178, shipped): three new outbound MCP tools
+  (`discord_react` / `discord_edit` / `discord_delete`) -- all
+  `confirm`-gated and `irreversible=True`, matching slice 1's
+  `discord_send_message` posture. Ownership errors on edit/delete are
+  surfaced from Discord rather than checked client-side. Dynamic
+  presence automation via `cerebral/discord_presence.py`: auto-idle
+  after a configurable no-activity threshold (default 5 min, matching
+  the real Discord desktop client's idle timer), auto-online on the
+  next LLM-driven Discord action (inbound dispatch or outbound tool
+  call). Manual `discord_set_presence` calls override auto-presence
+  until the next auto-trigger. Slice-2's sleep-hours window wins over
+  auto-presence: inside the window, presence holds at `invisible`
+  regardless of LLM activity.
 
 ---
 

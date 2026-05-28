@@ -1341,7 +1341,15 @@ async def test_check_capabilities_declared_irreversible_passive_merges():
 #     once a real human reads it, no API edit/delete restores the prior
 #     state of the conversation. The self-bot posture also makes mistaken
 #     sends a detection signal, raising the ban probability. Modal-gating
-#     is correct on top of the per-call ``confirm`` arg.)
+#     is correct on top of the per-call ``confirm`` arg.
+#     Slice 3 (Issue #178) extends the irreversible set in this plugin to
+#     discord_react / discord_edit / discord_delete -- the same self-bot
+#     ToS-risk argument applies. A reaction is visible to the recipient
+#     the moment it lands; an edit and a delete are likewise visible
+#     state-changes that anti-self-bot detection fingerprints on, and
+#     a wrong edit/delete cannot be undone any more than a wrong send
+#     can. Modal-gating + the per-call ``confirm`` arg is the same
+#     correct posture as discord_send_message.)
 # ---------------------------------------------------------------------------
 
 _IRREVERSIBLE_PLUGINS: frozenset[str] = frozenset({

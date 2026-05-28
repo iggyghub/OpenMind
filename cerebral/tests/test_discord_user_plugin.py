@@ -209,23 +209,27 @@ def _make_plugin(
 # Tool surface -- shape, count, capability declarations
 # ===========================================================================
 
-def test_list_tools_returns_four_discord_tools():
+def test_list_tools_contains_slice1_tools():
+    """Slice-1 surface guard. Slice 3 (Issue #178) added react/edit/delete
+    on top of these four; the additional shape is asserted in
+    test_discord_user_slice3.py."""
     plugin = _make_plugin()
-    tools = plugin.list_tools()
-    names = [t.name for t in tools]
-    assert set(names) == {
+    names = {t.name for t in plugin.list_tools()}
+    assert {
         "discord_list_conversations",
         "discord_get_messages",
         "discord_send_message",
         "discord_set_presence",
-    }
+    }.issubset(names)
 
 
 def test_send_message_marked_irreversible():
     plugin = _make_plugin()
     tools = {t.name: t for t in plugin.list_tools()}
     assert tools["discord_send_message"].irreversible is True
-    # The other three are not.
+    # The slice-1 read-only tools + the manual presence-setter are NOT
+    # irreversible. (Slice 3 added three more irreversible tools; that
+    # set is pinned in test_discord_user_slice3.py.)
     for name in (
         "discord_list_conversations",
         "discord_get_messages",

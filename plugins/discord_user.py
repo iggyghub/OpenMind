@@ -31,6 +31,23 @@ Slice 2 (Issue #177) adds the slice-2 internal sender surface
 from an allowlisted sender. The controller lives Cerebral-side -- the
 plugin stays focused on Discord I/O.
 
+Slice 3 (Issue #178) rounds out the outbound surface and adds dynamic
+presence automation:
+
+  - ``discord_react``  -- add or remove an emoji reaction on a message
+    (DM channel). Confirm-gated, irreversible=True.
+  - ``discord_edit``   -- edit a message owned by the authenticated
+    user. Confirm-gated, irreversible=True. Surfaces Discord's
+    ownership-violation error rather than checking client-side.
+  - ``discord_delete`` -- delete a message owned by the authenticated
+    user. Confirm-gated, irreversible=True. Same ownership posture.
+  - Auto-presence is driven by a Cerebral-side controller
+    (``cerebral/discord_presence.py``); the plugin still owns the
+    actual ``change_presence`` wire call via the slice-1
+    ``DiscordClient`` Protocol. The slice-1 ``discord_set_presence``
+    MCP tool remains the manual-override path and continues to win
+    until the next auto-trigger.
+
 Architecture
 ------------
 
@@ -71,6 +88,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import urllib.parse
 from typing import (
     Any, AsyncIterator, Awaitable, Callable, Optional, Protocol,
 )
@@ -123,6 +141,19 @@ _CONFIRM_REQUIRED_MSG = (
     "discord_send_message requires confirm=true to actually send. "
     "Without it, returning the would-be message for review."
 )
+_REACT_CONFIRM_REQUIRED_MSG = (
+    "discord_react requires confirm=true to actually apply the "
+    "reaction. Without it, returning the would-be reaction for review."
+)
+_EDIT_CONFIRM_REQUIRED_MSG = (
+    "discord_edit requires confirm=true to actually edit the message. "
+    "Without it, returning the would-be edit for review."
+)
+_DELETE_CONFIRM_REQUIRED_MSG = (
+    "discord_delete requires confirm=true to actually delete the "
+    "message. Without it, returning the would-be deletion for review."
+)
+_VALID_REACTION_ACTIONS = ("add", "remove")
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +201,45 @@ def set_draft_callback(fn: DraftCallback) -> None:
     """
     global _draft_callback
     _draft_callback = fn
+
+
+# ---------------------------------------------------------------------------
+# Slice-3 presence-controller seams -- main.py wires these
+# ---------------------------------------------------------------------------
+
+# Fired after a confirmed outbound tool call clears its confirm gate
+# (slice-3 acceptance: auto-online on the next LLM-driven Discord
+# action). Tick is fire-and-forget; exceptions are swallowed so a
+# failing controller never breaks the tool path.
+ActivityCallback = Callable[[], Awaitable[None]]
+
+_activity_callback: Optional[ActivityCallback] = None
+
+
+def set_activity_callback(fn: Optional[ActivityCallback]) -> None:
+    """Wire main.py's presence-activity tick. The plugin calls it after
+    every confirmed outbound tool call (send / react / edit / delete).
+    Passing ``None`` clears the seam (used by tests for isolation)."""
+    global _activity_callback
+    _activity_callback = fn
+
+
+# Manual-override delegate -- when wired, ``discord_set_presence``
+# routes through this instead of applying directly. Returns True iff
+# the callback handled the change.
+ManualPresenceCallback = Callable[[str], Awaitable[bool]]
+
+_manual_presence_callback: Optional[ManualPresenceCallback] = None
+
+
+def set_manual_presence_callback(
+    fn: Optional[ManualPresenceCallback],
+) -> None:
+    """Wire main.py's manual-override delegate. Without it,
+    ``discord_set_presence`` keeps its slice-1 direct-apply
+    behaviour."""
+    global _manual_presence_callback
+    _manual_presence_callback = fn
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +532,144 @@ class DiscordUserPlugin:
                 irreversible=True,
             ),
             Tool(
+                name="discord_react",
+                description=(
+                    "Add or remove an emoji reaction on a Discord DM "
+                    "message. REQUIRES confirm=true to actually apply "
+                    "the reaction -- without it, returns the would-be "
+                    "reaction for review. Unicode emoji or custom "
+                    "``name:id`` accepted. Discord enforces that "
+                    "remove acts only on reactions previously added "
+                    "by the authenticated user; surface the error "
+                    "rather than catch."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "channel_id": {
+                            "type": "string",
+                            "description": (
+                                "Discord channel/DM id the target "
+                                "message lives in."
+                            ),
+                        },
+                        "message_id": {
+                            "type": "string",
+                            "description": "Target message id.",
+                        },
+                        "emoji": {
+                            "type": "string",
+                            "description": (
+                                "Unicode emoji (e.g. thumbs-up "
+                                "\"\\U0001F44D\") or custom emoji "
+                                "as ``name:id``."
+                            ),
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": list(_VALID_REACTION_ACTIONS),
+                            "description": (
+                                "``add`` (default) or ``remove``."
+                            ),
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "description": (
+                                "Must be true to actually apply. "
+                                "False (default) returns the would-be "
+                                "reaction for review."
+                            ),
+                        },
+                    },
+                    "required": [
+                        "channel_id", "message_id", "emoji",
+                    ],
+                },
+                irreversible=True,
+            ),
+            Tool(
+                name="discord_edit",
+                description=(
+                    "Edit a Discord message owned by the authenticated "
+                    "user. REQUIRES confirm=true to actually apply -- "
+                    "without it, returns the would-be edit for review. "
+                    "Discord rejects edits to messages not owned by "
+                    "the authenticated user; the error is surfaced "
+                    "rather than caught."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "channel_id": {
+                            "type": "string",
+                            "description": (
+                                "Discord channel/DM id."
+                            ),
+                        },
+                        "message_id": {
+                            "type": "string",
+                            "description": "Target message id.",
+                        },
+                        "new_content": {
+                            "type": "string",
+                            "description": "Replacement message text.",
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "description": (
+                                "Must be true to actually edit. "
+                                "False (default) returns the would-be "
+                                "edit for review."
+                            ),
+                        },
+                    },
+                    "required": [
+                        "channel_id", "message_id", "new_content",
+                    ],
+                },
+                irreversible=True,
+            ),
+            Tool(
+                name="discord_delete",
+                description=(
+                    "Delete a Discord message owned by the "
+                    "authenticated user. REQUIRES confirm=true to "
+                    "actually delete -- without it, returns the "
+                    "would-be deletion for review. Discord rejects "
+                    "deletes of messages not owned by the "
+                    "authenticated user; the error is surfaced rather "
+                    "than caught."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "channel_id": {
+                            "type": "string",
+                            "description": (
+                                "Discord channel/DM id."
+                            ),
+                        },
+                        "message_id": {
+                            "type": "string",
+                            "description": "Target message id.",
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "description": (
+                                "Must be true to actually delete. "
+                                "False (default) returns the would-be "
+                                "deletion for review."
+                            ),
+                        },
+                    },
+                    "required": ["channel_id", "message_id"],
+                },
+                irreversible=True,
+            ),
+            Tool(
                 name="discord_set_presence",
                 description=(
                     "Set the user's Discord presence status. Slice-1: "
@@ -494,6 +702,12 @@ class DiscordUserPlugin:
             return await self._get_messages(args)
         if tool_name == "discord_send_message":
             return await self._send_message(args)
+        if tool_name == "discord_react":
+            return await self._react(args)
+        if tool_name == "discord_edit":
+            return await self._edit(args)
+        if tool_name == "discord_delete":
+            return await self._delete(args)
         if tool_name == "discord_set_presence":
             return await self._set_presence(args)
         return ToolResult(
@@ -590,6 +804,7 @@ class DiscordUserPlugin:
                 "note": _CONFIRM_REQUIRED_MSG,
             }))
 
+        await self._fire_activity()
         token, err = self._resolve_token()
         if err is not None:
             return ToolResult(content=err, is_error=True)
@@ -610,6 +825,183 @@ class DiscordUserPlugin:
             "message": _shape_message(resp),
         }))
 
+    async def _react(self, args: dict) -> ToolResult:
+        channel_id = args.get("channel_id")
+        message_id = args.get("message_id")
+        emoji = args.get("emoji")
+        action = args.get("action") or "add"
+        if not isinstance(channel_id, str) or not channel_id:
+            return ToolResult(
+                content="missing required arg(s) for discord_react: "
+                        "channel_id",
+                is_error=True,
+            )
+        if not isinstance(message_id, str) or not message_id:
+            return ToolResult(
+                content="missing required arg(s) for discord_react: "
+                        "message_id",
+                is_error=True,
+            )
+        if not isinstance(emoji, str) or not emoji:
+            return ToolResult(
+                content="missing required arg(s) for discord_react: "
+                        "emoji",
+                is_error=True,
+            )
+        if action not in _VALID_REACTION_ACTIONS:
+            return ToolResult(
+                content=(
+                    f"invalid action: must be one of "
+                    f"{_VALID_REACTION_ACTIONS}"
+                ),
+                is_error=True,
+            )
+        if not args.get("confirm"):
+            return ToolResult(content=json.dumps({
+                "confirmed": False,
+                "channel_id": channel_id,
+                "message_id": message_id,
+                "emoji": emoji,
+                "action": action,
+                "note": _REACT_CONFIRM_REQUIRED_MSG,
+            }))
+
+        await self._fire_activity()
+        token, err = self._resolve_token()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+
+        # Discord PUT/DELETE on /channels/{c}/messages/{m}/reactions/{e}/@me
+        # operate on the authenticated user's own reaction. ``@me`` is
+        # the only valid target for both add and remove (removing another
+        # user's reaction is a manage_messages bot operation, not a self-
+        # bot one). Both endpoints return 204; transport returns None.
+        method = "PUT" if action == "add" else "DELETE"
+        encoded = _encode_reaction(emoji)
+        try:
+            await self._request(
+                method,
+                f"channels/{channel_id}/messages/{message_id}/"
+                f"reactions/{encoded}/@me",
+                token,
+            )
+        except Exception as exc:
+            return self._fail("discord_react", exc)
+
+        return ToolResult(content=json.dumps({
+            "confirmed": True,
+            "channel_id": channel_id,
+            "message_id": message_id,
+            "emoji": emoji,
+            "action": action,
+        }))
+
+    async def _edit(self, args: dict) -> ToolResult:
+        channel_id = args.get("channel_id")
+        message_id = args.get("message_id")
+        new_content = args.get("new_content")
+        if not isinstance(channel_id, str) or not channel_id:
+            return ToolResult(
+                content="missing required arg(s) for discord_edit: "
+                        "channel_id",
+                is_error=True,
+            )
+        if not isinstance(message_id, str) or not message_id:
+            return ToolResult(
+                content="missing required arg(s) for discord_edit: "
+                        "message_id",
+                is_error=True,
+            )
+        if not isinstance(new_content, str) or not new_content:
+            return ToolResult(
+                content="missing required arg(s) for discord_edit: "
+                        "new_content",
+                is_error=True,
+            )
+        if not args.get("confirm"):
+            return ToolResult(content=json.dumps({
+                "confirmed": False,
+                "channel_id": channel_id,
+                "message_id": message_id,
+                "preview": new_content,
+                "note": _EDIT_CONFIRM_REQUIRED_MSG,
+            }))
+
+        await self._fire_activity()
+        token, err = self._resolve_token()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+
+        # Discord PATCH /channels/{c}/messages/{m} -- Discord enforces
+        # ownership server-side (returns 403/404 with code 50005 if the
+        # target wasn't authored by the authenticated user). We surface
+        # the error rather than check client-side, per ADR-0006 (slice 3
+        # acceptance criterion).
+        try:
+            resp = await self._request(
+                "PATCH",
+                f"channels/{channel_id}/messages/{message_id}",
+                token,
+                json={"content": new_content},
+            )
+        except Exception as exc:
+            return self._fail("discord_edit", exc)
+
+        if not isinstance(resp, dict):
+            return ToolResult(
+                content="unexpected Discord edit response", is_error=True,
+            )
+        return ToolResult(content=json.dumps({
+            "confirmed": True,
+            "message": _shape_message(resp),
+        }))
+
+    async def _delete(self, args: dict) -> ToolResult:
+        channel_id = args.get("channel_id")
+        message_id = args.get("message_id")
+        if not isinstance(channel_id, str) or not channel_id:
+            return ToolResult(
+                content="missing required arg(s) for discord_delete: "
+                        "channel_id",
+                is_error=True,
+            )
+        if not isinstance(message_id, str) or not message_id:
+            return ToolResult(
+                content="missing required arg(s) for discord_delete: "
+                        "message_id",
+                is_error=True,
+            )
+        if not args.get("confirm"):
+            return ToolResult(content=json.dumps({
+                "confirmed": False,
+                "channel_id": channel_id,
+                "message_id": message_id,
+                "note": _DELETE_CONFIRM_REQUIRED_MSG,
+            }))
+
+        await self._fire_activity()
+        token, err = self._resolve_token()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+
+        # Discord DELETE /channels/{c}/messages/{m} -- 403/404 returned
+        # by Discord when the message isn't owned by the authenticated
+        # user. Surface, don't catch.
+        try:
+            await self._request(
+                "DELETE",
+                f"channels/{channel_id}/messages/{message_id}",
+                token,
+            )
+        except Exception as exc:
+            return self._fail("discord_delete", exc)
+
+        return ToolResult(content=json.dumps({
+            "confirmed": True,
+            "channel_id": channel_id,
+            "message_id": message_id,
+        }))
+
     async def _set_presence(self, args: dict) -> ToolResult:
         status = args.get("status")
         if status not in _VALID_PRESENCE:
@@ -619,6 +1011,34 @@ class DiscordUserPlugin:
                 ),
                 is_error=True,
             )
+        # Slice-3: when the presence controller is wired, the LLM-callable
+        # discord_set_presence flows through controller.apply_manual_override
+        # so the controller can track the override and skip its next auto-
+        # flip. The controller calls plugin.apply_presence under the hood
+        # for the actual wire-level change. When no controller is wired
+        # (slice-1 behaviour), we fall through to the direct-apply path.
+        cb = _manual_presence_callback
+        if cb is not None:
+            self._desired_presence = status
+            try:
+                handled = await cb(status)
+            except Exception as exc:
+                logger.warning(
+                    "[discord_user] manual_presence_callback raised: %s",
+                    self._scrub(str(exc)),
+                )
+                handled = False
+            if handled:
+                return ToolResult(content=json.dumps({
+                    "status": status,
+                    "applied": True,
+                    "manual_override": True,
+                }))
+            return ToolResult(content=json.dumps({
+                "status": status,
+                "applied": False,
+                "note": "manual override delegate declined -- state recorded",
+            }))
         self._desired_presence = status
         client = self._client
         if client is not None:
@@ -675,6 +1095,38 @@ class DiscordUserPlugin:
                 "[discord_user] trigger_typing failed: %s",
                 self._scrub(str(exc)),
             )
+
+    async def apply_presence(self, status: str) -> bool:
+        """Slice-3 internal presence-control surface used by the
+        ``DiscordPresenceController``.
+
+        Behaves like ``discord_set_presence`` except it bypasses the
+        LLM-tool ceremony: presence transitions driven by the auto-
+        presence state machine are NOT LLM-initiated, so the confirm
+        gate doesn't apply (parity with slice 2's ``send_dm`` /
+        ``trigger_typing``).
+
+        Records the desired state (so the slice-1 next-connect path
+        still works) and, when the subscriber is running, calls the
+        underlying ``change_presence``. Returns True iff the call
+        actually made it to the client. Failure is non-fatal: state is
+        recorded for the next connect.
+        """
+        if status not in _VALID_PRESENCE:
+            return False
+        self._desired_presence = status
+        client = self._client
+        if client is None:
+            return False
+        try:
+            await client.change_presence(status=status)
+            return True
+        except Exception as exc:
+            logger.debug(
+                "[discord_user] apply_presence failed: %s",
+                self._scrub(str(exc)),
+            )
+            return False
 
     async def send_dm(self, channel_id: str, content: str) -> bool:
         """Slice-2 internal sender used by the auto-reply controller.
@@ -979,6 +1431,21 @@ class DiscordUserPlugin:
             is_error=True,
         )
 
+    async def _fire_activity(self) -> None:
+        """Tick the slice-3 presence-activity callback when wired.
+        Swallows exceptions so a misbehaving controller never breaks
+        the LLM tool call (slice-3 fire-and-forget contract)."""
+        cb = _activity_callback
+        if cb is None:
+            return
+        try:
+            await cb()
+        except Exception as exc:
+            logger.debug(
+                "[discord_user] activity callback raised: %s",
+                self._scrub(str(exc)),
+            )
+
     def _scrub(self, text: str) -> str:
         for tok in self._seen_tokens:
             if tok:
@@ -1027,6 +1494,19 @@ def _shape_message(m: dict) -> dict:
         "content": m.get("content", "") or "",
         "timestamp": m.get("timestamp", "") or "",
     }
+
+
+def _encode_reaction(emoji: str) -> str:
+    """URL-encode an emoji for Discord's reaction-path segment.
+
+    Discord expects either a unicode emoji (e.g. a thumbs-up
+    character) or ``name:id`` for custom emoji. ``urllib.parse.quote``
+    with no safe characters is correct for both -- the colon in
+    ``name:id`` is *not* reserved here (Discord parses the colon out
+    of the percent-encoded form). The ``:`` is left as safe to keep
+    test URLs readable while still encoding multi-byte unicode.
+    """
+    return urllib.parse.quote(emoji, safe=":")
 
 
 def _channel_type_label(ctype: Any) -> str:

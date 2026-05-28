@@ -49,10 +49,20 @@ if str(ROOT) not in sys.path:
 
 from cerebral.db.profiles import ProfileManager
 from cerebral.discord_auto_reply import (  # noqa: E402
-    ALLOWED_SETTING_KEYS,
-    _DEFAULTS as SETTING_DEFAULTS,
+    ALLOWED_SETTING_KEYS as AUTO_REPLY_KEYS,
+    _DEFAULTS as AUTO_REPLY_DEFAULTS,
     settings_from_overrides,
 )
+from cerebral.discord_presence import (  # noqa: E402
+    PRESENCE_ALLOWED_SETTING_KEYS,
+    _DEFAULTS as PRESENCE_DEFAULTS,
+    presence_settings_from_overrides,
+)
+
+# Slice 2 (#177) + slice 3 (#178) settings share the discord_user_settings
+# table; the CLI surfaces both namespaces in one ``settings`` subcommand.
+ALLOWED_SETTING_KEYS = AUTO_REPLY_KEYS | PRESENCE_ALLOWED_SETTING_KEYS
+SETTING_DEFAULTS: dict[str, str] = {**AUTO_REPLY_DEFAULTS, **PRESENCE_DEFAULTS}
 
 
 def _resolve_profile(pm: ProfileManager, explicit: int | None):
@@ -118,9 +128,10 @@ def cmd_remove(pm: ProfileManager, args) -> int:
 def cmd_settings_show(pm: ProfileManager, args) -> int:
     profile = _resolve_profile(pm, args.profile)
     overrides = pm.list_discord_settings(profile.id)
-    settings = settings_from_overrides(overrides)
+    auto_reply_settings = settings_from_overrides(overrides)
+    presence_settings = presence_settings_from_overrides(overrides)
     print(
-        f"Discord auto-reply settings for profile {profile.name!r} "
+        f"Discord settings for profile {profile.name!r} "
         f"(id={profile.id}):"
     )
     rows: list[tuple[str, str, str, str]] = []  # (key, effective, default, source)
@@ -133,9 +144,12 @@ def cmd_settings_show(pm: ProfileManager, args) -> int:
         line = f"  {key.ljust(kw)}  {eff!r:<10}  ({source}; default={default!r})"
         print(line)
     print()
-    print("Parsed:")
-    for field_name, value in settings.__dict__.items():
-        print(f"  {field_name:<20} {value!r}")
+    print("Parsed (auto-reply):")
+    for field_name, value in auto_reply_settings.__dict__.items():
+        print(f"  {field_name:<30} {value!r}")
+    print("Parsed (presence):")
+    for field_name, value in presence_settings.__dict__.items():
+        print(f"  {field_name:<30} {value!r}")
     return 0
 
 

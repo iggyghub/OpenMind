@@ -743,6 +743,21 @@ async def _surface_discord_draft(event: dict) -> None:
     if not isinstance(event, dict):
         return
 
+    # Slice-3: inbound dispatch is one of the two "LLM-driven Discord
+    # action" triggers for auto-presence (the other is outbound tool
+    # calls, hooked from inside the plugin). Tick BEFORE we route to
+    # the auto-reply controller so a sleep-hours / rate-limit fallback
+    # still counts as activity -- the user IS attending to Discord.
+    presence_controller = _get_discord_presence_controller()
+    if presence_controller is not None:
+        try:
+            await presence_controller.tick_activity()
+        except Exception:
+            logger.exception(
+                "[discord_user] presence tick_activity raised -- "
+                "continuing with inbound dispatch",
+            )
+
     controller = _get_discord_auto_reply_controller()
     if controller is not None:
         try:
@@ -848,6 +863,143 @@ def _get_discord_auto_reply_controller():
     )
     _discord_auto_reply_controller = (profile_id, controller)
     return controller
+
+
+# ── Discord presence controller (Issue #178 / ADR-0006) ─────────────────────
+#
+# Same lazy-singleton-keyed-by-profile-id pattern as the slice-2 auto-reply
+# controller above. Slice 3 adds:
+#   - tick_activity() ticks on inbound dispatch + every confirmed outbound
+#     LLM-driven Discord tool call (via the plugin's set_activity_callback
+#     seam). Bridges to controller.tick_activity().
+#   - Manual override: slice-1 ``discord_set_presence`` flows through this
+#     controller's apply_manual_override (via the plugin's
+#     set_manual_presence_callback seam) so the controller's state reflects
+#     reality.
+#   - A periodic background loop in main() drives tick_check at the
+#     configured interval (default 30s).
+
+_discord_presence_controller = None  # type: ignore[var-annotated]
+_discord_presence_stop_event: asyncio.Event | None = None
+_discord_presence_task: asyncio.Task | None = None
+
+
+def _get_discord_presence_controller():
+    """Return the cached DiscordPresenceController, building one when
+    every dependency is in place: active profile + plugin module loaded
+    + plugin instance present. Otherwise None -- the activity/override
+    callbacks degrade to silent no-ops, parity with the auto-reply
+    controller's posture."""
+    global _discord_presence_controller
+    if _active_profile is None:
+        return None
+    try:
+        module = _orc.get_plugin_module("discord_user")
+    except KeyError:
+        return None
+    plugin = getattr(module, "_active_plugin", None)
+    if plugin is None:
+        return None
+
+    if _discord_presence_controller is not None:
+        cached_pid, cached = _discord_presence_controller
+        if cached_pid == _active_profile.id:
+            return cached
+
+    from cerebral.discord_presence import (  # local import: avoid top-level cycle
+        DiscordPresenceController, presence_settings_from_overrides,
+    )
+    from cerebral.discord_auto_reply import settings_from_overrides
+    from datetime import datetime
+
+    profile_id = _active_profile.id
+
+    def _get_presence_settings():
+        overrides = _pm.list_discord_settings(profile_id)
+        return presence_settings_from_overrides(overrides)
+
+    def _sleep_hours():
+        overrides = _pm.list_discord_settings(profile_id)
+        s = settings_from_overrides(overrides)
+        return (s.sleep_start_hour, s.sleep_end_hour)
+
+    controller = DiscordPresenceController(
+        sender=plugin,
+        get_presence_settings=_get_presence_settings,
+        sleep_hours=_sleep_hours,
+        local_hour=lambda: datetime.now().hour,
+    )
+    _discord_presence_controller = (profile_id, controller)
+    return controller
+
+
+async def _discord_presence_tick_activity() -> None:
+    """Plugin's set_activity_callback target -- fire-and-forget tick
+    invoked from inside every confirmed outbound Discord tool call.
+    No-op when no controller is wired."""
+    controller = _get_discord_presence_controller()
+    if controller is None:
+        return
+    await controller.tick_activity()
+
+
+async def _discord_presence_manual_override(status: str) -> bool:
+    """Plugin's set_manual_presence_callback target -- routes the LLM-
+    callable ``discord_set_presence`` through the controller so the
+    override is tracked. Returns False when no controller is wired so
+    the plugin falls back to its slice-1 direct-apply path."""
+    controller = _get_discord_presence_controller()
+    if controller is None:
+        return False
+    await controller.apply_manual_override(status)
+    return True
+
+
+async def _start_discord_presence_loop() -> None:
+    """Spin up the background tick_check loop. Idempotent."""
+    global _discord_presence_stop_event, _discord_presence_task
+    if _discord_presence_task is not None and not _discord_presence_task.done():
+        return
+    controller = _get_discord_presence_controller()
+    if controller is None:
+        logger.info(
+            "[cerebral] Discord presence loop not started -- "
+            "no controller (no active profile or plugin missing)",
+        )
+        return
+    from cerebral.discord_presence import (  # local import: avoid top-level cycle
+        presence_settings_from_overrides, run_presence_loop,
+    )
+
+    def _get_settings():
+        overrides = _pm.list_discord_settings(_active_profile.id)
+        return presence_settings_from_overrides(overrides)
+
+    _discord_presence_stop_event = asyncio.Event()
+    _discord_presence_task = asyncio.create_task(
+        run_presence_loop(
+            controller,
+            _get_settings,
+            stop_event=_discord_presence_stop_event,
+        ),
+    )
+    logger.info("[cerebral] Discord presence loop running")
+
+
+async def _stop_discord_presence_loop() -> None:
+    """Stop the background tick_check loop. Idempotent."""
+    global _discord_presence_stop_event, _discord_presence_task
+    if _discord_presence_stop_event is not None:
+        _discord_presence_stop_event.set()
+    task = _discord_presence_task
+    _discord_presence_task = None
+    _discord_presence_stop_event = None
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
 
 
 def _credentials_state_event(
@@ -1937,6 +2089,8 @@ def _wire_plugin_seams() -> None:
         ("openclaw_channels", "set_inbound_callback", _bridge_process),     # #168
         ("discord_user",      "set_token_provider", _get_discord_user_token_provider),  # #175
         ("discord_user",      "set_draft_callback", _surface_discord_draft),          # #175
+        ("discord_user",      "set_activity_callback", _discord_presence_tick_activity),  # #178
+        ("discord_user",      "set_manual_presence_callback", _discord_presence_manual_override),  # #178
     ]
     for name, seam, factory in seams:
         try:
@@ -2277,6 +2431,7 @@ async def main() -> None:
 
     await _start_openclaw_subscriber()
     await _start_discord_user_subscriber()
+    await _start_discord_presence_loop()
 
     logger.info("[cerebral] Starting IPC server on ws://%s:%d", HOST, PORT)
     async with serve(_ws_handler, HOST, PORT):
@@ -2300,6 +2455,7 @@ async def main() -> None:
         pipeline.stop()
 
     await _stop_openclaw_subscriber()
+    await _stop_discord_presence_loop()
     await _stop_discord_user_subscriber()
 
     logger.info("[cerebral] Shut down cleanly.")
