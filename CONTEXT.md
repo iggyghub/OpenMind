@@ -245,6 +245,56 @@ Installable-on-a-friend's-machine, public release, PyPI/installer artefacts, mar
 
 ---
 
+## Discord user-account integration
+
+OpenMind has **two** Discord integration paths, intentionally:
+
+1. **Bot-API via OpenClaw** (the harness path, the default). A
+   registered Discord bot is the messaging account; messages flow
+   through `plugins/openclaw_channels.py` (#168 / PR #171). This is
+   the same path Telegram / WhatsApp / Slack take. Currently
+   deferred per the user's "add bots at a later date" decision
+   ([#164](https://github.com/iggyghub/OpenMind/issues/164)).
+2. **User-account direct** (the self-bot path,
+   `plugins/discord_user.py` -- Issue
+   [#175](https://github.com/iggyghub/OpenMind/issues/175), ADR-0006).
+   Felix reads incoming DMs from real humans on the *user's
+   personal* Discord account and replies as the user. This path
+   bypasses OpenClaw entirely because OpenClaw 2026.4.29's Discord
+   channel is bot-API only -- there is no user-account login flow
+   to consume.
+
+**Why both can coexist.** They bind two *different* Discord
+identities (a bot user vs. the human user), so they don't race on
+incoming events.
+
+### ToS risk on the self-bot path
+
+Discord's Developer Terms forbid automating personal user accounts.
+Discord actively detects self-bots; detection results in **permanent
+ban** of the human account (DMs, friend list, server ownership,
+Nitro, purchase history -- all lost, no recovery). The user filing
+#175 has explicitly accepted this risk. Slice-2+ mitigations (human-
+shaped reply delays, typing indicators, per-sender allowlist, sleep-
+hours, rate limits) reduce detection probability but do not
+eliminate it.
+
+**No contributor should run `plugins/discord_user.py` against a
+Discord account they are not prepared to lose.** See ADR-0006 for
+the full posture; SETUP.md's "Discord (user account) -- experimental,
+high risk" subsection covers the setup steps.
+
+### Token storage
+
+The user-account token is stored via the #160 keyring +
+`DISCORD_USER_TOKEN` env-var chain, NEVER in a plain-JSON config and
+NEVER logged. The provider is *deliberately not* surfaced in the
+tray's "API keys" UI (friction-as-safety -- setting it requires the
+user to do a slightly more deliberate thing than pasting into a
+form).
+
+---
+
 ## Not in scope (yet)
 
 - Security model and per-profile permissions

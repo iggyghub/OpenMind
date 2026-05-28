@@ -670,6 +670,103 @@ def _read_openclaw_config_token(config_path: Path) -> str | None:
     return token if isinstance(token, str) and token else None
 
 
+# ── Discord user-account plugin (Issue #175 / ADR-0006) ──────────────────────
+#
+# The Discord user-account token is a *highly* sensitive personal credential
+# (ToS-violating to use; detection = permanent account ban -- see ADR-0006).
+# Resolution mirrors the static-token chain (keyring + env fallback) BUT the
+# provider is deliberately omitted from ``_STATIC_TOKEN_PROVIDERS`` -- the
+# tray's "API keys" UI is friendly "click to paste" surface appropriate for
+# ordinary API tokens, and exposing a self-bot credential there would invite
+# casual setup. Friction-as-safety. Slice 2+ may reconsider once the auto-
+# reply allowlist + low-detection defaults land.
+
+DISCORD_USER_TOKEN_ENV = "DISCORD_USER_TOKEN"
+_DISCORD_USER_PROVIDER = "discord_user"
+
+
+class _DiscordUserTokenProvider:
+    """Static user-account token handle for plugins/discord_user.py.
+
+    Discord user-account tokens are a STATIC user-extracted value (the
+    user copies it out of their browser's storage). There is no OAuth
+    refresh capability -- if the token is rotated (or invalidated on
+    detection), the user re-extracts. ``current()`` only, mirroring
+    ``_TodoistTokenProvider`` / ``_OpenClawTokenProvider``.
+    """
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def current(self) -> str | None:
+        return self._token or None
+
+
+def _get_discord_user_token_provider() -> _DiscordUserTokenProvider | None:
+    """Return a Discord user-account token provider iff a token is
+    configured (per-profile keyring or ``DISCORD_USER_TOKEN`` env),
+    else None. Re-resolved on every connect so a rotated token picks
+    up without a Cerebral restart.
+
+    The keyring entry uses the same ``api_token`` field as the rest of
+    the static-token chain so the existing
+    ``cerebral/db/credentials.py`` storage is reused without schema
+    changes. The provider name (``discord_user``) is kept out of
+    ``_STATIC_TOKEN_PROVIDERS`` so the tray UI doesn't surface it
+    (ADR-0006).
+    """
+    token, _ = _static_token_from_store_or_env(
+        _DISCORD_USER_PROVIDER, DISCORD_USER_TOKEN_ENV,
+    )
+    if not token:
+        return None
+    return _DiscordUserTokenProvider(token)
+
+
+async def _surface_discord_draft(event: dict) -> None:
+    """Slice-1 draft surface for plugins/discord_user.py.
+
+    The plugin's subscriber loop calls this for each inbound DM from a
+    real human. No auto-reply yet (that's slice 2) -- we just push the
+    message into the queue as a draft for manual approval. The queue
+    item has no ``tool_name`` so approving it doesn't auto-execute
+    anything; the user reads it, decides what to do, and (in slice 2+)
+    the auto-reply allowlist will decide whether the LLM drafts a
+    response.
+
+    Never raises -- the plugin's handler logs+continues on callback
+    exceptions, but we keep this defensive so a queue/SQLite hiccup
+    doesn't taint the subscriber loop's state.
+    """
+    if not isinstance(event, dict):
+        return
+    author = event.get("author_name") or "<unknown>"
+    text = event.get("text") or ""
+    channel_id = event.get("channel_id") or ""
+    if not text:
+        return
+    title = f"Discord DM from {author}"
+    # Keep the summary terse so the tray cell stays readable; truncate
+    # at 280 chars (Twitter-ish). The full payload is recoverable via
+    # discord_get_messages when the user (or a later slice's auto-
+    # reply) wants context.
+    snippet = text if len(text) <= 280 else (text[:277] + "...")
+    summary = f"{snippet} (channel_id={channel_id})" if channel_id else snippet
+    try:
+        item = _queue.add_item(title=title, summary=summary)
+    except Exception:
+        logger.exception("[discord_user] queue add_item failed")
+        return
+    logger.info(
+        "[discord_user] Surfaced DM from %s as queue item %s",
+        author, item.id,
+    )
+    try:
+        await _broadcast(_queue_update_event())
+    except Exception:
+        logger.exception("[discord_user] queue_update broadcast failed")
+
+
 def _credentials_state_event(
     *, transient: str | None = None, error: str | None = None
 ) -> dict:
@@ -1755,6 +1852,8 @@ def _wire_plugin_seams() -> None:
         ("youtube",  "set_token_provider",  _get_youtube_token_provider),   # #148
         ("openclaw_channels", "set_token_provider", _get_openclaw_token_provider),  # #168
         ("openclaw_channels", "set_inbound_callback", _bridge_process),     # #168
+        ("discord_user",      "set_token_provider", _get_discord_user_token_provider),  # #175
+        ("discord_user",      "set_draft_callback", _surface_discord_draft),          # #175
     ]
     for name, seam, factory in seams:
         try:
@@ -1823,6 +1922,67 @@ async def _stop_openclaw_subscriber() -> None:
 def _openclaw_subscriber_running() -> bool:
     try:
         module = _orc.get_plugin_module("openclaw_channels")
+    except KeyError:
+        return False
+    fn = getattr(module, "subscriber_running", None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn())
+    except Exception:  # pragma: no cover -- defensive
+        return False
+
+
+# ── Discord user-account subscriber lifecycle (Issue #175) ────────────────────
+#
+# Parallel to the OpenClaw subscriber above. The Discord plugin's WS gateway
+# loop replaces nothing -- it's a wholly independent path that the harness
+# can't serve (OpenClaw 2026.4.29 is bot-API only; see ADR-0006). The
+# graceful-degradation posture matches: missing token / missing dep / WS
+# failure logs a warn and Cerebral stays up.
+
+async def _start_discord_user_subscriber() -> None:
+    try:
+        module = _orc.get_plugin_module("discord_user")
+    except KeyError:
+        logger.info(
+            "[cerebral] Plugin 'discord_user' not loaded -- "
+            "Discord user-account integration disabled",
+        )
+        return
+    start = getattr(module, "start_subscriber", None)
+    if start is None:
+        logger.warning(
+            "[cerebral] Plugin 'discord_user' missing start_subscriber",
+        )
+        return
+    try:
+        await start()
+    except Exception as exc:  # pragma: no cover -- defensive
+        logger.warning(
+            "[cerebral] Discord user subscriber start failed: %s", exc,
+        )
+
+
+async def _stop_discord_user_subscriber() -> None:
+    try:
+        module = _orc.get_plugin_module("discord_user")
+    except KeyError:
+        return
+    stop = getattr(module, "stop_subscriber", None)
+    if stop is None:
+        return
+    try:
+        await stop()
+    except Exception as exc:  # pragma: no cover -- defensive
+        logger.warning(
+            "[cerebral] Discord user subscriber stop failed: %s", exc,
+        )
+
+
+def _discord_user_subscriber_running() -> bool:
+    try:
+        module = _orc.get_plugin_module("discord_user")
     except KeyError:
         return False
     fn = getattr(module, "subscriber_running", None)
@@ -2033,6 +2193,7 @@ async def main() -> None:
         logger.info("[cerebral] No profiles found — will prompt on tray connection")
 
     await _start_openclaw_subscriber()
+    await _start_discord_user_subscriber()
 
     logger.info("[cerebral] Starting IPC server on ws://%s:%d", HOST, PORT)
     async with serve(_ws_handler, HOST, PORT):
@@ -2056,6 +2217,7 @@ async def main() -> None:
         pipeline.stop()
 
     await _stop_openclaw_subscriber()
+    await _stop_discord_user_subscriber()
 
     logger.info("[cerebral] Shut down cleanly.")
 
