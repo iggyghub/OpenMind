@@ -30,8 +30,117 @@
       color: var(--text);
       height: 100vh;
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
       overflow: hidden;
+    }
+
+    /* ── sidebar ────────────────────────────────────────────── */
+    .sidebar {
+      width: 180px;
+      flex-shrink: 0;
+      background: #0e0c1a;
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .sidebar::-webkit-scrollbar { width: 4px; }
+    .sidebar::-webkit-scrollbar-track { background: transparent; }
+    .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .brand {
+      padding: 16px 18px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav {
+      display: flex;
+      flex-direction: column;
+      padding: 8px 6px;
+      gap: 2px;
+    }
+
+    .nav-item {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      font-family: inherit;
+      font-size: 13px;
+      text-align: left;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background .12s, color .12s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .nav-item:hover { background: var(--bg-elev); color: var(--text); }
+    .nav-item.active {
+      background: var(--bg-elev);
+      color: var(--text);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+
+    /* ── content (right pane) ───────────────────────────────── */
+    .content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;          /* let flex children shrink */
+      overflow: hidden;
+    }
+
+    .pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .pane[hidden] { display: none; }
+
+    /* ── placeholder pane ──────────────────────────────────── */
+    .placeholder {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--text-muted);
+      padding: 40px 24px;
+      text-align: center;
+    }
+
+    .placeholder-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-dim);
+    }
+
+    .placeholder-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      max-width: 320px;
+    }
+
+    .placeholder-issue {
+      font-size: 11px;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      color: var(--text-muted);
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      border-radius: 6px;
+      margin-top: 8px;
     }
 
     /* ── header ─────────────────────────────────────────────── */
@@ -255,42 +364,125 @@
   </style>
 </head>
 <body>
-  <div class="header">
-    <div class="orb"></div>
-    <div class="title">Felix</div>
-    <div class="health">
-      <div class="health-dot" id="health-dot" data-health="down" title="Disconnected"></div>
-      <div class="health-panel" id="health-panel">
-        <h4>Backend status</h4>
-        <div class="health-row"><span class="k">Cerebral</span><span class="v" id="hb-conn">disconnected</span></div>
-        <div class="health-row"><span class="k">Last heartbeat</span><span class="v" id="hb-age">never</span></div>
-        <div class="health-row"><span class="k">Audio (Vosk)</span><span class="v" id="hb-audio">—</span></div>
-        <div class="health-row"><span class="k">TTS (Kokoro)</span><span class="v" id="hb-tts">—</span></div>
-        <div class="health-row"><span class="k">Profile</span><span class="v" id="hb-profile">—</span></div>
-        <div class="health-row"><span class="k">Model</span><span class="v" id="hb-model">—</span></div>
-        <div class="health-row"><span class="k">Queue</span><span class="v" id="hb-queue">—</span></div>
-        <div class="health-row"><span class="k">OpenClaw bridge</span><span class="v" id="hb-bridge">—</span></div>
+  <aside class="sidebar">
+    <div class="brand">Felix</div>
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-route="conversation">Conversation</button>
+      <button class="nav-item"        data-route="queue">Queue</button>
+      <button class="nav-item"        data-route="insights">Insights</button>
+      <button class="nav-item"        data-route="memory">Memory</button>
+      <button class="nav-item"        data-route="permissions">Permissions</button>
+      <button class="nav-item"        data-route="credentials">Credentials</button>
+      <button class="nav-item"        data-route="plugins">Plugins</button>
+      <button class="nav-item"        data-route="profiles">Profiles</button>
+      <button class="nav-item"        data-route="settings">Settings</button>
+    </nav>
+  </aside>
+
+  <main class="content">
+    <div class="header">
+      <div class="orb"></div>
+      <div class="title">Felix</div>
+      <div class="health">
+        <div class="health-dot" id="health-dot" data-health="down" title="Disconnected"></div>
+        <div class="health-panel" id="health-panel">
+          <h4>Backend status</h4>
+          <div class="health-row"><span class="k">Cerebral</span><span class="v" id="hb-conn">disconnected</span></div>
+          <div class="health-row"><span class="k">Last heartbeat</span><span class="v" id="hb-age">never</span></div>
+          <div class="health-row"><span class="k">Audio (Vosk)</span><span class="v" id="hb-audio">—</span></div>
+          <div class="health-row"><span class="k">TTS (Kokoro)</span><span class="v" id="hb-tts">—</span></div>
+          <div class="health-row"><span class="k">Profile</span><span class="v" id="hb-profile">—</span></div>
+          <div class="health-row"><span class="k">Model</span><span class="v" id="hb-model">—</span></div>
+          <div class="health-row"><span class="k">Queue</span><span class="v" id="hb-queue">—</span></div>
+          <div class="health-row"><span class="k">OpenClaw bridge</span><span class="v" id="hb-bridge">—</span></div>
+        </div>
       </div>
+      <div class="state-pill" id="state-pill" data-state="passive">Passive</div>
     </div>
-    <div class="state-pill" id="state-pill" data-state="passive">Passive</div>
-  </div>
 
-  <div class="transcript" id="transcript">
-    <div class="empty" id="empty-state">
-      Felix is ready. Type a command below, or just talk — the visualiser orb shows
-      voice state.<br><br>Conversation is per-profile and persists across restarts.
-    </div>
-  </div>
+    <section class="pane" data-route="conversation">
+      <div class="transcript" id="transcript">
+        <div class="empty" id="empty-state">
+          Felix is ready. Type a command below, or just talk — the visualiser orb shows
+          voice state.<br><br>Conversation is per-profile and persists across restarts.
+        </div>
+      </div>
 
-  <div class="composer">
-    <textarea
-      id="input"
-      class="input"
-      rows="1"
-      placeholder="Message Felix — Enter to send, Shift+Enter for newline"
-    ></textarea>
-    <button id="send" class="send" disabled>Send</button>
-  </div>
+      <div class="composer">
+        <textarea
+          id="input"
+          class="input"
+          rows="1"
+          placeholder="Message Felix — Enter to send, Shift+Enter for newline"
+        ></textarea>
+        <button id="send" class="send" disabled>Send</button>
+      </div>
+    </section>
+
+    <section class="pane" data-route="queue" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Queue</div>
+        <div class="placeholder-sub">Pending 5W1H candidates and Discord drafts will live here. For now, open the legacy popup from the system tray's right-click menu.</div>
+        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="insights" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Insights</div>
+        <div class="placeholder-sub">Per-profile learned model — patterns Felix has detected and adjustments it's made. Open the legacy popup from the system tray for now.</div>
+        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="memory" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Memory</div>
+        <div class="placeholder-sub">Per-profile long-term memory — facts Felix has stored and can recall. Open the legacy popup from the system tray for now.</div>
+        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="permissions" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Permissions</div>
+        <div class="placeholder-sub">Capability-class ACL + per-tool overrides (ADR-0005). Open the legacy popup from the system tray for now.</div>
+        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="credentials" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Credentials</div>
+        <div class="placeholder-sub">Connected accounts and API keys, per profile. Open the legacy popup from the system tray for now.</div>
+        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="plugins" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Plugins</div>
+        <div class="placeholder-sub">Every registered plugin with its status, declared capabilities, tool count, and per-plugin settings (including the Discord allowlist editor).</div>
+        <div class="placeholder-issue">Coming: Slice 2 of #184</div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="profiles" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Profiles</div>
+        <div class="placeholder-sub">List, switch, create, and edit profiles. For now, switch profiles from the system tray's right-click menu.</div>
+        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="settings" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Settings</div>
+        <div class="placeholder-sub">System-wide preferences — notifications, reminder interval, camera, visualiser toggle, active model, and per-task model assignments. Currently scattered across the tray menu.</div>
+        <div class="placeholder-issue">Coming: Slice 2 of #184</div>
+      </div>
+    </section>
+  </main>
 
   <script>
     'use strict';
@@ -556,8 +748,59 @@
     });
     send.addEventListener('click', submit);
 
+    // ── sidebar routing (Issue #192) ──────────────────────────────────────
+    // Hash-based routing so the tray can deep-link in later slices
+    // (e.g. clicking "Queue" in the tray opens #queue here). Default route
+    // is #conversation. Renderer-only — no Cerebral IPC, no per-route
+    // state-loading yet (each migration sub-issue wires its own data).
+    const VALID_ROUTES = new Set([
+      'conversation', 'queue', 'insights', 'memory',
+      'permissions', 'credentials', 'plugins', 'profiles', 'settings',
+    ]);
+    const DEFAULT_ROUTE = 'conversation';
+    const navItems = Array.from(document.querySelectorAll('.nav-item'));
+    const panes    = Array.from(document.querySelectorAll('.pane'));
+
+    function routeFromHash() {
+      const raw = (location.hash || '').replace(/^#/, '');
+      return VALID_ROUTES.has(raw) ? raw : DEFAULT_ROUTE;
+    }
+
+    function activateRoute(route) {
+      if (!VALID_ROUTES.has(route)) route = DEFAULT_ROUTE;
+      navItems.forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.route === route);
+      });
+      panes.forEach((pane) => {
+        const match = pane.dataset.route === route;
+        pane.hidden = !match;
+      });
+      // Focus the composer on Conversation only; non-Conversation panes
+      // shouldn't steal focus from any future panel-local inputs.
+      if (route === 'conversation') {
+        // Give the DOM a tick to un-hide before focusing.
+        setTimeout(() => input.focus(), 0);
+      }
+    }
+
+    navItems.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const route = btn.dataset.route;
+        if (!route) return;
+        // Update the hash; the hashchange handler does the activation
+        // so deep-link + click follow the same code path.
+        if (location.hash.replace(/^#/, '') === route) {
+          activateRoute(route);  // already there; re-run to ensure pane visible
+        } else {
+          location.hash = '#' + route;
+        }
+      });
+    });
+
+    window.addEventListener('hashchange', () => activateRoute(routeFromHash()));
+
     autosize();
-    input.focus();
+    activateRoute(routeFromHash());
     connect();
   </script>
 </body>
