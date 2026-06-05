@@ -284,10 +284,10 @@ async def test_non_allowlisted_sender_falls_through():
     assert sender.typing_calls == []
 
 
-async def test_empty_allowlist_is_byte_identical_to_slice1():
-    """The no-regression criterion: an empty allowlist means the
-    controller NEVER calls send/typing/LLM, so behaviour is exactly the
-    slice-1 draft-only path."""
+async def test_empty_allowlist_drops_every_event():
+    """Conservative default: an empty allowlist means the controller
+    NEVER calls send/typing/LLM and always returns False so the caller
+    drops the event."""
     ctrl, sender = _controller(allowlist=set())
     for i in range(5):
         out = await ctrl.handle_inbound(_event(author_id=f"U{i}"))
@@ -334,7 +334,7 @@ async def test_sleep_hours_falls_back_to_draft():
     settings = _settings(sleep_start_hour=22, sleep_end_hour=7)
     ctrl, sender = _controller(allowlist={"AUTHOR"}, settings=settings, hour=3)
     consumed = await ctrl.handle_inbound(_event())
-    assert consumed is False  # caller drafts
+    assert consumed is False  # caller drops the event
     assert sender.send_calls == []
     assert sender.typing_calls == []
 
@@ -366,7 +366,7 @@ async def test_rate_limit_falls_back_after_budget_exhausted():
         clock=clock, sleep=sleep, random_fn=lambda: 0.5,
     )
     # Within window, channel CH1 has budget 2. The third inbound should
-    # fall back to draft (NOT queue).
+    # drop (NOT queue, NOT auto-reply).
     assert await ctrl.handle_inbound(_event(channel_id="CH1")) is True
     clock.advance(1.0)
     assert await ctrl.handle_inbound(_event(channel_id="CH1")) is True

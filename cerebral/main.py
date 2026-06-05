@@ -724,67 +724,35 @@ def _get_discord_user_token_provider() -> _DiscordUserTokenProvider | None:
 
 
 async def _surface_discord_draft(event: dict) -> None:
-    """Slice-2 inbound dispatcher for plugins/discord_user.py.
+    """Inbound dispatcher for plugins/discord_user.py.
 
-    Slice 1 routed every inbound DM straight into the queue as a draft
-    for manual approval. Slice 2 forks: when the sender is on the
-    per-profile allowlist and the detection-mitigation gauntlet
-    (sleep-hours, per-channel rate budget) accepts the event, the
-    auto-reply controller drives the LLM pipeline and emits a real
-    reply via the plugin's internal send path. Otherwise (allowlist
-    miss, sleep-hours, rate-limit) we fall through to the slice-1
-    draft surface -- byte-identical behaviour to slice 1 when the
-    allowlist is empty (the no-regression criterion in #177).
+    When the sender is on the per-profile allowlist and the detection-
+    mitigation gauntlet (sleep-hours, per-channel rate budget) accepts
+    the event, the auto-reply controller drives the LLM pipeline and
+    emits a real reply via the plugin's internal send path. Otherwise
+    (allowlist miss, sleep-hours, rate-limit, controller not wired) the
+    event is dropped silently -- the action queue is for outbound
+    proposals Felix wants to take (each row carries a tool_name +
+    tool_args so Approve can dispatch), not a notification stream for
+    inbound DMs.
 
     Never raises -- the plugin's handler logs+continues on callback
-    exceptions, but we keep this defensive so a queue/SQLite hiccup
+    exceptions, but we keep this defensive so a controller hiccup
     doesn't taint the subscriber loop's state.
     """
     if not isinstance(event, dict):
         return
 
     controller = _get_discord_auto_reply_controller()
-    if controller is not None:
-        try:
-            consumed = await controller.handle_inbound(event)
-        except Exception:
-            logger.exception(
-                "[discord_user] auto-reply controller raised -- falling "
-                "back to draft surface",
-            )
-            consumed = False
-        if consumed:
-            return
-
-    await _surface_discord_draft_legacy(event)
-
-
-async def _surface_discord_draft_legacy(event: dict) -> None:
-    """The slice-1 draft surface -- still the fallback path when the
-    auto-reply controller declines (allowlist miss, sleep-hours,
-    rate-limit) or isn't wired (no active profile, no plugin module).
-    """
-    author = event.get("author_name") or "<unknown>"
-    text = event.get("text") or ""
-    channel_id = event.get("channel_id") or ""
-    if not text:
+    if controller is None:
         return
-    title = f"Discord DM from {author}"
-    snippet = text if len(text) <= 280 else (text[:277] + "...")
-    summary = f"{snippet} (channel_id={channel_id})" if channel_id else snippet
+
     try:
-        item = _queue.add_item(title=title, summary=summary)
+        await controller.handle_inbound(event)
     except Exception:
-        logger.exception("[discord_user] queue add_item failed")
-        return
-    logger.info(
-        "[discord_user] Surfaced DM from %s as queue item %s",
-        author, item.id,
-    )
-    try:
-        await _broadcast(_queue_update_event())
-    except Exception:
-        logger.exception("[discord_user] queue_update broadcast failed")
+        logger.exception(
+            "[discord_user] auto-reply controller raised -- dropping inbound",
+        )
 
 
 # ── Discord auto-reply controller (Issue #177 / ADR-0006) ────────────────────

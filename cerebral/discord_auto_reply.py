@@ -1,19 +1,19 @@
 """
 Discord auto-reply controller -- Issue #177 (slice 2), ADR-0006.
 
-Sits on the Cerebral side of the slice-1 ``set_draft_callback`` seam.
-Slice-1 routes every inbound Discord DM to ``_surface_discord_draft``
-for manual approval. Slice-2 forks that flow:
+Sits on the Cerebral side of the ``set_draft_callback`` seam exposed
+by ``plugins/discord_user.py``. Every inbound Discord DM lands here:
 
-  - sender NOT on the per-profile allowlist  --> draft surface (slice-1
-    behaviour, byte-identical when the allowlist is empty -- the
-    no-regression acceptance criterion in #177).
+  - sender NOT on the per-profile allowlist  --> dropped silently.
+    Inbound DMs are NOT queued; the action queue is for outbound
+    proposals Felix wants to take (each row carries a tool_name +
+    tool_args so Approve can dispatch), not a notification stream.
   - sender ON the allowlist  --> the controller below runs the
     detection-mitigation gauntlet, then drives Cerebral's LLM pipeline
-    and emits a real reply via the slice-1 plugin's internal send path.
-    Any gauntlet failure (sleep-hours window, per-channel rate-limit
-    budget exhausted) falls THROUGH to the draft surface rather than
-    queueing -- queueing invites burst-reply detection.
+    and emits a real reply via the plugin's internal send path. Any
+    gauntlet failure (sleep-hours window, per-channel rate-limit
+    budget exhausted) drops the event rather than queueing -- queueing
+    invites burst-reply detection.
 
 Detection-mitigation defaults (all on by default per ADR-0006):
 
@@ -192,9 +192,9 @@ class DiscordAutoReplyController:
     Discord wire protocol. The controller's job is everything BETWEEN
     "an inbound DM landed" and "a reply went out":
 
-      1. Is the sender on the allowlist?    -- no  -> caller drafts.
-      2. Are we inside sleep-hours?          -- yes -> caller drafts.
-      3. Per-channel rate-limit budget?      -- empty -> caller drafts.
+      1. Is the sender on the allowlist?    -- no  -> caller drops.
+      2. Are we inside sleep-hours?          -- yes -> caller drops.
+      3. Per-channel rate-limit budget?      -- empty -> caller drops.
       4. Serialise per-channel (asyncio.Lock so a second inbound on the
          same channel queues behind the first one's reply rather than
          racing).
@@ -203,10 +203,12 @@ class DiscordAutoReplyController:
       7. Drive the LLM pipeline; bail if it returns empty.
       8. Send the reply.
 
-    Step 1 alone enforces the no-regression contract: empty allowlist
+    Step 1 alone enforces the conservative default: empty allowlist
     means step-1 always says "no", so this controller never runs the
-    rest of the gauntlet and the legacy draft-only path stays
-    byte-identical.
+    rest of the gauntlet and inbound DMs are dropped silently. Inbound
+    DMs do NOT enter the action queue -- the queue is for outbound
+    proposals carrying a tool_name + tool_args, not a notification
+    stream.
     """
 
     def __init__(
@@ -245,12 +247,12 @@ class DiscordAutoReplyController:
     async def handle_inbound(self, event: dict) -> bool:
         """Try to auto-reply to this inbound DM event.
 
-        Returns True iff the caller should consider the event consumed
+        Returns True iff the controller actually engaged with the event
         (auto-reply attempted, regardless of whether the network send
-        ultimately succeeded). Returns False to mean "fall through to
-        the slice-1 draft surface" -- either the sender isn't
-        allowlisted, sleep-hours is in effect, or the per-channel rate
-        budget is exhausted.
+        ultimately succeeded). Returns False when the controller
+        declined -- sender not on the allowlist, sleep-hours in effect,
+        per-channel rate budget exhausted, or required fields missing.
+        The caller drops the event in that case; nothing is queued.
         """
         author_id = str(event.get("author_id") or "")
         channel_id = str(event.get("channel_id") or "")
@@ -302,10 +304,9 @@ class DiscordAutoReplyController:
             except Exception:
                 logger.exception(
                     "[discord_auto_reply] reply generator raised -- "
-                    "skipping send (will surface as draft fallback "
-                    "next inbound)",
+                    "skipping send",
                 )
-                return True  # consumed: don't double-surface as draft
+                return True  # engaged: caller still drops the event
 
             if not reply or not reply.strip():
                 logger.info(

@@ -94,7 +94,7 @@ class ProfileManager:
                 installed_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
             -- Per-profile Discord auto-reply allowlist (Issue #177, ADR-0006).
-            -- Empty allowlist = slice-1 draft-only behaviour for every sender.
+            -- Empty allowlist = drop every inbound DM (conservative default).
             -- A row routes inbound DMs from sender_id through the LLM pipeline
             -- and emits a real reply via discord_send_message, subject to the
             -- detection-mitigation defaults in cerebral/discord_auto_reply.py.
