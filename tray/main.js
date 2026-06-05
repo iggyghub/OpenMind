@@ -26,6 +26,7 @@ let activeProfile = null;
 let allProfiles   = [];
 let pendingItems  = [];
 let setupWindow      = null;
+let mainWindow        = null;
 let queueWindow       = null;
 let visualiserWindow  = null;
 let insightsWindow    = null;
@@ -320,6 +321,37 @@ function closeSetupWindow() {
 ipcMain.on('profile:create', (_event, data) => {
   sendToCerebral({ type: 'create_profile', data });
 });
+
+// ── Main window (Issue #185 / ADR-0007) ───────────────────────────────────────
+//
+// Chat-primary Felix UI. Unlike the legacy per-surface tray windows, the
+// renderer talks WebSocket directly to Cerebral (no ipcRenderer / no
+// nodeIntegration) per the ADR-0007 renderer-portability invariant. main.js
+// is only responsible for window lifecycle here.
+
+function openMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+
+  mainWindow = new BrowserWindow({
+    width:           1200,
+    height:          800,
+    minWidth:        720,
+    minHeight:       480,
+    title:           'Felix',
+    backgroundColor: '#12101e',
+    webPreferences: {
+      nodeIntegration:  false,
+      contextIsolation: true,
+    },
+  });
+
+  mainWindow.loadFile(path.join(__dirname, 'windows', 'main.html'));
+  mainWindow.on('closed', () => { mainWindow = null; });
+}
 
 // ── Queue window ──────────────────────────────────────────────────────────────
 
@@ -800,6 +832,7 @@ function buildMenu() {
   template.push({ type: 'separator' });
 
   if (isConnected) {
+    template.push({ label: 'Open Felix', click: openMainWindow });
     const count      = pendingItems.length;
     const queueLabel = count > 0 ? `Queue  (${count} pending)` : 'Queue';
     template.push({ label: queueLabel, click: openQueueWindow });
@@ -950,6 +983,20 @@ app.whenReady().then(() => {
   refreshMenu();
   connectToCerebral();
   console.log('[tray] Felix tray started');
+
+  // Issue #185 follow-on: fire an OS notification on startup. The Felix
+  // tray icon goes to the Win10 hidden-icons overflow by default and is
+  // easy to miss; a toast makes "the tray is alive" undeniable on first
+  // launch. Bypasses NotificationManager (which is for queued-action
+  // reminders) -- this is a one-shot lifecycle signal.
+  if (Notification.isSupported()) {
+    const n = new Notification({
+      title: 'Felix is running',
+      body:  'Click ^ in your system tray to find the Felix icon. Right-click it for the menu.',
+    });
+    n.on('click', () => openMainWindow());
+    n.show();
+  }
 });
 
 app.on('window-all-closed', () => {

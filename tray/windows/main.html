@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Felix</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:           #12101e;
+      --bg-elev:     #1a1730;
+      --border:       #2a2640;
+      --text:         #e2e0f0;
+      --text-dim:     #a8a4c8;
+      --text-muted:   #6b6790;
+      --accent:       #7c5cfc;
+      --accent-dim:   #5942c4;
+      --user-bubble:  #2d2455;
+      --felix-bubble: #1f1c36;
+      --system-text:  #5c5880;
+      --state-passive:  #6b6790;
+      --state-thinking: #d4b04b;
+      --state-speaking: #7c5cfc;
+      --state-active:   #4bd49a;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── header ─────────────────────────────────────────────── */
+    .header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+      background: var(--bg);
+    }
+
+    .orb {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 10px var(--accent);
+      flex-shrink: 0;
+    }
+
+    .title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: 0.02em;
+    }
+
+    .state-pill {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 12px;
+      background: var(--bg-elev);
+      color: var(--state-passive);
+      border: 1px solid var(--border);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      transition: color .15s, border-color .15s;
+    }
+
+    .state-pill[data-state="thinking"] { color: var(--state-thinking); border-color: var(--state-thinking); }
+    .state-pill[data-state="speaking"] { color: var(--state-speaking); border-color: var(--state-speaking); }
+    .state-pill[data-state="active"]   { color: var(--state-active);   border-color: var(--state-active);   }
+
+    /* ── health dot + panel ─────────────────────────────────── */
+    .health {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .health-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #c44b4b;
+      box-shadow: 0 0 6px #c44b4b88;
+      cursor: pointer;
+      transition: background .2s, box-shadow .2s;
+    }
+    .health-dot[data-health="ok"]    { background: #4bd49a; box-shadow: 0 0 6px #4bd49a88; }
+    .health-dot[data-health="stale"] { background: #d4b04b; box-shadow: 0 0 6px #d4b04b88; }
+    .health-dot[data-health="down"]  { background: #c44b4b; box-shadow: 0 0 6px #c44b4b88; }
+
+    .health-panel {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      min-width: 260px;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      z-index: 10;
+      display: none;
+      font-size: 12px;
+      color: var(--text-dim);
+      cursor: default;
+    }
+    .health-panel.open { display: block; }
+
+    .health-panel h4 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin: 0 0 8px 0;
+      font-weight: 600;
+    }
+
+    .health-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .health-row:last-child { border-bottom: none; }
+
+    .health-row .k { color: var(--text-muted); }
+    .health-row .v { color: var(--text); font-family: 'Consolas', 'Cascadia Code', monospace; font-size: 11px; }
+    .health-row .v.bad { color: #c44b4b; }
+    .health-row .v.warn { color: #d4b04b; }
+    .health-row .v.good { color: #4bd49a; }
+
+    /* ── transcript ─────────────────────────────────────────── */
+    .transcript {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .transcript::-webkit-scrollbar { width: 8px; }
+    .transcript::-webkit-scrollbar-track { background: transparent; }
+    .transcript::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .turn {
+      max-width: 78%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+      word-wrap: break-word;
+      white-space: pre-wrap;
+    }
+
+    .turn.user {
+      align-self: flex-end;
+      background: var(--user-bubble);
+      color: var(--text);
+      border-bottom-right-radius: 4px;
+    }
+
+    .turn.felix {
+      align-self: flex-start;
+      background: var(--felix-bubble);
+      color: var(--text);
+      border-bottom-left-radius: 4px;
+    }
+
+    .turn.system {
+      align-self: center;
+      background: transparent;
+      color: var(--system-text);
+      font-size: 12px;
+      font-style: italic;
+      padding: 4px 12px;
+      max-width: 100%;
+    }
+
+    .turn-meta {
+      display: block;
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .empty {
+      align-self: center;
+      margin: auto;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+      max-width: 320px;
+      line-height: 1.6;
+    }
+
+    /* ── input ─────────────────────────────────────────────── */
+    .composer {
+      padding: 14px 20px 18px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      flex-shrink: 0;
+      background: var(--bg);
+    }
+
+    .input {
+      flex: 1;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.5;
+      padding: 10px 14px;
+      border-radius: 10px;
+      resize: none;
+      max-height: 200px;
+      min-height: 42px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .input:focus { border-color: var(--accent); }
+    .input::placeholder { color: var(--text-muted); }
+
+    .send {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 13px;
+      padding: 0 18px;
+      height: 42px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background .15s, opacity .15s;
+    }
+    .send:hover:not(:disabled) { background: var(--accent-dim); }
+    .send:disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="orb"></div>
+    <div class="title">Felix</div>
+    <div class="health">
+      <div class="health-dot" id="health-dot" data-health="down" title="Disconnected"></div>
+      <div class="health-panel" id="health-panel">
+        <h4>Backend status</h4>
+        <div class="health-row"><span class="k">Cerebral</span><span class="v" id="hb-conn">disconnected</span></div>
+        <div class="health-row"><span class="k">Last heartbeat</span><span class="v" id="hb-age">never</span></div>
+        <div class="health-row"><span class="k">Audio (Vosk)</span><span class="v" id="hb-audio">—</span></div>
+        <div class="health-row"><span class="k">TTS (Kokoro)</span><span class="v" id="hb-tts">—</span></div>
+        <div class="health-row"><span class="k">Profile</span><span class="v" id="hb-profile">—</span></div>
+        <div class="health-row"><span class="k">Model</span><span class="v" id="hb-model">—</span></div>
+        <div class="health-row"><span class="k">Queue</span><span class="v" id="hb-queue">—</span></div>
+        <div class="health-row"><span class="k">OpenClaw bridge</span><span class="v" id="hb-bridge">—</span></div>
+      </div>
+    </div>
+    <div class="state-pill" id="state-pill" data-state="passive">Passive</div>
+  </div>
+
+  <div class="transcript" id="transcript">
+    <div class="empty" id="empty-state">
+      Felix is ready. Type a command below, or just talk — the visualiser orb shows
+      voice state.<br><br>Conversation is per-profile and persists across restarts.
+    </div>
+  </div>
+
+  <div class="composer">
+    <textarea
+      id="input"
+      class="input"
+      rows="1"
+      placeholder="Message Felix — Enter to send, Shift+Enter for newline"
+    ></textarea>
+    <button id="send" class="send" disabled>Send</button>
+  </div>
+
+  <script>
+    'use strict';
+
+    const CEREBRAL_URL = 'ws://localhost:7766';
+    const RECONNECT_DELAY_MS = 2000;
+    const STATE_MAP = {
+      wake:            'active',
+      passive:         'passive',
+      tts_speaking:    'speaking',
+      tts_done:        'passive',
+      thinking:        'thinking',
+      model_switching: 'thinking',
+    };
+    const STATE_LABEL = {
+      passive:  'Passive',
+      active:   'Active',
+      thinking: 'Thinking',
+      speaking: 'Speaking',
+    };
+
+    const transcript  = document.getElementById('transcript');
+    const emptyState  = document.getElementById('empty-state');
+    const input       = document.getElementById('input');
+    const send        = document.getElementById('send');
+    const statePill   = document.getElementById('state-pill');
+    const healthDot   = document.getElementById('health-dot');
+    const healthPanel = document.getElementById('health-panel');
+
+    let ws = null;
+    let activeProfileId = null;
+    let renderedTurnIds = new Set();
+
+    // Cerebral broadcasts heartbeat every 5s. We treat the connection as
+    // ok up to 12s after the last one (one missed tick), stale beyond
+    // that, and down when the WS itself isn't open.
+    const HEARTBEAT_OK_MS    = 12_000;
+    const HEARTBEAT_STALE_MS = 30_000;
+    let lastHeartbeatAt = 0;
+    let latestHb = null;     // most recent heartbeat data block
+    let wsConnected = false;
+
+    // ── connection ─────────────────────────────────────────────────────────
+    function connect() {
+      ws = new WebSocket(CEREBRAL_URL);
+      ws.addEventListener('open', () => {
+        wsConnected = true;
+        refreshHealth();
+      });
+      ws.addEventListener('close', () => {
+        wsConnected = false;
+        latestHb = null;
+        lastHeartbeatAt = 0;
+        refreshHealth();
+        setTimeout(connect, RECONNECT_DELAY_MS);
+      });
+      ws.addEventListener('error', () => {
+        // close handler runs after error; nothing to do here
+      });
+      ws.addEventListener('message', (e) => {
+        let event;
+        try { event = JSON.parse(e.data); } catch { return; }
+        handleEvent(event);
+      });
+    }
+
+    function sendEvent(event) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(JSON.stringify(event));
+      return true;
+    }
+
+    // ── event handling ─────────────────────────────────────────────────────
+    function handleEvent(event) {
+      const next = STATE_MAP[event.type];
+      if (next !== undefined) setState(next);
+
+      switch (event.type) {
+        case 'profile_loaded':
+          activeProfileId = event.data && event.data.id;
+          break;
+        case 'conversation_turns_data': {
+          const d = event.data || {};
+          // Profile snapshot replaces the visible transcript — covers
+          // initial load AND profile switch.
+          activeProfileId = d.profile_id;
+          renderedTurnIds = new Set();
+          clearTranscript();
+          (d.turns || []).forEach(appendTurn);
+          scrollToBottom();
+          break;
+        }
+        case 'conversation_turn_emitted': {
+          const turn = event.data && event.data.turn;
+          if (turn) {
+            appendTurn(turn);
+            scrollToBottom();
+          }
+          break;
+        }
+        case 'first_run':
+          // No profile yet — keep the empty state visible.
+          activeProfileId = null;
+          break;
+        case 'heartbeat':
+          latestHb = event.data || {};
+          lastHeartbeatAt = Date.now();
+          refreshHealth();
+          break;
+      }
+    }
+
+    // ── health dot + panel ────────────────────────────────────────────────
+    function classifyHealth() {
+      if (!wsConnected) return 'down';
+      if (!lastHeartbeatAt) return 'stale';   // connected but no heartbeat yet
+      const age = Date.now() - lastHeartbeatAt;
+      if (age <= HEARTBEAT_OK_MS)    return 'ok';
+      if (age <= HEARTBEAT_STALE_MS) return 'stale';
+      return 'down';
+    }
+
+    function formatAge() {
+      if (!lastHeartbeatAt) return 'never';
+      const s = Math.floor((Date.now() - lastHeartbeatAt) / 1000);
+      if (s < 1)   return 'just now';
+      if (s < 60)  return `${s}s ago`;
+      const m = Math.floor(s / 60);
+      return `${m}m ${s % 60}s ago`;
+    }
+
+    function setHealthRow(id, text, tone) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = text;
+      el.classList.remove('good', 'warn', 'bad');
+      if (tone) el.classList.add(tone);
+    }
+
+    function refreshHealth() {
+      const health = classifyHealth();
+      healthDot.dataset.health = health;
+      healthDot.title =
+        health === 'ok'    ? 'Cerebral is healthy — click for details' :
+        health === 'stale' ? 'Cerebral heartbeat is stale — click for details' :
+                             'Cerebral is disconnected — click for details';
+
+      // Always keep the panel content fresh so a click pops the live view.
+      setHealthRow('hb-conn',  wsConnected ? 'connected' : 'disconnected',
+                                wsConnected ? 'good' : 'bad');
+      setHealthRow('hb-age',   formatAge(),
+                                health === 'ok' ? 'good' : health === 'stale' ? 'warn' : 'bad');
+      if (latestHb) {
+        setHealthRow('hb-audio',   latestHb.audio   ? 'ready' : 'disabled',
+                                    latestHb.audio   ? 'good' : 'warn');
+        setHealthRow('hb-tts',     latestHb.tts     ? 'ready' : 'disabled',
+                                    latestHb.tts     ? 'good' : 'warn');
+        setHealthRow('hb-profile', latestHb.profile || 'none',
+                                    latestHb.profile ? null : 'warn');
+        const model = latestHb.model
+          ? (latestHb.active_is_cloud ? '☁ ' : '◉ ') + latestHb.model
+          : 'none';
+        setHealthRow('hb-model',   model, latestHb.model ? null : 'warn');
+        const q = latestHb.queue_pending || 0;
+        setHealthRow('hb-queue',   `${q} pending`, q > 0 ? 'warn' : null);
+        setHealthRow('hb-bridge',  latestHb.bridge ? 'connected' : 'idle',
+                                    latestHb.bridge ? 'good' : null);
+      }
+    }
+
+    healthDot.addEventListener('click', (e) => {
+      e.stopPropagation();
+      healthPanel.classList.toggle('open');
+      if (healthPanel.classList.contains('open')) refreshHealth();
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!healthPanel.contains(e.target) && e.target !== healthDot) {
+        healthPanel.classList.remove('open');
+      }
+    });
+
+    // Tick once a second so the age string + stale classification stay
+    // current even when no new heartbeat has arrived. Cheap; one DOM
+    // update per second when the panel is closed (dot color only).
+    setInterval(refreshHealth, 1000);
+
+    function setState(state) {
+      statePill.dataset.state = state;
+      statePill.textContent = STATE_LABEL[state] || state;
+    }
+
+    // ── transcript rendering ───────────────────────────────────────────────
+    function clearTranscript() {
+      [...transcript.children].forEach((el) => {
+        if (el !== emptyState) el.remove();
+      });
+      emptyState.style.display = '';
+    }
+
+    function appendTurn(turn) {
+      if (!turn || renderedTurnIds.has(turn.id)) return;
+      renderedTurnIds.add(turn.id);
+      emptyState.style.display = 'none';
+
+      const div = document.createElement('div');
+      div.className = 'turn ' + roleFor(turn.kind);
+      const text = (turn.content && turn.content.text) || labelFor(turn);
+      div.textContent = text;
+
+      if (turn.kind === 'user_voice') {
+        const meta = document.createElement('span');
+        meta.className = 'turn-meta';
+        meta.textContent = 'voice';
+        div.appendChild(meta);
+      }
+
+      transcript.appendChild(div);
+    }
+
+    function roleFor(kind) {
+      if (kind === 'user_voice' || kind === 'user_text') return 'user';
+      if (kind === 'felix_speech') return 'felix';
+      return 'system';
+    }
+
+    function labelFor(turn) {
+      switch (turn.kind) {
+        case 'tool_call':    return `→ ${turn.content && turn.content.name || 'tool'}`;
+        case 'tool_result':  return `← result`;
+        case 'system_event': return turn.content && turn.content.summary || 'system';
+        default:             return '';
+      }
+    }
+
+    function scrollToBottom() {
+      transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    // ── input ─────────────────────────────────────────────────────────────
+    function autosize() {
+      input.style.height = '42px';
+      input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+      send.disabled = input.value.trim().length === 0;
+    }
+
+    function submit() {
+      const text = input.value.trim();
+      if (!text) return;
+      const ok = sendEvent({ type: 'user_text_command', data: { text } });
+      if (!ok) return;  // wait for reconnect
+      input.value = '';
+      autosize();
+      input.focus();
+    }
+
+    input.addEventListener('input', autosize);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        submit();
+      }
+    });
+    send.addEventListener('click', submit);
+
+    autosize();
+    input.focus();
+    connect();
+  </script>
+</body>
+</html>
