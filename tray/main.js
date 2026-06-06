@@ -27,7 +27,6 @@ let allProfiles   = [];
 let pendingItems  = [];
 let setupWindow      = null;
 let mainWindow        = null;
-let queueWindow       = null;
 let visualiserWindow  = null;
 let insightsWindow    = null;
 let memoryWindow      = null;
@@ -78,7 +77,7 @@ function electronNotify(title, body, onClick) {
 const notifManager = new NotificationManager({
   store:                settingsStore,
   notify:               electronNotify,
-  onNotificationClick:  () => openQueueWindow(),
+  onNotificationClick:  () => openMainWindow('#queue'),
 });
 
 const consentManager = new ConsentManager({
@@ -194,18 +193,17 @@ function handleCerebralEvent(event) {
       break;
 
     case 'queue_update':
+      // Mirror the latest pending list so the tray icon's tooltip + count
+      // stay current. The Main window's renderer subscribes to the same
+      // broadcast directly over WS (Issue #194) — no need to forward it.
       pendingItems = (event.data && event.data.items) || [];
       notifManager.handleQueueUpdate(pendingItems);
       refreshMenu();
-      if (queueWindow && !queueWindow.isDestroyed()) {
-        queueWindow.webContents.send('queue:items', pendingItems);
-      }
       break;
 
     case 'queue_item_result':
-      if (queueWindow && !queueWindow.isDestroyed()) {
-        queueWindow.webContents.send('queue:item-result', event.data);
-      }
+      // Routed straight to the Main window renderer via the shared WS
+      // since Issue #194; main.js no longer forwards it.
       break;
 
     case 'insights_update':
@@ -329,10 +327,24 @@ ipcMain.on('profile:create', (_event, data) => {
 // nodeIntegration) per the ADR-0007 renderer-portability invariant. main.js
 // is only responsible for window lifecycle here.
 
-function openMainWindow() {
+function openMainWindow(hash) {
+  // `hash` is the optional deep-link route (without the `#`). The Main
+  // window's router activates the matching pane on hashchange, so callers
+  // like the tray menu's "Queue" item can route into a non-default pane.
+  const hashStr = hash ? hash.replace(/^#/, '') : '';
+
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show();
     mainWindow.focus();
+    if (hashStr) {
+      // Use a hashchange so the renderer's router runs through the same
+      // path as a sidebar click. We can't use ipcRenderer (contextIsolation
+      // + nodeIntegration:false per ADR-0007), and Cerebral isn't the
+      // right transport for a renderer-local navigation.
+      mainWindow.webContents.executeJavaScript(
+        `location.hash = ${JSON.stringify('#' + hashStr)};`,
+      ).catch(() => {});
+    }
     return;
   }
 
@@ -349,59 +361,17 @@ function openMainWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'windows', 'main.html'));
+  mainWindow.loadFile(path.join(__dirname, 'windows', 'main.html'),
+    hashStr ? { hash: hashStr } : undefined);
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-// ── Queue window ──────────────────────────────────────────────────────────────
-
-function openQueueWindow() {
-  if (queueWindow && !queueWindow.isDestroyed()) {
-    queueWindow.focus();
-    queueWindow.webContents.send('queue:items', pendingItems);
-    return;
-  }
-
-  queueWindow = new BrowserWindow({
-    width: 340,
-    height: 480,
-    resizable: false,
-    title: 'Felix — Queue',
-    backgroundColor: '#12101e',
-    ...queueWindowPosition(),
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  queueWindow.setMenuBarVisibility(false);
-  queueWindow.loadFile(path.join(__dirname, 'windows', 'queue.html'));
-  queueWindow.on('closed', () => { queueWindow = null; });
-}
-
-function queueWindowPosition() {
-  if (!tray) return {};
-  try {
-    const { x, y, width, height } = tray.getBounds();
-    const winW = 340, winH = 480;
-    const posX = Math.round(x + width / 2 - winW / 2);
-    const posY = process.platform === 'darwin'
-      ? Math.round(y + height + 4)
-      : Math.round(y - winH - 4);
-    return { x: posX, y: posY };
-  } catch { return {}; }
-}
-
-ipcMain.on('queue:approve', (_e, item_id) => sendToCerebral({ type: 'approve_item', data: { item_id } }));
-ipcMain.on('queue:dismiss', (_e, item_id) => sendToCerebral({ type: 'dismiss_item', data: { item_id } }));
-ipcMain.on('queue:clear', () => {
-  pendingItems.forEach(item => sendToCerebral({ type: 'dismiss_item', data: { item_id: item.id } }));
-});
-ipcMain.on('queue:request', (e) => {
-  e.sender.send('queue:items', pendingItems);
-  sendToCerebral({ type: 'list_queue' });
-});
+// Queue popup retired in Issue #194 — the Queue lives in the Main window's
+// sidebar pane now and talks directly to the Cerebral WebSocket. The tray
+// menu's "Queue (N pending)" item deep-links into `main.html#queue` via
+// openMainWindow('#queue'), and `pendingItems` is kept only so the tray
+// icon's tooltip + count-in-title stay current (retired by the Tray
+// Collapse sub-issue).
 
 // ── Insights window ───────────────────────────────────────────────────────────
 
@@ -832,10 +802,10 @@ function buildMenu() {
   template.push({ type: 'separator' });
 
   if (isConnected) {
-    template.push({ label: 'Open Felix', click: openMainWindow });
+    template.push({ label: 'Open Felix', click: () => openMainWindow() });
     const count      = pendingItems.length;
     const queueLabel = count > 0 ? `Queue  (${count} pending)` : 'Queue';
-    template.push({ label: queueLabel, click: openQueueWindow });
+    template.push({ label: queueLabel, click: () => openMainWindow('#queue') });
     template.push({
       label: visState.visible ? 'Hide Visualiser' : 'Show Visualiser',
       click: toggleVisualiser,
@@ -978,7 +948,7 @@ app.whenReady().then(() => {
   const icon = nativeImage.createFromPath(ICON_PATH);
   tray = new Tray(icon);
 
-  tray.on('click', openQueueWindow);
+  tray.on('click', () => openMainWindow());
 
   refreshMenu();
   connectToCerebral();

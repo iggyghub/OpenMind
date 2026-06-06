@@ -361,6 +361,174 @@
     }
     .send:hover:not(:disabled) { background: var(--accent-dim); }
     .send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── header queue badge ─────────────────────────────────── */
+    /* Pending-action count surfaced in the chat header so the user
+       sees it from any pane. Hidden when zero. Click jumps to #queue. */
+    .queue-badge {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 12px;
+      cursor: pointer;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: background .15s, transform .1s;
+    }
+    .queue-badge[hidden] { display: none; }
+    .queue-badge:hover  { background: var(--accent-dim); }
+    .queue-badge:active { transform: scale(0.96); }
+
+    /* ── queue pane ─────────────────────────────────────────── */
+    /* Lifted from the retired tray/windows/queue.html; class names are
+       prefixed with `q-` (or scoped under [data-route="queue"]) so the
+       pane doesn't collide with the Conversation .empty / .header / etc. */
+    .pane[data-route="queue"] { background: var(--bg); }
+
+    .q-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+      position: relative;
+    }
+    .q-list::-webkit-scrollbar { width: 4px; }
+    .q-list::-webkit-scrollbar-track { background: transparent; }
+    .q-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .q-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 8px;
+      color: var(--text-muted);
+      user-select: none;
+    }
+    .q-empty-icon { font-size: 28px; opacity: 0.5; }
+    .q-empty-text { font-size: 13px; }
+
+    .q-item {
+      padding: 10px 18px;
+      border-bottom: 1px solid #1e1c30;
+      animation: q-fadeIn 0.15s ease;
+    }
+    .q-item:last-child { border-bottom: none; }
+
+    @keyframes q-fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .q-item-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 3px;
+      line-height: 1.3;
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    /* Issue #52 — risky-verb admission overlay. The badge is a visibility
+       cue only; gate enforcement lives in main.py / orchestrator. Rows
+       start collapsed so the user reviews the title before any 5W1H
+       detail expands the surface area. */
+    .q-item-risky-badge {
+      font-size: 12px;
+      line-height: 1;
+      flex-shrink: 0;
+      filter: drop-shadow(0 0 3px #e0555555);
+    }
+    .q-item-title-text { flex: 1; min-width: 0; }
+    .q-item-toggle {
+      font-size: 10px;
+      color: var(--text-muted);
+      transition: transform 0.15s ease;
+      flex-shrink: 0;
+    }
+    .q-item.expanded .q-item-toggle { transform: rotate(90deg); }
+
+    .q-item-summary,
+    .q-item-tool {
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.4;
+      max-height: 0;
+      overflow: hidden;
+      opacity: 0;
+      transition: max-height 0.15s ease, opacity 0.15s ease, margin-bottom 0.15s ease;
+    }
+    .q-item-tool {
+      color: var(--text-muted);
+      font-size: 11px;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .q-item.expanded .q-item-summary {
+      max-height: 200px;
+      opacity: 1;
+      margin-bottom: 8px;
+    }
+    .q-item.expanded .q-item-tool {
+      max-height: 50px;
+      opacity: 1;
+      margin-bottom: 8px;
+    }
+
+    .q-item-actions { display: flex; gap: 6px; }
+
+    .q-btn {
+      flex: 1;
+      padding: 5px 0;
+      border: none;
+      border-radius: 5px;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.1s, transform 0.1s, background .12s;
+      letter-spacing: 0.01em;
+    }
+    .q-btn:active   { opacity: 0.75; transform: scale(0.97); }
+    .q-btn:disabled { cursor: default; }
+
+    .q-btn-approve { background: var(--accent);     color: #fff; }
+    .q-btn-approve:hover:not(:disabled) { background: var(--accent-dim); }
+
+    .q-btn-dismiss { background: var(--bg-elev);    color: var(--text-dim); }
+    .q-btn-dismiss:hover:not(:disabled) { background: #332f54; color: var(--text); }
+
+    .q-item.result-ok  { border-left: 3px solid #4caf82; }
+    .q-item.result-err { border-left: 3px solid #e05555; }
+
+    .q-footer {
+      padding: 8px 18px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
+    .q-btn-clear {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 11px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    .q-btn-clear:hover { color: #e05555; border-color: #e05555; }
+    .q-btn-clear:disabled { opacity: 0.4; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -397,6 +565,9 @@
           <div class="health-row"><span class="k">OpenClaw bridge</span><span class="v" id="hb-bridge">—</span></div>
         </div>
       </div>
+      <button class="queue-badge" id="queue-badge" type="button" hidden>
+        <span id="queue-badge-text">Queue 0</span>
+      </button>
       <div class="state-pill" id="state-pill" data-state="passive">Passive</div>
     </div>
 
@@ -420,10 +591,14 @@
     </section>
 
     <section class="pane" data-route="queue" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Queue</div>
-        <div class="placeholder-sub">Pending 5W1H candidates and Discord drafts will live here. For now, open the legacy popup from the system tray's right-click menu.</div>
-        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      <div class="q-list" id="queue-list">
+        <div class="q-empty" id="queue-empty">
+          <div class="q-empty-icon">✦</div>
+          <div class="q-empty-text">No pending actions</div>
+        </div>
+      </div>
+      <div class="q-footer">
+        <button class="q-btn-clear" id="queue-clear" type="button" disabled>Clear all</button>
       </div>
     </section>
 
@@ -511,6 +686,17 @@
     const statePill   = document.getElementById('state-pill');
     const healthDot   = document.getElementById('health-dot');
     const healthPanel = document.getElementById('health-panel');
+    const queueBadge     = document.getElementById('queue-badge');
+    const queueBadgeText = document.getElementById('queue-badge-text');
+    const queueListEl    = document.getElementById('queue-list');
+    const queueEmptyEl   = document.getElementById('queue-empty');
+    const queueClearBtn  = document.getElementById('queue-clear');
+
+    // Pending action queue (Issue #194 — migrated from queue.html). Held
+    // at the document level (not inside the pane) so the header badge can
+    // surface the count from any route and queue_update broadcasts apply
+    // even when the Queue pane is hidden.
+    let queueItems = [];
 
     let ws = null;
     let activeProfileId = null;
@@ -531,6 +717,11 @@
       ws.addEventListener('open', () => {
         wsConnected = true;
         refreshHealth();
+        // Pull the current queue snapshot so the header badge is accurate
+        // before the user navigates to the Queue pane. Cerebral also
+        // broadcasts queue_update on every mutation, so this is the only
+        // explicit fetch we need.
+        sendEvent({ type: 'list_queue' });
       });
       ws.addEventListener('close', () => {
         wsConnected = false;
@@ -591,6 +782,13 @@
           latestHb = event.data || {};
           lastHeartbeatAt = Date.now();
           refreshHealth();
+          break;
+        case 'queue_update':
+          queueItems = (event.data && event.data.items) || [];
+          renderQueue();
+          break;
+        case 'queue_item_result':
+          handleQueueItemResult(event.data || {});
           break;
       }
     }
@@ -722,6 +920,136 @@
       transcript.scrollTop = transcript.scrollHeight;
     }
 
+    // ── queue pane (Issue #194) ───────────────────────────────────────────
+    // Renderer-side mirror of cerebral.action_queue. Listens to queue_update
+    // broadcasts, drives the header badge from any route, and posts
+    // approve_item / dismiss_item events back through the same WebSocket
+    // (no ipcRenderer — per ADR-0007 renderer-portability invariant).
+
+    function escHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function renderQueue() {
+      // Header badge first — it's visible regardless of route.
+      const n = queueItems.length;
+      if (n > 0) {
+        queueBadgeText.textContent = `Queue ${n}`;
+        queueBadge.hidden = false;
+      } else {
+        queueBadge.hidden = true;
+      }
+
+      // Then the pane list (cheap even when the pane is hidden).
+      queueListEl.querySelectorAll('.q-item').forEach((el) => el.remove());
+
+      if (n === 0) {
+        queueEmptyEl.style.display = 'flex';
+        queueClearBtn.disabled = true;
+        return;
+      }
+
+      queueEmptyEl.style.display = 'none';
+      queueClearBtn.disabled = false;
+
+      queueItems.forEach((item) => {
+        const el = document.createElement('div');
+        // Issue #52 — rows always start collapsed. Risky verbs surface a
+        // 🛑 badge alongside the title so the user clocks them before
+        // expanding the 5W1H summary.
+        el.className = 'q-item';
+        el.dataset.id = item.id;
+
+        const toolLine = item.tool_name
+          ? `<div class="q-item-tool">⚙ ${escHtml(item.tool_name)}</div>`
+          : '';
+        const riskyBadge = item.risky
+          ? '<span class="q-item-risky-badge" title="Risky verb detected — review before approving">🛑</span>'
+          : '';
+
+        el.innerHTML = `
+          <div class="q-item-title" data-action="toggle">
+            ${riskyBadge}
+            <span class="q-item-title-text">${escHtml(item.title)}</span>
+            <span class="q-item-toggle">›</span>
+          </div>
+          <div class="q-item-summary">${escHtml(item.summary || '')}</div>
+          ${toolLine}
+          <div class="q-item-actions">
+            <button class="q-btn q-btn-approve" data-id="${escHtml(item.id)}">Approve</button>
+            <button class="q-btn q-btn-dismiss" data-id="${escHtml(item.id)}">Dismiss</button>
+          </div>
+        `;
+        queueListEl.insertBefore(el, queueEmptyEl);
+      });
+    }
+
+    function handleQueueItemResult({ item_id, is_error }) {
+      const el = queueListEl.querySelector(`.q-item[data-id="${CSS.escape(item_id)}"]`);
+      if (!el) return;
+      el.classList.add(is_error ? 'result-err' : 'result-ok');
+      const approveBtn = el.querySelector('.q-btn-approve');
+      if (approveBtn) {
+        approveBtn.textContent = is_error ? 'Error' : 'Done';
+        approveBtn.disabled = true;
+      }
+      // Auto-prune the row after a brief flash, matching the legacy popup
+      // behaviour. The authoritative queue_update broadcast that follows
+      // approve/dismiss will reconcile anyway.
+      setTimeout(() => {
+        queueItems = queueItems.filter((i) => i.id !== item_id);
+        renderQueue();
+      }, 1500);
+    }
+
+    queueListEl.addEventListener('click', (e) => {
+      const titleEl = e.target.closest('.q-item-title');
+      if (titleEl) {
+        const itemEl = titleEl.closest('.q-item');
+        if (itemEl) itemEl.classList.toggle('expanded');
+        return;
+      }
+      const btn = e.target.closest('.q-btn');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      if (btn.classList.contains('q-btn-approve')) {
+        sendEvent({ type: 'approve_item', data: { item_id: id } });
+        btn.disabled = true;
+        btn.textContent = 'Approving…';
+      } else if (btn.classList.contains('q-btn-dismiss')) {
+        sendEvent({ type: 'dismiss_item', data: { item_id: id } });
+        // Optimistic prune; the queue_update broadcast that follows is
+        // authoritative.
+        queueItems = queueItems.filter((i) => i.id !== id);
+        renderQueue();
+      }
+    });
+
+    queueClearBtn.addEventListener('click', () => {
+      // Same semantics as the legacy popup: fan out one dismiss_item per
+      // row. The optimistic prune in the click handler doesn't apply here
+      // because we don't have per-button feedback; instead clear the
+      // local list and let the queue_update reconciliation correct any
+      // dismiss that failed server-side.
+      queueItems.slice().forEach((item) => {
+        sendEvent({ type: 'dismiss_item', data: { item_id: item.id } });
+      });
+      queueItems = [];
+      renderQueue();
+    });
+
+    queueBadge.addEventListener('click', () => {
+      if (location.hash.replace(/^#/, '') === 'queue') {
+        activateRoute('queue');
+      } else {
+        location.hash = '#queue';
+      }
+    });
+
     // ── input ─────────────────────────────────────────────────────────────
     function autosize() {
       input.style.height = '42px';
@@ -780,6 +1108,11 @@
       if (route === 'conversation') {
         // Give the DOM a tick to un-hide before focusing.
         setTimeout(() => input.focus(), 0);
+      } else if (route === 'queue') {
+        // Re-pull the snapshot on every activation in case we missed a
+        // broadcast (e.g. WS was down when items mutated). Cheap; the
+        // queue_update reply renders idempotently via queueItems set.
+        sendEvent({ type: 'list_queue' });
       }
     }
 
