@@ -29,16 +29,11 @@ let setupWindow      = null;
 let mainWindow        = null;
 let visualiserWindow  = null;
 let permissionsWindow = null;
-let credentialsWindow = null;
 // Latest snapshots from Cerebral, kept up-to-date so a freshly-opened
 // Permissions window doesn't render a blank state while it waits for
 // the next broadcast. The store inside the window is fed by these on
 // `permissions:ready` and re-fed on every subsequent broadcast.
 let permissionsState  = null;
-// Latest connected-account status (Issue #114). Cached so a re-opened
-// Credentials window renders immediately rather than waiting for the
-// next Cerebral broadcast.
-let credentialsState  = null;
 let toolsList         = [];
 let pluginsList       = [];
 // request_id → BrowserWindow for the consent prompt (Issue #48). Each
@@ -266,10 +261,8 @@ function handleCerebralEvent(event) {
       break;
 
     case 'credentials_state':
-      credentialsState = event.data || null;
-      if (credentialsWindow && !credentialsWindow.isDestroyed()) {
-        credentialsWindow.webContents.send('credentials:state', credentialsState);
-      }
+      // Routed straight to the Main window renderer via the shared WS
+      // since Issue #200; main.js no longer mirrors or forwards it.
       break;
   }
 }
@@ -431,68 +424,13 @@ ipcMain.on('permissions:send', (_event, envelope) => {
   }
 });
 
-// ── Credentials window (Issue #114) ───────────────────────────────────────────
-//
-// Per-active-profile connected-account status from the #112 store + a
-// Connect-Google action driving #113's OAuth flow. Renderer talks
-// ipcRenderer directly and main.js is a thin forwarder (no lib store —
-// there is no client-side state resolution to unit-test, unlike
-// Permissions). Pending its own Slice 2 migration under #191.
-
-function openCredentialsWindow() {
-  if (credentialsWindow && !credentialsWindow.isDestroyed()) {
-    credentialsWindow.focus();
-    if (credentialsState) {
-      credentialsWindow.webContents.send('credentials:state', credentialsState);
-    }
-    return;
-  }
-
-  credentialsWindow = new BrowserWindow({
-    width: 380,
-    height: 460,
-    resizable: false,
-    title: 'Felix — Credentials',
-    backgroundColor: '#12101e',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  credentialsWindow.setMenuBarVisibility(false);
-  credentialsWindow.loadFile(path.join(__dirname, 'windows', 'credentials.html'));
-  credentialsWindow.on('closed', () => { credentialsWindow = null; });
-}
-
-ipcMain.on('credentials:request', (e) => {
-  if (credentialsState) e.sender.send('credentials:state', credentialsState);
-  sendToCerebral({ type: 'list_credentials' });
-});
-ipcMain.on('credentials:set-client', (_e, { client_id, client_secret }) =>
-  sendToCerebral({
-    type: 'set_credential_client',
-    data: { client_id, client_secret },
-  })
-);
-ipcMain.on('credentials:connect',    () => sendToCerebral({ type: 'connect_google' }));
-ipcMain.on('credentials:disconnect', () => sendToCerebral({ type: 'disconnect_credential' }));
-
-// Issue #148 — static-token settings UI. Two new channels for the API-keys
-// section (one row per static-token plugin). Write-only contract: the
-// renderer NEVER receives the token value back, only {status, source}.
-ipcMain.on('credentials:set-static-token', (_e, { provider, value }) =>
-  sendToCerebral({
-    type: 'set_static_token',
-    data: { provider, value },
-  })
-);
-ipcMain.on('credentials:clear-static-token', (_e, { provider }) =>
-  sendToCerebral({
-    type: 'clear_static_token',
-    data: { provider },
-  })
-);
+// Credentials popup retired in Issue #200 — the Connected-accounts +
+// API-keys cards live in the Main window's sidebar pane now and talk
+// directly to the Cerebral WebSocket. The tray menu's "Credentials"
+// item deep-links into `main.html#credentials` via
+// openMainWindow('#credentials'). Write-only contract on the client
+// secret + static-token values is preserved in the renderer (DOM
+// cleared on send; credentials_state never carries values back).
 
 // ── Consent prompt window (Issue #48) ─────────────────────────────────────────
 //
@@ -744,7 +682,7 @@ function buildMenu() {
     template.push({ label: 'Insights', click: () => openMainWindow('#insights') });
     template.push({ label: 'Memory', click: () => openMainWindow('#memory') });
     template.push({ label: 'Permissions', click: openPermissionsWindow });
-    template.push({ label: 'Credentials', click: openCredentialsWindow });
+    template.push({ label: 'Credentials', click: () => openMainWindow('#credentials') });
 
     // ── Model ─────────────────────────────────────────────────────────────────
     const modelLabel = activeModel

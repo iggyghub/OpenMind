@@ -794,6 +794,181 @@
       margin-left: auto;
     }
     .mem-btn-delete:hover { color: #e05555; border-color: #e05555; }
+
+    /* ── credentials pane ───────────────────────────────────── */
+    /* Lifted from the retired tray/windows/credentials.html; class names are
+       prefixed with `cred-` so the pane doesn't collide with Conversation's
+       .empty / .header / .item, Queue's `.q-*`, Insights's `.ins-*`, or
+       Memory's `.mem-*`. Accent is amber (#e0b755) — the existing colour for
+       the "connecting" OAuth state, reused here as the pane accent to stay
+       distinct from queue purple, insights blue, and memory green. The
+       write-only contract on client_secret + every static-token value is
+       preserved: those inputs are cleared from the DOM immediately on send,
+       and credentials_state broadcasts never carry the value back. */
+    .pane[data-route="credentials"] { background: var(--bg); }
+
+    .cred-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+    .cred-body::-webkit-scrollbar { width: 4px; }
+    .cred-body::-webkit-scrollbar-track { background: transparent; }
+    .cred-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .cred-card {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .cred-card + .cred-card { margin-top: 12px; }
+
+    .cred-card-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .cred-status {
+      font-size: 12px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .cred-status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-muted); flex-shrink: 0;
+    }
+    .cred-status.is-connected   .cred-status-dot { background: #4fc77a; box-shadow: 0 0 6px #4fc77a88; }
+    .cred-status.is-connecting  .cred-status-dot { background: #e0b755; box-shadow: 0 0 6px #e0b75588; }
+    .cred-status.is-error       .cred-status-dot { background: #e05555; box-shadow: 0 0 6px #e0555588; }
+    .cred-status.is-client-set  .cred-status-dot { background: #5cb8fc; box-shadow: 0 0 6px #5cb8fc88; }
+
+    .cred-status-text { color: var(--text-dim); }
+    .cred-status.is-error .cred-status-text { color: #e08585; }
+
+    .cred-field { margin-bottom: 10px; }
+
+    .cred-field label {
+      display: block;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      letter-spacing: 0.02em;
+    }
+
+    .cred-field input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 12px;
+      font-family: inherit;
+      padding: 7px 9px;
+      outline: none;
+    }
+    .cred-field input:focus { border-color: #e0b755; }
+
+    .cred-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+
+    .cred-btn {
+      padding: 7px 14px;
+      border: none;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.1s, background 0.12s, color .12s, border-color .12s;
+      letter-spacing: 0.01em;
+    }
+    .cred-btn:active { opacity: 0.75; }
+    .cred-btn:disabled { opacity: 0.4; cursor: default; }
+
+    .cred-btn-primary { background: #e0b755; color: var(--bg); }
+    .cred-btn-primary:hover:not(:disabled) { background: #f0c870; }
+
+    .cred-btn-secondary {
+      background: var(--bg);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+    }
+    .cred-btn-secondary:hover:not(:disabled) { color: var(--text); border-color: #4a4670; }
+
+    .cred-btn-danger {
+      background: var(--bg);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      margin-left: auto;
+    }
+    .cred-btn-danger:hover:not(:disabled) { color: #e05555; border-color: #e05555; }
+
+    .cred-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 12px;
+      line-height: 1.4;
+    }
+
+    /* Static-token rows inside the API-keys card. */
+    .cred-token-row {
+      padding: 10px 0;
+      border-top: 1px solid var(--border);
+    }
+    .cred-token-row:first-child { border-top: none; padding-top: 4px; }
+
+    .cred-token-row-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .cred-token-row-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .cred-token-row-pill {
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+    .cred-token-row-pill.is-token-set-keyring { color: #4fc77a; }
+    .cred-token-row-pill.is-token-set-env     { color: #5cb8fc; }
+
+    .cred-token-row-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .cred-token-row-actions input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 11px;
+      font-family: inherit;
+      padding: 6px 8px;
+      outline: none;
+    }
+    .cred-token-row-actions input:focus { border-color: #e0b755; }
+    .cred-token-row-actions .cred-btn {
+      padding: 6px 10px;
+      font-size: 11px;
+    }
   </style>
 </head>
 <body>
@@ -894,10 +1069,49 @@
     </section>
 
     <section class="pane" data-route="credentials" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Credentials</div>
-        <div class="placeholder-sub">Connected accounts and API keys, per profile. Open the legacy popup from the system tray for now.</div>
-        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      <div class="cred-body">
+        <div class="cred-card">
+          <div class="cred-card-title">Google</div>
+          <div class="cred-status" id="cred-status">
+            <span class="cred-status-dot"></span>
+            <span class="cred-status-text" id="cred-status-text">Loading…</span>
+          </div>
+
+          <div class="cred-field">
+            <label for="cred-client-id">Client ID</label>
+            <input id="cred-client-id" type="text" autocomplete="off"
+                   placeholder="xxxxx.apps.googleusercontent.com" />
+          </div>
+          <div class="cred-field">
+            <label for="cred-client-secret">Client secret</label>
+            <input id="cred-client-secret" type="password" autocomplete="off"
+                   placeholder="(write-only — never shown back)" />
+          </div>
+
+          <div class="cred-actions">
+            <button class="cred-btn cred-btn-secondary" id="cred-btn-save">Save credentials</button>
+            <button class="cred-btn cred-btn-primary" id="cred-btn-connect">Connect Google</button>
+            <button class="cred-btn cred-btn-danger" id="cred-btn-disconnect">Disconnect</button>
+          </div>
+
+          <div class="cred-hint">
+            Credentials are stored per profile. The secret is written to your
+            OS keyring and is never displayed or logged. Connecting opens your
+            browser to grant Gmail &amp; Calendar access.
+          </div>
+        </div>
+
+        <div class="cred-card">
+          <div class="cred-card-title">API keys</div>
+          <div id="cred-static-tokens-list">
+            <!-- rows rendered by renderStaticTokens() -->
+          </div>
+          <div class="cred-hint">
+            Per-profile API keys for static-token plugins. Saved keys live in
+            your OS keyring and override any environment variable. Clearing a
+            key falls back to the environment variable if one is set.
+          </div>
+        </div>
       </div>
     </section>
 
@@ -962,6 +1176,14 @@
     const insightsEmptyEl = document.getElementById('insights-empty');
     const memoryListEl   = document.getElementById('memory-list');
     const memoryEmptyEl  = document.getElementById('memory-empty');
+    const credStatusEl      = document.getElementById('cred-status');
+    const credStatusTextEl  = document.getElementById('cred-status-text');
+    const credClientIdEl    = document.getElementById('cred-client-id');
+    const credClientSecretEl = document.getElementById('cred-client-secret');
+    const credBtnSave       = document.getElementById('cred-btn-save');
+    const credBtnConnect    = document.getElementById('cred-btn-connect');
+    const credBtnDisconnect = document.getElementById('cred-btn-disconnect');
+    const credStaticTokensListEl = document.getElementById('cred-static-tokens-list');
 
     // Pending action queue (Issue #194 — migrated from queue.html). Held
     // at the document level (not inside the pane) so the header badge can
@@ -978,6 +1200,12 @@
     // document-level pattern: memory_update broadcasts reconcile the list
     // whether the pane is visible or not.
     let memoryItems = [];
+
+    // Credentials snapshot (Issue #200 — migrated from credentials.html).
+    // credentials_state broadcasts replace the whole payload; we hold it at
+    // document level so the cards stay current whether the pane is visible
+    // or not.
+    let credentialsState = null;
 
     let ws = null;
     let activeProfileId = null;
@@ -1009,6 +1237,8 @@
         sendEvent({ type: 'list_insights' });
         // Same snapshot-on-open for Memory (Issue #198).
         sendEvent({ type: 'list_memories' });
+        // Same snapshot-on-open for Credentials (Issue #200).
+        sendEvent({ type: 'list_credentials' });
       });
       ws.addEventListener('close', () => {
         wsConnected = false;
@@ -1084,6 +1314,10 @@
         case 'memory_update':
           memoryItems = (event.data && event.data.memories) || [];
           renderMemory();
+          break;
+        case 'credentials_state':
+          credentialsState = event.data || null;
+          renderCredentials();
           break;
       }
     }
@@ -1563,6 +1797,162 @@
       }
     });
 
+    // ── credentials pane (Issue #200) ─────────────────────────────────────
+    // Renderer-side mirror of cerebral's per-profile credential store.
+    // Listens to credentials_state broadcasts and posts set_credential_client
+    // / connect_google / disconnect_credential / set_static_token /
+    // clear_static_token back through the same WebSocket (no ipcRenderer —
+    // per ADR-0007 renderer-portability invariant). Write-only contract:
+    // the client_secret and every static-token value are cleared from the
+    // DOM immediately on send; credentials_state never carries them back.
+
+    const CRED_STATUS_LABEL = {
+      'not configured': 'Not configured',
+      'client set':     'Client credentials saved — not connected yet',
+      'connecting':     'Connecting… complete consent in your browser',
+      'connected':      'Connected',
+      'error':          'Error',
+    };
+    const CRED_STATUS_CLASS = {
+      'not configured': '',
+      'client set':     'is-client-set',
+      'connecting':     'is-connecting',
+      'connected':      'is-connected',
+      'error':          'is-error',
+    };
+
+    // Static-token provider list — render order fixed here so rows never
+    // re-shuffle on the dict-iteration order of the payload.
+    const CRED_STATIC_TOKEN_PROVIDERS = [
+      { id: 'youtube',  label: 'YouTube',  env: 'YOUTUBE_API_KEY' },
+      { id: 'todoist',  label: 'Todoist',  env: 'TODOIST_API_TOKEN' },
+      { id: 'notion',   label: 'Notion',   env: 'NOTION_API_TOKEN' },
+      { id: 'toggl',    label: 'Toggl',    env: 'TOGGL_API_TOKEN' },
+      { id: 'clockify', label: 'Clockify', env: 'CLOCKIFY_API_KEY' },
+    ];
+
+    function credStaticTokenPillClass(source) {
+      if (source === 'keyring') return 'is-token-set-keyring';
+      if (source === 'env')     return 'is-token-set-env';
+      return '';
+    }
+    function credStaticTokenPillLabel(source) {
+      if (source === 'keyring') return 'Set';
+      if (source === 'env')     return 'Set (env)';
+      return 'Not set';
+    }
+
+    function renderCredentials() {
+      const payload = credentialsState || {};
+      renderCredentialsGoogle(payload.google);
+      renderCredentialsStaticTokens(payload.static_tokens);
+    }
+
+    function renderCredentialsGoogle(google) {
+      const g = google || { status: 'not configured', email: '', client_id: '', detail: '' };
+      const status = g.status || 'not configured';
+
+      credStatusEl.className = 'cred-status ' + (CRED_STATUS_CLASS[status] || '');
+      let text = CRED_STATUS_LABEL[status] || status;
+      if (status === 'connected' && g.email) text = 'Connected as ' + g.email;
+      if (status === 'error' && g.detail)    text = 'Error: ' + g.detail;
+      credStatusTextEl.textContent = text;
+
+      // client_id is non-secret — reflect what's stored so the user sees
+      // the active value. Don't clobber if the user is actively typing.
+      if (g.client_id && document.activeElement !== credClientIdEl) {
+        credClientIdEl.value = g.client_id;
+      }
+
+      const configured = status !== 'not configured';
+      credBtnConnect.disabled    = status === 'connecting';
+      credBtnDisconnect.disabled = !configured || status === 'connecting';
+    }
+
+    function renderCredentialsStaticTokens(staticTokens) {
+      const tokens = staticTokens || {};
+      // Preserve focused-input value across re-renders so a half-typed key
+      // isn't blown away by a broadcast that fires in the background.
+      const focusedId = (document.activeElement &&
+                         document.activeElement.dataset &&
+                         document.activeElement.dataset.credStaticTokenInput) || null;
+      const focusedValue = focusedId ? document.activeElement.value : '';
+
+      credStaticTokensListEl.innerHTML = CRED_STATIC_TOKEN_PROVIDERS.map((p) => {
+        const t = tokens[p.id] || { status: 'not configured', source: 'none' };
+        const source = t.source || 'none';
+        const isSet  = source === 'keyring' || source === 'env';
+        const pillClass = credStaticTokenPillClass(source);
+        const pillLabel = credStaticTokenPillLabel(source);
+        return `
+          <div class="cred-token-row">
+            <div class="cred-token-row-head">
+              <span class="cred-token-row-name">${escHtml(p.label)}</span>
+              <span class="cred-token-row-pill ${pillClass}">${escHtml(pillLabel)}</span>
+            </div>
+            <div class="cred-token-row-actions">
+              <input type="password" autocomplete="off"
+                     data-cred-static-token-input="${escHtml(p.id)}"
+                     placeholder="${escHtml('Paste ' + p.env + ' (write-only)')}" />
+              <button class="cred-btn cred-btn-secondary"
+                      data-cred-static-token-set="${escHtml(p.id)}">Set</button>
+              <button class="cred-btn cred-btn-danger"
+                      data-cred-static-token-clear="${escHtml(p.id)}"
+                      ${isSet ? '' : 'disabled'}>Clear</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      if (focusedId) {
+        const el = credStaticTokensListEl.querySelector(
+          `[data-cred-static-token-input="${CSS.escape(focusedId)}"]`
+        );
+        if (el) { el.value = focusedValue; el.focus(); }
+      }
+    }
+
+    credBtnSave.addEventListener('click', () => {
+      const client_id     = credClientIdEl.value.trim();
+      const client_secret = credClientSecretEl.value.trim();
+      if (!client_id || !client_secret) return;
+      sendEvent({ type: 'set_credential_client', data: { client_id, client_secret } });
+      credClientSecretEl.value = '';   // never keep the secret in the DOM
+    });
+
+    credBtnConnect.addEventListener('click', () => {
+      sendEvent({ type: 'connect_google' });
+    });
+
+    credBtnDisconnect.addEventListener('click', () => {
+      sendEvent({ type: 'disconnect_credential' });
+      credClientIdEl.value = '';
+      credClientSecretEl.value = '';
+    });
+
+    credStaticTokensListEl.addEventListener('click', (ev) => {
+      const setBtn   = ev.target.closest('[data-cred-static-token-set]');
+      const clearBtn = ev.target.closest('[data-cred-static-token-clear]');
+      if (setBtn) {
+        const provider = setBtn.dataset.credStaticTokenSet;
+        const input = credStaticTokensListEl.querySelector(
+          `[data-cred-static-token-input="${CSS.escape(provider)}"]`
+        );
+        const value = input ? input.value.trim() : '';
+        if (!provider || !value) return;
+        sendEvent({ type: 'set_static_token', data: { provider, value } });
+        if (input) input.value = '';   // never keep the key in the DOM
+      } else if (clearBtn) {
+        const provider = clearBtn.dataset.credStaticTokenClear;
+        if (!provider) return;
+        sendEvent({ type: 'clear_static_token', data: { provider } });
+      }
+    });
+
+    // First render of the static-tokens section before any state arrives so
+    // the card isn't blank on initial paint.
+    renderCredentialsStaticTokens(null);
+
     // ── input ─────────────────────────────────────────────────────────────
     function autosize() {
       input.style.height = '42px';
@@ -1635,6 +2025,10 @@
         // Same defensive re-pull (Issue #198) — memory_update renders
         // idempotently via the memoryItems set.
         sendEvent({ type: 'list_memories' });
+      } else if (route === 'credentials') {
+        // Same defensive re-pull (Issue #200) — credentials_state renders
+        // idempotently from the whole payload.
+        sendEvent({ type: 'list_credentials' });
       }
     }
 
