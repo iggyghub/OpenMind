@@ -28,7 +28,6 @@ let pendingItems  = [];
 let setupWindow      = null;
 let mainWindow        = null;
 let visualiserWindow  = null;
-let insightsWindow    = null;
 let memoryWindow      = null;
 let permissionsWindow = null;
 let credentialsWindow = null;
@@ -50,7 +49,6 @@ const consentWindows = new Map();
 // request_id → BrowserWindow for the irreversible-flag modal (Issue #49).
 // Separate map from the consent windows so the two surfaces never collide.
 const modalWindows = new Map();
-let insightsList     = [];
 let memoryList       = [];
 let envContext       = {};
 let modelsList       = [];
@@ -207,10 +205,8 @@ function handleCerebralEvent(event) {
       break;
 
     case 'insights_update':
-      insightsList = (event.data && event.data.insights) || [];
-      if (insightsWindow && !insightsWindow.isDestroyed()) {
-        insightsWindow.webContents.send('insights:data', insightsList);
-      }
+      // Routed straight to the Main window renderer via the shared WS
+      // since Issue #196; main.js no longer mirrors or forwards it.
       break;
 
     case 'memory_update':
@@ -373,36 +369,10 @@ function openMainWindow(hash) {
 // icon's tooltip + count-in-title stay current (retired by the Tray
 // Collapse sub-issue).
 
-// ── Insights window ───────────────────────────────────────────────────────────
-
-function openInsightsWindow() {
-  if (insightsWindow && !insightsWindow.isDestroyed()) {
-    insightsWindow.focus();
-    insightsWindow.webContents.send('insights:data', insightsList);
-    return;
-  }
-
-  insightsWindow = new BrowserWindow({
-    width: 360,
-    height: 500,
-    resizable: false,
-    title: 'Felix — Insights',
-    backgroundColor: '#12101e',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  insightsWindow.setMenuBarVisibility(false);
-  insightsWindow.loadFile(path.join(__dirname, 'windows', 'insights.html'));
-  insightsWindow.on('closed', () => { insightsWindow = null; });
-}
-
-ipcMain.on('insights:request', (e) => {
-  e.sender.send('insights:data', insightsList);
-  sendToCerebral({ type: 'list_insights' });
-});
+// Insights popup retired in Issue #196 — the Insights view lives in the
+// Main window's sidebar pane now and talks directly to the Cerebral
+// WebSocket. The tray menu's "Insights" item deep-links into
+// `main.html#insights` via openMainWindow('#insights').
 
 // ── Memory window ─────────────────────────────────────────────────────────────
 
@@ -490,11 +460,6 @@ ipcMain.on('permissions:send', (_event, envelope) => {
     sendToCerebral(envelope);
   }
 });
-ipcMain.on('insights:pin',    (_e, id) => sendToCerebral({ type: 'pin_insight',    data: { insight_id: id } }));
-ipcMain.on('insights:delete', (_e, id) => sendToCerebral({ type: 'delete_insight', data: { insight_id: id } }));
-ipcMain.on('insights:edit',   (_e, { id, description }) =>
-  sendToCerebral({ type: 'edit_insight', data: { insight_id: id, description } })
-);
 ipcMain.on('memory:delete', (_e, id) => sendToCerebral({ type: 'delete_memory', data: { memory_id: id } }));
 ipcMain.on('memory:edit',   (_e, { id, fact }) =>
   sendToCerebral({ type: 'edit_memory', data: { memory_id: id, fact } })
@@ -810,7 +775,7 @@ function buildMenu() {
       label: visState.visible ? 'Hide Visualiser' : 'Show Visualiser',
       click: toggleVisualiser,
     });
-    template.push({ label: 'Insights', click: openInsightsWindow });
+    template.push({ label: 'Insights', click: () => openMainWindow('#insights') });
     template.push({ label: 'Memory', click: openMemoryWindow });
     template.push({ label: 'Permissions', click: openPermissionsWindow });
     template.push({ label: 'Credentials', click: openCredentialsWindow });

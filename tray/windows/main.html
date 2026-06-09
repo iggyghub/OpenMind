@@ -529,6 +529,146 @@
     }
     .q-btn-clear:hover { color: #e05555; border-color: #e05555; }
     .q-btn-clear:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── insights pane ──────────────────────────────────────── */
+    /* Lifted from the retired tray/windows/insights.html; class names are
+       prefixed with `ins-` so the pane doesn't collide with Conversation's
+       .empty / .header / .item styles or with #194's `.q-*`. The insights
+       accent is a cool blue (#5cb8fc) rather than the queue's purple. */
+    .pane[data-route="insights"] { background: var(--bg); }
+
+    .ins-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+      position: relative;
+    }
+    .ins-list::-webkit-scrollbar { width: 4px; }
+    .ins-list::-webkit-scrollbar-track { background: transparent; }
+    .ins-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .ins-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 8px;
+      color: var(--text-muted);
+      user-select: none;
+    }
+    .ins-empty-icon { font-size: 28px; opacity: 0.5; }
+    .ins-empty-text { font-size: 13px; }
+
+    .ins-item {
+      padding: 10px 18px;
+      border-bottom: 1px solid #1e1c30;
+      animation: ins-fadeIn 0.15s ease;
+    }
+    .ins-item:last-child { border-bottom: none; }
+    .ins-item.is-pinned { border-left: 3px solid #5cb8fc; }
+
+    @keyframes ins-fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .ins-item-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+
+    .ins-item-description {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.3;
+      flex: 1;
+    }
+    .ins-item-description.editing { display: none; }
+
+    .ins-edit-input {
+      display: none;
+      flex: 1;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 13px;
+      font-family: inherit;
+      padding: 3px 6px;
+      outline: none;
+    }
+    .ins-edit-input.visible { display: block; }
+    .ins-edit-input:focus { border-color: #5cb8fc; }
+
+    .ins-item-example {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+
+    .ins-item-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+
+    .ins-item-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .ins-btn {
+      padding: 4px 10px;
+      border: none;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.1s, background 0.12s, color .12s, border-color .12s;
+      letter-spacing: 0.01em;
+    }
+    .ins-btn:active { opacity: 0.75; }
+
+    .ins-btn-pin {
+      background: var(--bg-elev);
+      color: #5cb8fc;
+      border: 1px solid var(--border);
+      min-width: 54px;
+    }
+    .ins-btn-pin:hover { background: #272444; }
+    .ins-item.is-pinned .ins-btn-pin {
+      background: #5cb8fc22;
+      border-color: #5cb8fc66;
+    }
+
+    .ins-btn-edit {
+      background: var(--bg-elev);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+    }
+    .ins-btn-edit:hover { color: var(--text); border-color: #4a4670; }
+
+    .ins-btn-save {
+      background: #5cb8fc;
+      color: var(--bg);
+    }
+    .ins-btn-save:hover { background: #7ac8fc; }
+
+    .ins-btn-delete {
+      background: var(--bg-elev);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      margin-left: auto;
+    }
+    .ins-btn-delete:hover { color: #e05555; border-color: #e05555; }
   </style>
 </head>
 <body>
@@ -603,10 +743,11 @@
     </section>
 
     <section class="pane" data-route="insights" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Insights</div>
-        <div class="placeholder-sub">Per-profile learned model — patterns Felix has detected and adjustments it's made. Open the legacy popup from the system tray for now.</div>
-        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      <div class="ins-list" id="insights-list">
+        <div class="ins-empty" id="insights-empty">
+          <div class="ins-empty-icon">✦</div>
+          <div class="ins-empty-text">No insights yet</div>
+        </div>
       </div>
     </section>
 
@@ -691,12 +832,19 @@
     const queueListEl    = document.getElementById('queue-list');
     const queueEmptyEl   = document.getElementById('queue-empty');
     const queueClearBtn  = document.getElementById('queue-clear');
+    const insightsListEl  = document.getElementById('insights-list');
+    const insightsEmptyEl = document.getElementById('insights-empty');
 
     // Pending action queue (Issue #194 — migrated from queue.html). Held
     // at the document level (not inside the pane) so the header badge can
     // surface the count from any route and queue_update broadcasts apply
     // even when the Queue pane is hidden.
     let queueItems = [];
+
+    // Insights snapshot (Issue #196 — migrated from insights.html). Same
+    // document-level pattern as queueItems: insights_update broadcasts
+    // reconcile the list whether the pane is visible or not.
+    let insightsItems = [];
 
     let ws = null;
     let activeProfileId = null;
@@ -722,6 +870,10 @@
         // broadcasts queue_update on every mutation, so this is the only
         // explicit fetch we need.
         sendEvent({ type: 'list_queue' });
+        // Same snapshot-on-open for Insights (Issue #196). Cerebral
+        // broadcasts insights_update on every mutation; this just primes
+        // the list before the user navigates to the Insights pane.
+        sendEvent({ type: 'list_insights' });
       });
       ws.addEventListener('close', () => {
         wsConnected = false;
@@ -789,6 +941,10 @@
           break;
         case 'queue_item_result':
           handleQueueItemResult(event.data || {});
+          break;
+        case 'insights_update':
+          insightsItems = (event.data && event.data.insights) || [];
+          renderInsights();
           break;
       }
     }
@@ -1050,6 +1206,120 @@
       }
     });
 
+    // ── insights pane (Issue #196) ────────────────────────────────────────
+    // Renderer-side mirror of cerebral.insights.engine. Listens to
+    // insights_update broadcasts and posts pin_insight / delete_insight /
+    // edit_insight back through the same WebSocket (no ipcRenderer —
+    // per ADR-0007 renderer-portability invariant). Inline edit lives
+    // entirely in the DOM until Save (or Enter) commits — Escape restores
+    // the description from the cached card.dataset.original so a partial
+    // edit survives an `insights_update` reconciliation cleanly.
+
+    function fmtDate(iso) {
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? iso : d.toLocaleString();
+    }
+
+    function renderInsights() {
+      insightsListEl.querySelectorAll('.ins-item').forEach((el) => el.remove());
+
+      if (insightsItems.length === 0) {
+        insightsEmptyEl.style.display = 'flex';
+        return;
+      }
+      insightsEmptyEl.style.display = 'none';
+
+      insightsItems.forEach((ins) => {
+        const el = document.createElement('div');
+        el.className = 'ins-item' + (ins.pinned ? ' is-pinned' : '');
+        el.dataset.id = ins.id;
+
+        el.innerHTML = `
+          <div class="ins-item-header">
+            <span class="ins-item-description">${escHtml(ins.description)}</span>
+            <input class="ins-edit-input" value="${escHtml(ins.description)}" />
+          </div>
+          <div class="ins-item-example">⚙ ${escHtml(ins.example || '')}</div>
+          <div class="ins-item-meta">⧗ ${escHtml(fmtDate(ins.created_at))}</div>
+          <div class="ins-item-actions">
+            <button class="ins-btn ins-btn-pin"    data-id="${escHtml(ins.id)}">${ins.pinned ? '📌 Pinned' : '📌 Pin'}</button>
+            <button class="ins-btn ins-btn-edit"   data-id="${escHtml(ins.id)}">Edit</button>
+            <button class="ins-btn ins-btn-save"   data-id="${escHtml(ins.id)}" style="display:none">Save</button>
+            <button class="ins-btn ins-btn-delete" data-id="${escHtml(ins.id)}">Delete</button>
+          </div>
+        `;
+        insightsListEl.insertBefore(el, insightsEmptyEl);
+      });
+    }
+
+    function commitInsightEdit(card) {
+      const id = card.dataset.id;
+      const inputEl = card.querySelector('.ins-edit-input');
+      const newDesc = inputEl.value.trim();
+      if (newDesc) {
+        sendEvent({ type: 'edit_insight', data: { insight_id: id, description: newDesc } });
+      }
+    }
+
+    function cancelInsightEdit(card) {
+      const descEl  = card.querySelector('.ins-item-description');
+      const inputEl = card.querySelector('.ins-edit-input');
+      const editBtn = card.querySelector('.ins-btn-edit');
+      const saveBtn = card.querySelector('.ins-btn-save');
+      descEl.classList.remove('editing');
+      inputEl.classList.remove('visible');
+      inputEl.value = descEl.textContent;
+      saveBtn.style.display = 'none';
+      editBtn.style.display = 'inline-block';
+    }
+
+    insightsListEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('.ins-btn');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      const card = insightsListEl.querySelector(`.ins-item[data-id="${CSS.escape(id)}"]`);
+      if (!card) return;
+
+      if (btn.classList.contains('ins-btn-pin')) {
+        sendEvent({ type: 'pin_insight', data: { insight_id: id } });
+
+      } else if (btn.classList.contains('ins-btn-edit')) {
+        const descEl  = card.querySelector('.ins-item-description');
+        const inputEl = card.querySelector('.ins-edit-input');
+        const saveBtn = card.querySelector('.ins-btn-save');
+        descEl.classList.add('editing');
+        inputEl.classList.add('visible');
+        inputEl.value = descEl.textContent;
+        saveBtn.style.display = 'inline-block';
+        btn.style.display = 'none';
+        inputEl.focus();
+
+      } else if (btn.classList.contains('ins-btn-save')) {
+        commitInsightEdit(card);
+
+      } else if (btn.classList.contains('ins-btn-delete')) {
+        sendEvent({ type: 'delete_insight', data: { insight_id: id } });
+        // Optimistic prune; the insights_update broadcast that follows is
+        // authoritative.
+        insightsItems = insightsItems.filter((i) => i.id !== id);
+        renderInsights();
+      }
+    });
+
+    insightsListEl.addEventListener('keydown', (e) => {
+      const inputEl = e.target.closest('.ins-edit-input');
+      if (!inputEl) return;
+      const card = inputEl.closest('.ins-item');
+      if (!card) return;
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commitInsightEdit(card);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancelInsightEdit(card);
+      }
+    });
+
     // ── input ─────────────────────────────────────────────────────────────
     function autosize() {
       input.style.height = '42px';
@@ -1113,6 +1383,11 @@
         // broadcast (e.g. WS was down when items mutated). Cheap; the
         // queue_update reply renders idempotently via queueItems set.
         sendEvent({ type: 'list_queue' });
+      } else if (route === 'insights') {
+        // Same defensive re-pull as Queue (Issue #196). The
+        // insights_update reply renders idempotently via the insightsItems
+        // set, so this is safe to fire on every activation.
+        sendEvent({ type: 'list_insights' });
       }
     }
 
