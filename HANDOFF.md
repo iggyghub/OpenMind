@@ -4,6 +4,38 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ---
 
+## Next slice — start here
+
+The active multi-slice epic is **#184 Main window** / **#191 Slice 2** (per-panel migrations). Each slice retires a legacy `tray/windows/<panel>.html` popup and lifts it into the `data-route="<panel>"` pane in `tray/windows/main.html`. Six panels total; three landed so far (Queue, Insights, Memory). After landing a slice, **update this block** so the next session starts cold without re-deriving context.
+
+1. **Pick the next panel.** Remaining: Permissions, Credentials, Plugins, Profiles, Settings. Pick the one with the simplest IPC surface first if unsure — grep `tray/main.js` for `<panel>:` ipcMain channels to scope. Profiles is the lightest next.
+2. **Read the reference PRs in order:** [#195](https://github.com/iggyghub/OpenMind/pull/195) (Queue, simple), [#197](https://github.com/iggyghub/OpenMind/pull/197) (Insights, mutation flow), [#199](https://github.com/iggyghub/OpenMind/pull/199) (Memory, long-form text). The diffs are the implementation template.
+3. **Clone tracker issue #198 verbatim** with panel-specific renaming (route name, CSS prefix, WS event names). Pick a distinct accent colour: Queue purple, Insights blue `#5cb8fc`, Memory green `#4bd49a` are taken. Title format: `Migrate <Panel> panel into main.html sidebar (Slice 2.N of #184)`. File via `gh issue create --repo iggyghub/OpenMind --body-file`.
+4. **Branch off the most recent merged migration branch** (currently `drop-198-memory-migration`; rebase up the chain as parent PRs merge): `git checkout -b drop-NNN-<panel>-migration`.
+5. **Implement** in `tray/windows/main.html` (lift CSS + markup + WS wiring + `list_<panel>` on WS open + per-pane re-pull on activation) and retire in `tray/main.js` (drop globals, IPC channels, window opener; repoint tray menu to `openMainWindow('#<panel>')`).
+6. **Delete** `tray/windows/<panel>.html` via `git rm`.
+7. **Verify:** run the cumulative pytest suite (add this slice's tests to the trailing list) — must all pass. Grep for stale references in the live tree (exclude `.claude/**`, `HANDOFF.md`, `docs/adr/0007-*.md` — those are expected historical mentions).
+8. **Commit + push + open PR** with `--base <previous-migration-branch>`, mirror the [a34748f](https://github.com/iggyghub/OpenMind/commit/a34748f) / [Memory commit](https://github.com/iggyghub/OpenMind/pull/199/commits) message structure, include `Closes #NNN`.
+9. **Update this block** to point at the slice you just landed and the next panel.
+
+### Slice 2 progress
+
+- ✅ 2.1 Queue → #194 / PR [#195](https://github.com/iggyghub/OpenMind/pull/195)
+- ✅ 2.2 (sidebar shell, #192 / PR #193 — landed before per-panel work)
+- ✅ 2.3 Insights → #196 / PR [#197](https://github.com/iggyghub/OpenMind/pull/197)
+- ✅ 2.4 Memory → #198 / PR [#199](https://github.com/iggyghub/OpenMind/pull/199)
+- ⏳ 2.5 next — pick from {Permissions, Credentials, Plugins, Profiles, Settings}; branch base `drop-198-memory-migration`
+- ⏳ 2.6, 2.7, 2.8, 2.9 — the other four
+
+### Gotchas (carry forward each slice)
+
+- ASCII-only PowerShell scripts and "Closes #N" in PR body (per `CLAUDE.md`).
+- One PR per issue, no bundles (per project memory `feedback_per_issue_prs`).
+- If this slice plus the next would exceed ~100k tokens, end at the PR and let the user start the next slice in a fresh session (per `feedback_token_budget_session_split`).
+- ADR-0007 renderer-portability invariant: **no new `ipcRenderer` use in main.html** — the migrated pane must talk WebSocket directly to Cerebral.
+
+---
+
 ## What has been built
 
 ### Issue #2 — Project scaffold ✅
