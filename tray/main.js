@@ -28,7 +28,6 @@ let pendingItems  = [];
 let setupWindow      = null;
 let mainWindow        = null;
 let visualiserWindow  = null;
-let memoryWindow      = null;
 let permissionsWindow = null;
 let credentialsWindow = null;
 // Latest snapshots from Cerebral, kept up-to-date so a freshly-opened
@@ -49,7 +48,6 @@ const consentWindows = new Map();
 // request_id → BrowserWindow for the irreversible-flag modal (Issue #49).
 // Separate map from the consent windows so the two surfaces never collide.
 const modalWindows = new Map();
-let memoryList       = [];
 let envContext       = {};
 let modelsList       = [];
 let activeModel      = null;
@@ -210,10 +208,8 @@ function handleCerebralEvent(event) {
       break;
 
     case 'memory_update':
-      memoryList = (event.data && event.data.memories) || [];
-      if (memoryWindow && !memoryWindow.isDestroyed()) {
-        memoryWindow.webContents.send('memory:data', memoryList);
-      }
+      // Routed straight to the Main window renderer via the shared WS
+      // since Issue #198; main.js no longer mirrors or forwards it.
       break;
     case 'env_context_update':
       envContext = (event.data && event.data.context) || {};
@@ -374,36 +370,10 @@ function openMainWindow(hash) {
 // WebSocket. The tray menu's "Insights" item deep-links into
 // `main.html#insights` via openMainWindow('#insights').
 
-// ── Memory window ─────────────────────────────────────────────────────────────
-
-function openMemoryWindow() {
-  if (memoryWindow && !memoryWindow.isDestroyed()) {
-    memoryWindow.focus();
-    memoryWindow.webContents.send('memory:data', memoryList);
-    return;
-  }
-
-  memoryWindow = new BrowserWindow({
-    width: 360,
-    height: 500,
-    resizable: false,
-    title: 'Felix — Memory',
-    backgroundColor: '#12101e',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  memoryWindow.setMenuBarVisibility(false);
-  memoryWindow.loadFile(path.join(__dirname, 'windows', 'memory.html'));
-  memoryWindow.on('closed', () => { memoryWindow = null; });
-}
-
-ipcMain.on('memory:request', (e) => {
-  e.sender.send('memory:data', memoryList);
-  sendToCerebral({ type: 'list_memories' });
-});
+// Memory popup retired in Issue #198 — the Memory view lives in the Main
+// window's sidebar pane now and talks directly to the Cerebral WebSocket.
+// The tray menu's "Memory" item deep-links into `main.html#memory` via
+// openMainWindow('#memory').
 
 // ── Permissions window (Issue #53) ────────────────────────────────────────────
 
@@ -460,18 +430,14 @@ ipcMain.on('permissions:send', (_event, envelope) => {
     sendToCerebral(envelope);
   }
 });
-ipcMain.on('memory:delete', (_e, id) => sendToCerebral({ type: 'delete_memory', data: { memory_id: id } }));
-ipcMain.on('memory:edit',   (_e, { id, fact }) =>
-  sendToCerebral({ type: 'edit_memory', data: { memory_id: id, fact } })
-);
 
 // ── Credentials window (Issue #114) ───────────────────────────────────────────
 //
 // Per-active-profile connected-account status from the #112 store + a
-// Connect-Google action driving #113's OAuth flow. Mirrors the Memory/
-// Insights window pattern: the renderer talks ipcRenderer directly and
-// main.js is a thin forwarder (no lib store — there is no client-side
-// state resolution to unit-test, unlike Permissions).
+// Connect-Google action driving #113's OAuth flow. Renderer talks
+// ipcRenderer directly and main.js is a thin forwarder (no lib store —
+// there is no client-side state resolution to unit-test, unlike
+// Permissions). Pending its own Slice 2 migration under #191.
 
 function openCredentialsWindow() {
   if (credentialsWindow && !credentialsWindow.isDestroyed()) {
@@ -776,7 +742,7 @@ function buildMenu() {
       click: toggleVisualiser,
     });
     template.push({ label: 'Insights', click: () => openMainWindow('#insights') });
-    template.push({ label: 'Memory', click: openMemoryWindow });
+    template.push({ label: 'Memory', click: () => openMainWindow('#memory') });
     template.push({ label: 'Permissions', click: openPermissionsWindow });
     template.push({ label: 'Credentials', click: openCredentialsWindow });
 

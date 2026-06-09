@@ -669,6 +669,131 @@
       margin-left: auto;
     }
     .ins-btn-delete:hover { color: #e05555; border-color: #e05555; }
+
+    /* ── memory pane ────────────────────────────────────────── */
+    /* Lifted from the retired tray/windows/memory.html; class names are
+       prefixed with `mem-` so the pane doesn't collide with Conversation's
+       .empty / .header / .item styles, with #194's `.q-*`, or with #196's
+       `.ins-*`. The memory accent is green (#4bd49a) — distinct from the
+       conversation purple, queue purple, and insights blue. Long-form fact
+       text wraps via word-wrap: break-word so multi-sentence memories don't
+       blow out the column. */
+    .pane[data-route="memory"] { background: var(--bg); }
+
+    .mem-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+      position: relative;
+    }
+    .mem-list::-webkit-scrollbar { width: 4px; }
+    .mem-list::-webkit-scrollbar-track { background: transparent; }
+    .mem-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .mem-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 8px;
+      color: var(--text-muted);
+      user-select: none;
+    }
+    .mem-empty-icon { font-size: 28px; opacity: 0.5; }
+    .mem-empty-text { font-size: 13px; }
+
+    .mem-item {
+      padding: 10px 18px;
+      border-bottom: 1px solid #1e1c30;
+      animation: mem-fadeIn 0.15s ease;
+    }
+    .mem-item:last-child { border-bottom: none; }
+
+    @keyframes mem-fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .mem-item-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+
+    .mem-item-fact {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.4;
+      flex: 1;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
+    }
+    .mem-item-fact.editing { display: none; }
+
+    .mem-edit-input {
+      display: none;
+      flex: 1;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 13px;
+      font-family: inherit;
+      padding: 3px 6px;
+      outline: none;
+    }
+    .mem-edit-input.visible { display: block; }
+    .mem-edit-input:focus { border-color: #4bd49a; }
+
+    .mem-item-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+
+    .mem-item-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .mem-btn {
+      padding: 4px 10px;
+      border: none;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.1s, background 0.12s, color .12s, border-color .12s;
+      letter-spacing: 0.01em;
+    }
+    .mem-btn:active { opacity: 0.75; }
+
+    .mem-btn-edit {
+      background: var(--bg-elev);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+    }
+    .mem-btn-edit:hover { color: var(--text); border-color: #4a4670; }
+
+    .mem-btn-save {
+      background: #4bd49a;
+      color: var(--bg);
+    }
+    .mem-btn-save:hover { background: #6ce0b0; }
+
+    .mem-btn-delete {
+      background: var(--bg-elev);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      margin-left: auto;
+    }
+    .mem-btn-delete:hover { color: #e05555; border-color: #e05555; }
   </style>
 </head>
 <body>
@@ -752,10 +877,11 @@
     </section>
 
     <section class="pane" data-route="memory" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Memory</div>
-        <div class="placeholder-sub">Per-profile long-term memory — facts Felix has stored and can recall. Open the legacy popup from the system tray for now.</div>
-        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      <div class="mem-list" id="memory-list">
+        <div class="mem-empty" id="memory-empty">
+          <div class="mem-empty-icon">✦</div>
+          <div class="mem-empty-text">No memories yet</div>
+        </div>
       </div>
     </section>
 
@@ -834,6 +960,8 @@
     const queueClearBtn  = document.getElementById('queue-clear');
     const insightsListEl  = document.getElementById('insights-list');
     const insightsEmptyEl = document.getElementById('insights-empty');
+    const memoryListEl   = document.getElementById('memory-list');
+    const memoryEmptyEl  = document.getElementById('memory-empty');
 
     // Pending action queue (Issue #194 — migrated from queue.html). Held
     // at the document level (not inside the pane) so the header badge can
@@ -845,6 +973,11 @@
     // document-level pattern as queueItems: insights_update broadcasts
     // reconcile the list whether the pane is visible or not.
     let insightsItems = [];
+
+    // Memory snapshot (Issue #198 — migrated from memory.html). Same
+    // document-level pattern: memory_update broadcasts reconcile the list
+    // whether the pane is visible or not.
+    let memoryItems = [];
 
     let ws = null;
     let activeProfileId = null;
@@ -874,6 +1007,8 @@
         // broadcasts insights_update on every mutation; this just primes
         // the list before the user navigates to the Insights pane.
         sendEvent({ type: 'list_insights' });
+        // Same snapshot-on-open for Memory (Issue #198).
+        sendEvent({ type: 'list_memories' });
       });
       ws.addEventListener('close', () => {
         wsConnected = false;
@@ -945,6 +1080,10 @@
         case 'insights_update':
           insightsItems = (event.data && event.data.insights) || [];
           renderInsights();
+          break;
+        case 'memory_update':
+          memoryItems = (event.data && event.data.memories) || [];
+          renderMemory();
           break;
       }
     }
@@ -1320,6 +1459,110 @@
       }
     });
 
+    // ── memory pane (Issue #198) ──────────────────────────────────────────
+    // Renderer-side mirror of cerebral.memory.manager. Listens to
+    // memory_update broadcasts and posts edit_memory / delete_memory back
+    // through the same WebSocket (no ipcRenderer — per ADR-0007
+    // renderer-portability invariant). Inline edit lives entirely in the
+    // DOM until Save (or Enter) commits — Escape restores the fact from
+    // the cached card.dataset.original so a partial edit survives a
+    // memory_update reconciliation cleanly.
+
+    function renderMemory() {
+      memoryListEl.querySelectorAll('.mem-item').forEach((el) => el.remove());
+
+      if (memoryItems.length === 0) {
+        memoryEmptyEl.style.display = 'flex';
+        return;
+      }
+      memoryEmptyEl.style.display = 'none';
+
+      memoryItems.forEach((mem) => {
+        const el = document.createElement('div');
+        el.className = 'mem-item';
+        el.dataset.id = mem.id;
+
+        el.innerHTML = `
+          <div class="mem-item-header">
+            <span class="mem-item-fact">${escHtml(mem.fact)}</span>
+            <input class="mem-edit-input" value="${escHtml(mem.fact)}" />
+          </div>
+          <div class="mem-item-meta">⧗ ${escHtml(fmtDate(mem.created_at))}</div>
+          <div class="mem-item-actions">
+            <button class="mem-btn mem-btn-edit"   data-id="${escHtml(mem.id)}">Edit</button>
+            <button class="mem-btn mem-btn-save"   data-id="${escHtml(mem.id)}" style="display:none">Save</button>
+            <button class="mem-btn mem-btn-delete" data-id="${escHtml(mem.id)}">Delete</button>
+          </div>
+        `;
+        memoryListEl.insertBefore(el, memoryEmptyEl);
+      });
+    }
+
+    function commitMemoryEdit(card) {
+      const id = card.dataset.id;
+      const inputEl = card.querySelector('.mem-edit-input');
+      const newFact = inputEl.value.trim();
+      if (newFact) {
+        sendEvent({ type: 'edit_memory', data: { memory_id: id, fact: newFact } });
+      }
+    }
+
+    function cancelMemoryEdit(card) {
+      const factEl  = card.querySelector('.mem-item-fact');
+      const inputEl = card.querySelector('.mem-edit-input');
+      const editBtn = card.querySelector('.mem-btn-edit');
+      const saveBtn = card.querySelector('.mem-btn-save');
+      factEl.classList.remove('editing');
+      inputEl.classList.remove('visible');
+      inputEl.value = factEl.textContent;
+      saveBtn.style.display = 'none';
+      editBtn.style.display = 'inline-block';
+    }
+
+    memoryListEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('.mem-btn');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      const card = memoryListEl.querySelector(`.mem-item[data-id="${CSS.escape(id)}"]`);
+      if (!card) return;
+
+      if (btn.classList.contains('mem-btn-edit')) {
+        const factEl  = card.querySelector('.mem-item-fact');
+        const inputEl = card.querySelector('.mem-edit-input');
+        const saveBtn = card.querySelector('.mem-btn-save');
+        factEl.classList.add('editing');
+        inputEl.classList.add('visible');
+        inputEl.value = factEl.textContent;
+        saveBtn.style.display = 'inline-block';
+        btn.style.display = 'none';
+        inputEl.focus();
+
+      } else if (btn.classList.contains('mem-btn-save')) {
+        commitMemoryEdit(card);
+
+      } else if (btn.classList.contains('mem-btn-delete')) {
+        sendEvent({ type: 'delete_memory', data: { memory_id: id } });
+        // Optimistic prune; the memory_update broadcast that follows is
+        // authoritative.
+        memoryItems = memoryItems.filter((m) => m.id !== id);
+        renderMemory();
+      }
+    });
+
+    memoryListEl.addEventListener('keydown', (e) => {
+      const inputEl = e.target.closest('.mem-edit-input');
+      if (!inputEl) return;
+      const card = inputEl.closest('.mem-item');
+      if (!card) return;
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commitMemoryEdit(card);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancelMemoryEdit(card);
+      }
+    });
+
     // ── input ─────────────────────────────────────────────────────────────
     function autosize() {
       input.style.height = '42px';
@@ -1388,6 +1631,10 @@
         // insights_update reply renders idempotently via the insightsItems
         // set, so this is safe to fire on every activation.
         sendEvent({ type: 'list_insights' });
+      } else if (route === 'memory') {
+        // Same defensive re-pull (Issue #198) — memory_update renders
+        // idempotently via the memoryItems set.
+        sendEvent({ type: 'list_memories' });
       }
     }
 
