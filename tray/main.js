@@ -7,8 +7,11 @@ const { SettingsStore }        = require('./lib/settings-store');
 const { NotificationManager }  = require('./lib/notification-manager');
 const { ConsentManager }       = require('./lib/consent-manager');
 const { ModalManager }         = require('./lib/modal-manager');
-const { PermissionsStore }     = require('./lib/permissions-store');
 const { buildModelSubmenu }    = require('./lib/model-menu');
+// PermissionsStore is no longer instantiated in main.js (Issue #202).
+// The Main window's renderer loads it directly via a <script src> tag
+// — same source file, dual-mode export. tray/tests/permissions-store.test.js
+// still require()s it for the Node test suite.
 
 const CEREBRAL_URL    = 'ws://localhost:7766';
 const ICON_PATH       = path.join(__dirname, 'assets', 'icon.png');
@@ -25,25 +28,8 @@ let felixState  = 'idle';      // 'idle' | 'active'
 let activeProfile = null;
 let allProfiles   = [];
 let pendingItems  = [];
-let setupWindow      = null;
 let mainWindow        = null;
-let queueWindow       = null;
 let visualiserWindow  = null;
-let insightsWindow    = null;
-let memoryWindow      = null;
-let permissionsWindow = null;
-let credentialsWindow = null;
-// Latest snapshots from Cerebral, kept up-to-date so a freshly-opened
-// Permissions window doesn't render a blank state while it waits for
-// the next broadcast. The store inside the window is fed by these on
-// `permissions:ready` and re-fed on every subsequent broadcast.
-let permissionsState  = null;
-// Latest connected-account status (Issue #114). Cached so a re-opened
-// Credentials window renders immediately rather than waiting for the
-// next Cerebral broadcast.
-let credentialsState  = null;
-let toolsList         = [];
-let pluginsList       = [];
 // request_id → BrowserWindow for the consent prompt (Issue #48). Each
 // outstanding ASK from Cerebral gets its own window so per-class prompts
 // can be shown side-by-side.
@@ -51,8 +37,6 @@ const consentWindows = new Map();
 // request_id → BrowserWindow for the irreversible-flag modal (Issue #49).
 // Separate map from the consent windows so the two surfaces never collide.
 const modalWindows = new Map();
-let insightsList     = [];
-let memoryList       = [];
 let envContext       = {};
 let modelsList       = [];
 let activeModel      = null;
@@ -78,7 +62,7 @@ function electronNotify(title, body, onClick) {
 const notifManager = new NotificationManager({
   store:                settingsStore,
   notify:               electronNotify,
-  onNotificationClick:  () => openQueueWindow(),
+  onNotificationClick:  () => openMainWindow('#queue'),
 });
 
 const consentManager = new ConsentManager({
@@ -151,12 +135,14 @@ function sendToCerebral(event) {
 function handleCerebralEvent(event) {
   switch (event.type) {
     case 'first_run':
-      openSetupWindow();
+      // Profile-setup popup retired in Issue #204 — open the Main
+      // window's Profiles pane; the renderer flips into first-run
+      // wizard mode itself on the same event.
+      openMainWindow('#profiles');
       break;
 
     case 'profile_loaded':
       activeProfile = event.data;
-      closeSetupWindow();
       refreshMenu();
       console.log('[tray] Profile loaded:', activeProfile.name);
       break;
@@ -194,32 +180,27 @@ function handleCerebralEvent(event) {
       break;
 
     case 'queue_update':
+      // Mirror the latest pending list so the tray icon's tooltip + count
+      // stay current. The Main window's renderer subscribes to the same
+      // broadcast directly over WS (Issue #194) — no need to forward it.
       pendingItems = (event.data && event.data.items) || [];
       notifManager.handleQueueUpdate(pendingItems);
       refreshMenu();
-      if (queueWindow && !queueWindow.isDestroyed()) {
-        queueWindow.webContents.send('queue:items', pendingItems);
-      }
       break;
 
     case 'queue_item_result':
-      if (queueWindow && !queueWindow.isDestroyed()) {
-        queueWindow.webContents.send('queue:item-result', event.data);
-      }
+      // Routed straight to the Main window renderer via the shared WS
+      // since Issue #194; main.js no longer forwards it.
       break;
 
     case 'insights_update':
-      insightsList = (event.data && event.data.insights) || [];
-      if (insightsWindow && !insightsWindow.isDestroyed()) {
-        insightsWindow.webContents.send('insights:data', insightsList);
-      }
+      // Routed straight to the Main window renderer via the shared WS
+      // since Issue #196; main.js no longer mirrors or forwards it.
       break;
 
     case 'memory_update':
-      memoryList = (event.data && event.data.memories) || [];
-      if (memoryWindow && !memoryWindow.isDestroyed()) {
-        memoryWindow.webContents.send('memory:data', memoryList);
-      }
+      // Routed straight to the Main window renderer via the shared WS
+      // since Issue #198; main.js no longer mirrors or forwards it.
       break;
     case 'env_context_update':
       envContext = (event.data && event.data.context) || {};
@@ -255,31 +236,15 @@ function handleCerebralEvent(event) {
       break;
 
     case 'permissions_state':
-      permissionsState = event.data || null;
-      if (permissionsWindow && !permissionsWindow.isDestroyed()) {
-        permissionsWindow.webContents.send('permissions:state', permissionsState);
-      }
-      break;
-
     case 'tools_list':
-      toolsList = (event.data && event.data.tools) || [];
-      if (permissionsWindow && !permissionsWindow.isDestroyed()) {
-        permissionsWindow.webContents.send('permissions:tools', toolsList);
-      }
-      break;
-
     case 'plugins_list':
-      pluginsList = (event.data && event.data.plugins) || [];
-      if (permissionsWindow && !permissionsWindow.isDestroyed()) {
-        permissionsWindow.webContents.send('permissions:plugins', pluginsList);
-      }
+      // Routed straight to the Main window renderer via the shared WS
+      // since Issue #202; main.js no longer mirrors or forwards them.
       break;
 
     case 'credentials_state':
-      credentialsState = event.data || null;
-      if (credentialsWindow && !credentialsWindow.isDestroyed()) {
-        credentialsWindow.webContents.send('credentials:state', credentialsState);
-      }
+      // Routed straight to the Main window renderer via the shared WS
+      // since Issue #200; main.js no longer mirrors or forwards it.
       break;
   }
 }
@@ -292,35 +257,13 @@ function routeToVisualiser(event) {
   }
 }
 
-// ── Profile setup window ──────────────────────────────────────────────────────
-
-function openSetupWindow() {
-  if (setupWindow) { setupWindow.focus(); return; }
-
-  setupWindow = new BrowserWindow({
-    width: 380,
-    height: 520,
-    resizable: false,
-    title: 'Felix Setup',
-    backgroundColor: '#12101e',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  setupWindow.setMenuBarVisibility(false);
-  setupWindow.loadFile(path.join(__dirname, 'windows', 'profile-setup.html'));
-  setupWindow.on('closed', () => { setupWindow = null; });
-}
-
-function closeSetupWindow() {
-  if (setupWindow) { setupWindow.close(); setupWindow = null; }
-}
-
-ipcMain.on('profile:create', (_event, data) => {
-  sendToCerebral({ type: 'create_profile', data });
-});
+// Profile-setup popup retired in Issue #204 — the wizard lives in the
+// Main window's Profiles pane now and submits create_profile straight
+// to Cerebral over the shared WebSocket. The tray menu's "New profile…"
+// item and Cerebral's first_run event both deep-link into
+// `main.html#profiles` via openMainWindow('#profiles'). The renderer
+// flips the pane into first-run mode (wizard-only, list hidden) on
+// receipt of first_run and back out on profile_loaded.
 
 // ── Main window (Issue #185 / ADR-0007) ───────────────────────────────────────
 //
@@ -329,10 +272,24 @@ ipcMain.on('profile:create', (_event, data) => {
 // nodeIntegration) per the ADR-0007 renderer-portability invariant. main.js
 // is only responsible for window lifecycle here.
 
-function openMainWindow() {
+function openMainWindow(hash) {
+  // `hash` is the optional deep-link route (without the `#`). The Main
+  // window's router activates the matching pane on hashchange, so callers
+  // like the tray menu's "Queue" item can route into a non-default pane.
+  const hashStr = hash ? hash.replace(/^#/, '') : '';
+
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show();
     mainWindow.focus();
+    if (hashStr) {
+      // Use a hashchange so the renderer's router runs through the same
+      // path as a sidebar click. We can't use ipcRenderer (contextIsolation
+      // + nodeIntegration:false per ADR-0007), and Cerebral isn't the
+      // right transport for a renderer-local navigation.
+      mainWindow.webContents.executeJavaScript(
+        `location.hash = ${JSON.stringify('#' + hashStr)};`,
+      ).catch(() => {});
+    }
     return;
   }
 
@@ -349,249 +306,42 @@ function openMainWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'windows', 'main.html'));
+  mainWindow.loadFile(path.join(__dirname, 'windows', 'main.html'),
+    hashStr ? { hash: hashStr } : undefined);
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-// ── Queue window ──────────────────────────────────────────────────────────────
+// Queue popup retired in Issue #194 — the Queue lives in the Main window's
+// sidebar pane now and talks directly to the Cerebral WebSocket. The tray
+// menu's "Queue (N pending)" item deep-links into `main.html#queue` via
+// openMainWindow('#queue'), and `pendingItems` is kept only so the tray
+// icon's tooltip + count-in-title stay current (retired by the Tray
+// Collapse sub-issue).
 
-function openQueueWindow() {
-  if (queueWindow && !queueWindow.isDestroyed()) {
-    queueWindow.focus();
-    queueWindow.webContents.send('queue:items', pendingItems);
-    return;
-  }
+// Insights popup retired in Issue #196 — the Insights view lives in the
+// Main window's sidebar pane now and talks directly to the Cerebral
+// WebSocket. The tray menu's "Insights" item deep-links into
+// `main.html#insights` via openMainWindow('#insights').
 
-  queueWindow = new BrowserWindow({
-    width: 340,
-    height: 480,
-    resizable: false,
-    title: 'Felix — Queue',
-    backgroundColor: '#12101e',
-    ...queueWindowPosition(),
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
+// Memory popup retired in Issue #198 — the Memory view lives in the Main
+// window's sidebar pane now and talks directly to the Cerebral WebSocket.
+// The tray menu's "Memory" item deep-links into `main.html#memory` via
+// openMainWindow('#memory').
 
-  queueWindow.setMenuBarVisibility(false);
-  queueWindow.loadFile(path.join(__dirname, 'windows', 'queue.html'));
-  queueWindow.on('closed', () => { queueWindow = null; });
-}
+// Permissions popup retired in Issue #202 — the Capabilities / Tools
+// tabs live in the Main window's sidebar pane now and talk directly to
+// the Cerebral WebSocket (the PermissionsStore loads via a <script src>
+// from the renderer; dual-mode export keeps the Node test suite green).
+// The tray menu's "Permissions" item deep-links into
+// `main.html#permissions` via openMainWindow('#permissions').
 
-function queueWindowPosition() {
-  if (!tray) return {};
-  try {
-    const { x, y, width, height } = tray.getBounds();
-    const winW = 340, winH = 480;
-    const posX = Math.round(x + width / 2 - winW / 2);
-    const posY = process.platform === 'darwin'
-      ? Math.round(y + height + 4)
-      : Math.round(y - winH - 4);
-    return { x: posX, y: posY };
-  } catch { return {}; }
-}
-
-ipcMain.on('queue:approve', (_e, item_id) => sendToCerebral({ type: 'approve_item', data: { item_id } }));
-ipcMain.on('queue:dismiss', (_e, item_id) => sendToCerebral({ type: 'dismiss_item', data: { item_id } }));
-ipcMain.on('queue:clear', () => {
-  pendingItems.forEach(item => sendToCerebral({ type: 'dismiss_item', data: { item_id: item.id } }));
-});
-ipcMain.on('queue:request', (e) => {
-  e.sender.send('queue:items', pendingItems);
-  sendToCerebral({ type: 'list_queue' });
-});
-
-// ── Insights window ───────────────────────────────────────────────────────────
-
-function openInsightsWindow() {
-  if (insightsWindow && !insightsWindow.isDestroyed()) {
-    insightsWindow.focus();
-    insightsWindow.webContents.send('insights:data', insightsList);
-    return;
-  }
-
-  insightsWindow = new BrowserWindow({
-    width: 360,
-    height: 500,
-    resizable: false,
-    title: 'Felix — Insights',
-    backgroundColor: '#12101e',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  insightsWindow.setMenuBarVisibility(false);
-  insightsWindow.loadFile(path.join(__dirname, 'windows', 'insights.html'));
-  insightsWindow.on('closed', () => { insightsWindow = null; });
-}
-
-ipcMain.on('insights:request', (e) => {
-  e.sender.send('insights:data', insightsList);
-  sendToCerebral({ type: 'list_insights' });
-});
-
-// ── Memory window ─────────────────────────────────────────────────────────────
-
-function openMemoryWindow() {
-  if (memoryWindow && !memoryWindow.isDestroyed()) {
-    memoryWindow.focus();
-    memoryWindow.webContents.send('memory:data', memoryList);
-    return;
-  }
-
-  memoryWindow = new BrowserWindow({
-    width: 360,
-    height: 500,
-    resizable: false,
-    title: 'Felix — Memory',
-    backgroundColor: '#12101e',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  memoryWindow.setMenuBarVisibility(false);
-  memoryWindow.loadFile(path.join(__dirname, 'windows', 'memory.html'));
-  memoryWindow.on('closed', () => { memoryWindow = null; });
-}
-
-ipcMain.on('memory:request', (e) => {
-  e.sender.send('memory:data', memoryList);
-  sendToCerebral({ type: 'list_memories' });
-});
-
-// ── Permissions window (Issue #53) ────────────────────────────────────────────
-
-function openPermissionsWindow() {
-  if (permissionsWindow && !permissionsWindow.isDestroyed()) {
-    permissionsWindow.focus();
-    pushPermissionsToWindow();
-    return;
-  }
-
-  permissionsWindow = new BrowserWindow({
-    width: 480,
-    height: 560,
-    resizable: true,
-    title: 'Felix — Permissions',
-    backgroundColor: '#12101e',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  permissionsWindow.setMenuBarVisibility(false);
-  permissionsWindow.loadFile(path.join(__dirname, 'windows', 'permissions.html'));
-  permissionsWindow.on('closed', () => { permissionsWindow = null; });
-}
-
-function pushPermissionsToWindow() {
-  if (!permissionsWindow || permissionsWindow.isDestroyed()) return;
-  if (permissionsState) {
-    permissionsWindow.webContents.send('permissions:state', permissionsState);
-  }
-  permissionsWindow.webContents.send('permissions:tools',   toolsList);
-  permissionsWindow.webContents.send('permissions:plugins', pluginsList);
-}
-
-// Renderer just finished loading: send what we have and ask Cerebral
-// to refresh, in case the snapshot is stale (e.g. profile switched
-// while the window was closed).
-ipcMain.on('permissions:ready', (event) => {
-  if (!permissionsWindow || permissionsWindow.isDestroyed()) return;
-  if (event.sender !== permissionsWindow.webContents) return;
-  pushPermissionsToWindow();
-  sendToCerebral({ type: 'list_permissions' });
-  sendToCerebral({ type: 'list_tools' });
-  sendToCerebral({ type: 'list_plugins' });
-});
-
-// Outbound from the Permissions renderer — the store wraps every user
-// action in a single envelope so the main process is just a thin
-// forwarder.
-ipcMain.on('permissions:send', (_event, envelope) => {
-  if (envelope && typeof envelope === 'object' && envelope.type) {
-    sendToCerebral(envelope);
-  }
-});
-ipcMain.on('insights:pin',    (_e, id) => sendToCerebral({ type: 'pin_insight',    data: { insight_id: id } }));
-ipcMain.on('insights:delete', (_e, id) => sendToCerebral({ type: 'delete_insight', data: { insight_id: id } }));
-ipcMain.on('insights:edit',   (_e, { id, description }) =>
-  sendToCerebral({ type: 'edit_insight', data: { insight_id: id, description } })
-);
-ipcMain.on('memory:delete', (_e, id) => sendToCerebral({ type: 'delete_memory', data: { memory_id: id } }));
-ipcMain.on('memory:edit',   (_e, { id, fact }) =>
-  sendToCerebral({ type: 'edit_memory', data: { memory_id: id, fact } })
-);
-
-// ── Credentials window (Issue #114) ───────────────────────────────────────────
-//
-// Per-active-profile connected-account status from the #112 store + a
-// Connect-Google action driving #113's OAuth flow. Mirrors the Memory/
-// Insights window pattern: the renderer talks ipcRenderer directly and
-// main.js is a thin forwarder (no lib store — there is no client-side
-// state resolution to unit-test, unlike Permissions).
-
-function openCredentialsWindow() {
-  if (credentialsWindow && !credentialsWindow.isDestroyed()) {
-    credentialsWindow.focus();
-    if (credentialsState) {
-      credentialsWindow.webContents.send('credentials:state', credentialsState);
-    }
-    return;
-  }
-
-  credentialsWindow = new BrowserWindow({
-    width: 380,
-    height: 460,
-    resizable: false,
-    title: 'Felix — Credentials',
-    backgroundColor: '#12101e',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  credentialsWindow.setMenuBarVisibility(false);
-  credentialsWindow.loadFile(path.join(__dirname, 'windows', 'credentials.html'));
-  credentialsWindow.on('closed', () => { credentialsWindow = null; });
-}
-
-ipcMain.on('credentials:request', (e) => {
-  if (credentialsState) e.sender.send('credentials:state', credentialsState);
-  sendToCerebral({ type: 'list_credentials' });
-});
-ipcMain.on('credentials:set-client', (_e, { client_id, client_secret }) =>
-  sendToCerebral({
-    type: 'set_credential_client',
-    data: { client_id, client_secret },
-  })
-);
-ipcMain.on('credentials:connect',    () => sendToCerebral({ type: 'connect_google' }));
-ipcMain.on('credentials:disconnect', () => sendToCerebral({ type: 'disconnect_credential' }));
-
-// Issue #148 — static-token settings UI. Two new channels for the API-keys
-// section (one row per static-token plugin). Write-only contract: the
-// renderer NEVER receives the token value back, only {status, source}.
-ipcMain.on('credentials:set-static-token', (_e, { provider, value }) =>
-  sendToCerebral({
-    type: 'set_static_token',
-    data: { provider, value },
-  })
-);
-ipcMain.on('credentials:clear-static-token', (_e, { provider }) =>
-  sendToCerebral({
-    type: 'clear_static_token',
-    data: { provider },
-  })
-);
+// Credentials popup retired in Issue #200 — the Connected-accounts +
+// API-keys cards live in the Main window's sidebar pane now and talk
+// directly to the Cerebral WebSocket. The tray menu's "Credentials"
+// item deep-links into `main.html#credentials` via
+// openMainWindow('#credentials'). Write-only contract on the client
+// secret + static-token values is preserved in the renderer (DOM
+// cleared on send; credentials_state never carries values back).
 
 // ── Consent prompt window (Issue #48) ─────────────────────────────────────────
 //
@@ -832,18 +582,18 @@ function buildMenu() {
   template.push({ type: 'separator' });
 
   if (isConnected) {
-    template.push({ label: 'Open Felix', click: openMainWindow });
+    template.push({ label: 'Open Felix', click: () => openMainWindow() });
     const count      = pendingItems.length;
     const queueLabel = count > 0 ? `Queue  (${count} pending)` : 'Queue';
-    template.push({ label: queueLabel, click: openQueueWindow });
+    template.push({ label: queueLabel, click: () => openMainWindow('#queue') });
     template.push({
       label: visState.visible ? 'Hide Visualiser' : 'Show Visualiser',
       click: toggleVisualiser,
     });
-    template.push({ label: 'Insights', click: openInsightsWindow });
-    template.push({ label: 'Memory', click: openMemoryWindow });
-    template.push({ label: 'Permissions', click: openPermissionsWindow });
-    template.push({ label: 'Credentials', click: openCredentialsWindow });
+    template.push({ label: 'Insights', click: () => openMainWindow('#insights') });
+    template.push({ label: 'Memory', click: () => openMainWindow('#memory') });
+    template.push({ label: 'Permissions', click: () => openMainWindow('#permissions') });
+    template.push({ label: 'Credentials', click: () => openMainWindow('#credentials') });
 
     // ── Model ─────────────────────────────────────────────────────────────────
     const modelLabel = activeModel
@@ -926,7 +676,7 @@ function buildMenu() {
       template.push({ label: 'Switch profile', submenu: switchItems });
     }
 
-    template.push({ label: 'New profile...', click: openSetupWindow });
+    template.push({ label: 'New profile...', click: () => openMainWindow('#profiles') });
   }
 
   template.push({ type: 'separator' });
@@ -978,7 +728,7 @@ app.whenReady().then(() => {
   const icon = nativeImage.createFromPath(ICON_PATH);
   tray = new Tray(icon);
 
-  tray.on('click', openQueueWindow);
+  tray.on('click', () => openMainWindow());
 
   refreshMenu();
   connectToCerebral();

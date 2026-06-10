@@ -2,10 +2,18 @@
 
 // Tray-side Permissions store (Issue #53, ADR-0005).
 //
+// Dual-mode export (Issue #202): the same source file feeds the Node
+// unit-test suite via require() AND the Main window's renderer via a
+// plain <script src> tag (the Main window has nodeIntegration: false
+// per ADR-0007 so it can't require()). The UMD-ish wrapper at the
+// bottom checks for module.exports and otherwise exposes the module on
+// window.PermissionsStoreMod. No logic differences between the two
+// load paths — the wrapper is mechanical.
+//
 // Bridges the `permissions_state` event from Cerebral to the Permissions
-// window's renderer. The store is UI-agnostic so it can be unit-tested
-// without Electron — main.js wires the real BrowserWindow lifecycle and
-// the renderer reads / mutates state through the same surface.
+// pane's renderer. The store is UI-agnostic so it can be unit-tested
+// without Electron — the Main window's renderer wires the WebSocket
+// send callback and reads / mutates state through the same surface.
 //
 // State shape (mirrors the Python side):
 //   profile_id:                int | null
@@ -194,9 +202,18 @@ class PermissionsStore {
   }
 }
 
-module.exports = {
+// ── Dual-mode export (Issue #202) ────────────────────────────────────
+// Node (tests): module.exports = { ... }
+// Browser (Main window renderer): window.PermissionsStoreMod = { ... }
+const _exports = {
   PermissionsStore,
   VALID_DECISIONS,
   VALID_TOOL_OVERRIDES,
   DEFAULT_STATE,
 };
+
+if (typeof module === 'object' && module && module.exports) {
+  module.exports = _exports;
+} else if (typeof window !== 'undefined') {
+  window.PermissionsStoreMod = _exports;
+}

@@ -4,6 +4,50 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ---
 
+## Next slice — start here
+
+The active multi-slice epic is **#184 Main window** / **#191 Slice 2** (per-panel migrations). **Slice 2 is now complete at the v1 level — all nine routes in the sidebar are live.** The remaining work is the Settings v2 backend refactor (#209) which finishes the tray-submenu consolidation. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
+
+### Recommended next slice: **#209 Settings v2**
+
+This is the only known remaining work on the Slice 2 spec. It's a Cerebral-side refactor more than a renderer slice:
+
+1. **Build a `cerebral/settings.py` module** that owns `cerebral/data/felix-settings.json` (the file currently owned by `tray/lib/settings-store.js`). Schema: `notifications_enabled`, `reminder_interval_minutes`, `camera_enabled`, plus optionally promoting `visualiser_visible` from in-memory `visState` to persistent.
+2. **WS handlers in `cerebral/main.py`:** `list_settings`, `set_setting` (key/value with validation), and a `settings_updated` broadcast on every mutation. Include the snapshot in `_initial_broadcast()` so connecting clients prime their cache.
+3. **Port `tray/main.js`** to subscribe to `settings_updated` and keep a thin in-memory cache. `notifManager` gets reconstructed to take callbacks instead of the lib store. `set_camera_enabled` reads from the cache. `toggleVisualiser` writes via `set_setting`.
+4. **Settings pane in `tray/windows/main.html`** gains a real top section with toggles/dropdowns for the four settings. The "Managed in system tray" deferred section gets removed.
+5. **Tray menu** — either retire the Notifications / Reminder interval / Camera / Visualiser items entirely, or keep them as thin redirects to `openMainWindow('#settings')`. Pick (a) redirects for discoverability.
+6. **Tests:** `cerebral/tests/test_settings.py` for the new store + WS round-trips. The Jest suite for the old `tray/lib/settings-store.js` either moves to Python (settings now Cerebral-side) or deletes.
+7. **Branch base:** `drop-208-settings-pane` (Slice 2 v1 just landed there). Stack accordingly.
+
+If you want to do something else first (Slice 3 = retire consent.html, new features, etc), the v1 Settings pane is fully functional for the Models surface and the deferred items are clearly labelled in the UI — there's no functionality gap that blocks shipping.
+
+### Reference PRs (in order)
+
+[#195](https://github.com/iggyghub/OpenMind/pull/195) Queue → [#197](https://github.com/iggyghub/OpenMind/pull/197) Insights → [#199](https://github.com/iggyghub/OpenMind/pull/199) Memory → [#201](https://github.com/iggyghub/OpenMind/pull/201) Credentials → [#203](https://github.com/iggyghub/OpenMind/pull/203) Permissions (UMD lib + tabs + modal) → [#205](https://github.com/iggyghub/OpenMind/pull/205) Profiles (wizard + `MediaRecorder` in-pane) → [#207](https://github.com/iggyghub/OpenMind/pull/207) Plugins v1 → [#210](https://github.com/iggyghub/OpenMind/pull/210) Settings v1.
+
+### Slice 2 progress
+
+- ✅ 2.1 Queue → #194 / PR [#195](https://github.com/iggyghub/OpenMind/pull/195)
+- ✅ 2.2 sidebar shell → #192 / PR #193
+- ✅ 2.3 Insights → #196 / PR [#197](https://github.com/iggyghub/OpenMind/pull/197)
+- ✅ 2.4 Memory → #198 / PR [#199](https://github.com/iggyghub/OpenMind/pull/199)
+- ✅ 2.5 Credentials → #200 / PR [#201](https://github.com/iggyghub/OpenMind/pull/201)
+- ✅ 2.6 Permissions → #202 / PR [#203](https://github.com/iggyghub/OpenMind/pull/203)
+- ✅ 2.7 Profile-setup → #204 / PR [#205](https://github.com/iggyghub/OpenMind/pull/205)
+- ✅ 2.8 Plugins v1 → #206 / PR [#207](https://github.com/iggyghub/OpenMind/pull/207)
+- ✅ 2.9 Settings v1 (Models picker) → #208 / PR [#210](https://github.com/iggyghub/OpenMind/pull/210) — deferred items (Notifications, Reminder interval, Camera, Visualiser) flagged in the pane with a link to #209
+- ⏳ 2.10 Settings v2 (settingsStore → Cerebral; retire tray submenu items) → #209
+
+### Gotchas (carry forward each slice)
+
+- ASCII-only PowerShell scripts and "Closes #N" in PR body (per `CLAUDE.md`).
+- One PR per issue, no bundles (per project memory `feedback_per_issue_prs`).
+- If this slice plus the next would exceed ~100k tokens, end at the PR and let the user start the next slice in a fresh session (per `feedback_token_budget_session_split`).
+- ADR-0007 renderer-portability invariant: **no new `ipcRenderer` use in main.html** — the migrated pane must talk WebSocket directly to Cerebral.
+
+---
+
 ## What has been built
 
 ### Issue #2 — Project scaffold ✅
