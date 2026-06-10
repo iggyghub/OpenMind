@@ -6,30 +6,23 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ## Next slice — start here
 
-The active multi-slice epic is **#184 Main window** / **#191 Slice 2** (per-panel migrations). **Slice 2 is now complete at the v1 level — all nine routes in the sidebar are live.** The remaining work is the Settings v2 backend refactor (#209) which finishes the tray-submenu consolidation. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
+**Slice 2 is fully complete.** All nine Main window routes are live and `felix-settings.json` is now owned by Cerebral (`cerebral/settings.py`). PR [#212](https://github.com/iggyghub/OpenMind/pull/212) (#209 Settings v2) is open, awaiting merge. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
 
-### Recommended next slice: **#209 Settings v2**
+### Recommended next slice: **Slice 3 — retire consent.html**
 
-Model: sonnet
+Model: opus
 Status: ready
 
-(`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices. #209 is rated sonnet because the steps below are fully specced; rate haiku only for mechanical clone-the-spine work, opus/fable for unspecced or architectural slices.)
+(`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices. Slice 3 is unspecced/architectural — read the existing `tray/windows/consent.html` and `tray/windows/irreversible-modal.html`, understand how `ConsentManager` and `ModalManager` work, then design + file issues before implementing. Rated opus because the shape of the work needs to be reasoned through before coding.)
 
-This is the only known remaining work on the Slice 2 spec. It's a Cerebral-side refactor more than a renderer slice:
+**What Slice 3 should accomplish** (design before implementing):
+- Retire `tray/windows/consent.html` — migrate the consent prompt UI into `tray/windows/main.html` as a pane or overlay so it no longer requires a standalone `BrowserWindow` with `nodeIntegration: true`. Same for `irreversible-modal.html`.
+- The ConsentManager / ModalManager currently open per-request `BrowserWindow`s; the new design should route into the Main window (or at minimum use `contextIsolation: true` windows).
+- File one issue per surface before coding; mark this kickoff block blocked if you can't derive the right decomposition.
 
-1. **Build a `cerebral/settings.py` module** that owns `cerebral/data/felix-settings.json` (the file currently owned by `tray/lib/settings-store.js`). Schema: `notifications_enabled`, `reminder_interval_minutes`, `camera_enabled`, plus optionally promoting `visualiser_visible` from in-memory `visState` to persistent.
-2. **WS handlers in `cerebral/main.py`:** `list_settings`, `set_setting` (key/value with validation), and a `settings_updated` broadcast on every mutation. Include the snapshot in `_initial_broadcast()` so connecting clients prime their cache.
-3. **Port `tray/main.js`** to subscribe to `settings_updated` and keep a thin in-memory cache. `notifManager` gets reconstructed to take callbacks instead of the lib store. `set_camera_enabled` reads from the cache. `toggleVisualiser` writes via `set_setting`.
-4. **Settings pane in `tray/windows/main.html`** gains a real top section with toggles/dropdowns for the four settings. The "Managed in system tray" deferred section gets removed.
-5. **Tray menu** — either retire the Notifications / Reminder interval / Camera / Visualiser items entirely, or keep them as thin redirects to `openMainWindow('#settings')`. Pick (a) redirects for discoverability.
-6. **Tests:** `cerebral/tests/test_settings.py` for the new store + WS round-trips. The Jest suite for the old `tray/lib/settings-store.js` either moves to Python (settings now Cerebral-side) or deletes.
-7. **Branch base:** `master`. The entire Slice 2 stack (#190-#210) was merged into master on 2026-06-10, so start the #209 branch fresh from master (`git checkout -b drop-209-settings-v2 origin/master`) and target the PR at master. Do NOT base off `drop-208-settings-pane` — it is already merged.
+### Reference PRs (Slice 2, in order)
 
-If you want to do something else first (Slice 3 = retire consent.html, new features, etc), the v1 Settings pane is fully functional for the Models surface and the deferred items are clearly labelled in the UI — there's no functionality gap that blocks shipping.
-
-### Reference PRs (in order)
-
-[#195](https://github.com/iggyghub/OpenMind/pull/195) Queue → [#197](https://github.com/iggyghub/OpenMind/pull/197) Insights → [#199](https://github.com/iggyghub/OpenMind/pull/199) Memory → [#201](https://github.com/iggyghub/OpenMind/pull/201) Credentials → [#203](https://github.com/iggyghub/OpenMind/pull/203) Permissions (UMD lib + tabs + modal) → [#205](https://github.com/iggyghub/OpenMind/pull/205) Profiles (wizard + `MediaRecorder` in-pane) → [#207](https://github.com/iggyghub/OpenMind/pull/207) Plugins v1 → [#210](https://github.com/iggyghub/OpenMind/pull/210) Settings v1.
+[#195](https://github.com/iggyghub/OpenMind/pull/195) Queue → [#197](https://github.com/iggyghub/OpenMind/pull/197) Insights → [#199](https://github.com/iggyghub/OpenMind/pull/199) Memory → [#201](https://github.com/iggyghub/OpenMind/pull/201) Credentials → [#203](https://github.com/iggyghub/OpenMind/pull/203) Permissions → [#205](https://github.com/iggyghub/OpenMind/pull/205) Profiles → [#207](https://github.com/iggyghub/OpenMind/pull/207) Plugins v1 → [#210](https://github.com/iggyghub/OpenMind/pull/210) Settings v1 → [#212](https://github.com/iggyghub/OpenMind/pull/212) Settings v2.
 
 ### Slice 2 progress
 
@@ -41,8 +34,8 @@ If you want to do something else first (Slice 3 = retire consent.html, new featu
 - ✅ 2.6 Permissions → #202 / PR [#203](https://github.com/iggyghub/OpenMind/pull/203)
 - ✅ 2.7 Profile-setup → #204 / PR [#205](https://github.com/iggyghub/OpenMind/pull/205)
 - ✅ 2.8 Plugins v1 → #206 / PR [#207](https://github.com/iggyghub/OpenMind/pull/207)
-- ✅ 2.9 Settings v1 (Models picker) → #208 / PR [#210](https://github.com/iggyghub/OpenMind/pull/210) — deferred items (Notifications, Reminder interval, Camera, Visualiser) flagged in the pane with a link to #209
-- ⏳ 2.10 Settings v2 (settingsStore → Cerebral; retire tray submenu items) → #209
+- ✅ 2.9 Settings v1 (Models picker) → #208 / PR [#210](https://github.com/iggyghub/OpenMind/pull/210)
+- ✅ 2.10 Settings v2 (settingsStore → Cerebral; retire tray submenu items) → #209 / PR [#212](https://github.com/iggyghub/OpenMind/pull/212)
 
 ### Gotchas (carry forward each slice)
 
