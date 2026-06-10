@@ -24,7 +24,7 @@ If you want to do something else first (Slice 3 = retire consent.html, new featu
 
 ### Reference PRs (in order)
 
-[#195](https://github.com/iggyghub/OpenMind/pull/195) Queue → [#197](https://github.com/iggyghub/OpenMind/pull/197) Insights → [#199](https://github.com/iggyghub/OpenMind/pull/199) Memory → [#201](https://github.com/iggyghub/OpenMind/pull/201) Credentials → [#203](https://github.com/iggyghub/OpenMind/pull/203) Permissions (UMD lib + tabs + modal) → [#205](https://github.com/iggyghub/OpenMind/pull/205) Profiles (wizard + `MediaRecorder` in-pane) → [#207](https://github.com/iggyghub/OpenMind/pull/207) Plugins v1 → [#NNN] Settings v1 (this branch).
+[#195](https://github.com/iggyghub/OpenMind/pull/195) Queue → [#197](https://github.com/iggyghub/OpenMind/pull/197) Insights → [#199](https://github.com/iggyghub/OpenMind/pull/199) Memory → [#201](https://github.com/iggyghub/OpenMind/pull/201) Credentials → [#203](https://github.com/iggyghub/OpenMind/pull/203) Permissions (UMD lib + tabs + modal) → [#205](https://github.com/iggyghub/OpenMind/pull/205) Profiles (wizard + `MediaRecorder` in-pane) → [#207](https://github.com/iggyghub/OpenMind/pull/207) Plugins v1 → [#210](https://github.com/iggyghub/OpenMind/pull/210) Settings v1.
 
 ### Slice 2 progress
 
@@ -36,7 +36,7 @@ If you want to do something else first (Slice 3 = retire consent.html, new featu
 - ✅ 2.6 Permissions → #202 / PR [#203](https://github.com/iggyghub/OpenMind/pull/203)
 - ✅ 2.7 Profile-setup → #204 / PR [#205](https://github.com/iggyghub/OpenMind/pull/205)
 - ✅ 2.8 Plugins v1 → #206 / PR [#207](https://github.com/iggyghub/OpenMind/pull/207)
-- ✅ 2.9 Settings v1 (Models picker) → #208 / PR [#NNN] — deferred items (Notifications, Reminder interval, Camera, Visualiser) flagged in the pane with a link to #209
+- ✅ 2.9 Settings v1 (Models picker) → #208 / PR [#210](https://github.com/iggyghub/OpenMind/pull/210) — deferred items (Notifications, Reminder interval, Camera, Visualiser) flagged in the pane with a link to #209
 - ⏳ 2.10 Settings v2 (settingsStore → Cerebral; retire tray submenu items) → #209
 
 ### Gotchas (carry forward each slice)
