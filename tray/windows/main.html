@@ -1547,6 +1547,127 @@
     }
     .prof-submit:hover:not(:disabled) { background: #d65cae; }
     .prof-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── plugins pane ───────────────────────────────────────── */
+    /* New-feature build (Issue #206) — no legacy popup. Pure consumer
+       of the existing plugins_list broadcast that Cerebral already
+       emits on connect + every plugin mutation. Class prefix `plug-`;
+       accent teal (#4bd4d4) — distinct from queue purple, insights
+       blue, memory green, credentials amber, permissions brand purple,
+       profiles magenta.
+
+       v1 scope: registered-plugin list + registration-error list.
+       Discord allowlist editor + per-plugin settings + enable/disable
+       are explicitly deferred (no Cerebral API yet). */
+    .pane[data-route="plugins"] { background: var(--bg); }
+
+    .plug-body {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .plug-body::-webkit-scrollbar { width: 4px; }
+    .plug-body::-webkit-scrollbar-track { background: transparent; }
+    .plug-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .plug-section {
+      padding: 14px 18px 6px;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-top: 1px solid #1e1c30;
+    }
+    .plug-section:first-child { border-top: none; }
+
+    .plug-row {
+      padding: 12px 18px;
+      border-bottom: 1px solid #1e1c30;
+    }
+    .plug-row:last-child { border-bottom: none; }
+
+    .plug-row-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+      flex-wrap: wrap;
+    }
+
+    .plug-row-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+
+    .plug-badge {
+      font-size: 9px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 8px;
+      font-weight: 700;
+    }
+    .plug-badge-inspected {
+      background: rgba(75, 212, 212, 0.18);
+      color: #4bd4d4;
+    }
+    .plug-badge-trusted {
+      background: rgba(224, 85, 85, 0.18);
+      color: #ff7878;
+    }
+    .plug-badge-new {
+      background: rgba(224, 183, 85, 0.22);
+      color: #f5cd6b;
+    }
+
+    .plug-caps {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 4px;
+    }
+    .plug-cap-pill {
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 9px;
+      background: var(--bg-elev);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .plug-cap-pill.is-none {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .plug-empty {
+      padding: 12px 18px;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* Errors section — registration failures */
+    .plug-err-row {
+      padding: 10px 18px;
+      border-bottom: 1px solid #1e1c30;
+      border-left: 3px solid #e05555;
+      background: rgba(224, 85, 85, 0.04);
+    }
+    .plug-err-row:last-child { border-bottom: none; }
+
+    .plug-err-path {
+      font-size: 12px;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      color: #ff9090;
+      margin-bottom: 4px;
+    }
+    .plug-err-reason {
+      font-size: 11px;
+      color: var(--text-dim);
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
@@ -1730,10 +1851,14 @@
     </section>
 
     <section class="pane" data-route="plugins" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Plugins</div>
-        <div class="placeholder-sub">Every registered plugin with its status, declared capabilities, tool count, and per-plugin settings (including the Discord allowlist editor).</div>
-        <div class="placeholder-issue">Coming: Slice 2 of #184</div>
+      <div class="plug-body">
+        <div class="plug-section">Registered plugins</div>
+        <div id="plug-list">
+          <div class="plug-empty">No plugins registered.</div>
+        </div>
+
+        <div class="plug-section" id="plug-errors-section" hidden>Load errors</div>
+        <div id="plug-errors-list"></div>
       </div>
     </section>
 
@@ -1881,6 +2006,9 @@
     const profSubmitBtn    = document.getElementById('prof-submit');
     const profNameInput    = document.getElementById('prof-name');
     const profWakeInput    = document.getElementById('prof-wake-name');
+    const plugListEl       = document.getElementById('plug-list');
+    const plugErrorsListEl = document.getElementById('plug-errors-list');
+    const plugErrorsHeader = document.getElementById('plug-errors-section');
 
     // Pending action queue (Issue #194 — migrated from queue.html). Held
     // at the document level (not inside the pane) so the header badge can
@@ -1920,6 +2048,12 @@
     // Cerebral force-shows the wizard with the list hidden.
     let profilesList = [];
     let profIsFirstRun = false;
+
+    // Plugins pane state (Issue #206). Pure consumer of the existing
+    // plugins_list broadcast — the same one the PermissionsStore reads
+    // for its new-plugin trust list. Held at document level so the
+    // pane stays fresh whether or not it's visible.
+    let pluginsListData = { plugins: [], errors: [] };
 
     let ws = null;
     let activeProfileId = null;
@@ -2073,7 +2207,15 @@
           if (permStore) permStore.applyToolsList((event.data && event.data.tools) || []);
           break;
         case 'plugins_list':
+          // Two consumers (Issue #206): the PermissionsStore feeds the
+          // new-plugin trust list on the Permissions pane, and the
+          // Plugins pane below renders the full registry + load errors.
           if (permStore) permStore.applyPluginsList((event.data && event.data.plugins) || []);
+          pluginsListData = {
+            plugins: (event.data && event.data.plugins) || [],
+            errors:  (event.data && event.data.errors)  || [],
+          };
+          renderPlugins();
           break;
       }
     }
@@ -3172,6 +3314,91 @@
       });
     });
 
+    // ── plugins pane (Issue #206) ────────────────────────────────────────
+    // Pure consumer of plugins_list. The payload shape (from
+    // cerebral.main._plugins_list_event):
+    //   data.plugins: [{ name, required_capabilities, inspectability,
+    //                    new_plugin_flag }]
+    //   data.errors:  [{ path, reason }]  (or arbitrary objects from the
+    //                                       orchestrator's registration_errors)
+    // The errors list may contain free-form strings or objects; we
+    // render either gracefully.
+
+    function renderPlugins() {
+      const plugins = pluginsListData.plugins || [];
+      const errors  = pluginsListData.errors  || [];
+
+      if (plugins.length === 0) {
+        plugListEl.innerHTML = '<div class="plug-empty">No plugins registered.</div>';
+      } else {
+        plugListEl.innerHTML = plugins.map((p) => {
+          const caps = p.required_capabilities;
+          let capsHtml;
+          if (caps === null || caps === undefined) {
+            capsHtml = '<span class="plug-cap-pill is-none">no capability declaration</span>';
+          } else if (caps.length === 0) {
+            capsHtml = '<span class="plug-cap-pill is-none">no capabilities required</span>';
+          } else {
+            capsHtml = caps.map((c) =>
+              `<span class="plug-cap-pill">${escHtml(c)}</span>`
+            ).join('');
+          }
+
+          const inspBadge = p.inspectability === 'trusted'
+            ? '<span class="plug-badge plug-badge-trusted" title="Loaded from plugins/_trusted/ — code was not inspected by the orchestrator">trusted, unverified</span>'
+            : '<span class="plug-badge plug-badge-inspected">inspected</span>';
+
+          const newBadge = p.new_plugin_flag
+            ? '<span class="plug-badge plug-badge-new" title="Trust this plugin via the Permissions pane to clear">new</span>'
+            : '';
+
+          return `
+            <div class="plug-row">
+              <div class="plug-row-head">
+                <span class="plug-row-name">${escHtml(p.name)}</span>
+                ${inspBadge}
+                ${newBadge}
+              </div>
+              <div class="plug-caps">${capsHtml}</div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      if (errors.length === 0) {
+        plugErrorsHeader.hidden = true;
+        plugErrorsListEl.innerHTML = '';
+      } else {
+        plugErrorsHeader.hidden = false;
+        plugErrorsListEl.innerHTML = errors.map((err) => {
+          // err may be a string OR an object with .path / .reason / .name.
+          let path, reason;
+          if (typeof err === 'string') {
+            path = err;
+            reason = '';
+          } else if (err && typeof err === 'object') {
+            path = err.path || err.name || err.plugin || '(unknown plugin)';
+            reason = err.reason || err.message || err.error || '';
+          } else {
+            path = '(unknown)';
+            reason = String(err);
+          }
+          const reasonLine = reason
+            ? `<div class="plug-err-reason">${escHtml(reason)}</div>`
+            : '';
+          return `
+            <div class="plug-err-row">
+              <div class="plug-err-path">${escHtml(path)}</div>
+              ${reasonLine}
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    // First render so the empty state shows before plugins_list arrives.
+    renderPlugins();
+
     // ── input ─────────────────────────────────────────────────────────────
     function autosize() {
       input.style.height = '42px';
@@ -3255,6 +3482,12 @@
         if (permStore) permStore.requestRefresh();
       } else if (route === 'profiles') {
         sendEvent({ type: 'list_profiles' });
+      } else if (route === 'plugins') {
+        // Issue #206 — defensive re-pull. The Permissions WS-open
+        // handler also pulls list_plugins, so this is just for the
+        // case where the user opens Plugins between connect and the
+        // first activation of any pane that depends on it.
+        sendEvent({ type: 'list_plugins' });
       }
     }
 
