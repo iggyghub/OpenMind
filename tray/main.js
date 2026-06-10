@@ -3,7 +3,6 @@ const WebSocket = require('ws');
 const path = require('path');
 const { VisualiserState }      = require('./lib/visualiser-state');
 const { PositionStore }        = require('./lib/position-store');
-const { SettingsStore }        = require('./lib/settings-store');
 const { NotificationManager }  = require('./lib/notification-manager');
 const { ConsentManager }       = require('./lib/consent-manager');
 const { ModalManager }         = require('./lib/modal-manager');
@@ -16,7 +15,6 @@ const { buildModelSubmenu }    = require('./lib/model-menu');
 const CEREBRAL_URL    = 'ws://localhost:7766';
 const ICON_PATH       = path.join(__dirname, 'assets', 'icon.png');
 const VIS_POS_PATH    = path.join(__dirname, '..', 'cerebral', 'data', 'visualiser-pos.json');
-const SETTINGS_PATH   = path.join(__dirname, '..', 'cerebral', 'data', 'felix-settings.json');
 const RECONNECT_DELAY_MS = 3000;
 
 let tray = null;
@@ -44,13 +42,17 @@ let lastModel        = null;
 let activeIsCloud    = false;
 let taskModels       = {};
 
-const visState      = new VisualiserState();
-const posStore      = new PositionStore(VIS_POS_PATH);
-const settingsStore = new SettingsStore(SETTINGS_PATH, {
+const visState   = new VisualiserState();
+const posStore   = new PositionStore(VIS_POS_PATH);
+
+// In-memory cache of the settings_updated snapshot from Cerebral.
+// Starts from defaults; overwritten on first broadcast (sent on every connect).
+let settingsCache = {
   notifications_enabled:     false,
   reminder_interval_minutes: 120,
   camera_enabled:            false,
-});
+  visualiser_visible:        false,
+};
 
 function electronNotify(title, body, onClick) {
   if (!Notification.isSupported()) return;
@@ -60,7 +62,7 @@ function electronNotify(title, body, onClick) {
 }
 
 const notifManager = new NotificationManager({
-  store:                settingsStore,
+  onPersist:            (key, value) => sendToCerebral({ type: 'set_setting', data: { key, value } }),
   notify:               electronNotify,
   onNotificationClick:  () => openMainWindow('#queue'),
 });
@@ -87,9 +89,6 @@ function connectToCerebral() {
   ws.on('open', () => {
     isConnected = true;
     console.log('[tray] Connected to Cerebral');
-    // Sync persisted camera state to Cerebral on reconnect
-    const camEnabled = settingsStore.get('camera_enabled');
-    sendToCerebral({ type: 'set_camera_enabled', data: { enabled: camEnabled } });
     refreshMenu();
   });
 
@@ -206,6 +205,28 @@ function handleCerebralEvent(event) {
       envContext = (event.data && event.data.context) || {};
       refreshMenu();
       break;
+
+    case 'settings_updated': {
+      const prev = settingsCache;
+      settingsCache = event.data || {};
+      notifManager.applySettings(settingsCache);
+      // Sync visualiser visibility if it changed.
+      const visNow = !!settingsCache.visualiser_visible;
+      if (visNow !== !!prev.visualiser_visible) {
+        if (visNow && !visState.visible) {
+          visState.toggle();
+          openVisualiserWindow();
+        } else if (!visNow && visState.visible) {
+          visState.toggle();
+          if (visualiserWindow && !visualiserWindow.isDestroyed()) {
+            saveVisualiserPosition();
+            visualiserWindow.close();
+          }
+        }
+      }
+      refreshMenu();
+      break;
+    }
 
     case 'models_list': {
       const d = event.data || {};
@@ -552,6 +573,7 @@ function saveVisualiserPosition() {
 
 function toggleVisualiser() {
   const { visible } = visState.toggle();
+  sendToCerebral({ type: 'set_setting', data: { key: 'visualiser_visible', value: visible } });
   refreshMenu();
 
   if (visible) {
@@ -615,49 +637,10 @@ function buildMenu() {
       }),
     });
 
-    // ── Notifications ─────────────────────────────────────────────────────────
-    const notifOn = notifManager.enabled;
+    // ── Settings shortcuts (redirects to Settings pane) ──────────────────────
     template.push({
-      label: `Notifications: ${notifOn ? 'On' : 'Off'}`,
-      click: () => {
-        notifManager.setEnabled(!notifOn);
-        refreshMenu();
-      },
-    });
-
-    if (notifOn) {
-      const currentInterval = notifManager.intervalMinutes;
-      const intervalPresets = [
-        { label: 'Reminder off',    minutes: 0   },
-        { label: 'Every 30 min',   minutes: 30  },
-        { label: 'Every 1 hour',   minutes: 60  },
-        { label: 'Every 2 hours',  minutes: 120 },
-        { label: 'Every 4 hours',  minutes: 240 },
-      ];
-      template.push({
-        label: 'Reminder interval',
-        submenu: intervalPresets.map(({ label, minutes }) => ({
-          label,
-          type:    'radio',
-          checked: currentInterval === minutes,
-          click:   () => {
-            notifManager.setIntervalMinutes(minutes);
-            refreshMenu();
-          },
-        })),
-      });
-    }
-
-    // ── Camera ────────────────────────────────────────────────────────────────
-    const cameraOn = settingsStore.get('camera_enabled');
-    template.push({
-      label: `Camera: ${cameraOn ? 'On' : 'Off'}`,
-      click: () => {
-        const next = !cameraOn;
-        settingsStore.set('camera_enabled', next);
-        sendToCerebral({ type: 'set_camera_enabled', data: { enabled: next } });
-        refreshMenu();
-      },
+      label: 'Notifications / Camera / Visualiser...',
+      click: () => openMainWindow('#settings'),
     });
 
     template.push({ type: 'separator' });

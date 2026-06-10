@@ -53,6 +53,7 @@ from cerebral.db.conversation import (
 )
 from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
+from cerebral.settings import SettingsStore as _SettingsStore
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
 
@@ -88,6 +89,7 @@ _orc = MCPOrchestrator()
 _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
+_settings = _SettingsStore()
 _conversation = ConversationStore()
 
 
@@ -1127,6 +1129,11 @@ def _plugins_list_event() -> dict:
     }
 
 
+def _settings_state_event() -> dict:
+    """Snapshot of all system settings for the Main window Settings pane."""
+    return {"type": "settings_updated", "data": _settings.all()}
+
+
 async def _pulse_back_to_passive(delay: float = 1.2) -> None:
     """Brief 'thinking' pulse on the visualiser, then back to passive."""
     await asyncio.sleep(delay)
@@ -1784,6 +1791,27 @@ async def _handle_message(msg: dict) -> None:
         if ok:
             await _broadcast(_memory_update_event())
 
+    elif t == "list_settings":
+        await _broadcast(_settings_state_event())
+
+    elif t == "set_setting":
+        d = msg.get("data") or {}
+        key   = d.get("key")
+        value = d.get("value")
+        try:
+            _settings.set(key, value)
+        except ValueError as exc:
+            logger.warning("[cerebral] set_setting rejected: %s", exc)
+            return
+        logger.info("[cerebral] set_setting %s=%r", key, value)
+        if key == "camera_enabled":
+            if value:
+                _env.enable_camera()
+            else:
+                _env.disable_camera()
+            await _broadcast(_env_context_event())
+        await _broadcast(_settings_state_event())
+
     elif t == "set_camera_enabled":
         enabled = msg.get("data", {}).get("enabled", False)
         if enabled:
@@ -1821,6 +1849,7 @@ async def _greet(websocket) -> None:
         _plugins_list_event,
         _permissions_state_event,
         _credentials_state_event,
+        _settings_state_event,
         _conversation_turns_event,
     ]
     for build in greetings:

@@ -6,17 +6,16 @@ const DEFAULTS = {
 };
 
 class NotificationManager {
-  constructor({ store, notify, onNotificationClick } = {}) {
-    this._store             = store;
-    this._notify            = notify            || (() => {});
+  constructor({ initialEnabled, initialInterval, onPersist, notify, onNotificationClick } = {}) {
+    this._enabled         = initialEnabled         ?? DEFAULTS.notifications_enabled;
+    this._intervalMinutes = initialInterval         ?? DEFAULTS.reminder_interval_minutes;
+    this._onPersist       = onPersist              || (() => {});
+    this._notify          = notify                 || (() => {});
     this._onNotificationClick = onNotificationClick || (() => {});
 
-    this._enabled         = store.get('notifications_enabled')      ?? DEFAULTS.notifications_enabled;
-    this._intervalMinutes = store.get('reminder_interval_minutes')   ?? DEFAULTS.reminder_interval_minutes;
-    this._pendingCount    = 0;
-    this._reminderTimer   = null;
+    this._pendingCount  = 0;
+    this._reminderTimer = null;
 
-    // If persisted settings say notifications are on, start the reminder now.
     if (this._enabled && this._intervalMinutes > 0) {
       this._startReminder();
     }
@@ -31,7 +30,7 @@ class NotificationManager {
 
   setEnabled(value) {
     this._enabled = value;
-    this._store.set('notifications_enabled', value);
+    this._onPersist('notifications_enabled', value);
 
     this._stopReminder();
     if (value && this._intervalMinutes > 0) {
@@ -41,11 +40,32 @@ class NotificationManager {
 
   setIntervalMinutes(minutes) {
     this._intervalMinutes = minutes;
-    this._store.set('reminder_interval_minutes', minutes);
+    this._onPersist('reminder_interval_minutes', minutes);
 
     this._stopReminder();
     if (this._enabled && minutes > 0) {
       this._startReminder();
+    }
+  }
+
+  // ── Settings sync from Cerebral broadcast ───────────────────────────────────
+
+  applySettings(settings) {
+    const prevEnabled  = this._enabled;
+    const prevInterval = this._intervalMinutes;
+
+    if ('notifications_enabled' in settings) {
+      this._enabled = settings.notifications_enabled;
+    }
+    if ('reminder_interval_minutes' in settings) {
+      this._intervalMinutes = settings.reminder_interval_minutes;
+    }
+
+    if (prevEnabled !== this._enabled || prevInterval !== this._intervalMinutes) {
+      this._stopReminder();
+      if (this._enabled && this._intervalMinutes > 0) {
+        this._startReminder();
+      }
     }
   }
 

@@ -2,20 +2,14 @@
 
 const { NotificationManager } = require('../lib/notification-manager');
 
-function makeStore(initial = {}) {
-  const data = { ...initial };
-  return {
-    get: (key) => data[key],
-    set: (key, val) => { data[key] = val; },
-  };
-}
-
 let notify;
+let onPersist;
 let manager;
 
 beforeEach(() => {
   jest.useFakeTimers();
-  notify = jest.fn();
+  notify    = jest.fn();
+  onPersist = jest.fn();
 });
 
 afterEach(() => {
@@ -26,21 +20,21 @@ afterEach(() => {
 // ── Cycle 5: tracer bullet — default state ────────────────────────────────────
 
 test('notifications disabled by default', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   expect(manager.enabled).toBe(false);
 });
 
 // ── Cycle 6: default interval ─────────────────────────────────────────────────
 
 test('reminder interval defaults to 120 minutes', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   expect(manager.intervalMinutes).toBe(120);
 });
 
 // ── Cycle 7: no notification when disabled ────────────────────────────────────
 
 test('handleQueueUpdate does not fire when notifications disabled', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   manager.handleQueueUpdate([{ id: '1', title: 'Do something' }]);
   expect(notify).not.toHaveBeenCalled();
 });
@@ -48,14 +42,14 @@ test('handleQueueUpdate does not fire when notifications disabled', () => {
 // ── Cycle 8: fires when enabled and queue grows ───────────────────────────────
 
 test('fires notification when enabled and a new item is added', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   manager.setEnabled(true);
   manager.handleQueueUpdate([{ id: '1', title: 'Do something' }]);
   expect(notify).toHaveBeenCalledTimes(1);
 });
 
 test('notification title contains "queue" (case-insensitive)', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   manager.setEnabled(true);
   manager.handleQueueUpdate([{ id: '1', title: 'Do something' }]);
   expect(notify.mock.calls[0][0]).toMatch(/queue/i);
@@ -64,7 +58,7 @@ test('notification title contains "queue" (case-insensitive)', () => {
 // ── Cycle 9: no duplicate fire on stable queue ────────────────────────────────
 
 test('does not fire when same items arrive again (count unchanged)', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   manager.setEnabled(true);
   manager.handleQueueUpdate([{ id: '1', title: 'Task' }]);
   notify.mockClear();
@@ -73,7 +67,7 @@ test('does not fire when same items arrive again (count unchanged)', () => {
 });
 
 test('does not fire when queue shrinks (item dismissed)', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   manager.setEnabled(true);
   manager.handleQueueUpdate([{ id: '1', title: 'A' }, { id: '2', title: 'B' }]);
   notify.mockClear();
@@ -84,14 +78,14 @@ test('does not fire when queue shrinks (item dismissed)', () => {
 // ── Cycle 10: one notification per growth event, not per item ─────────────────
 
 test('fires exactly once when multiple items added in one update', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   manager.setEnabled(true);
   manager.handleQueueUpdate([{ id: '1', title: 'A' }, { id: '2', title: 'B' }]);
   expect(notify).toHaveBeenCalledTimes(1);
 });
 
 test('fires again when queue grows further after first notification', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   manager.setEnabled(true);
   manager.handleQueueUpdate([{ id: '1', title: 'A' }]);
   notify.mockClear();
@@ -102,7 +96,7 @@ test('fires again when queue grows further after first notification', () => {
 // ── Cycle 11: periodic reminder ───────────────────────────────────────────────
 
 test('periodic reminder fires after interval when queue is non-empty', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   manager.setEnabled(true);
   manager.handleQueueUpdate([{ id: '1', title: 'Task' }]);
   notify.mockClear();
@@ -112,7 +106,7 @@ test('periodic reminder fires after interval when queue is non-empty', () => {
 });
 
 test('periodic reminder does not fire when queue is empty', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   manager.setEnabled(true);
   manager.handleQueueUpdate([]); // empty queue
   notify.mockClear();
@@ -124,7 +118,7 @@ test('periodic reminder does not fire when queue is empty', () => {
 // ── Cycle 12: interval = 0 disables reminder ─────────────────────────────────
 
 test('reminder does not run when interval is 0', () => {
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   manager.setEnabled(true);
   manager.setIntervalMinutes(0);
   manager.handleQueueUpdate([{ id: '1', title: 'Task' }]);
@@ -137,8 +131,7 @@ test('reminder does not run when interval is 0', () => {
 // ── Cycle 12b: disabled notifications suppress reminder ───────────────────────
 
 test('periodic reminder does not fire when notifications disabled', () => {
-  // enabled=false means no reminder, even if queue has items
-  manager = new NotificationManager({ store: makeStore(), notify });
+  manager = new NotificationManager({ notify });
   // don't call setEnabled — stays false
   manager.handleQueueUpdate([{ id: '1', title: 'Task' }]);
 
@@ -146,38 +139,30 @@ test('periodic reminder does not fire when notifications disabled', () => {
   expect(notify).not.toHaveBeenCalled();
 });
 
-// ── Cycle 13: settings load from store on construction ───────────────────────
+// ── Cycle 13: initial state from constructor options ─────────────────────────
 
-test('loads enabled=true from store on construction', () => {
-  manager = new NotificationManager({
-    store: makeStore({ notifications_enabled: true }),
-    notify,
-  });
+test('loads enabled=true from initialEnabled', () => {
+  manager = new NotificationManager({ initialEnabled: true, notify });
   expect(manager.enabled).toBe(true);
 });
 
-test('loads custom interval from store on construction', () => {
-  manager = new NotificationManager({
-    store: makeStore({ reminder_interval_minutes: 60 }),
-    notify,
-  });
+test('loads custom interval from initialInterval', () => {
+  manager = new NotificationManager({ initialInterval: 60, notify });
   expect(manager.intervalMinutes).toBe(60);
 });
 
-// ── Cycle 14: settings persist to store ──────────────────────────────────────
+// ── Cycle 14: mutations call onPersist ────────────────────────────────────────
 
-test('setEnabled persists to store', () => {
-  const store = makeStore();
-  manager = new NotificationManager({ store, notify });
+test('setEnabled calls onPersist with notifications_enabled', () => {
+  manager = new NotificationManager({ onPersist, notify });
   manager.setEnabled(true);
-  expect(store.get('notifications_enabled')).toBe(true);
+  expect(onPersist).toHaveBeenCalledWith('notifications_enabled', true);
 });
 
-test('setIntervalMinutes persists to store', () => {
-  const store = makeStore();
-  manager = new NotificationManager({ store, notify });
+test('setIntervalMinutes calls onPersist with reminder_interval_minutes', () => {
+  manager = new NotificationManager({ onPersist, notify });
   manager.setIntervalMinutes(30);
-  expect(store.get('reminder_interval_minutes')).toBe(30);
+  expect(onPersist).toHaveBeenCalledWith('reminder_interval_minutes', 30);
 });
 
 // ── Cycle 15: click callback ──────────────────────────────────────────────────
@@ -185,7 +170,6 @@ test('setIntervalMinutes persists to store', () => {
 test('onNotificationClick is invoked when notification fires', () => {
   const onClick = jest.fn();
   manager = new NotificationManager({
-    store: makeStore(),
     notify,
     onNotificationClick: onClick,
   });
@@ -196,4 +180,36 @@ test('onNotificationClick is invoked when notification fires', () => {
   const clickCb = notify.mock.calls[0][2];
   clickCb();
   expect(onClick).toHaveBeenCalled();
+});
+
+// ── Cycle 16: applySettings syncs state from Cerebral broadcast ──────────────
+
+test('applySettings updates enabled and restarts reminder', () => {
+  manager = new NotificationManager({ notify });
+  manager.handleQueueUpdate([{ id: '1', title: 'Task' }]);
+
+  manager.applySettings({ notifications_enabled: true, reminder_interval_minutes: 60 });
+  expect(manager.enabled).toBe(true);
+  expect(manager.intervalMinutes).toBe(60);
+
+  notify.mockClear();
+  jest.advanceTimersByTime(60 * 60 * 1000);
+  expect(notify).toHaveBeenCalledTimes(1);
+});
+
+test('applySettings disabling stops the reminder', () => {
+  manager = new NotificationManager({ initialEnabled: true, notify });
+  manager.handleQueueUpdate([{ id: '1', title: 'Task' }]);
+  notify.mockClear();
+
+  manager.applySettings({ notifications_enabled: false });
+  jest.advanceTimersByTime(120 * 60 * 1000);
+  expect(notify).not.toHaveBeenCalled();
+});
+
+test('applySettings ignores unknown keys', () => {
+  manager = new NotificationManager({ notify });
+  // Should not throw
+  manager.applySettings({ bogus_key: true });
+  expect(manager.enabled).toBe(false);
 });
