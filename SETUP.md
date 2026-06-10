@@ -150,6 +150,39 @@ or use whatever uninstall command OpenClaw exposes in your version
 Cerebral itself is **not** auto-started — keep launching it manually. Auto-starting
 Cerebral on login is a separate follow-up.
 
+#### Approve the gateway scope upgrade (required before first Cerebral launch)
+
+Cerebral's `openclaw_channels` plugin drives an `events_wait` long-poll
+against the gateway as soon as the subscriber starts. **`events_wait` is
+itself a privileged call** — even with no channels configured, the first
+Cerebral boot against a freshly-paired gateway will file a scope-upgrade
+request and the gateway will close the WebSocket until the request is
+approved.
+
+Approve it once from any shell BEFORE the first `python -m cerebral.main`:
+
+```powershell
+openclaw devices list-pending   # surface the pending requestId
+openclaw devices approve --latest
+```
+
+`--latest` resolves the most recent pending request automatically. The
+scopes requested cover reading channel transcripts (`operator.read`) and
+sending replies (`operator.write`); approve once per Cerebral install.
+Re-pairing (`openclaw devices clear`) requires re-approval.
+
+If you skip this step and start Cerebral, you'll see one rate-limited
+WARN line per subscriber start:
+
+```
+[openclaw_channels] events_wait raised (likely scope upgrade pending) --
+approve via `openclaw devices approve --latest` (use `openclaw devices
+list-pending` to surface the requestId; see SETUP.md). Detail: ...
+```
+
+Run the approve command and the subscriber recovers on the next
+iteration — no Cerebral restart required.
+
 #### Configure a Discord channel (recommended first channel)
 
 Discord is the canonical first channel for Felix: bot tokens are free,
@@ -219,6 +252,9 @@ in `~/.openclaw/openclaw.json`.
    openclaw agents unbind --agent main --bind discord
    ```
 
+   (Repeat for any other channel Cerebral should drive: `--bind whatsapp`,
+   etc.)
+
 5. **Approve Cerebral's scope-upgrade request** if you haven't already —
    see the **Approve the gateway scope upgrade** section above. The
    `events_wait` long-poll triggers the same scope upgrade with or
@@ -226,8 +262,8 @@ in `~/.openclaw/openclaw.json`.
    step is a no-op if you already approved.
 
    ```powershell
-   openclaw devices list
-   openclaw devices approve <requestId>
+   openclaw devices list-pending   # find the pending requestId
+   openclaw devices approve --latest
    ```
 
 6. **(Optional) Override the gateway URL or token.** Cerebral reads
@@ -245,7 +281,7 @@ in `~/.openclaw/openclaw.json`.
    `[openclaw_channels] Connected to OpenClaw -- subscriber loop running`.
    If you skipped step 5 you'll instead see a single rate-limited
    `[openclaw_channels] events_wait raised (likely scope upgrade pending)
-   -- approve via openclaw devices approve <requestId>` line — run the
+   -- approve via \`openclaw devices approve --latest\`` line — run the
    approve command and the loop picks up on the next iteration without
    a restart.
 
@@ -263,6 +299,111 @@ channels; no per-channel pairing. See `openclaw channels add --help` for
 the per-provider flags, or
 [docs.openclaw.ai/channels](https://docs.openclaw.ai/channels) for the
 channel-specific keys.
+
+### Discord (user account) -- experimental, high risk
+
+> **Read first:** this is a separate Discord integration from the
+> bot-API one above. It runs Felix against your **personal Discord
+> account** (a "self-bot"), not a registered bot. Discord forbids
+> this in their Developer Terms and actively detects it. **Detection
+> results in permanent ban of your Discord account** -- DMs, friend
+> list, server ownership, Nitro, purchase history are all lost, with
+> no recovery path. Do NOT enable this on an account you care about.
+> See [ADR-0006](docs/adr/0006-discord-user-account-integration.md)
+> for the full ToS-risk posture and mitigation roadmap.
+
+This path exists because OpenClaw 2026.4.29's Discord channel is
+bot-API only -- it cannot connect to a personal user account. The
+plugin `plugins/discord_user.py` (Issue
+[#175](https://github.com/iggyghub/OpenMind/issues/175)) talks
+directly to Discord, bypassing OpenClaw.
+
+#### 1. Install the self-bot library
+
+```bash
+pip install discord.py-self
+```
+
+This is **not** in `cerebral/requirements.txt` -- the dep stays
+opt-in so contributors who don't enable the plugin don't pay the
+install cost. A missing install degrades gracefully (the plugin logs
+"Discord user plugin not available" and Cerebral keeps running).
+
+#### 2. Extract your Discord user-account token
+
+The token lives in your browser's local storage when you're logged
+in to Discord on the web client. Standard browser dev-tools
+extraction works. Treat this string the way you would your Discord
+password -- it grants full access to your account.
+
+#### 3. Configure the token
+
+Two storage paths, in resolution order:
+
+- **Per-profile keyring entry** (preferred). Write
+  `provider="discord_user", field="api_token"` via the #112
+  CredentialStore. The plugin is **deliberately not** exposed in the
+  tray "API keys" UI for now (#175 / ADR-0006 friction-as-safety),
+  so for slice 1 you set this manually:
+
+  ```powershell
+  python -c "from cerebral.db.credentials import CredentialStore; CredentialStore().set_secret(1, 'discord_user', 'api_token', 'PASTE-TOKEN-HERE')"
+  ```
+
+  (Replace `1` with your active profile id.)
+
+- **Env var fallback** (simpler for ad-hoc testing):
+
+  ```powershell
+  $env:DISCORD_USER_TOKEN = "PASTE-TOKEN-HERE"
+  ```
+
+  ```bash
+  # .env or shell profile
+  DISCORD_USER_TOKEN=PASTE-TOKEN-HERE
+  ```
+
+The token is **never** logged, **never** written to
+`~/.openclaw/openclaw.json`, and **never** echoed back to the
+renderer over IPC. The plugin scrubs the value from any error
+message before it leaves the process.
+
+#### 4. Restart Cerebral
+
+In your Cerebral terminal you should see:
+
+```
+[discord_user] Token validated for user=<your-username>
+[discord_user] Subscriber loop running (DMs only, draft-only inbound)
+```
+
+Slice-1 behaviour: incoming DMs from real humans surface as queue
+items titled `Discord DM from <author>`. **There is no auto-reply
+yet** -- the plugin only drafts the inbound message for you to read.
+Auto-reply (with a per-sender allowlist + human-shaped delays + typing
+indicators + rate limits) lands in slice 2 as a follow-up issue.
+
+#### 5. Verify outbound send
+
+From an LLM tool call (or the tray's tool tester):
+
+```json
+{"tool": "discord_send_message",
+ "args": {"channel_id": "<id from discord_list_conversations>",
+          "content": "test message from Felix",
+          "confirm": true}}
+```
+
+Without `confirm: true` the tool returns the would-be message for
+review and never hits the network. With `confirm: true`, a real DM
+lands in the recipient's client.
+
+#### Disabling the plugin
+
+Unset the env var (and clear the keyring entry if you set one). The
+plugin's startup check sees no token and logs `not configured --
+subscriber not started`; the tool surface returns "no Discord user-
+account token configured" for any call. No restart juggling needed.
 
 ### n8n (workflow automation)
 

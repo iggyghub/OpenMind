@@ -589,6 +589,216 @@ async def test_scope_upgrade_warning_logged_once(caplog):
 
 
 # ===========================================================================
+# Issue #172 -- closed-WS scope-upgrade rejection path
+#
+# The 2026.4.29 gateway does NOT return ``isError=True`` for scope-upgrade
+# rejections; it closes the underlying WebSocket. The mcp SDK then raises
+# ``McpError("Connection closed")`` on the next read. The actionable WARN
+# in the ``_is_error(result)`` branch is unreachable on this path; the
+# exception branch has to emit it instead. Pair this with cache
+# invalidation of ``_session`` so the next iteration spawns a fresh stdio
+# child once the operator approves the scope out-of-band.
+# ===========================================================================
+
+
+def _multi_session_factory(sessions: list[FakeSession]):
+    """Return a session_factory that yields sequential ``FakeSession``s on
+    each ``_ensure_session`` invocation -- one per call.
+
+    Lets a test prove the cache was invalidated: if the plugin keeps
+    reusing the first session, ``factory()`` is only called once and
+    later sessions never receive events.
+    """
+    invocations = {"count": 0}
+
+    @contextlib.asynccontextmanager
+    async def factory():
+        idx = invocations["count"]
+        invocations["count"] += 1
+        if idx >= len(sessions):
+            # Exhausted -- yield the last one to keep tests stable rather
+            # than raise. Real session_factory would respawn each time.
+            session = sessions[-1]
+        else:
+            session = sessions[idx]
+        await session.initialize()
+        yield session
+
+    factory.invocations = invocations  # type: ignore[attr-defined]
+    return factory
+
+
+async def test_closed_ws_raise_logs_actionable_scope_warn_once(caplog):
+    """First events_wait raise emits the actionable scope-upgrade WARN
+    naming ``openclaw devices approve --latest`` -- and only once across
+    N iterations.
+
+    Repro shape from issue #172: the gateway closes the WebSocket and
+    the mcp SDK raises ``McpError`` with message ``"Connection closed"``.
+    Before the fix, the loop logged the unhelpful ``events_wait raised:
+    Connection closed -- backing off`` on every iteration. After the
+    fix, exactly one actionable WARN names the approve command.
+    """
+    raises_remaining = {"count": 3}
+
+    class ClosedWSSession(FakeSession):
+        async def call_tool(self, name, arguments):  # type: ignore[override]
+            self._calls.append((name, dict(arguments)))
+            if name == "events_wait":
+                self.events_wait_calls += 1
+                if raises_remaining["count"] > 0:
+                    raises_remaining["count"] -= 1
+                    # OSError("Connection closed") stands in for the mcp
+                    # SDK's McpError(ErrorData(code=CONNECTION_CLOSED,
+                    # message="Connection closed")) -- the plugin handles
+                    # both via the generic ``except Exception``.
+                    raise OSError("Connection closed")
+                # Subsequent calls succeed with an empty payload.
+                await asyncio.sleep(0.01)
+                return _text_result({"events": []})
+            return _text_result({"ok": True})
+
+    sessions = [ClosedWSSession() for _ in range(5)]
+    factory = _multi_session_factory(sessions)
+    plugin = _make_plugin(
+        session_factory=factory,
+        inbound_callback=_unused_callback,
+    )
+    with caplog.at_level(logging.WARNING):
+        await plugin.start_subscriber()
+        try:
+            # Allow several iterations of the loop. The first three
+            # raise, then the loop recovers.
+            await _drain_until(
+                lambda: sum(s.events_wait_calls for s in sessions) >= 4,
+                timeout=2.0,
+            )
+        finally:
+            await plugin.stop_subscriber()
+
+    msgs = [rec.getMessage() for rec in caplog.records]
+    # Exactly ONE actionable WARN line names the approve command.
+    actionable = [m for m in msgs if "openclaw devices approve --latest" in m]
+    assert len(actionable) == 1, f"expected 1 actionable WARN; got {len(actionable)}: {msgs}"
+    # The actionable WARN also points at list-pending so the operator
+    # can find the requestId (which the SDK doesn't surface).
+    assert "list-pending" in actionable[0], actionable[0]
+    # The legacy unhelpful "events_wait raised: Connection closed --
+    # backing off" line should NOT be repeated for every iteration --
+    # the rate-limited path swallows subsequent terse lines into the
+    # `_scope_warned` branch.
+    terse_dupes = [m for m in msgs if m.startswith(
+        "[openclaw_channels] events_wait raised: Connection closed",
+    )]
+    # At most one terse line per raise AFTER the first; the actionable
+    # WARN replaces the terse one on the first raise.
+    assert len(terse_dupes) <= 2, terse_dupes
+
+
+async def test_closed_ws_raise_invalidates_cached_session(caplog):
+    """After an events_wait raise, ``_ensure_session`` calls the factory
+    again -- the cached dead session is dropped.
+
+    If the cache weren't invalidated, the factory's invocation counter
+    would stay at 1 forever and the operator would have to restart
+    Cerebral to recover.
+    """
+
+    class OneShotSession(FakeSession):
+        """Raises ``OSError("Connection closed")`` exactly once on
+        events_wait, then never responds again (the dead-WS analogue)."""
+
+        async def call_tool(self, name, arguments):  # type: ignore[override]
+            self._calls.append((name, dict(arguments)))
+            if name == "events_wait":
+                self.events_wait_calls += 1
+                if self.events_wait_calls == 1:
+                    raise OSError("Connection closed")
+                # If the cache wasn't invalidated, the plugin would land
+                # here on subsequent iterations and never reach the
+                # second session's events_wait.
+                await asyncio.sleep(0.01)
+                return _text_result({"events": []})
+            return _text_result({"ok": True})
+
+    sessions = [OneShotSession(), FakeSession()]
+    factory = _multi_session_factory(sessions)
+    plugin = _make_plugin(
+        session_factory=factory,
+        inbound_callback=_unused_callback,
+    )
+    with caplog.at_level(logging.WARNING):
+        await plugin.start_subscriber()
+        try:
+            # The factory MUST be invoked >= 2 times: once at subscriber
+            # start, once after the cache is invalidated.
+            ok = await _drain_until(
+                lambda: factory.invocations["count"] >= 2,
+                timeout=2.0,
+            )
+            assert ok, (
+                "session factory was not re-invoked after raise -- cache "
+                f"invalidation broken; invocations={factory.invocations['count']}"
+            )
+        finally:
+            await plugin.stop_subscriber()
+
+    # The second (fresh) session should have received at least one
+    # events_wait call -- recovery flowed through it.
+    assert sessions[1].events_wait_calls >= 1, (
+        "second session never polled events_wait -- recovery never reached it"
+    )
+
+
+async def test_closed_ws_recovery_resumes_normal_event_flow():
+    """End-to-end: first events_wait raises ``Connection closed``, the
+    plugin invalidates the session, the next ``_ensure_session`` brings
+    up a fresh session whose events_wait returns a real event, and the
+    inbound callback fires normally -- no Cerebral restart required.
+    """
+    callback_invocations: list[str] = []
+
+    async def callback(text: str, history: list[dict]) -> str:
+        callback_invocations.append(text)
+        return f"echo: {text}"
+
+    class FirstSessionDead(FakeSession):
+        async def call_tool(self, name, arguments):  # type: ignore[override]
+            self._calls.append((name, dict(arguments)))
+            if name == "events_wait":
+                self.events_wait_calls += 1
+                raise OSError("Connection closed")
+            return _text_result({"ok": True})
+
+    # The second session delivers a real event so the callback fires.
+    recovered_session = FakeSession(events_queue=[
+        {"cursor": 7, "session_key": "telegram:alice", "text": "post-recovery hello"},
+    ])
+    sessions: list[FakeSession] = [FirstSessionDead(), recovered_session]
+    factory = _multi_session_factory(sessions)
+
+    plugin = _make_plugin(
+        session_factory=factory,
+        inbound_callback=callback,
+    )
+    await plugin.start_subscriber()
+    try:
+        ok = await _drain_until(
+            lambda: len(callback_invocations) >= 1,
+            timeout=2.0,
+        )
+        assert ok, "callback never fired -- recovery path broken"
+    finally:
+        await plugin.stop_subscriber()
+
+    assert callback_invocations == ["post-recovery hello"]
+    # And the reply was sent via the second (recovered) session.
+    assert recovered_session.send_calls and (
+        recovered_session.send_calls[0]["text"] == "echo: post-recovery hello"
+    )
+
+
+# ===========================================================================
 # Module-level lifecycle wrappers
 # ===========================================================================
 
