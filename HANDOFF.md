@@ -6,30 +6,38 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ## Next slice — start here
 
-The active multi-slice epic is **#184 Main window** / **#191 Slice 2** (per-panel migrations). Seven slices landed: six panel migrations (Queue, Insights, Memory, Credentials, Permissions, Profile-setup) plus the Plugins pane v1. **All popup retirements are done.** Only the Settings consolidation remains — and it has a real backend dependency the kickoff prompt should make explicit. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
+The active multi-slice epic is **#184 Main window** / **#191 Slice 2** (per-panel migrations). **Slice 2 is now complete at the v1 level — all nine routes in the sidebar are live.** The remaining work is the Settings v2 backend refactor (#209) which finishes the tray-submenu consolidation. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
 
-1. **Next slice = Settings, but with a backend precondition.** The Settings pane needs to consolidate the tray submenu's: Models picker, Notifications toggle, Reminder interval, Camera toggle, Visualiser toggle. Models + Camera are already WS-native (`models_list` / `switch_model` / `set_task_model` for models, `set_camera_enabled` for camera). **Notifications + Reminder interval + Visualiser visibility are tray-local** — they live in `tray/lib/settings-store.js` (file-backed at `cerebral/data/felix-settings.json`) and `tray/lib/visualiser-state.js` (in-memory). The Main window can't read or mutate them without either an `ipcRenderer` channel (violates ADR-0007) or a Cerebral-side store. **Pick one of two paths:**
-   - **Path A (clean):** move `settingsStore` from tray-local to Cerebral with `list_settings` / `set_setting` / `settings_updated` WS events. Tray + Main window both subscribe. visualiser visible state becomes a setting too, or stays tray-local with a relay event. Bigger PR — ~150 LOC Python + ~80 LOC tweak in main.js. The right answer.
-   - **Path B (pragmatic):** land a Settings v1 with **only** the Models picker (the part that's already WS-native). Mark the tray-local items as "managed from the system tray for now" in the pane copy. File a follow-on Settings v2 issue for the Path-A refactor. Smaller PR but doesn't finish the consolidation.
-2. **Read the reference PRs in order:** [#195](https://github.com/iggyghub/OpenMind/pull/195) (Queue), [#197](https://github.com/iggyghub/OpenMind/pull/197) (Insights), [#199](https://github.com/iggyghub/OpenMind/pull/199) (Memory), [#201](https://github.com/iggyghub/OpenMind/pull/201) (Credentials), [#203](https://github.com/iggyghub/OpenMind/pull/203) (Permissions), [#205](https://github.com/iggyghub/OpenMind/pull/205) (Profiles), [#207](https://github.com/iggyghub/OpenMind/pull/207) (Plugins v1). The diffs are the implementation template.
-3. **Clone tracker issue #206 verbatim** with Settings-specific renaming. Pick a distinct accent — coral (`#ff8c69`), soft cyan (`#7fdfdf`), or a deeper rose. Title: `Settings pane in main.html sidebar (Slice 2.9 of #184)`.
-4. **Branch off the most recent merged migration branch** (currently `drop-206-plugins-pane`; rebase up the chain as parent PRs merge): `git checkout -b drop-NNN-settings-pane`.
-5. **Implement** per the chosen path. For Path A: build a Cerebral `settings.py` module that owns the JSON file, add the WS handlers + broadcast, port `tray/main.js` to consume `settings_updated` instead of file reads, gut the tray submenu items and re-route them to `openMainWindow('#settings')`. For Path B: just `models_list` in the pane, scoped tightly.
-6. **Verify:** cumulative pytest (add `test_settings*.py` if you write any). `npm --prefix tray test` if you touched any `tray/lib/` file. Grep for stale references in the live tree.
-7. **Commit + push + open PR** with `--base <previous-migration-branch>`, mirror the [Memory commit](https://github.com/iggyghub/OpenMind/pull/199/commits) message structure, include `Closes #NNN`.
-8. **Update this block** to point at the slice you just landed and the next phase.
+### Recommended next slice: **#209 Settings v2**
+
+This is the only known remaining work on the Slice 2 spec. It's a Cerebral-side refactor more than a renderer slice:
+
+1. **Build a `cerebral/settings.py` module** that owns `cerebral/data/felix-settings.json` (the file currently owned by `tray/lib/settings-store.js`). Schema: `notifications_enabled`, `reminder_interval_minutes`, `camera_enabled`, plus optionally promoting `visualiser_visible` from in-memory `visState` to persistent.
+2. **WS handlers in `cerebral/main.py`:** `list_settings`, `set_setting` (key/value with validation), and a `settings_updated` broadcast on every mutation. Include the snapshot in `_initial_broadcast()` so connecting clients prime their cache.
+3. **Port `tray/main.js`** to subscribe to `settings_updated` and keep a thin in-memory cache. `notifManager` gets reconstructed to take callbacks instead of the lib store. `set_camera_enabled` reads from the cache. `toggleVisualiser` writes via `set_setting`.
+4. **Settings pane in `tray/windows/main.html`** gains a real top section with toggles/dropdowns for the four settings. The "Managed in system tray" deferred section gets removed.
+5. **Tray menu** — either retire the Notifications / Reminder interval / Camera / Visualiser items entirely, or keep them as thin redirects to `openMainWindow('#settings')`. Pick (a) redirects for discoverability.
+6. **Tests:** `cerebral/tests/test_settings.py` for the new store + WS round-trips. The Jest suite for the old `tray/lib/settings-store.js` either moves to Python (settings now Cerebral-side) or deletes.
+7. **Branch base:** `drop-208-settings-pane` (Slice 2 v1 just landed there). Stack accordingly.
+
+If you want to do something else first (Slice 3 = retire consent.html, new features, etc), the v1 Settings pane is fully functional for the Models surface and the deferred items are clearly labelled in the UI — there's no functionality gap that blocks shipping.
+
+### Reference PRs (in order)
+
+[#195](https://github.com/iggyghub/OpenMind/pull/195) Queue → [#197](https://github.com/iggyghub/OpenMind/pull/197) Insights → [#199](https://github.com/iggyghub/OpenMind/pull/199) Memory → [#201](https://github.com/iggyghub/OpenMind/pull/201) Credentials → [#203](https://github.com/iggyghub/OpenMind/pull/203) Permissions (UMD lib + tabs + modal) → [#205](https://github.com/iggyghub/OpenMind/pull/205) Profiles (wizard + `MediaRecorder` in-pane) → [#207](https://github.com/iggyghub/OpenMind/pull/207) Plugins v1 → [#NNN] Settings v1 (this branch).
 
 ### Slice 2 progress
 
 - ✅ 2.1 Queue → #194 / PR [#195](https://github.com/iggyghub/OpenMind/pull/195)
-- ✅ 2.2 (sidebar shell, #192 / PR #193 — landed before per-panel work)
+- ✅ 2.2 sidebar shell → #192 / PR #193
 - ✅ 2.3 Insights → #196 / PR [#197](https://github.com/iggyghub/OpenMind/pull/197)
 - ✅ 2.4 Memory → #198 / PR [#199](https://github.com/iggyghub/OpenMind/pull/199)
 - ✅ 2.5 Credentials → #200 / PR [#201](https://github.com/iggyghub/OpenMind/pull/201)
 - ✅ 2.6 Permissions → #202 / PR [#203](https://github.com/iggyghub/OpenMind/pull/203)
-- ✅ 2.7 Profile-setup → #204 / PR [#205](https://github.com/iggyghub/OpenMind/pull/205) — first non-list shape (wizard + audio capture in-pane)
-- ✅ 2.8 Plugins v1 → #206 / PR [#207](https://github.com/iggyghub/OpenMind/pull/207) — list + load errors; Discord allowlist editor + per-plugin settings + enable/disable deferred (no Cerebral API yet)
-- ⏳ 2.9 Settings — see Path A vs B above; branch base `drop-206-plugins-pane`
+- ✅ 2.7 Profile-setup → #204 / PR [#205](https://github.com/iggyghub/OpenMind/pull/205)
+- ✅ 2.8 Plugins v1 → #206 / PR [#207](https://github.com/iggyghub/OpenMind/pull/207)
+- ✅ 2.9 Settings v1 (Models picker) → #208 / PR [#NNN] — deferred items (Notifications, Reminder interval, Camera, Visualiser) flagged in the pane with a link to #209
+- ⏳ 2.10 Settings v2 (settingsStore → Cerebral; retire tray submenu items) → #209
 
 ### Gotchas (carry forward each slice)
 

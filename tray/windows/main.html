@@ -1668,6 +1668,207 @@
       color: var(--text-dim);
       line-height: 1.4;
     }
+
+    /* ── settings pane ──────────────────────────────────────── */
+    /* New-feature build v1 (Issue #208). Models section only — the rest
+       of the legacy tray submenu (Notifications, Reminder interval,
+       Camera, Visualiser) needs the settingsStore-to-Cerebral refactor
+       filed as Settings v2 (#209). Class prefix `set-*`; accent coral
+       (#ff8c69) — eighth distinct pane colour. */
+    .pane[data-route="settings"] { background: var(--bg); }
+
+    .set-body {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .set-body::-webkit-scrollbar { width: 4px; }
+    .set-body::-webkit-scrollbar-track { background: transparent; }
+    .set-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .set-section {
+      padding: 14px 18px 6px;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-top: 1px solid #1e1c30;
+    }
+    .set-section:first-child { border-top: none; }
+
+    .set-active-header {
+      padding: 8px 18px 14px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .set-active-cloud {
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 8px;
+      font-weight: 700;
+      background: rgba(255, 140, 105, 0.18);
+      color: #ff8c69;
+    }
+    .set-active-cloud.is-local { background: var(--bg-elev); color: var(--text-dim); }
+
+    .set-last-line {
+      padding: 0 18px 10px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .set-offline {
+      padding: 0 18px 10px;
+      font-size: 11px;
+      color: #f5cd6b;
+      font-style: italic;
+    }
+
+    .set-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 18px;
+      border-bottom: 1px solid #1e1c30;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .set-row:last-child { border-bottom: none; }
+    .set-row:hover { background: rgba(255, 255, 255, 0.02); }
+    .set-row.is-active { background: rgba(255, 140, 105, 0.06); }
+
+    .set-radio {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      flex-shrink: 0;
+      position: relative;
+      transition: border-color 0.12s;
+    }
+    .set-row.is-active .set-radio { border-color: #ff8c69; }
+    .set-row.is-active .set-radio::after {
+      content: '';
+      position: absolute;
+      inset: 2px;
+      border-radius: 50%;
+      background: #ff8c69;
+    }
+
+    .set-row-name {
+      flex: 1;
+      font-size: 13px;
+      color: var(--text);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .set-row-tag {
+      font-size: 10px;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+    }
+
+    .set-task-card {
+      margin: 10px 18px;
+      padding: 10px 12px;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .set-task-card-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .set-task-card-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: 0.02em;
+    }
+    .set-task-card-current {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .set-task-card-current.is-active-fallback { color: #ff8c69; font-style: italic; }
+
+    .set-task-row {
+      padding: 6px 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background 0.1s;
+    }
+    .set-task-row:hover { background: rgba(255, 255, 255, 0.03); }
+    .set-task-row .set-radio { width: 12px; height: 12px; }
+    .set-task-row-name {
+      font-size: 11px;
+      color: var(--text-dim);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .set-task-row.is-sentinel .set-task-row-name {
+      font-style: italic;
+      font-family: inherit;
+    }
+
+    .set-refresh-row {
+      padding: 12px 18px;
+    }
+    .set-btn {
+      background: var(--bg-elev);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      font-family: inherit;
+      padding: 7px 14px;
+      border-radius: 5px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: color 0.12s, border-color 0.12s, background 0.12s;
+    }
+    .set-btn:hover { color: var(--text); border-color: #ff8c69; }
+    .set-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .set-deferred {
+      margin: 8px 18px 16px;
+      padding: 12px 14px;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .set-deferred-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-dim);
+      margin-bottom: 6px;
+    }
+    .set-deferred-list {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      list-style: none;
+    }
+    .set-deferred-list li::before { content: '· '; color: var(--text-muted); }
+    .set-deferred-note {
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+    .set-deferred-note a {
+      color: #ff8c69;
+      text-decoration: none;
+    }
+    .set-deferred-note a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -1935,10 +2136,50 @@
     </section>
 
     <section class="pane" data-route="settings" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Settings</div>
-        <div class="placeholder-sub">System-wide preferences — notifications, reminder interval, camera, visualiser toggle, active model, and per-task model assignments. Currently scattered across the tray menu.</div>
-        <div class="placeholder-issue">Coming: Slice 2 of #184</div>
+      <div class="set-body">
+        <div class="set-section">Active model</div>
+        <div class="set-active-header" id="set-active-header">
+          <span id="set-active-name">—</span>
+          <span class="set-active-cloud" id="set-active-cloud">local</span>
+        </div>
+        <div class="set-last-line" id="set-last-line" hidden></div>
+        <div class="set-offline" id="set-offline" hidden>
+          Ollama offline — local models unavailable.
+        </div>
+
+        <div class="set-section">Switch model</div>
+        <div id="set-model-list">
+          <div class="prof-empty">No models known yet — try Refresh.</div>
+        </div>
+
+        <div class="set-section">Per-task models</div>
+        <div id="set-task-list">
+          <!-- Cards rendered by renderSettings() for each task type. -->
+        </div>
+
+        <div class="set-refresh-row">
+          <button class="set-btn" id="set-refresh-btn" type="button">
+            Refresh installed models
+          </button>
+        </div>
+
+        <div class="set-section">Managed in system tray</div>
+        <div class="set-deferred">
+          <div class="set-deferred-title">Still in the tray menu (for now)</div>
+          <ul class="set-deferred-list">
+            <li>Notifications — on/off + reminder interval</li>
+            <li>Camera — on/off</li>
+            <li>Visualiser — show/hide the floating orb window</li>
+          </ul>
+          <div class="set-deferred-note">
+            These settings live in a tray-local file-backed store today
+            (<code>tray/lib/settings-store.js</code> →
+            <code>cerebral/data/felix-settings.json</code>) and need a
+            Cerebral-side store before the Main window can read/write them
+            without violating ADR-0007. Tracked as
+            <a href="https://github.com/iggyghub/OpenMind/issues/209" target="_blank">#209 Settings v2</a>.
+          </div>
+        </div>
       </div>
     </section>
   </main>
@@ -2009,6 +2250,13 @@
     const plugListEl       = document.getElementById('plug-list');
     const plugErrorsListEl = document.getElementById('plug-errors-list');
     const plugErrorsHeader = document.getElementById('plug-errors-section');
+    const setActiveNameEl  = document.getElementById('set-active-name');
+    const setActiveCloudEl = document.getElementById('set-active-cloud');
+    const setLastLineEl    = document.getElementById('set-last-line');
+    const setOfflineEl     = document.getElementById('set-offline');
+    const setModelListEl   = document.getElementById('set-model-list');
+    const setTaskListEl    = document.getElementById('set-task-list');
+    const setRefreshBtn    = document.getElementById('set-refresh-btn');
 
     // Pending action queue (Issue #194 — migrated from queue.html). Held
     // at the document level (not inside the pane) so the header badge can
@@ -2054,6 +2302,19 @@
     // for its new-plugin trust list. Held at document level so the
     // pane stays fresh whether or not it's visible.
     let pluginsListData = { plugins: [], errors: [] };
+
+    // Settings v1 state (Issue #208). Mirrors the tray's models_list
+    // payload — both surfaces drive the same WS events so they stay in
+    // sync without any cross-talk. Task types match the tray's default
+    // (chat + extraction).
+    let modelsState = {
+      models:          [],
+      active:          null,
+      last:            null,
+      active_is_cloud: false,
+      task_models:     {},
+    };
+    const SET_TASK_TYPES = ['chat', 'extraction'];
 
     let ws = null;
     let activeProfileId = null;
@@ -2217,6 +2478,21 @@
           };
           renderPlugins();
           break;
+        case 'models_list': {
+          // Issue #208 — Settings pane v1. Tray menu's Model submenu
+          // (buildModelSubmenu) drives off the same payload, so both
+          // surfaces stay in sync.
+          const d = event.data || {};
+          modelsState = {
+            models:          d.models          || [],
+            active:          d.active          || null,
+            last:            d.last            || null,
+            active_is_cloud: !!d.active_is_cloud,
+            task_models:     d.task_models     || {},
+          };
+          renderSettings();
+          break;
+        }
       }
     }
 
@@ -3399,6 +3675,127 @@
     // First render so the empty state shows before plugins_list arrives.
     renderPlugins();
 
+    // ── settings pane v1 (Issue #208) ────────────────────────────────────
+    // Models section only. Notifications / Reminder interval / Camera /
+    // Visualiser still live in the tray menu — they need the
+    // settingsStore-to-Cerebral refactor in #209 before they can move
+    // here without violating ADR-0007. The pane surfaces a "Managed in
+    // system tray" section that links to #209 so the user knows where
+    // to find them in the interim.
+
+    function setFormatModelLabel(m) {
+      const cloud = m.is_cloud ? '☁ ' : '◉ ';
+      const last  = m.is_last && !m.is_active ? '  (last)' : '';
+      return `${cloud}${m.label || m.id}${last}`;
+    }
+
+    function renderSettings() {
+      const { models, active, last, active_is_cloud, task_models } = modelsState;
+
+      // Active model header.
+      setActiveNameEl.textContent = active || '—';
+      setActiveCloudEl.textContent = active_is_cloud ? '☁ cloud' : '◉ local';
+      setActiveCloudEl.classList.toggle('is-local', !active_is_cloud);
+
+      // Last-used line (only when last differs from active and exists).
+      if (last && last !== active) {
+        setLastLineEl.hidden = false;
+        setLastLineEl.textContent = `Last used: ${last}`;
+      } else {
+        setLastLineEl.hidden = true;
+      }
+
+      // Ollama-offline banner (no local models known).
+      const hasLocal = models.some((m) => !m.is_cloud);
+      setOfflineEl.hidden = hasLocal || models.length === 0;
+
+      // Switch-model list.
+      if (models.length === 0) {
+        setModelListEl.innerHTML =
+          '<div class="prof-empty">No models known yet — try Refresh.</div>';
+      } else {
+        setModelListEl.innerHTML = models.map((m) => `
+          <div class="set-row ${m.is_active ? 'is-active' : ''}"
+               data-set-switch="${escHtml(m.id)}">
+            <span class="set-radio"></span>
+            <span class="set-row-name">${escHtml(setFormatModelLabel(m))}</span>
+          </div>
+        `).join('');
+      }
+
+      // Per-task cards.
+      setTaskListEl.innerHTML = SET_TASK_TYPES.map((taskType) => {
+        const current = task_models[taskType];
+        const currentLabel = current
+          ? `<span class="set-task-card-current">→ ${escHtml(current)}</span>`
+          : `<span class="set-task-card-current is-active-fallback">use active</span>`;
+
+        const sentinelRow = `
+          <div class="set-task-row is-sentinel ${!current ? 'is-active' : ''}"
+               data-set-task="${escHtml(taskType)}"
+               data-set-task-model="">
+            <span class="set-radio"></span>
+            <span class="set-task-row-name">Use active model</span>
+          </div>
+        `;
+        const modelRows = models.map((m) => `
+          <div class="set-task-row ${current === m.id ? 'is-active' : ''}"
+               data-set-task="${escHtml(taskType)}"
+               data-set-task-model="${escHtml(m.id)}">
+            <span class="set-radio"></span>
+            <span class="set-task-row-name">${escHtml(setFormatModelLabel(m))}</span>
+          </div>
+        `).join('');
+
+        return `
+          <div class="set-task-card">
+            <div class="set-task-card-head">
+              <span class="set-task-card-label">Task: ${escHtml(taskType)}</span>
+              ${currentLabel}
+            </div>
+            ${sentinelRow}
+            ${modelRows}
+          </div>
+        `;
+      }).join('');
+    }
+
+    setModelListEl.addEventListener('click', (e) => {
+      const row = e.target.closest('[data-set-switch]');
+      if (!row) return;
+      const id = row.dataset.setSwitch;
+      if (!id || id === modelsState.active) return;
+      sendEvent({ type: 'switch_model', data: { model_id: id } });
+    });
+
+    setTaskListEl.addEventListener('click', (e) => {
+      const row = e.target.closest('[data-set-task]');
+      if (!row) return;
+      const taskType = row.dataset.setTask;
+      // Empty string sentinel = "Use active model" -> null on the WS event.
+      const modelId  = row.dataset.setTaskModel || null;
+      if (!taskType) return;
+      sendEvent({
+        type: 'set_task_model',
+        data: { task_type: taskType, model_id: modelId },
+      });
+    });
+
+    setRefreshBtn.addEventListener('click', () => {
+      setRefreshBtn.disabled = true;
+      setRefreshBtn.textContent = 'Refreshing…';
+      sendEvent({ type: 'refresh_models' });
+      // Re-enable after a beat so the next models_list broadcast lands
+      // before the user can spam it; cheap UX guard.
+      setTimeout(() => {
+        setRefreshBtn.disabled = false;
+        setRefreshBtn.textContent = 'Refresh installed models';
+      }, 1500);
+    });
+
+    // First render so the empty state shows before models_list arrives.
+    renderSettings();
+
     // ── input ─────────────────────────────────────────────────────────────
     function autosize() {
       input.style.height = '42px';
@@ -3488,6 +3885,12 @@
         // case where the user opens Plugins between connect and the
         // first activation of any pane that depends on it.
         sendEvent({ type: 'list_plugins' });
+      } else if (route === 'settings') {
+        // Issue #208 — models_list rides on the connect-time initial
+        // broadcast; refresh_models triggers a re-broadcast. Either
+        // way the render is idempotent so firing on activation is
+        // cheap and recovers from any missed broadcasts.
+        sendEvent({ type: 'refresh_models' });
       }
     }
 
