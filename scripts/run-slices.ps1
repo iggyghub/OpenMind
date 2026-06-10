@@ -22,7 +22,12 @@
 
 param(
     [int]$MaxSlices = 8,
-    [int]$MaxAttempts = 3
+    [int]$MaxAttempts = 3,
+    # When the usage limit is hit, sleep until it resets and auto-resume the
+    # same slice instead of stopping. -AutoResume:$false reverts to stop-and-notify.
+    [bool]$AutoResume = $true,
+    # Safety cap on consecutive limit-waits, so a permanent block can't loop forever.
+    [int]$MaxLimitWaits = 6
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,8 +53,50 @@ try {
     $shell = New-Object -ComObject WScript.Shell
     function Notify($title, $msg) {
         Log ("NOTIFY: {0} - {1}" -f $title, $msg)
-        # 48 = exclamation icon; 0 = wait until dismissed
+        # 48 = exclamation icon; 0 = wait until dismissed (use for terminal stops)
         $shell.Popup($msg, 0, $title, 48) | Out-Null
+    }
+    function NotifyTimed($title, $msg, $seconds) {
+        Log ("NOTIFY: {0} - {1}" -f $title, $msg)
+        # 64 = info icon; auto-dismisses after $seconds so it never blocks an unattended wait
+        $shell.Popup($msg, $seconds, $title, 64) | Out-Null
+    }
+
+    # Parse "...resets 7:20pm..." into seconds-from-now until that clock time.
+    # Caps at 5h30m (the max usage window) and adds a 2-min buffer past reset.
+    # Returns a sane default (5h15m) when no time can be parsed.
+    function Get-SecondsUntilReset($text) {
+        $buffer = 120
+        $capSec = 19800            # 5h30m
+        $default = 18900           # 5h15m
+        if ($text -match 'resets?\s+(\d{1,2}(:\d{2})?\s*[ap]\.?m\.?)') {
+            $clock = $matches[1] -replace '\.', ''
+            try {
+                $target = [DateTime]::Parse($clock)          # today at that clock time
+                $now = Get-Date
+                if ($target -le $now.AddMinutes(1)) {
+                    # reset time is now/just passed -> retry shortly
+                    return 300
+                }
+                $sec = [int]($target - $now).TotalSeconds + $buffer
+                if ($sec -gt $capSec) { return $capSec }
+                return $sec
+            } catch { return $default }
+        }
+        return $default
+    }
+
+    # Sleep $seconds in 60s ticks, bailing early if the STOP file appears.
+    # Returns $true if it slept the full duration, $false if STOP interrupted it.
+    function Wait-WithStopCheck($seconds, $stopFile) {
+        $elapsed = 0
+        while ($elapsed -lt $seconds) {
+            if (Test-Path $stopFile) { return $false }
+            $chunk = [Math]::Min(60, $seconds - $elapsed)
+            Start-Sleep -Seconds $chunk
+            $elapsed += $chunk
+        }
+        return $true
     }
 
     function Get-HandoffField($name, $default) {
@@ -79,9 +126,10 @@ try {
              "(ready, blocked, or done). If you cannot complete the slice, set Status: blocked " +
              "with a one-line reason and stop."
 
-    Log ("=== slice loop started (max {0} slices, {1} attempts each) ===" -f $MaxSlices, $MaxAttempts)
+    Log ("=== slice loop started (max {0} slices, {1} attempts each, auto-resume={2}) ===" -f $MaxSlices, $MaxAttempts, $AutoResume)
 
     $stopAll = $false
+    $limitWaits = 0
     for ($slice = 1; $slice -le $MaxSlices -and -not $stopAll; $slice++) {
 
         if (Test-Path $stopFile) { Log "STOP file found, ending loop."; break }
@@ -126,16 +174,48 @@ try {
             if (Test-Path $errLog) { $output += [IO.File]::ReadAllText($errLog) }
 
             if ($output -match $limitPattern) {
+                # Not-logged-in is unrecoverable without a human -> always stop.
                 if ($output -match "Not logged in") {
                     Notify "Slice loop" "The claude CLI is not logged in. Open a terminal, run claude, type /login, then restart the loop."
-                } else {
-                    $resetMsg = "Claude usage limit reached. Loop stopped cleanly - restart it after the limit resets."
-                    if ($output -match "resets[^\r\n]*") { $resetMsg = "Claude usage limit reached (" + $matches[0].Trim() + "). Loop stopped cleanly - restart after reset." }
-                    Notify "Slice loop" $resetMsg
+                    $stopAll = $true
+                    break
                 }
-                $stopAll = $true
-                break
+
+                $resetTxt = ""
+                if ($output -match "resets[^\r\n]*") { $resetTxt = $matches[0].Trim() }
+
+                if (-not $AutoResume) {
+                    $msg = "Claude usage limit reached. Loop stopped cleanly - restart after reset."
+                    if ($resetTxt) { $msg = "Claude usage limit reached ({0}). Loop stopped cleanly - restart after reset." -f $resetTxt }
+                    Notify "Slice loop" $msg
+                    $stopAll = $true
+                    break
+                }
+
+                $limitWaits++
+                if ($limitWaits -gt $MaxLimitWaits) {
+                    Notify "Slice loop" ("Usage limit hit {0} times in a row - stopping to avoid an endless wait. Check your plan, then restart." -f $MaxLimitWaits)
+                    $stopAll = $true
+                    break
+                }
+
+                $waitSec = Get-SecondsUntilReset $output
+                $resumeAt = (Get-Date).AddSeconds($waitSec).ToString("h:mm tt")
+                Log ("slice {0}: usage limit hit ({1}); sleeping {2}s, auto-resume at ~{3} (wait {4}/{5})" -f `
+                    $slice, $resetTxt, $waitSec, $resumeAt, $limitWaits, $MaxLimitWaits)
+                NotifyTimed "Slice loop" ("Usage limit reached{0}. Sleeping until ~{1}, then auto-resuming this slice. Closing this window cancels." -f `
+                    $(if ($resetTxt) { " ($resetTxt)" } else { "" }), $resumeAt) 30
+
+                $sleptFull = Wait-WithStopCheck $waitSec $stopFile
+                if (-not $sleptFull) { Log "STOP file found during limit wait, ending loop."; $stopAll = $true; break }
+
+                Log ("slice {0}: resuming after limit wait, retrying attempt {1}" -f $slice, $attempt)
+                $attempt--   # do not consume a debug attempt: the cap was not a code failure
+                continue
             }
+
+            # A successful run means we are not limit-blocked; reset the wait counter.
+            $limitWaits = 0
 
             if ($proc.ExitCode -eq 0) {
                 Log ("slice {0} attempt {1} succeeded" -f $slice, $attempt)
