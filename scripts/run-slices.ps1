@@ -67,7 +67,10 @@ try {
     $claudeCmd = $claudeCmd.Source
 
     $allowedModels = @("haiku", "sonnet", "opus", "fable")
-    $limitPattern  = "usage limit|rate limit|limit reached|out of usage|resets at|exceeded your|Not logged in"
+    # Matches the actual CLI wording, e.g. "You've hit your limit . resets 7:20pm",
+    # plus rate-limit and not-logged-in variants. Keep broad: a missed match here
+    # turns a benign cap into 3 wasted instant retries + a false "failed" alarm.
+    $limitPattern  = "hit your limit|usage limit|rate limit|limit reached|out of usage|resets \d|reset at|resets at|exceeded your|approaching your|Claude usage limit|Not logged in"
 
     $rules = "Hard rules: one PR per issue; run the relevant tests before opening the PR; " +
              "open the PR with Closes #N in the body; do NOT merge any PR; do NOT push to master directly; " +
@@ -126,7 +129,9 @@ try {
                 if ($output -match "Not logged in") {
                     Notify "Slice loop" "The claude CLI is not logged in. Open a terminal, run claude, type /login, then restart the loop."
                 } else {
-                    Notify "Slice loop" "Claude subscription usage limit reached. Loop stopped - restart it after the limit resets."
+                    $resetMsg = "Claude usage limit reached. Loop stopped cleanly - restart it after the limit resets."
+                    if ($output -match "resets[^\r\n]*") { $resetMsg = "Claude usage limit reached (" + $matches[0].Trim() + "). Loop stopped cleanly - restart after reset." }
+                    Notify "Slice loop" $resetMsg
                 }
                 $stopAll = $true
                 break
