@@ -10,6 +10,11 @@ The active multi-slice epic is **#184 Main window** / **#191 Slice 2** (per-pane
 
 ### Recommended next slice: **#209 Settings v2**
 
+Model: sonnet
+Status: ready
+
+(`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices. #209 is rated sonnet because the steps below are fully specced; rate haiku only for mechanical clone-the-spine work, opus/fable for unspecced or architectural slices.)
+
 This is the only known remaining work on the Slice 2 spec. It's a Cerebral-side refactor more than a renderer slice:
 
 1. **Build a `cerebral/settings.py` module** that owns `cerebral/data/felix-settings.json` (the file currently owned by `tray/lib/settings-store.js`). Schema: `notifications_enabled`, `reminder_interval_minutes`, `camera_enabled`, plus optionally promoting `visualiser_visible` from in-memory `visState` to persistent.
@@ -18,7 +23,7 @@ This is the only known remaining work on the Slice 2 spec. It's a Cerebral-side 
 4. **Settings pane in `tray/windows/main.html`** gains a real top section with toggles/dropdowns for the four settings. The "Managed in system tray" deferred section gets removed.
 5. **Tray menu** — either retire the Notifications / Reminder interval / Camera / Visualiser items entirely, or keep them as thin redirects to `openMainWindow('#settings')`. Pick (a) redirects for discoverability.
 6. **Tests:** `cerebral/tests/test_settings.py` for the new store + WS round-trips. The Jest suite for the old `tray/lib/settings-store.js` either moves to Python (settings now Cerebral-side) or deletes.
-7. **Branch base:** `drop-208-settings-pane` (Slice 2 v1 just landed there). Stack accordingly.
+7. **Branch base:** `master`. The entire Slice 2 stack (#190-#210) was merged into master on 2026-06-10, so start the #209 branch fresh from master (`git checkout -b drop-209-settings-v2 origin/master`) and target the PR at master. Do NOT base off `drop-208-settings-pane` — it is already merged.
 
 If you want to do something else first (Slice 3 = retire consent.html, new features, etc), the v1 Settings pane is fully functional for the Models surface and the deferred items are clearly labelled in the UI — there's no functionality gap that blocks shipping.
 
@@ -45,6 +50,8 @@ If you want to do something else first (Slice 3 = retire consent.html, new featu
 - One PR per issue, no bundles (per project memory `feedback_per_issue_prs`).
 - If this slice plus the next would exceed ~100k tokens, end at the PR and let the user start the next slice in a fresh session (per `feedback_token_budget_session_split`).
 - ADR-0007 renderer-portability invariant: **no new `ipcRenderer` use in main.html** — the migrated pane must talk WebSocket directly to Cerebral.
+- When updating this kickoff block after landing a slice, also update the `Model:` and `Status:` lines for the *next* slice (haiku = mechanical clone work with a reference file, sonnet = well-specified slice like the numbered steps above, opus/fable = unspecced, architectural, or cross-process debugging). A SessionEnd hook runs `scripts/sync-slice-model.ps1` to copy the model into `.claude/settings.local.json`; the autonomous loop `scripts/run-slices.ps1` reads both lines between sessions.
+- In the autonomous loop: end at an OPEN PR — never merge, never push to master directly. If stuck, set `Status: blocked` with a one-line reason rather than improvising.
 
 ---
 

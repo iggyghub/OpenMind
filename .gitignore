@@ -21,3 +21,7 @@ Thumbs.db
 
 # Self-improving agent logs (per-developer, not committed by default)
 .learnings/
+
+# Claude Code scratch: slice-loop logs and transient git worktrees
+.claude/tmp/
+.claude/worktrees/
