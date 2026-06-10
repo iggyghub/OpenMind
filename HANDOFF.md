@@ -10,10 +10,10 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ### Recommended next slice: **Slice 3 — retire consent.html**
 
-Model: opus
+Model: sonnet
 Status: ready
 
-(`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices. Slice 3 is unspecced/architectural — read the existing `tray/windows/consent.html` and `tray/windows/irreversible-modal.html`, understand how `ConsentManager` and `ModalManager` work, then design + file issues before implementing. Rated opus because the shape of the work needs to be reasoned through before coding.)
+(`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices. Slice 3 is unspecced/architectural — read the existing `tray/windows/consent.html` and `tray/windows/irreversible-modal.html`, understand how `ConsentManager` and `ModalManager` work, then design + file issues before implementing. Rated **sonnet** for the autonomous loop on the $20 Pro plan (opus/fable drain the ~5h usage window too fast and Opus access is constrained on Pro). NOTE: design-first/architectural slices are a weak fit for the autonomous loop — consider doing Slice 3 interactively in the desktop app instead, and reserve the loop for well-specced execution slices.)
 
 **What Slice 3 should accomplish** (design before implementing):
 - Retire `tray/windows/consent.html` — migrate the consent prompt UI into `tray/windows/main.html` as a pane or overlay so it no longer requires a standalone `BrowserWindow` with `nodeIntegration: true`. Same for `irreversible-modal.html`.
