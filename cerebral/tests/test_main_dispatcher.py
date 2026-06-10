@@ -259,3 +259,86 @@ async def test_broken_greeting_builder_does_not_abort_handshake(dispatcher_rig):
     # exception didn't terminate _ws_handler before async-for started.
     # (If it had, no greeting events past credentials_state would exist
     #  AND the loop would never run; the handler's stub accepts cleanly.)
+
+
+# ── conversation IPC (Issue #185 / ADR-0007) ────────────────────────────────
+
+@pytest.fixture
+def conversation_rig(monkeypatch):
+    """Stub the LLM/process and capture broadcasts + recorded turns so
+    we can assert the dispatcher's user_text_command shape without
+    standing up a model router."""
+    import cerebral.main as main_mod
+
+    broadcasts: list[dict] = []
+    recorded: list[tuple[str, dict]] = []
+    processed: list[tuple[str, bool]] = []
+
+    async def fake_broadcast(event):
+        broadcasts.append(event)
+
+    async def fake_record_turn(kind, content):
+        recorded.append((kind, content))
+
+    async def fake_process_command(text, *, speak=True):
+        processed.append((text, speak))
+
+    monkeypatch.setattr(main_mod, "_broadcast", fake_broadcast)
+    monkeypatch.setattr(main_mod, "_record_turn", fake_record_turn)
+    monkeypatch.setattr(main_mod, "_process_command", fake_process_command)
+
+    class Rig:
+        pass
+
+    rig = Rig()
+    rig.module = main_mod
+    rig.broadcasts = broadcasts
+    rig.recorded = recorded
+    rig.processed = processed
+    return rig
+
+
+async def test_user_text_command_records_and_processes(conversation_rig):
+    """A typed command records a user_text turn, broadcasts wake so the
+    visualiser/state pill activate, and kicks off the same LLM pipeline
+    voice uses -- but with speak=False so no TTS fires."""
+    await conversation_rig.module._handle_message({
+        "type": "user_text_command",
+        "data": {"text": "what time is it"},
+    })
+    # asyncio.create_task fires the coroutine on the running loop; yield
+    # one tick so the scheduled task actually runs against our stub.
+    import asyncio
+    await asyncio.sleep(0)
+
+    assert ("user_text", {"text": "what time is it"}) in conversation_rig.recorded
+    assert any(e.get("type") == "wake" for e in conversation_rig.broadcasts)
+    assert conversation_rig.processed == [("what time is it", False)]
+
+
+async def test_user_text_command_ignores_empty(conversation_rig):
+    """Whitespace-only or missing text must not spawn a thinking cycle --
+    a stray Enter press in the input shouldn't wake Felix."""
+    await conversation_rig.module._handle_message({
+        "type": "user_text_command", "data": {"text": "   "},
+    })
+    await conversation_rig.module._handle_message({
+        "type": "user_text_command", "data": {},
+    })
+    assert conversation_rig.recorded == []
+    assert conversation_rig.processed == []
+
+
+async def test_list_conversation_turns_broadcasts_snapshot(conversation_rig, monkeypatch):
+    """list_conversation_turns must emit a conversation_turns_data event;
+    the renderer treats this as its initial transcript on Main window open."""
+    snapshot = {"type": "conversation_turns_data",
+                "data": {"profile_id": 1, "turns": []}}
+    monkeypatch.setattr(
+        conversation_rig.module, "_conversation_turns_event",
+        lambda limit=50: snapshot,
+    )
+    await conversation_rig.module._handle_message({
+        "type": "list_conversation_turns", "data": {"limit": 50},
+    })
+    assert snapshot in conversation_rig.broadcasts

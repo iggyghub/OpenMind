@@ -45,6 +45,12 @@ from cerebral.security import (
     is_valid_choice,
     is_valid_modal_choice,
 )
+from cerebral.db.conversation import (
+    KIND_FELIX_SPEECH,
+    KIND_USER_TEXT,
+    KIND_USER_VOICE,
+    ConversationStore,
+)
 from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 
@@ -82,6 +88,7 @@ _orc = MCPOrchestrator()
 _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
+_conversation = ConversationStore()
 
 
 def _new_plugin_flag_for_tool(tool_name: str) -> bool:
@@ -949,6 +956,45 @@ def _env_context_event() -> dict:
     return {"type": "env_context_update", "data": {"context": _env.get_context()}}
 
 
+async def _record_turn(kind: str, content: dict) -> None:
+    """Persist a conversation turn against the active profile and push it
+    live to subscribers (Issue #185 / ADR-0007).
+
+    Silently skips when no profile is active -- the first-run state has
+    no identity to attribute turns to. Persistence/broadcast failures
+    log + swallow so the chat lane never wedges the audio or LLM path."""
+    if _active_profile is None:
+        return
+    try:
+        turn = _conversation.append(_active_profile.id, kind, content)
+    except Exception:
+        logger.exception("[cerebral] conversation_turn append failed (kind=%s)", kind)
+        return
+    try:
+        await _broadcast({"type": "conversation_turn_emitted",
+                          "data": {"turn": turn.to_dict()}})
+    except Exception:
+        logger.exception("[cerebral] conversation_turn_emitted broadcast failed")
+
+
+def _conversation_turns_event(limit: int = 50) -> dict:
+    """Snapshot of the active profile's last ``limit`` turns, oldest first.
+
+    Returns an empty list when no profile is active (Main window opens
+    pre-profile-creation in the first-run flow)."""
+    if _active_profile is None:
+        return {"type": "conversation_turns_data",
+                "data": {"profile_id": None, "turns": []}}
+    turns = _conversation.list_recent(_active_profile.id, limit=limit)
+    return {
+        "type": "conversation_turns_data",
+        "data": {
+            "profile_id": _active_profile.id,
+            "turns": [t.to_dict() for t in turns],
+        },
+    }
+
+
 def _models_list_event() -> dict:
     return {
         "type": "models_list",
@@ -1142,6 +1188,9 @@ async def _handle_message(msg: dict) -> None:
                 # ACL has none, so the tray's session-grants sub-panel
                 # will correctly empty out.
                 await _broadcast(_permissions_state_event())
+                # Issue #185 — Conversation is per-profile; re-snapshot so
+                # the Main window's transcript reflects the active identity.
+                await _broadcast(_conversation_turns_event())
 
     elif t == "delete_profile":
         pid = msg.get("data", {}).get("id")
@@ -1548,6 +1597,30 @@ async def _handle_message(msg: dict) -> None:
             "data": {"name": tool_name, "content": result.content, "is_error": result.is_error},
         })
 
+    elif t == "user_text_command":
+        # Issue #185 / ADR-0007 -- typed input from the Main window. Same
+        # orchestrator path as a voice wake, minus the TTS leg: a typed
+        # interaction stays silent (meetings / late-night use cases).
+        # Records the user turn before kicking off the LLM so the Main
+        # window's transcript reflects the input the instant it lands,
+        # even if the model is slow.
+        text = (msg.get("data") or {}).get("text", "")
+        if isinstance(text, str) and text.strip():
+            await _broadcast({"type": "wake", "data": {"transcript": text}})
+            await _record_turn(KIND_USER_TEXT, {"text": text})
+            asyncio.create_task(_process_command(text, speak=False))
+
+    elif t == "list_conversation_turns":
+        # Issue #185 / ADR-0007 -- Main window requesting its initial
+        # transcript snapshot (last 50 by default). Sent on window open
+        # and on profile switch so the chat reflects the active identity.
+        limit_raw = (msg.get("data") or {}).get("limit", 50)
+        try:
+            limit = int(limit_raw)
+        except (TypeError, ValueError):
+            limit = 50
+        await _broadcast(_conversation_turns_event(limit=limit))
+
     elif t == "list_queue":
         await _broadcast(_queue_update_event())
 
@@ -1748,6 +1821,7 @@ async def _greet(websocket) -> None:
         _plugins_list_event,
         _permissions_state_event,
         _credentials_state_event,
+        _conversation_turns_event,
     ]
     for build in greetings:
         try:
@@ -1816,24 +1890,34 @@ async def _on_passive(transcript: str) -> None:
 async def _on_wake(transcript: str) -> None:
     logger.info("[cerebral] Wake event — transcript: %r", transcript)
     await _broadcast({"type": "wake", "data": {"transcript": transcript}})
-    asyncio.create_task(_process_command(transcript))
+    await _record_turn(KIND_USER_VOICE, {"text": transcript})
+    asyncio.create_task(_process_command(transcript, speak=True))
 
 
-async def _process_command(transcript: str) -> None:
-    """Call the LLM with the transcribed command and speak the response."""
+async def _process_command(transcript: str, *, speak: bool = True) -> None:
+    """Call the LLM with the transcript and emit Felix's response.
+
+    ``speak=True`` (voice path) routes the response through TTS as today.
+    ``speak=False`` (text path -- Issue #185) skips TTS so a typed
+    interaction stays silent (meetings / late-night use cases). The
+    persisted ``felix_speech`` turn and broadcast cycle are identical
+    either way -- the Main window renders the response from the
+    ``conversation_turn_emitted`` push regardless of lane."""
     tools = _orc.tools_for_llm
     await _broadcast({"type": "thinking"})
     try:
         prompt = await _memory_preamble(transcript) + transcript
         response = await _router.complete(prompt, task_type="chat")
         logger.info("[cerebral] LLM response (%d tools available): %r", len(tools), response[:80])
-        await _speak(response)
     except ModelUnavailableError as exc:
         logger.error("[cerebral] Model unavailable: %s", exc)
-        await _speak("Sorry, I can't reach the language model right now.")
+        response = "Sorry, I can't reach the language model right now."
     except Exception as exc:
         logger.error("[cerebral] Unexpected error during LLM call: %s", exc)
-        await _speak("Something went wrong. Please try again.")
+        response = "Something went wrong. Please try again."
+    await _record_turn(KIND_FELIX_SPEECH, {"text": response, "spoken": bool(speak)})
+    if speak:
+        await _speak(response)
     await _broadcast({"type": "passive", "data": {"status": "running"}})
 
 

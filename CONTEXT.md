@@ -10,7 +10,7 @@
 
 **Profile** — a user identity container. Stores who someone is (name, voice preference, wake name override, pronunciation guide, **connected accounts**) and their scoped long-term memory. Selected on launch or auto-detected after first use.
 
-**System setting** — a non-identity machine-wide preference (notifications, reminder interval, camera). Global, shared by every profile, not part of a profile. _Avoid_: calling credentials or connected accounts "settings".
+**System setting** — a non-identity machine-wide preference. Includes: notifications on/off, reminder interval, camera enabled, visualiser visibility, **active model + per-task model assignments**. Global, shared by every profile, not part of a profile. Lives in the Main window's **Settings** sidebar panel (v1) and persists to `cerebral/data/felix-settings.json`. _Avoid_: calling credentials or connected accounts "settings"; avoid putting profile-scoped state (ACL, memory, connected accounts, wake name) here.
 
 **Connected account** — an external account (e.g. Google) a profile has authorized Felix to act as, plus the stored credential that authorizes it. Belongs to one **Profile** (consent belongs with identity, like memory and ACL), never global. _Avoid_: "linked account", "integration login".
 
@@ -42,7 +42,34 @@
 
 **Insights view** — the UI panel showing Felix's learned model of a user. Displays detected preferences, patterns, and behavioural adjustments per profile. Every entry is editable, deletable, or pinnable. Full transparency into what Felix has inferred.
 
-**Visualiser** — the on-screen character in advanced mode. Currently: a dark, animated abstract form (orb/waveform style). Reacts to voice activity and system state. Future: configurable — 2D avatar, 3D model, or abstract theme packs.
+**Visualiser** — the floating on-screen representation of Felix. A 200x200 transparent, click-through, always-on-top window that mirrors Felix's voice/system state (idle / listening / thinking / speaking / switching model). Architecturally a separate window from the **Main window** so it survives the Main window being closed and so a future **body** can move around the screen (which a window-embedded visualiser could not). Runs independently of the Main window's own in-header state pill (which signals the same state to a user already inside the chat).
+
+**Visualiser theme** — what the visualiser renders. v1 default: the **orb** (dark, animated abstract form, waveform-style). Future themes: 2D avatars, 3D models, animal characters, abstract theme packs — user-selectable per profile. The v1 visualiser's renderer is theme-pluggable in shape so the orb is one option among many, not a single hard-coded form. Post-v1: a fully embodied **body** that walks around the screen as a theme.
+
+**State pill** — a one-line indicator in the Main window's chat header ("Felix is listening…" / "thinking…" / "speaking…"). Covers state-signalling *inside* the chat so the user doesn't have to glance at the floating Visualiser. Same state machine as the Visualiser, different render surface, different attention context.
+
+**Plugins panel** — the Main window sidebar item that lists every registered plugin with: name / status (loaded / error / disabled) / declared capabilities / tool count. Click a row → plugin-detail view: per-tool list (read-only) and per-plugin settings (where applicable — e.g. the **Discord allowlist editor** for `discord_user.py` lives here). The Plugins panel hosts plugin-specific configuration; the **Permissions panel** keeps its ADR-0005 two-tab shape (Capabilities / Tools) for class+tool ACL only. _Avoid_: putting per-plugin settings inside Permissions, or putting class-level ACL inside Plugins.
+
+**Main window** — the primary Felix UI surface. A chat/interaction canvas where the user converses with Felix by voice (the fast lane — wake + speak) or by typing (the slow-but-silent lane). The transcript renders both lanes interleaved. Layout: a persistent left **sidebar nav** lists the inspection/control surfaces (Queue, Insights, Memory, Permissions, Credentials, Plugins, Settings, Profiles); the right pane defaults to the **Conversation** and swaps to the selected panel when a nav item is clicked. The Queue earns a count badge in the chat header (the only time-sensitive surface) so the user sees pending items without leaving the conversation. Distinct from the **Visualiser** (ambient overlay) and from the **tray** (always-on launcher + quick-actions). Lifecycle: the Main window does **not** autostart with Cerebral — the user opens it on demand from the tray. Closing the window **hides** it; it does not quit Felix. Quit is reachable only from the tray. _Avoid_: calling it "the chat window" — it is the chat *and* the control surface.
+
+**Tray (post-Main-window)** — the always-on launcher and escape hatch. After the Main window ships, the tray menu collapses from its previous fragmented-control role (~14 items) to four jobs: a status line ("Felix — Running" / "ACTIVE — listening"), `Open Felix` (focus or open Main window), `Switch profile` submenu (fast multi-profile action that doesn't justify drilling into Profiles), and `Quit`. All other controls (model picker, notifications, camera, reminder interval, visualiser toggle, Queue/Insights/Memory/Permissions/Credentials/Plugins/Profiles open-window items) move into the Main window's sidebar. Single source of truth per setting; no tray⇄Main sync.
+
+### Deployment topology (post-Main-window)
+
+Two processes, one binary on each side. Both stay local.
+
+- **Cerebral (Python).** AI pipeline, memory, MCP execution, WebSocket IPC server on `ws://localhost:7766`. v1 floor: user starts manually (`python -m cerebral.main`). Post-v1: registered as an OS service (Windows service / macOS launchd / Linux systemd) and autostarts at boot. The v1 architecture must not preclude the service shape.
+- **Felix (Electron).** Hosts the tray, the Main window, the Visualiser, and the irreversible-modal popup. Started on demand from a desktop shortcut. Connects to Cerebral over WebSocket. The renderer code (HTML/CSS/JS in `tray/windows/`) is **stack-agnostic** — no `require('electron')` from renderers, all backend calls go through the existing WebSocket IPC — so a future PWA mirror is a v2 deepening, not a v1 design choice.
+
+PWA serving from Cerebral (a local HTTP server + service-worker shell) is **out of v1 scope**. Thin clients (phone, glasses) continue to ride OpenClaw bridges per CONTEXT.md "Deployment topology" until native clients ship.
+
+**Conversation** — a turn-by-turn record of what Felix heard, said, was typed at, and called. Lives in the Main window's chat canvas. Per-profile. The canonical transcript surface — replaces the tray's previous fragmented "what just happened?" surfaces (queue results, model-switch notifications, tool-call logs).
+
+**Conversation store** — the SQLite-backed persistent transcript. A new structured-memory tier alongside profiles / queue / ACL / credentials. Schema: `conversation_turns(id, profile_id, ts, kind, content_json)` where `kind ∈ {user_voice, user_text, felix_speech, tool_call, tool_result, system_event}`. Per-profile (consent belongs with identity). Stored unencrypted in the user's local SQLite (disk encryption is the user's OS responsibility, same posture as profiles + queue + memories). Retention is infinite in v1 — purge UX is a deepening, not a blocker. The rolling RAM buffer's raw audio stays unwritten per the existing memory-model rule; only the post-Whisper text of voice turns is persisted. Dropped 5W1H candidates stay in the queue table; the Conversation store records only acted-upon turns and system events.
+
+**Distinct from Long-term memory.** The Conversation store keeps raw turns. ChromaDB keeps *extracted facts* learned from those turns. Conflating the two pollutes the semantic store with verbatim noise — Felix recalls "you live in Berlin" from the extraction pipeline, not by re-reading last Tuesday's transcript.
+
+**Initial Main-window load.** On open, the Conversation pane shows the most recent ~50 turns of the active profile, scrolled to bottom, with a "load older" affordance at the top.
 
 ---
 
