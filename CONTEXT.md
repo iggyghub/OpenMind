@@ -274,10 +274,11 @@ Discord's Developer Terms forbid automating personal user accounts.
 Discord actively detects self-bots; detection results in **permanent
 ban** of the human account (DMs, friend list, server ownership,
 Nitro, purchase history -- all lost, no recovery). The user filing
-#175 has explicitly accepted this risk. Slice-2+ mitigations (human-
-shaped reply delays, typing indicators, per-sender allowlist, sleep-
-hours, rate limits) reduce detection probability but do not
-eliminate it.
+#175 has explicitly accepted this risk. Slice-2 mitigations (human-
+shaped reply delays sampled from a log-normal distribution, typing
+indicators, per-sender allowlist, sleep-hours, per-channel rate
+limits, per-channel serialisation) reduce detection probability but
+do not eliminate it.
 
 **No contributor should run `plugins/discord_user.py` against a
 Discord account they are not prepared to lose.** See ADR-0006 for
@@ -292,6 +293,25 @@ NEVER logged. The provider is *deliberately not* surfaced in the
 tray's "API keys" UI (friction-as-safety -- setting it requires the
 user to do a slightly more deliberate thing than pasting into a
 form).
+
+### Slice sequencing
+
+- **Slice 1** (PR #176, shipped): plugin skeleton + outbound
+  `discord_send_message` + draft-only inbound via
+  `cerebral/main.py:_surface_discord_draft`. Every inbound DM became
+  a queue draft for manual approval; no auto-reply.
+- **Slice 2** (Issue #177, this branch): per-sender auto-reply
+  allowlist + detection-mitigation gauntlet
+  (`cerebral/discord_auto_reply.py`). Empty allowlist preserves
+  slice-1 byte-identical behaviour. The
+  `scripts/discord_user_allowlist.py` CLI manages senders + settings
+  (rate limit, delay distribution, typing indicator, sleep-hours
+  window). Live verification against a real recipient is the user's
+  acceptance gate.
+- **Slice 3** (Issue #178, blocked-on-slice-2): `discord_react` /
+  `discord_edit` / `discord_delete` + dynamic presence automation
+  (auto-idle / auto-online driven by LLM activity, with slice-2's
+  sleep-hours window winning over presence transitions).
 
 ---
 

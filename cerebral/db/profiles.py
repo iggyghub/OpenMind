@@ -93,6 +93,31 @@ class ProfileManager:
                 new_plugin    INTEGER NOT NULL DEFAULT 0 CHECK (new_plugin IN (0, 1)),
                 installed_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+            -- Per-profile Discord auto-reply allowlist (Issue #177, ADR-0006).
+            -- Empty allowlist = drop every inbound DM (conservative default).
+            -- A row routes inbound DMs from sender_id through the LLM pipeline
+            -- and emits a real reply via discord_send_message, subject to the
+            -- detection-mitigation defaults in cerebral/discord_auto_reply.py.
+            CREATE TABLE IF NOT EXISTS discord_user_allowlist (
+                profile_id INTEGER NOT NULL,
+                sender_id  TEXT    NOT NULL,
+                note       TEXT    NOT NULL DEFAULT '',
+                added_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (profile_id, sender_id),
+                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+            );
+            -- Per-profile slice-2 detection-mitigation settings (Issue #177).
+            -- Free-form key/value strings so adding a new knob is a code
+            -- change, not a schema migration. Defaults live in
+            -- cerebral/discord_auto_reply.py; this table holds only the
+            -- overrides. ``key`` namespace is intentionally flat.
+            CREATE TABLE IF NOT EXISTS discord_user_settings (
+                profile_id INTEGER NOT NULL,
+                key        TEXT    NOT NULL,
+                value      TEXT    NOT NULL DEFAULT '',
+                PRIMARY KEY (profile_id, key),
+                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+            );
         """)
         self._con.commit()
         # Migrate pre-existing DBs that lack newer columns
@@ -340,6 +365,100 @@ class ProfileManager:
         )
         self._con.commit()
         return cur.rowcount
+
+    # ── Discord auto-reply allowlist + settings (Issue #177) ─────────────────
+
+    def add_discord_allowlist(
+        self, profile_id: int, sender_id: str, note: str = "",
+    ) -> None:
+        """Insert or refresh a row in the Discord auto-reply allowlist."""
+        if not sender_id:
+            raise ValueError("sender_id must be non-empty")
+        self._con.execute(
+            """INSERT INTO discord_user_allowlist (profile_id, sender_id, note)
+               VALUES (?, ?, ?)
+               ON CONFLICT(profile_id, sender_id)
+               DO UPDATE SET note=excluded.note,
+                             added_at=CURRENT_TIMESTAMP""",
+            (profile_id, sender_id, note or ""),
+        )
+        self._con.commit()
+
+    def remove_discord_allowlist(
+        self, profile_id: int, sender_id: str,
+    ) -> bool:
+        """Drop a row. Returns True iff a row existed."""
+        cur = self._con.execute(
+            "DELETE FROM discord_user_allowlist WHERE profile_id=? AND sender_id=?",
+            (profile_id, sender_id),
+        )
+        self._con.commit()
+        return cur.rowcount > 0
+
+    def list_discord_allowlist(self, profile_id: int) -> list[dict]:
+        rows = self._con.execute(
+            """SELECT sender_id, note, added_at
+                 FROM discord_user_allowlist
+                WHERE profile_id=?
+                ORDER BY added_at""",
+            (profile_id,),
+        ).fetchall()
+        return [
+            {"sender_id": r["sender_id"], "note": r["note"],
+             "added_at": r["added_at"]}
+            for r in rows
+        ]
+
+    def is_discord_allowlisted(
+        self, profile_id: int, sender_id: str,
+    ) -> bool:
+        if not sender_id:
+            return False
+        row = self._con.execute(
+            "SELECT 1 FROM discord_user_allowlist WHERE profile_id=? AND sender_id=?",
+            (profile_id, sender_id),
+        ).fetchone()
+        return row is not None
+
+    def set_discord_setting(
+        self, profile_id: int, key: str, value: str,
+    ) -> None:
+        if not key:
+            raise ValueError("key must be non-empty")
+        self._con.execute(
+            """INSERT INTO discord_user_settings (profile_id, key, value)
+               VALUES (?, ?, ?)
+               ON CONFLICT(profile_id, key)
+               DO UPDATE SET value=excluded.value""",
+            (profile_id, key, value),
+        )
+        self._con.commit()
+
+    def get_discord_setting(
+        self, profile_id: int, key: str,
+    ) -> str | None:
+        row = self._con.execute(
+            "SELECT value FROM discord_user_settings WHERE profile_id=? AND key=?",
+            (profile_id, key),
+        ).fetchone()
+        return row["value"] if row else None
+
+    def list_discord_settings(self, profile_id: int) -> dict[str, str]:
+        rows = self._con.execute(
+            "SELECT key, value FROM discord_user_settings WHERE profile_id=?",
+            (profile_id,),
+        ).fetchall()
+        return {r["key"]: r["value"] for r in rows}
+
+    def clear_discord_setting(
+        self, profile_id: int, key: str,
+    ) -> bool:
+        cur = self._con.execute(
+            "DELETE FROM discord_user_settings WHERE profile_id=? AND key=?",
+            (profile_id, key),
+        )
+        self._con.commit()
+        return cur.rowcount > 0
 
     # ── Active profile ────────────────────────────────────────────────────────
 
