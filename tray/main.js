@@ -7,8 +7,11 @@ const { SettingsStore }        = require('./lib/settings-store');
 const { NotificationManager }  = require('./lib/notification-manager');
 const { ConsentManager }       = require('./lib/consent-manager');
 const { ModalManager }         = require('./lib/modal-manager');
-const { PermissionsStore }     = require('./lib/permissions-store');
 const { buildModelSubmenu }    = require('./lib/model-menu');
+// PermissionsStore is no longer instantiated in main.js (Issue #202).
+// The Main window's renderer loads it directly via a <script src> tag
+// — same source file, dual-mode export. tray/tests/permissions-store.test.js
+// still require()s it for the Node test suite.
 
 const CEREBRAL_URL    = 'ws://localhost:7766';
 const ICON_PATH       = path.join(__dirname, 'assets', 'icon.png');
@@ -28,14 +31,6 @@ let pendingItems  = [];
 let setupWindow      = null;
 let mainWindow        = null;
 let visualiserWindow  = null;
-let permissionsWindow = null;
-// Latest snapshots from Cerebral, kept up-to-date so a freshly-opened
-// Permissions window doesn't render a blank state while it waits for
-// the next broadcast. The store inside the window is fed by these on
-// `permissions:ready` and re-fed on every subsequent broadcast.
-let permissionsState  = null;
-let toolsList         = [];
-let pluginsList       = [];
 // request_id → BrowserWindow for the consent prompt (Issue #48). Each
 // outstanding ASK from Cerebral gets its own window so per-class prompts
 // can be shown side-by-side.
@@ -240,24 +235,10 @@ function handleCerebralEvent(event) {
       break;
 
     case 'permissions_state':
-      permissionsState = event.data || null;
-      if (permissionsWindow && !permissionsWindow.isDestroyed()) {
-        permissionsWindow.webContents.send('permissions:state', permissionsState);
-      }
-      break;
-
     case 'tools_list':
-      toolsList = (event.data && event.data.tools) || [];
-      if (permissionsWindow && !permissionsWindow.isDestroyed()) {
-        permissionsWindow.webContents.send('permissions:tools', toolsList);
-      }
-      break;
-
     case 'plugins_list':
-      pluginsList = (event.data && event.data.plugins) || [];
-      if (permissionsWindow && !permissionsWindow.isDestroyed()) {
-        permissionsWindow.webContents.send('permissions:plugins', pluginsList);
-      }
+      // Routed straight to the Main window renderer via the shared WS
+      // since Issue #202; main.js no longer mirrors or forwards them.
       break;
 
     case 'credentials_state':
@@ -368,61 +349,12 @@ function openMainWindow(hash) {
 // The tray menu's "Memory" item deep-links into `main.html#memory` via
 // openMainWindow('#memory').
 
-// ── Permissions window (Issue #53) ────────────────────────────────────────────
-
-function openPermissionsWindow() {
-  if (permissionsWindow && !permissionsWindow.isDestroyed()) {
-    permissionsWindow.focus();
-    pushPermissionsToWindow();
-    return;
-  }
-
-  permissionsWindow = new BrowserWindow({
-    width: 480,
-    height: 560,
-    resizable: true,
-    title: 'Felix — Permissions',
-    backgroundColor: '#12101e',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  permissionsWindow.setMenuBarVisibility(false);
-  permissionsWindow.loadFile(path.join(__dirname, 'windows', 'permissions.html'));
-  permissionsWindow.on('closed', () => { permissionsWindow = null; });
-}
-
-function pushPermissionsToWindow() {
-  if (!permissionsWindow || permissionsWindow.isDestroyed()) return;
-  if (permissionsState) {
-    permissionsWindow.webContents.send('permissions:state', permissionsState);
-  }
-  permissionsWindow.webContents.send('permissions:tools',   toolsList);
-  permissionsWindow.webContents.send('permissions:plugins', pluginsList);
-}
-
-// Renderer just finished loading: send what we have and ask Cerebral
-// to refresh, in case the snapshot is stale (e.g. profile switched
-// while the window was closed).
-ipcMain.on('permissions:ready', (event) => {
-  if (!permissionsWindow || permissionsWindow.isDestroyed()) return;
-  if (event.sender !== permissionsWindow.webContents) return;
-  pushPermissionsToWindow();
-  sendToCerebral({ type: 'list_permissions' });
-  sendToCerebral({ type: 'list_tools' });
-  sendToCerebral({ type: 'list_plugins' });
-});
-
-// Outbound from the Permissions renderer — the store wraps every user
-// action in a single envelope so the main process is just a thin
-// forwarder.
-ipcMain.on('permissions:send', (_event, envelope) => {
-  if (envelope && typeof envelope === 'object' && envelope.type) {
-    sendToCerebral(envelope);
-  }
-});
+// Permissions popup retired in Issue #202 — the Capabilities / Tools
+// tabs live in the Main window's sidebar pane now and talk directly to
+// the Cerebral WebSocket (the PermissionsStore loads via a <script src>
+// from the renderer; dual-mode export keeps the Node test suite green).
+// The tray menu's "Permissions" item deep-links into
+// `main.html#permissions` via openMainWindow('#permissions').
 
 // Credentials popup retired in Issue #200 — the Connected-accounts +
 // API-keys cards live in the Main window's sidebar pane now and talk
@@ -681,7 +613,7 @@ function buildMenu() {
     });
     template.push({ label: 'Insights', click: () => openMainWindow('#insights') });
     template.push({ label: 'Memory', click: () => openMainWindow('#memory') });
-    template.push({ label: 'Permissions', click: openPermissionsWindow });
+    template.push({ label: 'Permissions', click: () => openMainWindow('#permissions') });
     template.push({ label: 'Credentials', click: () => openMainWindow('#credentials') });
 
     // ── Model ─────────────────────────────────────────────────────────────────

@@ -969,6 +969,308 @@
       padding: 6px 10px;
       font-size: 11px;
     }
+
+    /* ── permissions pane ───────────────────────────────────── */
+    /* Lifted from the retired tray/windows/permissions.html; class names are
+       prefixed with `perm-` so the pane doesn't collide with Conversation's
+       .empty / .header / .item, Queue's `.q-*`, Insights's `.ins-*`,
+       Memory's `.mem-*`, or Credentials's `.cred-*`. Reuses the brand
+       purple (`var(--accent)`) — Permissions has always been purple in the
+       legacy popup and it's the only pane with this much chrome to colour.
+       The pane has two inner tabs (Capabilities, Tools) and a shell-exec
+       confirmation modal anchored inside the pane scope. */
+    .pane[data-route="permissions"] { background: var(--bg); position: relative; }
+
+    .perm-tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border);
+      padding: 0 18px;
+      flex-shrink: 0;
+    }
+    .perm-tab {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 10px 14px 12px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 120ms, border-color 120ms;
+    }
+    .perm-tab:hover { color: var(--text-dim); }
+    .perm-tab.is-active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+
+    .perm-body {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .perm-body::-webkit-scrollbar { width: 4px; }
+    .perm-body::-webkit-scrollbar-track { background: transparent; }
+    .perm-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .perm-panel { display: none; }
+    .perm-panel.is-active { display: block; }
+
+    .perm-section {
+      padding: 14px 18px 6px;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-top: 1px solid #1e1c30;
+    }
+    .perm-section:first-child { border-top: none; }
+
+    .perm-row {
+      padding: 12px 18px;
+      border-bottom: 1px solid #1e1c30;
+    }
+    .perm-row:last-child { border-bottom: none; }
+
+    .perm-row-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+    .perm-row-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      flex: 1;
+    }
+    .perm-row-desc {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
+      margin-bottom: 8px;
+    }
+
+    .perm-toggle-group {
+      display: inline-flex;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .perm-toggle {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 5px 12px;
+      cursor: pointer;
+      border-right: 1px solid var(--border);
+      letter-spacing: 0.02em;
+    }
+    .perm-toggle:last-child { border-right: none; }
+    .perm-toggle:hover:not(:disabled) { color: var(--text-dim); }
+    .perm-toggle.is-active {
+      background: var(--accent);
+      color: #fff;
+    }
+    .perm-toggle:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .perm-row.is-locked .perm-row-label { color: #8c87b3; }
+    .perm-row.is-locked .perm-row-desc  { color: var(--text-muted); }
+
+    .perm-lock-note {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #ffc4d8;
+    }
+    .perm-lock-note button {
+      background: #5c1f3c;
+      color: #ffc4d8;
+      border: none;
+      border-radius: 4px;
+      padding: 4px 10px;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-left: 8px;
+    }
+    .perm-lock-note button:hover { background: #6e2548; }
+
+    .perm-pill-default {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-left: 8px;
+    }
+
+    .perm-session-row,
+    .perm-plugin-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 18px;
+      border-bottom: 1px solid #1e1c30;
+      font-size: 12px;
+    }
+    .perm-session-row:last-child,
+    .perm-plugin-row:last-child { border-bottom: none; }
+
+    .perm-session-row .perm-name,
+    .perm-plugin-row  .perm-name { flex: 1; color: var(--text-dim); }
+    .perm-plugin-row  .perm-name { font-weight: 600; }
+    .perm-session-row .perm-policy {
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      color: var(--accent);
+      font-size: 11px;
+    }
+
+    .perm-btn-revoke {
+      background: var(--border);
+      color: var(--text-dim);
+      border: none;
+      font-family: inherit;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .perm-btn-revoke:hover { background: #3a3460; color: #ffc4d8; }
+
+    .perm-plugin-row .perm-badge {
+      font-size: 9px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: #4a3df0;
+      color: #fff;
+      padding: 2px 6px;
+      border-radius: 8px;
+    }
+    .perm-btn-trust {
+      background: #4a3df0;
+      color: #fff;
+      border: none;
+      font-family: inherit;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .perm-btn-trust:hover { background: #5b4ff5; }
+
+    .perm-empty {
+      padding: 12px 18px;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .perm-tools-search {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+    }
+    .perm-tools-search input {
+      width: 100%;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 10px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+      outline: none;
+    }
+    .perm-tools-search input:focus { border-color: var(--accent); }
+
+    .perm-tool-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 18px;
+      border-bottom: 1px solid #1e1c30;
+    }
+    .perm-tool-name {
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      font-size: 12px;
+      color: var(--text);
+      flex: 1;
+    }
+    .perm-tool-plugin {
+      font-size: 10px;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+    }
+    .perm-tool-row select {
+      background: var(--bg-elev);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-family: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      outline: none;
+    }
+    .perm-tool-row select:focus { border-color: var(--accent); }
+
+    /* Shell-exec confirmation modal — scoped inside the pane so it overlays
+       the Permissions content only (not the chat / sidebar). */
+    .perm-modal-veil {
+      position: absolute;
+      inset: 0;
+      background: rgba(8, 6, 16, 0.78);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+    .perm-modal-veil.is-open { display: flex; }
+    .perm-modal {
+      width: 380px;
+      max-width: calc(100% - 32px);
+      background: var(--bg-elev);
+      border: 1px solid #5c1f3c;
+      border-radius: 8px;
+      padding: 18px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+    }
+    .perm-modal h2 {
+      font-size: 14px;
+      color: #ffc4d8;
+      margin-bottom: 8px;
+    }
+    .perm-modal p {
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.5;
+      margin-bottom: 14px;
+    }
+    .perm-modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .perm-modal-actions button {
+      padding: 7px 14px;
+      border-radius: 5px;
+      border: none;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .perm-modal-cancel  { background: var(--border); color: var(--text-dim); }
+    .perm-modal-confirm { background: #4a3df0; color: #fff; }
+    .perm-modal-cancel:hover  { background: #3a3460; }
+    .perm-modal-confirm:hover { background: #5b4ff5; }
   </style>
 </head>
 <body>
@@ -1061,10 +1363,46 @@
     </section>
 
     <section class="pane" data-route="permissions" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Permissions</div>
-        <div class="placeholder-sub">Capability-class ACL + per-tool overrides (ADR-0005). Open the legacy popup from the system tray for now.</div>
-        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      <div class="perm-tabs">
+        <button class="perm-tab is-active" data-perm-tab="capabilities">Capabilities</button>
+        <button class="perm-tab"           data-perm-tab="tools">Tools</button>
+      </div>
+
+      <div class="perm-body">
+        <div class="perm-panel is-active" id="perm-panel-capabilities">
+          <div class="perm-section">Capability classes</div>
+          <div id="perm-capability-rows"></div>
+
+          <div class="perm-section">Session grants</div>
+          <div id="perm-session-rows">
+            <div class="perm-empty">No active session grants.</div>
+          </div>
+
+          <div class="perm-section">New plugins to review</div>
+          <div id="perm-plugin-rows">
+            <div class="perm-empty">No new plugins waiting for review.</div>
+          </div>
+        </div>
+
+        <div class="perm-panel" id="perm-panel-tools">
+          <div class="perm-tools-search">
+            <input type="search" id="perm-tools-search-input"
+                   placeholder="Search tools or plugins…" />
+          </div>
+          <div id="perm-tool-rows"></div>
+        </div>
+      </div>
+
+      <!-- Shell-exec confirmation modal — scoped inside the pane. -->
+      <div class="perm-modal-veil" id="perm-shell-modal">
+        <div class="perm-modal" role="dialog" aria-modal="true">
+          <h2>Enable shell access?</h2>
+          <p>Shell access lets Felix run commands on your computer — the highest-blast-radius capability. Once unlocked, you can still set the policy to <strong>ask</strong> or <strong>deny</strong>, but the row cannot be re-locked from this UI.</p>
+          <div class="perm-modal-actions">
+            <button class="perm-modal-cancel"  id="perm-shell-modal-cancel">Cancel</button>
+            <button class="perm-modal-confirm" id="perm-shell-modal-confirm">Enable</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -1140,6 +1478,12 @@
     </section>
   </main>
 
+  <!-- Permissions store (Issue #202) — same source feeds the Node test
+       suite via require() and this renderer via window.PermissionsStoreMod.
+       Loaded before the inline script so the constructor is available
+       when the pane wires itself up. -->
+  <script src="../lib/permissions-store.js"></script>
+
   <script>
     'use strict';
 
@@ -1184,6 +1528,12 @@
     const credBtnConnect    = document.getElementById('cred-btn-connect');
     const credBtnDisconnect = document.getElementById('cred-btn-disconnect');
     const credStaticTokensListEl = document.getElementById('cred-static-tokens-list');
+    const permCapRowsEl     = document.getElementById('perm-capability-rows');
+    const permSessionRowsEl = document.getElementById('perm-session-rows');
+    const permPluginRowsEl  = document.getElementById('perm-plugin-rows');
+    const permToolRowsEl    = document.getElementById('perm-tool-rows');
+    const permSearchInput   = document.getElementById('perm-tools-search-input');
+    const permShellModal    = document.getElementById('perm-shell-modal');
 
     // Pending action queue (Issue #194 — migrated from queue.html). Held
     // at the document level (not inside the pane) so the header badge can
@@ -1206,6 +1556,16 @@
     // document level so the cards stay current whether the pane is visible
     // or not.
     let credentialsState = null;
+
+    // Permissions UI state (Issue #202 — migrated from permissions.html).
+    // The PermissionsStore is loaded from window.PermissionsStoreMod via
+    // the <script src> tag above; it bridges Cerebral broadcasts to the
+    // pane's render functions and posts mutations back through the
+    // renderer's existing WebSocket. Inner tab state lives here too so
+    // the pane remembers which tab the user was on across re-renders.
+    let permActiveTab = 'capabilities';
+    let permToolsQuery = '';
+    let permStore = null;  // initialised after DOM is parsed (below).
 
     let ws = null;
     let activeProfileId = null;
@@ -1239,6 +1599,11 @@
         sendEvent({ type: 'list_memories' });
         // Same snapshot-on-open for Credentials (Issue #200).
         sendEvent({ type: 'list_credentials' });
+        // Permissions (Issue #202) — three broadcasts feed the pane, so
+        // pull all three on WS open. The store applies them idempotently.
+        sendEvent({ type: 'list_permissions' });
+        sendEvent({ type: 'list_tools' });
+        sendEvent({ type: 'list_plugins' });
       });
       ws.addEventListener('close', () => {
         wsConnected = false;
@@ -1318,6 +1683,15 @@
         case 'credentials_state':
           credentialsState = event.data || null;
           renderCredentials();
+          break;
+        case 'permissions_state':
+          if (permStore) permStore.applyState(event.data || {});
+          break;
+        case 'tools_list':
+          if (permStore) permStore.applyToolsList((event.data && event.data.tools) || []);
+          break;
+        case 'plugins_list':
+          if (permStore) permStore.applyPluginsList((event.data && event.data.plugins) || []);
           break;
       }
     }
@@ -1953,6 +2327,195 @@
     // the card isn't blank on initial paint.
     renderCredentialsStaticTokens(null);
 
+    // ── permissions pane (Issue #202) ────────────────────────────────────
+    // The store is the renderer-portable resolver from
+    // tray/lib/permissions-store.js (UMD-ish dual-mode: same source feeds
+    // the Node test suite and this <script>-loaded copy). Mutations go
+    // through the store, which calls our injected `send` — straight to
+    // the existing WebSocket, no ipcRenderer. Cerebral's authoritative
+    // permissions_state / tools_list / plugins_list broadcasts feed
+    // applyState / applyToolsList / applyPluginsList from handleEvent
+    // above.
+
+    const PermissionsStoreCtor = (window.PermissionsStoreMod || {}).PermissionsStore;
+    if (PermissionsStoreCtor) {
+      permStore = new PermissionsStoreCtor({
+        send:     (event) => sendEvent(event),
+        onChange: () => renderPermissions(),
+      });
+    } else {
+      console.warn('[main.html] PermissionsStore not loaded; Permissions pane disabled.');
+    }
+
+    function renderPermissions() {
+      if (!permStore) return;
+      if (permActiveTab === 'capabilities') renderPermissionsCapabilities();
+      else                                  renderPermissionsTools();
+    }
+
+    function renderPermissionsCapabilities() {
+      const state = permStore.state;
+      const vocab = state.capability_vocabulary || [];
+
+      const capHtml = vocab.map((c) => {
+        const effective = permStore.effectiveClassPolicy(c.value);
+        const isShell   = c.value === 'shell_exec';
+        const locked    = isShell && !state.shell_exec_unlocked;
+        const persistentSet = c.value in (state.persistent_class_grants || {});
+        const sessionSet    = c.value in (state.session_class_grants    || {});
+        const defaultText   = `default: ${c.default}`;
+        const overrideHint  = persistentSet ? '(persistent)'
+                            : sessionSet    ? '(session)'    : '';
+
+        const buttons = ['silent', 'ask', 'deny'].map((p) => `
+          <button class="perm-toggle ${effective === p ? 'is-active' : ''}"
+                  data-perm-cap="${escHtml(c.value)}"
+                  data-perm-decision="${p}"
+                  ${locked ? 'disabled' : ''}>
+            ${p}
+          </button>
+        `).join('');
+
+        const lockNote = locked ? `
+          <div class="perm-lock-note">
+            shell_exec is locked by default.
+            <button class="perm-btn-unlock-shell">Unlock shell access</button>
+          </div>` : '';
+
+        return `
+          <div class="perm-row ${locked ? 'is-locked' : ''}">
+            <div class="perm-row-head">
+              <div class="perm-row-label">${escHtml(c.label)}</div>
+              <div class="perm-toggle-group">${buttons}</div>
+            </div>
+            <div class="perm-row-desc">${escHtml(c.description)}</div>
+            <span class="perm-pill-default">${escHtml(defaultText)} ${escHtml(overrideHint)}</span>
+            ${lockNote}
+          </div>
+        `;
+      }).join('');
+      permCapRowsEl.innerHTML = capHtml;
+
+      // Session-grants list.
+      const sessionEntries = Object.entries(state.session_class_grants || {});
+      if (sessionEntries.length === 0) {
+        permSessionRowsEl.innerHTML = '<div class="perm-empty">No active session grants.</div>';
+      } else {
+        const labels = Object.fromEntries(vocab.map((c) => [c.value, c.label]));
+        permSessionRowsEl.innerHTML = sessionEntries.map(([cap, policy]) => `
+          <div class="perm-session-row">
+            <span class="perm-name">${escHtml(labels[cap] || cap)}</span>
+            <span class="perm-policy">${escHtml(policy)}</span>
+            <button class="perm-btn-revoke" data-perm-revoke-cap="${escHtml(cap)}">Revoke</button>
+          </div>
+        `).join('');
+      }
+
+      // New-plugin trust list.
+      const flagged = permStore.flaggedPlugins();
+      if (flagged.length === 0) {
+        permPluginRowsEl.innerHTML = '<div class="perm-empty">No new plugins waiting for review.</div>';
+      } else {
+        permPluginRowsEl.innerHTML = flagged.map((p) => `
+          <div class="perm-plugin-row">
+            <span class="perm-name">${escHtml(p.name)}</span>
+            <span class="perm-badge">new</span>
+            <button class="perm-btn-trust" data-perm-trust-plugin="${escHtml(p.name)}">Trust this plugin</button>
+          </div>
+        `).join('');
+      }
+    }
+
+    function renderPermissionsTools() {
+      const filtered = permStore.filterTools(permToolsQuery);
+      if (filtered.length === 0) {
+        permToolRowsEl.innerHTML = '<div class="perm-empty">No tools match.</div>';
+        return;
+      }
+      permToolRowsEl.innerHTML = filtered.map((t) => {
+        const current = permStore.effectiveToolOverride(t.name);
+        const opts = ['inherit', 'silent', 'ask', 'deny'].map((o) => `
+          <option value="${o}" ${o === current ? 'selected' : ''}>${o}</option>
+        `).join('');
+        return `
+          <div class="perm-tool-row">
+            <div class="perm-tool-name">${escHtml(t.name)}
+              <span class="perm-tool-plugin">  · ${escHtml(t.plugin || '')}</span>
+            </div>
+            <select data-perm-tool="${escHtml(t.name)}">${opts}</select>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Inner-tab switching (Capabilities ↔ Tools).
+    document.querySelectorAll('.perm-tab').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.permTab;
+        if (!tab) return;
+        permActiveTab = tab;
+        document.querySelectorAll('.perm-tab').forEach((b) => {
+          b.classList.toggle('is-active', b.dataset.permTab === tab);
+        });
+        document.querySelectorAll('.perm-panel').forEach((p) => {
+          p.classList.toggle('is-active', p.id === 'perm-panel-' + tab);
+        });
+        renderPermissions();
+      });
+    });
+
+    // Capability row clicks: three-toggle + unlock-shell button.
+    permCapRowsEl.addEventListener('click', (e) => {
+      const toggle = e.target.closest('.perm-toggle');
+      if (toggle && !toggle.disabled && permStore) {
+        const cap = toggle.dataset.permCap;
+        const dec = toggle.dataset.permDecision;
+        permStore.setClassPolicy(cap, dec);
+        return;
+      }
+      if (e.target.classList.contains('perm-btn-unlock-shell')) {
+        permShellModal.classList.add('is-open');
+      }
+    });
+
+    permSessionRowsEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-perm-revoke-cap]');
+      if (!btn || !permStore) return;
+      permStore.revokeSessionGrant(btn.dataset.permRevokeCap);
+    });
+
+    permPluginRowsEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-perm-trust-plugin]');
+      if (!btn || !permStore) return;
+      permStore.clearNewPluginFlag(btn.dataset.permTrustPlugin);
+    });
+
+    permSearchInput.addEventListener('input', () => {
+      permToolsQuery = permSearchInput.value;
+      if (permActiveTab === 'tools') renderPermissionsTools();
+    });
+
+    permToolRowsEl.addEventListener('change', (e) => {
+      if (!permStore) return;
+      const sel = e.target.closest('select[data-perm-tool]');
+      if (!sel) return;
+      permStore.setToolOverride(sel.dataset.permTool, sel.value);
+    });
+
+    // Shell-exec confirmation modal.
+    document.getElementById('perm-shell-modal-cancel').addEventListener('click', () => {
+      permShellModal.classList.remove('is-open');
+    });
+    document.getElementById('perm-shell-modal-confirm').addEventListener('click', () => {
+      if (permStore) permStore.unlockShellExec();
+      permShellModal.classList.remove('is-open');
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && permShellModal.classList.contains('is-open')) {
+        permShellModal.classList.remove('is-open');
+      }
+    });
+
     // ── input ─────────────────────────────────────────────────────────────
     function autosize() {
       input.style.height = '42px';
@@ -2029,6 +2592,11 @@
         // Same defensive re-pull (Issue #200) — credentials_state renders
         // idempotently from the whole payload.
         sendEvent({ type: 'list_credentials' });
+      } else if (route === 'permissions') {
+        // Same defensive re-pull (Issue #202) — three broadcasts feed
+        // this pane, refetch all three on activation in case any was
+        // missed (e.g. tools_list, which doesn't auto-broadcast often).
+        if (permStore) permStore.requestRefresh();
       }
     }
 
