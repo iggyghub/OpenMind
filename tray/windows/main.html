@@ -1271,6 +1271,282 @@
     .perm-modal-confirm { background: #4a3df0; color: #fff; }
     .perm-modal-cancel:hover  { background: #3a3460; }
     .perm-modal-confirm:hover { background: #5b4ff5; }
+
+    /* ── profiles pane ──────────────────────────────────────── */
+    /* Migrated from tray/windows/profile-setup.html (Issue #204). Two
+       surfaces in one pane: (1) the profiles list + Switch buttons + a
+       `+ New profile` toggle, and (2) the wizard (lifted wholesale from
+       the legacy popup) for creating a new profile. The wizard captures
+       audio via MediaRecorder + AudioContext + canvas waveform — all
+       browser-standard APIs that work in a nodeIntegration:false
+       BrowserWindow. Submission is straight to the WebSocket via
+       sendEvent — no ipcRenderer. When Cerebral emits `first_run` the
+       pane force-shows the wizard and hides the list (there's nothing
+       to list yet). Class names prefixed `prof-*`; accent magenta
+       (#c44b9c) — distinct from queue purple, insights blue, memory
+       green, credentials amber, permissions brand purple. */
+    .pane[data-route="profiles"] { background: var(--bg); }
+
+    .prof-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 0 24px;
+    }
+    .prof-body::-webkit-scrollbar { width: 4px; }
+    .prof-body::-webkit-scrollbar-track { background: transparent; }
+    .prof-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .prof-section {
+      padding: 14px 18px 6px;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-top: 1px solid #1e1c30;
+    }
+    .prof-section:first-child { border-top: none; }
+
+    .prof-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 18px;
+      border-bottom: 1px solid #1e1c30;
+    }
+    .prof-row:last-child { border-bottom: none; }
+    .prof-row.is-active { background: rgba(196, 75, 156, 0.06); }
+
+    .prof-row-name {
+      flex: 1;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .prof-row-badge {
+      font-size: 9px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: #c44b9c;
+      color: #fff;
+      padding: 2px 8px;
+      border-radius: 8px;
+    }
+
+    .prof-btn {
+      background: var(--bg-elev);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      font-family: inherit;
+      padding: 5px 12px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+    .prof-btn:hover { color: var(--text); border-color: #c44b9c; }
+    .prof-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .prof-empty {
+      padding: 12px 18px;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .prof-new-toggle {
+      margin: 12px 18px 0;
+      width: calc(100% - 36px);
+      background: var(--bg-elev);
+      color: var(--text-dim);
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      padding: 9px 12px;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: color 0.12s, border-color 0.12s;
+    }
+    .prof-new-toggle:hover { color: var(--text); border-color: #c44b9c; }
+    .prof-new-toggle.is-open { color: #c44b9c; border-color: #c44b9c; }
+
+    /* ── wizard ── */
+    .prof-wizard {
+      display: none;
+      padding: 16px 18px 0;
+    }
+    .prof-wizard.is-open { display: block; }
+    .prof-wizard.is-first-run { display: block; }
+    /* In first-run mode hide the list + toggle (no profile to list). */
+    .pane[data-route="profiles"].is-first-run .prof-section,
+    .pane[data-route="profiles"].is-first-run #prof-list,
+    .pane[data-route="profiles"].is-first-run .prof-new-toggle { display: none; }
+
+    .prof-greeting {
+      text-align: center;
+      padding: 8px 0 18px;
+    }
+    .prof-greeting-line1 {
+      font-size: 16px;
+      font-weight: 700;
+      color: #c44b9c;
+    }
+    .prof-greeting-line2 {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .prof-q-block {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .prof-q-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      letter-spacing: 0.02em;
+    }
+
+    .prof-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .prof-input {
+      flex: 1;
+      background: var(--bg-elev);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-family: inherit;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .prof-input:focus {
+      border-color: #c44b9c;
+      box-shadow: 0 0 0 3px rgba(196, 75, 156, 0.15);
+    }
+
+    .prof-mic-btn {
+      width: 34px;
+      height: 34px;
+      flex-shrink: 0;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .prof-mic-btn:hover { border-color: #c44b9c; color: #c44b9c; }
+    .prof-mic-btn.is-recording {
+      border-color: #e05555;
+      background: rgba(224, 85, 85, 0.12);
+      color: #e05555;
+    }
+    .prof-mic-btn.is-done {
+      border-color: #4bd49a;
+      color: #4bd49a;
+    }
+
+    .prof-rec-panel {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .prof-rec-panel.is-open { display: flex; }
+
+    .prof-rec-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .prof-rec-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #e05555;
+      animation: prof-blink 0.8s ease-in-out infinite;
+    }
+    @keyframes prof-blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.2; }
+    }
+    .prof-rec-timer {
+      color: #e05555;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .prof-rec-bar-wrap {
+      height: 26px;
+      background: var(--bg);
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+    canvas.prof-rec-wave {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    .prof-rec-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .prof-rec-actions button {
+      flex: 1;
+      padding: 6px 0;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .prof-rec-play:hover { border-color: #4bd49a; color: #4bd49a; }
+    .prof-rec-redo:hover { border-color: #c44b9c; color: #c44b9c; }
+
+    .prof-divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 16px 0;
+    }
+
+    .prof-submit {
+      width: 100%;
+      background: #c44b9c;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .prof-submit:hover:not(:disabled) { background: #d65cae; }
+    .prof-submit:disabled { opacity: 0.4; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -1462,10 +1738,74 @@
     </section>
 
     <section class="pane" data-route="profiles" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Profiles</div>
-        <div class="placeholder-sub">List, switch, create, and edit profiles. For now, switch profiles from the system tray's right-click menu.</div>
-        <div class="placeholder-issue">Migration: Slice 2 of #184</div>
+      <div class="prof-body">
+        <div class="prof-section">Profiles</div>
+        <div id="prof-list">
+          <div class="prof-empty">No profiles yet.</div>
+        </div>
+
+        <button class="prof-new-toggle" id="prof-new-toggle" type="button">
+          + New profile
+        </button>
+
+        <!-- Wizard — lifted from the retired tray/windows/profile-setup.html.
+             Hidden by default; shown when the user clicks `+ New profile` or
+             when Cerebral emits `first_run` (no profile yet → the wizard is
+             the only thing visible). -->
+        <div class="prof-wizard" id="prof-wizard">
+          <div class="prof-greeting">
+            <div class="prof-greeting-line1">Hello, I'm Felix.</div>
+            <div class="prof-greeting-line2">Let's set up your profile.</div>
+          </div>
+
+          <div class="prof-q-block">
+            <div class="prof-q-label">What should I call you?</div>
+            <div class="prof-input-row">
+              <input class="prof-input" type="text" id="prof-name"
+                     placeholder="Your name" autocomplete="off">
+              <button class="prof-mic-btn" id="prof-mic-name"
+                      title="Record how your name is said" type="button">🎙</button>
+            </div>
+            <div class="prof-rec-panel" id="prof-rec-name">
+              <div class="prof-rec-status" id="prof-rec-name-status">
+                <span class="prof-rec-dot" id="prof-dot-name"></span>
+                <span class="prof-rec-name-msg">Recording your name…</span>
+                <span class="prof-rec-timer" id="prof-timer-name">3s</span>
+              </div>
+              <div class="prof-rec-bar-wrap"><canvas class="prof-rec-wave" id="prof-wave-name"></canvas></div>
+              <div class="prof-rec-actions" id="prof-rec-name-actions" style="display:none">
+                <button class="prof-rec-play" id="prof-play-name" type="button">▶ Play back</button>
+                <button class="prof-rec-redo" id="prof-redo-name" type="button">↺ Re-record</button>
+              </div>
+            </div>
+          </div>
+
+          <hr class="prof-divider">
+
+          <div class="prof-q-block">
+            <div class="prof-q-label">What would you like to call me?</div>
+            <div class="prof-input-row">
+              <input class="prof-input" type="text" id="prof-wake-name"
+                     value="Felix" autocomplete="off">
+              <button class="prof-mic-btn" id="prof-mic-wake"
+                      title="Record how to say the wake word" type="button">🎙</button>
+            </div>
+            <div class="prof-rec-panel" id="prof-rec-wake">
+              <div class="prof-rec-status" id="prof-rec-wake-status">
+                <span class="prof-rec-dot" id="prof-dot-wake"></span>
+                <span class="prof-rec-wake-msg">Recording the wake word…</span>
+                <span class="prof-rec-timer" id="prof-timer-wake">3s</span>
+              </div>
+              <div class="prof-rec-bar-wrap"><canvas class="prof-rec-wave" id="prof-wave-wake"></canvas></div>
+              <div class="prof-rec-actions" id="prof-rec-wake-actions" style="display:none">
+                <button class="prof-rec-play" id="prof-play-wake" type="button">▶ Play back</button>
+                <button class="prof-rec-redo" id="prof-redo-wake" type="button">↺ Re-record</button>
+              </div>
+            </div>
+          </div>
+
+          <button class="prof-submit" id="prof-submit" type="button">Get started</button>
+        </div>
       </div>
     </section>
 
@@ -1534,6 +1874,13 @@
     const permToolRowsEl    = document.getElementById('perm-tool-rows');
     const permSearchInput   = document.getElementById('perm-tools-search-input');
     const permShellModal    = document.getElementById('perm-shell-modal');
+    const profPaneEl       = document.querySelector('.pane[data-route="profiles"]');
+    const profListEl       = document.getElementById('prof-list');
+    const profNewToggleEl  = document.getElementById('prof-new-toggle');
+    const profWizardEl     = document.getElementById('prof-wizard');
+    const profSubmitBtn    = document.getElementById('prof-submit');
+    const profNameInput    = document.getElementById('prof-name');
+    const profWakeInput    = document.getElementById('prof-wake-name');
 
     // Pending action queue (Issue #194 — migrated from queue.html). Held
     // at the document level (not inside the pane) so the header badge can
@@ -1566,6 +1913,13 @@
     let permActiveTab = 'capabilities';
     let permToolsQuery = '';
     let permStore = null;  // initialised after DOM is parsed (below).
+
+    // Profiles state (Issue #204 — migrated from profile-setup.html). The
+    // pane has two surfaces: a list of existing profiles with Switch
+    // buttons, and a wizard for creating a new one. `first_run` from
+    // Cerebral force-shows the wizard with the list hidden.
+    let profilesList = [];
+    let profIsFirstRun = false;
 
     let ws = null;
     let activeProfileId = null;
@@ -1604,6 +1958,8 @@
         sendEvent({ type: 'list_permissions' });
         sendEvent({ type: 'list_tools' });
         sendEvent({ type: 'list_plugins' });
+        // Profiles (Issue #204).
+        sendEvent({ type: 'list_profiles' });
       });
       ws.addEventListener('close', () => {
         wsConnected = false;
@@ -1636,6 +1992,21 @@
       switch (event.type) {
         case 'profile_loaded':
           activeProfileId = event.data && event.data.id;
+          // Profile just landed — leave first-run mode and collapse the
+          // wizard so the user lands on the chat. Clearing inputs is
+          // defensive: if the user opens the wizard again it starts
+          // clean rather than showing their just-submitted name.
+          if (profIsFirstRun) {
+            profIsFirstRun = false;
+            profPaneEl.classList.remove('is-first-run');
+          }
+          profCollapseWizard();
+          // Pull the refreshed profiles list so the new row shows up.
+          sendEvent({ type: 'list_profiles' });
+          break;
+        case 'profiles_list':
+          profilesList = (event.data && event.data.profiles) || [];
+          renderProfiles();
           break;
         case 'conversation_turns_data': {
           const d = event.data || {};
@@ -1657,8 +2028,19 @@
           break;
         }
         case 'first_run':
-          // No profile yet — keep the empty state visible.
+          // No profile yet — flip the Profiles pane into wizard-only
+          // mode and route to it. Cerebral re-emits first_run on every
+          // connect if no profile is loaded, so the flag stays sticky
+          // until profile_loaded clears it.
           activeProfileId = null;
+          profIsFirstRun = true;
+          profPaneEl.classList.add('is-first-run');
+          profExpandWizard();
+          if (location.hash.replace(/^#/, '') !== 'profiles') {
+            location.hash = '#profiles';
+          } else {
+            activateRoute('profiles');
+          }
           break;
         case 'heartbeat':
           latestHb = event.data || {};
@@ -2516,6 +2898,280 @@
       }
     });
 
+    // ── profiles pane (Issue #204) ───────────────────────────────────────
+    // Migrated from the retired profile-setup.html. Two surfaces in one
+    // pane: list + Switch buttons (always visible unless first_run) and
+    // an expandable wizard (visible only on first_run, or on demand via
+    // the `+ New profile` toggle). The wizard uses MediaRecorder +
+    // AudioContext + canvas waveform — all browser-standard APIs, no
+    // ipcRenderer. Submit posts create_profile straight to Cerebral over
+    // the existing WebSocket; the resulting profile_loaded broadcast
+    // collapses the wizard and exits first-run mode.
+
+    function renderProfiles() {
+      if (profilesList.length === 0) {
+        profListEl.innerHTML = '<div class="prof-empty">No profiles yet.</div>';
+        return;
+      }
+      profListEl.innerHTML = profilesList.map((p) => {
+        const isActive = p.id === activeProfileId;
+        const badge = isActive ? '<span class="prof-row-badge">active</span>' : '';
+        const switchBtn = isActive
+          ? ''
+          : `<button class="prof-btn" data-prof-switch="${escHtml(p.id)}">Switch</button>`;
+        return `
+          <div class="prof-row ${isActive ? 'is-active' : ''}">
+            <span class="prof-row-name">${escHtml(p.name)}</span>
+            ${badge}
+            ${switchBtn}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function profExpandWizard() {
+      profWizardEl.classList.add('is-open');
+      profNewToggleEl.classList.add('is-open');
+      profNewToggleEl.textContent = '× Cancel new profile';
+      setTimeout(() => profNameInput.focus(), 50);
+    }
+
+    function profCollapseWizard() {
+      profWizardEl.classList.remove('is-open');
+      profNewToggleEl.classList.remove('is-open');
+      profNewToggleEl.textContent = '+ New profile';
+      // Reset wizard inputs + recorders so the next open is clean.
+      profNameInput.value = '';
+      profWakeInput.value = 'Felix';
+      profNameRecorder && profNameRecorder.reset();
+      profWakeRecorder && profWakeRecorder.reset();
+      profSubmitBtn.disabled = false;
+      profSubmitBtn.textContent = 'Get started';
+    }
+
+    profListEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-prof-switch]');
+      if (!btn) return;
+      const id = btn.dataset.profSwitch;
+      // Cerebral's switch_profile expects a numeric id; coerce if needed.
+      const numId = Number(id);
+      sendEvent({
+        type: 'switch_profile',
+        data: { id: Number.isFinite(numId) ? numId : id },
+      });
+    });
+
+    profNewToggleEl.addEventListener('click', () => {
+      if (profWizardEl.classList.contains('is-open')) {
+        profCollapseWizard();
+      } else {
+        profExpandWizard();
+      }
+    });
+
+    // ── Recorder factory (lifted from profile-setup.html). ──────────────
+    // Each instance manages one (mic-btn, rec-panel, canvas) trio. The
+    // owner reads the latest base64-encoded blob via getAudio(); reset()
+    // clears state so the wizard can be reopened cleanly.
+
+    function makeProfRecorder({ micBtn, recPanel, statusEl, dotEl, timerEl,
+                                actionsEl, playBtn, redoBtn, waveCanvas,
+                                statusMsgSelector }) {
+      let mediaRecorder = null;
+      let chunks = [];
+      let audioBlob = null;
+      let audioUrl  = null;
+      let audioEl   = null;
+      let audioB64  = '';
+      let timerInterval = null;
+      let animFrame = null;
+      let analyser  = null;
+      let dataArray = null;
+      let stream    = null;
+
+      const ctx = waveCanvas.getContext('2d');
+
+      function drawWave() {
+        if (!analyser) return;
+        const W = waveCanvas.width  = waveCanvas.offsetWidth;
+        const H = waveCanvas.height = waveCanvas.offsetHeight;
+        analyser.getByteTimeDomainData(dataArray);
+        ctx.clearRect(0, 0, W, H);
+        ctx.strokeStyle = '#e05555';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        const step = W / dataArray.length;
+        dataArray.forEach((v, i) => {
+          const y = (v / 128 - 1) * (H / 2 - 2) + H / 2;
+          i === 0 ? ctx.moveTo(0, y) : ctx.lineTo(i * step, y);
+        });
+        ctx.stroke();
+        animFrame = requestAnimationFrame(drawWave);
+      }
+
+      function drawFlatLine() {
+        const W = waveCanvas.width  = waveCanvas.offsetWidth;
+        const H = waveCanvas.height = waveCanvas.offsetHeight;
+        ctx.clearRect(0, 0, W, H);
+        ctx.strokeStyle = '#4bd49a';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(0, H / 2);
+        ctx.lineTo(W, H / 2);
+        ctx.stroke();
+      }
+
+      function setPostRecordState() {
+        micBtn.classList.remove('is-recording');
+        micBtn.classList.add('is-done');
+        dotEl.style.display = 'none';
+        const msgEl = statusEl.querySelector(statusMsgSelector);
+        if (msgEl) msgEl.style.display = 'none';
+        timerEl.style.display = 'none';
+        actionsEl.style.display = 'flex';
+
+        const reader = new FileReader();
+        reader.onload = () => { audioB64 = reader.result || ''; };
+        reader.readAsDataURL(audioBlob);
+      }
+
+      function startRecording() {
+        navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => {
+          stream = s;
+          chunks = [];
+          audioBlob = null; audioUrl = null; audioEl = null;
+
+          const audioCtx = new AudioContext();
+          const source = audioCtx.createMediaStreamSource(s);
+          analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 256;
+          dataArray = new Uint8Array(analyser.frequencyBinCount);
+          source.connect(analyser);
+
+          mediaRecorder = new MediaRecorder(s);
+          mediaRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+          mediaRecorder.onstop = () => {
+            audioBlob = new Blob(chunks, { type: 'audio/webm' });
+            audioUrl  = URL.createObjectURL(audioBlob);
+            audioEl   = new Audio(audioUrl);
+            if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+            cancelAnimationFrame(animFrame); animFrame = null;
+            drawFlatLine();
+            setPostRecordState();
+          };
+
+          mediaRecorder.start();
+
+          micBtn.classList.add('is-recording');
+          recPanel.classList.add('is-open');
+          dotEl.style.display = 'inline-block';
+          const msgEl = statusEl.querySelector(statusMsgSelector);
+          if (msgEl) msgEl.style.display = 'inline';
+          actionsEl.style.display = 'none';
+          timerEl.style.display = 'inline';
+
+          let secs = 3;
+          timerEl.textContent = secs + 's';
+          timerInterval = setInterval(() => {
+            secs -= 1;
+            timerEl.textContent = secs + 's';
+            if (secs <= 0) { clearInterval(timerInterval); stopRecording(); }
+          }, 1000);
+
+          drawWave();
+        }).catch((err) => {
+          console.warn('[profiles] Mic error:', err.message);
+        });
+      }
+
+      function stopRecording() {
+        clearInterval(timerInterval);
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+      }
+
+      function reset() {
+        if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+        clearInterval(timerInterval);
+        cancelAnimationFrame(animFrame);
+        micBtn.classList.remove('is-recording', 'is-done');
+        recPanel.classList.remove('is-open');
+        actionsEl.style.display = 'none';
+        audioBlob = null; audioUrl = null; audioEl = null; audioB64 = '';
+        chunks = [];
+      }
+
+      micBtn.addEventListener('click', () => {
+        if (micBtn.classList.contains('is-recording')) {
+          stopRecording();
+        } else if (micBtn.classList.contains('is-done')) {
+          reset();
+          startRecording();
+        } else {
+          startRecording();
+        }
+      });
+
+      playBtn.addEventListener('click', () => {
+        if (audioEl) { audioEl.currentTime = 0; audioEl.play(); }
+      });
+      redoBtn.addEventListener('click', () => { reset(); startRecording(); });
+
+      return { getAudio: () => audioB64, reset };
+    }
+
+    const profNameRecorder = makeProfRecorder({
+      micBtn:    document.getElementById('prof-mic-name'),
+      recPanel:  document.getElementById('prof-rec-name'),
+      statusEl:  document.getElementById('prof-rec-name-status'),
+      dotEl:     document.getElementById('prof-dot-name'),
+      timerEl:   document.getElementById('prof-timer-name'),
+      actionsEl: document.getElementById('prof-rec-name-actions'),
+      playBtn:   document.getElementById('prof-play-name'),
+      redoBtn:   document.getElementById('prof-redo-name'),
+      waveCanvas: document.getElementById('prof-wave-name'),
+      statusMsgSelector: '.prof-rec-name-msg',
+    });
+
+    const profWakeRecorder = makeProfRecorder({
+      micBtn:    document.getElementById('prof-mic-wake'),
+      recPanel:  document.getElementById('prof-rec-wake'),
+      statusEl:  document.getElementById('prof-rec-wake-status'),
+      dotEl:     document.getElementById('prof-dot-wake'),
+      timerEl:   document.getElementById('prof-timer-wake'),
+      actionsEl: document.getElementById('prof-rec-wake-actions'),
+      playBtn:   document.getElementById('prof-play-wake'),
+      redoBtn:   document.getElementById('prof-redo-wake'),
+      waveCanvas: document.getElementById('prof-wave-wake'),
+      statusMsgSelector: '.prof-rec-wake-msg',
+    });
+
+    function profSubmit() {
+      const name      = profNameInput.value.trim();
+      const wake_name = profWakeInput.value.trim() || 'felix';
+      if (!name) { profNameInput.focus(); return; }
+      profSubmitBtn.disabled = true;
+      profSubmitBtn.textContent = 'Setting up…';
+      sendEvent({
+        type: 'create_profile',
+        data: {
+          name,
+          wake_name,
+          voice_sample: profNameRecorder.getAudio(),
+          wake_sample:  profWakeRecorder.getAudio(),
+        },
+      });
+    }
+
+    profSubmitBtn.addEventListener('click', profSubmit);
+    [profNameInput, profWakeInput].forEach((el) => {
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          profSubmit();
+        }
+      });
+    });
+
     // ── input ─────────────────────────────────────────────────────────────
     function autosize() {
       input.style.height = '42px';
@@ -2597,6 +3253,8 @@
         // this pane, refetch all three on activation in case any was
         // missed (e.g. tools_list, which doesn't auto-broadcast often).
         if (permStore) permStore.requestRefresh();
+      } else if (route === 'profiles') {
+        sendEvent({ type: 'list_profiles' });
       }
     }
 

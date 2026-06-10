@@ -28,7 +28,6 @@ let felixState  = 'idle';      // 'idle' | 'active'
 let activeProfile = null;
 let allProfiles   = [];
 let pendingItems  = [];
-let setupWindow      = null;
 let mainWindow        = null;
 let visualiserWindow  = null;
 // request_id → BrowserWindow for the consent prompt (Issue #48). Each
@@ -136,12 +135,14 @@ function sendToCerebral(event) {
 function handleCerebralEvent(event) {
   switch (event.type) {
     case 'first_run':
-      openSetupWindow();
+      // Profile-setup popup retired in Issue #204 — open the Main
+      // window's Profiles pane; the renderer flips into first-run
+      // wizard mode itself on the same event.
+      openMainWindow('#profiles');
       break;
 
     case 'profile_loaded':
       activeProfile = event.data;
-      closeSetupWindow();
       refreshMenu();
       console.log('[tray] Profile loaded:', activeProfile.name);
       break;
@@ -256,35 +257,13 @@ function routeToVisualiser(event) {
   }
 }
 
-// ── Profile setup window ──────────────────────────────────────────────────────
-
-function openSetupWindow() {
-  if (setupWindow) { setupWindow.focus(); return; }
-
-  setupWindow = new BrowserWindow({
-    width: 380,
-    height: 520,
-    resizable: false,
-    title: 'Felix Setup',
-    backgroundColor: '#12101e',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  setupWindow.setMenuBarVisibility(false);
-  setupWindow.loadFile(path.join(__dirname, 'windows', 'profile-setup.html'));
-  setupWindow.on('closed', () => { setupWindow = null; });
-}
-
-function closeSetupWindow() {
-  if (setupWindow) { setupWindow.close(); setupWindow = null; }
-}
-
-ipcMain.on('profile:create', (_event, data) => {
-  sendToCerebral({ type: 'create_profile', data });
-});
+// Profile-setup popup retired in Issue #204 — the wizard lives in the
+// Main window's Profiles pane now and submits create_profile straight
+// to Cerebral over the shared WebSocket. The tray menu's "New profile…"
+// item and Cerebral's first_run event both deep-link into
+// `main.html#profiles` via openMainWindow('#profiles'). The renderer
+// flips the pane into first-run mode (wizard-only, list hidden) on
+// receipt of first_run and back out on profile_loaded.
 
 // ── Main window (Issue #185 / ADR-0007) ───────────────────────────────────────
 //
@@ -697,7 +676,7 @@ function buildMenu() {
       template.push({ label: 'Switch profile', submenu: switchItems });
     }
 
-    template.push({ label: 'New profile...', click: openSetupWindow });
+    template.push({ label: 'New profile...', click: () => openMainWindow('#profiles') });
   }
 
   template.push({ type: 'separator' });
