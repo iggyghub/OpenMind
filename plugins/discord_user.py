@@ -1042,6 +1042,19 @@ class DiscordUserPlugin:
         # gateway closing cryptically a second later.
         try:
             who = await self._request("GET", "users/@me", token)
+        except asyncio.CancelledError:
+            # CancelledError is a BaseException, so the handler below never
+            # sees it. A sibling plugin's broken teardown can cancel this
+            # in-flight request (#182); that must degrade like any other
+            # startup failure instead of killing Cerebral. A deliberate
+            # stop_subscriber still propagates.
+            if self._stop_event.is_set():
+                raise
+            logger.warning(
+                "[discord_user] token validation cancelled mid-flight "
+                "(GET /users/@me) -- subscriber not started",
+            )
+            return
         except Exception as exc:
             logger.warning(
                 "[discord_user] token validation failed (GET /users/@me): "
