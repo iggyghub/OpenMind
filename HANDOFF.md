@@ -6,23 +6,33 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ## Next slice — start here
 
-**Slice 2 is fully complete.** All nine Main window routes are live and `felix-settings.json` is now owned by Cerebral (`cerebral/settings.py`). PR [#212](https://github.com/iggyghub/OpenMind/pull/212) (#209 Settings v2) is open, awaiting merge. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
+**Slice 3 is complete.** PR [#213](https://github.com/iggyghub/OpenMind/pull/213) (#189 — retire consent.html, inline consent card) is open, awaiting merge. PR [#212](https://github.com/iggyghub/OpenMind/pull/212) (#209 Settings v2) was merged before this slice started. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
 
-### Recommended next slice: **Slice 3 — retire consent.html**
+### Recommended next slice: **Slice 4 — Conversation store (Cerebral side)**
 
 Model: sonnet
 Status: ready
 
-(`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices. Slice 3 is unspecced/architectural — read the existing `tray/windows/consent.html` and `tray/windows/irreversible-modal.html`, understand how `ConsentManager` and `ModalManager` work, then design + file issues before implementing. Rated **sonnet** for the autonomous loop on the $20 Pro plan (opus/fable drain the ~5h usage window too fast and Opus access is constrained on Pro). NOTE: design-first/architectural slices are a weak fit for the autonomous loop — consider doing Slice 3 interactively in the desktop app instead, and reserve the loop for well-specced execution slices.)
+(`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices.)
 
-**What Slice 3 should accomplish** (design before implementing):
-- Retire `tray/windows/consent.html` — migrate the consent prompt UI into `tray/windows/main.html` as a pane or overlay so it no longer requires a standalone `BrowserWindow` with `nodeIntegration: true`. Same for `irreversible-modal.html`.
-- The ConsentManager / ModalManager currently open per-request `BrowserWindow`s; the new design should route into the Main window (or at minimum use `contextIsolation: true` windows).
-- File one issue per surface before coding; mark this kickoff block blocked if you can't derive the right decomposition.
+**What Slice 4 should accomplish** (well-specced execution work):
+
+ADR-0007 calls for a fifth structured-memory tier: `conversation_turns(id, profile_id, ts, kind, content_json)` in SQLite, per-profile, kinds = `{user_voice, user_text, felix_speech, tool_call, tool_result, system_event}`, load-last-50 on connect, infinite retention in v1.
+
+1. `cerebral/db/conversation.py` — new `ConversationStore` class mirroring `cerebral/db/profiles.py` / `cerebral/db/memory.py` patterns. Methods: `append(profile_id, kind, content)`, `list_recent(profile_id, limit=50)`, `purge(profile_id)`.
+2. Schema migration in `cerebral/db/__init__.py` (or wherever the DB init lives) — `CREATE TABLE IF NOT EXISTS conversation_turns (...)`.
+3. Cerebral emits `conversation_turns_data` on connect (last 50 turns for the active profile). The Main window renderer already handles this event (`case 'conversation_turns_data'` in `handleEvent`).
+4. Cerebral appends a turn whenever: (a) user voice command lands (Vosk wake → faster-whisper transcript), (b) Felix TTS speaks (`tts_speaking` + text), (c) tool call fires, (d) tool result returns, (e) system events (model switch, profile switch, consent grant/deny).
+5. `cerebral/tests/test_conversation.py` — pytest suite mirroring `test_settings.py`.
+6. File one issue (e.g. "Slice 4: Conversation store + turn persistence") before coding if one doesn't exist; look for an existing open issue first.
 
 ### Reference PRs (Slice 2, in order)
 
 [#195](https://github.com/iggyghub/OpenMind/pull/195) Queue → [#197](https://github.com/iggyghub/OpenMind/pull/197) Insights → [#199](https://github.com/iggyghub/OpenMind/pull/199) Memory → [#201](https://github.com/iggyghub/OpenMind/pull/201) Credentials → [#203](https://github.com/iggyghub/OpenMind/pull/203) Permissions → [#205](https://github.com/iggyghub/OpenMind/pull/205) Profiles → [#207](https://github.com/iggyghub/OpenMind/pull/207) Plugins v1 → [#210](https://github.com/iggyghub/OpenMind/pull/210) Settings v1 → [#212](https://github.com/iggyghub/OpenMind/pull/212) Settings v2.
+
+### Reference PRs (Slice 3)
+
+[#213](https://github.com/iggyghub/OpenMind/pull/213) Consent inline cards (#189).
 
 ### Slice 2 progress
 
