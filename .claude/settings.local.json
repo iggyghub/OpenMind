@@ -26,6 +26,6 @@
                                      }
                                  ]
               },
-    "model":  "sonnet",
-    "skipDangerousModePermissionPrompt":  true
+    "skipDangerousModePermissionPrompt":  true,
+    "model":  "sonnet"
 }
