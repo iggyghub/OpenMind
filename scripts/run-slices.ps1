@@ -2,8 +2,9 @@
 #
 # Repeats: read HANDOFF.md kickoff block -> launch a fresh headless Claude
 # Code session (claude -p) on the recommended model -> session completes the
-# slice, ends at an OPEN (unmerged) PR, and rewrites the kickoff block for
-# the next slice -> loop.
+# slice, runs tests, opens a PR, MERGES it to master (so the next slice
+# branches off a current master and same-file edits never collide), then
+# rewrites the kickoff block for the next slice -> loop.
 #
 # Stop conditions:
 #   - STOP file created by scripts/stop-slices.ps1 (graceful, between steps)
@@ -119,12 +120,25 @@ try {
     # turns a benign cap into 3 wasted instant retries + a false "failed" alarm.
     $limitPattern  = "hit your limit|usage limit|rate limit|limit reached|out of usage|resets \d|reset at|resets at|exceeded your|approaching your|Claude usage limit|Not logged in"
 
-    $rules = "Hard rules: one PR per issue; run the relevant tests before opening the PR; " +
-             "open the PR with Closes #N in the body; do NOT merge any PR; do NOT push to master directly; " +
-             "finish by rewriting the HANDOFF.md kickoff block for the slice after this one, " +
-             "including the Model: line (haiku, sonnet, opus, or fable) and the Status: line " +
-             "(ready, blocked, or done). If you cannot complete the slice, set Status: blocked " +
-             "with a one-line reason and stop."
+    # Merge-between-slices flow: each slice MUST land on master before the next
+    # one starts, otherwise parallel slices that all edit the same big file (e.g.
+    # tray/windows/main.html) diverge off the same base and collide at merge time.
+    $rules = "Hard rules, in order: " +
+             "(1) Branch off the latest origin/master (git fetch then git checkout -b <branch> origin/master). " +
+             "(2) One PR per issue. Implement the slice. " +
+             "(3) Run the relevant tests; proceed ONLY if they pass. " +
+             "(4) Open the PR with 'Closes #N' in the body. " +
+             "(5) Merge YOUR OWN PR into master now: gh pr merge <n> --squash --delete-branch. " +
+             "If gh reports the PR is not mergeable yet, wait ~15s and retry up to 5 times " +
+             "(GitHub recomputes mergeability after the push). " +
+             "(6) git checkout master and git pull origin master so master is current. " +
+             "(7) Rewrite the HANDOFF.md kickoff block for the NEXT slice: the 'Model:' line " +
+             "(haiku|sonnet|opus|fable -- prefer sonnet on this plan) and the 'Status:' line " +
+             "(ready|blocked|done). Commit that HANDOFF change directly to master and push it. " +
+             "The HANDOFF update is the ONLY thing you may commit straight to master -- all code goes through the PR. " +
+             "If tests fail and you cannot fix them, set Status: blocked with a one-line reason, " +
+             "commit that to master, and stop WITHOUT merging the PR. " +
+             "Leave the working tree on master with no uncommitted changes before you finish."
 
     Log ("=== slice loop started (max {0} slices, {1} attempts each, auto-resume={2}) ===" -f $MaxSlices, $MaxAttempts, $AutoResume)
 
