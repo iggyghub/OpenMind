@@ -6,28 +6,14 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ## Next slice — start here
 
-**Slice 7 is complete.** PR [#218](https://github.com/iggyghub/OpenMind/pull/218) (#188 — Tray collapse + window lifecycle) merged to master. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
+**Slice 8 is complete.** PR [#219](https://github.com/iggyghub/OpenMind/pull/219) (#178 — Discord slice 3: react/edit/delete + DiscordPresenceController) merged to master. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
 
-### Recommended next slice: **Slice 8 — Discord-as-user plugin slice 3**
+### Recommended next slice: **Slice 9 — (to be determined)**
 
 Model: sonnet
-Status: ready
+Status: done
 
 (`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices.)
-
-**What Slice 8 should accomplish** (issue #178):
-
-Round out the discord_user plugin's outbound surface and presence behaviour. Issue #178 is fully specified (ready-for-agent). Blocked-by issues #175 (slice 1, PR #176) and #177 (slice 2, PR #179) are both merged.
-
-1. Add `discord_react` MCP tool (add/remove emoji reaction; `irreversible=True`, `confirm`-gated).
-2. Add `discord_edit` MCP tool (edit own message; surfaces Discord's ownership error).
-3. Add `discord_delete` MCP tool (delete own message; same ownership posture).
-4. Auto-idle after N minutes of no LLM Discord activity; auto-online on next Discord-bound action.
-5. Manual `discord_set_presence` still wins over auto-presence.
-6. Sleep-hours window (slice 2) wins over auto-presence: inside window, presence stays `invisible`.
-7. Update CONTEXT.md "Discord user-account integration" section: promote slice 3 from "planned" to "shipped".
-
-Acceptance criteria: see issue #178. Includes a live-verification step (one round-trip per new tool + observed auto-idle/auto-online flip).
 
 ### Reference PRs (Slice 2, in order)
 
@@ -52,6 +38,10 @@ Acceptance criteria: see issue #178. Includes a live-verification step (one roun
 ### Reference PRs (Slice 7)
 
 [#218](https://github.com/iggyghub/OpenMind/pull/218) Tray collapse + window lifecycle (#188).
+
+### Reference PRs (Slice 8)
+
+[#219](https://github.com/iggyghub/OpenMind/pull/219) Discord slice 3: react/edit/delete + DiscordPresenceController (#178).
 
 ### Slice 2 progress
 
