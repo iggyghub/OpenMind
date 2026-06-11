@@ -1105,6 +1105,10 @@ def _plugins_list_event() -> dict:
       - its inspectability mark — "inspected" or "trusted" (Issue #46)
         so the tray can render the red "trusted, unverified" badge on
         plugins loaded from plugins/_trusted/.
+      - tool_count: number of tools the plugin registers (Issue #187)
+      - status: "loaded" | "error" | "disabled" (Issue #187); all entries
+        in _plugins are "loaded" by definition — errors live in
+        registration_errors, and disable is a v2 feature.
 
     The companion `errors` list carries plugins the orchestrator refused at
     load time (forbidden patterns, non-conforming paths, missing
@@ -1114,6 +1118,7 @@ def _plugins_list_event() -> dict:
     registered = []
     for plugin_name in sorted(_orc._plugins):
         caps = _orc.required_capabilities_for(plugin_name)
+        tool_count = sum(1 for p in _orc._tool_index.values() if p == plugin_name)
         registered.append({
             "name": plugin_name,
             "required_capabilities": sorted(caps) if caps is not None else None,
@@ -1122,12 +1127,34 @@ def _plugins_list_event() -> dict:
             # builder-installed plugins whose flag is still set. Cleared
             # via the Permissions UI (#53).
             "new_plugin_flag": _pm.get_plugin_new_flag(plugin_name),
+            "tool_count": tool_count,
+            "status": "loaded",
         })
     return {
         "type": "plugins_list",
         "data": {
             "plugins": registered,
             "errors": _orc.registration_errors,
+        },
+    }
+
+
+def _plugin_settings_event(plugin_name: str) -> dict:
+    """Per-plugin settings snapshot for the Plugins pane (Issue #187).
+
+    Currently only discord_user has editable settings (auto-reply allowlist).
+    Other plugins return an empty allowlist so the renderer can stay generic.
+    The allowlist is scoped to the active profile; returns empty when no
+    profile is active.
+    """
+    allowlist: list[dict] = []
+    if plugin_name == "discord_user" and _active_profile is not None:
+        allowlist = _pm.list_discord_allowlist(_active_profile.id)
+    return {
+        "type": "plugin_settings",
+        "data": {
+            "plugin_name": plugin_name,
+            "allowlist": allowlist,
         },
     }
 
@@ -1282,6 +1309,43 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "list_plugins":
         await _broadcast(_plugins_list_event())
+
+    elif t == "get_plugin_settings":
+        # Issue #187 — Plugins pane requests per-plugin settings.
+        # Currently only discord_user carries editable state (allowlist).
+        d = msg.get("data") or {}
+        plugin_name = (d.get("plugin_name") or "").strip()
+        if not plugin_name:
+            logger.warning("[cerebral] get_plugin_settings missing plugin_name")
+            return
+        await _broadcast(_plugin_settings_event(plugin_name))
+
+    elif t == "discord_allowlist_add":
+        # Issue #187 — add a sender to the Discord auto-reply allowlist.
+        d = msg.get("data") or {}
+        sender_id = (d.get("sender_id") or "").strip()
+        note = (d.get("note") or "").strip()
+        if not sender_id:
+            logger.warning("[cerebral] discord_allowlist_add missing sender_id")
+            return
+        if _active_profile is None:
+            logger.warning("[cerebral] discord_allowlist_add with no active profile")
+            return
+        _pm.add_discord_allowlist(_active_profile.id, sender_id, note)
+        await _broadcast(_plugin_settings_event("discord_user"))
+
+    elif t == "discord_allowlist_remove":
+        # Issue #187 — remove a sender from the Discord auto-reply allowlist.
+        d = msg.get("data") or {}
+        sender_id = (d.get("sender_id") or "").strip()
+        if not sender_id:
+            logger.warning("[cerebral] discord_allowlist_remove missing sender_id")
+            return
+        if _active_profile is None:
+            logger.warning("[cerebral] discord_allowlist_remove with no active profile")
+            return
+        _pm.remove_discord_allowlist(_active_profile.id, sender_id)
+        await _broadcast(_plugin_settings_event("discord_user"))
 
     elif t == "list_permissions":
         # Issue #53 — Permissions UI requesting a fresh state snapshot.

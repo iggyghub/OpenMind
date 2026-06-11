@@ -1669,6 +1669,171 @@
       line-height: 1.4;
     }
 
+    /* Issue #187 — tool count + status badge on plugin rows */
+    .plug-row-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    .plug-tool-count {
+      font-size: 10px;
+      color: var(--text-muted);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .plug-badge-loaded   { background: rgba(75, 212, 154, 0.18); color: #4bd49a; }
+    .plug-badge-error    { background: rgba(224, 85, 85, 0.18);  color: #e05555; }
+    .plug-badge-disabled { background: var(--bg-elev);           color: var(--text-muted); }
+
+    .plug-row-clickable { cursor: pointer; }
+    .plug-row-clickable:hover { background: rgba(255, 255, 255, 0.025); }
+    .plug-settings-arrow {
+      font-size: 11px;
+      color: var(--text-muted);
+      transition: transform 0.1s;
+    }
+    .plug-row-clickable:hover .plug-settings-arrow { color: var(--accent); }
+
+    /* Issue #187 — per-plugin settings sub-pane */
+    .plug-settings-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .plug-settings-view[hidden] { display: none; }
+
+    .plug-settings-header {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .plug-back-btn {
+      background: none;
+      border: none;
+      color: var(--accent);
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 5px;
+      transition: background 0.1s;
+    }
+    .plug-back-btn:hover { background: var(--bg-elev); }
+    .plug-settings-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-dim);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .plug-settings-body {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .plug-settings-body::-webkit-scrollbar { width: 4px; }
+    .plug-settings-body::-webkit-scrollbar-track { background: transparent; }
+    .plug-settings-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* Discord allowlist editor (Issue #187) */
+    .dsc-section {
+      padding: 14px 18px 6px;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-top: 1px solid #1e1c30;
+    }
+    .dsc-section:first-child { border-top: none; }
+    .dsc-desc {
+      padding: 6px 18px 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .dsc-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 18px;
+      border-bottom: 1px solid #1e1c30;
+    }
+    .dsc-row:last-child { border-bottom: none; }
+    .dsc-sender-id {
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      font-size: 12px;
+      color: var(--text);
+      flex-shrink: 0;
+    }
+    .dsc-note {
+      font-size: 11px;
+      color: var(--text-muted);
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .dsc-remove-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: color 0.1s, border-color 0.1s;
+    }
+    .dsc-remove-btn:hover { color: #e05555; border-color: #e05555; }
+    .dsc-empty {
+      padding: 12px 18px;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+    .dsc-add-form {
+      display: flex;
+      gap: 6px;
+      padding: 10px 18px 12px;
+      flex-wrap: wrap;
+      border-top: 1px solid #1e1c30;
+    }
+    .dsc-input {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      font-size: 12px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      outline: none;
+      transition: border-color 0.1s;
+    }
+    .dsc-input:focus { border-color: var(--accent); }
+    .dsc-input::placeholder { color: var(--text-muted); }
+    .dsc-input-id   { flex: 1; min-width: 120px; }
+    .dsc-input-note { flex: 2; min-width: 100px; }
+    .dsc-add-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.1s;
+      flex-shrink: 0;
+    }
+    .dsc-add-btn:hover:not(:disabled) { background: var(--accent-dim); }
+    .dsc-add-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
     /* ── settings pane ──────────────────────────────────────── */
     /* Issues #208 (Models) + #209 (System settings). Class prefix `set-*`;
        accent coral (#ff8c69) — eighth distinct pane colour. */
@@ -2211,7 +2376,8 @@
     </section>
 
     <section class="pane" data-route="plugins" hidden>
-      <div class="plug-body">
+      <!-- Plugin list view (default) -->
+      <div class="plug-body" id="plug-main-view">
         <div class="plug-section">Registered plugins</div>
         <div id="plug-list">
           <div class="plug-empty">No plugins registered.</div>
@@ -2219,6 +2385,17 @@
 
         <div class="plug-section" id="plug-errors-section" hidden>Load errors</div>
         <div id="plug-errors-list"></div>
+      </div>
+
+      <!-- Per-plugin settings sub-pane (hidden by default, Issue #187) -->
+      <div class="plug-settings-view" id="plug-settings-view" hidden>
+        <div class="plug-settings-header">
+          <button class="plug-back-btn" id="plug-back-btn" type="button">
+            &larr; Plugins
+          </button>
+          <span class="plug-settings-title" id="plug-settings-title">Settings</span>
+        </div>
+        <div class="plug-settings-body" id="plug-settings-body"></div>
       </div>
     </section>
 
@@ -2437,9 +2614,14 @@
     const profSubmitBtn    = document.getElementById('prof-submit');
     const profNameInput    = document.getElementById('prof-name');
     const profWakeInput    = document.getElementById('prof-wake-name');
-    const plugListEl       = document.getElementById('plug-list');
-    const plugErrorsListEl = document.getElementById('plug-errors-list');
-    const plugErrorsHeader = document.getElementById('plug-errors-section');
+    const plugListEl         = document.getElementById('plug-list');
+    const plugErrorsListEl   = document.getElementById('plug-errors-list');
+    const plugErrorsHeader   = document.getElementById('plug-errors-section');
+    const plugMainViewEl     = document.getElementById('plug-main-view');
+    const plugSettingsViewEl = document.getElementById('plug-settings-view');
+    const plugSettingsTitleEl = document.getElementById('plug-settings-title');
+    const plugSettingsBodyEl  = document.getElementById('plug-settings-body');
+    const plugBackBtn        = document.getElementById('plug-back-btn');
     const setActiveNameEl  = document.getElementById('set-active-name');
     const setActiveCloudEl = document.getElementById('set-active-cloud');
     const setLastLineEl    = document.getElementById('set-last-line');
@@ -2492,6 +2674,15 @@
     // for its new-plugin trust list. Held at document level so the
     // pane stays fresh whether or not it's visible.
     let pluginsListData = { plugins: [], errors: [] };
+
+    // Per-plugin settings sub-pane state (Issue #187). Populated by
+    // plugin_settings broadcasts; null when no sub-pane is open.
+    let pluginSettingsData = null;
+    let pluginSettingsActive = null;  // plugin_name currently open, or null
+
+    // The set of plugins that expose per-plugin settings in the UI.
+    // Clicking a row in this set navigates to the settings sub-pane.
+    const PLUGINS_WITH_SETTINGS = new Set(['discord_user']);
 
     // Settings v1 state (Issue #208). Mirrors the tray's models_list
     // payload — both surfaces drive the same WS events so they stay in
@@ -2676,6 +2867,14 @@
             errors:  (event.data && event.data.errors)  || [],
           };
           renderPlugins();
+          break;
+        case 'plugin_settings':
+          // Issue #187 — per-plugin settings sub-pane.
+          pluginSettingsData = event.data || null;
+          if (pluginSettingsActive && pluginSettingsData &&
+              pluginSettingsData.plugin_name === pluginSettingsActive) {
+            renderPluginSettings(pluginSettingsData);
+          }
           break;
         case 'models_list': {
           // Issue #208 — Settings pane v1. Tray menu's Model submenu
@@ -3932,15 +4131,14 @@
       });
     });
 
-    // ── plugins pane (Issue #206) ────────────────────────────────────────
-    // Pure consumer of plugins_list. The payload shape (from
-    // cerebral.main._plugins_list_event):
+    // ── plugins pane (Issues #206, #187) ────────────────────────────────────
+    // Consumes plugins_list (status + tool_count added in #187) and
+    // plugin_settings (new in #187 for the Discord allowlist sub-pane).
+    //
+    // plugins_list payload shape (cerebral.main._plugins_list_event):
     //   data.plugins: [{ name, required_capabilities, inspectability,
-    //                    new_plugin_flag }]
-    //   data.errors:  [{ path, reason }]  (or arbitrary objects from the
-    //                                       orchestrator's registration_errors)
-    // The errors list may contain free-form strings or objects; we
-    // render either gracefully.
+    //                    new_plugin_flag, tool_count, status }]
+    //   data.errors:  [{ path, reason }]  (or free-form strings)
 
     function renderPlugins() {
       const plugins = pluginsListData.plugins || [];
@@ -3970,12 +4168,34 @@
             ? '<span class="plug-badge plug-badge-new" title="Trust this plugin via the Permissions pane to clear">new</span>'
             : '';
 
+          // Issue #187 — status badge + tool count
+          const statusCls = p.status === 'error' ? 'plug-badge-error'
+                          : p.status === 'disabled' ? 'plug-badge-disabled'
+                          : 'plug-badge-loaded';
+          const statusBadge = `<span class="plug-badge ${statusCls}">${escHtml(p.status || 'loaded')}</span>`;
+          const toolCount = typeof p.tool_count === 'number'
+            ? `<span class="plug-tool-count">${p.tool_count} tool${p.tool_count !== 1 ? 's' : ''}</span>`
+            : '';
+
+          // Plugins with a settings sub-pane get a click handler + arrow.
+          const hasSettings = PLUGINS_WITH_SETTINGS.has(p.name);
+          const clickable = hasSettings ? ' plug-row-clickable' : '';
+          const arrow = hasSettings
+            ? '<span class="plug-settings-arrow">&#8250;</span>'
+            : '';
+          const dataAttr = hasSettings ? ` data-plugin="${escHtml(p.name)}"` : '';
+
           return `
-            <div class="plug-row">
+            <div class="plug-row${clickable}"${dataAttr}>
               <div class="plug-row-head">
                 <span class="plug-row-name">${escHtml(p.name)}</span>
                 ${inspBadge}
                 ${newBadge}
+                <span class="plug-row-meta">
+                  ${statusBadge}
+                  ${toolCount}
+                  ${arrow}
+                </span>
               </div>
               <div class="plug-caps">${capsHtml}</div>
             </div>
@@ -4012,6 +4232,108 @@
           `;
         }).join('');
       }
+
+      // Wire up click handlers for plugin rows that have settings sub-panes.
+      plugListEl.querySelectorAll('.plug-row-clickable[data-plugin]').forEach((row) => {
+        row.addEventListener('click', () => openPluginSettings(row.dataset.plugin));
+      });
+    }
+
+    // Open the per-plugin settings sub-pane for `pluginName`.
+    function openPluginSettings(pluginName) {
+      pluginSettingsActive = pluginName;
+      plugSettingsTitleEl.textContent = pluginName;
+      plugSettingsBodyEl.innerHTML = '<div class="plug-empty">Loading…</div>';
+      plugMainViewEl.hidden = true;
+      plugSettingsViewEl.hidden = false;
+      sendEvent({ type: 'get_plugin_settings', data: { plugin_name: pluginName } });
+    }
+
+    // Return to the plugin list from the settings sub-pane.
+    function closePluginSettings() {
+      pluginSettingsActive = null;
+      pluginSettingsData = null;
+      plugSettingsBodyEl.innerHTML = '';
+      plugSettingsViewEl.hidden = true;
+      plugMainViewEl.hidden = false;
+    }
+
+    plugBackBtn.addEventListener('click', closePluginSettings);
+
+    // Render whatever plugin_settings Cerebral sent.
+    function renderPluginSettings(data) {
+      if (!data) return;
+      const name = data.plugin_name || '';
+      if (name === 'discord_user') {
+        renderDiscordAllowlist(data.allowlist || []);
+      } else {
+        plugSettingsBodyEl.innerHTML =
+          '<div class="plug-empty">No settings available for this plugin.</div>';
+      }
+    }
+
+    // ── Discord allowlist editor (Issue #187) ───────────────────────────────
+
+    function renderDiscordAllowlist(allowlist) {
+      const rows = Array.isArray(allowlist) ? allowlist : [];
+      const listHtml = rows.length === 0
+        ? '<div class="dsc-empty">No senders on the allowlist. Felix will not auto-reply.</div>'
+        : rows.map((entry) => `
+            <div class="dsc-row">
+              <span class="dsc-sender-id">${escHtml(entry.sender_id || '')}</span>
+              <span class="dsc-note">${escHtml(entry.note || '')}</span>
+              <button class="dsc-remove-btn" data-sender="${escHtml(entry.sender_id || '')}"
+                      type="button">Remove</button>
+            </div>
+          `).join('');
+
+      plugSettingsBodyEl.innerHTML = `
+        <div class="dsc-section">Auto-reply allowlist</div>
+        <div class="dsc-desc">
+          Felix will only auto-reply to Discord DMs from senders listed here.
+          Add a Discord user ID (the numeric ID, not the username).
+        </div>
+        <div id="dsc-list">${listHtml}</div>
+        <div class="dsc-add-form">
+          <input class="dsc-input dsc-input-id" id="dsc-sender-input"
+                 type="text" placeholder="Discord user ID (e.g. 123456789012)" autocomplete="off" />
+          <input class="dsc-input dsc-input-note" id="dsc-note-input"
+                 type="text" placeholder="Label (optional)" autocomplete="off" />
+          <button class="dsc-add-btn" id="dsc-add-btn" type="button">Add</button>
+        </div>
+      `;
+
+      // Wire remove buttons
+      plugSettingsBodyEl.querySelectorAll('.dsc-remove-btn[data-sender]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const senderId = btn.dataset.sender;
+          if (!senderId) return;
+          sendEvent({ type: 'discord_allowlist_remove', data: { sender_id: senderId } });
+        });
+      });
+
+      // Wire add button + Enter key in sender input
+      const senderInput = document.getElementById('dsc-sender-input');
+      const noteInput   = document.getElementById('dsc-note-input');
+      const addBtn      = document.getElementById('dsc-add-btn');
+
+      function submitAddAllowlist() {
+        const senderId = (senderInput.value || '').trim();
+        if (!senderId) { senderInput.focus(); return; }
+        const note = (noteInput.value || '').trim();
+        sendEvent({ type: 'discord_allowlist_add', data: { sender_id: senderId, note } });
+        senderInput.value = '';
+        noteInput.value = '';
+        senderInput.focus();
+      }
+
+      addBtn.addEventListener('click', submitAddAllowlist);
+      senderInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          submitAddAllowlist();
+        }
+      });
     }
 
     // First render so the empty state shows before plugins_list arrives.
@@ -4250,6 +4572,9 @@
         // case where the user opens Plugins between connect and the
         // first activation of any pane that depends on it.
         sendEvent({ type: 'list_plugins' });
+        // Issue #187 — if we navigated away while a sub-pane was open,
+        // return to the list view when the tab is re-selected.
+        closePluginSettings();
       } else if (route === 'settings') {
         // models_list and settings_updated both ride the connect-time
         // greeting; pulling fresh on activation is a cheap recovery for
