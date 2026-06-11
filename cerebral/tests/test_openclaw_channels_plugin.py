@@ -526,6 +526,92 @@ async def test_start_subscriber_is_graceful_when_session_fails(caplog):
     assert any("gateway unreachable" in m for m in msgs), msgs
 
 
+async def test_session_context_entered_and_exited_in_same_task():
+    """Issue #181: the mcp SDK's stdio_client uses anyio cancel scopes
+    that must be exited by the task that entered them. The session
+    context manager must therefore be entered AND exited inside the
+    same (dedicated host) task, no matter which task drives
+    start_subscriber / stop_subscriber."""
+    record: dict = {}
+    session = FakeSession()
+
+    @contextlib.asynccontextmanager
+    async def cm():
+        record["enter_task"] = asyncio.current_task()
+        try:
+            yield session
+        finally:
+            record["exit_task"] = asyncio.current_task()
+
+    plugin = _make_plugin(
+        session_factory=lambda: cm(), inbound_callback=_unused_callback,
+    )
+    await plugin.start_subscriber()
+    await plugin.stop_subscriber()
+    assert "exit_task" in record, "session context was never exited"
+    assert record["enter_task"] is record["exit_task"]
+    # And neither happened in the test task -- the host owns the scope.
+    assert record["enter_task"] is not asyncio.current_task()
+
+
+async def test_stop_subscriber_survives_teardown_exception():
+    """Issue #181: a dead ``openclaw mcp serve`` child makes the SDK's
+    teardown raise (ExceptionGroup / cancel-scope RuntimeError). That
+    must stay contained -- stop_subscriber returns normally and the
+    loop is not poisoned."""
+    session = FakeSession()
+
+    @contextlib.asynccontextmanager
+    async def cm():
+        try:
+            yield session
+        finally:
+            raise RuntimeError(
+                "Attempted to exit cancel scope in a different task "
+                "than it was entered in",
+            )
+
+    plugin = _make_plugin(
+        session_factory=lambda: cm(), inbound_callback=_unused_callback,
+    )
+    await plugin.start_subscriber()
+    await plugin.stop_subscriber()  # must not raise
+    assert plugin.subscriber_running is False
+    # The loop is still healthy: unrelated tasks run to completion.
+    await asyncio.sleep(0)
+
+
+async def test_session_invalidate_survives_teardown_exception():
+    """Same containment on the _invalidate_session path (events_wait
+    raise -> respawn). The first session's teardown raising must not
+    prevent the loop from bringing up the second session."""
+    first, second = FakeSession(), FakeSession()
+    handed_out: list[FakeSession] = []
+
+    @contextlib.asynccontextmanager
+    async def cm():
+        sess = first if not handed_out else second
+        handed_out.append(sess)
+        try:
+            yield sess
+        finally:
+            if sess is first:
+                raise RuntimeError("athrow(): asynchronous generator "
+                                   "is already running")
+
+    first._events_wait_error = OSError("connection reset")
+
+    plugin = _make_plugin(
+        session_factory=lambda: cm(), inbound_callback=_unused_callback,
+    )
+    await plugin.start_subscriber()
+    try:
+        ok = await _drain_until(lambda: second.events_wait_calls >= 1)
+        assert ok, "loop never recovered onto a fresh session"
+    finally:
+        await plugin.stop_subscriber()
+
+
 async def test_stop_subscriber_is_idempotent():
     session = FakeSession()
     plugin = _make_plugin(session=session, inbound_callback=_unused_callback)
@@ -730,16 +816,19 @@ async def test_closed_ws_raise_invalidates_cached_session(caplog):
     with caplog.at_level(logging.WARNING):
         await plugin.start_subscriber()
         try:
-            # The factory MUST be invoked >= 2 times: once at subscriber
-            # start, once after the cache is invalidated.
+            # Recovery must flow all the way onto the fresh session.
+            # (Draining on the factory invocation count alone is racy
+            # since the #181 session host added suspension points
+            # between context entry and the first poll.)
             ok = await _drain_until(
-                lambda: factory.invocations["count"] >= 2,
+                lambda: sessions[1].events_wait_calls >= 1,
                 timeout=2.0,
             )
             assert ok, (
-                "session factory was not re-invoked after raise -- cache "
+                "second session never polled events_wait -- cache "
                 f"invalidation broken; invocations={factory.invocations['count']}"
             )
+            assert factory.invocations["count"] >= 2
         finally:
             await plugin.stop_subscriber()
 
