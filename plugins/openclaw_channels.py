@@ -75,7 +75,6 @@ import contextlib
 import json
 import logging
 import os
-from contextlib import AsyncExitStack
 from typing import Any, AsyncContextManager, Awaitable, Callable, Optional, Protocol
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
@@ -248,6 +247,91 @@ def _default_session_factory(
 
 
 # ---------------------------------------------------------------------------
+# Session host -- single-task ownership of the MCP session lifecycle (#181)
+# ---------------------------------------------------------------------------
+
+class _SessionHost:
+    """Run an MCP session context manager entirely inside one dedicated
+    task.
+
+    The mcp SDK's ``stdio_client`` is built on anyio task groups whose
+    cancel scopes must be exited by the same task that entered them. The
+    plugin previously entered the context in whichever task called
+    ``_ensure_session`` and exited it from whichever task called
+    ``stop_subscriber`` / ``_invalidate_session``; when the ``openclaw
+    mcp serve`` subprocess died early, that cross-task teardown
+    corrupted the event loop ("Attempted to exit cancel scope in a
+    different task than it was entered in", "athrow(): asynchronous
+    generator is already running") and cancelled unrelated in-flight
+    tasks in sibling plugins (#182's symptom). Enter and exit now both
+    happen inside ``_run`` -- one task, one cancel scope.
+    """
+
+    def __init__(self, cm: AsyncContextManager[_McpSession]) -> None:
+        self._cm = cm
+        loop = asyncio.get_running_loop()
+        self._ready: asyncio.Future = loop.create_future()
+        self._close = asyncio.Event()
+        self._task = loop.create_task(self._run())
+
+    async def session(self) -> _McpSession:
+        """Wait for the host task to enter the context and return the
+        session. Raises what ``__aenter__`` raised (wrapped in
+        RuntimeError when it wasn't an ``Exception``, so callers'
+        ``except Exception`` graceful-degradation paths still fire)."""
+        return await asyncio.shield(self._ready)
+
+    async def aclose(self) -> None:
+        """Signal the host task to exit the context and wait for it.
+
+        Never raises: teardown failures of a dead subprocess are logged
+        at debug, matching the plugin's existing shutdown posture.
+        """
+        self._close.set()
+        if not self._ready.done():
+            # __aenter__ still in flight -- cancel it in its own task so
+            # the cancel scope unwinds where it was entered.
+            self._task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(self._task), timeout=5.0)
+        except asyncio.TimeoutError:  # pragma: no cover -- defensive
+            self._task.cancel()
+        except (asyncio.CancelledError, Exception):  # pragma: no cover
+            pass
+        # Retrieve a never-awaited startup exception so asyncio doesn't
+        # log "Future exception was never retrieved".
+        if self._ready.done() and not self._ready.cancelled():
+            self._ready.exception()
+
+    async def _run(self) -> None:
+        try:
+            async with self._cm as session:
+                if not self._ready.done():
+                    self._ready.set_result(session)
+                await self._close.wait()
+        except asyncio.CancelledError:
+            if not self._ready.done():
+                self._ready.cancel()
+            raise
+        except BaseException as exc:
+            if not self._ready.done():
+                # Startup failure -- surface to session(). ExceptionGroups
+                # from the SDK's TaskGroup may not be Exception subclasses;
+                # normalise so _ensure_session's except Exception catches.
+                if isinstance(exc, Exception):
+                    self._ready.set_exception(exc)
+                else:
+                    self._ready.set_exception(RuntimeError(str(exc)))
+                return
+            # Session died after start or teardown raised (e.g. the
+            # subprocess exited and the SDK emitted an ExceptionGroup).
+            # All scopes unwound in this task -- nothing leaks; log only.
+            logger.debug(
+                "[openclaw_channels] session teardown ignored: %s", exc,
+            )
+
+
+# ---------------------------------------------------------------------------
 # MCP CallToolResult extraction
 # ---------------------------------------------------------------------------
 
@@ -348,7 +432,7 @@ class OpenClawChannelsPlugin:
         self._error_backoff_seconds = error_backoff_seconds
 
         self._sessions_history: dict[str, list[dict]] = {}
-        self._exit_stack: Optional[AsyncExitStack] = None
+        self._session_host: Optional[_SessionHost] = None
         self._session: Optional[_McpSession] = None
         self._session_lock = asyncio.Lock()
         self._loop_task: Optional[asyncio.Task] = None
@@ -596,8 +680,8 @@ class OpenClawChannelsPlugin:
     async def stop_subscriber(self) -> None:
         """Cancel the events_wait loop and tear down the MCP session.
 
-        Idempotent. The exit stack closes the stdio_client (which
-        terminates the subprocess) and the ClientSession.
+        Idempotent. The session host exits the stdio_client (which
+        terminates the subprocess) and the ClientSession in its own task.
         """
         self._stop_event.set()
         task = self._loop_task
@@ -610,21 +694,14 @@ class OpenClawChannelsPlugin:
                 pass
 
         async with self._session_lock:
-            stack = self._exit_stack
-            self._exit_stack = None
+            host = self._session_host
+            self._session_host = None
             self._session = None
-            if stack is not None:
-                try:
-                    await stack.aclose()
-                except Exception as exc:  # pragma: no cover -- defensive
-                    # The mcp SDK can emit an ExceptionGroup on shutdown
-                    # when openclaw mcp serve writes a non-JSON line to
-                    # stdout during teardown (an upstream cosmetic bug
-                    # observed via the slice-0/1 probes). Don't crash
-                    # Cerebral over it.
-                    logger.debug(
-                        "[openclaw_channels] session shutdown ignored: %s", exc,
-                    )
+            if host is not None:
+                # _SessionHost.aclose never raises; teardown happens in
+                # the host's own task so a dead subprocess can't poison
+                # this one's cancel scopes (#181).
+                await host.aclose()
 
     # ------------------------------------------------------------------
     # Internals
@@ -675,7 +752,6 @@ class OpenClawChannelsPlugin:
                 return None, err
 
             factory = self._session_factory_override
-            stack = AsyncExitStack()
             try:
                 if factory is None:
                     cm = _default_session_factory(
@@ -685,13 +761,25 @@ class OpenClawChannelsPlugin:
                     )
                 else:
                     cm = factory()
-                session = await stack.enter_async_context(cm)
             except Exception as exc:
-                await stack.aclose()
                 scrubbed = self._scrub(str(exc))
                 return None, f"session start failed: {scrubbed}"
 
-            self._exit_stack = stack
+            host = _SessionHost(cm)
+            try:
+                session = await host.session()
+            except asyncio.CancelledError:
+                # Caller cancelled mid bring-up (stop_subscriber during
+                # the events_wait loop's reconnect). Close the host so
+                # its task doesn't leak with the context half-entered.
+                await host.aclose()
+                raise
+            except Exception as exc:
+                await host.aclose()
+                scrubbed = self._scrub(str(exc))
+                return None, f"session start failed: {scrubbed}"
+
+            self._session_host = host
             self._session = session
             return session, None
 
@@ -833,18 +921,12 @@ class OpenClawChannelsPlugin:
         serve writes a non-JSON line to stdout during close).
         """
         async with self._session_lock:
-            stack = self._exit_stack
-            self._exit_stack = None
+            host = self._session_host
+            self._session_host = None
             self._session = None
-            if stack is None:
+            if host is None:
                 return
-            try:
-                await stack.aclose()
-            except Exception as exc:  # pragma: no cover -- defensive
-                logger.debug(
-                    "[openclaw_channels] session invalidate ignored: %s",
-                    exc,
-                )
+            await host.aclose()
 
     @staticmethod
     def _normalize_events(payload: Any) -> list[dict]:
