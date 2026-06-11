@@ -6,25 +6,30 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ## Next slice — start here
 
-**Slice 3 is complete.** PR [#213](https://github.com/iggyghub/OpenMind/pull/213) (#189 — retire consent.html, inline consent card) is open, awaiting merge. PR [#212](https://github.com/iggyghub/OpenMind/pull/212) (#209 Settings v2) was merged before this slice started. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
+**Slice 5 is complete.** PR [#216](https://github.com/iggyghub/OpenMind/pull/216) (#186 — Sidebar shell: extract sidebar-router lib + tests) is open, awaiting merge. PR [#215](https://github.com/iggyghub/OpenMind/pull/215) (#214 — Conversation store: wire tool+system event turn recording + IPC tests) is open, awaiting merge. PR [#213](https://github.com/iggyghub/OpenMind/pull/213) (#189 — consent inline card) is open, awaiting merge. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
 
-### Recommended next slice: **Slice 4 — Conversation store (Cerebral side)**
+### Recommended next slice: **Slice 6 — Plugins panel + Discord allowlist editor**
 
 Model: sonnet
 Status: ready
 
 (`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices.)
 
-**What Slice 4 should accomplish** (well-specced execution work):
+**What Slice 6 should accomplish** (issue #187):
 
-ADR-0007 calls for a fifth structured-memory tier: `conversation_turns(id, profile_id, ts, kind, content_json)` in SQLite, per-profile, kinds = `{user_voice, user_text, felix_speech, tool_call, tool_result, system_event}`, load-last-50 on connect, infinite retention in v1.
+Promote the Plugins pane from its current placeholder state to a first-class sidebar surface, and add the Discord allowlist editor as the first per-plugin settings sub-pane. Spec is in `docs/adr/0007-main-window-ui-architecture.md` §"Plugins panel" and ADR-0006 for Discord posture context.
 
-1. `cerebral/db/conversation.py` — new `ConversationStore` class mirroring `cerebral/db/profiles.py` / `cerebral/db/memory.py` patterns. Methods: `append(profile_id, kind, content)`, `list_recent(profile_id, limit=50)`, `purge(profile_id)`.
-2. Schema migration in `cerebral/db/__init__.py` (or wherever the DB init lives) — `CREATE TABLE IF NOT EXISTS conversation_turns (...)`.
-3. Cerebral emits `conversation_turns_data` on connect (last 50 turns for the active profile). The Main window renderer already handles this event (`case 'conversation_turns_data'` in `handleEvent`).
-4. Cerebral appends a turn whenever: (a) user voice command lands (Vosk wake → faster-whisper transcript), (b) Felix TTS speaks (`tts_speaking` + text), (c) tool call fires, (d) tool result returns, (e) system events (model switch, profile switch, consent grant/deny).
-5. `cerebral/tests/test_conversation.py` — pytest suite mirroring `test_settings.py`.
-6. File one issue (e.g. "Slice 4: Conversation store + turn persistence") before coding if one doesn't exist; look for an existing open issue first.
+1. Plugins tab lists every loaded plugin with status (`loaded` / `error` / `disabled`), declared capabilities, and registered tool count.
+2. Click-through from any plugin row → per-plugin settings sub-pane.
+3. For `discord_user.py`: settings sub-pane includes the **per-channel auto-reply allowlist editor** (add/remove channel IDs, persist, take effect without restart).
+4. Backend support in Cerebral: WebSocket event(s) to stream plugin status; read/write API for plugin-specific settings (starting with Discord allowlist, designed to extend to other plugins).
+
+Acceptance criteria (from #187):
+- Plugins tab lists every loaded plugin with correct status, capabilities, and tool count.
+- Clicking `discord_user` opens a settings sub-pane with the auto-reply allowlist editor.
+- Editing the allowlist persists across Cerebral restart.
+- Allowlist changes take effect without restart.
+- No regression to plugin loading or MCP tool registration.
 
 ### Reference PRs (Slice 2, in order)
 
@@ -33,6 +38,14 @@ ADR-0007 calls for a fifth structured-memory tier: `conversation_turns(id, profi
 ### Reference PRs (Slice 3)
 
 [#213](https://github.com/iggyghub/OpenMind/pull/213) Consent inline cards (#189).
+
+### Reference PRs (Slice 4)
+
+[#215](https://github.com/iggyghub/OpenMind/pull/215) Conversation store: tool+system event turn recording (#214).
+
+### Reference PRs (Slice 5)
+
+[#216](https://github.com/iggyghub/OpenMind/pull/216) Sidebar shell: sidebar-router lib + tests (#186).
 
 ### Slice 2 progress
 
