@@ -1102,6 +1102,7 @@ def _plugins_list_event() -> dict:
       - its inspectability mark — "inspected" or "trusted" (Issue #46)
         so the tray can render the red "trusted, unverified" badge on
         plugins loaded from plugins/_trusted/.
+      - tool_count — number of MCP tools the plugin registered (Issue #187)
 
     The companion `errors` list carries plugins the orchestrator refused at
     load time (forbidden patterns, non-conforming paths, missing
@@ -1111,6 +1112,9 @@ def _plugins_list_event() -> dict:
     registered = []
     for plugin_name in sorted(_orc._plugins):
         caps = _orc.required_capabilities_for(plugin_name)
+        tool_count = sum(
+            1 for v in _orc._tool_index.values() if v == plugin_name
+        )
         registered.append({
             "name": plugin_name,
             "required_capabilities": sorted(caps) if caps is not None else None,
@@ -1119,6 +1123,7 @@ def _plugins_list_event() -> dict:
             # builder-installed plugins whose flag is still set. Cleared
             # via the Permissions UI (#53).
             "new_plugin_flag": _pm.get_plugin_new_flag(plugin_name),
+            "tool_count": tool_count,
         })
     return {
         "type": "plugins_list",
@@ -1127,6 +1132,25 @@ def _plugins_list_event() -> dict:
             "errors": _orc.registration_errors,
         },
     }
+
+
+def _discord_state_event() -> dict:
+    """Snapshot of the Discord allowlist + per-profile settings (Issue #187).
+
+    Broadcast after any allowlist or settings mutation and included in the
+    connect-time greeting so the Plugins pane renders current state on open.
+    """
+    if _active_profile is None:
+        return {"type": "discord_state", "data": {
+            "profile_id": None,
+            "allowlist": [],
+            "settings": {},
+        }}
+    return {"type": "discord_state", "data": {
+        "profile_id": _active_profile.id,
+        "allowlist": _pm.list_discord_allowlist(_active_profile.id),
+        "settings": _pm.list_discord_settings(_active_profile.id),
+    }}
 
 
 def _settings_state_event() -> dict:
@@ -1277,6 +1301,71 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "list_plugins":
         await _broadcast(_plugins_list_event())
+
+    elif t == "discord_allowlist_list":
+        # Issue #187 — Plugins pane requests current allowlist snapshot.
+        await _broadcast(_discord_state_event())
+
+    elif t == "discord_allowlist_add":
+        # Issue #187 — add a sender_id to the auto-reply allowlist.
+        d = msg.get("data") or {}
+        sender_id = (d.get("sender_id") or "").strip()
+        note = (d.get("note") or "").strip()
+        if not sender_id:
+            logger.warning("[cerebral] discord_allowlist_add missing sender_id")
+            return
+        if _active_profile is None:
+            logger.warning("[cerebral] discord_allowlist_add with no active profile")
+            return
+        _pm.add_discord_allowlist(_active_profile.id, sender_id, note)
+        logger.info("[cerebral] discord_allowlist_add %r for profile %d", sender_id, _active_profile.id)
+        await _broadcast(_discord_state_event())
+
+    elif t == "discord_allowlist_remove":
+        # Issue #187 — remove a sender_id from the auto-reply allowlist.
+        d = msg.get("data") or {}
+        sender_id = (d.get("sender_id") or "").strip()
+        if not sender_id:
+            logger.warning("[cerebral] discord_allowlist_remove missing sender_id")
+            return
+        if _active_profile is None:
+            logger.warning("[cerebral] discord_allowlist_remove with no active profile")
+            return
+        removed = _pm.remove_discord_allowlist(_active_profile.id, sender_id)
+        logger.info(
+            "[cerebral] discord_allowlist_remove %r for profile %d (existed=%s)",
+            sender_id, _active_profile.id, removed,
+        )
+        await _broadcast(_discord_state_event())
+
+    elif t == "discord_settings_set":
+        # Issue #187 — write a single Discord auto-reply setting override.
+        d = msg.get("data") or {}
+        key   = (d.get("key") or "").strip()
+        value = (d.get("value") or "")
+        if not key:
+            logger.warning("[cerebral] discord_settings_set missing key")
+            return
+        if _active_profile is None:
+            logger.warning("[cerebral] discord_settings_set with no active profile")
+            return
+        _pm.set_discord_setting(_active_profile.id, key, str(value))
+        logger.info("[cerebral] discord_settings_set %r=%r for profile %d", key, value, _active_profile.id)
+        await _broadcast(_discord_state_event())
+
+    elif t == "discord_settings_clear":
+        # Issue #187 — clear a Discord auto-reply setting override (reverts to default).
+        d = msg.get("data") or {}
+        key = (d.get("key") or "").strip()
+        if not key:
+            logger.warning("[cerebral] discord_settings_clear missing key")
+            return
+        if _active_profile is None:
+            logger.warning("[cerebral] discord_settings_clear with no active profile")
+            return
+        _pm.clear_discord_setting(_active_profile.id, key)
+        logger.info("[cerebral] discord_settings_clear %r for profile %d", key, _active_profile.id)
+        await _broadcast(_discord_state_event())
 
     elif t == "list_permissions":
         # Issue #53 — Permissions UI requesting a fresh state snapshot.
@@ -1847,6 +1936,7 @@ async def _greet(websocket) -> None:
         _env_context_event,
         _models_list_event,
         _plugins_list_event,
+        _discord_state_event,
         _permissions_state_event,
         _credentials_state_event,
         _settings_state_event,
