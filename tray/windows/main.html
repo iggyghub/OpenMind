@@ -1942,6 +1942,92 @@
       display: block;
       margin-bottom: 4px;
     }
+
+    /* ── inline consent card (Issue #189) ───────────────────────── */
+    /* Ask-class consent gates render as interactive cards in the
+       Conversation pane transcript stream. */
+    .consent-card {
+      align-self: stretch;
+      background: #1a1730;
+      border: 1px solid #3a3460;
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-size: 13px;
+      max-width: 100%;
+    }
+    .consent-card.consent-resolved {
+      opacity: 0.55;
+      border-left-color: var(--border);
+    }
+    .consent-card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .consent-card-orb {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 6px var(--accent);
+      flex-shrink: 0;
+    }
+    .consent-card-title {
+      font-size: 12px; font-weight: 600;
+      color: var(--text-dim); letter-spacing: 0.02em;
+    }
+    .consent-pill {
+      font-size: 9px; padding: 2px 6px; border-radius: 8px;
+      letter-spacing: 0.04em; text-transform: uppercase; margin-left: 4px;
+    }
+    .consent-pill-passive     { background: #3a3460; color: #c5bff5; }
+    .consent-pill-irreversible { background: #5c1f3c; color: #ffc4d8; }
+    .consent-card-label {
+      font-size: 14px; font-weight: 600; color: var(--text);
+      margin-bottom: 3px;
+    }
+    .consent-card-tool {
+      font-size: 11px; color: var(--text-muted);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      margin-bottom: 8px; word-break: break-all;
+    }
+    .consent-why-toggle {
+      cursor: pointer; font-size: 11px; color: var(--accent);
+      background: none; border: none; padding: 0;
+      font-family: inherit; transition: color .12s;
+    }
+    .consent-why-toggle:hover { color: #b8a8ff; }
+    .consent-why-body {
+      margin-top: 8px; padding: 8px 10px;
+      background: var(--bg); border-left: 2px solid var(--accent);
+      border-radius: 3px; font-size: 11px;
+      color: var(--text-dim); line-height: 1.5;
+    }
+    .consent-args-preview {
+      margin-top: 6px;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      font-size: 10px; color: var(--text-muted);
+    }
+    .consent-arg-key { color: var(--accent); }
+    .consent-card-buttons {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 6px; margin-top: 10px;
+    }
+    .consent-btn {
+      font-family: inherit; font-size: 11px; font-weight: 600;
+      padding: 7px 8px; border-radius: 5px;
+      border: 1px solid transparent; cursor: pointer;
+      transition: filter 120ms;
+    }
+    .consent-btn:hover { filter: brightness(1.15); }
+    .consent-btn:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .consent-btn-once,
+    .consent-btn-session    { background: #2a2640; color: var(--text); border-color: #3a3460; }
+    .consent-btn-persistent { background: #4a3df0; color: #fff; }
+    .consent-btn-deny       { background: #401a2a; color: #ffc4d8; border-color: #5c1f3c; }
+    .consent-resolved-label {
+      font-size: 12px; color: var(--text-muted); font-style: italic;
+    }
   </style>
 </head>
 <body>
@@ -2606,6 +2692,12 @@
           systemSettingsData = event.data || {};
           renderSystemSettings();
           break;
+        case 'consent_request':
+          // Issue #189 — inline consent card replaces the standalone
+          // consent.html window. main.js ensures this window is open;
+          // the renderer handles the card and sends consent_response.
+          appendConsentCard(event.data || {});
+          break;
       }
     }
 
@@ -2734,6 +2826,138 @@
 
     function scrollToBottom() {
       transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    // ── inline consent cards (Issue #189) ────────────────────────────────
+    // Ask-class consent requests from Cerebral render here as interactive
+    // cards in the Conversation pane. The renderer sends consent_response
+    // directly to Cerebral via the shared WebSocket — no ipcRenderer.
+    // main.js ensures the window is open and fires an OS notification when
+    // it is not focused; the renderer handles the card lifecycle autonomously.
+
+    // Map request_id -> card element for collapse-on-resolve.
+    const pendingConsentCards = new Map();
+
+    function appendConsentCard(record) {
+      if (!record || !record.request_id) return;
+      if (pendingConsentCards.has(record.request_id)) return;
+
+      emptyState.style.display = 'none';
+
+      const f = record.flags || {};
+      const card = document.createElement('div');
+      card.className = 'consent-card';
+
+      const header = document.createElement('div');
+      header.className = 'consent-card-header';
+      const orb = document.createElement('div');
+      orb.className = 'consent-card-orb';
+      const title = document.createElement('span');
+      title.className = 'consent-card-title';
+      title.textContent = 'Felix needs permission';
+      header.appendChild(orb);
+      header.appendChild(title);
+      if (f.passive) {
+        const pill = document.createElement('span');
+        pill.className = 'consent-pill consent-pill-passive';
+        pill.textContent = 'queued action';
+        header.appendChild(pill);
+      }
+      if (f.irreversible) {
+        const pill = document.createElement('span');
+        pill.className = 'consent-pill consent-pill-irreversible';
+        pill.textContent = 'irreversible';
+        header.appendChild(pill);
+      }
+      card.appendChild(header);
+
+      const labelEl = document.createElement('div');
+      labelEl.className = 'consent-card-label';
+      labelEl.textContent = record.capability_label || record.capability;
+      card.appendChild(labelEl);
+
+      const toolEl = document.createElement('div');
+      toolEl.className = 'consent-card-tool';
+      toolEl.textContent = record.tool_name;
+      card.appendChild(toolEl);
+
+      const whyToggle = document.createElement('button');
+      whyToggle.className = 'consent-why-toggle';
+      whyToggle.textContent = 'Why?';
+      card.appendChild(whyToggle);
+
+      const whyBody = document.createElement('div');
+      whyBody.className = 'consent-why-body';
+      whyBody.hidden = true;
+      const descEl = document.createElement('div');
+      descEl.textContent = record.capability_description || '';
+      whyBody.appendChild(descEl);
+      const argsEl = document.createElement('div');
+      argsEl.className = 'consent-args-preview';
+      const entries = Object.entries(record.args_preview || {});
+      if (entries.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.fontStyle = 'italic';
+        empty.textContent = '(no arguments)';
+        argsEl.appendChild(empty);
+      } else {
+        for (const [k, v] of entries) {
+          const row = document.createElement('div');
+          const key = document.createElement('span');
+          key.className = 'consent-arg-key';
+          key.textContent = k + ': ';
+          const val = document.createElement('span');
+          val.textContent = typeof v === 'string' ? v : JSON.stringify(v);
+          row.appendChild(key);
+          row.appendChild(val);
+          argsEl.appendChild(row);
+        }
+      }
+      whyBody.appendChild(argsEl);
+      card.appendChild(whyBody);
+
+      whyToggle.addEventListener('click', () => {
+        whyBody.hidden = !whyBody.hidden;
+        whyToggle.textContent = whyBody.hidden ? 'Why?' : 'Hide';
+      });
+
+      const btns = document.createElement('div');
+      btns.className = 'consent-card-buttons';
+      const choices = [
+        { choice: 'once',       label: 'Allow once',          cls: 'consent-btn-once' },
+        { choice: 'session',    label: 'Allow this session',  cls: 'consent-btn-session' },
+        { choice: 'persistent', label: 'Always allow',        cls: 'consent-btn-persistent' },
+        { choice: 'deny',       label: 'Deny',                cls: 'consent-btn-deny' },
+      ];
+      for (const { choice, label, cls } of choices) {
+        const btn = document.createElement('button');
+        btn.className = 'consent-btn ' + cls;
+        btn.textContent = label;
+        btn.addEventListener('click', () => resolveConsentCard(record.request_id, choice));
+        btns.appendChild(btn);
+      }
+      card.appendChild(btns);
+
+      pendingConsentCards.set(record.request_id, card);
+      transcript.appendChild(card);
+      scrollToBottom();
+    }
+
+    function resolveConsentCard(request_id, choice) {
+      const card = pendingConsentCards.get(request_id);
+      if (!card) return;
+      pendingConsentCards.delete(request_id);
+      sendEvent({ type: 'consent_response', data: { request_id, choice } });
+      const LABEL = {
+        once: 'Allowed once', session: 'Allowed this session',
+        persistent: 'Always allowed', deny: 'Denied',
+      };
+      const resolved = document.createElement('div');
+      resolved.className = 'consent-resolved-label';
+      resolved.textContent = 'Permission: ' + (LABEL[choice] || choice);
+      card.innerHTML = '';
+      card.appendChild(resolved);
+      card.classList.add('consent-resolved');
     }
 
     // ── queue pane (Issue #194) ───────────────────────────────────────────
