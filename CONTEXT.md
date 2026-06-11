@@ -327,18 +327,20 @@ form).
   `discord_send_message` + draft-only inbound via
   `cerebral/main.py:_surface_discord_draft`. Every inbound DM became
   a queue draft for manual approval; no auto-reply.
-- **Slice 2** (Issue #177, this branch): per-sender auto-reply
-  allowlist + detection-mitigation gauntlet
-  (`cerebral/discord_auto_reply.py`). Empty allowlist preserves
-  slice-1 byte-identical behaviour. The
+- **Slice 2** (PR #179, shipped): per-sender auto-reply allowlist +
+  detection-mitigation gauntlet (`cerebral/discord_auto_reply.py`).
+  Empty allowlist preserves slice-1 byte-identical behaviour. The
   `scripts/discord_user_allowlist.py` CLI manages senders + settings
   (rate limit, delay distribution, typing indicator, sleep-hours
-  window). Live verification against a real recipient is the user's
-  acceptance gate.
-- **Slice 3** (Issue #178, blocked-on-slice-2): `discord_react` /
-  `discord_edit` / `discord_delete` + dynamic presence automation
-  (auto-idle / auto-online driven by LLM activity, with slice-2's
-  sleep-hours window winning over presence transitions).
+  window).
+- **Slice 3** (Issue #178, PR #219, shipped): `discord_react` /
+  `discord_edit` / `discord_delete` outbound tools (all
+  `irreversible=True`, `confirm`-gated, same `_scrub` discipline).
+  `DiscordPresenceController` (`cerebral/discord_presence.py`) drives
+  dynamic auto-idle / auto-online transitions based on LLM Discord
+  activity; the slice-2 sleep-hours window wins over all
+  auto-transitions; manual `discord_set_presence` calls override until
+  the next LLM Discord action.
 
 ---
 
