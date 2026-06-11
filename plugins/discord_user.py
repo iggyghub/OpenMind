@@ -31,14 +31,26 @@ Slice 2 (Issue #177) adds the slice-2 internal sender surface
 from an allowlisted sender. The controller lives Cerebral-side -- the
 plugin stays focused on Discord I/O.
 
+Slice 3 (Issue #178) adds three richer outbound tools:
+  - ``discord_react``   -- add/remove an emoji reaction on a message.
+  - ``discord_edit``    -- edit a message sent by the user's own account.
+  - ``discord_delete``  -- delete a message owned by the user.
+All three are ``irreversible=True`` and ``confirm``-gated like
+``discord_send_message``.
+
+Also adds an ``on_manual_override`` callback seam: when
+``discord_set_presence`` is called manually (LLM or user), the plugin
+notifies ``cerebral/discord_presence.py``'s ``DiscordPresenceController``
+so the auto-presence machinery knows a manual override is in effect.
+
 Architecture
 ------------
 
 Two side-effect surfaces, both injectable:
 
   - ``fetch_fn`` (todoist.py precedent) -- raw HTTPS to
-    ``discord.com/api/v10``. Drives the four REST tools above. Defaults
-    to aiohttp -> httpx -> hard error.
+    ``discord.com/api/v10``. Drives the REST tools. Defaults to
+    aiohttp -> httpx -> hard error.
   - ``client_factory`` -- builds a ``DiscordClient`` for the inbound
     gateway subscriber. Default factory lazy-imports ``discord.py-self``
     inside the function body so a missing install degrades gracefully
@@ -71,6 +83,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import urllib.parse
 from typing import (
     Any, AsyncIterator, Awaitable, Callable, Optional, Protocol,
 )
@@ -122,6 +135,18 @@ _NO_TOKEN_MSG = "no Discord user-account token configured"
 _CONFIRM_REQUIRED_MSG = (
     "discord_send_message requires confirm=true to actually send. "
     "Without it, returning the would-be message for review."
+)
+_CONFIRM_REQUIRED_MSG_REACT = (
+    "discord_react requires confirm=true to apply. "
+    "Without it, returning the would-be reaction for review."
+)
+_CONFIRM_REQUIRED_MSG_EDIT = (
+    "discord_edit requires confirm=true to apply. "
+    "Without it, returning the would-be edit for review."
+)
+_CONFIRM_REQUIRED_MSG_DELETE = (
+    "discord_delete requires confirm=true to delete. "
+    "Without it, returning the would-be deletion for review."
 )
 
 
@@ -345,6 +370,7 @@ class DiscordUserPlugin:
         fetch_fn: FetchFn | None = None,
         client_factory: Optional[ClientFactory] = None,
         draft_callback: Optional[DraftCallback] = None,
+        on_manual_override: Optional[Callable[[str], None]] = None,
     ) -> None:
         # Constructor injection wins over the module-level setters --
         # the todoist.py / openclaw_channels.py pattern.
@@ -352,6 +378,9 @@ class DiscordUserPlugin:
         self._fetch = fetch_fn or _default_fetch
         self._client_factory_override = client_factory
         self._draft_override = draft_callback
+        # Slice-3: called when discord_set_presence is invoked manually so
+        # cerebral/discord_presence.py can mark the manual-override flag.
+        self._on_manual_override = on_manual_override
 
         self._seen_tokens: set[str] = set()
         self._client: Optional[DiscordClient] = None
@@ -464,9 +493,10 @@ class DiscordUserPlugin:
             Tool(
                 name="discord_set_presence",
                 description=(
-                    "Set the user's Discord presence status. Slice-1: "
-                    "records the desired status; applied on the next "
-                    "subscriber connect."
+                    "Set the user's Discord presence status. Records "
+                    "the desired status and applies it immediately when "
+                    "the subscriber is connected. Manual call overrides "
+                    "auto-presence until the next LLM Discord action."
                 ),
                 plugin=PLUGIN_NAME,
                 schema={
@@ -484,6 +514,118 @@ class DiscordUserPlugin:
                     "required": ["status"],
                 },
             ),
+            Tool(
+                name="discord_react",
+                description=(
+                    "Add or remove an emoji reaction on a Discord DM "
+                    "message. REQUIRES confirm=true to apply -- without "
+                    "it, returns the would-be reaction for review."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "channel_id": {
+                            "type": "string",
+                            "description": "Discord channel/DM id.",
+                        },
+                        "message_id": {
+                            "type": "string",
+                            "description": "Id of the message to react to.",
+                        },
+                        "emoji": {
+                            "type": "string",
+                            "description": (
+                                "Unicode emoji (e.g. '\U0001f44d') or "
+                                "custom emoji in name:id format."
+                            ),
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["add", "remove"],
+                            "description": "add or remove the reaction.",
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "description": (
+                                "Must be true to apply. False (default) "
+                                "returns the would-be reaction for review."
+                            ),
+                        },
+                    },
+                    "required": ["channel_id", "message_id", "emoji", "action"],
+                },
+                irreversible=True,
+            ),
+            Tool(
+                name="discord_edit",
+                description=(
+                    "Edit a message previously sent by the user's own "
+                    "Discord account. REQUIRES confirm=true to apply. "
+                    "Errors cleanly when the target message is not owned "
+                    "by the authenticated user (Discord enforces this at "
+                    "the API level -- no client-side ownership check)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "channel_id": {
+                            "type": "string",
+                            "description": "Discord channel/DM id.",
+                        },
+                        "message_id": {
+                            "type": "string",
+                            "description": "Id of the message to edit.",
+                        },
+                        "new_content": {
+                            "type": "string",
+                            "description": "New message text.",
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "description": (
+                                "Must be true to apply. False (default) "
+                                "returns the would-be edit for review."
+                            ),
+                        },
+                    },
+                    "required": ["channel_id", "message_id", "new_content"],
+                },
+                irreversible=True,
+            ),
+            Tool(
+                name="discord_delete",
+                description=(
+                    "Delete a message owned by the authenticated user's "
+                    "Discord account. REQUIRES confirm=true to delete. "
+                    "Errors cleanly when the target message is not owned "
+                    "by the authenticated user."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "channel_id": {
+                            "type": "string",
+                            "description": "Discord channel/DM id.",
+                        },
+                        "message_id": {
+                            "type": "string",
+                            "description": "Id of the message to delete.",
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "description": (
+                                "Must be true to delete. False (default) "
+                                "returns the would-be deletion for review."
+                            ),
+                        },
+                    },
+                    "required": ["channel_id", "message_id"],
+                },
+                irreversible=True,
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -496,6 +638,12 @@ class DiscordUserPlugin:
             return await self._send_message(args)
         if tool_name == "discord_set_presence":
             return await self._set_presence(args)
+        if tool_name == "discord_react":
+            return await self._react(args)
+        if tool_name == "discord_edit":
+            return await self._edit(args)
+        if tool_name == "discord_delete":
+            return await self._delete(args)
         return ToolResult(
             content=f"Unknown tool: '{tool_name}'", is_error=True,
         )
@@ -620,6 +768,11 @@ class DiscordUserPlugin:
                 is_error=True,
             )
         self._desired_presence = status
+        # Notify the presence controller that a manual override was set so
+        # the auto-idle / auto-online machinery pauses until the next
+        # LLM-driven Discord action (slice-3 seam).
+        if self._on_manual_override is not None:
+            self._on_manual_override(status)
         client = self._client
         if client is not None:
             try:
@@ -642,6 +795,146 @@ class DiscordUserPlugin:
             "applied": False,
             "note": "subscriber not running -- status will apply on "
                     "next connect",
+        }))
+
+    async def _react(self, args: dict) -> ToolResult:
+        channel_id = args.get("channel_id")
+        message_id = args.get("message_id")
+        emoji = args.get("emoji")
+        action = args.get("action")
+        for field, val in [
+            ("channel_id", channel_id),
+            ("message_id", message_id),
+            ("emoji", emoji),
+            ("action", action),
+        ]:
+            if not isinstance(val, str) or not val:
+                return ToolResult(
+                    content=f"missing required arg(s) for discord_react: "
+                            f"{field}",
+                    is_error=True,
+                )
+        if action not in ("add", "remove"):
+            return ToolResult(
+                content="discord_react: action must be 'add' or 'remove'",
+                is_error=True,
+            )
+        if not args.get("confirm"):
+            return ToolResult(content=json.dumps({
+                "confirmed": False,
+                "channel_id": channel_id,
+                "message_id": message_id,
+                "emoji": emoji,
+                "action": action,
+                "note": _CONFIRM_REQUIRED_MSG_REACT,
+            }))
+
+        token, err = self._resolve_token()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+
+        encoded = urllib.parse.quote(str(emoji), safe=":")
+        endpoint = (
+            f"channels/{channel_id}/messages/{message_id}"
+            f"/reactions/{encoded}/@me"
+        )
+        try:
+            method = "PUT" if action == "add" else "DELETE"
+            await self._request(method, endpoint, token)
+        except Exception as exc:
+            return self._fail("discord_react", exc)
+
+        return ToolResult(content=json.dumps({
+            "confirmed": True,
+            "channel_id": channel_id,
+            "message_id": message_id,
+            "emoji": emoji,
+            "action": action,
+        }))
+
+    async def _edit(self, args: dict) -> ToolResult:
+        channel_id = args.get("channel_id")
+        message_id = args.get("message_id")
+        new_content = args.get("new_content")
+        for field, val in [
+            ("channel_id", channel_id),
+            ("message_id", message_id),
+            ("new_content", new_content),
+        ]:
+            if not isinstance(val, str) or not val:
+                return ToolResult(
+                    content=f"missing required arg(s) for discord_edit: "
+                            f"{field}",
+                    is_error=True,
+                )
+        if not args.get("confirm"):
+            return ToolResult(content=json.dumps({
+                "confirmed": False,
+                "channel_id": channel_id,
+                "message_id": message_id,
+                "preview": new_content,
+                "note": _CONFIRM_REQUIRED_MSG_EDIT,
+            }))
+
+        token, err = self._resolve_token()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+        try:
+            resp = await self._request(
+                "PATCH",
+                f"channels/{channel_id}/messages/{message_id}",
+                token,
+                json={"content": new_content},
+            )
+        except Exception as exc:
+            return self._fail("discord_edit", exc)
+
+        if not isinstance(resp, dict):
+            return ToolResult(
+                content="unexpected Discord edit response", is_error=True,
+            )
+        return ToolResult(content=json.dumps({
+            "confirmed": True,
+            "message": _shape_message(resp),
+        }))
+
+    async def _delete(self, args: dict) -> ToolResult:
+        channel_id = args.get("channel_id")
+        message_id = args.get("message_id")
+        for field, val in [
+            ("channel_id", channel_id),
+            ("message_id", message_id),
+        ]:
+            if not isinstance(val, str) or not val:
+                return ToolResult(
+                    content=f"missing required arg(s) for discord_delete: "
+                            f"{field}",
+                    is_error=True,
+                )
+        if not args.get("confirm"):
+            return ToolResult(content=json.dumps({
+                "confirmed": False,
+                "channel_id": channel_id,
+                "message_id": message_id,
+                "note": _CONFIRM_REQUIRED_MSG_DELETE,
+            }))
+
+        token, err = self._resolve_token()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+        try:
+            await self._request(
+                "DELETE",
+                f"channels/{channel_id}/messages/{message_id}",
+                token,
+            )
+        except Exception as exc:
+            return self._fail("discord_delete", exc)
+
+        return ToolResult(content=json.dumps({
+            "confirmed": True,
+            "channel_id": channel_id,
+            "message_id": message_id,
         }))
 
     # ------------------------------------------------------------------

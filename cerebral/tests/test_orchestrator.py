@@ -1342,6 +1342,10 @@ async def test_check_capabilities_declared_irreversible_passive_merges():
 #     state of the conversation. The self-bot posture also makes mistaken
 #     sends a detection signal, raising the ban probability. Modal-gating
 #     is correct on top of the per-call ``confirm`` arg.)
+#                                (discord_react / discord_edit / discord_delete
+#     -- Issue #178 slice 3: reactions, edits, and deletes are also
+#     detection vectors and mutate external state on a real Discord account.
+#     Same ``irreversible=True`` + ``confirm``-gate posture as send.)
 # ---------------------------------------------------------------------------
 
 _IRREVERSIBLE_PLUGINS: frozenset[str] = frozenset({

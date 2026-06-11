@@ -209,7 +209,7 @@ def _make_plugin(
 # Tool surface -- shape, count, capability declarations
 # ===========================================================================
 
-def test_list_tools_returns_four_discord_tools():
+def test_list_tools_returns_seven_discord_tools():
     plugin = _make_plugin()
     tools = plugin.list_tools()
     names = [t.name for t in tools]
@@ -218,14 +218,24 @@ def test_list_tools_returns_four_discord_tools():
         "discord_get_messages",
         "discord_send_message",
         "discord_set_presence",
+        "discord_react",
+        "discord_edit",
+        "discord_delete",
     }
 
 
-def test_send_message_marked_irreversible():
+def test_outbound_tools_marked_irreversible():
     plugin = _make_plugin()
     tools = {t.name: t for t in plugin.list_tools()}
-    assert tools["discord_send_message"].irreversible is True
-    # The other three are not.
+    # All four outbound-mutating tools are irreversible (Issue #175 + #178).
+    for name in (
+        "discord_send_message",
+        "discord_react",
+        "discord_edit",
+        "discord_delete",
+    ):
+        assert tools[name].irreversible is True, name
+    # Read and presence tools are not.
     for name in (
         "discord_list_conversations",
         "discord_get_messages",
