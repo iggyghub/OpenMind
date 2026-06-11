@@ -2369,6 +2369,11 @@
     </section>
   </main>
 
+  <!-- Sidebar router (Issue #186) — route constants and hash parser.
+       Same source feeds the Node test suite via require() and this renderer
+       via window.SidebarRouterMod. -->
+  <script src="../lib/sidebar-router.js"></script>
+
   <!-- Permissions store (Issue #202) — same source feeds the Node test
        suite via require() and this renderer via window.PermissionsStoreMod.
        Loaded before the inline script so the constructor is available
@@ -4187,22 +4192,17 @@
     });
     send.addEventListener('click', submit);
 
-    // ── sidebar routing (Issue #192) ──────────────────────────────────────
+    // ── sidebar routing (Issue #192, lib extracted Issue #186) ────────────
     // Hash-based routing so the tray can deep-link in later slices
     // (e.g. clicking "Queue" in the tray opens #queue here). Default route
-    // is #conversation. Renderer-only — no Cerebral IPC, no per-route
-    // state-loading yet (each migration sub-issue wires its own data).
-    const VALID_ROUTES = new Set([
-      'conversation', 'queue', 'insights', 'memory',
-      'permissions', 'credentials', 'plugins', 'profiles', 'settings',
-    ]);
-    const DEFAULT_ROUTE = 'conversation';
+    // is #conversation. Route constants live in tray/lib/sidebar-router.js
+    // (same source feeds the Node test suite and this renderer).
+    const { VALID_ROUTES, DEFAULT_ROUTE, routeFromHash: _routeFromHash } = window.SidebarRouterMod;
     const navItems = Array.from(document.querySelectorAll('.nav-item'));
     const panes    = Array.from(document.querySelectorAll('.pane'));
 
     function routeFromHash() {
-      const raw = (location.hash || '').replace(/^#/, '');
-      return VALID_ROUTES.has(raw) ? raw : DEFAULT_ROUTE;
+      return _routeFromHash(location.hash);
     }
 
     function activateRoute(route) {
