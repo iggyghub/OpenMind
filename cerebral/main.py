@@ -47,6 +47,9 @@ from cerebral.security import (
 )
 from cerebral.db.conversation import (
     KIND_FELIX_SPEECH,
+    KIND_SYSTEM_EVENT,
+    KIND_TOOL_CALL,
+    KIND_TOOL_RESULT,
     KIND_USER_TEXT,
     KIND_USER_VOICE,
     ConversationStore,
@@ -1195,8 +1198,9 @@ async def _handle_message(msg: dict) -> None:
                 # ACL has none, so the tray's session-grants sub-panel
                 # will correctly empty out.
                 await _broadcast(_permissions_state_event())
-                # Issue #185 — Conversation is per-profile; re-snapshot so
-                # the Main window's transcript reflects the active identity.
+                # Issue #185 / #214 — Record the switch as a system event in
+                # the new profile's transcript, then re-snapshot.
+                await _record_turn(KIND_SYSTEM_EVENT, {"event": "profile_switch", "profile_id": p.id, "profile_name": p.name})
                 await _broadcast(_conversation_turns_event())
 
     elif t == "delete_profile":
@@ -1245,6 +1249,7 @@ async def _handle_message(msg: dict) -> None:
                 })
                 await _broadcast({"type": "model_switching", "data": {"model_id": model_id}})
                 await _broadcast(_models_list_event())
+                await _record_turn(KIND_SYSTEM_EVENT, {"event": "model_switch", "model_id": model_id})
                 asyncio.create_task(_pulse_back_to_passive())
             except ValueError as exc:
                 logger.warning("[cerebral] switch_model failed: %s", exc)
@@ -1562,9 +1567,11 @@ async def _handle_message(msg: dict) -> None:
             )
             if not fut.done():
                 fut.set_result("deny")
+            await _record_turn(KIND_SYSTEM_EVENT, {"event": "consent_response", "choice": "deny", "request_id": request_id})
             return
         if not fut.done():
             fut.set_result(choice)
+        await _record_turn(KIND_SYSTEM_EVENT, {"event": "consent_response", "choice": choice, "request_id": request_id})
 
     elif t == "irreversible_modal_response":
         # Issue #49 — Accept dispatches the call, Cancel refuses. The
@@ -1598,11 +1605,13 @@ async def _handle_message(msg: dict) -> None:
         d = msg.get("data", {})
         tool_name = d.get("name", "")
         tool_args = d.get("args", {})
+        await _record_turn(KIND_TOOL_CALL, {"name": tool_name, "args": tool_args})
         result = await _orc.call_tool(tool_name, tool_args)
         await _broadcast({
             "type": "tool_result",
             "data": {"name": tool_name, "content": result.content, "is_error": result.is_error},
         })
+        await _record_turn(KIND_TOOL_RESULT, {"name": tool_name, "is_error": result.is_error})
 
     elif t == "user_text_command":
         # Issue #185 / ADR-0007 -- typed input from the Main window. Same
