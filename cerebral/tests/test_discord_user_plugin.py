@@ -511,6 +511,41 @@ async def test_start_subscriber_validates_token_against_users_me():
     assert client.start_calls == []
 
 
+async def test_start_subscriber_cancelled_validation_degrades(caplog):
+    """Issue #182: a CancelledError raised by the in-flight /users/@me
+    request (e.g. a sibling plugin's teardown disturbing the loop) must
+    degrade gracefully like any other startup failure -- warn and return,
+    never propagate up and kill Cerebral."""
+    fetch = FakeFetch(raises={
+        ("GET", "users/@me"): asyncio.CancelledError(),
+    })
+    client = FakeDiscordClient()
+    plugin = _make_plugin(
+        fetch=fetch, client=client, draft_callback=_unused_draft,
+    )
+    with caplog.at_level(logging.WARNING):
+        await plugin.start_subscriber()  # must not raise
+    assert plugin.subscriber_running is False
+    assert client.start_calls == []
+    msgs = [rec.getMessage() for rec in caplog.records]
+    assert any("cancelled" in m for m in msgs), msgs
+
+
+async def test_start_subscriber_cancelled_during_deliberate_stop_reraises():
+    """Issue #182 counterpart: when the cancellation is part of a
+    deliberate stop (stop_subscriber set the stop event), it must
+    propagate so shutdown isn't swallowed."""
+    fetch = FakeFetch(raises={
+        ("GET", "users/@me"): asyncio.CancelledError(),
+    })
+    plugin = _make_plugin(
+        fetch=fetch, client=FakeDiscordClient(), draft_callback=_unused_draft,
+    )
+    plugin._stop_event.set()
+    with pytest.raises(asyncio.CancelledError):
+        await plugin.start_subscriber()
+
+
 async def test_start_subscriber_starts_client_after_validation():
     fetch = FakeFetch(responses={
         ("GET", "users/@me"): {"id": "1", "username": "felix"},

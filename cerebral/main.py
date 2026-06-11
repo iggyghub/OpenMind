@@ -2195,6 +2195,17 @@ async def _start_discord_user_subscriber() -> None:
         return
     try:
         await start()
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException -- without this clause a loop
+        # disturbance during startup (e.g. a sibling plugin's teardown
+        # cancelling in-flight requests, #182) escapes and kills Cerebral.
+        # Deliberate shutdown still propagates.
+        if _shutdown.is_set():
+            raise
+        logger.warning(
+            "[cerebral] Discord user subscriber start cancelled -- "
+            "continuing without it",
+        )
     except Exception as exc:  # pragma: no cover -- defensive
         logger.warning(
             "[cerebral] Discord user subscriber start failed: %s", exc,
