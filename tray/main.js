@@ -5,7 +5,6 @@ const { VisualiserState }      = require('./lib/visualiser-state');
 const { PositionStore }        = require('./lib/position-store');
 const { NotificationManager }  = require('./lib/notification-manager');
 const { ModalManager }         = require('./lib/modal-manager');
-const { buildModelSubmenu }    = require('./lib/model-menu');
 // PermissionsStore is no longer instantiated in main.js (Issue #202).
 // The Main window's renderer loads it directly via a <script src> tag
 // — same source file, dual-mode export. tray/tests/permissions-store.test.js
@@ -24,17 +23,10 @@ let reconnectTimer = null;
 let felixState  = 'idle';      // 'idle' | 'active'
 let activeProfile = null;
 let allProfiles   = [];
-let pendingItems  = [];
 let mainWindow        = null;
 let visualiserWindow  = null;
 // request_id → BrowserWindow for the irreversible-flag modal (Issue #49).
 const modalWindows = new Map();
-let envContext       = {};
-let modelsList       = [];
-let activeModel      = null;
-let lastModel        = null;
-let activeIsCloud    = false;
-let taskModels       = {};
 
 const visState   = new VisualiserState();
 const posStore   = new PositionStore(VIS_POS_PATH);
@@ -166,12 +158,10 @@ function handleCerebralEvent(event) {
       break;
 
     case 'queue_update':
-      // Mirror the latest pending list so the tray icon's tooltip + count
-      // stay current. The Main window's renderer subscribes to the same
-      // broadcast directly over WS (Issue #194) — no need to forward it.
-      pendingItems = (event.data && event.data.items) || [];
-      notifManager.handleQueueUpdate(pendingItems);
-      refreshMenu();
+      // The Main window renderer subscribes to the same broadcast directly
+      // over WS (Issue #194). main.js only forwards to NotificationManager
+      // for OS reminder notifications.
+      notifManager.handleQueueUpdate((event.data && event.data.items) || []);
       break;
 
     case 'queue_item_result':
@@ -189,8 +179,6 @@ function handleCerebralEvent(event) {
       // since Issue #198; main.js no longer mirrors or forwards it.
       break;
     case 'env_context_update':
-      envContext = (event.data && event.data.context) || {};
-      refreshMenu();
       break;
 
     case 'settings_updated': {
@@ -215,20 +203,8 @@ function handleCerebralEvent(event) {
       break;
     }
 
-    case 'models_list': {
-      const d = event.data || {};
-      modelsList    = d.models || [];
-      activeModel   = d.active || null;
-      lastModel     = d.last || null;
-      activeIsCloud = !!d.active_is_cloud;
-      taskModels    = d.task_models || {};
-      refreshMenu();
-      break;
-    }
-
+    case 'models_list':
     case 'model_switched':
-      // The follow-up models_list event will refresh the menu; route the
-      // model_switching event to the visualiser so it briefly shows thinking.
       break;
 
     case 'model_switching':
@@ -329,15 +305,19 @@ function openMainWindow(hash) {
 
   mainWindow.loadFile(path.join(__dirname, 'windows', 'main.html'),
     hashStr ? { hash: hashStr } : undefined);
+
+  // Issue #188 — close button hides to tray; quit is tray-only.
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
 // Queue popup retired in Issue #194 — the Queue lives in the Main window's
-// sidebar pane now and talks directly to the Cerebral WebSocket. The tray
-// menu's "Queue (N pending)" item deep-links into `main.html#queue` via
-// openMainWindow('#queue'), and `pendingItems` is kept only so the tray
-// icon's tooltip + count-in-title stay current (retired by the Tray
-// Collapse sub-issue).
+// sidebar pane now and talks directly to the Cerebral WebSocket.
 
 // Insights popup retired in Issue #196 — the Insights view lives in the
 // Main window's sidebar pane now and talks directly to the Cerebral
@@ -517,78 +497,34 @@ function toggleVisualiser() {
 function buildMenu() {
   const template = [];
 
-  template.push({ label: 'Felix', enabled: false });
-
+  // 1. Status
   if (!isConnected) {
-    template.push({ label: '● Connecting...', enabled: false });
+    template.push({ label: 'Felix — Connecting...', enabled: false });
   } else if (felixState === 'active') {
-    template.push({ label: '● ACTIVE — listening', enabled: false });
+    template.push({ label: 'Felix — ACTIVE — listening', enabled: false });
   } else {
-    template.push({ label: '● Running', enabled: false });
+    template.push({ label: 'Felix — Running', enabled: false });
   }
 
   template.push({ type: 'separator' });
 
-  if (isConnected) {
-    template.push({ label: 'Open Felix', click: () => openMainWindow() });
-    const count      = pendingItems.length;
-    const queueLabel = count > 0 ? `Queue  (${count} pending)` : 'Queue';
-    template.push({ label: queueLabel, click: () => openMainWindow('#queue') });
-    template.push({
-      label: visState.visible ? 'Hide Visualiser' : 'Show Visualiser',
-      click: toggleVisualiser,
-    });
-    template.push({ label: 'Insights', click: () => openMainWindow('#insights') });
-    template.push({ label: 'Memory', click: () => openMainWindow('#memory') });
-    template.push({ label: 'Permissions', click: () => openMainWindow('#permissions') });
-    template.push({ label: 'Credentials', click: () => openMainWindow('#credentials') });
+  // 2. Open Felix
+  template.push({ label: 'Open Felix', click: () => openMainWindow() });
 
-    // ── Model ─────────────────────────────────────────────────────────────────
-    const modelLabel = activeModel
-      ? `Model: ${activeIsCloud ? '☁ ' : '◉ '}${activeModel}`
-      : 'Model: —';
-    template.push({
-      label: modelLabel,
-      submenu: buildModelSubmenu({
-        models:        modelsList,
-        active:        activeModel,
-        last:          lastModel,
-        activeIsCloud,
-        taskModels,
-        taskTypes:     ['chat', 'extraction'],
-        onSwitchModel: (id) => sendToCerebral({ type: 'switch_model', data: { model_id: id } }),
-        onSetTaskModel: (taskType, modelId) =>
-          sendToCerebral({ type: 'set_task_model', data: { task_type: taskType, model_id: modelId } }),
-        onRefresh:     () => sendToCerebral({ type: 'refresh_models' }),
-      }),
-    });
-
-    // ── Settings shortcuts (redirects to Settings pane) ──────────────────────
-    template.push({
-      label: 'Notifications / Camera / Visualiser...',
-      click: () => openMainWindow('#settings'),
-    });
-
-    template.push({ type: 'separator' });
-  }
-
-  if (activeProfile) {
-    template.push({ label: `Profile: ${activeProfile.name}`, enabled: false });
-
-    if (allProfiles.length > 1) {
-      const switchItems = allProfiles.map((p) => ({
-        label:   p.name,
-        type:    'radio',
-        checked: p.id === activeProfile.id,
-        click:   () => sendToCerebral({ type: 'switch_profile', data: { id: p.id } }),
-      }));
-      template.push({ label: 'Switch profile', submenu: switchItems });
-    }
-
-    template.push({ label: 'New profile...', click: () => openMainWindow('#profiles') });
+  // 3. Switch profile (only when multiple profiles exist)
+  if (activeProfile && allProfiles.length > 1) {
+    const switchItems = allProfiles.map((p) => ({
+      label:   p.name,
+      type:    'radio',
+      checked: p.id === activeProfile.id,
+      click:   () => sendToCerebral({ type: 'switch_profile', data: { id: p.id } }),
+    }));
+    template.push({ label: 'Switch profile', submenu: switchItems });
   }
 
   template.push({ type: 'separator' });
+
+  // 4. Quit
   template.push({ label: 'Quit', click: quit });
 
   return Menu.buildFromTemplate(template);
@@ -597,23 +533,16 @@ function buildMenu() {
 function refreshMenu() {
   if (!tray) return;
 
-  const count = pendingItems.length;
   const tooltip = !isConnected
     ? 'Felix — connecting...'
     : felixState === 'active'
       ? 'Felix — ACTIVE'
-      : count > 0
-        ? `Felix — ${count} pending action${count === 1 ? '' : 's'}`
-        : activeProfile
-          ? `Felix — ${activeProfile.name}`
-          : 'Felix — running';
+      : activeProfile
+        ? `Felix — ${activeProfile.name}`
+        : 'Felix — running';
 
   tray.setToolTip(tooltip);
   tray.setContextMenu(buildMenu());
-
-  if (tray.setTitle) {
-    tray.setTitle(count > 0 ? ` ${count}` : '');
-  }
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
