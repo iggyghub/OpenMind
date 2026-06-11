@@ -6,30 +6,32 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ## Next slice — start here
 
-**Slice 5 is complete.** PR [#216](https://github.com/iggyghub/OpenMind/pull/216) (#186 — Sidebar shell: extract sidebar-router lib + tests) is open, awaiting merge. PR [#215](https://github.com/iggyghub/OpenMind/pull/215) (#214 — Conversation store: wire tool+system event turn recording + IPC tests) is open, awaiting merge. PR [#213](https://github.com/iggyghub/OpenMind/pull/213) (#189 — consent inline card) is open, awaiting merge. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
+**Slice 6 is complete.** PR [#217](https://github.com/iggyghub/OpenMind/pull/217) (#187 — Plugins panel: status/tool-count + Discord allowlist editor) merged to master. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
 
-### Recommended next slice: **Slice 6 — Plugins panel + Discord allowlist editor**
+### Recommended next slice: **Slice 7 — Tray collapse + window lifecycle**
 
 Model: sonnet
 Status: ready
 
 (`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices.)
 
-**What Slice 6 should accomplish** (issue #187):
+**What Slice 7 should accomplish** (issue #188):
 
-Promote the Plugins pane from its current placeholder state to a first-class sidebar surface, and add the Discord allowlist editor as the first per-plugin settings sub-pane. Spec is in `docs/adr/0007-main-window-ui-architecture.md` §"Plugins panel" and ADR-0006 for Discord posture context.
+Retire the legacy 14-item tray menu now that the Main window sidebar covers every surface. Tray collapses to exactly 4 items; Main window close hides to tray; quit is tray-only. Spec is in `docs/adr/0007-main-window-ui-architecture.md` §"Slice 2 — Sidebar + migration".
 
-1. Plugins tab lists every loaded plugin with status (`loaded` / `error` / `disabled`), declared capabilities, and registered tool count.
-2. Click-through from any plugin row → per-plugin settings sub-pane.
-3. For `discord_user.py`: settings sub-pane includes the **per-channel auto-reply allowlist editor** (add/remove channel IDs, persist, take effect without restart).
-4. Backend support in Cerebral: WebSocket event(s) to stream plugin status; read/write API for plugin-specific settings (starting with Discord allowlist, designed to extend to other plugins).
+1. Tray menu collapses to exactly 4 items: **status / Open Felix / Switch profile / Quit**.
+2. Remove tray-launch wiring for the 9 legacy windows now covered by the sidebar.
+3. Delete or archive the now-unused `tray/windows/*.html` files that the sidebar tabs do not reuse.
+4. Window lifecycle: **close = hide to tray** (Main window close button does not quit the app).
+5. Quit only via tray. No autostart change in this slice.
 
-Acceptance criteria (from #187):
-- Plugins tab lists every loaded plugin with correct status, capabilities, and tool count.
-- Clicking `discord_user` opens a settings sub-pane with the auto-reply allowlist editor.
-- Editing the allowlist persists across Cerebral restart.
-- Allowlist changes take effect without restart.
-- No regression to plugin loading or MCP tool registration.
+Acceptance criteria (from #188):
+- Tray menu shows exactly 4 items: status, Open Felix, Switch profile, Quit.
+- Closing Main window hides it; reopening from tray restores it.
+- Quit from tray cleanly shuts down Cerebral.
+- Every surface previously reachable via tray is still reachable via the sidebar.
+- No regression to daily-driver voice loop.
+- Discord allowlist still editable from Plugins panel (regression check from #187).
 
 ### Reference PRs (Slice 2, in order)
 
@@ -46,6 +48,10 @@ Acceptance criteria (from #187):
 ### Reference PRs (Slice 5)
 
 [#216](https://github.com/iggyghub/OpenMind/pull/216) Sidebar shell: sidebar-router lib + tests (#186).
+
+### Reference PRs (Slice 6)
+
+[#217](https://github.com/iggyghub/OpenMind/pull/217) Plugins panel: status/tool-count + Discord allowlist editor (#187).
 
 ### Slice 2 progress
 
