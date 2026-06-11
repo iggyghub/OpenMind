@@ -6,32 +6,28 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ## Next slice — start here
 
-**Slice 6 is complete.** PR [#217](https://github.com/iggyghub/OpenMind/pull/217) (#187 — Plugins panel: status/tool-count + Discord allowlist editor) merged to master. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
+**Slice 7 is complete.** PR [#218](https://github.com/iggyghub/OpenMind/pull/218) (#188 — Tray collapse + window lifecycle) merged to master. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
 
-### Recommended next slice: **Slice 7 — Tray collapse + window lifecycle**
+### Recommended next slice: **Slice 8 — Discord-as-user plugin slice 3**
 
 Model: sonnet
 Status: ready
 
 (`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices.)
 
-**What Slice 7 should accomplish** (issue #188):
+**What Slice 8 should accomplish** (issue #178):
 
-Retire the legacy 14-item tray menu now that the Main window sidebar covers every surface. Tray collapses to exactly 4 items; Main window close hides to tray; quit is tray-only. Spec is in `docs/adr/0007-main-window-ui-architecture.md` §"Slice 2 — Sidebar + migration".
+Round out the discord_user plugin's outbound surface and presence behaviour. Issue #178 is fully specified (ready-for-agent). Blocked-by issues #175 (slice 1, PR #176) and #177 (slice 2, PR #179) are both merged.
 
-1. Tray menu collapses to exactly 4 items: **status / Open Felix / Switch profile / Quit**.
-2. Remove tray-launch wiring for the 9 legacy windows now covered by the sidebar.
-3. Delete or archive the now-unused `tray/windows/*.html` files that the sidebar tabs do not reuse.
-4. Window lifecycle: **close = hide to tray** (Main window close button does not quit the app).
-5. Quit only via tray. No autostart change in this slice.
+1. Add `discord_react` MCP tool (add/remove emoji reaction; `irreversible=True`, `confirm`-gated).
+2. Add `discord_edit` MCP tool (edit own message; surfaces Discord's ownership error).
+3. Add `discord_delete` MCP tool (delete own message; same ownership posture).
+4. Auto-idle after N minutes of no LLM Discord activity; auto-online on next Discord-bound action.
+5. Manual `discord_set_presence` still wins over auto-presence.
+6. Sleep-hours window (slice 2) wins over auto-presence: inside window, presence stays `invisible`.
+7. Update CONTEXT.md "Discord user-account integration" section: promote slice 3 from "planned" to "shipped".
 
-Acceptance criteria (from #188):
-- Tray menu shows exactly 4 items: status, Open Felix, Switch profile, Quit.
-- Closing Main window hides it; reopening from tray restores it.
-- Quit from tray cleanly shuts down Cerebral.
-- Every surface previously reachable via tray is still reachable via the sidebar.
-- No regression to daily-driver voice loop.
-- Discord allowlist still editable from Plugins panel (regression check from #187).
+Acceptance criteria: see issue #178. Includes a live-verification step (one round-trip per new tool + observed auto-idle/auto-online flip).
 
 ### Reference PRs (Slice 2, in order)
 
@@ -52,6 +48,10 @@ Acceptance criteria (from #188):
 ### Reference PRs (Slice 6)
 
 [#217](https://github.com/iggyghub/OpenMind/pull/217) Plugins panel: status/tool-count + Discord allowlist editor (#187).
+
+### Reference PRs (Slice 7)
+
+[#218](https://github.com/iggyghub/OpenMind/pull/218) Tray collapse + window lifecycle (#188).
 
 ### Slice 2 progress
 
