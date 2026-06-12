@@ -286,7 +286,8 @@ def _get_insights() -> InsightsEngine | None:
 # Requested once for the whole Gmail/Calendar/Docs/Sheets/Drive arc so the
 # user consents a single time for #115 (gmail_search) / #116 (gmail_send) /
 # #117 (Calendar) / #224 (Google Docs) / #225 (Google Sheets) /
-# #228 (Google Drive). drive.readonly -> drive for upload/share (#228).
+# #228 (Google Drive) / #229 (Google Contacts). drive.readonly -> drive for
+# upload/share (#228).
 _GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
@@ -295,6 +296,7 @@ _GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/contacts",
 ]
 
 
