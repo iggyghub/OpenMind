@@ -828,11 +828,11 @@ class TestGristRangeParser:
 # ===========================================================================
 
 class TestListTools:
-    def test_list_tools_returns_ten_tools(self):
-        """GoogleWorkspaceFallbackPlugin.list_tools() returns exactly 10 tools."""
+    def test_list_tools_returns_ten_workspace_tools(self):
+        """With docs_primary=None, list_tools() returns exactly 10 workspace tools."""
         from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin, _StubPrimaryPlugin
 
-        plugin = GoogleWorkspaceFallbackPlugin(primary=_StubPrimaryPlugin())
+        plugin = GoogleWorkspaceFallbackPlugin(primary=_StubPrimaryPlugin(), docs_primary=None)
         names = {t.name for t in plugin.list_tools()}
         assert names == {
             "gmail_send",
@@ -846,6 +846,19 @@ class TestListTools:
             "sheets_read_range",
             "sheets_write_range",
         }
+
+    def test_list_tools_includes_docs_tools_when_docs_primary_set(self):
+        """With a docs_primary, list_tools() includes all docs_* tools."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin, _StubPrimaryPlugin
+        from plugins.google_docs import GoogleDocsPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_StubPrimaryPlugin(), docs_primary=GoogleDocsPlugin()
+        )
+        names = {t.name for t in plugin.list_tools()}
+        assert "docs_create" in names
+        assert "docs_read" in names
+        assert "docs_append" in names
 
     def test_plugin_name_is_google_workspace(self):
         """Plugin name must be 'google_workspace' for MCP orchestrator compatibility."""
@@ -889,3 +902,213 @@ class TestCreateFactory:
         plugin = create(fetch_fn=sentinel)
         assert plugin._grist._fetch is sentinel
         assert plugin._nextcloud._fetch is sentinel
+
+
+# ===========================================================================
+# Cycle 14 — DocsODTFallback unit tests (Issue #233)
+# ===========================================================================
+
+class TestDocsODTFallback:
+    def test_create_returns_doc_id_and_title(self, tmp_path):
+        """docs_create returns a payload with 'id' and 'title'."""
+        from plugins.google_workspace_fallback import DocsODTFallback
+
+        fallback = DocsODTFallback(docs_dir=str(tmp_path))
+        result = fallback.create(title="My Report", body="Hello world")
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert payload["title"] == "My Report"
+        assert "id" in payload
+
+    def test_create_writes_odt_file_to_docs_dir(self, tmp_path):
+        """docs_create writes a .odt file to the configured docs directory."""
+        from plugins.google_workspace_fallback import DocsODTFallback
+
+        fallback = DocsODTFallback(docs_dir=str(tmp_path))
+        result = fallback.create(title="Test Doc", body="content")
+        doc_id = json.loads(result.content)["id"]
+        assert (tmp_path / (doc_id + ".odt")).exists()
+
+    def test_read_returns_body_text(self, tmp_path):
+        """docs_read returns the body text that was written at create time."""
+        from plugins.google_workspace_fallback import DocsODTFallback
+
+        fallback = DocsODTFallback(docs_dir=str(tmp_path))
+        doc_id = json.loads(fallback.create(title="Read Test", body="Sample text").content)["id"]
+
+        result = fallback.read(doc_id)
+        assert not result.is_error
+        assert "Sample text" in json.loads(result.content)["body"]
+
+    def test_read_returns_title_from_sidecar(self, tmp_path):
+        """docs_read returns the original title stored in the .meta.json sidecar."""
+        from plugins.google_workspace_fallback import DocsODTFallback
+
+        fallback = DocsODTFallback(docs_dir=str(tmp_path))
+        doc_id = json.loads(fallback.create(title="Stored Title", body="body").content)["id"]
+
+        payload = json.loads(fallback.read(doc_id).content)
+        assert payload["title"] == "Stored Title"
+
+    def test_read_missing_doc_returns_error(self, tmp_path):
+        """docs_read on a non-existent document_id returns is_error=True."""
+        from plugins.google_workspace_fallback import DocsODTFallback
+
+        fallback = DocsODTFallback(docs_dir=str(tmp_path))
+        result = fallback.read("nonexistent-id")
+        assert result.is_error
+
+    def test_append_adds_text_to_existing_doc(self, tmp_path):
+        """docs_append adds new text that is visible after a subsequent read."""
+        from plugins.google_workspace_fallback import DocsODTFallback
+
+        fallback = DocsODTFallback(docs_dir=str(tmp_path))
+        doc_id = json.loads(fallback.create(title="Append Test", body="First line").content)["id"]
+
+        fallback.append(doc_id, "Second line")
+        body = json.loads(fallback.read(doc_id).content)["body"]
+        assert "First line" in body
+        assert "Second line" in body
+
+    def test_append_missing_doc_returns_error(self, tmp_path):
+        """docs_append on a non-existent document_id returns is_error=True."""
+        from plugins.google_workspace_fallback import DocsODTFallback
+
+        fallback = DocsODTFallback(docs_dir=str(tmp_path))
+        result = fallback.append("nonexistent-id", "some text")
+        assert result.is_error
+
+    def test_append_result_includes_appended_flag(self, tmp_path):
+        """docs_append result payload has appended=True on success."""
+        from plugins.google_workspace_fallback import DocsODTFallback
+
+        fallback = DocsODTFallback(docs_dir=str(tmp_path))
+        doc_id = json.loads(fallback.create(title="Flag Test", body="body").content)["id"]
+
+        result = fallback.append(doc_id, "more text")
+        assert json.loads(result.content)["appended"] is True
+
+    def test_create_read_append_roundtrip(self, tmp_path):
+        """Full create -> append -> read roundtrip preserves all content."""
+        from plugins.google_workspace_fallback import DocsODTFallback
+
+        fallback = DocsODTFallback(docs_dir=str(tmp_path))
+        doc_id = json.loads(fallback.create(title="Roundtrip", body="Initial").content)["id"]
+        fallback.append(doc_id, "Added later")
+        body = json.loads(fallback.read(doc_id).content)["body"]
+        assert "Initial" in body
+        assert "Added later" in body
+
+
+# ===========================================================================
+# Cycle 15 — Docs → ODF fallback via GoogleWorkspaceFallbackPlugin (Issue #233)
+# ===========================================================================
+
+def _make_docs_primary_fail(msg: str = "Google Docs API unreachable"):
+    """Docs primary stub that always returns a connectivity error."""
+    from cerebral.mcp.orchestrator import ToolResult
+
+    class _Stub:
+        async def call_tool(self, name, args):
+            return ToolResult(content=msg, is_error=True)
+
+    return _Stub()
+
+
+class TestDocsODTFallbackIntegration:
+    @pytest.mark.asyncio
+    async def test_docs_create_falls_back_to_odf_on_primary_failure(self, tmp_path):
+        """docs_create routes to ODF fallback when docs primary returns a connectivity error."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            docs_primary=_make_docs_primary_fail(),
+            docs_dir=str(tmp_path),
+        )
+        result = await plugin.call_tool("docs_create", {"title": "Offline Doc"})
+        assert not result.is_error
+        assert json.loads(result.content)["title"] == "Offline Doc"
+
+    @pytest.mark.asyncio
+    async def test_docs_read_falls_back_to_odf_on_primary_failure(self, tmp_path):
+        """docs_read routes to ODF fallback when docs primary returns a connectivity error."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            docs_primary=_make_docs_primary_fail(),
+            docs_dir=str(tmp_path),
+        )
+        doc_id = json.loads(
+            (await plugin.call_tool("docs_create", {"title": "Read Test"})).content
+        )["id"]
+        result = await plugin.call_tool("docs_read", {"document_id": doc_id})
+        assert not result.is_error
+
+    @pytest.mark.asyncio
+    async def test_docs_append_falls_back_to_odf_on_primary_failure(self, tmp_path):
+        """docs_append routes to ODF fallback when docs primary returns a connectivity error."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            docs_primary=_make_docs_primary_fail(),
+            docs_dir=str(tmp_path),
+        )
+        doc_id = json.loads(
+            (await plugin.call_tool("docs_create", {"title": "Append Test"})).content
+        )["id"]
+        result = await plugin.call_tool("docs_append", {
+            "document_id": doc_id, "text": "Extra content",
+        })
+        assert not result.is_error
+
+    @pytest.mark.asyncio
+    async def test_docs_create_read_append_roundtrip_via_plugin(self, tmp_path):
+        """Full create → append → read roundtrip through the fallback plugin."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            docs_primary=_make_docs_primary_fail(),
+            docs_dir=str(tmp_path),
+        )
+        doc_id = json.loads(
+            (await plugin.call_tool("docs_create", {"title": "My Doc"})).content
+        )["id"]
+        await plugin.call_tool("docs_append", {"document_id": doc_id, "text": "Appended text"})
+        body = json.loads(
+            (await plugin.call_tool("docs_read", {"document_id": doc_id})).content
+        )["body"]
+        assert "Appended text" in body
+
+    @pytest.mark.asyncio
+    async def test_docs_create_directly_when_no_docs_primary(self, tmp_path):
+        """When docs_primary=None, docs_create routes directly to ODF fallback."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            docs_primary=None,
+            docs_dir=str(tmp_path),
+        )
+        result = await plugin.call_tool("docs_create", {"title": "Direct ODF"})
+        assert not result.is_error
+        assert json.loads(result.content)["title"] == "Direct ODF"
+
+    @pytest.mark.asyncio
+    async def test_workspace_tools_still_work_alongside_docs_fallback(self, tmp_path):
+        """Adding docs fallback does not break existing workspace (calendar) fallback."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail("Google Calendar unreachable"),
+            docs_primary=_make_docs_primary_fail(),
+            docs_dir=str(tmp_path),
+            db_path=":memory:",
+        )
+        result = await plugin.call_tool("calendar_create_event", {
+            "title": "Standup", "start": "2026-07-01T09:00:00",
+        })
+        assert not result.is_error
