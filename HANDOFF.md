@@ -8,9 +8,9 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 **The v1 completion queue is loaded (issue #240).** The Main-window UI epic (#184, slices 1–8) is done; the queue below covers everything that remains for v1 per `docs/v1-roadmap.md`. Work it **strictly top-down**. After landing a slice, **update this block**: tick the entry, retitle "Recommended next slice" to the next unticked entry, and set `Model:` to that entry's model.
 
-### Recommended next slice: **Slice 16 — B.8 Retire superseded n8n tools from google_workspace.py (#231)**
+### Recommended next slice: **Slice 17 — F.1 Calendar offline fallback (local SQLite) (#232)**
 
-Model: haiku
+Model: sonnet
 Status: ready
 
 (`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices.)
@@ -24,7 +24,7 @@ Status: ready
 5. [x] #228 — B.5 Real Google Drive plugin — Model: sonnet
 6. [x] #229 — B.6 Real Google Contacts plugin — Model: haiku
 7. [x] #230 — B.7 PRD amendment: drop Slides from story 31 — Model: haiku
-8. [ ] #231 — B.8 Retire superseded n8n tools from google_workspace.py — Model: haiku
+8. [x] #231 — B.8 Retire superseded n8n tools from google_workspace.py — Model: haiku
 9. [ ] #232 — F.1 Calendar offline fallback (local SQLite) — Model: sonnet
 10. [ ] #233 — F.2 Docs offline fallback (LibreOffice Writer) — Model: sonnet
 11. [ ] #234 — F.3 Maps OSS fallback (OSM/Nominatim) — Model: sonnet
