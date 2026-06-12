@@ -428,6 +428,69 @@ _FALLBACK_TOOLS: frozenset[str] = frozenset({
 
 
 # ---------------------------------------------------------------------------
+# Stub primary plugin (used when google_workspace.py is retired)
+# ---------------------------------------------------------------------------
+
+class _StubPrimaryPlugin:
+    """Stub plugin that lists the original GoogleWorkspacePlugin's tools
+    but returns "not available" errors for all of them. This allows
+    GoogleWorkspaceFallbackPlugin to provide OSS fallbacks for all
+    tool calls when google_workspace.py has been retired."""
+
+    name = "google_workspace_stub"
+
+    def list_tools(self) -> list[Tool]:
+        return [
+            Tool(
+                name="gmail_send",
+                description="Send an email via Gmail (fallback to SMTP).",
+                plugin="google_workspace",
+            ),
+            Tool(
+                name="gmail_search",
+                description="Search Gmail (fallback to IMAP).",
+                plugin="google_workspace",
+            ),
+            Tool(
+                name="calendar_create_event",
+                description="Create a Google Calendar event.",
+                plugin="google_workspace",
+            ),
+            Tool(
+                name="calendar_list_events",
+                description="List Google Calendar events.",
+                plugin="google_workspace",
+            ),
+            Tool(
+                name="drive_list_files",
+                description="List Google Drive files (fallback to Nextcloud).",
+                plugin="google_workspace",
+            ),
+            Tool(
+                name="drive_upload_file",
+                description="Upload a file to Google Drive (fallback to Nextcloud).",
+                plugin="google_workspace",
+            ),
+            Tool(
+                name="sheets_read_range",
+                description="Read from a Google Sheet (fallback to Grist).",
+                plugin="google_workspace",
+            ),
+            Tool(
+                name="sheets_write_range",
+                description="Write to a Google Sheet (fallback to Grist).",
+                plugin="google_workspace",
+            ),
+        ]
+
+    async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
+        return ToolResult(
+            content="Google Workspace bridge retired; using OSS fallback",
+            is_error=True,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main plugin
 # ---------------------------------------------------------------------------
 
@@ -468,8 +531,11 @@ class GoogleWorkspaceFallbackPlugin:
         if primary is not None:
             self._primary = primary
         else:
-            from plugins.google_workspace import GoogleWorkspacePlugin
-            self._primary = GoogleWorkspacePlugin()
+            try:
+                from plugins.google_workspace import GoogleWorkspacePlugin
+                self._primary = GoogleWorkspacePlugin()
+            except ModuleNotFoundError:
+                self._primary = _StubPrimaryPlugin()
 
         self._imap_smtp = ImapSmtpFallback(
             imap_fn=imap_fn,

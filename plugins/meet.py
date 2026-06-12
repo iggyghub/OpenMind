@@ -61,13 +61,17 @@ class MeetPlugin:
         if google_workspace_plugin is not None:
             self._gws = google_workspace_plugin
         else:
-            from plugins.google_workspace import GoogleWorkspacePlugin
-            self._gws = GoogleWorkspacePlugin(
-                n8n_plugin=n8n_plugin,
-                fetch_fn=fetch_fn,
-                base_url=base_url,
-                api_key=api_key,
-            )
+            try:
+                from plugins.google_workspace import GoogleWorkspacePlugin
+                self._gws = GoogleWorkspacePlugin(
+                    n8n_plugin=n8n_plugin,
+                    fetch_fn=fetch_fn,
+                    base_url=base_url,
+                    api_key=api_key,
+                )
+            except ModuleNotFoundError:
+                from plugins.calendar import create as create_calendar
+                self._gws = create_calendar()
         self._open = webbrowser_open_fn or _default_open
 
     # ------------------------------------------------------------------

@@ -746,10 +746,9 @@ class TestGristRangeParser:
 class TestListTools:
     def test_list_tools_returns_eight_tools(self):
         """GoogleWorkspaceFallbackPlugin.list_tools() returns exactly 8 tools."""
-        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
-        from plugins.google_workspace import GoogleWorkspacePlugin
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin, _StubPrimaryPlugin
 
-        plugin = GoogleWorkspaceFallbackPlugin(primary=GoogleWorkspacePlugin())
+        plugin = GoogleWorkspaceFallbackPlugin(primary=_StubPrimaryPlugin())
         names = {t.name for t in plugin.list_tools()}
         assert names == {
             "gmail_send",
@@ -790,10 +789,9 @@ class TestCreateFactory:
 
     def test_create_accepts_primary_plugin(self):
         """create() accepts an optional primary plugin argument."""
-        from plugins.google_workspace import GoogleWorkspacePlugin
-        from plugins.google_workspace_fallback import create
+        from plugins.google_workspace_fallback import create, _StubPrimaryPlugin
 
-        gws = GoogleWorkspacePlugin()
+        gws = _StubPrimaryPlugin()
         plugin = create(primary=gws)
         assert plugin._primary is gws
 
