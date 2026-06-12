@@ -8,12 +8,21 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 **The v1 completion queue is loaded (issue #240).** The Main-window UI epic (#184, slices 1–8) is done; the queue below covers everything that remains for v1 per `docs/v1-roadmap.md`. Work it **strictly top-down**. After landing a slice, **update this block**: tick the entry, retitle "Recommended next slice" to the next unticked entry, and set `Model:` to that entry's model.
 
-### Recommended next slice: **Slice 24 — V.1 Human live-verify checklist + Bucket D handoff (#239)**
+### All queue slices complete — v1 waits on human work
 
 Model: sonnet
-Status: ready
+Status: done
 
-(`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices.)
+(`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status: done` stops the loop — no more planned slices.)
+
+**v1 completion now waits entirely on human execution of `docs/v1-live-verify.md`:**
+
+1. Batched OAuth consent pass — grant Documents/Sheets/Tasks/Drive/Contacts scopes in one browser flow; set `GOOGLE_MAPS_API_KEY`.
+2. Per-plugin live-verify — one smoke action each for Docs, Sheets, Maps, Tasks, Drive, Contacts against the real Google account.
+3. Fallback spot-checks — one offline action each for Calendar/Docs/Maps/Tasks/Contacts fallbacks.
+4. Bucket D campaign — D.1: 8-hour passive run (no crash, no memory growth); D.2: 3-day daily-driver wake-queue-approve cycle.
+
+Run `scripts/verify-v1.ps1` first to confirm the automatable pre-conditions pass, then work through the checklist top-down.
 
 ### v1 slice queue (issue body = the spec; work top-down; blockers always precede dependents)
 
@@ -32,9 +41,11 @@ Status: ready
 13. [x] #236 — F.5 Contacts offline fallback (local SQLite) — Model: haiku
 14. [x] #237 — C.1 Profile auto-detect: default to last-used — Model: sonnet
 15. [x] #238 — D.3 Gate tray-IPC call_tool through capability ladder — Model: sonnet
-16. [ ] #239 — V.1 Human live-verify checklist + Bucket D handoff — Model: sonnet
+16. [x] #239 — V.1 Human live-verify checklist + Bucket D handoff — Model: sonnet
 
-After landing the **last** entry (#239), set `Status: done`. v1 then waits on the human work that no slice can do: the `docs/v1-live-verify.md` checklist (one OAuth consent pass + per-plugin smoke tests) and the Bucket D stability campaign (8-hour passive run, daily-driver usage). **No Google-plugin slice live-verifies against the real account** — that is deliberately batched into #239 so the loop never blocks on browser OAuth consent.
+### Reference PRs (Slice 24)
+
+[#257](https://github.com/iggyghub/OpenMind/pull/257) Human live-verify checklist + Bucket D campaign handoff (#239).
 
 ### Reference PRs (Slice 23)
 
