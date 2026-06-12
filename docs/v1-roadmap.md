@@ -55,9 +55,9 @@ Legend: ✅ delivered · 🟡 partial · ❌ not started
 | 27 | NL → MCP server plugin | ✅ | #30 + #51 |
 | 28 | Generated code in readable /plugins | ✅ | #30 |
 | 29 | Full computer access | ✅ | #15 + #24 |
-| 30 | Fully offline operable | 🟡 | #21 fallback exists for Gmail/Sheets/Drive only; Calendar/Docs/Slides/Contacts/Maps/Tasks have **no fallback** |
-| 31 | Google Workspace (9 services) | 🟡 | Gmail (#115/116) + Calendar (#117) on real OAuth. Drive/Sheets on n8n bridge (#20). **Docs/Slides/Contacts/Maps/Tasks have no implementation — neither real nor n8n.** |
-| 32 | Local OSS fallbacks for every Google service | 🟡 | Same as #30 — fallback covers 3 of 9 services |
+| 30 | Fully offline operable | 🟡 | #21 fallback exists for Gmail/Sheets/Drive only; Calendar/Docs/Contacts/Maps/Tasks have **no fallback** |
+| 31 | Google Workspace (8 services) | 🟡 | Gmail (#115/116) + Calendar (#117) on real OAuth. Drive/Sheets on n8n bridge (#20). **Docs/Contacts/Maps/Tasks have no implementation — neither real nor n8n.** |
+| 32 | Local OSS fallbacks for every Google service | 🟡 | Same as #30 — fallback covers 3 of 8 services |
 | 33 | Dev tools (Git/GH/Docker/SSH/pkg/HTTP) | ✅ | #24 |
 | 34 | Info (Wikipedia/Weather/News/Markets) | ✅ | #25 |
 | 35 | Security (Bitwarden/VPN/Net scan) | ✅ | #26 |
@@ -113,7 +113,7 @@ Each B.1–B.6 is a #115/#117-sized slice: OAuth scope addition → real plugin 
 
 ### Bucket B-fallback — OSS fallback parity *(unblocks stories 30, 32)*
 
-Story 32 says every Google service has a local OSS fallback. Currently `google_workspace_fallback.py` covers Gmail (IMAP/SMTP), Sheets (Grist), Drive (Nextcloud) — direct calls, not through n8n. The remaining 5 (Calendar, Docs, Maps, Tasks, Contacts) have no fallback. Slides drops via B.7.
+Story 32 says every Google service has a local OSS fallback. Currently `google_workspace_fallback.py` covers Gmail (IMAP/SMTP), Sheets (Grist), Drive (Nextcloud) — direct calls, not through n8n. The remaining 5 (Calendar, Docs, Maps, Tasks, Contacts) have no fallback.
 
 **Decision (Q3 resolved):** fallback plugins call OSS tools **directly**, not through n8n. Rationale: offline mode must have the fewest moving parts. Making n8n a required dependency for offline contradicts "local-first, cloud fallback." n8n earns its keep when Cerebral has no other client, not as an extra hop on the most-critical path.
 
