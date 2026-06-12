@@ -829,10 +829,10 @@ class TestGristRangeParser:
 
 class TestListTools:
     def test_list_tools_returns_ten_workspace_tools(self):
-        """With docs_primary=None, list_tools() returns exactly 10 workspace tools."""
+        """With docs_primary=None and maps_primary=None, list_tools() returns exactly 10 workspace tools."""
         from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin, _StubPrimaryPlugin
 
-        plugin = GoogleWorkspaceFallbackPlugin(primary=_StubPrimaryPlugin(), docs_primary=None)
+        plugin = GoogleWorkspaceFallbackPlugin(primary=_StubPrimaryPlugin(), docs_primary=None, maps_primary=None)
         names = {t.name for t in plugin.list_tools()}
         assert names == {
             "gmail_send",
@@ -1112,3 +1112,344 @@ class TestDocsODTFallbackIntegration:
             "title": "Standup", "start": "2026-07-01T09:00:00",
         })
         assert not result.is_error
+
+
+# ===========================================================================
+# Nominatim fetch stubs
+# ===========================================================================
+
+_NOMINATIM_GEOCODE_SAMPLE = [
+    {
+        "place_id": 12345,
+        "display_name": "10 Downing Street, Westminster, London, UK",
+        "lat": "51.5034070",
+        "lon": "-0.1276248",
+        "type": "house",
+    }
+]
+
+_NOMINATIM_REVERSE_SAMPLE = {
+    "place_id": 12345,
+    "display_name": "10 Downing Street, Westminster, London, UK",
+    "lat": "51.5034070",
+    "lon": "-0.1276248",
+    "type": "house",
+}
+
+
+def _make_nominatim_geocode_fetch(*, raises=None, results=None):
+    """Async fetch stub returning a Nominatim /search-style response."""
+    captured = {}
+
+    async def fetch(method, url, *, headers=None, params=None, json=None):
+        captured["headers"] = headers or {}
+        captured["params"] = params or {}
+        captured["url"] = url
+        if raises:
+            raise raises
+        return results if results is not None else _NOMINATIM_GEOCODE_SAMPLE
+
+    fetch._captured = captured
+    return fetch
+
+
+def _make_nominatim_reverse_fetch(*, raises=None, result=None, error=None):
+    """Async fetch stub returning a Nominatim /reverse-style response."""
+    async def fetch(method, url, *, headers=None, params=None, json=None):
+        if raises:
+            raise raises
+        if error:
+            return {"error": error}
+        return result if result is not None else _NOMINATIM_REVERSE_SAMPLE
+
+    return fetch
+
+
+def _make_maps_primary_fail(msg: str = "Google Maps API unreachable"):
+    """Maps primary stub that always returns a connectivity error."""
+    from cerebral.mcp.orchestrator import ToolResult
+
+    class _Stub:
+        def list_tools(self):
+            from plugins.google_maps import GoogleMapsPlugin
+            return GoogleMapsPlugin().list_tools()
+
+        async def call_tool(self, name, args):
+            return ToolResult(content=msg, is_error=True)
+
+    return _Stub()
+
+
+def _make_maps_primary_success(tool_name: str, payload: dict | None = None):
+    """Maps primary stub that returns success for the given tool."""
+    from cerebral.mcp.orchestrator import ToolResult
+
+    class _Stub:
+        def list_tools(self):
+            from plugins.google_maps import GoogleMapsPlugin
+            return GoogleMapsPlugin().list_tools()
+
+        async def call_tool(self, name, args):
+            if name == tool_name:
+                return ToolResult(content=json.dumps(payload or {"status": "OK", "results": []}))
+            return ToolResult(content=f"Unknown tool: '{name}'", is_error=True)
+
+    return _Stub()
+
+
+def _make_maps_validation_error(tool_name: str, field: str):
+    """Maps primary stub that returns a validation error."""
+    from cerebral.mcp.orchestrator import ToolResult
+
+    class _Stub:
+        def list_tools(self):
+            from plugins.google_maps import GoogleMapsPlugin
+            return GoogleMapsPlugin().list_tools()
+
+        async def call_tool(self, name, args):
+            return ToolResult(
+                content=f"'{field}' is required for {tool_name}",
+                is_error=True,
+            )
+
+    return _Stub()
+
+
+# ===========================================================================
+# Cycle 16 -- NominatimFallback unit tests (Issue #234)
+# ===========================================================================
+
+class TestNominatimFallback:
+    @pytest.mark.asyncio
+    async def test_geocode_returns_lat_lng(self):
+        """geocode() result payload includes lat and lng for the first result."""
+        from plugins.google_workspace_fallback import NominatimFallback
+
+        fetch = _make_nominatim_geocode_fetch()
+        fallback = NominatimFallback(fetch_fn=fetch)
+        result = await fallback.geocode("10 Downing Street, London")
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert payload["results"][0]["lat"] == pytest.approx(51.503407, abs=1e-4)
+        assert payload["results"][0]["lng"] == pytest.approx(-0.1276248, abs=1e-4)
+
+    @pytest.mark.asyncio
+    async def test_geocode_result_has_formatted_address(self):
+        """geocode() result includes formatted_address from display_name."""
+        from plugins.google_workspace_fallback import NominatimFallback
+
+        fetch = _make_nominatim_geocode_fetch()
+        fallback = NominatimFallback(fetch_fn=fetch)
+        result = await fallback.geocode("10 Downing Street, London")
+        payload = json.loads(result.content)
+        assert "formatted_address" in payload["results"][0]
+        assert "London" in payload["results"][0]["formatted_address"]
+
+    @pytest.mark.asyncio
+    async def test_geocode_network_failure_returns_error(self):
+        """geocode() returns is_error=True when the HTTP call raises."""
+        from plugins.google_workspace_fallback import NominatimFallback
+
+        fetch = _make_nominatim_geocode_fetch(raises=OSError("Nominatim unreachable"))
+        fallback = NominatimFallback(fetch_fn=fetch)
+        result = await fallback.geocode("anywhere")
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_geocode_sends_user_agent_header(self):
+        """geocode() sends the configured User-Agent header on every request."""
+        from plugins.google_workspace_fallback import NominatimFallback
+
+        fetch = _make_nominatim_geocode_fetch()
+        fallback = NominatimFallback(fetch_fn=fetch, user_agent="TestAgent/1.0")
+        await fallback.geocode("anywhere")
+        assert fetch._captured["headers"].get("User-Agent") == "TestAgent/1.0"
+
+    @pytest.mark.asyncio
+    async def test_geocode_uses_configurable_endpoint(self):
+        """geocode() calls the configured base_url, not the hardcoded public URL."""
+        from plugins.google_workspace_fallback import NominatimFallback
+
+        fetch = _make_nominatim_geocode_fetch()
+        fallback = NominatimFallback(fetch_fn=fetch, base_url="http://nominatim.local")
+        await fallback.geocode("anywhere")
+        assert fetch._captured["url"].startswith("http://nominatim.local")
+
+    @pytest.mark.asyncio
+    async def test_reverse_geocode_returns_formatted_address(self):
+        """reverse_geocode() result includes formatted_address."""
+        from plugins.google_workspace_fallback import NominatimFallback
+
+        fetch = _make_nominatim_reverse_fetch()
+        fallback = NominatimFallback(fetch_fn=fetch)
+        result = await fallback.reverse_geocode(51.5034070, -0.1276248)
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert "formatted_address" in payload["results"][0]
+
+    @pytest.mark.asyncio
+    async def test_reverse_geocode_result_matches_coordinates(self):
+        """reverse_geocode() result lat/lng match the parsed Nominatim response."""
+        from plugins.google_workspace_fallback import NominatimFallback
+
+        fetch = _make_nominatim_reverse_fetch()
+        fallback = NominatimFallback(fetch_fn=fetch)
+        result = await fallback.reverse_geocode(51.5034070, -0.1276248)
+        payload = json.loads(result.content)
+        assert payload["results"][0]["lat"] == pytest.approx(51.503407, abs=1e-4)
+
+    @pytest.mark.asyncio
+    async def test_reverse_geocode_network_failure_returns_error(self):
+        """reverse_geocode() returns is_error=True when the HTTP call raises."""
+        from plugins.google_workspace_fallback import NominatimFallback
+
+        fetch = _make_nominatim_reverse_fetch(raises=OSError("connection refused"))
+        fallback = NominatimFallback(fetch_fn=fetch)
+        result = await fallback.reverse_geocode(0.0, 0.0)
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_reverse_geocode_nominatim_error_response_returns_error(self):
+        """reverse_geocode() surfaces Nominatim 'error' field as is_error=True."""
+        from plugins.google_workspace_fallback import NominatimFallback
+
+        fetch = _make_nominatim_reverse_fetch(error="Unable to geocode")
+        fallback = NominatimFallback(fetch_fn=fetch)
+        result = await fallback.reverse_geocode(0.0, 0.0)
+        assert result.is_error
+        assert "Unable to geocode" in result.content
+
+
+# ===========================================================================
+# Cycle 17 -- GoogleWorkspaceFallbackPlugin maps integration (Issue #234)
+# ===========================================================================
+
+class TestMapsFallbackIntegration:
+    @pytest.mark.asyncio
+    async def test_maps_geocode_falls_back_to_nominatim_on_primary_failure(self):
+        """maps_geocode routes to Nominatim when the maps primary returns a connectivity error."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            maps_primary=_make_maps_primary_fail("Google Maps API unreachable"),
+            fetch_fn=_make_nominatim_geocode_fetch(),
+        )
+        result = await plugin.call_tool("maps_geocode", {"address": "10 Downing Street"})
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert "results" in payload
+
+    @pytest.mark.asyncio
+    async def test_maps_reverse_geocode_falls_back_to_nominatim_on_primary_failure(self):
+        """maps_reverse_geocode routes to Nominatim when the maps primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            maps_primary=_make_maps_primary_fail(),
+            fetch_fn=_make_nominatim_reverse_fetch(),
+        )
+        result = await plugin.call_tool("maps_reverse_geocode", {"lat": 51.5, "lng": -0.1})
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert "results" in payload
+
+    @pytest.mark.asyncio
+    async def test_maps_geocode_passes_through_on_primary_success(self):
+        """maps_geocode returns primary result without calling Nominatim when primary succeeds."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        nominatim_called = []
+
+        async def spy_fetch(method, url, *, headers=None, params=None, json=None):
+            nominatim_called.append(method)
+            return _NOMINATIM_GEOCODE_SAMPLE
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            maps_primary=_make_maps_primary_success(
+                "maps_geocode", {"status": "OK", "results": [{"formatted_address": "London"}]}
+            ),
+            fetch_fn=spy_fetch,
+        )
+        result = await plugin.call_tool("maps_geocode", {"address": "London"})
+        assert not result.is_error
+        assert not nominatim_called
+
+    @pytest.mark.asyncio
+    async def test_maps_validation_error_bypasses_nominatim(self):
+        """maps_geocode validation error from primary is returned without fallback."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        nominatim_called = []
+
+        async def spy_fetch(method, url, *, headers=None, params=None, json=None):
+            nominatim_called.append(method)
+            return _NOMINATIM_GEOCODE_SAMPLE
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            maps_primary=_make_maps_validation_error("maps_geocode", "address"),
+            fetch_fn=spy_fetch,
+        )
+        result = await plugin.call_tool("maps_geocode", {})
+        assert result.is_error
+        assert "required" in result.content
+        assert not nominatim_called
+
+    @pytest.mark.asyncio
+    async def test_maps_geocode_directly_when_no_maps_primary(self):
+        """When maps_primary=None, maps_geocode routes directly to Nominatim."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            maps_primary=None,
+            fetch_fn=_make_nominatim_geocode_fetch(),
+        )
+        result = await plugin.call_tool("maps_geocode", {"address": "London"})
+        assert not result.is_error
+
+    @pytest.mark.asyncio
+    async def test_maps_place_search_returns_error_when_no_maps_primary(self):
+        """maps_place_search (no Nominatim fallback) returns error when maps_primary=None."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            maps_primary=None,
+            fetch_fn=_make_nominatim_geocode_fetch(),
+        )
+        result = await plugin.call_tool("maps_place_search", {"query": "coffee"})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_workspace_tools_still_work_alongside_maps_fallback(self):
+        """Adding maps fallback does not break existing workspace (calendar) fallback."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail("Google Calendar unreachable"),
+            maps_primary=None,
+            db_path=":memory:",
+        )
+        result = await plugin.call_tool("calendar_create_event", {
+            "title": "Maps-era standup", "start": "2026-08-01T09:00:00",
+        })
+        assert not result.is_error
+
+    @pytest.mark.asyncio
+    async def test_list_tools_includes_maps_tools_when_maps_primary_set(self):
+        """With a maps_primary, list_tools() includes all maps_* tools."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin, _StubPrimaryPlugin
+        from plugins.google_maps import GoogleMapsPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_StubPrimaryPlugin(),
+            docs_primary=None,
+            maps_primary=GoogleMapsPlugin(),
+        )
+        names = {t.name for t in plugin.list_tools()}
+        assert "maps_geocode" in names
+        assert "maps_reverse_geocode" in names

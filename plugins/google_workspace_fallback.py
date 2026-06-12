@@ -4,34 +4,50 @@ Google Workspace fallback plugin — Issue #21.
 Wraps GoogleWorkspacePlugin and, when the primary Google/n8n path returns a
 connectivity error, automatically routes to local OSS equivalents:
 
-  gmail_send / gmail_search   → IMAP/SMTP  (stdlib imaplib + smtplib)
-  sheets_read / sheets_write  → Grist HTTP API  (default: localhost:8484)
-  drive_list / drive_upload   → Nextcloud WebDAV  (configurable host)
-  calendar_* (4 tools)        → local SQLite scheduler (Issue #232)
-  docs_create/read/append     → local ODF .odt files via stdlib (Issue #233)
+  gmail_send / gmail_search   -> IMAP/SMTP  (stdlib imaplib + smtplib)
+  sheets_read / sheets_write  -> Grist HTTP API  (default: localhost:8484)
+  drive_list / drive_upload   -> Nextcloud WebDAV  (configurable host)
+  calendar_* (4 tools)        -> local SQLite scheduler (Issue #232)
+  docs_create/read/append     -> local ODF .odt files via stdlib (Issue #233)
+  maps_geocode/reverse_geocode -> Nominatim OSS geocoder (Issue #234)
 
 Offline detection: if the primary plugin returns is_error=True AND the error
 content does not look like a client-side validation error ("is required",
 "Unknown tool"), the call is treated as a connectivity failure and routed to
 the appropriate OSS backend.
 
-Injectable dependencies (all optional — defaults used in production):
-  imap_fn      : (host, port) → IMAP4_SSL-like connection
-  smtp_fn      : (host, port) → SMTP_SSL-like connection
-  fetch_fn     : async (method, url, *, headers, json) → dict
-                 used by both GristFallback and NextcloudFallback
-  db_path      : path to the SQLite file used by CalendarSQLiteFallback;
-                 ":memory:" is accepted for tests.
-  docs_primary : GoogleDocsPlugin (or stub) for docs_* tools; defaults to a
-                 live GoogleDocsPlugin() if importable, else None.
-  docs_dir     : directory for local .odt files; defaults to LOCAL_DOCS_DIR
-                 env var or ~/Documents/OpenMind.
+Injectable dependencies (all optional -- defaults used in production):
+  imap_fn              : (host, port) -> IMAP4_SSL-like connection
+  smtp_fn              : (host, port) -> SMTP_SSL-like connection
+  fetch_fn             : async (method, url, *, headers, json, params) -> dict
+                         used by GristFallback, NextcloudFallback, NominatimFallback
+  db_path              : path to the SQLite file used by CalendarSQLiteFallback;
+                         ":memory:" is accepted for tests.
+  docs_primary         : GoogleDocsPlugin (or stub) for docs_* tools; defaults to a
+                         live GoogleDocsPlugin() if importable, else None.
+  docs_dir             : directory for local .odt files; defaults to LOCAL_DOCS_DIR
+                         env var or ~/Documents/OpenMind.
+  maps_primary         : GoogleMapsPlugin (or stub) for maps_* tools; defaults to a
+                         live GoogleMapsPlugin() if importable, else None.
+  nominatim_url        : Nominatim base URL; defaults to NOMINATIM_URL env var or
+                         the public instance. Set to a self-hosted URL for true
+                         offline use or high-volume geocoding.
+  nominatim_user_agent : User-Agent header sent to Nominatim; defaults to
+                         NOMINATIM_USER_AGENT env var or "OpenMind/1.0 ...".
 
 Intentional omissions:
-  • Nextcloud is conditional — drive fallbacks return a clear error when
-    nextcloud_url is None.  Set NEXTCLOUD_URL env var or pass nextcloud_url
+  - Nextcloud is conditional -- drive fallbacks return a clear error when
+    nextcloud_url is None. Set NEXTCLOUD_URL env var or pass nextcloud_url
     to GoogleWorkspaceFallbackPlugin to enable.
-  • Nominatim/Maps fallback applies to a future maps_* tool family (Issue #234).
+  - maps_place_search and maps_directions have no direct Nominatim equivalent;
+    those calls pass through to the primary (Google Maps) only.
+
+Nominatim public instance usage policy:
+  - A custom User-Agent identifying this application is required on every request.
+  - Maximum 1 request per second on the public instance; self-host for higher
+    volume or fully offline deployments (set nominatim_url accordingly).
+  - Do not use the public instance for bulk or automated geocoding.
+  - See https://operations.osmfoundation.org/policies/nominatim/
 """
 import email as _email_lib
 import imaplib
@@ -622,6 +638,108 @@ class DocsODTFallback:
 
 
 # ---------------------------------------------------------------------------
+# Nominatim fallback (Maps) — Issue #234
+# ---------------------------------------------------------------------------
+
+_NOMINATIM_DEFAULT_URL = "https://nominatim.openstreetmap.org"
+_NOMINATIM_DEFAULT_UA = "OpenMind/1.0 (github.com/iggyghub/OpenMind)"
+
+
+class NominatimFallback:
+    """Routes maps_geocode / maps_reverse_geocode to the Nominatim geocoding API.
+
+    Public instance usage policy (https://operations.osmfoundation.org/policies/nominatim/):
+      - A unique User-Agent is sent on every request (required by policy).
+      - Callers must not burst; rate-limit to 1 req/s on the public instance.
+      - Set nominatim_url to a self-hosted instance for high-volume or fully
+        offline use (no rate limit or User-Agent enforcement on private instances,
+        but the header is still sent for good practice).
+
+    Args:
+      fetch_fn       : injectable transport; defaults to google_maps._default_fetch
+                       (supports params= keyword arg for GET query strings).
+      base_url       : Nominatim base URL (default: public OSM instance).
+      user_agent     : User-Agent header value (required by Nominatim policy).
+    """
+
+    def __init__(
+        self,
+        fetch_fn: FetchFn | None = None,
+        base_url: str = _NOMINATIM_DEFAULT_URL,
+        user_agent: str = _NOMINATIM_DEFAULT_UA,
+    ) -> None:
+        self._fetch = fetch_fn
+        self._base_url = base_url.rstrip("/")
+        self._user_agent = user_agent
+
+    def _headers(self) -> dict:
+        return {"User-Agent": self._user_agent, "Accept": "application/json"}
+
+    def _get_fetch(self) -> FetchFn:
+        if self._fetch is not None:
+            return self._fetch
+        from plugins.google_maps import _default_fetch
+        return _default_fetch
+
+    async def geocode(self, address: str) -> ToolResult:
+        try:
+            url = f"{self._base_url}/search"
+            resp = await self._get_fetch()(
+                "GET", url,
+                headers=self._headers(),
+                params={"q": address, "format": "json", "addressdetails": "1"},
+            )
+            if not isinstance(resp, list):
+                return ToolResult(
+                    content="Nominatim geocode returned unexpected format", is_error=True
+                )
+            results = []
+            for r in resp:
+                if not isinstance(r, dict):
+                    continue
+                results.append({
+                    "formatted_address": r.get("display_name", ""),
+                    "lat": float(r["lat"]) if r.get("lat") else None,
+                    "lng": float(r["lon"]) if r.get("lon") else None,
+                    "place_id": str(r.get("place_id", "")),
+                    "types": r.get("type", ""),
+                })
+            return ToolResult(content=json.dumps({"status": "OK", "results": results}))
+        except Exception as exc:
+            return ToolResult(content=f"Nominatim geocode failed: {exc}", is_error=True)
+
+    async def reverse_geocode(self, lat: float, lng: float) -> ToolResult:
+        try:
+            url = f"{self._base_url}/reverse"
+            resp = await self._get_fetch()(
+                "GET", url,
+                headers=self._headers(),
+                params={"lat": str(lat), "lon": str(lng), "format": "json"},
+            )
+            if not isinstance(resp, dict):
+                return ToolResult(
+                    content="Nominatim reverse geocode returned unexpected format",
+                    is_error=True,
+                )
+            if "error" in resp:
+                return ToolResult(
+                    content=f"Nominatim reverse geocode: {resp['error']}", is_error=True
+                )
+            result = {
+                "formatted_address": resp.get("display_name", ""),
+                "lat": float(resp["lat"]) if resp.get("lat") else lat,
+                "lng": float(resp["lon"]) if resp.get("lon") else lng,
+                "place_id": str(resp.get("place_id", "")),
+                "types": resp.get("type", ""),
+            }
+            return ToolResult(content=json.dumps({"status": "OK", "results": [result]}))
+        except Exception as exc:
+            return ToolResult(
+                content=f"Nominatim reverse geocode failed: {exc}", is_error=True
+            )
+
+
+# ---------------------------------------------------------------------------
 # Tools with OSS fallbacks
 # ---------------------------------------------------------------------------
 
@@ -642,6 +760,11 @@ _DOCS_FALLBACK_TOOLS: frozenset[str] = frozenset({
     "docs_create",
     "docs_read",
     "docs_append",
+})
+
+_MAPS_FALLBACK_TOOLS: frozenset[str] = frozenset({
+    "maps_geocode",
+    "maps_reverse_geocode",
 })
 
 
@@ -760,6 +883,12 @@ class GoogleWorkspaceFallbackPlugin:
         # Docs ODF fallback (Issue #233)
         docs_primary=_UNSET,
         docs_dir: str | None = None,
+        # Maps Nominatim fallback (Issue #234)
+        maps_primary=_UNSET,
+        nominatim_url: str = os.environ.get("NOMINATIM_URL", _NOMINATIM_DEFAULT_URL),
+        nominatim_user_agent: str = os.environ.get(
+            "NOMINATIM_USER_AGENT", _NOMINATIM_DEFAULT_UA
+        ),
     ) -> None:
         if primary is not None:
             self._primary = primary
@@ -803,6 +932,20 @@ class GoogleWorkspaceFallbackPlugin:
                 self._docs_primary = None
         self._docs_odt = DocsODTFallback(docs_dir=docs_dir)
 
+        if maps_primary is not _UNSET:
+            self._maps_primary = maps_primary
+        else:
+            try:
+                from plugins.google_maps import GoogleMapsPlugin
+                self._maps_primary = GoogleMapsPlugin()
+            except (ModuleNotFoundError, Exception):
+                self._maps_primary = None
+        self._nominatim = NominatimFallback(
+            fetch_fn=fetch_fn,
+            base_url=nominatim_url,
+            user_agent=nominatim_user_agent,
+        )
+
     # ------------------------------------------------------------------
     # Plugin protocol
     # ------------------------------------------------------------------
@@ -811,11 +954,15 @@ class GoogleWorkspaceFallbackPlugin:
         tools = list(self._primary.list_tools())
         if self._docs_primary is not None:
             tools.extend(self._docs_primary.list_tools())
+        if self._maps_primary is not None:
+            tools.extend(self._maps_primary.list_tools())
         return tools
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         if tool_name.startswith("docs_"):
             return await self._call_docs_tool(tool_name, args)
+        if tool_name.startswith("maps_"):
+            return await self._call_maps_tool(tool_name, args)
 
         result = await self._primary.call_tool(tool_name, args)
         if not result.is_error:
@@ -848,6 +995,33 @@ class GoogleWorkspaceFallbackPlugin:
                 content=f"No fallback available for: {tool_name}", is_error=True
             )
         return self._docs_odt.call(tool_name, args)
+
+    async def _call_maps_tool(self, tool_name: str, args: dict) -> ToolResult:
+        if self._maps_primary is not None:
+            result = await self._maps_primary.call_tool(tool_name, args)
+            if not result.is_error:
+                return result
+            if not _is_connection_failure(result) or tool_name not in _MAPS_FALLBACK_TOOLS:
+                return result
+            logger.info(
+                "Google Maps API failed for %s (%s) -- routing to Nominatim fallback",
+                tool_name,
+                result.content[:80],
+            )
+        elif tool_name not in _MAPS_FALLBACK_TOOLS:
+            return ToolResult(
+                content=f"No fallback available for: {tool_name}", is_error=True
+            )
+        if tool_name == "maps_geocode":
+            return await self._nominatim.geocode(address=args.get("address", ""))
+        if tool_name == "maps_reverse_geocode":
+            return await self._nominatim.reverse_geocode(
+                lat=args.get("lat", 0.0),
+                lng=args.get("lng", 0.0),
+            )
+        return ToolResult(
+            content=f"No Nominatim fallback for: {tool_name}", is_error=True
+        )
 
     # ------------------------------------------------------------------
     # Fallback dispatch
@@ -915,9 +1089,11 @@ def create(
     grist_url: str | None = None,
     nextcloud_url: str | None = None,
     docs_dir: str | None = None,
+    nominatim_url: str | None = None,
+    nominatim_user_agent: str | None = None,
     **kwargs,
 ) -> GoogleWorkspaceFallbackPlugin:
-    return GoogleWorkspaceFallbackPlugin(
+    init_kwargs: dict = dict(
         primary=primary,
         fetch_fn=fetch_fn,
         imap_fn=imap_fn,
@@ -925,5 +1101,10 @@ def create(
         grist_url=grist_url or os.environ.get("GRIST_URL", "http://localhost:8484"),
         nextcloud_url=nextcloud_url,
         docs_dir=docs_dir,
-        **kwargs,
     )
+    if nominatim_url is not None:
+        init_kwargs["nominatim_url"] = nominatim_url
+    if nominatim_user_agent is not None:
+        init_kwargs["nominatim_user_agent"] = nominatim_user_agent
+    init_kwargs.update(kwargs)
+    return GoogleWorkspaceFallbackPlugin(**init_kwargs)
