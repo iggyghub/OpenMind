@@ -1352,6 +1352,7 @@ _IRREVERSIBLE_PLUGINS: frozenset[str] = frozenset({
     "gmail.py",
     "openclaw_channels.py",
     "discord_user.py",
+    "google_docs.py",  # docs_create + docs_append (#224)
 })
 
 
