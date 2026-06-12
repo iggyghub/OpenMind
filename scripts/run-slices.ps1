@@ -22,7 +22,8 @@
 # terminal, type /login, complete the browser flow.
 
 param(
-    [int]$MaxSlices = 8,
+    # Default covers the full 16-slice v1 queue in HANDOFF.md plus headroom.
+    [int]$MaxSlices = 25,
     [int]$MaxAttempts = 3,
     # When the usage limit is hit, sleep until it resets and auto-resume the
     # same slice instead of stopping. -AutoResume:$false reverts to stop-and-notify.

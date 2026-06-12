@@ -6,14 +6,35 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ## Next slice — start here
 
-**Slice 8 is complete.** PR [#219](https://github.com/iggyghub/OpenMind/pull/219) (#178 — Discord slice 3: react/edit/delete + DiscordPresenceController) merged to master. After landing a slice, **update this block** so the next session starts cold without re-deriving context.
+**The v1 completion queue is loaded (issue #240).** The Main-window UI epic (#184, slices 1–8) is done; the queue below covers everything that remains for v1 per `docs/v1-roadmap.md`. Work it **strictly top-down**. After landing a slice, **update this block**: tick the entry, retitle "Recommended next slice" to the next unticked entry, and set `Model:` to that entry's model.
 
-### Recommended next slice: **Slice 9 — (to be determined)**
+### Recommended next slice: **Slice 9 — B.1 Real Google Docs plugin (#224)**
 
 Model: sonnet
-Status: done
+Status: ready
 
 (`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices.)
+
+### v1 slice queue (issue body = the spec; work top-down; blockers always precede dependents)
+
+1. [ ] #224 — B.1 Real Google Docs plugin — Model: sonnet
+2. [ ] #225 — B.2 Real Google Sheets plugin — Model: sonnet
+3. [ ] #226 — B.3 Real Google Maps plugin (static API key, youtube.py posture) — Model: sonnet
+4. [ ] #227 — B.4 Real Google Tasks plugin — Model: haiku
+5. [ ] #228 — B.5 Real Google Drive plugin — Model: sonnet
+6. [ ] #229 — B.6 Real Google Contacts plugin — Model: haiku
+7. [ ] #230 — B.7 PRD amendment: drop Slides from story 31 — Model: haiku
+8. [ ] #231 — B.8 Retire superseded n8n tools from google_workspace.py — Model: haiku
+9. [ ] #232 — F.1 Calendar offline fallback (local SQLite) — Model: sonnet
+10. [ ] #233 — F.2 Docs offline fallback (LibreOffice Writer) — Model: sonnet
+11. [ ] #234 — F.3 Maps OSS fallback (OSM/Nominatim) — Model: sonnet
+12. [ ] #235 — F.4 Tasks offline fallback (clone of F.1) — Model: haiku
+13. [ ] #236 — F.5 Contacts offline fallback (local SQLite) — Model: haiku
+14. [ ] #237 — C.1 Profile auto-detect: default to last-used — Model: sonnet
+15. [ ] #238 — D.3 Gate tray-IPC call_tool through capability ladder — Model: sonnet
+16. [ ] #239 — V.1 Human live-verify checklist + Bucket D handoff — Model: sonnet
+
+After landing the **last** entry (#239), set `Status: done`. v1 then waits on the human work that no slice can do: the `docs/v1-live-verify.md` checklist (one OAuth consent pass + per-plugin smoke tests) and the Bucket D stability campaign (8-hour passive run, daily-driver usage). **No Google-plugin slice live-verifies against the real account** — that is deliberately batched into #239 so the loop never blocks on browser OAuth consent.
 
 ### Reference PRs (Slice 2, in order)
 
@@ -63,7 +84,7 @@ Status: done
 - If this slice plus the next would exceed ~100k tokens, end at the PR and let the user start the next slice in a fresh session (per `feedback_token_budget_session_split`).
 - ADR-0007 renderer-portability invariant: **no new `ipcRenderer` use in main.html** — the migrated pane must talk WebSocket directly to Cerebral.
 - When updating this kickoff block after landing a slice, also update the `Model:` and `Status:` lines for the *next* slice (haiku = mechanical clone work with a reference file, sonnet = well-specified slice like the numbered steps above, opus/fable = unspecced, architectural, or cross-process debugging). A SessionEnd hook runs `scripts/sync-slice-model.ps1` to copy the model into `.claude/settings.local.json`; the autonomous loop `scripts/run-slices.ps1` reads both lines between sessions.
-- In the autonomous loop: end at an OPEN PR — never merge, never push to master directly. If stuck, set `Status: blocked` with a one-line reason rather than improvising.
+- In the autonomous loop: after tests pass, merge YOUR OWN PR (`gh pr merge <n> --squash --delete-branch`), pull master, then commit the updated kickoff block directly to master — the HANDOFF update is the **only** direct-to-master commit allowed; all code goes through the PR. If stuck, set `Status: blocked` with a one-line reason rather than improvising.
 
 ---
 
