@@ -8,6 +8,7 @@ connectivity error, automatically routes to local OSS equivalents:
   sheets_read / sheets_write  → Grist HTTP API  (default: localhost:8484)
   drive_list / drive_upload   → Nextcloud WebDAV  (configurable host)
   calendar_* (4 tools)        → local SQLite scheduler (Issue #232)
+  docs_create/read/append     → local ODF .odt files via stdlib (Issue #233)
 
 Offline detection: if the primary plugin returns is_error=True AND the error
 content does not look like a client-side validation error ("is required",
@@ -15,20 +16,22 @@ content does not look like a client-side validation error ("is required",
 the appropriate OSS backend.
 
 Injectable dependencies (all optional — defaults used in production):
-  imap_fn   : (host, port) → IMAP4_SSL-like connection
-  smtp_fn   : (host, port) → SMTP_SSL-like connection
-  fetch_fn  : async (method, url, *, headers, json) → dict
-              used by both GristFallback and NextcloudFallback
-  db_path   : path to the SQLite file used by CalendarSQLiteFallback;
-              ":memory:" is accepted for tests.
+  imap_fn      : (host, port) → IMAP4_SSL-like connection
+  smtp_fn      : (host, port) → SMTP_SSL-like connection
+  fetch_fn     : async (method, url, *, headers, json) → dict
+                 used by both GristFallback and NextcloudFallback
+  db_path      : path to the SQLite file used by CalendarSQLiteFallback;
+                 ":memory:" is accepted for tests.
+  docs_primary : GoogleDocsPlugin (or stub) for docs_* tools; defaults to a
+                 live GoogleDocsPlugin() if importable, else None.
+  docs_dir     : directory for local .odt files; defaults to LOCAL_DOCS_DIR
+                 env var or ~/Documents/OpenMind.
 
 Intentional omissions:
   • Nextcloud is conditional — drive fallbacks return a clear error when
     nextcloud_url is None.  Set NEXTCLOUD_URL env var or pass nextcloud_url
     to GoogleWorkspaceFallbackPlugin to enable.
-  • LibreOffice (Docs/Slides) is not yet in GoogleWorkspacePlugin's tool set;
-    the fallback will be wired when those tools are added.
-  • Nominatim/Maps fallback applies to a future maps_* tool family.
+  • Nominatim/Maps fallback applies to a future maps_* tool family (Issue #234).
 """
 import email as _email_lib
 import imaplib
@@ -36,6 +39,9 @@ import json
 import logging
 import os
 import smtplib
+import uuid
+import xml.etree.ElementTree as ET
+import zipfile
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any, Awaitable, Callable
@@ -46,6 +52,8 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "google_workspace"
 
+_UNSET = object()  # sentinel: distinguishes "not provided" from None in docs_primary
+
 # ADR-0005 / Issue #44 — wraps GoogleWorkspacePlugin. Adds direct IMAP/SMTP
 # (mail), Grist (sheets), and Nextcloud (drive) fallbacks. Reads and writes
 # external services; reaches both local OSS backends and remote SMTP/IMAP
@@ -55,6 +63,8 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
     "external_data_write",
     "network_egress_local",
     "network_egress_cloud",
+    "fs_read",   # DocsODTFallback reads .meta.json and .odt content
+    "fs_write",  # DocsODTFallback writes .odt files and .meta.json sidecars
 })
 
 FetchFn = Callable[..., Awaitable[dict]]
@@ -463,6 +473,155 @@ class CalendarSQLiteFallback:
 
 
 # ---------------------------------------------------------------------------
+# ODF fallback (Docs) — Issue #233
+# ---------------------------------------------------------------------------
+
+class DocsODTFallback:
+    """
+    Routes docs_create / docs_read / docs_append to local .odt files.
+
+    Mechanism chosen: pure-Python ODF 1.2 via stdlib zipfile +
+    xml.etree.ElementTree — no LibreOffice binary, no third-party packages.
+    A <doc-id>.meta.json sidecar next to each .odt stores the title so
+    docs_read can return it.  document_id is an 8-hex UUID stem;
+    docs_dir defaults to ~/Documents/OpenMind or LOCAL_DOCS_DIR env var.
+    """
+
+    _OFFICE_NS = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+    _TEXT_NS = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+    _MANIFEST_NS = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
+    _ODF_MIME = "application/vnd.oasis.opendocument.text"
+
+    def __init__(self, docs_dir: str | None = None) -> None:
+        self._docs_dir = docs_dir or os.environ.get(
+            "LOCAL_DOCS_DIR",
+            os.path.join(os.path.expanduser("~"), "Documents", "OpenMind"),
+        )
+
+    def _odt_path(self, doc_id: str) -> str:
+        stem = doc_id[:-4] if doc_id.endswith(".odt") else doc_id
+        stem = stem.replace("/", "_").replace("\\", "_")
+        return os.path.join(self._docs_dir, stem + ".odt")
+
+    def _meta_path(self, doc_id: str) -> str:
+        stem = doc_id[:-4] if doc_id.endswith(".odt") else doc_id
+        stem = stem.replace("/", "_").replace("\\", "_")
+        return os.path.join(self._docs_dir, stem + ".meta.json")
+
+    def _ensure_dir(self) -> None:
+        os.makedirs(self._docs_dir, exist_ok=True)
+
+    def _write_odt(self, path: str, paragraphs: list[str]) -> None:
+        ns_o = self._OFFICE_NS
+        ns_t = self._TEXT_NS
+        ns_m = self._MANIFEST_NS
+
+        root = ET.Element(f"{{{ns_o}}}document-content")
+        root.set(f"{{{ns_o}}}version", "1.2")
+        body = ET.SubElement(root, f"{{{ns_o}}}body")
+        text_elem = ET.SubElement(body, f"{{{ns_o}}}text")
+        for para in (paragraphs or [""]):
+            p = ET.SubElement(text_elem, f"{{{ns_t}}}p")
+            p.text = para
+        content_xml = ET.tostring(root, encoding="UTF-8", xml_declaration=True)
+
+        mf_root = ET.Element(f"{{{ns_m}}}manifest")
+        mf_root.set(f"{{{ns_m}}}version", "1.2")
+        ET.SubElement(mf_root, f"{{{ns_m}}}file-entry", {
+            f"{{{ns_m}}}full-path": "/",
+            f"{{{ns_m}}}media-type": self._ODF_MIME,
+        })
+        ET.SubElement(mf_root, f"{{{ns_m}}}file-entry", {
+            f"{{{ns_m}}}full-path": "content.xml",
+            f"{{{ns_m}}}media-type": "text/xml",
+        })
+        manifest_xml = ET.tostring(mf_root, encoding="UTF-8", xml_declaration=True)
+
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+            mi = zipfile.ZipInfo("mimetype")
+            mi.compress_type = zipfile.ZIP_STORED
+            zf.writestr(mi, self._ODF_MIME)
+            zf.writestr("content.xml", content_xml)
+            zf.writestr("META-INF/manifest.xml", manifest_xml)
+
+    def _read_paragraphs(self, path: str) -> list[str]:
+        with zipfile.ZipFile(path, "r") as zf:
+            with zf.open("content.xml") as f:
+                tree = ET.parse(f)
+        return [
+            (p.text or "")
+            for p in tree.getroot().iter(f"{{{self._TEXT_NS}}}p")
+        ]
+
+    def create(self, title: str, body: str = "") -> ToolResult:
+        try:
+            self._ensure_dir()
+            doc_id = uuid.uuid4().hex[:8]
+            path = self._odt_path(doc_id)
+            paragraphs = body.splitlines() if body else [""]
+            self._write_odt(path, paragraphs)
+            with open(self._meta_path(doc_id), "w", encoding="utf-8") as f:
+                json.dump({"title": title}, f)
+            return ToolResult(content=json.dumps({
+                "id": doc_id,
+                "title": title,
+                "path": path,
+            }))
+        except Exception as exc:
+            return ToolResult(content=f"ODF create failed: {exc}", is_error=True)
+
+    def read(self, document_id: str) -> ToolResult:
+        try:
+            path = self._odt_path(document_id)
+            if not os.path.exists(path):
+                return ToolResult(
+                    content=f"Document not found: {document_id}", is_error=True
+                )
+            paras = self._read_paragraphs(path)
+            title = document_id
+            meta_path = self._meta_path(document_id)
+            if os.path.exists(meta_path):
+                with open(meta_path, encoding="utf-8") as f:
+                    title = json.load(f).get("title", document_id)
+            return ToolResult(content=json.dumps({
+                "document_id": document_id,
+                "title": title,
+                "body": "\n".join(paras),
+            }))
+        except Exception as exc:
+            return ToolResult(content=f"ODF read failed: {exc}", is_error=True)
+
+    def append(self, document_id: str, text: str) -> ToolResult:
+        try:
+            path = self._odt_path(document_id)
+            if not os.path.exists(path):
+                return ToolResult(
+                    content=f"Document not found: {document_id}", is_error=True
+                )
+            paras = self._read_paragraphs(path)
+            paras.extend(text.splitlines() if text else [""])
+            self._write_odt(path, paras)
+            return ToolResult(content=json.dumps({
+                "document_id": document_id,
+                "appended": True,
+            }))
+        except Exception as exc:
+            return ToolResult(content=f"ODF append failed: {exc}", is_error=True)
+
+    def call(self, tool_name: str, args: dict) -> ToolResult:
+        if tool_name == "docs_create":
+            return self.create(title=args.get("title", ""), body=args.get("body", ""))
+        if tool_name == "docs_read":
+            return self.read(document_id=args.get("document_id", ""))
+        if tool_name == "docs_append":
+            return self.append(
+                document_id=args.get("document_id", ""),
+                text=args.get("text", ""),
+            )
+        return ToolResult(content=f"No ODF fallback for: {tool_name}", is_error=True)
+
+
+# ---------------------------------------------------------------------------
 # Tools with OSS fallbacks
 # ---------------------------------------------------------------------------
 
@@ -477,6 +636,12 @@ _FALLBACK_TOOLS: frozenset[str] = frozenset({
     "calendar_create_event",
     "calendar_update_event",
     "calendar_delete_event",
+})
+
+_DOCS_FALLBACK_TOOLS: frozenset[str] = frozenset({
+    "docs_create",
+    "docs_read",
+    "docs_append",
 })
 
 
@@ -592,6 +757,9 @@ class GoogleWorkspaceFallbackPlugin:
         nextcloud_password: str = os.environ.get("NEXTCLOUD_PASSWORD", ""),
         # Calendar SQLite fallback
         db_path: str | None = None,
+        # Docs ODF fallback (Issue #233)
+        docs_primary=_UNSET,
+        docs_dir: str | None = None,
     ) -> None:
         if primary is not None:
             self._primary = primary
@@ -625,14 +793,30 @@ class GoogleWorkspaceFallbackPlugin:
         )
         self._calendar_sqlite = CalendarSQLiteFallback(db_path=db_path)
 
+        if docs_primary is not _UNSET:
+            self._docs_primary = docs_primary
+        else:
+            try:
+                from plugins.google_docs import GoogleDocsPlugin
+                self._docs_primary = GoogleDocsPlugin()
+            except (ModuleNotFoundError, Exception):
+                self._docs_primary = None
+        self._docs_odt = DocsODTFallback(docs_dir=docs_dir)
+
     # ------------------------------------------------------------------
     # Plugin protocol
     # ------------------------------------------------------------------
 
     def list_tools(self) -> list[Tool]:
-        return self._primary.list_tools()
+        tools = list(self._primary.list_tools())
+        if self._docs_primary is not None:
+            tools.extend(self._docs_primary.list_tools())
+        return tools
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
+        if tool_name.startswith("docs_"):
+            return await self._call_docs_tool(tool_name, args)
+
         result = await self._primary.call_tool(tool_name, args)
         if not result.is_error:
             return result
@@ -646,6 +830,24 @@ class GoogleWorkspaceFallbackPlugin:
             result.content[:80],
         )
         return await self._call_fallback(tool_name, args)
+
+    async def _call_docs_tool(self, tool_name: str, args: dict) -> ToolResult:
+        if self._docs_primary is not None:
+            result = await self._docs_primary.call_tool(tool_name, args)
+            if not result.is_error:
+                return result
+            if not _is_connection_failure(result) or tool_name not in _DOCS_FALLBACK_TOOLS:
+                return result
+            logger.info(
+                "Google Docs API failed for %s (%s) — routing to ODF fallback",
+                tool_name,
+                result.content[:80],
+            )
+        elif tool_name not in _DOCS_FALLBACK_TOOLS:
+            return ToolResult(
+                content=f"No fallback available for: {tool_name}", is_error=True
+            )
+        return self._docs_odt.call(tool_name, args)
 
     # ------------------------------------------------------------------
     # Fallback dispatch
@@ -712,6 +914,7 @@ def create(
     smtp_fn: Callable | None = None,
     grist_url: str | None = None,
     nextcloud_url: str | None = None,
+    docs_dir: str | None = None,
     **kwargs,
 ) -> GoogleWorkspaceFallbackPlugin:
     return GoogleWorkspaceFallbackPlugin(
@@ -721,5 +924,6 @@ def create(
         smtp_fn=smtp_fn,
         grist_url=grist_url or os.environ.get("GRIST_URL", "http://localhost:8484"),
         nextcloud_url=nextcloud_url,
+        docs_dir=docs_dir,
         **kwargs,
     )
