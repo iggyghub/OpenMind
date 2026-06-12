@@ -8,7 +8,7 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 **The v1 completion queue is loaded (issue #240).** The Main-window UI epic (#184, slices 1–8) is done; the queue below covers everything that remains for v1 per `docs/v1-roadmap.md`. Work it **strictly top-down**. After landing a slice, **update this block**: tick the entry, retitle "Recommended next slice" to the next unticked entry, and set `Model:` to that entry's model.
 
-### Recommended next slice: **Slice 14 — B.6 Real Google Contacts plugin (#229)**
+### Recommended next slice: **Slice 15 — B.7 PRD amendment: drop Slides from story 31 (#230)**
 
 Model: haiku
 Status: ready
@@ -22,7 +22,7 @@ Status: ready
 3. [x] #226 — B.3 Real Google Maps plugin (static API key, youtube.py posture) — Model: sonnet
 4. [x] #227 — B.4 Real Google Tasks plugin — Model: haiku
 5. [x] #228 — B.5 Real Google Drive plugin — Model: sonnet
-6. [ ] #229 — B.6 Real Google Contacts plugin — Model: haiku
+6. [x] #229 — B.6 Real Google Contacts plugin — Model: haiku
 7. [ ] #230 — B.7 PRD amendment: drop Slides from story 31 — Model: haiku
 8. [ ] #231 — B.8 Retire superseded n8n tools from google_workspace.py — Model: haiku
 9. [ ] #232 — F.1 Calendar offline fallback (local SQLite) — Model: sonnet
@@ -35,6 +35,10 @@ Status: ready
 16. [ ] #239 — V.1 Human live-verify checklist + Bucket D handoff — Model: sonnet
 
 After landing the **last** entry (#239), set `Status: done`. v1 then waits on the human work that no slice can do: the `docs/v1-live-verify.md` checklist (one OAuth consent pass + per-plugin smoke tests) and the Bucket D stability campaign (8-hour passive run, daily-driver usage). **No Google-plugin slice live-verifies against the real account** — that is deliberately batched into #239 so the loop never blocks on browser OAuth consent.
+
+### Reference PRs (Slice 14)
+
+[#247](https://github.com/iggyghub/OpenMind/pull/247) Google Contacts plugin (#229).
 
 ### Reference PRs (Slice 13)
 
