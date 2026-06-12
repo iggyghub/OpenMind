@@ -307,7 +307,10 @@ class TestShellPlugin:
     async def test_run_command_timeout_returns_error(self):
         from plugins.shell import create
         plugin = create()
-        result = await plugin.call_tool("run_command", {"command": "sleep 10", "timeout": 0.1})
+        # cmd.exe has no `sleep` builtin, so use the interpreter for a
+        # long-running command that exists on every platform
+        sleep_cmd = f'"{sys.executable}" -c "import time; time.sleep(10)"'
+        result = await plugin.call_tool("run_command", {"command": sleep_cmd, "timeout": 0.1})
         assert result.is_error
 
     @pytest.mark.asyncio
