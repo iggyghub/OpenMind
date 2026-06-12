@@ -59,7 +59,7 @@ try {
         $fallbackContent = Get-Content $fallbackFile -Raw
         $fallbackChecks = @(
             @{ label = "calendar fallback (SQLite, #232)"; pattern = "CalendarSQLiteFallback" },
-            @{ label = "docs fallback (ODF, #233)";        pattern = "DocsFallback" },
+            @{ label = "docs fallback (ODF, #233)";        pattern = "DocsODTFallback" },
             @{ label = "maps fallback (Nominatim, #234)";  pattern = "NominatimFallback" },
             @{ label = "tasks fallback (SQLite, #235)";    pattern = "TasksSQLiteFallback" },
             @{ label = "contacts fallback (SQLite, #236)"; pattern = "ContactsSQLiteFallback" }
