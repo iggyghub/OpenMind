@@ -1621,3 +1621,151 @@ class TestTasksSQLiteFallback:
         personal_tasks = json.loads(personal_result.content)["tasks"]
         assert len(personal_tasks) == 1
         assert personal_tasks[0]["title"] == "Personal task"
+
+
+class TestContactsSQLiteFallback:
+    @pytest.mark.asyncio
+    async def test_contacts_create_falls_back_to_sqlite_on_primary_failure(self):
+        """contacts_create falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail("Failed to connect to Google Contacts")
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        result = await plugin.call_tool("contacts_create", {
+            "display_name": "John Doe",
+            "email": "john@example.com",
+        })
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert payload["display_name"] == "John Doe"
+        assert payload["email"] == "john@example.com"
+
+    @pytest.mark.asyncio
+    async def test_contacts_search_falls_back_to_sqlite_on_primary_failure(self):
+        """contacts_search falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail("Google Contacts unreachable")
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        result = await plugin.call_tool("contacts_search", {"query": "John"})
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert "contacts" in payload
+
+    @pytest.mark.asyncio
+    async def test_contacts_create_search_roundtrip(self):
+        """Create a contact then search for it — proves SQLite persistence."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        await plugin.call_tool("contacts_create", {
+            "display_name": "Alice Smith",
+            "email": "alice@example.com",
+        })
+        result = await plugin.call_tool("contacts_search", {"query": "Alice"})
+        payload = json.loads(result.content)
+        names = [c["display_name"] for c in payload["contacts"]]
+        assert "Alice Smith" in names
+
+    @pytest.mark.asyncio
+    async def test_contacts_get_falls_back_to_sqlite_on_primary_failure(self):
+        """contacts_get falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        create_result = await plugin.call_tool("contacts_create", {
+            "display_name": "Bob Johnson",
+            "phone": "+1234567890",
+        })
+        resource_name = json.loads(create_result.content)["resource_name"]
+
+        get_result = await plugin.call_tool("contacts_get", {"resource_name": resource_name})
+        assert not get_result.is_error
+        payload = json.loads(get_result.content)
+        assert payload["display_name"] == "Bob Johnson"
+        assert payload["phone"] == "+1234567890"
+
+    @pytest.mark.asyncio
+    async def test_contacts_update_falls_back_to_sqlite_on_primary_failure(self):
+        """contacts_update falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        create_result = await plugin.call_tool("contacts_create", {
+            "display_name": "Carol White",
+            "email": "carol@example.com",
+        })
+        resource_name = json.loads(create_result.content)["resource_name"]
+
+        update_result = await plugin.call_tool("contacts_update", {
+            "resource_name": resource_name,
+            "email": "carol.white@example.com",
+        })
+        assert not update_result.is_error
+        payload = json.loads(update_result.content)
+        assert payload["email"] == "carol.white@example.com"
+
+    @pytest.mark.asyncio
+    async def test_contacts_delete_falls_back_to_sqlite_on_primary_failure(self):
+        """contacts_delete falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        create_result = await plugin.call_tool("contacts_create", {
+            "display_name": "Dave Brown",
+            "email": "dave@example.com",
+        })
+        resource_name = json.loads(create_result.content)["resource_name"]
+
+        delete_result = await plugin.call_tool("contacts_delete", {"resource_name": resource_name})
+        assert not delete_result.is_error
+        payload = json.loads(delete_result.content)
+        assert payload.get("deleted") is True
+
+    @pytest.mark.asyncio
+    async def test_contacts_search_respects_max_results(self):
+        """contacts_search respects max_results parameter."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        for i in range(15):
+            await plugin.call_tool("contacts_create", {
+                "display_name": f"Contact {i}",
+            })
+
+        result = await plugin.call_tool("contacts_search", {
+            "query": "Contact",
+            "max_results": 5,
+        })
+        payload = json.loads(result.content)
+        assert len(payload["contacts"]) == 5
+
+    @pytest.mark.asyncio
+    async def test_contacts_search_by_email(self):
+        """contacts_search finds contacts by email."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        await plugin.call_tool("contacts_create", {
+            "display_name": "Eve Green",
+            "email": "eve@example.com",
+        })
+
+        result = await plugin.call_tool("contacts_search", {"query": "eve@example.com"})
+        payload = json.loads(result.content)
+        assert len(payload["contacts"]) == 1
+        assert payload["contacts"][0]["email"] == "eve@example.com"
