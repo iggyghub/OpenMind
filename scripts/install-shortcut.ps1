@@ -54,12 +54,12 @@ try {
         # -NoProfile keeps the launch fast (no $PROFILE dot-source).
         # -ExecutionPolicy Bypass lets the .ps1 run without per-machine
         #   Set-ExecutionPolicy ceremony.
-        # -WindowStyle Normal keeps the launcher console visible so the
-        #   user sees what's happening during launch (~5 seconds, then it
-        #   self-closes). Flip to Hidden once daily-driver stable.
+        # -WindowStyle Hidden keeps the launcher console invisible; logs go
+        #   to launcher.log in the repo root. Use "Show Logs" from the
+        #   Felix tray menu to inspect them.
         # -File runs the script and exits, so the parent powershell.exe
         #   doesn't linger.
-        $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Normal -File `"$launcher`""
+        $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
         $shortcut.WorkingDirectory = $repoRoot
         $shortcut.Description = "Launch Felix (OpenMind)"
         $shortcut.Save()

@@ -121,11 +121,14 @@ if (Test-CerebralPort) {
 
 # ---- 2. start Cerebral --------------------------------------------------------
 Log "Starting Cerebral (Python backend)..."
+$cerebralLog = Join-Path $repoRoot "cerebral.log"
 $cerebral = Start-Process `
     -FilePath "python" `
     -ArgumentList "-m","cerebral.main" `
     -WorkingDirectory $repoRoot `
-    -WindowStyle Minimized `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $cerebralLog `
+    -RedirectStandardError  ($cerebralLog -replace '\.log$', '.err.log') `
     -PassThru
 
 # ---- 3. wait for Cerebral to bind ws://localhost:7766 -------------------------
