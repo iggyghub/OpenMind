@@ -1,5 +1,5 @@
 """
-Google Workspace fallback plugin tests — Issue #21.
+Google Workspace fallback plugin tests — Issue #21 + Issue #232.
 
 TDD vertical slices for GoogleWorkspaceFallbackPlugin:
   - Pass-through when primary (Google/n8n) succeeds
@@ -7,8 +7,8 @@ TDD vertical slices for GoogleWorkspaceFallbackPlugin:
       gmail_send / gmail_search   → IMAP/SMTP (stdlib imaplib + smtplib)
       sheets_read / sheets_write  → Grist HTTP API
       drive_list / drive_upload   → Nextcloud WebDAV
+      calendar_* (4 tools)        → local SQLite (Issue #232)
   - Validation errors (missing required args) pass through unchanged
-  - Calendar tools have no OSS fallback; primary error is returned
   - IMAP query builder: from:, subject:, is:unread translations
   - Grist range parser: "Sheet1!A1:D10" → table="Sheet1"
   - create() factory for orchestrator auto-registration
@@ -621,38 +621,122 @@ class TestDriveNextcloudUploadFallback:
 
 
 # ===========================================================================
-# Cycle 9 — Calendar: no OSS fallback (pass through primary error)
+# Cycle 9 — Calendar → SQLite fallback (Issue #232)
 # ===========================================================================
 
-class TestCalendarNoFallback:
+class TestCalendarSQLiteFallback:
     @pytest.mark.asyncio
-    async def test_calendar_create_returns_primary_error_on_failure(self):
-        """calendar_create_event has no OSS fallback; primary error is returned."""
+    async def test_calendar_create_falls_back_to_sqlite_on_primary_failure(self):
+        """calendar_create_event falls back to SQLite when primary fails."""
         from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
 
-        err_msg = "Failed to connect to n8n"
-        primary = _make_primary_fail(err_msg)
-        plugin = GoogleWorkspaceFallbackPlugin(primary=primary)
+        primary = _make_primary_fail("Failed to connect to Google Calendar")
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
 
         result = await plugin.call_tool("calendar_create_event", {
             "title": "Standup",
             "start": "2026-05-10T10:00:00",
         })
-        assert result.is_error
-        assert result.content == err_msg
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert payload["title"] == "Standup"
 
     @pytest.mark.asyncio
-    async def test_calendar_list_returns_primary_error_on_failure(self):
-        """calendar_list_events has no OSS fallback; primary error is returned."""
+    async def test_calendar_list_falls_back_to_sqlite_on_primary_failure(self):
+        """calendar_list_events falls back to SQLite when primary fails."""
         from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
 
-        err_msg = "n8n unreachable"
-        primary = _make_primary_fail(err_msg)
-        plugin = GoogleWorkspaceFallbackPlugin(primary=primary)
+        primary = _make_primary_fail("Google Calendar unreachable")
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
 
         result = await plugin.call_tool("calendar_list_events", {})
-        assert result.is_error
-        assert result.content == err_msg
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert "events" in payload
+
+    @pytest.mark.asyncio
+    async def test_calendar_create_list_roundtrip(self):
+        """Create an event then list it back — proves SQLite persistence."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        await plugin.call_tool("calendar_create_event", {
+            "title": "Weekly sync",
+            "start": "2026-06-01T09:00:00",
+            "end": "2026-06-01T10:00:00",
+        })
+        result = await plugin.call_tool("calendar_list_events", {})
+        payload = json.loads(result.content)
+        titles = [e["title"] for e in payload["events"]]
+        assert "Weekly sync" in titles
+
+    @pytest.mark.asyncio
+    async def test_calendar_update_falls_back_to_sqlite_on_primary_failure(self):
+        """calendar_update_event falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        create_result = await plugin.call_tool("calendar_create_event", {
+            "title": "Old title",
+            "start": "2026-06-10T08:00:00",
+        })
+        event_id = json.loads(create_result.content)["id"]
+
+        update_result = await plugin.call_tool("calendar_update_event", {
+            "id": event_id,
+            "title": "New title",
+        })
+        assert not update_result.is_error
+        payload = json.loads(update_result.content)
+        assert "title" in payload["updated"]
+
+    @pytest.mark.asyncio
+    async def test_calendar_delete_falls_back_to_sqlite_on_primary_failure(self):
+        """calendar_delete_event falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        create_result = await plugin.call_tool("calendar_create_event", {
+            "title": "Doomed meeting",
+            "start": "2026-06-15T14:00:00",
+        })
+        event_id = json.loads(create_result.content)["id"]
+
+        delete_result = await plugin.call_tool("calendar_delete_event", {"id": event_id})
+        assert not delete_result.is_error
+        payload = json.loads(delete_result.content)
+        assert payload.get("deleted") is True
+
+    @pytest.mark.asyncio
+    async def test_calendar_list_filtered_by_date_range(self):
+        """calendar_list_events respects from/to date filters via SQLite."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        for title, start in [
+            ("Early event", "2026-01-01T09:00:00"),
+            ("Mid event", "2026-06-01T09:00:00"),
+            ("Late event", "2026-12-01T09:00:00"),
+        ]:
+            await plugin.call_tool("calendar_create_event", {"title": title, "start": start})
+
+        result = await plugin.call_tool("calendar_list_events", {
+            "from": "2026-05-01T00:00:00",
+            "to": "2026-07-01T00:00:00",
+        })
+        payload = json.loads(result.content)
+        titles = [e["title"] for e in payload["events"]]
+        assert "Mid event" in titles
+        assert "Early event" not in titles
+        assert "Late event" not in titles
 
 
 # ===========================================================================
@@ -744,8 +828,8 @@ class TestGristRangeParser:
 # ===========================================================================
 
 class TestListTools:
-    def test_list_tools_returns_eight_tools(self):
-        """GoogleWorkspaceFallbackPlugin.list_tools() returns exactly 8 tools."""
+    def test_list_tools_returns_ten_tools(self):
+        """GoogleWorkspaceFallbackPlugin.list_tools() returns exactly 10 tools."""
         from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin, _StubPrimaryPlugin
 
         plugin = GoogleWorkspaceFallbackPlugin(primary=_StubPrimaryPlugin())
@@ -755,6 +839,8 @@ class TestListTools:
             "gmail_search",
             "calendar_create_event",
             "calendar_list_events",
+            "calendar_update_event",
+            "calendar_delete_event",
             "drive_list_files",
             "drive_upload_file",
             "sheets_read_range",

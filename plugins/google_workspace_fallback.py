@@ -7,9 +7,7 @@ connectivity error, automatically routes to local OSS equivalents:
   gmail_send / gmail_search   → IMAP/SMTP  (stdlib imaplib + smtplib)
   sheets_read / sheets_write  → Grist HTTP API  (default: localhost:8484)
   drive_list / drive_upload   → Nextcloud WebDAV  (configurable host)
-  calendar_create / list      → no fallback — primary error returned
-                                (Google Calendar → local Scheduler is a
-                                growth-loop candidate, not in scope here)
+  calendar_* (4 tools)        → local SQLite scheduler (Issue #232)
 
 Offline detection: if the primary plugin returns is_error=True AND the error
 content does not look like a client-side validation error ("is required",
@@ -21,7 +19,8 @@ Injectable dependencies (all optional — defaults used in production):
   smtp_fn   : (host, port) → SMTP_SSL-like connection
   fetch_fn  : async (method, url, *, headers, json) → dict
               used by both GristFallback and NextcloudFallback
-  run_fn    : reserved for future LibreOffice (Docs/Slides) fallback
+  db_path   : path to the SQLite file used by CalendarSQLiteFallback;
+              ":memory:" is accepted for tests.
 
 Intentional omissions:
   • Nextcloud is conditional — drive fallbacks return a clear error when
@@ -414,6 +413,56 @@ class NextcloudFallback:
 
 
 # ---------------------------------------------------------------------------
+# SQLite calendar fallback (Issue #232)
+# ---------------------------------------------------------------------------
+
+class CalendarSQLiteFallback:
+    """
+    Routes calendar_list_events / calendar_create_event / calendar_update_event
+    / calendar_delete_event to the local SchedulerPlugin (SQLite-backed).
+
+    Args are mapped from the calendar plugin's naming convention (start/end/from/to)
+    to the scheduler's convention (start_iso/end_iso/from_iso/to_iso).
+    """
+
+    def __init__(self, db_path: str | None = None) -> None:
+        from plugins.scheduler import SchedulerPlugin
+        self._sched = SchedulerPlugin(db_path=db_path)
+
+    def list_events(self, args: dict) -> ToolResult:
+        mapped: dict = {}
+        if args.get("from"):
+            mapped["from_iso"] = args["from"]
+        if args.get("to"):
+            mapped["to_iso"] = args["to"]
+        return self._sched._list_events(mapped)
+
+    def create_event(self, args: dict) -> ToolResult:
+        mapped: dict = {
+            "title": args.get("title", ""),
+            "start_iso": args.get("start", ""),
+        }
+        if args.get("end"):
+            mapped["end_iso"] = args["end"]
+        return self._sched._create_event(mapped)
+
+    def update_event(self, args: dict) -> ToolResult:
+        mapped: dict = {"id": args.get("id")}
+        if args.get("title"):
+            mapped["title"] = args["title"]
+        if args.get("start"):
+            mapped["start_iso"] = args["start"]
+        if args.get("end"):
+            mapped["end_iso"] = args["end"]
+        if args.get("recurrence"):
+            mapped["recurrence"] = args["recurrence"]
+        return self._sched._update_event(mapped)
+
+    def delete_event(self, args: dict) -> ToolResult:
+        return self._sched._delete_event({"id": args.get("id")})
+
+
+# ---------------------------------------------------------------------------
 # Tools with OSS fallbacks
 # ---------------------------------------------------------------------------
 
@@ -424,6 +473,10 @@ _FALLBACK_TOOLS: frozenset[str] = frozenset({
     "sheets_write_range",
     "drive_list_files",
     "drive_upload_file",
+    "calendar_list_events",
+    "calendar_create_event",
+    "calendar_update_event",
+    "calendar_delete_event",
 })
 
 
@@ -459,6 +512,16 @@ class _StubPrimaryPlugin:
             Tool(
                 name="calendar_list_events",
                 description="List Google Calendar events.",
+                plugin="google_workspace",
+            ),
+            Tool(
+                name="calendar_update_event",
+                description="Update an existing calendar event (fallback to SQLite).",
+                plugin="google_workspace",
+            ),
+            Tool(
+                name="calendar_delete_event",
+                description="Delete a calendar event by id (fallback to SQLite).",
                 plugin="google_workspace",
             ),
             Tool(
@@ -527,6 +590,8 @@ class GoogleWorkspaceFallbackPlugin:
         nextcloud_url: str | None = os.environ.get("NEXTCLOUD_URL"),
         nextcloud_username: str = os.environ.get("NEXTCLOUD_USERNAME", ""),
         nextcloud_password: str = os.environ.get("NEXTCLOUD_PASSWORD", ""),
+        # Calendar SQLite fallback
+        db_path: str | None = None,
     ) -> None:
         if primary is not None:
             self._primary = primary
@@ -558,6 +623,7 @@ class GoogleWorkspaceFallbackPlugin:
             username=nextcloud_username,
             password=nextcloud_password,
         )
+        self._calendar_sqlite = CalendarSQLiteFallback(db_path=db_path)
 
     # ------------------------------------------------------------------
     # Plugin protocol
@@ -622,6 +688,14 @@ class GoogleWorkspaceFallbackPlugin:
                 folder_id=args.get("folder_id"),
                 mime_type=args.get("mime_type"),
             )
+        if tool_name == "calendar_list_events":
+            return self._calendar_sqlite.list_events(args)
+        if tool_name == "calendar_create_event":
+            return self._calendar_sqlite.create_event(args)
+        if tool_name == "calendar_update_event":
+            return self._calendar_sqlite.update_event(args)
+        if tool_name == "calendar_delete_event":
+            return self._calendar_sqlite.delete_event(args)
         # Unreachable given _FALLBACK_TOOLS guard, but belt-and-suspenders:
         return ToolResult(content=f"No OSS fallback for tool: {tool_name}", is_error=True)
 
