@@ -1352,7 +1352,8 @@ _IRREVERSIBLE_PLUGINS: frozenset[str] = frozenset({
     "gmail.py",
     "openclaw_channels.py",
     "discord_user.py",
-    "google_docs.py",  # docs_create + docs_append (#224)
+    "google_docs.py",    # docs_create + docs_append (#224)
+    "google_sheets.py",  # sheets_write_range + sheets_append_row + sheets_create (#225)
 })
 
 
