@@ -621,6 +621,168 @@ def _row_to_task(row) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# SQLite contacts fallback (Issue #236)
+# ---------------------------------------------------------------------------
+
+class ContactsSQLiteFallback:
+    """
+    Routes contacts_search / contacts_get / contacts_create / contacts_update /
+    contacts_delete to a local SQLite backing store.
+
+    Maps Google People API naming convention to internal SQLite representation.
+    """
+
+    def __init__(self, db_path: str | None = None) -> None:
+        import sqlite3
+        from pathlib import Path
+
+        if db_path is None:
+            db_path = str(Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db")
+        if db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._con = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._con.row_factory = sqlite3.Row
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        self._con.executescript("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_name   TEXT    UNIQUE,
+                display_name    TEXT    NOT NULL,
+                email           TEXT,
+                phone           TEXT,
+                created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(display_name);
+        """)
+        self._con.commit()
+
+    def search_contacts(self, args: dict) -> ToolResult:
+        query = args.get("query", "").strip()
+        if not query:
+            return ToolResult(content="query is required", is_error=True)
+        max_results = args.get("max_results", 10)
+
+        rows = self._con.execute(
+            "SELECT * FROM contacts WHERE display_name LIKE ? OR email LIKE ? ORDER BY created_at DESC LIMIT ?",
+            (f"%{query}%", f"%{query}%", max_results),
+        ).fetchall()
+        contacts = [_row_to_contact(r) for r in rows]
+        return ToolResult(content=json.dumps({"contacts": contacts}))
+
+    def get_contact(self, args: dict) -> ToolResult:
+        resource_name = args.get("resource_name", "").strip()
+        if not resource_name:
+            return ToolResult(content="resource_name is required", is_error=True)
+
+        row = self._con.execute(
+            "SELECT * FROM contacts WHERE resource_name=?",
+            (resource_name,),
+        ).fetchone()
+        if not row:
+            return ToolResult(content=f"Contact {resource_name} not found", is_error=True)
+
+        return ToolResult(content=json.dumps(_row_to_contact(row)))
+
+    def create_contact(self, args: dict) -> ToolResult:
+        display_name = args.get("display_name", "").strip()
+        email = args.get("email", "").strip() or None
+        phone = args.get("phone", "").strip() or None
+
+        if not display_name:
+            return ToolResult(content="display_name is required", is_error=True)
+
+        resource_name = f"people/{uuid.uuid4().hex}"
+        cur = self._con.execute(
+            "INSERT INTO contacts (resource_name, display_name, email, phone) VALUES (?, ?, ?, ?)",
+            (resource_name, display_name, email, phone),
+        )
+        self._con.commit()
+        return ToolResult(content=json.dumps({
+            "resource_name": resource_name,
+            "display_name": display_name,
+            "email": email or "",
+            "phone": phone or "",
+        }))
+
+    def update_contact(self, args: dict) -> ToolResult:
+        resource_name = args.get("resource_name", "").strip()
+        if not resource_name:
+            return ToolResult(content="resource_name is required", is_error=True)
+
+        row = self._con.execute(
+            "SELECT * FROM contacts WHERE resource_name=?",
+            (resource_name,),
+        ).fetchone()
+        if not row:
+            return ToolResult(content=f"Contact {resource_name} not found", is_error=True)
+
+        display_name = args.get("display_name")
+        email = args.get("email")
+        phone = args.get("phone")
+
+        if display_name is not None:
+            display_name = display_name.strip()
+        if email is not None:
+            email = email.strip() or None
+        if phone is not None:
+            phone = phone.strip() or None
+
+        updates = []
+        params = []
+        if display_name is not None:
+            updates.append("display_name = ?")
+            params.append(display_name)
+        if email is not None:
+            updates.append("email = ?")
+            params.append(email)
+        if phone is not None:
+            updates.append("phone = ?")
+            params.append(phone)
+
+        if updates:
+            params.append(resource_name)
+            self._con.execute(
+                f"UPDATE contacts SET {', '.join(updates)} WHERE resource_name=?",
+                params,
+            )
+            self._con.commit()
+
+        updated_row = self._con.execute(
+            "SELECT * FROM contacts WHERE resource_name=?",
+            (resource_name,),
+        ).fetchone()
+        return ToolResult(content=json.dumps(_row_to_contact(updated_row)))
+
+    def delete_contact(self, args: dict) -> ToolResult:
+        resource_name = args.get("resource_name", "").strip()
+        if not resource_name:
+            return ToolResult(content="resource_name is required", is_error=True)
+
+        row = self._con.execute(
+            "SELECT id FROM contacts WHERE resource_name=?",
+            (resource_name,),
+        ).fetchone()
+        if not row:
+            return ToolResult(content=f"Contact {resource_name} not found", is_error=True)
+
+        self._con.execute("DELETE FROM contacts WHERE resource_name=?", (resource_name,))
+        self._con.commit()
+        return ToolResult(content=json.dumps({"deleted": True}))
+
+
+def _row_to_contact(row) -> dict:
+    """Convert a SQLite row to a contact dict."""
+    return {
+        "resource_name": row["resource_name"],
+        "display_name": row["display_name"],
+        "email": row["email"] or "",
+        "phone": row["phone"] or "",
+    }
+
+
+# ---------------------------------------------------------------------------
 # ODF fallback (Docs) — Issue #233
 # ---------------------------------------------------------------------------
 
@@ -890,6 +1052,11 @@ _FALLBACK_TOOLS: frozenset[str] = frozenset({
     "tasks_create",
     "tasks_complete",
     "tasks_delete",
+    "contacts_search",
+    "contacts_get",
+    "contacts_create",
+    "contacts_update",
+    "contacts_delete",
 })
 
 _DOCS_FALLBACK_TOOLS: frozenset[str] = frozenset({
@@ -1058,6 +1225,7 @@ class GoogleWorkspaceFallbackPlugin:
         )
         self._calendar_sqlite = CalendarSQLiteFallback(db_path=db_path)
         self._tasks_sqlite = TasksSQLiteFallback(db_path=db_path)
+        self._contacts_sqlite = ContactsSQLiteFallback(db_path=db_path)
 
         if docs_primary is not _UNSET:
             self._docs_primary = docs_primary
@@ -1217,6 +1385,16 @@ class GoogleWorkspaceFallbackPlugin:
             return self._tasks_sqlite.complete_task(args)
         if tool_name == "tasks_delete":
             return self._tasks_sqlite.delete_task(args)
+        if tool_name == "contacts_search":
+            return self._contacts_sqlite.search_contacts(args)
+        if tool_name == "contacts_get":
+            return self._contacts_sqlite.get_contact(args)
+        if tool_name == "contacts_create":
+            return self._contacts_sqlite.create_contact(args)
+        if tool_name == "contacts_update":
+            return self._contacts_sqlite.update_contact(args)
+        if tool_name == "contacts_delete":
+            return self._contacts_sqlite.delete_contact(args)
         # Unreachable given _FALLBACK_TOOLS guard, but belt-and-suspenders:
         return ToolResult(content=f"No OSS fallback for tool: {tool_name}", is_error=True)
 
