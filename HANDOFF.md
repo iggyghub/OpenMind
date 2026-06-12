@@ -8,9 +8,9 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 **The v1 completion queue is loaded (issue #240).** The Main-window UI epic (#184, slices 1–8) is done; the queue below covers everything that remains for v1 per `docs/v1-roadmap.md`. Work it **strictly top-down**. After landing a slice, **update this block**: tick the entry, retitle "Recommended next slice" to the next unticked entry, and set `Model:` to that entry's model.
 
-### Recommended next slice: **Slice 19 — F.3 Maps OSS fallback (OSM/Nominatim) (#234)**
+### Recommended next slice: **Slice 20 — F.4 Tasks offline fallback (#235)**
 
-Model: sonnet
+Model: haiku
 Status: ready
 
 (`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status:` is the loop's gate: ready = next slice can start, blocked = a human needs to look (add a one-line reason), done = no more planned slices.)
@@ -27,7 +27,7 @@ Status: ready
 8. [x] #231 — B.8 Retire superseded n8n tools from google_workspace.py — Model: haiku
 9. [x] #232 — F.1 Calendar offline fallback (local SQLite) — Model: sonnet
 10. [x] #233 — F.2 Docs offline fallback (LibreOffice Writer) — Model: sonnet
-11. [ ] #234 — F.3 Maps OSS fallback (OSM/Nominatim) — Model: sonnet
+11. [x] #234 — F.3 Maps OSS fallback (OSM/Nominatim) — Model: sonnet
 12. [ ] #235 — F.4 Tasks offline fallback (clone of F.1) — Model: haiku
 13. [ ] #236 — F.5 Contacts offline fallback (local SQLite) — Model: haiku
 14. [ ] #237 — C.1 Profile auto-detect: default to last-used — Model: sonnet
@@ -35,6 +35,10 @@ Status: ready
 16. [ ] #239 — V.1 Human live-verify checklist + Bucket D handoff — Model: sonnet
 
 After landing the **last** entry (#239), set `Status: done`. v1 then waits on the human work that no slice can do: the `docs/v1-live-verify.md` checklist (one OAuth consent pass + per-plugin smoke tests) and the Bucket D stability campaign (8-hour passive run, daily-driver usage). **No Google-plugin slice live-verifies against the real account** — that is deliberately batched into #239 so the loop never blocks on browser OAuth consent.
+
+### Reference PRs (Slice 19)
+
+[#252](https://github.com/iggyghub/OpenMind/pull/252) Maps OSS fallback via Nominatim/OSM (#234).
 
 ### Reference PRs (Slice 18)
 
