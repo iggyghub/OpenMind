@@ -489,6 +489,138 @@ class CalendarSQLiteFallback:
 
 
 # ---------------------------------------------------------------------------
+# SQLite tasks fallback (Issue #235)
+# ---------------------------------------------------------------------------
+
+class TasksSQLiteFallback:
+    """
+    Routes tasks_list / tasks_create / tasks_complete / tasks_delete to a
+    local SQLite backing store.
+
+    Maps Google Tasks API naming convention to internal SQLite representation.
+    """
+
+    def __init__(self, db_path: str | None = None) -> None:
+        import sqlite3
+        from pathlib import Path
+
+        if db_path is None:
+            db_path = str(Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db")
+        if db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._con = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._con.row_factory = sqlite3.Row
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        self._con.executescript("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                tasklist_id TEXT    NOT NULL,
+                title       TEXT    NOT NULL,
+                status      TEXT    DEFAULT 'needsAction',
+                notes       TEXT,
+                due         TEXT,
+                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        self._con.commit()
+
+    def list_tasks(self, args: dict) -> ToolResult:
+        tasklist_id = args.get("tasklist_id")
+        if not tasklist_id:
+            return ToolResult(content="tasklist_id is required", is_error=True)
+        max_results = args.get("max_results", 10)
+
+        rows = self._con.execute(
+            "SELECT * FROM tasks WHERE tasklist_id=? ORDER BY created_at DESC LIMIT ?",
+            (tasklist_id, max_results),
+        ).fetchall()
+        tasks = [_row_to_task(r) for r in rows]
+        return ToolResult(content=json.dumps({"tasks": tasks}))
+
+    def create_task(self, args: dict) -> ToolResult:
+        tasklist_id = args.get("tasklist_id", "").strip()
+        title = args.get("title", "").strip()
+        notes = args.get("notes")
+        due = args.get("due")
+
+        if not tasklist_id:
+            return ToolResult(content="tasklist_id is required", is_error=True)
+        if not title:
+            return ToolResult(content="title is required", is_error=True)
+
+        cur = self._con.execute(
+            "INSERT INTO tasks (tasklist_id, title, status, notes, due) VALUES (?, ?, ?, ?, ?)",
+            (tasklist_id, title, "needsAction", notes, due),
+        )
+        self._con.commit()
+        return ToolResult(content=json.dumps({
+            "id": str(cur.lastrowid),
+            "title": title,
+            "status": "needsAction",
+        }))
+
+    def complete_task(self, args: dict) -> ToolResult:
+        task_id = args.get("task_id")
+        tasklist_id = args.get("tasklist_id")
+
+        if not task_id:
+            return ToolResult(content="task_id is required", is_error=True)
+        if not tasklist_id:
+            return ToolResult(content="tasklist_id is required", is_error=True)
+
+        row = self._con.execute(
+            "SELECT id FROM tasks WHERE id=? AND tasklist_id=?",
+            (task_id, tasklist_id),
+        ).fetchone()
+        if not row:
+            return ToolResult(content=f"Task {task_id} not found", is_error=True)
+
+        self._con.execute(
+            "UPDATE tasks SET status=? WHERE id=?",
+            ("completed", task_id),
+        )
+        self._con.commit()
+        return ToolResult(content=json.dumps({
+            "id": str(task_id),
+            "status": "completed",
+        }))
+
+    def delete_task(self, args: dict) -> ToolResult:
+        task_id = args.get("task_id")
+        tasklist_id = args.get("tasklist_id")
+
+        if not task_id:
+            return ToolResult(content="task_id is required", is_error=True)
+        if not tasklist_id:
+            return ToolResult(content="tasklist_id is required", is_error=True)
+
+        row = self._con.execute(
+            "SELECT id FROM tasks WHERE id=? AND tasklist_id=?",
+            (task_id, tasklist_id),
+        ).fetchone()
+        if not row:
+            return ToolResult(content=f"Task {task_id} not found", is_error=True)
+
+        self._con.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+        self._con.commit()
+        return ToolResult(content=json.dumps({"deleted": True}))
+
+
+def _row_to_task(row) -> dict:
+    """Convert a SQLite row to a task dict."""
+    return {
+        "id": str(row["id"]),
+        "tasklist_id": row["tasklist_id"],
+        "title": row["title"],
+        "status": row["status"],
+        "notes": row["notes"] or "",
+        "due": row["due"] or "",
+    }
+
+
+# ---------------------------------------------------------------------------
 # ODF fallback (Docs) — Issue #233
 # ---------------------------------------------------------------------------
 
@@ -754,6 +886,10 @@ _FALLBACK_TOOLS: frozenset[str] = frozenset({
     "calendar_create_event",
     "calendar_update_event",
     "calendar_delete_event",
+    "tasks_list",
+    "tasks_create",
+    "tasks_complete",
+    "tasks_delete",
 })
 
 _DOCS_FALLBACK_TOOLS: frozenset[str] = frozenset({
@@ -921,6 +1057,7 @@ class GoogleWorkspaceFallbackPlugin:
             password=nextcloud_password,
         )
         self._calendar_sqlite = CalendarSQLiteFallback(db_path=db_path)
+        self._tasks_sqlite = TasksSQLiteFallback(db_path=db_path)
 
         if docs_primary is not _UNSET:
             self._docs_primary = docs_primary
@@ -1072,6 +1209,14 @@ class GoogleWorkspaceFallbackPlugin:
             return self._calendar_sqlite.update_event(args)
         if tool_name == "calendar_delete_event":
             return self._calendar_sqlite.delete_event(args)
+        if tool_name == "tasks_list":
+            return self._tasks_sqlite.list_tasks(args)
+        if tool_name == "tasks_create":
+            return self._tasks_sqlite.create_task(args)
+        if tool_name == "tasks_complete":
+            return self._tasks_sqlite.complete_task(args)
+        if tool_name == "tasks_delete":
+            return self._tasks_sqlite.delete_task(args)
         # Unreachable given _FALLBACK_TOOLS guard, but belt-and-suspenders:
         return ToolResult(content=f"No OSS fallback for tool: {tool_name}", is_error=True)
 

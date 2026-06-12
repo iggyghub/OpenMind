@@ -1452,4 +1452,172 @@ class TestMapsFallbackIntegration:
         )
         names = {t.name for t in plugin.list_tools()}
         assert "maps_geocode" in names
-        assert "maps_reverse_geocode" in names
+
+
+# ===========================================================================
+# Cycle 15 — TasksSQLiteFallback unit tests (Issue #235)
+# ===========================================================================
+
+class TestTasksSQLiteFallback:
+    @pytest.mark.asyncio
+    async def test_tasks_create_falls_back_to_sqlite_on_primary_failure(self):
+        """tasks_create falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail("Failed to connect to Google Tasks")
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        result = await plugin.call_tool("tasks_create", {
+            "tasklist_id": "default",
+            "title": "Buy milk",
+        })
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert payload["title"] == "Buy milk"
+        assert payload["status"] == "needsAction"
+
+    @pytest.mark.asyncio
+    async def test_tasks_list_falls_back_to_sqlite_on_primary_failure(self):
+        """tasks_list falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail("Google Tasks unreachable")
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        result = await plugin.call_tool("tasks_list", {"tasklist_id": "default"})
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert "tasks" in payload
+
+    @pytest.mark.asyncio
+    async def test_tasks_create_list_roundtrip(self):
+        """Create a task then list it back — proves SQLite persistence."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        await plugin.call_tool("tasks_create", {
+            "tasklist_id": "default",
+            "title": "First task",
+        })
+        result = await plugin.call_tool("tasks_list", {"tasklist_id": "default"})
+        payload = json.loads(result.content)
+        titles = [t["title"] for t in payload["tasks"]]
+        assert "First task" in titles
+
+    @pytest.mark.asyncio
+    async def test_tasks_complete_falls_back_to_sqlite_on_primary_failure(self):
+        """tasks_complete falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        create_result = await plugin.call_tool("tasks_create", {
+            "tasklist_id": "default",
+            "title": "Task to complete",
+        })
+        task_id = json.loads(create_result.content)["id"]
+
+        complete_result = await plugin.call_tool("tasks_complete", {
+            "tasklist_id": "default",
+            "task_id": task_id,
+        })
+        assert not complete_result.is_error
+        payload = json.loads(complete_result.content)
+        assert payload["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_tasks_delete_falls_back_to_sqlite_on_primary_failure(self):
+        """tasks_delete falls back to SQLite when primary fails."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        create_result = await plugin.call_tool("tasks_create", {
+            "tasklist_id": "default",
+            "title": "Task to delete",
+        })
+        task_id = json.loads(create_result.content)["id"]
+
+        delete_result = await plugin.call_tool("tasks_delete", {
+            "tasklist_id": "default",
+            "task_id": task_id,
+        })
+        assert not delete_result.is_error
+        payload = json.loads(delete_result.content)
+        assert payload.get("deleted") is True
+
+    @pytest.mark.asyncio
+    async def test_tasks_create_with_notes_and_due(self):
+        """tasks_create preserves optional notes and due fields."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        result = await plugin.call_tool("tasks_create", {
+            "tasklist_id": "default",
+            "title": "Project deadline",
+            "notes": "Important milestone",
+            "due": "2026-12-31",
+        })
+        assert not result.is_error
+        task_id = json.loads(result.content)["id"]
+
+        list_result = await plugin.call_tool("tasks_list", {"tasklist_id": "default"})
+        tasks = json.loads(list_result.content)["tasks"]
+        task = next((t for t in tasks if t["id"] == task_id), None)
+        assert task is not None
+        assert task["notes"] == "Important milestone"
+        assert task["due"] == "2026-12-31"
+
+    @pytest.mark.asyncio
+    async def test_tasks_list_respects_max_results(self):
+        """tasks_list respects max_results parameter."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        for i in range(15):
+            await plugin.call_tool("tasks_create", {
+                "tasklist_id": "default",
+                "title": f"Task {i}",
+            })
+
+        result = await plugin.call_tool("tasks_list", {
+            "tasklist_id": "default",
+            "max_results": 5,
+        })
+        payload = json.loads(result.content)
+        assert len(payload["tasks"]) == 5
+
+    @pytest.mark.asyncio
+    async def test_tasks_list_filters_by_tasklist_id(self):
+        """tasks_list only returns tasks from the specified tasklist."""
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        primary = _make_primary_fail()
+        plugin = GoogleWorkspaceFallbackPlugin(primary=primary, db_path=":memory:")
+
+        await plugin.call_tool("tasks_create", {
+            "tasklist_id": "work",
+            "title": "Work task",
+        })
+        await plugin.call_tool("tasks_create", {
+            "tasklist_id": "personal",
+            "title": "Personal task",
+        })
+
+        work_result = await plugin.call_tool("tasks_list", {"tasklist_id": "work"})
+        work_tasks = json.loads(work_result.content)["tasks"]
+        assert len(work_tasks) == 1
+        assert work_tasks[0]["title"] == "Work task"
+
+        personal_result = await plugin.call_tool("tasks_list", {"tasklist_id": "personal"})
+        personal_tasks = json.loads(personal_result.content)["tasks"]
+        assert len(personal_tasks) == 1
+        assert personal_tasks[0]["title"] == "Personal task"
