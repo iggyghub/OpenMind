@@ -2,6 +2,12 @@
 
 // Tray-side Permissions store (Issue #53, ADR-0005).
 //
+// IIFE wrapper (Issue #260): prevents const _exports from landing in the
+// global realm scope and clashing with other <script> tags.
+;(function () {
+
+// Original file content below (Issue #53, ADR-0005).
+//
 // Dual-mode export (Issue #202): the same source file feeds the Node
 // unit-test suite via require() AND the Main window's renderer via a
 // plain <script src> tag (the Main window has nodeIntegration: false
@@ -217,3 +223,5 @@ if (typeof module === 'object' && module && module.exports) {
 } else if (typeof window !== 'undefined') {
   window.PermissionsStoreMod = _exports;
 }
+
+})();

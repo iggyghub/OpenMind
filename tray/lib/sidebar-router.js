@@ -7,6 +7,10 @@
 // per ADR-0007 so the renderer can't require()). The UMD-ish wrapper at the
 // bottom checks for module.exports and otherwise exposes the module on
 // window.SidebarRouterMod.
+//
+// IIFE wrapper (Issue #260): prevents const VALID_ROUTES / _exports from
+// landing in the global realm scope and clashing with other <script> tags.
+;(function () {
 
 const VALID_ROUTES = new Set([
   'conversation', 'queue', 'insights', 'memory',
@@ -31,3 +35,5 @@ if (typeof module === 'object' && module && module.exports) {
 } else if (typeof window !== 'undefined') {
   window.SidebarRouterMod = _exports;
 }
+
+})();
