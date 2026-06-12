@@ -1873,7 +1873,38 @@ async def _handle_message(msg: dict) -> None:
         tool_name = d.get("name", "")
         tool_args = d.get("args", {})
         await _record_turn(KIND_TOOL_CALL, {"name": tool_name, "args": tool_args})
-        result = await _orc.call_tool(tool_name, tool_args)
+        # Issue #238 — route tray-IPC calls through the ACL/consent gate
+        # ladder before dispatching. Mirrors the approve_item path but
+        # without passive=True: this is a direct user action, not a queued
+        # ambient candidate. check_capabilities handles irreversible modal
+        # routing and ask-class consent identically to the queue path.
+        plugin_name = _orc.plugin_for_tool(tool_name)
+        caps = (
+            _orc.required_capabilities_for(plugin_name)
+            if plugin_name is not None
+            else None
+        )
+        if caps:
+            decision = await _orc.check_capabilities(
+                tool_name, caps, CallFlags(),
+            )
+        else:
+            decision = Decision.SILENT
+
+        if decision is Decision.SILENT:
+            result = await _orc.call_tool(tool_name, tool_args)
+        else:
+            logger.info(
+                "[cerebral] Tray-IPC call_tool denied: %s (decision=%s)",
+                tool_name, decision.value,
+            )
+            result = ToolResult(
+                content=(
+                    f"Denied: '{tool_name}' was refused by the "
+                    f"capability gate (decision: {decision.value})"
+                ),
+                is_error=True,
+            )
         await _broadcast({
             "type": "tool_result",
             "data": {"name": tool_name, "content": result.content, "is_error": result.is_error},
