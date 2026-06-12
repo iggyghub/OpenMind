@@ -489,11 +489,12 @@ def _get_google_sheets_token_provider() -> _GoogleSheetsTokenProvider | None:
 # section, and _credentials_state_event reports per-provider status from
 # it. The order is the canonical UI render order.
 _STATIC_TOKEN_PROVIDERS: list[tuple[str, str]] = [
-    ("youtube",  "YOUTUBE_API_KEY"),
-    ("todoist",  "TODOIST_API_TOKEN"),
-    ("notion",   "NOTION_API_TOKEN"),
-    ("toggl",    "TOGGL_API_TOKEN"),
-    ("clockify", "CLOCKIFY_API_KEY"),
+    ("youtube",      "YOUTUBE_API_KEY"),
+    ("google_maps",  "GOOGLE_MAPS_API_KEY"),
+    ("todoist",      "TODOIST_API_TOKEN"),
+    ("notion",       "NOTION_API_TOKEN"),
+    ("toggl",        "TOGGL_API_TOKEN"),
+    ("clockify",     "CLOCKIFY_API_KEY"),
 ]
 
 _STATIC_TOKEN_PROVIDER_NAMES: frozenset[str] = frozenset(
@@ -693,6 +694,35 @@ def _get_youtube_token_provider() -> _YouTubeTokenProvider | None:
     if not token:
         return None
     return _YouTubeTokenProvider(token)
+
+
+class _GoogleMapsTokenProvider:
+    """Static-API-key handle for plugins/google_maps.py.
+
+    Google Maps Platform auth is a STATIC user-rotated API key (Google
+    Cloud Console -> Credentials -> API key), passed as a ``?key=``
+    query parameter (no header). The Protocol on plugins/google_maps.py
+    carries only ``current()`` -- there is no refresh capability.
+    Key is per-profile via #112's CredentialStore (api_token field)
+    with GOOGLE_MAPS_API_KEY as the env-var fallback (ADR-0005
+    2026-05-23 amendment / Issue #226)."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def current(self) -> str | None:
+        return self._token or None
+
+
+def _get_google_maps_token_provider() -> _GoogleMapsTokenProvider | None:
+    """Return a Google Maps token provider iff a key is configured (per-
+    profile keyring or GOOGLE_MAPS_API_KEY env), else None. Re-resolved on
+    every tool call so a freshly-set key picks up without a Cerebral
+    restart."""
+    token, _ = _static_token_from_store_or_env("google_maps", "GOOGLE_MAPS_API_KEY")
+    if not token:
+        return None
+    return _GoogleMapsTokenProvider(token)
 
 
 # ── OpenClaw gateway token provider (Issue #168) ──────────────────────────────
@@ -2175,7 +2205,8 @@ def _wire_plugin_seams() -> None:
         ("notion",   "set_token_provider",  _get_notion_token_provider),    # #136
         ("toggl",    "set_token_provider",  _get_toggl_token_provider),     # #142
         ("clockify", "set_token_provider",  _get_clockify_token_provider),  # #145
-        ("youtube",  "set_token_provider",  _get_youtube_token_provider),   # #148
+        ("youtube",      "set_token_provider",  _get_youtube_token_provider),        # #148
+        ("google_maps",  "set_token_provider",  _get_google_maps_token_provider),    # #226
         ("openclaw_channels", "set_token_provider", _get_openclaw_token_provider),  # #168
         ("openclaw_channels", "set_inbound_callback", _bridge_process),     # #168
         ("discord_user",      "set_token_provider", _get_discord_user_token_provider),  # #175

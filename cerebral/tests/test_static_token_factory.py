@@ -89,26 +89,28 @@ def test_static_token_providers_list_canonical_order():
     """The canonical UI render order — locked at issue body §6."""
     from cerebral import main as main_mod
     assert main_mod._STATIC_TOKEN_PROVIDERS == [
-        ("youtube",  "YOUTUBE_API_KEY"),
-        ("todoist",  "TODOIST_API_TOKEN"),
-        ("notion",   "NOTION_API_TOKEN"),
-        ("toggl",    "TOGGL_API_TOKEN"),
-        ("clockify", "CLOCKIFY_API_KEY"),
+        ("youtube",      "YOUTUBE_API_KEY"),
+        ("google_maps",  "GOOGLE_MAPS_API_KEY"),
+        ("todoist",      "TODOIST_API_TOKEN"),
+        ("notion",       "NOTION_API_TOKEN"),
+        ("toggl",        "TOGGL_API_TOKEN"),
+        ("clockify",     "CLOCKIFY_API_KEY"),
     ]
     assert main_mod._STATIC_TOKEN_PROVIDER_NAMES == frozenset({
-        "youtube", "todoist", "notion", "toggl", "clockify",
+        "youtube", "google_maps", "todoist", "notion", "toggl", "clockify",
     })
 
 
 # ── _static_token_from_store_or_env: the helper ──────────────────────────────
 
-_PROVIDERS = ["youtube", "todoist", "notion", "toggl", "clockify"]
+_PROVIDERS = ["youtube", "google_maps", "todoist", "notion", "toggl", "clockify"]
 _ENV_VARS = {
-    "youtube":  "YOUTUBE_API_KEY",
-    "todoist":  "TODOIST_API_TOKEN",
-    "notion":   "NOTION_API_TOKEN",
-    "toggl":    "TOGGL_API_TOKEN",
-    "clockify": "CLOCKIFY_API_KEY",
+    "youtube":      "YOUTUBE_API_KEY",
+    "google_maps":  "GOOGLE_MAPS_API_KEY",
+    "todoist":      "TODOIST_API_TOKEN",
+    "notion":       "NOTION_API_TOKEN",
+    "toggl":        "TOGGL_API_TOKEN",
+    "clockify":     "CLOCKIFY_API_KEY",
 }
 
 
@@ -178,11 +180,12 @@ def test_helper_no_profile_no_env_returns_none(fac_rig, provider):
 # ── per-provider factories: round-trip through the helper ────────────────────
 
 _FACTORIES = [
-    ("youtube",  "_get_youtube_token_provider"),
-    ("todoist",  "_get_todoist_token_provider"),
-    ("notion",   "_get_notion_token_provider"),
-    ("toggl",    "_get_toggl_token_provider"),
-    ("clockify", "_get_clockify_token_provider"),
+    ("youtube",      "_get_youtube_token_provider"),
+    ("google_maps",  "_get_google_maps_token_provider"),
+    ("todoist",      "_get_todoist_token_provider"),
+    ("notion",       "_get_notion_token_provider"),
+    ("toggl",        "_get_toggl_token_provider"),
+    ("clockify",     "_get_clockify_token_provider"),
 ]
 
 
