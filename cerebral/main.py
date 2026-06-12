@@ -293,6 +293,7 @@ _GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/tasks",
 ]
 
 
@@ -470,6 +471,47 @@ def _get_google_sheets_token_provider() -> _GoogleSheetsTokenProvider | None:
     if not meta or meta.get("status") != "connected":
         return None
     return _GoogleSheetsTokenProvider(
+        store, _get_oauth_flow(store), _active_profile.id
+    )
+
+
+class _GoogleTasksTokenProvider:
+    """Per-active-profile bearer-token handle for plugins/google_tasks.py.
+
+    Parallel to `_GoogleSheetsTokenProvider` above: same #112 store + #113
+    flow, same per-active-profile lifecycle. Re-resolved on every tool call
+    because the active profile can switch. The ``tasks`` scope is added to
+    ``_GOOGLE_SCOPES`` alongside docs/gmail/calendar/sheets (#227)."""
+
+    def __init__(self, store: CredentialStore, flow: GoogleOAuthFlow,
+                 profile_id: int) -> None:
+        self._store = store
+        self._flow = flow
+        self._profile_id = profile_id
+
+    def current(self) -> str | None:
+        return self._store.get_secret(
+            self._profile_id, "google", "access_token"
+        )
+
+    def refresh(self) -> str:
+        return self._flow.refresh_access_token(self._profile_id)
+
+
+def _get_google_tasks_token_provider() -> _GoogleTasksTokenProvider | None:
+    """Resolve the active profile's Google Tasks bearer-token provider, or
+    None when no profile is active or it has no connected Google account.
+
+    Mirrors `_get_google_sheets_token_provider`: re-resolved on every tool
+    call (the active profile can switch). Tests patch
+    plugins.google_tasks's provider directly."""
+    if _active_profile is None:
+        return None
+    store = _get_credential_store()
+    meta = store.get_credential(_active_profile.id, "google")
+    if not meta or meta.get("status") != "connected":
+        return None
+    return _GoogleTasksTokenProvider(
         store, _get_oauth_flow(store), _active_profile.id
     )
 
@@ -2201,6 +2243,7 @@ def _wire_plugin_seams() -> None:
         ("calendar",     "set_token_provider",  _get_calendar_token_provider),     # #117
         ("google_docs",    "set_token_provider",  _get_google_docs_token_provider),    # #224
         ("google_sheets",  "set_token_provider",  _get_google_sheets_token_provider),  # #225
+        ("google_tasks",   "set_token_provider",  _get_google_tasks_token_provider),   # #227
         ("todoist",  "set_token_provider",  _get_todoist_token_provider),   # #130
         ("notion",   "set_token_provider",  _get_notion_token_provider),    # #136
         ("toggl",    "set_token_provider",  _get_toggl_token_provider),     # #142
