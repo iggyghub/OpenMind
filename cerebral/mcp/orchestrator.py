@@ -390,10 +390,13 @@ class MCPOrchestrator:
     # ------------------------------------------------------------------
 
     def list_tools(self) -> list[Tool]:
-        tools: list[Tool] = []
-        for plugin in self._plugins.values():
-            tools.extend(plugin.list_tools())
-        return tools
+        # Use _tool_lookup rather than iterating plugins so that when one
+        # plugin takes over a tool from another (e.g. google_workspace
+        # superseding gmail / calendar / etc.) each tool name appears exactly
+        # once.  _tool_lookup is updated in register() with last-write-wins
+        # semantics identical to _tool_index, so its values are always the
+        # authoritative Tool objects.
+        return list(self._tool_lookup.values())
 
     async def check_capabilities(
         self,

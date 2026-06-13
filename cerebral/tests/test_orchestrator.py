@@ -69,6 +69,17 @@ def test_list_tools_aggregates_across_plugins():
     assert "open_url" in names
 
 
+def test_list_tools_no_duplicates_when_plugin_takes_over():
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("gmail", ["gmail_send", "gmail_search"]))
+    orc.register(_make_plugin("google_workspace", ["gmail_send", "gmail_search", "calendar_create_event"]))
+    names = [t.name for t in orc.list_tools()]
+    assert names.count("gmail_send") == 1
+    assert names.count("gmail_search") == 1
+    assert "calendar_create_event" in names
+    assert len(names) == 3
+
+
 # ---------------------------------------------------------------------------
 # Slice 2 — call_tool() routes to the correct plugin
 # ---------------------------------------------------------------------------
