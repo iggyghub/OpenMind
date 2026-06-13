@@ -53,9 +53,8 @@ function Test-Prerequisites {
 
     # python on PATH
     if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-        Write-Host "MISSING: 'python' is not on PATH." -ForegroundColor Red
-        Write-Host "  Install Python 3.10+ from https://www.python.org/ and re-open this shortcut." `
-            -ForegroundColor Red
+        Log "MISSING: 'python' is not on PATH."
+        Log "  Install Python 3.10+ from https://www.python.org/ and re-open this shortcut."
         $hardFail = $true
     } else {
         # cerebral package importable -- catches missing `pip install -e .`.
@@ -64,45 +63,35 @@ function Test-Prerequisites {
         # arrives at Python as `python -c import cerebral` and errors out.
         & python -c "import cerebral" *> $null
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "MISSING: 'cerebral' package not importable." -ForegroundColor Red
-            Write-Host "  Run from the repo root: pip install -e ." -ForegroundColor Red
+            Log "MISSING: 'cerebral' package not importable."
+            Log "  Run from the repo root: pip install -e ."
             $hardFail = $true
         }
     }
 
     # npm on PATH
     if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-        Write-Host "MISSING: 'npm' is not on PATH." -ForegroundColor Red
-        Write-Host "  Install Node.js 22.14+ from https://nodejs.org/ and re-open this shortcut." `
-            -ForegroundColor Red
+        Log "MISSING: 'npm' is not on PATH."
+        Log "  Install Node.js 22.14+ from https://nodejs.org/ and re-open this shortcut."
         $hardFail = $true
     }
 
     # tray dependencies installed
     $trayModules = Join-Path $repoRoot "tray\node_modules"
     if (-not (Test-Path $trayModules)) {
-        Write-Host "MISSING: tray dependencies are not installed." -ForegroundColor Red
-        Write-Host "  Run from the repo root: cd tray; npm install" -ForegroundColor Red
+        Log "MISSING: tray dependencies are not installed."
+        Log "  Run from the repo root: cd tray; npm install"
         $hardFail = $true
     }
 
     # Vosk model present (soft -- Cerebral degrades to typing-only)
     $voskDir = Join-Path $repoRoot "cerebral\models\vosk-model-small-en-us-0.15"
     if (-not (Test-Path $voskDir)) {
-        Write-Host "NOTE: Vosk speech model not found." -ForegroundColor Yellow
-        Write-Host "  Voice input will be disabled (text input still works)." `
-            -ForegroundColor Yellow
-        Write-Host "  To enable voice, run: python -m cerebral.scripts.download_models" `
-            -ForegroundColor Yellow
+        Log "NOTE: Vosk speech model not found -- voice disabled (text input still works)."
     }
 
     if ($hardFail) {
-        Write-Host ""
-        Write-Host "Fix the items above, then re-launch Felix." -ForegroundColor Red
-        # Held briefly so a hidden-console double-click still surfaces the
-        # error if the user runs `powershell.exe -WindowStyle Hidden` from
-        # the shortcut. (Visible-console runs see this immediately.)
-        Start-Sleep -Seconds 6
+        Log "FAILED: fix the items above, then re-launch Felix."
         exit 1
     }
 }
@@ -111,11 +100,7 @@ Test-Prerequisites
 
 # ---- 1. refuse to double-launch -----------------------------------------------
 if (Test-CerebralPort) {
-    Write-Host "Felix is already running (port $CEREBRAL_PORT is in use)." `
-        -ForegroundColor Yellow
-    Write-Host "Open the tray menu or look for the Felix icon in the system tray." `
-        -ForegroundColor Yellow
-    Start-Sleep -Seconds 2
+    Log "Felix is already running (port $CEREBRAL_PORT is in use) -- skipping launch."
     exit 0
 }
 
@@ -173,7 +158,6 @@ Log "electronExe=$electronExe"
 
 if (-not (Test-Path $electronExe)) {
     Log "MISSING: $electronExe not found -- run 'cd tray; npm install' from the repo root."
-    Start-Sleep -Seconds 6
     exit 1
 }
 
@@ -187,7 +171,6 @@ try {
     Log "Start-Process electron returned PID=$($tray.Id)"
 } catch {
     Log "Start-Process electron THREW: $_"
-    Start-Sleep -Seconds 6
     exit 1
 }
 
