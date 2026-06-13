@@ -43,3 +43,16 @@ dev = [
 where = ["."]
 include = ["cerebral*"]
 exclude = ["cerebral.tests*"]
+
+# Mirror of cerebral/pytest.ini so `python -m pytest` run from the repo root
+# resolves to this config (rootdir C:\OpenMind) with the SAME asyncio_mode the
+# async suite was written for. Without this, a root-level run picks pyproject.toml
+# as the config file in STRICT mode and every bare `async def` test errors with
+# "async def functions are not natively supported" (~400 false failures).
+# cerebral/pytest.ini still wins when pytest is invoked from inside cerebral/.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["cerebral/tests"]
+markers = [
+    "integration: requires live services (Ollama, OpenClaw); skipped in CI by default",
+]
