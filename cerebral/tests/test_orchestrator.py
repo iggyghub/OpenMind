@@ -80,6 +80,20 @@ def test_list_tools_no_duplicates_when_plugin_takes_over():
     assert len(names) == 3
 
 
+def test_registration_tool_count_for_reflects_original_count_after_takeover():
+    # Regression: _plugins_list_event was computing tool_count by counting
+    # _tool_index entries owned by the plugin. After google_workspace takes
+    # over, superseded plugins (gmail, calendar, etc.) showed tool_count=0
+    # even though they had registered tools. registration_tool_count_for()
+    # must return the count frozen at register() time, not the current index.
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("gmail", ["gmail_send", "gmail_search"]))
+    orc.register(_make_plugin("google_workspace", ["gmail_send", "gmail_search", "calendar_create_event"]))
+    assert orc.registration_tool_count_for("gmail") == 2
+    assert orc.registration_tool_count_for("google_workspace") == 3
+    assert orc.registration_tool_count_for("unknown") == 0
+
+
 # ---------------------------------------------------------------------------
 # Slice 2 — call_tool() routes to the correct plugin
 # ---------------------------------------------------------------------------

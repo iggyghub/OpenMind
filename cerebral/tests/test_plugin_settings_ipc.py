@@ -96,6 +96,9 @@ def ipc_rig(tmp_path, monkeypatch):
         def inspectability_for(self, plugin_name: str) -> str:
             return "inspected"
 
+        def registration_tool_count_for(self, plugin_name: str) -> int:
+            return sum(1 for v in self._tool_index.values() if v == plugin_name)
+
     fake_orc = FakeOrchestrator()
 
     saved = {

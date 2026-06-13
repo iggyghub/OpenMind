@@ -1321,7 +1321,7 @@ def _plugins_list_event() -> dict:
     registered = []
     for plugin_name in sorted(_orc._plugins):
         caps = _orc.required_capabilities_for(plugin_name)
-        tool_count = sum(1 for p in _orc._tool_index.values() if p == plugin_name)
+        tool_count = _orc.registration_tool_count_for(plugin_name)
         registered.append({
             "name": plugin_name,
             "required_capabilities": sorted(caps) if caps is not None else None,

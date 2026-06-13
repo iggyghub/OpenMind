@@ -202,6 +202,12 @@ class MCPOrchestrator:
         # Plugins registered directly via register() (tests, parked builder)
         # default to "inspected" — they bypass on-disk discovery entirely.
         self._plugin_inspectability: dict[str, str] = {}
+        # plugin_name → tool count at registration time, frozen after register().
+        # Reflects how many tools the plugin declared, regardless of subsequent
+        # takeovers by other plugins (e.g. google_workspace). The tray's
+        # plugins_list event exposes this so superseded plugins (tool_count in
+        # _tool_index → 0) still report a non-zero meaningful count.
+        self._plugin_registration_tool_counts: dict[str, int] = {}
         # Plugins refused at load time, ordered by discovery order.
         # Each entry is {plugin_name, reason, detail, path}. Surfaced to the
         # tray so the user sees *why* a plugin didn't load.
@@ -291,7 +297,9 @@ class MCPOrchestrator:
             logger.warning("[mcp] Plugin '%s' already registered — replacing", plugin.name)
             self._remove_from_index(plugin.name)
         self._plugins[plugin.name] = plugin
-        for tool in plugin.list_tools():
+        tools = plugin.list_tools()
+        self._plugin_registration_tool_counts[plugin.name] = len(tools)
+        for tool in tools:
             if tool.name in self._tool_index:
                 existing = self._tool_index[tool.name]
                 logger.warning(
@@ -300,7 +308,7 @@ class MCPOrchestrator:
                 )
             self._tool_index[tool.name] = plugin.name
             self._tool_lookup[tool.name] = tool
-        logger.info("[mcp] Registered plugin '%s' with %d tool(s)", plugin.name, len(plugin.list_tools()))
+        logger.info("[mcp] Registered plugin '%s' with %d tool(s)", plugin.name, len(tools))
 
     def unregister(self, plugin_name: str) -> None:
         if plugin_name not in self._plugins:
@@ -310,6 +318,7 @@ class MCPOrchestrator:
         del self._plugins[plugin_name]
         self._plugin_capabilities.pop(plugin_name, None)
         self._plugin_inspectability.pop(plugin_name, None)
+        self._plugin_registration_tool_counts.pop(plugin_name, None)
         self._plugin_modules.pop(plugin_name, None)
         logger.info("[mcp] Unregistered plugin '%s'", plugin_name)
 
@@ -378,6 +387,16 @@ class MCPOrchestrator:
         inspectability mark.
         """
         return self._plugin_inspectability.get(plugin_name)
+
+    def registration_tool_count_for(self, plugin_name: str) -> int:
+        """Number of tools the plugin declared at registration time.
+
+        Unlike counting ``_tool_index`` entries by owner, this value is frozen
+        at ``register()`` and remains correct even when another plugin (e.g.
+        ``google_workspace``) later takes over some or all of the tools.
+        Returns 0 for unknown plugin names.
+        """
+        return self._plugin_registration_tool_counts.get(plugin_name, 0)
 
     def _remove_from_index(self, plugin_name: str) -> None:
         to_remove = [k for k, v in self._tool_index.items() if v == plugin_name]
