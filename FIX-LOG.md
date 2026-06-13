@@ -104,3 +104,28 @@ bug, stop; `blocked` = a bug needs a human, stop. The loop reads both lines dire
   cerebral/tests/test_plugin_google_workspace_fallback.py` -> 333 passed.
 - **Landed:** commit `56480b4` on `fix/run-campaign`; draft PR
   https://github.com/iggyghub/OpenMind/pull/262 (stays open for human review).
+
+### Iteration 2 -- 2026-06-13 -- MCPOrchestrator.list_tools() returns duplicate tools
+
+- **Ran:** `python -u -m cerebral.main` headless (PID 17144); exercised IPC
+  dispatcher via WebSocket smoke client (`list_tools`, `call_tool`, `list_queue`,
+  `list_permissions`, `list_settings`, etc.); ran full test suite
+  (2958 passed, 4 skipped).
+- **Bug:** `tools_for_llm` exposed 16 duplicate tool entries to the LLM (204 tools
+  instead of 188 unique). Every tool that `google_workspace` takes over from a
+  fine-grained plugin (`gmail`, `calendar`, `google_docs`, `google_drive`,
+  `google_maps`, `google_sheets`) appeared twice. Root cause: `list_tools()` in
+  `cerebral/mcp/orchestrator.py` iterated all plugins and called
+  `plugin.list_tools()` on each; when `google_workspace` re-registers a tool
+  already owned by another plugin, `_tool_index` / `_tool_lookup` are updated
+  to the new owner but the superseded plugin still emits its copy when iterated.
+  No test covered this because the override path was never asserted on
+  `list_tools()`.
+- **Fix:** Replace the loop with `return list(self._tool_lookup.values())`.
+  `_tool_lookup` is already maintained with last-write-wins semantics identical
+  to `_tool_index`, so its values are the authoritative, deduplicated Tool objects.
+  Added regression test `test_list_tools_no_duplicates_when_plugin_takes_over`.
+  Live smoke after fix: 204 → 188 tools, zero duplicates.
+- **Tests:** full suite (minus Discord self-bot tests) -- 2959 passed, 4 skipped.
+- **Landed:** commit `f35d721` on `fix/run-campaign`; PR #262 remains open for
+  human review.
