@@ -129,3 +129,35 @@ bug, stop; `blocked` = a bug needs a human, stop. The loop reads both lines dire
 - **Tests:** full suite (minus Discord self-bot tests) -- 2959 passed, 4 skipped.
 - **Landed:** commit `f35d721` on `fix/run-campaign`; PR #262 remains open for
   human review.
+
+### Iteration 3 -- 2026-06-13 -- plugins_list tool_count=0 for superseded plugins
+
+- **Ran:** `python -u -m cerebral.main` headless; exercised IPC via WebSocket
+  smoke client (`list_tools`, `call_tool`, `list_plugins`, `list_settings`,
+  `list_queue`, `list_permissions`, `get_time`, `git_status`); ran full test
+  suite (3051 passed, 4 skipped).
+- **Bug:** `_plugins_list_event()` in `cerebral/main.py` computed `tool_count`
+  for each plugin by summing `_tool_index` entries with that plugin as owner.
+  After `google_workspace` takes over tools from `gmail`, `calendar`,
+  `google_docs`, and `google_maps`, those plugins' `_tool_index` count drops
+  to 0. The tray's Plugins pane showed them as "loaded, 0 tools" even though
+  they registered 2, 2, 4, and 4 tools respectively. Root cause: the count
+  reflected current tool-index ownership, not registration time. The docstring
+  says "number of tools the plugin registers" -- the implementation violated
+  its own contract. Tests didn't catch this because the `FakeOrchestrator` in
+  `test_plugin_settings_ipc.py` used `_tool_index` to compute the fake count,
+  masking the takeover edge case.
+- **Fix:** Added `_plugin_registration_tool_counts: dict[str, int]` to
+  `MCPOrchestrator.__init__`. `register()` now stores `len(tools)` before the
+  takeover loop runs (eliminating a redundant `list_tools()` call in the
+  logger as a side-effect). `unregister()` pops the entry. New public method
+  `registration_tool_count_for(plugin_name)` exposes it. `_plugins_list_event`
+  in `main.py` changed from `sum(..._tool_index...)` to
+  `_orc.registration_tool_count_for(plugin_name)`. Updated `FakeOrchestrator`
+  in `test_plugin_settings_ipc.py` to expose the new method. Added regression
+  test `test_registration_tool_count_for_reflects_original_count_after_takeover`
+  in `test_orchestrator.py`. Live smoke (fresh process) confirmed: gmail=2,
+  calendar=2, google_docs=4, google_maps=4, google_workspace=18 (all correct).
+- **Tests:** full suite -- 3051 passed, 4 skipped.
+- **Landed:** commit `d7c4374` on `fix/run-campaign`; PR #262 remains open for
+  human review.
