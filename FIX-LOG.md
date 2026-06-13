@@ -18,7 +18,7 @@ full smoke pass finds nothing left to fix (`Status: clean`), hits a blocker
 
 ## Kickoff block -- start here
 
-Model: opus
+Model: sonnet
 Status: hunting
 
 (`Model:` selects the model for the NEXT session -- allowed: haiku | sonnet | opus | fable.
@@ -80,3 +80,27 @@ bug, stop; `blocked` = a bug needs a human, stop. The loop reads both lines dire
   now reports 3049 passed, 4 skipped.
 - **Landed:** committed to master as pre-loop setup (human session, not via the loop).
   The loop itself never commits to master -- this entry is the one exception.
+
+### Iteration 1 -- 2026-06-13 -- finance plugin import of retired google_workspace
+
+- **Ran:** `python -u -m cerebral.main` headless; watched `cerebral.smoke.err` /
+  `cerebral.err.log` during boot + plugin discovery. Re-ran orchestrator
+  `discover_plugins(Path('plugins'))` standalone to confirm registration errors.
+- **Bug:** `[mcp] Refused plugin 'finance' ... create_failed: create() raised: No
+  module named 'plugins.google_workspace'`. The B.8 commit (#249) deleted
+  `plugins/google_workspace.py` and migrated `plugins/meet.py` to a try/except +
+  fallback, but missed `plugins/finance.py`. `FinancePlugin.__init__` ran
+  `from plugins.google_workspace import create` unconditionally when no workspace
+  was injected. Both `finance_extract_receipt` and `finance_log_expense` therefore
+  failed to register at runtime. Tests didn't catch this because they always
+  inject a `FakeWorkspace`.
+- **Fix:** mirror `meet.py` -- try the retired `plugins.google_workspace`, fall
+  back to `plugins.google_workspace_fallback.create` (the module that already
+  registers as the `google_workspace` plugin and provides `sheets_write_range`).
+  Re-running discovery shows `finance` registers with its 2 tools and no
+  registration error.
+- **Tests:** `pytest -c cerebral/pytest.ini cerebral/tests/test_plugin_finance.py
+  cerebral/tests/test_orchestrator.py cerebral/tests/test_main_dispatcher.py
+  cerebral/tests/test_plugin_google_workspace_fallback.py` -> 333 passed.
+- **Landed:** commit `56480b4` on `fix/run-campaign`; draft PR
+  https://github.com/iggyghub/OpenMind/pull/262 (stays open for human review).
