@@ -30,9 +30,10 @@ n8n):
         Defaults to pdf2image.convert_from_path; only page 1 is OCR'd
         (multi-page receipts are out of scope for v1).
   - google_workspace_plugin
-        Defaults to plugins.google_workspace.create(); tests pass a fake
-        with a recording call_tool. Mirrors the n8n_plugin injection in
-        plugins/zoom.py.
+        Defaults to plugins.google_workspace_fallback.create() (the
+        primary plugins/google_workspace.py was retired in #249); tests
+        pass a fake with a recording call_tool. Mirrors the n8n_plugin
+        injection in plugins/zoom.py.
 
 Field extraction (regex over OCR text — no LLM):
   total      keyword anchor → 1.0, bare currency number → 0.5, nothing → 0.0
@@ -165,7 +166,10 @@ class FinancePlugin:
         if google_workspace_plugin is not None:
             self._workspace = google_workspace_plugin
         else:
-            from plugins.google_workspace import create as _create_workspace
+            try:
+                from plugins.google_workspace import create as _create_workspace
+            except ModuleNotFoundError:
+                from plugins.google_workspace_fallback import create as _create_workspace
             self._workspace = _create_workspace()
         self._ocr = ocr_fn or _default_ocr
         self._pdf_to_image = pdf_to_image_fn or _default_pdf_to_image
