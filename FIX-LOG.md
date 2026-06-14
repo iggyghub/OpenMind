@@ -19,7 +19,7 @@ full smoke pass finds nothing left to fix (`Status: clean`), hits a blocker
 ## Kickoff block -- start here
 
 Model: sonnet
-Status: hunting
+Status: clean
 
 (`Model:` selects the model for the NEXT session -- allowed: haiku | sonnet | opus | fable.
 `Status:` controls the loop: `hunting` = keep going; `clean` = a smoke pass found no
@@ -312,3 +312,34 @@ bug, stop; `blocked` = a bug needs a human, stop. The loop reads both lines dire
   4 skipped (+2 new regression tests vs iteration 5's 3059).
 - **Landed:** commit `1e1de1e` on `fix/run-campaign`; PR #262 remains
   open for human review.
+
+### Iteration 7 -- 2026-06-14 -- clean smoke pass, no bug found (campaign stop)
+
+- **Ran:** `python -u -m cerebral.main` headless (fresh boot, 188 tools /
+  17 plugin seams wired, profile Alice); exercised IPC via a persistent
+  WebSocket smoke client (`smoke_iter7.py`) running 29 probes aimed at
+  paths not fully covered in iterations 1-6: `list_conversation_turns`
+  (custom limit / bad `"bad"` limit / no-data), `user_text_command`
+  (empty + whitespace-only), `revoke_class_policy` (valid cap / unknown
+  cap / empty), `remember` + `recall`, `list_memories` then a real
+  `edit_memory` -> `delete_memory` round-trip on a live id, `forget` bad
+  id, `get_plugin_settings` (unknown plugin + `discord_user`),
+  `refresh_models`, `list_insights`, `pin_insight` / `edit_insight` on
+  missing ids, `approve_item` bad id, `consent_response` /
+  `irreversible_modal_response` stale ids, a `create_profile` ->
+  `switch_profile` -> `delete_profile` round-trip, `connect_google`
+  no-credential guard, and `call_tool` with `null` args + empty-dict
+  args. Stopped the Cerebral process after the run (no orphan).
+- **Result:** 29/29 probes OK, 0 errors (`smoke_iter7.py` exit 0). All
+  edge paths handled gracefully -- e.g. `approve_item: unknown id`,
+  `consent_response for unknown request_id (ignored)`, `Google consent
+  failed: no client_id/client_secret stored`, `[mcp] Unknown tool ''`
+  -- with **zero unhandled exceptions / tracebacks / plugin refusals**
+  from application code in the run. (The only tracebacks in the boot log
+  were `websockets` library handshake errors from a bare TCP port-probe
+  used to detect readiness -- not a Cerebral code path; the real tray
+  handshake never hits it.)
+- **Bug:** none. A full smoke pass found nothing left to fix.
+- **Landed:** no code change. FIX-LOG entry only; kickoff `Status:` set
+  to `clean` to stop the loop. PR #262 stays open for human review and
+  deliberate merge of the iteration 1-6 campaign.
