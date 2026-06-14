@@ -300,6 +300,38 @@ the per-provider flags, or
 [docs.openclaw.ai/channels](https://docs.openclaw.ai/channels) for the
 channel-specific keys.
 
+#### Configure a voice channel (for outbound calls)
+
+Felix's `phone` plugin (`start_call`) places outbound calls by POSTing to
+OpenClaw's `POST /voice/dial` endpoint — OpenClaw owns the SIP/Twilio
+transport, Cerebral is just the HTTP client. **The provider API key lives in
+OpenClaw's config, not in OpenMind.**
+
+1. **Put your voice-provider credentials in `~/.openclaw/openclaw.json`** under
+   the voice channel. For Twilio that's the Account SID, Auth Token, and a
+   verified "from" number; for a SIP trunk it's the trunk URI + credentials.
+   Use the CLI or edit the file by hand:
+
+   ```powershell
+   openclaw channels add --channel voice --help   # provider-specific flags
+   ```
+
+   The exact key names are provider-specific — see
+   [docs.openclaw.ai/channels](https://docs.openclaw.ai/channels). What matters
+   for OpenMind: once configured, `POST http://localhost:3000/voice/dial` with
+   `{"number": "+1..."}` must reach your provider and ring the phone.
+
+2. **(Optional) Point Cerebral at a non-default gateway.** The `phone` plugin
+   dials `http://localhost:3000/voice/dial` by default. If OpenClaw's HTTP
+   listener is elsewhere, set the plugin's `base_url` accordingly.
+
+3. **Consent gate.** `start_call` declares `external_data_write` (ask-class), so
+   Felix prompts for confirmation before every call — no silent auto-dial.
+
+4. **Test it.** Say to Felix *"Call +1XXXXXXXXXX"* (your own number, E.164).
+   Approve the consent prompt; your phone should ring and `start_call` returns
+   the provider's call id.
+
 ### Discord (user account) -- experimental, high risk
 
 > **Read first:** this is a separate Discord integration from the
