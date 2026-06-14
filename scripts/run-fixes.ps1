@@ -211,6 +211,11 @@ try {
             $proc = Start-Process -FilePath $claudeCmd -ArgumentList $argString `
                 -WorkingDirectory $repoRoot -NoNewWindow -PassThru `
                 -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+            # PS 5.1 quirk: a Start-Process -PassThru process started WITHOUT -Wait drops
+            # its OS handle, so $proc.ExitCode reads $null after it exits and every success
+            # is misread as a failure. Touching .Handle once caches the handle so ExitCode
+            # is populated correctly post-exit.
+            $null = $proc.Handle
 
             $maxRunSec = 5400   # 90-min hard cap per attempt, so a hung session can't stall forever
             $polled = 0
@@ -287,13 +292,16 @@ try {
             # A successful run means we are not limit-blocked; reset the wait counter.
             $limitWaits = 0
 
-            if ($proc.ExitCode -eq 0) {
+            $exitCode = $null
+            try { $exitCode = $proc.ExitCode } catch { $exitCode = $null }
+
+            if ($exitCode -eq 0) {
                 Log ("iteration {0} attempt {1} succeeded" -f $iter, $attempt)
                 $succeeded = $true
                 break
             }
 
-            Log ("iteration {0} attempt {1} FAILED (exit {2})" -f $iter, $attempt, $proc.ExitCode)
+            Log ("iteration {0} attempt {1} FAILED (exit {2})" -f $iter, $attempt, $(if ($null -eq $exitCode) { "unknown" } else { $exitCode }))
         }
 
         if ($stopAll) { break }
