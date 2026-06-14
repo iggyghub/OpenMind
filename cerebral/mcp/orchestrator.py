@@ -177,6 +177,16 @@ class MCPOrchestrator:
         # ``check_capabilities``; future per-tool metadata reads share this
         # cache rather than re-walking ``plugin.list_tools()`` each call.
         self._tool_lookup: dict[str, Tool] = {}
+        # tool_name → registration history as a list of (plugin_name, Tool)
+        # entries in registration order. The LAST entry is the current owner
+        # (mirrored into ``_tool_index`` / ``_tool_lookup``); earlier entries
+        # are prior owners whose claim was superseded by a later registrant.
+        # On unregister, the unregistering plugin's entries are filtered out
+        # of each tool's history; the new last entry becomes the active
+        # owner — so when (e.g.) ``google_workspace`` takes over ``gmail_send``
+        # and is later unregistered, the original ``gmail`` plugin's claim is
+        # restored instead of the tool silently disappearing from the index.
+        self._tool_registrations: dict[str, list[tuple[str, Tool]]] = {}
         # The capability gate enforces ADR-0005's day-1 policy. The optional
         # ACL resolver (Issue #45) layers per-profile overrides + RAM-only
         # once/session grants on top; when present, the gate's lookup is
@@ -308,6 +318,9 @@ class MCPOrchestrator:
                 )
             self._tool_index[tool.name] = plugin.name
             self._tool_lookup[tool.name] = tool
+            self._tool_registrations.setdefault(tool.name, []).append(
+                (plugin.name, tool),
+            )
         logger.info("[mcp] Registered plugin '%s' with %d tool(s)", plugin.name, len(tools))
 
     def unregister(self, plugin_name: str) -> None:
@@ -399,10 +412,28 @@ class MCPOrchestrator:
         return self._plugin_registration_tool_counts.get(plugin_name, 0)
 
     def _remove_from_index(self, plugin_name: str) -> None:
-        to_remove = [k for k, v in self._tool_index.items() if v == plugin_name]
-        for key in to_remove:
-            del self._tool_index[key]
-            self._tool_lookup.pop(key, None)
+        # Walk every tool's registration history rather than only the tools
+        # this plugin currently owns: when a later registrant took over a
+        # tool from ``plugin_name``, the index points at the new owner, but
+        # the unregister still needs to scrub the now-departing plugin's
+        # historical entry so a future re-registration order check stays
+        # honest. For each tool, drop entries belonging to ``plugin_name``;
+        # if any prior registrant remains, the last surviving entry takes
+        # back the active claim (restores the pre-takeover owner) instead
+        # of the tool silently vanishing from ``_tool_index`` /
+        # ``_tool_lookup``.
+        for tool_name in list(self._tool_registrations):
+            history = self._tool_registrations[tool_name]
+            kept = [(p, t) for (p, t) in history if p != plugin_name]
+            if not kept:
+                self._tool_registrations.pop(tool_name, None)
+                self._tool_index.pop(tool_name, None)
+                self._tool_lookup.pop(tool_name, None)
+                continue
+            self._tool_registrations[tool_name] = kept
+            new_owner, new_tool = kept[-1]
+            self._tool_index[tool_name] = new_owner
+            self._tool_lookup[tool_name] = new_tool
 
     # ------------------------------------------------------------------
     # Tool access
