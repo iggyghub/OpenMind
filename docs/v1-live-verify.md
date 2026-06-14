@@ -5,7 +5,7 @@ This document covers everything the autonomous loop built with mocked tests only
 **Human work:** executing it — in order, once Cerebral is running on the dev box.
 
 Run `scripts/verify-v1.ps1` first to confirm the automatable pre-conditions pass,
-then work through sections 1–4 manually.
+then work through sections 1–6 manually.
 
 ---
 
@@ -283,11 +283,102 @@ gh issue create \
   --label "needs-triage"
 ```
 
-### v1 DoD gate
+---
+
+## 5. Channel bridge live-verify — Discord (#164)
+
+Proves the harness is multi-channel: an inbound Discord message reaches Cerebral
+through the OpenClaw channel bridge and the reply lands back in Discord.
+
+> **Architecture note (post-#168):** there is no longer a `ChannelBridge` class.
+> Cerebral consumes OpenClaw's channel bridge as a stdio MCP server via the
+> `plugins/openclaw_channels.py` plugin, whose background subscriber drives an
+> `events_wait` long-poll and replies via `openclaw_messages_send`. Conversations
+> are keyed by the gateway-supplied `session_key` (e.g. `discord:456` vs
+> `telegram:123`), and the plugin's per-`session_key` history buffer
+> (`_sessions_history`) is keyed on it — so history cannot bleed across channels
+> by construction.
+
+**Pre-conditions:**
+
+1. Complete the **"Configure a Discord channel"** subsection in `SETUP.md`
+   (register a bot at the Discord Developer Portal, put the bot token under
+   `channels.discord` in `~/.openclaw/openclaw.json`, invite the bot to a
+   server, and unbind OpenClaw's internal `main` agent from Discord).
+2. Start Cerebral (`python -m cerebral.main`) and confirm the log shows:
+   ```
+   [openclaw_channels] Connected to OpenClaw -- subscriber loop running
+   ```
+   If you instead see `events_wait raised (likely scope upgrade pending)`,
+   approve the device scope per `SETUP.md`
+   (`openclaw devices approve --latest`) and restart.
+
+**Steps:**
+
+1. From a Discord account that is allowed to message the bot, send a DM (or an
+   @-mention in an allowed channel) such as *"Felix, what's 2 + 2?"*.
+2. The subscriber forwards the inbound event to Cerebral's pipeline and posts
+   the LLM reply back to the same Discord conversation.
+
+**Expected outcome:**
+
+- A reply from Felix appears in the same Discord DM / channel within a few
+  seconds.
+- The Cerebral log shows the inbound event being processed and a
+  `openclaw_messages_send` for the reply (no `messages_send ... returned error`).
+- **Cross-channel isolation:** if you have also configured another channel,
+  confirm a follow-up that relies on history (e.g. *"and double that?"*) only
+  uses the same channel's context — the `session_key` prefix keeps Discord and
+  other channels' histories separate.
+
+Capture the result as **PRD #1 / story 42** evidence.
+
+---
+
+## 6. Phone live-verify — one outbound call (#165)
+
+Proves `plugins/phone.py:start_call` places a real outbound call through
+OpenClaw's voice channel.
+
+**Pre-conditions:**
+
+1. A voice provider (Twilio or equivalent) is configured in
+   `~/.openclaw/openclaw.json` and OpenClaw's `POST /voice/dial` endpoint is
+   live. **Note:** the exact provider config keys follow OpenClaw's voice-channel
+   docs — `SETUP.md` does not yet carry a voice subsection (tracked as a remaining
+   doc task on #165). Confirm `curl -X POST http://localhost:3000/voice/dial`
+   with a test body reaches the provider before proceeding.
+2. Cerebral's `phone` plugin posts to `http://localhost:3000/voice/dial` by
+   default (`DEFAULT_BASE_URL`); override via the plugin's `base_url` if OpenClaw
+   listens elsewhere.
+
+**Steps:**
+
+1. Say to Felix: *"Call my phone"* (or *"Call +1XXXXXXXXXX"* with your own
+   number in E.164 format).
+2. `start_call` declares `external_data_write` + `network_egress_local`
+   (`plugins/phone.py:31–34`). `external_data_write` is ask-class, so **expect a
+   consent prompt before the call is placed** — approve it. (Confirm that
+   *without* approval, no call is placed — the gate must hold.)
+
+**Expected outcome:**
+
+- Your phone actually rings (**user-verified** — the core acceptance criterion).
+- `start_call` returns a non-error `ToolResult` whose JSON body carries the
+  provider's call id / initial status.
+- No `Call failed:` error in the Cerebral log.
+
+Capture the result as **PRD #1 / story 40** evidence.
+
+---
+
+## 7. v1 DoD gate
 
 v1 is complete when:
 - [ ] All six Google plugins live-verified (Section 2).
 - [ ] All five fallbacks spot-checked (Section 3).
 - [ ] D.1: 8-hour passive run passed.
 - [ ] D.2: 3-day daily-driver cycle passed.
+- [ ] Channel bridge live-verified — Discord inbound → reply (Section 5, #164).
+- [ ] Outbound phone call placed and the phone rang (Section 6, #165).
 - [ ] All P0/P1 issues from D.1 and D.2 closed.
