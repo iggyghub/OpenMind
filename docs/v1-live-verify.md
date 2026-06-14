@@ -344,9 +344,9 @@ OpenClaw's voice channel.
 
 1. A voice provider (Twilio or equivalent) is configured in
    `~/.openclaw/openclaw.json` and OpenClaw's `POST /voice/dial` endpoint is
-   live. **Note:** the exact provider config keys follow OpenClaw's voice-channel
-   docs — `SETUP.md` does not yet carry a voice subsection (tracked as a remaining
-   doc task on #165). Confirm `curl -X POST http://localhost:3000/voice/dial`
+   live — see the **"Configure a voice channel"** subsection in `SETUP.md`. The
+   provider API key lives in OpenClaw's config, not in OpenMind; the exact key
+   names are provider-specific. Confirm `curl -X POST http://localhost:3000/voice/dial`
    with a test body reaches the provider before proceeding.
 2. Cerebral's `phone` plugin posts to `http://localhost:3000/voice/dial` by
    default (`DEFAULT_BASE_URL`); override via the plugin's `base_url` if OpenClaw
