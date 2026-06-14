@@ -18,7 +18,7 @@ full smoke pass finds nothing left to fix (`Status: clean`), hits a blocker
 
 ## Kickoff block -- start here
 
-Model: opus
+Model: sonnet
 Status: hunting
 
 (`Model:` selects the model for the NEXT session -- allowed: haiku | sonnet | opus | fable.
@@ -211,3 +211,51 @@ bug, stop; `blocked` = a bug needs a human, stop. The loop reads both lines dire
 - **Tests:** full suite -- 3051 passed, 4 skipped.
 - **Landed:** commit `d7c4374` on `fix/run-campaign`; PR #262 remains open for
   human review.
+
+### Iteration 5 -- 2026-06-13 -- set_voice IPC accepts unknown voice_id silently
+
+- **Ran:** `python -u -m cerebral.main` headless (PID 39520, killed after
+  smoke); exercised IPC via WebSocket smoke client driving ~70 probes
+  across listers (`list_tools`, `list_plugins`, `list_settings`,
+  `list_queue`, `list_permissions`, `list_models`, `list_credentials`,
+  `list_conversation_turns`, `list_insights`, `list_memories`,
+  `list_profiles`, `list_voices`, `get_env_context`, `refresh_models`),
+  per-plugin settings, well-formed `call_tool` paths (`get_time`,
+  `git_status`), and ~50 bad-payload edges across `set_setting`,
+  `set_static_token` / `clear_static_token`, `set_class_policy`,
+  `set_tool_override`, `revoke_session_grant`, `consent_response`,
+  `dismiss_item`, `delete_insight` / `pin_insight` / `edit_insight`,
+  `edit_memory` / `delete_memory`, `discord_allowlist_add/remove`,
+  `switch_profile` / `delete_profile`, `switch_model` / `set_task_model`,
+  `set_camera_enabled`, `set_voice`, `set_credential_client`,
+  `disconnect_credential`, `irreversible_modal_response`,
+  `unlock_shell_exec`, `clear_new_plugin_flag`, `approve_item`,
+  `forget`, plus an unknown handler and a malformed message. Ran the
+  full test suite (root `python -m pytest`) -- 3059 passed, 4 skipped.
+  Restored Alice's `shell_exec_unlocked` flag the deeper smoke flipped.
+- **Bug:** `set_voice` (`cerebral/main.py`) accepted any `voice_id` and
+  persisted it to the active profile with no validation, while its
+  sibling handlers `switch_model` and `set_task_model` both reject
+  unknown ids. Smoke proved it: sending
+  `{"type":"set_voice","data":{"voice_id":"no_such_voice"}}` logged
+  `[cerebral] Voice updated to no_such_voice for profile Alice`. Once
+  persisted, the next `speak()` would push the unknown id straight into
+  Kokoro's `KPipeline(voice=...)` which raises -- so the tray would
+  show "voice updated", a `profile_loaded` event would broadcast, and
+  TTS would silently fail at the next utterance. No test covered the
+  IPC layer for `set_voice` at all.
+- **Fix:** Mirror `switch_model`'s known-id guard. Before calling
+  `_pm.update_voice(...)`, build `known_ids = {v["id"] for v in
+  _tts.list_voices()}` from the bundled Kokoro catalogue (already the
+  source of truth for `list_voices`) and refuse ids not in the set
+  with a `WARNING` log. New test file
+  `cerebral/tests/test_set_voice_ipc.py` covers known-id success
+  (broadcasts a `profile_loaded`), unknown-id rejection (no update, no
+  broadcast), missing `voice_id` no-op, and no-active-profile no-op
+  using a focused `voice_rig` fixture that patches `_tts`, `_pm`,
+  `_active_profile`, and `_broadcast`. Live smoke after fix shows the
+  expected `[cerebral] set_voice refused: unknown voice 'no_such_voice'`.
+- **Tests:** full suite (root `python -m pytest`) -- 3059 passed,
+  4 skipped (+4 new regression tests vs iteration 4's 3055).
+- **Landed:** commit `7582261` on `fix/run-campaign`; PR #262 remains
+  open for human review.
