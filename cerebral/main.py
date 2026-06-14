@@ -2681,6 +2681,8 @@ async def main() -> None:
         )
 
     await _env.refresh_location()
+    if _settings.get("camera_enabled"):
+        _env.enable_camera()
     logger.info("[cerebral] Environment context: %s", _env.get_context())
 
     if _active_profile:
