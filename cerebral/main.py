@@ -1456,8 +1456,17 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "set_voice":
         # Update the active profile's voice_id; next speak() call picks it up.
+        # Reject unknown ids up-front so a buggy/third-party client can't
+        # silently persist a voice that breaks TTS at the next speak() —
+        # mirrors switch_model's known-id guard.
         voice_id = msg.get("data", {}).get("voice_id")
         if voice_id and _active_profile:
+            known_ids = {v["id"] for v in _tts.list_voices()}
+            if voice_id not in known_ids:
+                logger.warning(
+                    "[cerebral] set_voice refused: unknown voice %r", voice_id,
+                )
+                return
             _pm.update_voice(_active_profile.id, voice_id)
             _active_profile = _pm.get(_active_profile.id)
             logger.info("[cerebral] Voice updated to %s for profile %s", voice_id, _active_profile.name)
