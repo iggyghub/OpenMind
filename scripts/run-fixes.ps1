@@ -138,7 +138,8 @@ try {
              "(3) Boot Cerebral headless (python -m cerebral.main, WebSocket IPC on ws://localhost:7766) and SMOKE it: " +
              "exercise tool dispatch / IPC the way cerebral/tests rigs do (orchestrator, settings, conversation, queue) " +
              "and watch cerebral.err.log + stdout for unhandled exceptions and tracebacks. " +
-             "STOP the Cerebral process you started before you finish -- no orphan python processes. " +
+             "Launch Cerebral in the BACKGROUND (never as a blocking foreground command -- it runs forever) and ALWAYS " +
+             "terminate it before you finish, even on error -- leave no orphan python -m cerebral.main process. " +
              "(4) SAFETY: never run plugins/discord_user.py or the Discord self-bot path (real-account ban risk per ADR-0006). " +
              "No real credentials, no live OAuth, no real messages/calls/paid APIs -- mocked/local backends and offline fallbacks only. " +
              "The voice/mic, browser-OAuth, and 8-hour real-time parts of docs/v1-live-verify.md are human-only and out of scope. " +
@@ -195,10 +196,48 @@ try {
 
             Log ("iteration {0} attempt {1}/{2} starting (log: {3})" -f $iter, $attempt, $MaxAttempts, $outLog)
 
+            # Snapshot any cerebral.main already running (e.g. the user's own Felix) so
+            # we only reap Cerebrals THIS attempt leaves behind, never a pre-existing one.
+            $pyBefore = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -like '*cerebral.main*' } |
+                Select-Object -ExpandProperty ProcessId)
+
             $argString = '-p --model {0} --dangerously-skip-permissions "{1}"' -f $model, $prompt
+            # Do NOT use Start-Process -Wait here. The session launches Cerebral
+            # (python -m cerebral.main); if it leaves one running -- e.g. it hits the usage
+            # limit or crashes mid-run -- that child inherits the redirected stdout handle
+            # and -Wait blocks on the stream EOF forever. Launch detached, poll the claude
+            # process by handle, then reap any orphan Cerebral so it can't wedge the loop.
             $proc = Start-Process -FilePath $claudeCmd -ArgumentList $argString `
-                -WorkingDirectory $repoRoot -NoNewWindow -Wait -PassThru `
+                -WorkingDirectory $repoRoot -NoNewWindow -PassThru `
                 -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+
+            $maxRunSec = 5400   # 90-min hard cap per attempt, so a hung session can't stall forever
+            $polled = 0
+            while (-not $proc.HasExited) {
+                if (Test-Path $stopFile) {
+                    Log ("iteration {0}: STOP file found, killing the running session" -f $iter)
+                    try { $proc.Kill() } catch {}
+                    break
+                }
+                if ($polled -ge $maxRunSec) {
+                    Log ("iteration {0}: attempt exceeded {1}s, killing the session" -f $iter, $maxRunSec)
+                    try { $proc.Kill() } catch {}
+                    break
+                }
+                Start-Sleep -Seconds 5
+                $polled += 5
+            }
+            try { $proc.WaitForExit() } catch {}
+
+            # Reap any Cerebral this attempt spawned but did not stop, so it can neither
+            # hold the redirected stdout handle nor wedge the next iteration.
+            Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -like '*cerebral.main*' -and $pyBefore -notcontains $_.ProcessId } |
+                ForEach-Object {
+                    Log ("iteration {0}: reaping orphan Cerebral pid {1}" -f $iter, $_.ProcessId)
+                    try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}
+                }
 
             $output = ""
             if (Test-Path $outLog) { $output += [IO.File]::ReadAllText($outLog) }

@@ -38,7 +38,9 @@ bug, stop; `blocked` = a bug needs a human, stop. The loop reads both lines dire
    - Exercise tool dispatch / IPC the way `cerebral/tests/` rigs do (orchestrator,
      settings, conversation, queue) and watch `cerebral.err.log` + stdout for
      unhandled exceptions and tracebacks.
-   - **Stop the Cerebral process you started before you finish** -- no orphan python procs.
+   - Launch Cerebral in the **background** (never as a blocking foreground command --
+     it runs forever) and **always terminate it before you finish, even on error** --
+     leave no orphan `python -m cerebral.main` process.
 4. **Find ONE real runtime bug.** If you find one: fix it on `fix/run-campaign`,
    run `pytest -c cerebral/pytest.ini` (or root `python -m pytest`) for the affected
    area, proceed ONLY if green. Commit the fix to `fix/run-campaign` with a clear

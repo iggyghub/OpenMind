@@ -25,3 +25,7 @@ Thumbs.db
 # Claude Code scratch: slice-loop logs and transient git worktrees
 .claude/tmp/
 .claude/worktrees/
+
+# Run-and-fix loop smoke-test scratch (sessions write these while smoking Cerebral)
+cerebral.smoke*
+smoke_client*.py
