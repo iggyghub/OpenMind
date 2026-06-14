@@ -177,6 +177,16 @@ class MCPOrchestrator:
         # ``check_capabilities``; future per-tool metadata reads share this
         # cache rather than re-walking ``plugin.list_tools()`` each call.
         self._tool_lookup: dict[str, Tool] = {}
+        # tool_name → registration history as a list of (plugin_name, Tool)
+        # entries in registration order. The LAST entry is the current owner
+        # (mirrored into ``_tool_index`` / ``_tool_lookup``); earlier entries
+        # are prior owners whose claim was superseded by a later registrant.
+        # On unregister, the unregistering plugin's entries are filtered out
+        # of each tool's history; the new last entry becomes the active
+        # owner — so when (e.g.) ``google_workspace`` takes over ``gmail_send``
+        # and is later unregistered, the original ``gmail`` plugin's claim is
+        # restored instead of the tool silently disappearing from the index.
+        self._tool_registrations: dict[str, list[tuple[str, Tool]]] = {}
         # The capability gate enforces ADR-0005's day-1 policy. The optional
         # ACL resolver (Issue #45) layers per-profile overrides + RAM-only
         # once/session grants on top; when present, the gate's lookup is
@@ -202,6 +212,12 @@ class MCPOrchestrator:
         # Plugins registered directly via register() (tests, parked builder)
         # default to "inspected" — they bypass on-disk discovery entirely.
         self._plugin_inspectability: dict[str, str] = {}
+        # plugin_name → tool count at registration time, frozen after register().
+        # Reflects how many tools the plugin declared, regardless of subsequent
+        # takeovers by other plugins (e.g. google_workspace). The tray's
+        # plugins_list event exposes this so superseded plugins (tool_count in
+        # _tool_index → 0) still report a non-zero meaningful count.
+        self._plugin_registration_tool_counts: dict[str, int] = {}
         # Plugins refused at load time, ordered by discovery order.
         # Each entry is {plugin_name, reason, detail, path}. Surfaced to the
         # tray so the user sees *why* a plugin didn't load.
@@ -291,7 +307,9 @@ class MCPOrchestrator:
             logger.warning("[mcp] Plugin '%s' already registered — replacing", plugin.name)
             self._remove_from_index(plugin.name)
         self._plugins[plugin.name] = plugin
-        for tool in plugin.list_tools():
+        tools = plugin.list_tools()
+        self._plugin_registration_tool_counts[plugin.name] = len(tools)
+        for tool in tools:
             if tool.name in self._tool_index:
                 existing = self._tool_index[tool.name]
                 logger.warning(
@@ -300,7 +318,10 @@ class MCPOrchestrator:
                 )
             self._tool_index[tool.name] = plugin.name
             self._tool_lookup[tool.name] = tool
-        logger.info("[mcp] Registered plugin '%s' with %d tool(s)", plugin.name, len(plugin.list_tools()))
+            self._tool_registrations.setdefault(tool.name, []).append(
+                (plugin.name, tool),
+            )
+        logger.info("[mcp] Registered plugin '%s' with %d tool(s)", plugin.name, len(tools))
 
     def unregister(self, plugin_name: str) -> None:
         if plugin_name not in self._plugins:
@@ -310,6 +331,7 @@ class MCPOrchestrator:
         del self._plugins[plugin_name]
         self._plugin_capabilities.pop(plugin_name, None)
         self._plugin_inspectability.pop(plugin_name, None)
+        self._plugin_registration_tool_counts.pop(plugin_name, None)
         self._plugin_modules.pop(plugin_name, None)
         logger.info("[mcp] Unregistered plugin '%s'", plugin_name)
 
@@ -379,21 +401,52 @@ class MCPOrchestrator:
         """
         return self._plugin_inspectability.get(plugin_name)
 
+    def registration_tool_count_for(self, plugin_name: str) -> int:
+        """Number of tools the plugin declared at registration time.
+
+        Unlike counting ``_tool_index`` entries by owner, this value is frozen
+        at ``register()`` and remains correct even when another plugin (e.g.
+        ``google_workspace``) later takes over some or all of the tools.
+        Returns 0 for unknown plugin names.
+        """
+        return self._plugin_registration_tool_counts.get(plugin_name, 0)
+
     def _remove_from_index(self, plugin_name: str) -> None:
-        to_remove = [k for k, v in self._tool_index.items() if v == plugin_name]
-        for key in to_remove:
-            del self._tool_index[key]
-            self._tool_lookup.pop(key, None)
+        # Walk every tool's registration history rather than only the tools
+        # this plugin currently owns: when a later registrant took over a
+        # tool from ``plugin_name``, the index points at the new owner, but
+        # the unregister still needs to scrub the now-departing plugin's
+        # historical entry so a future re-registration order check stays
+        # honest. For each tool, drop entries belonging to ``plugin_name``;
+        # if any prior registrant remains, the last surviving entry takes
+        # back the active claim (restores the pre-takeover owner) instead
+        # of the tool silently vanishing from ``_tool_index`` /
+        # ``_tool_lookup``.
+        for tool_name in list(self._tool_registrations):
+            history = self._tool_registrations[tool_name]
+            kept = [(p, t) for (p, t) in history if p != plugin_name]
+            if not kept:
+                self._tool_registrations.pop(tool_name, None)
+                self._tool_index.pop(tool_name, None)
+                self._tool_lookup.pop(tool_name, None)
+                continue
+            self._tool_registrations[tool_name] = kept
+            new_owner, new_tool = kept[-1]
+            self._tool_index[tool_name] = new_owner
+            self._tool_lookup[tool_name] = new_tool
 
     # ------------------------------------------------------------------
     # Tool access
     # ------------------------------------------------------------------
 
     def list_tools(self) -> list[Tool]:
-        tools: list[Tool] = []
-        for plugin in self._plugins.values():
-            tools.extend(plugin.list_tools())
-        return tools
+        # Use _tool_lookup rather than iterating plugins so that when one
+        # plugin takes over a tool from another (e.g. google_workspace
+        # superseding gmail / calendar / etc.) each tool name appears exactly
+        # once.  _tool_lookup is updated in register() with last-write-wins
+        # semantics identical to _tool_index, so its values are always the
+        # authoritative Tool objects.
+        return list(self._tool_lookup.values())
 
     async def check_capabilities(
         self,

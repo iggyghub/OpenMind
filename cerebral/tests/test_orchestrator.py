@@ -69,6 +69,31 @@ def test_list_tools_aggregates_across_plugins():
     assert "open_url" in names
 
 
+def test_list_tools_no_duplicates_when_plugin_takes_over():
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("gmail", ["gmail_send", "gmail_search"]))
+    orc.register(_make_plugin("google_workspace", ["gmail_send", "gmail_search", "calendar_create_event"]))
+    names = [t.name for t in orc.list_tools()]
+    assert names.count("gmail_send") == 1
+    assert names.count("gmail_search") == 1
+    assert "calendar_create_event" in names
+    assert len(names) == 3
+
+
+def test_registration_tool_count_for_reflects_original_count_after_takeover():
+    # Regression: _plugins_list_event was computing tool_count by counting
+    # _tool_index entries owned by the plugin. After google_workspace takes
+    # over, superseded plugins (gmail, calendar, etc.) showed tool_count=0
+    # even though they had registered tools. registration_tool_count_for()
+    # must return the count frozen at register() time, not the current index.
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("gmail", ["gmail_send", "gmail_search"]))
+    orc.register(_make_plugin("google_workspace", ["gmail_send", "gmail_search", "calendar_create_event"]))
+    assert orc.registration_tool_count_for("gmail") == 2
+    assert orc.registration_tool_count_for("google_workspace") == 3
+    assert orc.registration_tool_count_for("unknown") == 0
+
+
 # ---------------------------------------------------------------------------
 # Slice 2 — call_tool() routes to the correct plugin
 # ---------------------------------------------------------------------------
@@ -168,6 +193,84 @@ def test_unregister_unknown_plugin_does_not_raise():
         orc.unregister("nonexistent")
     except Exception as exc:
         pytest.fail(f"unregister raised unexpectedly: {exc}")
+
+
+def test_unregister_taker_restores_prior_owner():
+    # Regression: when google_workspace took over gmail_send / calendar_*
+    # from gmail / calendar / etc. and was then unregistered (the only
+    # production path that triggers this is the builder plugin's uninstall
+    # flow), the superseded tool used to silently disappear from
+    # _tool_index — even though the original plugin was still registered
+    # and still declared the tool. The orchestrator's view of the registry
+    # diverged from the registered plugins' own list_tools(). Unregistering
+    # the taker must restore the prior owner's claim.
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("gmail", ["gmail_send", "gmail_search"]))
+    orc.register(
+        _make_plugin("google_workspace", ["gmail_send", "gmail_search"])
+    )
+    assert orc._tool_index["gmail_send"] == "google_workspace"
+
+    orc.unregister("google_workspace")
+
+    assert orc._tool_index["gmail_send"] == "gmail"
+    assert orc._tool_index["gmail_search"] == "gmail"
+    names = [t.name for t in orc.list_tools()]
+    assert sorted(names) == ["gmail_search", "gmail_send"]
+
+
+async def test_unregister_taker_restores_routing_to_prior_owner():
+    # Companion to the previous test: not just the index, but dispatch
+    # must route back to the restored owner — call_tool against a
+    # superseded-then-restored tool should hit the original plugin.
+    orc = MCPOrchestrator()
+    gmail = _make_plugin("gmail", ["gmail_send"])
+    workspace = _make_plugin("google_workspace", ["gmail_send"])
+    orc.register(gmail)
+    orc.register(workspace)
+
+    await orc.call_tool("gmail_send", {"to": "x"})
+    workspace.call_tool.assert_called_once()
+    gmail.call_tool.assert_not_called()
+
+    orc.unregister("google_workspace")
+
+    await orc.call_tool("gmail_send", {"to": "y"})
+    gmail.call_tool.assert_called_once_with("gmail_send", {"to": "y"})
+
+
+def test_unregister_three_step_takeover_chain_restores_in_reverse():
+    # Build an A -> B -> C takeover chain; unregistering in reverse must
+    # restore B then A. Asserts the registration history is honoured as a
+    # stack, not just two-level fallback.
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("a", ["t1"]))
+    orc.register(_make_plugin("b", ["t1"]))
+    orc.register(_make_plugin("c", ["t1"]))
+    assert orc._tool_index["t1"] == "c"
+
+    orc.unregister("c")
+    assert orc._tool_index["t1"] == "b"
+
+    orc.unregister("b")
+    assert orc._tool_index["t1"] == "a"
+
+
+def test_unregister_prior_owner_keeps_taker_active():
+    # Symmetric to the restoration case: when the original owner leaves
+    # but the taker remains, the taker keeps the tool. This already worked
+    # under the pre-fix _remove_from_index (which only walked entries
+    # currently owned by the unregistering plugin) so the assertion here
+    # is a guardrail against regressions from the history-walk rewrite.
+    orc = MCPOrchestrator()
+    orc.register(_make_plugin("a", ["t1"]))
+    orc.register(_make_plugin("b", ["t1"]))
+
+    orc.unregister("a")
+
+    assert orc._tool_index["t1"] == "b"
+    names = [t.name for t in orc.list_tools()]
+    assert names == ["t1"]
 
 
 # ---------------------------------------------------------------------------

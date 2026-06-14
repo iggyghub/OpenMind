@@ -1321,7 +1321,7 @@ def _plugins_list_event() -> dict:
     registered = []
     for plugin_name in sorted(_orc._plugins):
         caps = _orc.required_capabilities_for(plugin_name)
-        tool_count = sum(1 for p in _orc._tool_index.values() if p == plugin_name)
+        tool_count = _orc.registration_tool_count_for(plugin_name)
         registered.append({
             "name": plugin_name,
             "required_capabilities": sorted(caps) if caps is not None else None,
@@ -1456,8 +1456,17 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "set_voice":
         # Update the active profile's voice_id; next speak() call picks it up.
+        # Reject unknown ids up-front so a buggy/third-party client can't
+        # silently persist a voice that breaks TTS at the next speak() —
+        # mirrors switch_model's known-id guard.
         voice_id = msg.get("data", {}).get("voice_id")
         if voice_id and _active_profile:
+            known_ids = {v["id"] for v in _tts.list_voices()}
+            if voice_id not in known_ids:
+                logger.warning(
+                    "[cerebral] set_voice refused: unknown voice %r", voice_id,
+                )
+                return
             _pm.update_voice(_active_profile.id, voice_id)
             _active_profile = _pm.get(_active_profile.id)
             logger.info("[cerebral] Voice updated to %s for profile %s", voice_id, _active_profile.name)
@@ -2672,6 +2681,8 @@ async def main() -> None:
         )
 
     await _env.refresh_location()
+    if _settings.get("camera_enabled"):
+        _env.enable_camera()
     logger.info("[cerebral] Environment context: %s", _env.get_context())
 
     if _active_profile:

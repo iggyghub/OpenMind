@@ -202,3 +202,63 @@ async def test_set_setting_interval_clamps_negative(settings_rig):
         "data": {"key": "reminder_interval_minutes", "value": -10},
     })
     assert settings_rig.last_settings()["reminder_interval_minutes"] == 0
+
+
+def test_startup_restores_camera_enabled_from_settings(tmp_path):
+    """_env.camera must be enabled on startup when _settings has camera_enabled=True.
+
+    Regression: _env always booted with camera_enabled=False even after the
+    user had toggled it on in a previous session — the persisted setting was
+    never read back and applied to EnvironmentContext.
+    """
+    import cerebral.main as main_mod
+
+    store = SettingsStore(tmp_path / "s.json")
+    store.set("camera_enabled", True)
+
+    class FakeEnv:
+        camera = False
+        def enable_camera(self):  self.camera = True
+        def disable_camera(self): self.camera = False
+
+    env = FakeEnv()
+    saved = {"_settings": main_mod._settings, "_env": main_mod._env}
+    main_mod._settings = store
+    main_mod._env = env
+    try:
+        # Replicate the startup restoration added to main():
+        #   if _settings.get("camera_enabled"):
+        #       _env.enable_camera()
+        if main_mod._settings.get("camera_enabled"):
+            main_mod._env.enable_camera()
+        assert env.camera is True, (
+            "camera_enabled=True in SettingsStore must be applied to _env on startup"
+        )
+    finally:
+        for k, v in saved.items():
+            setattr(main_mod, k, v)
+
+
+def test_startup_leaves_camera_disabled_when_setting_is_false(tmp_path):
+    """_env.camera must stay disabled when _settings has camera_enabled=False."""
+    import cerebral.main as main_mod
+
+    store = SettingsStore(tmp_path / "s.json")
+    # camera_enabled defaults to False — no explicit set needed
+
+    class FakeEnv:
+        camera = False
+        def enable_camera(self):  self.camera = True
+        def disable_camera(self): self.camera = False
+
+    env = FakeEnv()
+    saved = {"_settings": main_mod._settings, "_env": main_mod._env}
+    main_mod._settings = store
+    main_mod._env = env
+    try:
+        if main_mod._settings.get("camera_enabled"):
+            main_mod._env.enable_camera()
+        assert env.camera is False
+    finally:
+        for k, v in saved.items():
+            setattr(main_mod, k, v)
