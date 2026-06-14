@@ -1,5 +1,17 @@
 'use strict';
 
+// Dual-mode export: the same source feeds the Node test suite (and main.js)
+// via require() AND can be loaded into a renderer via a plain <script src>
+// tag (the windows run nodeIntegration:false per ADR-0007 so they can't
+// require()). The body is wrapped in an IIFE so the module-private
+// declarations (DEFAULTS, NotificationManager, _exports) stay function-scoped.
+// Classic <script src> tags share ONE global lexical environment, so a bare
+// top-level `const _exports` here would collide with the identical declaration
+// in any other dual-mode lib loaded into the same page -- a page-killing
+// redeclaration SyntaxError that silently kills the whole renderer. require()
+// scopes each module separately, which is why the Node test suite never
+// catches this. Preventive hardening following #263/#264.
+(function () {
 const DEFAULTS = {
   notifications_enabled:    false,
   reminder_interval_minutes: 120,
@@ -116,4 +128,14 @@ class NotificationManager {
   }
 }
 
-module.exports = { NotificationManager };
+// ── Dual-mode export ────────────────────────────────────────────────────
+// Node (tests, main.js): module.exports = { ... }
+// Browser (renderer):    window.NotificationManagerMod = { ... }
+const _exports = { NotificationManager };
+
+if (typeof module === 'object' && module && module.exports) {
+  module.exports = _exports;
+} else if (typeof window !== 'undefined') {
+  window.NotificationManagerMod = _exports;
+}
+})();

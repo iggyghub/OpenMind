@@ -17,7 +17,20 @@
 // The UI layer is injected as two callbacks (`openPrompt`, `closePrompt`)
 // so this class stays UI-free and unit-testable. main.js wires the real
 // Electron BrowserWindow lifecycle into those callbacks.
-
+//
+// Dual-mode export: the same source feeds the Node test suite (and main.js)
+// via require() AND can be loaded into a renderer via a plain <script src>
+// tag (the windows run nodeIntegration:false per ADR-0007 so they can't
+// require()). The body is wrapped in an IIFE so the module-private
+// declarations (VALID_MODAL_CHOICES, ModalManager, _exports) stay
+// function-scoped. Classic <script src> tags share ONE global lexical
+// environment, so a bare top-level `const _exports` here would collide with
+// the identical declaration in any other dual-mode lib loaded into the same
+// page (e.g. consent-manager.js) -- a page-killing redeclaration SyntaxError
+// that silently kills the whole renderer. require() scopes each module
+// separately, which is why the Node test suite never catches this. Preventive
+// hardening following #263/#264.
+(function () {
 const VALID_MODAL_CHOICES = new Set(['accept', 'cancel']);
 
 class ModalManager {
@@ -101,4 +114,14 @@ class ModalManager {
   }
 }
 
-module.exports = { ModalManager, VALID_MODAL_CHOICES };
+// ── Dual-mode export ────────────────────────────────────────────────────
+// Node (tests, main.js): module.exports = { ... }
+// Browser (renderer):    window.ModalManagerMod = { ... }
+const _exports = { ModalManager, VALID_MODAL_CHOICES };
+
+if (typeof module === 'object' && module && module.exports) {
+  module.exports = _exports;
+} else if (typeof window !== 'undefined') {
+  window.ModalManagerMod = _exports;
+}
+})();

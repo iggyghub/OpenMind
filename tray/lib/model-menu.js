@@ -19,6 +19,19 @@
  * @param {() => void} [opts.onRefresh]            re-query Ollama for installed models (#37)
  * @returns {Array<object>} Electron Menu template entries
  */
+
+// Dual-mode export: the same source feeds the Node test suite (and main.js)
+// via require() AND can be loaded into a renderer via a plain <script src>
+// tag (the windows run nodeIntegration:false per ADR-0007 so they can't
+// require()). The body is wrapped in an IIFE so the module-private
+// declarations (buildModelSubmenu, formatModelLabel, _exports) stay
+// function-scoped. Classic <script src> tags share ONE global lexical
+// environment, so a bare top-level `const _exports` here would collide with
+// the identical declaration in any other dual-mode lib loaded into the same
+// page -- a page-killing redeclaration SyntaxError that silently kills the
+// whole renderer. require() scopes each module separately, which is why the
+// Node test suite never catches this. Preventive hardening following #263/#264.
+(function () {
 function buildModelSubmenu(opts) {
   const {
     models = [],
@@ -98,4 +111,14 @@ function formatModelLabel(m) {
   return `${cloud}${m.label || m.id}${last}`;
 }
 
-module.exports = { buildModelSubmenu, formatModelLabel };
+// ── Dual-mode export ────────────────────────────────────────────────────
+// Node (tests, main.js): module.exports = { ... }
+// Browser (renderer):    window.ModelMenuMod = { ... }
+const _exports = { buildModelSubmenu, formatModelLabel };
+
+if (typeof module === 'object' && module && module.exports) {
+  module.exports = _exports;
+} else if (typeof window !== 'undefined') {
+  window.ModelMenuMod = _exports;
+}
+})();
