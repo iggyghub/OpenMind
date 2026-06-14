@@ -18,7 +18,7 @@ full smoke pass finds nothing left to fix (`Status: clean`), hits a blocker
 
 ## Kickoff block -- start here
 
-Model: sonnet
+Model: opus
 Status: hunting
 
 (`Model:` selects the model for the NEXT session -- allowed: haiku | sonnet | opus | fable.
@@ -129,6 +129,56 @@ bug, stop; `blocked` = a bug needs a human, stop. The loop reads both lines dire
 - **Tests:** full suite (minus Discord self-bot tests) -- 2959 passed, 4 skipped.
 - **Landed:** commit `f35d721` on `fix/run-campaign`; PR #262 remains open for
   human review.
+
+### Iteration 4 -- 2026-06-13 -- unregister of tool-taker drops prior owner's claim
+
+- **Ran:** `python -u -m cerebral.main` headless (PID 19014, killed after
+  smoke); exercised IPC via WebSocket smoke client (`list_tools`,
+  `list_plugins`, `list_queue`, `list_permissions`, `list_settings`,
+  `list_models`, `list_credentials`, `list_conversation_turns`,
+  `list_insights`, `list_memories`, `list_profiles`, `list_voices`,
+  `get_env_context`, `get_plugin_settings`, `call_tool` for git_status /
+  clock get_time); ran a second deeper smoke that drove ~22 bad-payload
+  edge paths (`set_setting` bad keys, `delete_insight` / `pin_insight` /
+  `edit_insight` on missing ids, `dismiss_item` nonexistent,
+  `set_static_token` / `clear_static_token` missing fields,
+  `set_class_policy` / `set_tool_override` / `revoke_session_grant`
+  empties, `consent_response` stale id, `call_tool` unknown tool); ran
+  full test suite (3055 passed, 4 skipped). Reverted Alice's
+  `shell_exec_unlocked` flag that the deeper smoke flipped (the dispatcher
+  trusts the click — that's by design, not a bug).
+- **Bug:** `MCPOrchestrator._remove_from_index` walked `_tool_index` by
+  current ownership only. When plugin B took over a tool from plugin A
+  and B was later unregistered, `_tool_index[tool] = B` got deleted and
+  the tool vanished from `list_tools()` / `tools_for_llm` / dispatch —
+  even though A was still registered and still declared the tool in its
+  own `list_tools()`. Reproduced standalone: register `a` with `t1`,
+  register `b` with `t1` (b takes over), `unregister("b")` → `t1` gone
+  from index; `a` still in `_plugins`; `a.list_tools()` still has `t1`.
+  In production the only runtime unregister path is the builder plugin's
+  uninstall flow (#30) — any builder-installed plugin that took over a
+  base-plugin tool would erase that base tool on removal. Not caught by
+  existing tests: the takeover regression tests added in iteration 2 / 3
+  exercised takeover+list/dispatch + per-plugin counts, but not the
+  takeover-then-unregister round-trip.
+- **Fix:** Track a per-tool registration history in
+  `MCPOrchestrator._tool_registrations` (`dict[str, list[tuple[str,
+  Tool]]]`) populated in `register()` alongside `_tool_index` /
+  `_tool_lookup`. `_remove_from_index` walks every tool's history,
+  filters out entries belonging to the leaving plugin, and — if a prior
+  registrant remains — promotes the last surviving entry back into
+  `_tool_index` / `_tool_lookup` as the active owner. A→B→C chain
+  unwinds correctly to B then A as C then B leave. Added four regression
+  tests in `test_orchestrator.py`:
+  `test_unregister_taker_restores_prior_owner`,
+  `test_unregister_taker_restores_routing_to_prior_owner`,
+  `test_unregister_three_step_takeover_chain_restores_in_reverse`,
+  `test_unregister_prior_owner_keeps_taker_active`. Verified the live
+  boot still registers 188 unique tools and all 17 plugin seams wire.
+- **Tests:** full suite (root `python -m pytest`) -- 3055 passed,
+  4 skipped (+4 new regression tests vs iteration 3's 3051).
+- **Landed:** commit `e724d78` on `fix/run-campaign`; PR #262 remains
+  open for human review.
 
 ### Iteration 3 -- 2026-06-13 -- plugins_list tool_count=0 for superseded plugins
 
