@@ -35,6 +35,14 @@
 // enough and "what Cerebral says" is the only truth that matters for
 // security state.
 
+// Body wrapped in an IIFE so the module-private declarations (VALID_DECISIONS,
+// DEFAULT_STATE, PermissionsStore, _exports, ...) stay function-scoped. Classic
+// <script src> tags share ONE global lexical environment, so a bare top-level
+// `const _exports` here collides with the identical declaration in
+// sidebar-router.js (also loaded into the Main window), a page-killing
+// redeclaration SyntaxError. require() scopes each module separately, which is
+// why the Node test suite never caught it.
+(function () {
 const VALID_DECISIONS         = new Set(['silent', 'ask', 'deny']);
 const VALID_TOOL_OVERRIDES    = new Set(['silent', 'ask', 'deny', 'inherit']);
 
@@ -217,3 +225,4 @@ if (typeof module === 'object' && module && module.exports) {
 } else if (typeof window !== 'undefined') {
   window.PermissionsStoreMod = _exports;
 }
+})();
