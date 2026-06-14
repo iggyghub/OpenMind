@@ -259,3 +259,56 @@ bug, stop; `blocked` = a bug needs a human, stop. The loop reads both lines dire
   4 skipped (+4 new regression tests vs iteration 4's 3055).
 - **Landed:** commit `7582261` on `fix/run-campaign`; PR #262 remains
   open for human review.
+
+### Iteration 6 -- 2026-06-13 -- camera_enabled setting not restored to env on startup
+
+- **Ran:** `python -u -m cerebral.main` headless (PID 42840, killed after
+  smoke); exercised IPC via two WebSocket smoke clients: an initial
+  67-probe run (smoke_iter6.py, single-recv-per-connection) and a
+  corrected 52-probe persistent-connection run (smoke_iter6c.py) that
+  drains the 13-event greeting burst before probing. Probes covered all
+  major IPC paths: listers (`list_tools`, `list_plugins`,
+  `list_settings`, `list_queue`, `list_permissions`, `list_models`,
+  `list_credentials`, `list_voices`, `list_profiles`, `list_insights`,
+  `list_memories`, `list_conversation_turns`, `get_env_context`,
+  `refresh_models`), tool dispatch (`call_tool` with correct name, null
+  args, unknown tool, empty name), model/voice switching, setting
+  updates (`set_setting`, `set_camera_enabled`, `set_class_policy`,
+  `set_tool_override`, `set_task_model`, `set_static_token`,
+  `clear_static_token`), credentials (`set_credential_client`,
+  `disconnect_credential`, `consent_response`,
+  `irreversible_modal_response`, `revoke_session_grant`), profile/queue
+  ops, insights, memory, discord allowlist, `unlock_shell_exec`,
+  `clear_new_plugin_flag`, and unknown/malformed messages; ran full test
+  suite (3061 passed, 4 skipped).
+- **Bug:** `_env` (EnvironmentContext) always booted with
+  `camera_enabled=False` even when the user had persisted
+  `camera_enabled=True` via `set_setting` in a prior session.
+  `_settings` (SettingsStore) is a module-level global that loads the
+  JSON correctly on import, and `set_setting` with `camera_enabled=True`
+  correctly calls both `_settings.set()` (persists to disk) and
+  `_env.enable_camera()` (runtime sync). But `main()` never reads
+  `_settings.get("camera_enabled")` to initialize `_env` at startup
+  — every restart hard-resets the camera to disabled regardless of
+  what was persisted. The `set_camera_enabled` IPC handler compounds
+  this: it calls `_env.enable_camera()` but never calls
+  `_settings.set()`, so even that path loses state on restart. No
+  existing test covered the startup-restoration contract.
+- **Fix:** One-line addition in `main()` (cerebral/main.py) after
+  `await _env.refresh_location()`:
+  ```python
+  if _settings.get("camera_enabled"):
+      _env.enable_camera()
+  ```
+  This restores the persisted camera state into `_env` before the
+  WebSocket server opens, so the first `get_env_context` broadcast on
+  any client connection reflects the correct state. Added two regression
+  tests to `cerebral/tests/test_settings.py`:
+  `test_startup_restores_camera_enabled_from_settings` (persisted True
+  propagates to env) and
+  `test_startup_leaves_camera_disabled_when_setting_is_false` (False
+  case leaves env unchanged).
+- **Tests:** full suite (root `python -m pytest`) -- 3061 passed,
+  4 skipped (+2 new regression tests vs iteration 5's 3059).
+- **Landed:** commit `1e1de1e` on `fix/run-campaign`; PR #262 remains
+  open for human review.
