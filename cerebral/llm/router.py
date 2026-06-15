@@ -19,9 +19,18 @@ Public interface:
 """
 
 import logging
+import os
 from typing import Callable, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
+
+# Per-request timeout for the local Ollama backend. Default 180s: CPU-bound
+# inference of a 7B+ model on a real prompt routinely exceeds the old 60s.
+# Overridable via env for differently-specced hardware.
+try:
+    _OLLAMA_TIMEOUT_S = float(os.environ.get("OLLAMA_TIMEOUT_S", "180"))
+except ValueError:
+    _OLLAMA_TIMEOUT_S = 180.0
 
 
 class ModelUnavailableError(Exception):
@@ -214,7 +223,12 @@ class OllamaBackend:
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         import httpx
         payload = {"model": self.model, "prompt": prompt, "stream": False}
-        async with httpx.AsyncClient(timeout=60) as client:
+        # CPU-bound local inference of a 7B+ model on a real (large) prompt can
+        # take 80s+; the old 60s ceiling timed out every genuine request on a
+        # GPU-light box and surfaced as ModelUnavailableError ("can't reach the
+        # language model"). 180s covers cold-load + generation. Override with
+        # OLLAMA_TIMEOUT_S for slower/faster hardware.
+        async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT_S) as client:
             try:
                 resp = await client.post(f"{self.url}/api/generate", json=payload)
                 resp.raise_for_status()
