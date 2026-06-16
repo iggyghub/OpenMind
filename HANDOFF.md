@@ -6,14 +6,24 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 
 ## Next slice — start here
 
-**The v1 completion queue is loaded (issue #240).** The Main-window UI epic (#184, slices 1–8) is done; the queue below covers everything that remains for v1 per `docs/v1-roadmap.md`. Work it **strictly top-down**. After landing a slice, **update this block**: tick the entry, retitle "Recommended next slice" to the next unticked entry, and set `Model:` to that entry's model.
-
-### All queue slices complete — v1 waits on human work
+**Core-loop epic (#270).** The active autonomous queue is the #270 core-loop build: **S1 single-step → S2 chaining → S3 Recipes**. The design is locked in **`docs/adr/0008-core-loop-tool-selection.md`** (+ the ADR-0005 2026-06-15 amendment); each issue body is its slice spec. Work strictly top-down — S2 depends on S1, S3 on S2. After landing a slice, **update this block**: tick the entry, set the next unticked entry's `#N` + `Model:` as the active slice, and bump `Status:` (ready while slices remain; `done` after #276 lands).
 
 Model: sonnet
-Status: done
+Status: ready
 
-(`Model:` is synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook) and read directly by the autonomous loop `scripts/run-slices.ps1`. Allowed: haiku | sonnet | opus | fable. `Status: done` stops the loop — no more planned slices.)
+(`Model:`/`Status:` are read directly by the loop `scripts/run-slices.ps1` and synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook). Allowed: haiku | sonnet | opus | fable. `Status: ready` = run the active slice; `blocked` = needs a human; `done` = stop.)
+
+### #270 core-loop slice queue (work top-down; issue body = spec; ADR-0008 = design)
+
+1. [ ] #274 — S1 single-step engine (planner → tool → execute) — Model: sonnet
+2. [ ] #275 — S2 chaining (multi-step loop, 8-step cap) — Model: sonnet
+3. [ ] #276 — S3 Recipes (save/replay named chains + panel) — Model: sonnet  (also `Closes #270`)
+
+> Notes for each session: the default tool-picking model is a **tool-capable** Ollama model — `qwen2.5:7b` is installed and tool-capable (verify against it); `qwen3.6` is the ADR target to `ollama pull` later. Do NOT hard-code a model that isn't installed. Cloud tool-calling via OpenClaw `/v1` is fail-soft-to-text (ADR-0008).
+
+---
+
+### (Archived) v1 completion queue (#240) — landed; waits on human live-verify
 
 **v1 completion now waits entirely on human execution of `docs/v1-live-verify.md`:**
 

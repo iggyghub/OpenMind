@@ -16,7 +16,7 @@
 
 **Wake** — the moment a user speaks Felix's name. Triggers: mic opens, system awaits a command. Does not read the queue aloud. Does not interrupt.
 
-**Passive mode** — the default always-on state. Vosk listens continuously for the wake name and actionable signals. No full transcription, no LLM calls, minimal CPU. The system is observing, not acting.
+**Passive mode** — the default always-on state. Vosk listens continuously for the wake name and actionable signals. No full transcription, no LLM calls, minimal CPU. The system is observing, not acting. *(v1 scope: Felix acts only when addressed — wake word or typed. Continuous ambient 5W1H capture into the queue is designed-for but deferred post-v1; see ADR-0008.)*
 
 **Active mode** — entered after a wake. faster-whisper transcribes, the LLM processes, tools execute.
 
@@ -36,9 +36,17 @@
 
 **n8n-backed plugin** — a plugin whose implementation posts to a local n8n workflow, which then calls the target. Shared credentials across profiles, two hops, plus n8n daemon as a runtime dependency. Acceptable for occasional-use services or where Cerebral has no first-class client for the target.
 
-**The core loop** — the fundamental operation: user speaks → LLM decomposes intent into tasks → selects available tools → executes via MCP. If no tool exists, the growth loop begins.
+**The core loop** — the fundamental operation: intent → the LLM (the *planner*) selects a tool → executes via MCP. It runs in two forms (see ADR-0008):
+- **Active loop** — Felix is *addressed* (wake word or typed command). The planner picks a tool via native tool-calling and dispatches it **directly** through the ADR-0005 gate with `passive=False`: silent-class runs friction-free, ask-class prompts via the Conversation consent card, irreversible pops a modal. No queue detour. This is the v1 path.
+- **Passive loop** — an ambient 5W1H candidate is queued and executed only after the user approves, with `passive=True` (escalated). v1 narrows this: Felix acts only when addressed; always-listening ambient capture into the queue is deferred post-v1.
+
+If no tool exists, the growth loop begins.
 
 **The growth loop** — when Felix lacks a tool: identify the gap → run /grill-me to design it → build it as an MCP server → register it → Felix has it permanently.
+
+**Chain** — the active loop run as a loop: the planner picks a tool, sees the result, picks the next, and repeats until it returns final text or hits the step cap (default 8). A single tool call is a chain of length one. Chaining is the real target; the single-step engine is its stepping stone.
+
+**Recipe** — a saved, named, user-approved **chain** (a frozen sequence of tool calls) a user re-runs on command, scoped per profile. Replaying a Recipe re-fires every per-step ADR-0005 gate — a Recipe saves the *plan*, never a *grant*. Distinct from the growth loop, which builds a *new* tool: a Recipe just remembers a sequence of tools that already exist.
 
 **Insights view** — the UI panel showing Felix's learned model of a user. Displays detected preferences, patterns, and behavioural adjustments per profile. Every entry is editable, deletable, or pinnable. Full transparency into what Felix has inferred.
 
@@ -81,7 +89,7 @@ PWA serving from Cerebral (a local HTTP server + service-worker shell) is **out 
 |-------|-----------|
 | Backend brain | Python |
 | Frontend / tray | Node.js + web (HTML/CSS/JS) |
-| Local LLM | Ollama (default model: Gemma 4) |
+| Local LLM | Ollama (default tool-calling model: Qwen 3.6; Gemma 4 supported) |
 | Cloud LLM | Claude (Anthropic) |
 | Model router | OpenClaw |
 | Always-on STT | Vosk |
