@@ -20,7 +20,7 @@
 (function () {
   const VALID_ROUTES = new Set([
     'conversation', 'queue', 'insights', 'memory',
-    'permissions', 'credentials', 'plugins', 'profiles', 'settings',
+    'permissions', 'credentials', 'plugins', 'profiles', 'settings', 'recipes',
   ]);
 
   const DEFAULT_ROUTE = 'conversation';

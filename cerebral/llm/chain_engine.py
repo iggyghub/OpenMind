@@ -14,6 +14,8 @@ from typing import Awaitable, Callable
 from cerebral.llm.planner import Planner, validate_tool_args
 from cerebral.llm.router import ToolCall
 
+_ChainDoneFn = Callable[[list[dict]], Awaitable[None]]
+
 logger = logging.getLogger(__name__)
 
 MAX_CHAIN_STEPS: int = int(os.environ.get("MAX_CHAIN_STEPS", "8"))
@@ -46,8 +48,15 @@ class ChainEngine:
         tools: list[dict],
         *,
         max_steps: int = MAX_CHAIN_STEPS,
+        on_chain_done: "_ChainDoneFn | None" = None,
     ) -> str:
-        """Run the chaining loop. Returns the final text response to speak."""
+        """Run the chaining loop. Returns the final text response to speak.
+
+        on_chain_done -- optional async callback fired when the planner returns
+        text naturally (not cap/denial/error) after 2+ successful steps. Receives
+        the list of completed step dicts so the caller can offer to save a Recipe.
+        Each step dict: {"name": str, "args": dict, "result": str, "is_error": bool}.
+        """
         from cerebral.db.conversation import KIND_TOOL_CALL, KIND_TOOL_RESULT
         from cerebral.security import Decision
 
@@ -58,6 +67,11 @@ class ChainEngine:
             logger.info("[chain] step %d: planner returned %s", step_num + 1, type(result).__name__)
 
             if isinstance(result, str):
+                if on_chain_done is not None and len(prior_steps) >= 2:
+                    try:
+                        await on_chain_done(prior_steps)
+                    except Exception:
+                        logger.exception("[chain] on_chain_done callback raised")
                 return result
 
             # Validate args -- one re-ask on failure (ADR-0008 bounded correction)
