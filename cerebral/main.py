@@ -22,7 +22,8 @@ from pathlib import Path
 
 from cerebral.audio.pipeline import AudioPipeline, DEFAULT_SIGNAL_WORDS
 from cerebral.db.profiles import Profile, ProfileManager
-from cerebral.llm.router import ModelRouter, ModelUnavailableError
+from cerebral.llm.router import ModelRouter, ModelUnavailableError, ToolCall
+from cerebral.llm.planner import Planner, validate_tool_args
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
 from cerebral.passive.extractor import FiveW1HExtractor
@@ -2240,26 +2241,75 @@ async def _on_wake(transcript: str) -> None:
 
 
 async def _process_command(transcript: str, *, speak: bool = True) -> None:
-    """Call the LLM with the transcript and emit Felix's response.
+    """Run the planner, gate and dispatch a tool call, or fall back to chat text.
 
-    ``speak=True`` (voice path) routes the response through TTS as today.
-    ``speak=False`` (text path -- Issue #185) skips TTS so a typed
-    interaction stays silent (meetings / late-night use cases). The
-    persisted ``felix_speech`` turn and broadcast cycle are identical
-    either way -- the Main window renders the response from the
-    ``conversation_turn_emitted`` push regardless of lane."""
+    ``speak=True`` (voice path) routes the response through TTS.
+    ``speak=False`` (text path -- Issue #185) skips TTS for typed interactions.
+    """
     tools = _orc.tools_for_llm
     await _broadcast({"type": "thinking"})
+    planner = Planner(_router)
     try:
-        prompt = await _memory_preamble(transcript) + transcript
-        response = await _router.complete(prompt, task_type="chat")
-        logger.info("[cerebral] LLM response (%d tools available): %r", len(tools), response[:80])
+        preamble = await _memory_preamble(transcript)
+        enriched = preamble + transcript if preamble else transcript
+
+        result = await planner.plan(enriched, tools)
+        logger.info("[cerebral] Planner result: %s", type(result).__name__)
+
+        if isinstance(result, ToolCall):
+            # Lightweight arg validation -- one re-ask on failure (ADR-0008)
+            val_err = validate_tool_args(result.name, result.args, tools)
+            if val_err:
+                logger.warning("[cerebral] Arg validation failed for '%s': %s", result.name, val_err)
+                result = await planner.plan(enriched, tools, error=val_err)
+
+            if isinstance(result, ToolCall):
+                # Gate: issue #238 pattern with passive=False (active loop)
+                plugin_name = _orc.plugin_for_tool(result.name)
+                caps = (
+                    _orc.required_capabilities_for(plugin_name)
+                    if plugin_name is not None
+                    else None
+                )
+                if caps:
+                    decision = await _orc.check_capabilities(result.name, caps, CallFlags())
+                else:
+                    decision = Decision.SILENT
+
+                await _record_turn(KIND_TOOL_CALL, {"name": result.name, "args": result.args})
+
+                if decision is Decision.SILENT:
+                    tool_result = await _orc.call_tool(result.name, result.args)
+                    await _record_turn(
+                        KIND_TOOL_RESULT,
+                        {"name": result.name, "is_error": tool_result.is_error},
+                    )
+                    if tool_result.is_error:
+                        response = f"The tool encountered an error: {tool_result.content}"
+                    else:
+                        response = tool_result.content
+                else:
+                    logger.info(
+                        "[cerebral] Planner tool '%s' denied by gate (decision=%s)",
+                        result.name, decision.value,
+                    )
+                    response = (
+                        f"I don't have permission to use {result.name} right now."
+                    )
+            else:
+                # Re-ask returned text (validation error couldn't be corrected)
+                response = result if isinstance(result, str) else "Something went wrong. Please try again."
+        else:
+            # Text response -- existing chat path
+            response = result
+
     except ModelUnavailableError as exc:
         logger.error("[cerebral] Model unavailable: %s", exc)
         response = "Sorry, I can't reach the language model right now."
     except Exception as exc:
         logger.error("[cerebral] Unexpected error during LLM call: %s", exc)
         response = "Something went wrong. Please try again."
+
     await _record_turn(KIND_FELIX_SPEECH, {"text": response, "spoken": bool(speak)})
     if speak:
         await _speak(response)
