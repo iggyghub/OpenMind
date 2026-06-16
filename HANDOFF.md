@@ -9,7 +9,7 @@ Continuing implementation of the OpenMind project. Read CONTEXT.md and CLAUDE.md
 **Core-loop epic (#270).** The active autonomous queue is the #270 core-loop build: **S1 single-step → S2 chaining → S3 Recipes**. The design is locked in **`docs/adr/0008-core-loop-tool-selection.md`** (+ the ADR-0005 2026-06-15 amendment); each issue body is its slice spec. Work strictly top-down — S2 depends on S1, S3 on S2. After landing a slice, **update this block**: tick the entry, set the next unticked entry's `#N` + `Model:` as the active slice, and bump `Status:` (ready while slices remain; `done` after #276 lands).
 
 Model: sonnet
-Status: ready
+Status: done
 
 (`Model:`/`Status:` are read directly by the loop `scripts/run-slices.ps1` and synced into `.claude/settings.local.json` by `scripts/sync-slice-model.ps1` (SessionEnd hook). Allowed: haiku | sonnet | opus | fable. `Status: ready` = run the active slice; `blocked` = needs a human; `done` = stop.)
 
@@ -17,7 +17,7 @@ Status: ready
 
 1. [x] #274 — S1 single-step engine (planner → tool → execute) — Model: sonnet — PR #277
 2. [x] #275 — S2 chaining (multi-step loop, 8-step cap) — Model: sonnet — PR #278
-3. [ ] #276 — S3 Recipes (save/replay named chains + panel) — Model: sonnet  (also `Closes #270`)
+3. [x] #276 — S3 Recipes (save/replay named chains + panel) — Model: sonnet — PR #279  (also `Closes #270`)
 
 > Notes for each session: the default tool-picking model is a **tool-capable** Ollama model — `qwen2.5:7b` is installed and tool-capable (verify against it); `qwen3.6` is the ADR target to `ollama pull` later. Do NOT hard-code a model that isn't installed. Cloud tool-calling via OpenClaw `/v1` is fail-soft-to-text (ADR-0008).
 
