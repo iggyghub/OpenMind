@@ -15,7 +15,7 @@ Status: ready
 
 ### #270 core-loop slice queue (work top-down; issue body = spec; ADR-0008 = design)
 
-1. [ ] #274 — S1 single-step engine (planner → tool → execute) — Model: sonnet
+1. [x] #274 — S1 single-step engine (planner → tool → execute) — Model: sonnet — PR #277
 2. [ ] #275 — S2 chaining (multi-step loop, 8-step cap) — Model: sonnet
 3. [ ] #276 — S3 Recipes (save/replay named chains + panel) — Model: sonnet  (also `Closes #270`)
 
