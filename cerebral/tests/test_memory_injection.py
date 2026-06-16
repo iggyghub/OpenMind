@@ -32,6 +32,12 @@ class _FakeRouter:
         self.calls.append((prompt, task_type))
         return "OK"
 
+    async def complete_with_tools(self, prompt, tools):
+        # Planner path (Issue #274) -- capture prompt; return text so planner
+        # falls through to the chat-reply path without dispatching a tool.
+        self.calls.append((prompt, "tools"))
+        return "OK"
+
     @property
     def last_prompt(self) -> str:
         return self.calls[-1][0]
@@ -146,30 +152,39 @@ async def test_preamble_preserves_recall_relevance_order(inj_rig):
 # ── _process_command (wake) ───────────────────────────────────────────────────
 
 async def test_process_command_no_profile_prompt_byte_identical(inj_rig):
+    # S1 (Issue #274): planner wraps transcript in a system prompt, so the
+    # raw transcript appears inside the prompt rather than being byte-identical.
+    # The invariant: no memory block when there is no profile.
     inj_rig.no_profile()
     await inj_rig.module._process_command("felix what time is it")
-    assert inj_rig.router.last_prompt == "felix what time is it"
+    prompt = inj_rig.router.last_prompt
+    assert "felix what time is it" in prompt
+    assert "<memory>" not in prompt
 
 
 async def test_process_command_empty_recall_byte_identical(inj_rig):
+    # No memories stored -- memory block must not appear in prompt.
     await inj_rig.module._process_command("felix what time is it")
-    assert inj_rig.router.last_prompt == "felix what time is it"
+    prompt = inj_rig.router.last_prompt
+    assert "felix what time is it" in prompt
+    assert "<memory>" not in prompt
 
 
 async def test_process_command_injects_block_then_transcript(inj_rig):
     await inj_rig.mgr.remember("The user's name is Sam")
     await inj_rig.module._process_command("felix who am i")
     prompt = inj_rig.router.last_prompt
-    assert prompt.startswith(inj_rig.module._MEMORY_PREAMBLE_HEADER)
+    assert inj_rig.module._MEMORY_PREAMBLE_HEADER in prompt
     assert "- The user's name is Sam" in prompt
-    assert prompt.endswith("felix who am i")
+    assert "felix who am i" in prompt
     assert prompt.index("</memory>") < prompt.index("felix who am i")
 
 
 async def test_process_command_recall_raises_degrades(inj_rig):
     inj_rig.failing_memory()
     await inj_rig.module._process_command("felix hello")
-    assert inj_rig.router.last_prompt == "felix hello"
+    prompt = inj_rig.router.last_prompt
+    assert "felix hello" in prompt
     assert len(inj_rig.router.calls) == 1
 
 

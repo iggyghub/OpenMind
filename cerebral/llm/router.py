@@ -19,6 +19,7 @@ Public interface:
 """
 
 import logging
+from dataclasses import dataclass, field
 from typing import Callable, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
@@ -28,9 +29,17 @@ class ModelUnavailableError(Exception):
     """Raised when the active backend cannot be reached. Never silently falls back."""
 
 
+@dataclass
+class ToolCall:
+    """A tool invocation returned by the LLM planner (Issue #274)."""
+    name: str
+    args: dict = field(default_factory=dict)
+
+
 @runtime_checkable
 class Backend(Protocol):
     async def complete(self, prompt: str, task_type: str) -> str: ...
+    async def complete_with_tools(self, prompt: str, tools: list[dict]) -> ToolCall | str: ...
 
 
 # Cloud entries are constants; local entries are discovered at runtime.
@@ -166,6 +175,22 @@ class ModelRouter:
         logger.info("[router] %s handled request", model_id)
         return response
 
+    async def complete_with_tools(
+        self, prompt: str, tools: list[dict]
+    ) -> ToolCall | str:
+        """Route a tool-selection request to the active backend (Issue #274)."""
+        model_id = self._task_models.get("tool", self._active_model)
+        backend = self._backends[model_id]
+        try:
+            result = await backend.complete_with_tools(prompt, tools)
+        except (OSError, ConnectionError) as exc:
+            raise ModelUnavailableError(
+                f"model '{model_id}' unavailable: {exc}"
+            ) from exc
+        self._last_model = model_id
+        logger.info("[router] %s handled tool-selection request", model_id)
+        return result
+
 
 # ---------------------------------------------------------------------------
 # Default-picker + real-backend factories
@@ -207,7 +232,7 @@ def _real_models(backends: dict[str, Backend]) -> dict[str, dict]:
 class OllamaBackend:
     """Calls Ollama's generate endpoint directly (local, no cloud dependency)."""
 
-    def __init__(self, url: str = "http://localhost:11434", model: str = "gemma4"):
+    def __init__(self, url: str = "http://localhost:11434", model: str = "qwen2.5:7b"):
         self.url = url
         self.model = model
 
@@ -221,6 +246,50 @@ class OllamaBackend:
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 raise ConnectionError(str(exc)) from exc
         return resp.json()["response"]
+
+    async def complete_with_tools(
+        self, prompt: str, tools: list[dict]
+    ) -> ToolCall | str:
+        """Tool-selection via Ollama /api/chat with native tool-calling (Issue #274)."""
+        import httpx
+        import json as _json
+
+        ollama_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
+                },
+            }
+            for t in tools
+        ]
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "tools": ollama_tools,
+            "stream": False,
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            try:
+                resp = await client.post(f"{self.url}/api/chat", json=payload)
+                resp.raise_for_status()
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                raise ConnectionError(str(exc)) from exc
+
+        message = resp.json()["message"]
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            fn = tool_calls[0]["function"]
+            args = fn.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = _json.loads(args)
+                except _json.JSONDecodeError:
+                    args = {}
+            return ToolCall(name=fn["name"], args=args)
+        return message.get("content") or ""
 
     @staticmethod
     def list_installed_models(
@@ -273,3 +342,51 @@ class ClawBackend:
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 raise ConnectionError(str(exc)) from exc
         return resp.json()["choices"][0]["message"]["content"]
+
+    async def complete_with_tools(
+        self, prompt: str, tools: list[dict]
+    ) -> ToolCall | str:
+        """Tool-selection via OpenClaw /v1/chat/completions (Issue #274).
+
+        Fail-soft: if the response has no tool_calls (some OpenClaw builds drop
+        them), return the plain text content rather than raising.
+        """
+        import httpx
+        import json as _json
+
+        oai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
+                },
+            }
+            for t in tools
+        ]
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "tools": oai_tools,
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            try:
+                resp = await client.post(f"{self.url}/v1/chat/completions", json=payload)
+                resp.raise_for_status()
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                raise ConnectionError(str(exc)) from exc
+
+        message = resp.json()["choices"][0]["message"]
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            fn = tool_calls[0]["function"]
+            args = fn.get("arguments") or "{}"
+            if isinstance(args, str):
+                try:
+                    args = _json.loads(args)
+                except _json.JSONDecodeError:
+                    args = {}
+            return ToolCall(name=fn["name"], args=args)
+        # Fail-soft: no tool_calls → return text content
+        return message.get("content") or ""
