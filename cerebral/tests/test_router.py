@@ -380,11 +380,29 @@ def test_refresh_local_backends_keeps_active_when_still_installed():
 # Slice 10 — integration tests (real HTTP; skipped unless -m integration)
 # ---------------------------------------------------------------------------
 
+def _first_installed_ollama_model() -> str:
+    """Return the name of any installed Ollama model, or skip if none/unreachable.
+
+    Avoids hard-coding a tag (e.g. bare ``gemma4``) that may not match what's
+    actually pulled on the box (e.g. ``gemma4:e4b``) — a bare, uninstalled tag
+    makes Ollama 404 on ``/api/generate``.
+    """
+    import httpx
+    try:
+        tags = httpx.get("http://localhost:11434/api/tags", timeout=2.0).json()
+        models = [m["name"] for m in (tags.get("models") or [])]
+    except Exception:
+        pytest.skip("Ollama not reachable")
+    if not models:
+        pytest.skip("No Ollama models installed")
+    return models[0]
+
+
 @pytest.mark.integration
 async def test_ollama_backend_real_call():
     """OllamaBackend hits live Ollama at localhost:11434."""
     from cerebral.llm.router import OllamaBackend
-    backend = OllamaBackend(url="http://localhost:11434", model="gemma4")
+    backend = OllamaBackend(url="http://localhost:11434", model=_first_installed_ollama_model())
     result = await backend.complete("Reply with only the word PONG.", "chat")
     assert isinstance(result, str)
     assert len(result.strip()) > 0
@@ -393,11 +411,14 @@ async def test_ollama_backend_real_call():
 @pytest.mark.integration
 async def test_model_router_end_to_end_ollama():
     """ModelRouter with no injection calls real Ollama by default."""
+    _first_installed_ollama_model()  # skip early if no local model is available
     router = ModelRouter()
     result = await router.complete("Reply with only the word PONG.", "chat")
     assert isinstance(result, str)
     assert len(result.strip()) > 0
-    assert router.active_model == "ollama/gemma4"
+    # The default picker selects the first installed ollama/* backend; don't
+    # pin a specific tag (the box may have gemma4:e4b, qwen2.5:7b, etc.).
+    assert router.active_model.startswith("ollama/")
 
 
 @pytest.mark.integration
