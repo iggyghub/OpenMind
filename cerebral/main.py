@@ -24,6 +24,7 @@ from cerebral.audio.pipeline import AudioPipeline, DEFAULT_SIGNAL_WORDS
 from cerebral.db.profiles import Profile, ProfileManager
 from cerebral.llm.router import ModelRouter, ModelUnavailableError, ToolCall
 from cerebral.llm.planner import Planner, validate_tool_args
+from cerebral.llm.chain_engine import ChainEngine
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
 from cerebral.passive.extractor import FiveW1HExtractor
@@ -2241,7 +2242,11 @@ async def _on_wake(transcript: str) -> None:
 
 
 async def _process_command(transcript: str, *, speak: bool = True) -> None:
-    """Run the planner, gate and dispatch a tool call, or fall back to chat text.
+    """Run the planner chain and dispatch tool calls, or fall back to chat text.
+
+    S2 (Issue #275): the planner is wrapped in a ChainEngine that loops until
+    it returns text or hits the step cap. Each tool call + result surfaces as
+    its own Conversation turn so the user watches the chain unfold.
 
     ``speak=True`` (voice path) routes the response through TTS.
     ``speak=False`` (text path -- Issue #185) skips TTS for typed interactions.
@@ -2249,59 +2254,32 @@ async def _process_command(transcript: str, *, speak: bool = True) -> None:
     tools = _orc.tools_for_llm
     await _broadcast({"type": "thinking"})
     planner = Planner(_router)
+
+    async def _gate(tool_name: str) -> Decision:
+        plugin_name = _orc.plugin_for_tool(tool_name)
+        caps = (
+            _orc.required_capabilities_for(plugin_name)
+            if plugin_name is not None
+            else None
+        )
+        if caps:
+            return await _orc.check_capabilities(tool_name, caps, CallFlags())
+        return Decision.SILENT
+
+    async def _execute(tool_name: str, tool_args: dict) -> ToolResult:
+        return await _orc.call_tool(tool_name, tool_args)
+
+    chain = ChainEngine(
+        planner=planner,
+        gate_fn=_gate,
+        execute_fn=_execute,
+        record_fn=_record_turn,
+    )
+
     try:
         preamble = await _memory_preamble(transcript)
         enriched = preamble + transcript if preamble else transcript
-
-        result = await planner.plan(enriched, tools)
-        logger.info("[cerebral] Planner result: %s", type(result).__name__)
-
-        if isinstance(result, ToolCall):
-            # Lightweight arg validation -- one re-ask on failure (ADR-0008)
-            val_err = validate_tool_args(result.name, result.args, tools)
-            if val_err:
-                logger.warning("[cerebral] Arg validation failed for '%s': %s", result.name, val_err)
-                result = await planner.plan(enriched, tools, error=val_err)
-
-            if isinstance(result, ToolCall):
-                # Gate: issue #238 pattern with passive=False (active loop)
-                plugin_name = _orc.plugin_for_tool(result.name)
-                caps = (
-                    _orc.required_capabilities_for(plugin_name)
-                    if plugin_name is not None
-                    else None
-                )
-                if caps:
-                    decision = await _orc.check_capabilities(result.name, caps, CallFlags())
-                else:
-                    decision = Decision.SILENT
-
-                await _record_turn(KIND_TOOL_CALL, {"name": result.name, "args": result.args})
-
-                if decision is Decision.SILENT:
-                    tool_result = await _orc.call_tool(result.name, result.args)
-                    await _record_turn(
-                        KIND_TOOL_RESULT,
-                        {"name": result.name, "is_error": tool_result.is_error},
-                    )
-                    if tool_result.is_error:
-                        response = f"The tool encountered an error: {tool_result.content}"
-                    else:
-                        response = tool_result.content
-                else:
-                    logger.info(
-                        "[cerebral] Planner tool '%s' denied by gate (decision=%s)",
-                        result.name, decision.value,
-                    )
-                    response = (
-                        f"I don't have permission to use {result.name} right now."
-                    )
-            else:
-                # Re-ask returned text (validation error couldn't be corrected)
-                response = result if isinstance(result, str) else "Something went wrong. Please try again."
-        else:
-            # Text response -- existing chat path
-            response = result
+        response = await chain.run(enriched, tools)
 
     except ModelUnavailableError as exc:
         logger.error("[cerebral] Model unavailable: %s", exc)

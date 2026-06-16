@@ -74,19 +74,34 @@ class Planner:
         tools: list[dict],
         *,
         error: str | None = None,
+        prior_steps: list[dict] | None = None,
     ) -> ToolCall | str:
         """Return a ToolCall when a tool is selected, or str for text/clarification.
 
         Pass error= to feed a prior validation failure back to the model for
-        a one-shot self-correction attempt.
+        a one-shot self-correction attempt (ADR-0008 bounded self-correction).
+        Pass prior_steps= (S2 chaining) to include accumulated tool call history
+        so the model can pick the next action or return a final summary.
+        Each entry: {"name": str, "args": dict, "result": str, "is_error": bool}.
         """
-        if error:
-            prompt = (
-                f"{_SYSTEM_PROMPT}\n\n"
-                f"User: {transcript}\n\n"
-                f"Note: the previous tool call failed validation: {error}. "
-                f"Please retry with correct arguments."
+        parts = [_SYSTEM_PROMPT, f"\nUser: {transcript}"]
+
+        if prior_steps:
+            lines = []
+            for i, s in enumerate(prior_steps, 1):
+                res = f"ERROR: {s['result']}" if s.get("is_error") else s["result"]
+                lines.append(f"Step {i}: {s['name']} -> {res}")
+            parts.append(
+                "\nPrevious steps:\n"
+                + "\n".join(lines)
+                + "\nWhat should I do next? Use a tool to continue, or reply with a summary if done."
             )
-        else:
-            prompt = f"{_SYSTEM_PROMPT}\n\nUser: {transcript}"
+
+        if error:
+            parts.append(
+                f"\nNote: the previous tool call failed validation: {error}. "
+                "Please retry with correct arguments."
+            )
+
+        prompt = "\n".join(parts)
         return await self._backend.complete_with_tools(prompt, tools)
