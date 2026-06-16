@@ -58,6 +58,7 @@ from cerebral.db.conversation import (
 )
 from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
+from cerebral.db.recipes import RecipeStore
 from cerebral.settings import SettingsStore as _SettingsStore
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
@@ -96,6 +97,7 @@ _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
 _settings = _SettingsStore()
 _conversation = ConversationStore()
+_recipe_store = RecipeStore()
 
 
 def _new_plugin_flag_for_tool(tool_name: str) -> bool:
@@ -274,6 +276,22 @@ def _get_insights() -> InsightsEngine | None:
     if _active_profile is None:
         return None
     return InsightsEngine(profile_id=_active_profile.id)
+
+
+def _recipes_update_event() -> dict:
+    if _active_profile is None:
+        return {"type": "recipes_update", "data": {"recipes": [], "stale_ids": [], "duplicate_ids": []}}
+    recipes = _recipe_store.list_for_profile(_active_profile.id)
+    stale = _recipe_store.stale_ids(_active_profile.id)
+    dups = _recipe_store.duplicate_ids(_active_profile.id)
+    return {
+        "type": "recipes_update",
+        "data": {
+            "recipes": [r.to_dict() for r in recipes],
+            "stale_ids": list(stale),
+            "duplicate_ids": list(dups),
+        },
+    }
 
 
 # ── Connected-account credentials (Issue #114, ADR-0005) ──────────────────────
@@ -2109,6 +2127,36 @@ async def _handle_message(msg: dict) -> None:
         if ok:
             await _broadcast(_memory_update_event())
 
+    elif t == "list_recipes":
+        await _broadcast(_recipes_update_event())
+
+    elif t == "save_recipe":
+        d = msg.get("data", {})
+        name = d.get("name", "").strip()
+        steps = d.get("steps") or []
+        if _active_profile and name and len(steps) >= 2:
+            try:
+                _recipe_store.save(_active_profile.id, name, steps)
+                await _broadcast(_recipes_update_event())
+            except ValueError as exc:
+                logger.warning("[cerebral] save_recipe rejected: %s", exc)
+
+    elif t == "rename_recipe":
+        d = msg.get("data", {})
+        recipe_id = d.get("recipe_id")
+        new_name = (d.get("name") or "").strip()
+        if recipe_id and new_name:
+            ok = _recipe_store.rename(recipe_id, new_name)
+            if ok:
+                await _broadcast(_recipes_update_event())
+
+    elif t == "delete_recipe":
+        recipe_id = msg.get("data", {}).get("recipe_id")
+        if recipe_id:
+            ok = _recipe_store.delete(recipe_id)
+            if ok:
+                await _broadcast(_recipes_update_event())
+
     elif t == "list_settings":
         await _broadcast(_settings_state_event())
 
@@ -2169,6 +2217,7 @@ async def _greet(websocket) -> None:
         _credentials_state_event,
         _settings_state_event,
         _conversation_turns_event,
+        _recipes_update_event,
     ]
     for build in greetings:
         try:
@@ -2248,14 +2297,27 @@ async def _process_command(transcript: str, *, speak: bool = True) -> None:
     it returns text or hits the step cap. Each tool call + result surfaces as
     its own Conversation turn so the user watches the chain unfold.
 
+    S3 (Issue #276): Recipe synthetic tools are folded into the tools list so
+    the planner can pick saved chains by name. After a natural 2+-step
+    completion a save-offer system event is broadcast. Recipe replay re-gates
+    every stored step (no standing grant per ADR-0005 amendment).
+
     ``speak=True`` (voice path) routes the response through TTS.
     ``speak=False`` (text path -- Issue #185) skips TTS for typed interactions.
     """
-    tools = _orc.tools_for_llm
+    base_tools = _orc.tools_for_llm
+    profile_id = _active_profile.id if _active_profile else None
+    recipe_tools = _recipe_store.get_synthetic_tools(profile_id) if profile_id else []
+    tools = base_tools + recipe_tools
+
     await _broadcast({"type": "thinking"})
     planner = Planner(_router)
 
     async def _gate(tool_name: str) -> Decision:
+        # Recipe synthetic tools don't have a plugin; treat them as SILENT at
+        # the gate level -- per-step gates fire inside _replay_recipe.
+        if tool_name.startswith("recipe_"):
+            return Decision.SILENT
         plugin_name = _orc.plugin_for_tool(tool_name)
         caps = (
             _orc.required_capabilities_for(plugin_name)
@@ -2267,7 +2329,25 @@ async def _process_command(transcript: str, *, speak: bool = True) -> None:
         return Decision.SILENT
 
     async def _execute(tool_name: str, tool_args: dict) -> ToolResult:
+        if tool_name.startswith("recipe_") and profile_id is not None:
+            return await _replay_recipe(tool_name, profile_id)
         return await _orc.call_tool(tool_name, tool_args)
+
+    async def _on_chain_done(completed_steps: list[dict]) -> None:
+        if profile_id is None:
+            return
+        step_summary = [
+            {"tool_name": s["name"], "args": s["args"]} for s in completed_steps
+        ]
+        await _broadcast({
+            "type": "recipe_offer",
+            "data": {"steps": step_summary, "step_count": len(step_summary)},
+        })
+        await _record_turn(KIND_SYSTEM_EVENT, {
+            "kind": "recipe_offer",
+            "steps": step_summary,
+            "step_count": len(step_summary),
+        })
 
     chain = ChainEngine(
         planner=planner,
@@ -2279,7 +2359,7 @@ async def _process_command(transcript: str, *, speak: bool = True) -> None:
     try:
         preamble = await _memory_preamble(transcript)
         enriched = preamble + transcript if preamble else transcript
-        response = await chain.run(enriched, tools)
+        response = await chain.run(enriched, tools, on_chain_done=_on_chain_done)
 
     except ModelUnavailableError as exc:
         logger.error("[cerebral] Model unavailable: %s", exc)
@@ -2292,6 +2372,56 @@ async def _process_command(transcript: str, *, speak: bool = True) -> None:
     if speak:
         await _speak(response)
     await _broadcast({"type": "passive", "data": {"status": "running"}})
+
+
+async def _replay_recipe(synthetic_name: str, profile_id: int) -> ToolResult:
+    """Expand and re-run a saved Recipe, re-gating every step (ADR-0005 amendment).
+
+    Returns a ToolResult whose content is a summary of what ran.
+    A step whose tool is uninstalled fails gracefully with a spoken notice.
+    """
+    recipe = _recipe_store.get_by_synthetic_name(profile_id, synthetic_name)
+    if recipe is None:
+        return ToolResult(content=f"Recipe '{synthetic_name}' not found.", is_error=True)
+
+    results: list[str] = []
+    for step in recipe.steps:
+        tool_name = step["tool_name"]
+        tool_args = step.get("args") or {}
+
+        # Re-gate every step -- no standing grant from the save (ADR-0005 amendment)
+        plugin_name = _orc.plugin_for_tool(tool_name)
+        if plugin_name is None:
+            # Tool was uninstalled since the save -- graceful skip
+            notice = f"Step '{tool_name}' is no longer available (plugin uninstalled)."
+            logger.warning("[recipe] %s", notice)
+            await _record_turn(KIND_SYSTEM_EVENT, {
+                "kind": "recipe_step_missing",
+                "tool_name": tool_name,
+            })
+            return ToolResult(content=notice, is_error=True)
+
+        caps = _orc.required_capabilities_for(plugin_name)
+        decision = await _orc.check_capabilities(tool_name, caps, CallFlags()) if caps else Decision.SILENT
+
+        if decision is not Decision.SILENT:
+            return ToolResult(
+                content=f"Recipe step '{tool_name}' was denied by the permission gate.",
+                is_error=True,
+            )
+
+        tool_result = await _orc.call_tool(tool_name, tool_args)
+        await _record_turn(KIND_TOOL_RESULT, {"name": tool_name, "is_error": tool_result.is_error})
+        if tool_result.is_error:
+            return ToolResult(
+                content=f"Recipe step '{tool_name}' failed: {tool_result.content}",
+                is_error=True,
+            )
+        results.append(f"{tool_name}: {tool_result.content}")
+
+    _recipe_store.record_run(recipe.id)
+    await _broadcast(_recipes_update_event())
+    return ToolResult(content="; ".join(results) or "Recipe completed.", is_error=False)
 
 
 # ── Heartbeat ─────────────────────────────────────────────────────────────────
