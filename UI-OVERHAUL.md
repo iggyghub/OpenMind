@@ -16,7 +16,7 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **S1 — #284** (Render-smoke harness + live-verify doc)
+Active slice: **S2 — #285** (Grouped sidebar nav)
 
 Model: sonnet
 Status: ready
@@ -29,7 +29,7 @@ needs a human; `done` = stop. Stop gracefully any time with
 ### Slice queue (work top-down; spec = `docs/ui-overhaul-spec.md`; issue body = detail)
 
 Phase 0 — Foundation (land first, in order)
-1. [ ] S1 — #284 Render-smoke harness + live-verify doc — Model: sonnet
+1. [x] S1 — #284 Render-smoke harness + live-verify doc — Model: sonnet
 2. [ ] S2 — #285 Grouped sidebar nav (CHAT/MIND/TOOLS/SYSTEM) — Model: sonnet
 3. [ ] S3 — #286 Collapsible section headers (persisted) — Model: sonnet
 4. [ ] S4 — #287 Federated search shell — Model: opus
@@ -62,4 +62,4 @@ Phase 5 — Control surfaces
 
 ### Landed PRs (append as slices merge)
 
-_(none yet)_
+- S1 — #284 → PR #304 (render-smoke harness + live-verify doc)
