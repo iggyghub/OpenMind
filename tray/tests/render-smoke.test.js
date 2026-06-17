@@ -108,6 +108,24 @@ test('search bar is inside the static header so it persists across panes (S4)', 
   expect(insidePane).toBe(false);
 });
 
+// ── S5 — models pane has model controls; settings pane does not ──────────────
+
+test('models pane contains model control elements (S5)', () => {
+  const pane = root.querySelector('.pane[data-route="models"]');
+  expect(pane).not.toBeNull();
+  expect(pane.querySelector('#set-active-header')).not.toBeNull();
+  expect(pane.querySelector('#set-model-list')).not.toBeNull();
+  expect(pane.querySelector('#set-task-list')).not.toBeNull();
+  expect(pane.querySelector('#set-refresh-btn')).not.toBeNull();
+});
+
+test('settings pane no longer contains model control elements (S5)', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  expect(pane).not.toBeNull();
+  expect(pane.querySelector('#set-model-list')).toBeNull();
+  expect(pane.querySelector('#set-refresh-btn')).toBeNull();
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

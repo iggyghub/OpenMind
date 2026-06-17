@@ -1947,9 +1947,11 @@
     .dsc-add-btn:hover:not(:disabled) { background: var(--accent-dim); }
     .dsc-add-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    /* ── settings pane ──────────────────────────────────────── */
+    /* ── models pane (S5 -- #288) + settings pane ──────────── */
     /* Issues #208 (Models) + #209 (System settings). Class prefix `set-*`;
-       accent coral (#ff8c69) — eighth distinct pane colour. */
+       accent coral (#ff8c69) — eighth distinct pane colour.
+       S5 moved model controls to models pane; settings keeps notifications/system. */
+    .pane[data-route="models"]   { background: var(--bg); }
     .pane[data-route="settings"] { background: var(--bg); }
 
     .set-body {
@@ -2616,32 +2618,6 @@
 
     <section class="pane" data-route="settings" hidden>
       <div class="set-body">
-        <div class="set-section">Active model</div>
-        <div class="set-active-header" id="set-active-header">
-          <span id="set-active-name">—</span>
-          <span class="set-active-cloud" id="set-active-cloud">local</span>
-        </div>
-        <div class="set-last-line" id="set-last-line" hidden></div>
-        <div class="set-offline" id="set-offline" hidden>
-          Ollama offline — local models unavailable.
-        </div>
-
-        <div class="set-section">Switch model</div>
-        <div id="set-model-list">
-          <div class="prof-empty">No models known yet — try Refresh.</div>
-        </div>
-
-        <div class="set-section">Per-task models</div>
-        <div id="set-task-list">
-          <!-- Cards rendered by renderSettings() for each task type. -->
-        </div>
-
-        <div class="set-refresh-row">
-          <button class="set-btn" id="set-refresh-btn" type="button">
-            Refresh installed models
-          </button>
-        </div>
-
         <div class="set-section">Notifications</div>
         <div class="set-toggle-row">
           <div>
@@ -2713,10 +2689,32 @@
     </section>
 
     <section class="pane" data-route="models" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Models</div>
-        <div class="placeholder-sub">Active model, per-task model assignments, and refresh.</div>
-        <div class="placeholder-issue">Coming in issue #288 (S5)</div>
+      <div class="set-body">
+        <div class="set-section">Active model</div>
+        <div class="set-active-header" id="set-active-header">
+          <span id="set-active-name">—</span>
+          <span class="set-active-cloud" id="set-active-cloud">local</span>
+        </div>
+        <div class="set-last-line" id="set-last-line" hidden></div>
+        <div class="set-offline" id="set-offline" hidden>
+          Ollama offline — local models unavailable.
+        </div>
+
+        <div class="set-section">Switch model</div>
+        <div id="set-model-list">
+          <div class="prof-empty">No models known yet — try Refresh.</div>
+        </div>
+
+        <div class="set-section">Per-task models</div>
+        <div id="set-task-list">
+          <!-- Cards rendered by renderSettings() for each task type. -->
+        </div>
+
+        <div class="set-refresh-row">
+          <button class="set-btn" id="set-refresh-btn" type="button">
+            Refresh installed models
+          </button>
+        </div>
       </div>
     </section>
   </main>
@@ -4911,18 +4909,25 @@
       });
     });
 
+    // ── Models provider (S5 -- #288).
+    _registerProvider('models', function (_query) {
+      return [
+        { label: 'Active model',    route: 'models', anchor: 'set-active-header' },
+        { label: 'Switch model',    route: 'models', anchor: 'set-model-list' },
+        { label: 'Per-task models', route: 'models', anchor: 'set-task-list' },
+        { label: 'Refresh models',  route: 'models', anchor: 'set-refresh-btn' },
+      ];
+    });
+
     // ── Settings provider: a fixed set of labels for the section headers and
     // toggles that exist today. Lets the user jump to Settings by typing e.g.
     // "notifications" from any pane.
     _registerProvider('settings', function (_query) {
       return [
-        { label: 'Active model',         route: 'settings', anchor: 'set-active-header' },
-        { label: 'Switch model',         route: 'settings', anchor: 'set-model-list' },
-        { label: 'Per-task models',      route: 'settings', anchor: 'set-task-list' },
-        { label: 'Notifications',        route: 'settings', anchor: 'set-interval-row' },
-        { label: 'Reminder interval',    route: 'settings', anchor: 'set-interval-row' },
-        { label: 'Camera',               route: 'settings', anchor: 'set-camera-toggle' },
-        { label: 'Visualiser',           route: 'settings', anchor: 'set-vis-toggle' },
+        { label: 'Notifications',     route: 'settings', anchor: 'set-interval-row' },
+        { label: 'Reminder interval', route: 'settings', anchor: 'set-interval-row' },
+        { label: 'Camera',            route: 'settings', anchor: 'set-camera-toggle' },
+        { label: 'Visualiser',        route: 'settings', anchor: 'set-vis-toggle' },
       ];
     });
 
