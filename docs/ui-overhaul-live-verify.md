@@ -184,3 +184,50 @@ and creates this document. Verify the harness itself works:
       header control and the Settings dropdown (persisted via Cerebral).
 - [ ] With Cerebral running: set mode to **Disabled**, then reload. Confirm
       Felix does not respond to the wake word.
+
+---
+
+## S8 — TTS controls (#291)
+
+**Header controls (mute + volume)**
+
+- [ ] Open the Felix window. Confirm the static header (visible on every pane)
+      now contains a **vol** button and a volume slider, to the right of the
+      mic-mode segmented control.
+- [ ] Click the **vol** button. Confirm it changes to **muted** and the button
+      appears dimmed (opacity reduced). With Cerebral running, confirm Felix no
+      longer speaks responses aloud.
+- [ ] Click **muted** again. Confirm it reverts to **vol** (un-dimmed) and TTS
+      resumes on the next response.
+- [ ] Drag the volume slider left (toward 0). Confirm Felix speaks more quietly.
+      Drag it right (toward 100) and confirm full volume returns.
+
+**Settings pane (Voice output section)**
+
+- [ ] Navigate to **Settings** (SYSTEM section). Confirm a new **Voice output**
+      section appears with three rows: **Text-to-speech** toggle, **Volume**
+      slider with percentage label, and **Voice** dropdown.
+- [ ] Toggle **Text-to-speech** off. Confirm the header mute button changes to
+      **muted** (single source of truth — they stay in sync).
+- [ ] Toggle **Text-to-speech** back on. Confirm the header button returns to
+      **vol**.
+- [ ] Move the **Volume** slider in Settings. Confirm the header slider moves
+      to the same value, and the percentage label updates.
+- [ ] Move the header volume slider. Confirm the Settings slider and label
+      update to match.
+
+**Voice picker (per-profile)**
+
+- [ ] With Cerebral running, open Settings and confirm the **Voice** dropdown is
+      populated with Kokoro voice names (e.g. Heart, Bella, Adam).
+- [ ] Select a different voice and send a message. Confirm Felix responds in the
+      new voice.
+- [ ] Switch to a different profile (Profiles pane) and confirm the Voice
+      dropdown updates to that profile's last-saved voice.
+- [ ] Switch back to the original profile and confirm its voice is restored.
+
+**Persistence across reload**
+
+- [ ] Set volume to 50 and mute TTS. Reload the app. Confirm muted state and
+      volume (50%) are restored in both header and Settings.
+- [ ] Unmute and confirm the volume is still 50 after the unmute.

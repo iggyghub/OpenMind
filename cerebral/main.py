@@ -1396,10 +1396,14 @@ async def _pulse_back_to_passive(delay: float = 1.2) -> None:
 # ── TTS helpers ───────────────────────────────────────────────────────────────
 
 async def _speak(text: str) -> None:
-    """Speak using the active profile's voice; fires tts_speaking/tts_done events."""
+    """Speak using the active profile's voice; fires tts_speaking/tts_done events.
+    No-op when tts_muted is True."""
+    if _settings.get("tts_muted"):
+        return
     voice_id = _active_profile.voice_id if _active_profile else None
+    volume = (_settings.get("tts_volume") or 100) / 100.0
     await _broadcast({"type": "tts_speaking", "data": {"text": text, "voice_id": voice_id}})
-    await _tts.speak(text, voice_id)
+    await _tts.speak(text, voice_id, volume=volume)
     await _broadcast({"type": "tts_done", "data": {}})
 
 

@@ -34,6 +34,8 @@ class TestSettingsStore:
         assert store.get("camera_enabled") is False
         assert store.get("visualiser_visible") is False
         assert store.get("mic_mode") == "passive"
+        assert store.get("tts_muted") is False
+        assert store.get("tts_volume") == 100
 
     def test_all_returns_all_keys(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")
@@ -44,6 +46,8 @@ class TestSettingsStore:
             "camera_enabled",
             "visualiser_visible",
             "mic_mode",
+            "tts_muted",
+            "tts_volume",
         }
 
     def test_set_and_get_roundtrip(self, tmp_path):
@@ -118,6 +122,44 @@ class TestSettingsStore:
         s1.set("mic_mode", "disabled")
         s2 = SettingsStore(p)
         assert s2.get("mic_mode") == "disabled"
+
+    def test_tts_muted_default_false(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("tts_muted") is False
+
+    def test_tts_muted_toggle(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("tts_muted", True)
+        assert store.get("tts_muted") is True
+
+    def test_tts_muted_wrong_type_raises(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        with pytest.raises(ValueError, match="expects bool"):
+            store.set("tts_muted", "yes")
+
+    def test_tts_volume_default_100(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("tts_volume") == 100
+
+    def test_tts_volume_set_and_get(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("tts_volume", 50)
+        assert store.get("tts_volume") == 50
+
+    def test_tts_volume_clamps_above_100(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("tts_volume", 150)
+        assert store.get("tts_volume") == 100
+
+    def test_tts_volume_clamps_below_0(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("tts_volume", -10)
+        assert store.get("tts_volume") == 0
+
+    def test_tts_volume_wrong_type_raises(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        with pytest.raises(ValueError, match="expects int"):
+            store.set("tts_volume", "loud")
 
 
 # ── WS IPC tests ──────────────────────────────────────────────────────────────

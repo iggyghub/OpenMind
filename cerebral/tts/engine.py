@@ -97,21 +97,28 @@ class TTSEngine:
         """Return all Kokoro voices with id, name, accent, gender."""
         return list(_VOICES)
 
-    async def speak(self, text: str, voice_id: Optional[str] = None) -> None:
+    async def speak(
+        self,
+        text: str,
+        voice_id: Optional[str] = None,
+        volume: float = 1.0,
+    ) -> None:
         """
         Synthesise text and play on the default output device.
         Returns only after playback finishes.  Never blocks the event loop.
+        volume is clamped to [0.0, 1.0]; 0.0 = silent, 1.0 = full.
         """
         if not self._ready:
             logger.warning("[tts] speak() skipped — engine not ready")
             return
         voice = voice_id or DEFAULT_VOICE
+        vol = max(0.0, min(1.0, float(volume)))
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._speak_sync, text, voice)
+        await loop.run_in_executor(None, self._speak_sync, text, voice, vol)
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _speak_sync(self, text: str, voice_id: str) -> None:
+    def _speak_sync(self, text: str, voice_id: str, volume: float = 1.0) -> None:
         """Runs in a thread-pool thread; safe to call sounddevice blocking APIs."""
         if self._pipeline is None:
             return
@@ -126,6 +133,8 @@ class TTSEngine:
                     split_pattern=r"\n+",
                 )
                 for _graphemes, _phonemes, audio in gen:
+                    if volume != 1.0:
+                        audio = audio * volume
                     sd.play(audio, samplerate=SAMPLE_RATE, blocking=True)
         except Exception as exc:
             logger.error("[tts] Playback error: %s", exc)
