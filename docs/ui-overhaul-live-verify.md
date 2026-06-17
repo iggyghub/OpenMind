@@ -95,3 +95,29 @@ and creates this document. Verify the harness itself works:
       re-applies the in-pane filter on the new pane (e.g. switching from
       Plugins with `gmail` typed to Permissions filters Permissions tools
       live without re-typing).
+
+---
+
+## S5 — Models tab (#288)
+
+- [ ] Open the live Felix window. Click **Models** in the SYSTEM section of the
+      sidebar. Confirm the pane shows three section headers: "Active model",
+      "Switch model", and "Per-task models", plus a "Refresh installed models"
+      button.
+- [ ] Confirm **Settings** (SYSTEM section) no longer shows any model controls
+      — only "Notifications" and "System" sections remain.
+- [ ] With Cerebral running: confirm the Models pane shows the currently active
+      model name and a local/cloud badge under "Active model".
+- [ ] Click a different model in the "Switch model" list. Confirm the active
+      model updates (radio dot moves, name in the header updates).
+- [ ] Expand a task card in "Per-task models" and assign a model to one task.
+      Confirm the card's current model label updates.
+- [ ] Click "Refresh installed models". Confirm the button briefly shows
+      "Refreshing..." then re-enables; the model list updates if Ollama is
+      running.
+- [ ] Type "active model" in the header search bar from any pane other than
+      Models. Confirm the "Found elsewhere" dropdown shows an "Active model"
+      hit with route `models`. Click it — confirm navigation to the Models pane.
+- [ ] Confirm the S3 collapsible chevrons appear on each section header in the
+      Models pane (Active model, Switch model, Per-task models) and that
+      collapse/expand works.
