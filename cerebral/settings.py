@@ -5,7 +5,7 @@ The Main window (ADR-0007) cannot call Node fs APIs directly, so all
 settings must be read and written via WebSocket to Cerebral.
 
 Keys: notifications_enabled, reminder_interval_minutes, camera_enabled,
-      visualiser_visible
+      visualiser_visible, mic_mode
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ _DEFAULTS: dict[str, Any] = {
     "reminder_interval_minutes": 120,
     "camera_enabled":            False,
     "visualiser_visible":        False,
+    "mic_mode":                  "passive",
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -31,7 +32,10 @@ _TYPES: dict[str, type] = {
     "reminder_interval_minutes": int,
     "camera_enabled":            bool,
     "visualiser_visible":        bool,
+    "mic_mode":                  str,
 }
+
+_MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
 
 _SETTINGS_PATH = Path(__file__).parent / "data" / "felix-settings.json"
 
@@ -68,6 +72,10 @@ class SettingsStore:
             )
         if key == "reminder_interval_minutes":
             value = max(0, value)
+        if key == "mic_mode" and value not in _MIC_MODE_VALUES:
+            raise ValueError(
+                f"mic_mode must be one of {sorted(_MIC_MODE_VALUES)}, got {value!r}"
+            )
         self._data[key] = value
         self._save()
 

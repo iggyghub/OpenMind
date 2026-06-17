@@ -139,6 +139,43 @@ test('settings pane contains appearance controls (S6)', () => {
   expect(chips.length).toBeGreaterThanOrEqual(3);
 });
 
+// ── S7 — mic-mode control in static header ───────────────────────────────────
+
+test('mic-mode control exists in static header (S7)', () => {
+  const ctrl = root.querySelector('#hdr-mic-mode');
+  expect(ctrl).not.toBeNull();
+
+  // Must be inside .header, not inside any .pane.
+  let el = ctrl.parentNode;
+  let insideHeader = false;
+  let insidePane   = false;
+  while (el) {
+    const cls = el.classNames || '';
+    const has = (name) => cls.split(/\s+/).includes(name);
+    if (has('header')) insideHeader = true;
+    if (has('pane'))   insidePane   = true;
+    el = el.parentNode;
+  }
+  expect(insideHeader).toBe(true);
+  expect(insidePane).toBe(false);
+
+  // Three segment buttons with correct data-mic values.
+  const segs = ctrl.querySelectorAll('.hdr-mic-seg[data-mic]');
+  expect(segs.length).toBe(3);
+  const vals = segs.map(s => s.getAttribute('data-mic'));
+  expect(vals).toContain('passive');
+  expect(vals).toContain('ptt');
+  expect(vals).toContain('disabled');
+});
+
+test('settings pane contains mic-mode select (S7)', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  expect(pane).not.toBeNull();
+  expect(pane.querySelector('#set-mic-mode-select')).not.toBeNull();
+  const opts = pane.querySelectorAll('#set-mic-mode-select option');
+  expect(opts.length).toBe(3);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
