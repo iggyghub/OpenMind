@@ -155,3 +155,32 @@ and creates this document. Verify the harness itself works:
 - [ ] Type **"accent"** in the search bar from any other pane. Confirm an
       "Accent colour" hit appears. Type **"ui scale"** — confirm a "UI scale"
       hit appears.
+
+---
+
+## S7 — Mic-mode control (#290)
+
+- [ ] Open the live Felix window. Confirm the static header (visible on every
+      pane) shows a segmented control with three buttons: **Passive**, **PTT**,
+      **Disabled**. The **Passive** segment should be highlighted (accent
+      background) by default.
+- [ ] Confirm the control is visible regardless of which sidebar pane is active
+      (switch through Conversation, Queue, Insights, Memory, Models, Settings,
+      etc.).
+- [ ] Click **Disabled** in the header control. Confirm it becomes highlighted
+      and the other segments are un-highlighted. With Cerebral running, confirm
+      the mic goes silent (no wake-word detection).
+- [ ] Click **PTT** in the header control. Confirm it highlights. (PTT behaviour
+      requires a future hotkey binding; for now confirm the setting persists.)
+- [ ] Click **Passive** to restore the default.
+- [ ] Navigate to **Settings** (SYSTEM section). Confirm a **Voice input**
+      section appears with a **Mic mode** dropdown showing Passive / Push to
+      talk / Disabled.
+- [ ] Change the dropdown in Settings to **Disabled**. Confirm the header
+      segmented control also switches to **Disabled** (single source of truth).
+- [ ] Change the header control back to **Passive**. Confirm the Settings
+      dropdown also updates to **Passive**.
+- [ ] Reload the app. Confirm the last-set mic mode is restored in both the
+      header control and the Settings dropdown (persisted via Cerebral).
+- [ ] With Cerebral running: set mode to **Disabled**, then reload. Confirm
+      Felix does not respond to the wake word.

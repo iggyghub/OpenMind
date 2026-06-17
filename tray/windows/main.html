@@ -268,6 +268,35 @@
     /* Visually hide a row that the in-pane search filter has dropped. */
     [data-search-hidden] { display: none !important; }
 
+    /* ── S7 -- mic-mode control (#290) ───────────────────────── */
+    .hdr-mic-mode {
+      display: flex;
+      align-items: center;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      background: var(--bg-elev);
+      flex-shrink: 0;
+    }
+    .hdr-mic-seg {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      padding: 4px 9px;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+      white-space: nowrap;
+    }
+    .hdr-mic-seg:hover { color: var(--text); }
+    .hdr-mic-seg.is-active {
+      background: var(--accent);
+      color: #fff;
+    }
+
     .orb {
       width: 12px;
       height: 12px;
@@ -2418,6 +2447,12 @@
           <div class="health-row"><span class="k">OpenClaw bridge</span><span class="v" id="hb-bridge">—</span></div>
         </div>
       </div>
+      <!-- S7 -- mic-mode control (#290). Static across panes. -->
+      <div class="hdr-mic-mode" id="hdr-mic-mode" role="group" aria-label="Mic mode">
+        <button class="hdr-mic-seg is-active" data-mic="passive" type="button">Passive</button>
+        <button class="hdr-mic-seg" data-mic="ptt" type="button">PTT</button>
+        <button class="hdr-mic-seg" data-mic="disabled" type="button">Disabled</button>
+      </div>
       <button class="queue-badge" id="queue-badge" type="button" hidden>
         <span id="queue-badge-text">Queue 0</span>
       </button>
@@ -2691,6 +2726,19 @@
           <input type="color" id="set-accent-picker" class="set-accent-picker">
         </div>
 
+        <div class="set-section">Voice input</div>
+        <div class="set-toggle-row">
+          <div>
+            <div class="set-toggle-label">Mic mode</div>
+            <div class="set-toggle-sub">Passive = wake-word always on; PTT = hold to talk; Disabled = mic off</div>
+          </div>
+          <select class="set-interval-select" id="set-mic-mode-select">
+            <option value="passive">Passive</option>
+            <option value="ptt">Push to talk</option>
+            <option value="disabled">Disabled</option>
+          </select>
+        </div>
+
         <div class="set-section">Notifications</div>
         <div class="set-toggle-row">
           <div>
@@ -2960,6 +3008,7 @@
       reminder_interval_minutes: 120,
       camera_enabled:            false,
       visualiser_visible:        false,
+      mic_mode:                  'passive',
     };
 
     let ws = null;
@@ -3001,6 +3050,9 @@
         sendEvent({ type: 'list_plugins' });
         // Profiles (Issue #204).
         sendEvent({ type: 'list_profiles' });
+        // System settings (Issue #209 + S7). Pulls current mic_mode and
+        // other persisted settings so header controls are in sync on load.
+        sendEvent({ type: 'list_settings' });
       });
       ws.addEventListener('close', () => {
         wsConnected = false;
@@ -4717,6 +4769,20 @@
     const setCameraToggle   = document.getElementById('set-camera-toggle');
     const setVisToggle      = document.getElementById('set-vis-toggle');
 
+    // S7 -- mic-mode control (#290)
+    const hdrMicMode      = document.getElementById('hdr-mic-mode');
+    const hdrMicSegs      = hdrMicMode ? Array.from(hdrMicMode.querySelectorAll('.hdr-mic-seg')) : [];
+    const setMicModeSelect = document.getElementById('set-mic-mode-select');
+
+    function applyMicMode(mode) {
+      // Update header segmented control.
+      hdrMicSegs.forEach(btn => {
+        btn.classList.toggle('is-active', btn.dataset.mic === mode);
+      });
+      // Update settings select.
+      if (setMicModeSelect) setMicModeSelect.value = mode;
+    }
+
     function renderSystemSettings() {
       const s = systemSettingsData;
       setNotifToggle.checked  = !!s.notifications_enabled;
@@ -4726,6 +4792,7 @@
       setIntervalSelect.value = ivVal;
       setCameraToggle.checked = !!s.camera_enabled;
       setVisToggle.checked    = !!s.visualiser_visible;
+      applyMicMode(s.mic_mode || 'passive');
     }
 
     setNotifToggle.addEventListener('change', () => {
@@ -4740,6 +4807,25 @@
     setVisToggle.addEventListener('change', () => {
       sendEvent({ type: 'set_setting', data: { key: 'visualiser_visible', value: setVisToggle.checked } });
     });
+
+    // Mic-mode header segmented control click.
+    hdrMicSegs.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.mic;
+        sendEvent({ type: 'set_setting', data: { key: 'mic_mode', value: mode } });
+        // Optimistic update so the UI feels instant.
+        applyMicMode(mode);
+      });
+    });
+
+    // Mic-mode settings select change.
+    if (setMicModeSelect) {
+      setMicModeSelect.addEventListener('change', () => {
+        const mode = setMicModeSelect.value;
+        sendEvent({ type: 'set_setting', data: { key: 'mic_mode', value: mode } });
+        applyMicMode(mode);
+      });
+    }
 
     // First render with defaults; real values arrive via settings_updated.
     renderSystemSettings();

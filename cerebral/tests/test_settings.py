@@ -33,8 +33,9 @@ class TestSettingsStore:
         assert store.get("reminder_interval_minutes") == 120
         assert store.get("camera_enabled") is False
         assert store.get("visualiser_visible") is False
+        assert store.get("mic_mode") == "passive"
 
-    def test_all_returns_all_four_keys(self, tmp_path):
+    def test_all_returns_all_keys(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")
         snap = store.all()
         assert set(snap.keys()) == {
@@ -42,6 +43,7 @@ class TestSettingsStore:
             "reminder_interval_minutes",
             "camera_enabled",
             "visualiser_visible",
+            "mic_mode",
         }
 
     def test_set_and_get_roundtrip(self, tmp_path):
@@ -89,6 +91,33 @@ class TestSettingsStore:
         snap = store.all()
         assert snap["notifications_enabled"] is True
         assert snap["reminder_interval_minutes"] == 60
+
+    def test_mic_mode_default_is_passive(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("mic_mode") == "passive"
+
+    def test_mic_mode_accepts_valid_values(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        for val in ("passive", "ptt", "disabled"):
+            store.set("mic_mode", val)
+            assert store.get("mic_mode") == val
+
+    def test_mic_mode_rejects_invalid_value(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        with pytest.raises(ValueError, match="mic_mode must be one of"):
+            store.set("mic_mode", "always_on")
+
+    def test_mic_mode_wrong_type_raises(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        with pytest.raises(ValueError, match="expects str"):
+            store.set("mic_mode", 42)
+
+    def test_mic_mode_persists_to_disk(self, tmp_path):
+        p = tmp_path / "s.json"
+        s1 = SettingsStore(p)
+        s1.set("mic_mode", "disabled")
+        s2 = SettingsStore(p)
+        assert s2.get("mic_mode") == "disabled"
 
 
 # ── WS IPC tests ──────────────────────────────────────────────────────────────
@@ -202,6 +231,22 @@ async def test_set_setting_interval_clamps_negative(settings_rig):
         "data": {"key": "reminder_interval_minutes", "value": -10},
     })
     assert settings_rig.last_settings()["reminder_interval_minutes"] == 0
+
+
+async def test_set_setting_mic_mode_valid(settings_rig):
+    await settings_rig.handle({
+        "type": "set_setting",
+        "data": {"key": "mic_mode", "value": "disabled"},
+    })
+    assert settings_rig.last_settings()["mic_mode"] == "disabled"
+
+
+async def test_set_setting_mic_mode_invalid_no_broadcast(settings_rig):
+    await settings_rig.handle({
+        "type": "set_setting",
+        "data": {"key": "mic_mode", "value": "always_on"},
+    })
+    assert settings_rig.settings_events() == []
 
 
 def test_startup_restores_camera_enabled_from_settings(tmp_path):
