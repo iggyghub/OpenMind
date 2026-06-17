@@ -68,6 +68,46 @@ test('section-collapse.js script tag is present (S3)', () => {
   expect(found).toBe(true);
 });
 
+// ── S4 — federated search shell present ──────────────────────────────────────
+
+test('search-registry.js script tag is present (S4)', () => {
+  const srcTags = root.querySelectorAll('script[src]');
+  const found = srcTags.some(s => (s.getAttribute('src') || '').includes('search-registry'));
+  expect(found).toBe(true);
+});
+
+test('header search input + elsewhere panel exist (S4)', () => {
+  const input = root.querySelector('#hdr-search-input');
+  expect(input).not.toBeNull();
+  expect(input.getAttribute('type')).toBe('search');
+
+  const elsewherePanel = root.querySelector('#hdr-search-elsewhere');
+  expect(elsewherePanel).not.toBeNull();
+
+  const elsewhereList = root.querySelector('#hdr-search-elsewhere-list');
+  expect(elsewhereList).not.toBeNull();
+});
+
+test('search bar is inside the static header so it persists across panes (S4)', () => {
+  const input = root.querySelector('#hdr-search-input');
+  expect(input).not.toBeNull();
+  // Walk ancestors: it must sit inside .header, not inside any .pane.
+  let el = input.parentNode;
+  let insideHeader = false;
+  let insidePane   = false;
+  while (el) {
+    const cls = el.classNames || el.classList || '';
+    const has = (name) => (typeof cls === 'string'
+                            ? cls.split(/\s+/).includes(name)
+                            : (cls.contains && cls.contains(name)));
+    if (has('header')) insideHeader = true;
+    if (has('pane'))   insidePane = true;
+    el = el.parentNode;
+  }
+  expect(insideHeader).toBe(true);
+  expect(insidePane).toBe(false);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

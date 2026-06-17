@@ -58,3 +58,40 @@ and creates this document. Verify the harness itself works:
       profile list and New profile button when clicked.
 - [ ] Confirm Queue and Insights item-level collapse is unchanged (rows still
       start collapsed as before; section headers in those panes are unaffected).
+
+---
+
+## S4 — Federated search shell (#287)
+
+- [ ] Open the live Felix window. Confirm the header has a search input
+      between the "Felix" title and the health/state pill (placeholder text:
+      "Search this pane and everywhere else...").
+- [ ] Confirm the search bar is visible from EVERY pane (switch through
+      Conversation, Queue, Insights, Memory, Permissions, Credentials,
+      Plugins, Profiles, Settings, Models, Conversations, Integrations,
+      Recipes) -- it lives in the static header, not in any single pane.
+- [ ] Open the Plugins pane. Type a substring of a plugin name (e.g. `gmail`).
+      Confirm only plugin rows whose name contains the substring stay visible;
+      other rows are hidden. Clear the input -- all rows return.
+- [ ] Still on Plugins, type a query that matches NOTHING in plugins but
+      matches a setting (e.g. `notifications`). Confirm the "Found elsewhere"
+      dropdown opens under the search bar with at least one Settings hit
+      tagged with the route `settings`.
+- [ ] Click the "Notifications" jump link. Confirm the active pane switches
+      to Settings and the Notifications row is scrolled into view.
+- [ ] Open Credentials and set at least one API key (or just observe an
+      existing setup). Then type the FIRST FEW CHARS of any saved API token
+      value (NOT the label, the actual secret). Confirm NO credentials row
+      appears anywhere -- not in current pane, not in "Found elsewhere".
+- [ ] Type a credential's label (e.g. `Google`, `OpenAI`, `Todoist`).
+      Confirm the matching row appears with a status word ("connected",
+      "set", "not set", etc.) -- never with the actual token value.
+- [ ] Open Permissions -> Tools tab. Type into the header search and confirm
+      tools matching the query appear in "Found elsewhere" with route
+      `permissions`. Clicking one navigates to the Permissions pane.
+- [ ] Press the header search input, then press Escape or click outside the
+      search column. Confirm the "Found elsewhere" dropdown closes.
+- [ ] Confirm that switching panes while the search box still has text
+      re-applies the in-pane filter on the new pane (e.g. switching from
+      Plugins with `gmail` typed to Permissions filters Permissions tools
+      live without re-typing).
