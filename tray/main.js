@@ -1,4 +1,4 @@
-const { app, Tray, Menu, BrowserWindow, Notification, nativeImage, ipcMain, screen } = require('electron');
+const { app, Tray, Menu, BrowserWindow, Notification, nativeImage, ipcMain, screen, shell } = require('electron');
 const WebSocket = require('ws');
 const path = require('path');
 const { VisualiserState }      = require('./lib/visualiser-state');
@@ -13,6 +13,8 @@ const { ModalManager }         = require('./lib/modal-manager');
 const CEREBRAL_URL    = 'ws://localhost:7766';
 const ICON_PATH       = path.join(__dirname, 'assets', 'icon.png');
 const VIS_POS_PATH    = path.join(__dirname, '..', 'cerebral', 'data', 'visualiser-pos.json');
+const LAUNCHER_LOG    = path.join(__dirname, '..', 'launcher.log');
+const CEREBRAL_LOG    = path.join(__dirname, '..', 'cerebral.log');
 const RECONNECT_DELAY_MS = 3000;
 
 let tray = null;
@@ -524,7 +526,14 @@ function buildMenu() {
 
   template.push({ type: 'separator' });
 
-  // 4. Quit
+  // 4. Logs + Quit
+  template.push({
+    label: 'Show Logs',
+    submenu: [
+      { label: 'Launcher log',  click: () => shell.openPath(LAUNCHER_LOG) },
+      { label: 'Cerebral log',  click: () => shell.openPath(CEREBRAL_LOG) },
+    ],
+  });
   template.push({ label: 'Quit', click: quit });
 
   return Menu.buildFromTemplate(template);
