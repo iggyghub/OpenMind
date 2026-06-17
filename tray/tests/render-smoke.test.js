@@ -18,10 +18,11 @@ const HTML_PATH    = path.resolve(__dirname, '../windows/main.html');
 const ARTIFACT_DIR = path.resolve(__dirname, '../../.claude/tmp/render-smoke');
 
 // Routes that must have both a pane and a nav item in the current baseline.
-// S2 will extend this list with models/conversations/integrations/recipes.
+// Extended in S2 with models/conversations/integrations/recipes.
 const SMOKE_ROUTES = [
   'conversation', 'queue', 'insights', 'memory',
   'permissions', 'credentials', 'plugins', 'profiles', 'settings',
+  'models', 'conversations', 'integrations', 'recipes',
 ];
 
 let root;

@@ -18,3 +18,22 @@ and creates this document. Verify the harness itself works:
       9 sidebar nav items (Conversation, Queue, Insights, Memory, Permissions,
       Credentials, Plugins, Profiles, Settings) are present and their panes
       activate on click.
+
+---
+
+## S2 — Grouped sidebar nav (#285)
+
+- [ ] Open the live Felix window and confirm the sidebar nav is now grouped into
+      four sections with headers: CHAT, MIND, TOOLS, SYSTEM.
+- [ ] CHAT section contains: Conversation, Queue, Conversations.
+- [ ] MIND section contains: Insights, Memory, Recipes.
+- [ ] TOOLS section contains: Plugins, Integrations, Credentials, Permissions.
+- [ ] SYSTEM section contains: Models, Settings, Profiles.
+- [ ] Each section header label is visible and styled (small caps, muted colour).
+- [ ] All pre-existing panes still activate on click (Conversation, Queue,
+      Insights, Memory, Credentials, Permissions, Plugins, Profiles, Settings).
+- [ ] Clicking Conversations, Recipes, Integrations, Models each shows a stub
+      placeholder pane with a title, description, and "Coming in issue #N" label.
+- [ ] Hash routing still works: navigating to e.g. `#memory` activates the
+      Memory pane and highlights the Memory nav item.
+- [ ] The active nav item retains the accent left-border highlight.
