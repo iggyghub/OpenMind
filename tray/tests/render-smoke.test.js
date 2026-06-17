@@ -1,0 +1,92 @@
+'use strict';
+
+// Headless render check for tray/windows/main.html (UI overhaul S1, issue #284).
+//
+// Reads the HTML, asserts that every SMOKE_ROUTES pane element and nav item
+// exists, verifies the inline script parses without syntax errors, and writes
+// a serialised-DOM artifact to .claude/tmp/render-smoke/.
+//
+// Each later slice appends its newly-introduced routes to SMOKE_ROUTES and
+// adds any element-level assertions it needs.
+
+const fs   = require('fs');
+const path = require('path');
+const vm   = require('vm');
+const { parse } = require('node-html-parser');
+
+const HTML_PATH    = path.resolve(__dirname, '../windows/main.html');
+const ARTIFACT_DIR = path.resolve(__dirname, '../../.claude/tmp/render-smoke');
+
+// Routes that must have both a pane and a nav item in the current baseline.
+// S2 will extend this list with models/conversations/integrations/recipes.
+const SMOKE_ROUTES = [
+  'conversation', 'queue', 'insights', 'memory',
+  'permissions', 'credentials', 'plugins', 'profiles', 'settings',
+];
+
+let root;
+let inlineScript;
+
+beforeAll(() => {
+  const html = fs.readFileSync(HTML_PATH, 'utf8');
+  root = parse(html);
+
+  // Extract the last inline <script> block (the main renderer body, not the
+  // <script src=...> lib tags).
+  const allScripts = root.querySelectorAll('script');
+  const inlineScripts = allScripts.filter(s => !s.getAttribute('src'));
+  expect(inlineScripts.length).toBeGreaterThan(0);
+  inlineScript = inlineScripts[inlineScripts.length - 1].text;
+
+  fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
+});
+
+// ── Pane elements ────────────────────────────────────────────────────────────
+
+test('every expected pane element exists', () => {
+  for (const route of SMOKE_ROUTES) {
+    const pane = root.querySelector(`.pane[data-route="${route}"]`);
+    expect(pane).not.toBeNull();
+  }
+});
+
+// ── Nav items ────────────────────────────────────────────────────────────────
+
+test('every expected nav item exists', () => {
+  for (const route of SMOKE_ROUTES) {
+    const nav = root.querySelector(`.nav-item[data-route="${route}"]`);
+    expect(nav).not.toBeNull();
+  }
+});
+
+// ── Script syntax ────────────────────────────────────────────────────────────
+
+test('inline script parses without syntax errors', () => {
+  expect(() => new vm.Script(inlineScript)).not.toThrow();
+});
+
+// ── Artifact ─────────────────────────────────────────────────────────────────
+
+test('writes serialised-DOM artifact', () => {
+  const panesFound = SMOKE_ROUTES.filter(r => root.querySelector(`.pane[data-route="${r}"]`));
+  const navFound   = SMOKE_ROUTES.filter(r => root.querySelector(`.nav-item[data-route="${r}"]`));
+
+  const artifact = {
+    timestamp:       new Date().toISOString(),
+    html_path:       HTML_PATH,
+    routes_checked:  SMOKE_ROUTES,
+    panes_found:     panesFound,
+    nav_items_found: navFound,
+    script_bytes:    inlineScript ? inlineScript.length : 0,
+  };
+
+  fs.writeFileSync(path.join(ARTIFACT_DIR, 'last-run.json'),
+    JSON.stringify(artifact, null, 2));
+
+  const navEl = root.querySelector('.nav');
+  if (navEl) {
+    fs.writeFileSync(path.join(ARTIFACT_DIR, 'sidebar-nav.html'), navEl.outerHTML);
+  }
+
+  expect(fs.existsSync(path.join(ARTIFACT_DIR, 'last-run.json'))).toBe(true);
+});
