@@ -121,3 +121,37 @@ and creates this document. Verify the harness itself works:
 - [ ] Confirm the S3 collapsible chevrons appear on each section header in the
       Models pane (Active model, Switch model, Per-task models) and that
       collapse/expand works.
+
+---
+
+## S6 — Appearance settings (#289)
+
+- [ ] Open the live Felix window and navigate to **Settings** (SYSTEM section).
+      Confirm an **Appearance** section is present at the top of the Settings
+      pane, above Notifications. Confirm the Appearance section has a collapsible
+      chevron (S3 behaviour).
+- [ ] Under Appearance, confirm three controls are visible: a **UI scale**
+      dropdown (90% / 100% / 110% / 125%), a **Theme** chip group (Midnight /
+      Light / High Contrast), and an **Accent colour** picker.
+- [ ] The **Midnight** theme chip should appear active (highlighted in coral)
+      by default.
+- [ ] Change UI scale to **110%**. Confirm the entire Felix window zooms in
+      immediately. Reload the page — confirm it opens at 110%.
+- [ ] Click the **Light** theme button. Confirm the background, sidebar, and
+      text colours all change immediately to a light palette. Reload — confirm
+      the Light theme is still applied.
+- [ ] Click **High Contrast**. Confirm the UI switches to a high-contrast
+      black-and-white palette. Reload — still HC.
+- [ ] Click **Midnight** to restore the default dark theme.
+- [ ] Open the **Accent colour** picker and choose a different colour (e.g.
+      green or red). Confirm the accent changes live: the active nav item
+      left-border, the orb glow, the state pill border (when speaking), and
+      other accent-coloured elements update immediately. Reload — accent persists.
+- [ ] Set the scale back to **100%** and accent back to the default purple
+      (#7c5cfc). Reload and confirm both are restored.
+- [ ] From a pane other than Settings, type **"theme"** in the header search
+      bar. Confirm a hit for "Theme" appears in the "Found elsewhere" list
+      with route `settings`. Click it — confirm navigation to Settings.
+- [ ] Type **"accent"** in the search bar from any other pane. Confirm an
+      "Accent colour" hit appears. Type **"ui scale"** — confirm a "UI scale"
+      hit appears.

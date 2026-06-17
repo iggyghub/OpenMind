@@ -9,6 +9,7 @@
     :root {
       --bg:           #12101e;
       --bg-elev:     #1a1730;
+      --bg-sidebar:   #0e0c1a;
       --border:       #2a2640;
       --text:         #e2e0f0;
       --text-dim:     #a8a4c8;
@@ -38,7 +39,7 @@
     .sidebar {
       width: 180px;
       flex-shrink: 0;
-      background: #0e0c1a;
+      background: var(--bg-sidebar);
       border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
@@ -2147,6 +2148,49 @@
     }
     .set-deferred-note a:hover { text-decoration: underline; }
 
+    /* S6 -- appearance settings (#289): scale, theme presets, accent picker */
+    .set-appearance-theme-row {
+      padding: 8px 18px 12px;
+    }
+    .set-appearance-theme-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: block;
+      margin-bottom: 6px;
+    }
+    .set-theme-chips {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .set-theme-chip {
+      background: var(--bg-elev);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      font-family: inherit;
+      padding: 5px 12px;
+      border-radius: 5px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: color 0.12s, border-color 0.12s, background 0.12s;
+    }
+    .set-theme-chip:hover { color: var(--text); border-color: #ff8c69; }
+    .set-theme-chip.is-active {
+      color: #ff8c69;
+      border-color: #ff8c69;
+      background: rgba(255, 140, 105, 0.08);
+    }
+    .set-accent-picker {
+      width: 38px;
+      height: 28px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px;
+      background: var(--bg-elev);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
     /* Settings v2 — system settings toggle rows (Issue #209) */
     .set-toggle-row {
       display: flex;
@@ -2618,6 +2662,35 @@
 
     <section class="pane" data-route="settings" hidden>
       <div class="set-body">
+        <div class="set-section">Appearance</div>
+        <div class="set-toggle-row">
+          <div>
+            <div class="set-toggle-label">UI scale</div>
+            <div class="set-toggle-sub">Zoom level for the entire interface</div>
+          </div>
+          <select class="set-interval-select" id="set-scale-select">
+            <option value="0.9">90%</option>
+            <option value="1">100%</option>
+            <option value="1.1">110%</option>
+            <option value="1.25">125%</option>
+          </select>
+        </div>
+        <div class="set-appearance-theme-row">
+          <span class="set-appearance-theme-label">Theme</span>
+          <div class="set-theme-chips" id="set-theme-chips">
+            <button class="set-theme-chip" data-theme="midnight" type="button">Midnight</button>
+            <button class="set-theme-chip" data-theme="light" type="button">Light</button>
+            <button class="set-theme-chip" data-theme="hc" type="button">High Contrast</button>
+          </div>
+        </div>
+        <div class="set-toggle-row">
+          <div>
+            <div class="set-toggle-label">Accent colour</div>
+            <div class="set-toggle-sub">Highlight colour for active items</div>
+          </div>
+          <input type="color" id="set-accent-picker" class="set-accent-picker">
+        </div>
+
         <div class="set-section">Notifications</div>
         <div class="set-toggle-row">
           <div>
@@ -4671,6 +4744,130 @@
     // First render with defaults; real values arrive via settings_updated.
     renderSystemSettings();
 
+    // ── S6 -- appearance settings (#289) ─────────────────────────────────
+    // Scale, theme presets, and accent colour. All persisted to localStorage
+    // (renderer-only concern — no Cerebral IPC needed).
+
+    const APPEARANCE_LS_KEY = 'om:appearance';
+
+    const THEMES = {
+      midnight: {
+        '--bg':           '#12101e',
+        '--bg-elev':     '#1a1730',
+        '--bg-sidebar':   '#0e0c1a',
+        '--border':       '#2a2640',
+        '--text':         '#e2e0f0',
+        '--text-dim':     '#a8a4c8',
+        '--text-muted':   '#6b6790',
+        '--user-bubble':  '#2d2455',
+        '--felix-bubble': '#1f1c36',
+        '--system-text':  '#5c5880',
+        '--state-passive':  '#6b6790',
+        '--state-thinking': '#d4b04b',
+        '--state-active':   '#4bd49a',
+      },
+      light: {
+        '--bg':           '#f8f8fc',
+        '--bg-elev':     '#eeeef8',
+        '--bg-sidebar':   '#e4e2f4',
+        '--border':       '#d0cce8',
+        '--text':         '#1a1830',
+        '--text-dim':     '#3a3860',
+        '--text-muted':   '#7a789a',
+        '--user-bubble':  '#dddaf8',
+        '--felix-bubble': '#f0f0fc',
+        '--system-text':  '#9898b8',
+        '--state-passive':  '#7a789a',
+        '--state-thinking': '#c08820',
+        '--state-active':   '#28a870',
+      },
+      hc: {
+        '--bg':           '#000000',
+        '--bg-elev':     '#111111',
+        '--bg-sidebar':   '#080808',
+        '--border':       '#666666',
+        '--text':         '#ffffff',
+        '--text-dim':     '#eeeeee',
+        '--text-muted':   '#bbbbbb',
+        '--user-bubble':  '#1a0a40',
+        '--felix-bubble': '#081020',
+        '--system-text':  '#888888',
+        '--state-passive':  '#bbbbbb',
+        '--state-thinking': '#ffdd00',
+        '--state-active':   '#00ff88',
+      },
+    };
+
+    function _accentDim(hex) {
+      const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+      if (!m) return hex;
+      const r = Math.round(parseInt(m[1], 16) * 0.8).toString(16).padStart(2, '0');
+      const g = Math.round(parseInt(m[2], 16) * 0.8).toString(16).padStart(2, '0');
+      const b = Math.round(parseInt(m[3], 16) * 0.8).toString(16).padStart(2, '0');
+      return '#' + r + g + b;
+    }
+
+    function loadAppearance() {
+      const defaults = { scale: '1', theme: 'midnight', accent: '#7c5cfc' };
+      try {
+        const stored = localStorage.getItem(APPEARANCE_LS_KEY);
+        if (stored) return Object.assign(defaults, JSON.parse(stored));
+      } catch (e) {}
+      return defaults;
+    }
+
+    function saveAppearance(prefs) {
+      try { localStorage.setItem(APPEARANCE_LS_KEY, JSON.stringify(prefs)); } catch (e) {}
+    }
+
+    function applyAppearance(prefs) {
+      const root = document.documentElement;
+      root.style.zoom = prefs.scale || '1';
+      const themeVars = THEMES[prefs.theme] || THEMES.midnight;
+      for (const [prop, val] of Object.entries(themeVars)) {
+        root.style.setProperty(prop, val);
+      }
+      const accent = prefs.accent || '#7c5cfc';
+      root.style.setProperty('--accent', accent);
+      root.style.setProperty('--accent-dim', _accentDim(accent));
+      root.style.setProperty('--state-speaking', accent);
+      // Sync controls if they exist in the DOM yet.
+      const scaleEl = document.getElementById('set-scale-select');
+      if (scaleEl) scaleEl.value = prefs.scale || '1';
+      const chips = document.querySelectorAll('#set-theme-chips .set-theme-chip');
+      chips.forEach((c) => c.classList.toggle('is-active', c.dataset.theme === (prefs.theme || 'midnight')));
+      const accentEl = document.getElementById('set-accent-picker');
+      if (accentEl) accentEl.value = accent;
+    }
+
+    let appearancePrefs = loadAppearance();
+    // Apply immediately so the UI renders with the persisted theme+scale.
+    applyAppearance(appearancePrefs);
+
+    const setScaleSelectEl  = document.getElementById('set-scale-select');
+    const setThemeChipsEl   = document.getElementById('set-theme-chips');
+    const setAccentPickerEl = document.getElementById('set-accent-picker');
+
+    setScaleSelectEl.addEventListener('change', () => {
+      appearancePrefs.scale = setScaleSelectEl.value;
+      saveAppearance(appearancePrefs);
+      applyAppearance(appearancePrefs);
+    });
+
+    setThemeChipsEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('.set-theme-chip');
+      if (!btn) return;
+      appearancePrefs.theme = btn.dataset.theme;
+      saveAppearance(appearancePrefs);
+      applyAppearance(appearancePrefs);
+    });
+
+    setAccentPickerEl.addEventListener('input', () => {
+      appearancePrefs.accent = setAccentPickerEl.value;
+      saveAppearance(appearancePrefs);
+      applyAppearance(appearancePrefs);
+    });
+
     // ── input ─────────────────────────────────────────────────────────────
     function autosize() {
       input.style.height = '42px';
@@ -4920,10 +5117,13 @@
     });
 
     // ── Settings provider: a fixed set of labels for the section headers and
-    // toggles that exist today. Lets the user jump to Settings by typing e.g.
-    // "notifications" from any pane.
+    // toggles. Lets the user jump to Settings by typing e.g. "notifications".
     _registerProvider('settings', function (_query) {
       return [
+        { label: 'Appearance',        route: 'settings', anchor: 'set-scale-select' },
+        { label: 'UI scale',          route: 'settings', anchor: 'set-scale-select' },
+        { label: 'Theme',             route: 'settings', anchor: 'set-theme-chips' },
+        { label: 'Accent colour',     route: 'settings', anchor: 'set-accent-picker' },
         { label: 'Notifications',     route: 'settings', anchor: 'set-interval-row' },
         { label: 'Reminder interval', route: 'settings', anchor: 'set-interval-row' },
         { label: 'Camera',            route: 'settings', anchor: 'set-camera-toggle' },
