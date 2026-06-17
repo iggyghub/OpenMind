@@ -1098,6 +1098,66 @@ class TestDocsODTFallbackIntegration:
         assert json.loads(result.content)["title"] == "Direct ODF"
 
     @pytest.mark.asyncio
+    async def test_not_connected_sentinel_logs_at_info_not_warning(self, tmp_path, caplog):
+        """A genuine not-connected sentinel is the expected offline path: INFO, no WARNING."""
+        import logging
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            docs_primary=_make_docs_primary_fail("no Google account connected"),
+            docs_dir=str(tmp_path),
+        )
+        with caplog.at_level(logging.INFO, logger="plugins.google_workspace_fallback"):
+            result = await plugin.call_tool("docs_create", {"title": "Offline"})
+        assert not result.is_error
+        text = caplog.text
+        assert "not connected" in text
+        assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_connected_but_api_error_logs_warning(self, tmp_path, caplog):
+        """A non-sentinel error means a connected account whose API call failed -> WARNING (#273)."""
+        import logging
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            docs_primary=_make_docs_primary_fail("Docs create failed: 403 insufficient scope"),
+            docs_dir=str(tmp_path),
+        )
+        with caplog.at_level(logging.WARNING, logger="plugins.google_workspace_fallback"):
+            result = await plugin.call_tool("docs_create", {"title": "Connected"})
+        # Behaviour unchanged: still falls back to ODF (offline-tolerant), but loudly.
+        assert not result.is_error
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings, "expected a WARNING when a wired account's Docs API fails"
+        assert "despite a wired account" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_missing_docs_primary_logs_warning(self, tmp_path, caplog):
+        """docs_primary=None routes unconditionally to ODF and warns it could not try Google."""
+        import logging
+        from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin
+
+        plugin = GoogleWorkspaceFallbackPlugin(
+            primary=_make_primary_fail(),
+            docs_primary=None,
+            docs_dir=str(tmp_path),
+        )
+        with caplog.at_level(logging.WARNING, logger="plugins.google_workspace_fallback"):
+            result = await plugin.call_tool("docs_create", {"title": "NoPrimary"})
+        assert not result.is_error
+        assert "docs_primary is None" in caplog.text
+
+    def test_not_connected_sentinels_match_google_docs_constants(self):
+        """Guard: the literal sentinels here must stay in sync with google_docs.py."""
+        from plugins.google_workspace_fallback import _DOCS_NOT_CONNECTED_SENTINELS
+        from plugins import google_docs
+        assert google_docs._NO_ACCOUNT_MSG in _DOCS_NOT_CONNECTED_SENTINELS
+        assert google_docs._FACTORY_NOT_WIRED_MSG in _DOCS_NOT_CONNECTED_SENTINELS
+
+    @pytest.mark.asyncio
     async def test_workspace_tools_still_work_alongside_docs_fallback(self, tmp_path):
         """Adding docs fallback does not break existing workspace (calendar) fallback."""
         from plugins.google_workspace_fallback import GoogleWorkspaceFallbackPlugin

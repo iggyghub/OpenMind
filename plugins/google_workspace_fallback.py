@@ -1065,6 +1065,19 @@ _DOCS_FALLBACK_TOOLS: frozenset[str] = frozenset({
     "docs_append",
 })
 
+# The Google Docs primary signals "no usable Google connection for the active
+# profile" with these exact sentinel strings (plugins/google_docs.py). When the
+# primary fails with one of these, the account is genuinely not connected and
+# the local ODF path is the *intended* offline behaviour (#233). Any OTHER
+# error from a wired primary means the account looked connected but the API
+# call itself failed -- a connected-but-failing state we log distinctly so a
+# silent ODF fallback "despite Google connected" (#273) is diagnosable from
+# cerebral.log rather than invisible.
+_DOCS_NOT_CONNECTED_SENTINELS: frozenset[str] = frozenset({
+    "no Google account connected",                              # _NO_ACCOUNT_MSG
+    "Google Docs is not available -- token provider not wired",  # _FACTORY_NOT_WIRED_MSG
+})
+
 _MAPS_FALLBACK_TOOLS: frozenset[str] = frozenset({
     "maps_geocode",
     "maps_reverse_geocode",
@@ -1233,7 +1246,14 @@ class GoogleWorkspaceFallbackPlugin:
             try:
                 from plugins.google_docs import GoogleDocsPlugin
                 self._docs_primary = GoogleDocsPlugin()
-            except (ModuleNotFoundError, Exception):
+            except Exception as exc:
+                # A None docs_primary forces EVERY docs_* call to the local ODF
+                # fallback regardless of Google connectivity (#273). Log why so
+                # the cause is visible instead of silently degrading.
+                logger.warning(
+                    "google_docs primary unavailable (%s) -- docs_* tools will "
+                    "use the local ODF fallback unconditionally", exc,
+                )
                 self._docs_primary = None
         self._docs_odt = DocsODTFallback(docs_dir=docs_dir)
 
@@ -1290,14 +1310,33 @@ class GoogleWorkspaceFallbackPlugin:
                 return result
             if not _is_connection_failure(result) or tool_name not in _DOCS_FALLBACK_TOOLS:
                 return result
-            logger.info(
-                "Google Docs API failed for %s (%s) — routing to ODF fallback",
-                tool_name,
-                result.content[:80],
-            )
+            # Name *why* we are about to write a local .odt instead of a Google
+            # Doc so a fallback "despite Google connected" (#273) is visible in
+            # cerebral.log. The not-connected sentinels are the expected offline
+            # path (#233); anything else means a connected account whose API
+            # call failed -- the surprising case worth flagging at WARN.
+            if result.content in _DOCS_NOT_CONNECTED_SENTINELS:
+                logger.info(
+                    "Google Docs not connected for %s (%s) -- using local ODF fallback",
+                    tool_name, result.content,
+                )
+            else:
+                logger.warning(
+                    "Google Docs API failed for %s despite a wired account (%s) "
+                    "-- falling back to local ODF; the result is a local .odt "
+                    "file, NOT a Google Doc",
+                    tool_name, result.content[:120],
+                )
         elif tool_name not in _DOCS_FALLBACK_TOOLS:
             return ToolResult(
                 content=f"No fallback available for: {tool_name}", is_error=True
+            )
+        else:
+            logger.warning(
+                "Google Docs plugin unavailable (docs_primary is None) -- %s "
+                "using local ODF fallback unconditionally; check google_docs "
+                "import/construction at startup",
+                tool_name,
             )
         return self._docs_odt.call(tool_name, args)
 
