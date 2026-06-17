@@ -60,6 +60,14 @@ test('every expected nav item exists', () => {
   }
 });
 
+// ── S3 — section-collapse lib present ────────────────────────────────────────
+
+test('section-collapse.js script tag is present (S3)', () => {
+  const srcTags = root.querySelectorAll('script[src]');
+  const found = srcTags.some(s => (s.getAttribute('src') || '').includes('section-collapse'));
+  expect(found).toBe(true);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

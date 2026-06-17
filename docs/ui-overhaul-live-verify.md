@@ -37,3 +37,24 @@ and creates this document. Verify the harness itself works:
 - [ ] Hash routing still works: navigating to e.g. `#memory` activates the
       Memory pane and highlights the Memory nav item.
 - [ ] The active nav item retains the accent left-border highlight.
+
+---
+
+## S3 — Collapsible section headers (#286)
+
+- [ ] Open Settings. Confirm each section header (Active model, Switch model,
+      Per-task models, Notifications, System) shows a right-aligned chevron (▾).
+- [ ] Click "Notifications" header — its rows collapse (hidden) and the chevron
+      changes to ▸.
+- [ ] Click "Notifications" again — rows expand and chevron returns to ▾.
+- [ ] Reload the page. Navigate back to Settings. Confirm "Notifications" is
+      still collapsed (state survived reload).
+- [ ] Open Permissions → Capabilities tab. Confirm its three section headers
+      (Capability classes, Session grants, New plugins to review) each have a
+      chevron and are click-to-collapse.
+- [ ] Open Plugins. Confirm "Registered plugins" header has a chevron and
+      collapses/expands its plugin list.
+- [ ] Open Profiles. Confirm "Profiles" header has a chevron and collapses the
+      profile list and New profile button when clicked.
+- [ ] Confirm Queue and Insights item-level collapse is unchanged (rows still
+      start collapsed as before; section headers in those panes are unaffected).
