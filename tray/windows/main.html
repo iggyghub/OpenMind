@@ -155,6 +155,18 @@
       margin-top: 8px;
     }
 
+    /* ── collapsible section headers (S3 -- #286) ───────────────────── */
+    .sec-hdr {
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .sec-chevron::before { content: '\25BE'; /* down-pointing small triangle */ }
+    .sec-hdr.sec-collapsed .sec-chevron::before { content: '\25B8'; /* right-pointing */ }
+    [data-sec-hidden] { display: none !important; }
+
     /* ── header ─────────────────────────────────────────────── */
     .header {
       padding: 14px 20px;
@@ -2617,6 +2629,11 @@
        when the pane wires itself up. -->
   <script src="../lib/permissions-store.js"></script>
 
+  <!-- Section collapse (S3 -- #286) -- accordion for *-section headers.
+       Dual-mode: feeds Node test suite via require() and this renderer via
+       window.SectionCollapse. -->
+  <script src="../lib/section-collapse.js"></script>
+
   <script>
     'use strict';
 
@@ -4659,6 +4676,13 @@
     });
 
     window.addEventListener('hashchange', () => activateRoute(routeFromHash()));
+
+    // S3 -- collapsible section headers (#286)
+    const _sc = window.SectionCollapse;
+    _sc.init(document.getElementById('perm-panel-capabilities'), 'permissions');
+    _sc.init(document.getElementById('plug-main-view'), 'plugins');
+    _sc.init(document.querySelector('.prof-body'), 'profiles');
+    _sc.init(document.querySelector('.set-body'), 'settings');
 
     autosize();
     activateRoute(routeFromHash());
