@@ -126,6 +126,19 @@ test('settings pane no longer contains model control elements (S5)', () => {
   expect(pane.querySelector('#set-refresh-btn')).toBeNull();
 });
 
+// ── S6 — appearance controls in settings pane ────────────────────────────────
+
+test('settings pane contains appearance controls (S6)', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  expect(pane).not.toBeNull();
+  expect(pane.querySelector('#set-scale-select')).not.toBeNull();
+  expect(pane.querySelector('#set-theme-chips')).not.toBeNull();
+  expect(pane.querySelector('#set-accent-picker')).not.toBeNull();
+  // Three theme preset buttons must be present.
+  const chips = pane.querySelectorAll('.set-theme-chip');
+  expect(chips.length).toBeGreaterThanOrEqual(3);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
