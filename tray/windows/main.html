@@ -297,6 +297,100 @@
       color: #fff;
     }
 
+    /* ── S8 -- TTS controls (#291) ───────────────────────────── */
+    .hdr-tts {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .hdr-tts-mute {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      padding: 4px 9px;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+      white-space: nowrap;
+    }
+    .hdr-tts-mute:hover { color: var(--text); }
+    .hdr-tts-mute.is-muted {
+      background: var(--bg-elev);
+      color: var(--text-muted);
+      opacity: 0.5;
+    }
+    .hdr-tts-vol {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 72px;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--border);
+      outline: none;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .hdr-tts-vol::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
+    .hdr-tts-vol::-moz-range-thumb {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      border: none;
+      background: var(--accent);
+      cursor: pointer;
+    }
+    .set-vol-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .set-vol-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100px;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--border);
+      outline: none;
+      cursor: pointer;
+    }
+    .set-vol-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
+    .set-vol-slider::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: none;
+      background: var(--accent);
+      cursor: pointer;
+    }
+    .set-vol-val {
+      font-size: 11px;
+      color: var(--text-muted);
+      min-width: 34px;
+      text-align: right;
+    }
+
     .orb {
       width: 12px;
       height: 12px;
@@ -2453,6 +2547,12 @@
         <button class="hdr-mic-seg" data-mic="ptt" type="button">PTT</button>
         <button class="hdr-mic-seg" data-mic="disabled" type="button">Disabled</button>
       </div>
+      <!-- S8 -- TTS controls (#291). Static across panes. -->
+      <div class="hdr-tts" id="hdr-tts">
+        <button class="hdr-tts-mute" id="hdr-tts-mute" type="button" aria-label="Toggle TTS mute">vol</button>
+        <input type="range" class="hdr-tts-vol" id="hdr-tts-vol"
+               min="0" max="100" step="1" value="100" aria-label="TTS volume">
+      </div>
       <button class="queue-badge" id="queue-badge" type="button" hidden>
         <span id="queue-badge-text">Queue 0</span>
       </button>
@@ -2739,6 +2839,38 @@
           </select>
         </div>
 
+        <div class="set-section">Voice output</div>
+        <div class="set-toggle-row">
+          <div>
+            <div class="set-toggle-label">Text-to-speech</div>
+            <div class="set-toggle-sub">Felix speaks responses aloud</div>
+          </div>
+          <label class="set-toggle">
+            <input type="checkbox" id="set-tts-enabled" checked>
+            <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
+          </label>
+        </div>
+        <div class="set-toggle-row">
+          <div>
+            <div class="set-toggle-label">Volume</div>
+            <div class="set-toggle-sub">TTS output level (synced with header slider)</div>
+          </div>
+          <div class="set-vol-row">
+            <input type="range" class="set-vol-slider" id="set-tts-vol-slider"
+                   min="0" max="100" step="1" value="100">
+            <span class="set-vol-val" id="set-tts-vol-val">100%</span>
+          </div>
+        </div>
+        <div class="set-toggle-row">
+          <div>
+            <div class="set-toggle-label">Voice</div>
+            <div class="set-toggle-sub">Kokoro voice model (saved per profile)</div>
+          </div>
+          <select class="set-interval-select" id="set-voice-picker">
+            <option value="">Loading voices...</option>
+          </select>
+        </div>
+
         <div class="set-section">Notifications</div>
         <div class="set-toggle-row">
           <div>
@@ -3009,7 +3141,11 @@
       camera_enabled:            false,
       visualiser_visible:        false,
       mic_mode:                  'passive',
+      tts_muted:                 false,
+      tts_volume:                100,
     };
+
+    let activeProfileVoice = 'af_heart';
 
     let ws = null;
     let activeProfileId = null;
@@ -3053,6 +3189,8 @@
         // System settings (Issue #209 + S7). Pulls current mic_mode and
         // other persisted settings so header controls are in sync on load.
         sendEvent({ type: 'list_settings' });
+        // S8 -- voices catalogue for the voice picker.
+        sendEvent({ type: 'list_voices' });
       });
       ws.addEventListener('close', () => {
         wsConnected = false;
@@ -3085,6 +3223,11 @@
       switch (event.type) {
         case 'profile_loaded':
           activeProfileId = event.data && event.data.id;
+          // S8 -- sync voice picker to this profile's persisted voice.
+          if (event.data && event.data.voice_id) {
+            activeProfileVoice = event.data.voice_id;
+            if (setVoicePicker) setVoicePicker.value = activeProfileVoice;
+          }
           // Profile just landed — leave first-run mode and collapse the
           // wizard so the user lands on the chat. Clearing inputs is
           // defensive: if the user opens the wizard again it starts
@@ -3097,6 +3240,16 @@
           // Pull the refreshed profiles list so the new row shows up.
           sendEvent({ type: 'list_profiles' });
           break;
+        case 'voices_list': {
+          const voices = (event.data && event.data.voices) || [];
+          if (setVoicePicker && voices.length) {
+            setVoicePicker.innerHTML = voices.map(v =>
+              `<option value="${v.id}">${v.name} (${v.accent}, ${v.gender})</option>`
+            ).join('');
+            setVoicePicker.value = activeProfileVoice;
+          }
+          break;
+        }
         case 'profiles_list':
           profilesList = (event.data && event.data.profiles) || [];
           renderProfiles();
@@ -4774,6 +4927,14 @@
     const hdrMicSegs      = hdrMicMode ? Array.from(hdrMicMode.querySelectorAll('.hdr-mic-seg')) : [];
     const setMicModeSelect = document.getElementById('set-mic-mode-select');
 
+    // S8 -- TTS controls (#291)
+    const hdrTtsMute      = document.getElementById('hdr-tts-mute');
+    const hdrTtsVol       = document.getElementById('hdr-tts-vol');
+    const setTtsEnabled   = document.getElementById('set-tts-enabled');
+    const setTtsVolSlider = document.getElementById('set-tts-vol-slider');
+    const setTtsVolVal    = document.getElementById('set-tts-vol-val');
+    const setVoicePicker  = document.getElementById('set-voice-picker');
+
     function applyMicMode(mode) {
       // Update header segmented control.
       hdrMicSegs.forEach(btn => {
@@ -4781,6 +4942,22 @@
       });
       // Update settings select.
       if (setMicModeSelect) setMicModeSelect.value = mode;
+    }
+
+    function applyTTS(muted, volume) {
+      // Header mute button.
+      if (hdrTtsMute) {
+        hdrTtsMute.textContent = muted ? 'muted' : 'vol';
+        hdrTtsMute.classList.toggle('is-muted', !!muted);
+        hdrTtsMute.title = muted ? 'Unmute TTS' : 'Mute TTS';
+      }
+      // Header volume slider.
+      if (hdrTtsVol) hdrTtsVol.value = volume;
+      // Settings TTS toggle (checked = NOT muted).
+      if (setTtsEnabled) setTtsEnabled.checked = !muted;
+      // Settings volume slider + label.
+      if (setTtsVolSlider) setTtsVolSlider.value = volume;
+      if (setTtsVolVal) setTtsVolVal.textContent = volume + '%';
     }
 
     function renderSystemSettings() {
@@ -4793,6 +4970,7 @@
       setCameraToggle.checked = !!s.camera_enabled;
       setVisToggle.checked    = !!s.visualiser_visible;
       applyMicMode(s.mic_mode || 'passive');
+      applyTTS(!!s.tts_muted, s.tts_volume ?? 100);
     }
 
     setNotifToggle.addEventListener('change', () => {
@@ -4824,6 +5002,57 @@
         const mode = setMicModeSelect.value;
         sendEvent({ type: 'set_setting', data: { key: 'mic_mode', value: mode } });
         applyMicMode(mode);
+      });
+    }
+
+    // S8 -- TTS mute button in header.
+    if (hdrTtsMute) {
+      hdrTtsMute.addEventListener('click', () => {
+        const newMuted = !systemSettingsData.tts_muted;
+        sendEvent({ type: 'set_setting', data: { key: 'tts_muted', value: newMuted } });
+        systemSettingsData.tts_muted = newMuted;
+        applyTTS(newMuted, systemSettingsData.tts_volume ?? 100);
+      });
+    }
+
+    // S8 -- Header volume slider.
+    if (hdrTtsVol) {
+      hdrTtsVol.addEventListener('input', () => {
+        const vol = Number(hdrTtsVol.value);
+        sendEvent({ type: 'set_setting', data: { key: 'tts_volume', value: vol } });
+        systemSettingsData.tts_volume = vol;
+        applyTTS(!!systemSettingsData.tts_muted, vol);
+      });
+    }
+
+    // S8 -- Settings TTS enabled toggle.
+    if (setTtsEnabled) {
+      setTtsEnabled.addEventListener('change', () => {
+        const muted = !setTtsEnabled.checked;
+        sendEvent({ type: 'set_setting', data: { key: 'tts_muted', value: muted } });
+        systemSettingsData.tts_muted = muted;
+        applyTTS(muted, systemSettingsData.tts_volume ?? 100);
+      });
+    }
+
+    // S8 -- Settings volume slider.
+    if (setTtsVolSlider) {
+      setTtsVolSlider.addEventListener('input', () => {
+        const vol = Number(setTtsVolSlider.value);
+        sendEvent({ type: 'set_setting', data: { key: 'tts_volume', value: vol } });
+        systemSettingsData.tts_volume = vol;
+        applyTTS(!!systemSettingsData.tts_muted, vol);
+      });
+    }
+
+    // S8 -- Voice picker: save per-profile voice on change.
+    if (setVoicePicker) {
+      setVoicePicker.addEventListener('change', () => {
+        const voiceId = setVoicePicker.value;
+        if (voiceId) {
+          sendEvent({ type: 'set_voice', data: { voice_id: voiceId } });
+          activeProfileVoice = voiceId;
+        }
       });
     }
 

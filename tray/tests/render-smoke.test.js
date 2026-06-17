@@ -176,6 +176,49 @@ test('settings pane contains mic-mode select (S7)', () => {
   expect(opts.length).toBe(3);
 });
 
+// ── S8 — TTS controls ────────────────────────────────────────────────────────
+
+test('TTS mute button and volume slider exist in static header (S8)', () => {
+  const muteBtn = root.querySelector('#hdr-tts-mute');
+  const volSlider = root.querySelector('#hdr-tts-vol');
+  expect(muteBtn).not.toBeNull();
+  expect(volSlider).not.toBeNull();
+
+  // Both must be inside .header, not inside any .pane.
+  for (const el of [muteBtn, volSlider]) {
+    let node = el.parentNode;
+    let insideHeader = false;
+    let insidePane   = false;
+    while (node) {
+      const cls = node.classNames || '';
+      const has = (name) => cls.split(/\s+/).includes(name);
+      if (has('header')) insideHeader = true;
+      if (has('pane'))   insidePane   = true;
+      node = node.parentNode;
+    }
+    expect(insideHeader).toBe(true);
+    expect(insidePane).toBe(false);
+  }
+
+  // Volume slider attributes.
+  expect(volSlider.getAttribute('type')).toBe('range');
+  expect(volSlider.getAttribute('min')).toBe('0');
+  expect(volSlider.getAttribute('max')).toBe('100');
+});
+
+test('settings pane contains TTS on/off, volume slider, and voice picker (S8)', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  expect(pane).not.toBeNull();
+  expect(pane.querySelector('#set-tts-enabled')).not.toBeNull();
+  expect(pane.querySelector('#set-tts-vol-slider')).not.toBeNull();
+  expect(pane.querySelector('#set-voice-picker')).not.toBeNull();
+
+  // Volume slider in settings must be 0-100.
+  const slider = pane.querySelector('#set-tts-vol-slider');
+  expect(slider.getAttribute('min')).toBe('0');
+  expect(slider.getAttribute('max')).toBe('100');
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
