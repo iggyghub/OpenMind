@@ -16,7 +16,7 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **S7 — #290** (Mic-mode control)
+Active slice: **S8 — #291** (TTS controls)
 
 Model: sonnet
 Status: ready
@@ -37,7 +37,7 @@ Phase 0 — Foundation (land first, in order)
 Phase 1 — Models & settings
 5. [x] S5 — #288 Models tab — Model: sonnet
 6. [x] S6 — #289 Appearance settings (scale/theme/accent) — Model: sonnet
-7. [ ] S7 — #290 Mic-mode control (Passive/PTT/Disabled) — Model: sonnet
+7. [x] S7 — #290 Mic-mode control (Passive/PTT/Disabled) — Model: sonnet
 8. [ ] S8 — #291 TTS controls (mute/volume + voice picker) — Model: sonnet
 
 Phase 2 — Conversations
@@ -68,3 +68,4 @@ Phase 5 — Control surfaces
 - S4 — #287 → PR #307 (federated search shell)
 - S5 — #288 → PR #308 (Models tab: model controls moved out of Settings)
 - S6 — #289 → PR #309 (Appearance settings: UI scale + theme presets + accent colour)
+- S7 — #290 → PR #310 (Mic-mode control: Passive/PTT/Disabled in header + Settings)
