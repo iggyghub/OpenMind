@@ -429,3 +429,58 @@ async def test_claw_backend_real_call():
     result = await backend.complete("Reply with only the word PONG.", "chat")
     assert isinstance(result, str)
     assert len(result.strip()) > 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #271 — local Ollama timeout is generous + env-overridable
+# ---------------------------------------------------------------------------
+
+def test_ollama_timeout_defaults_to_180(monkeypatch):
+    from cerebral.llm import router
+    monkeypatch.delenv("OLLAMA_TIMEOUT_S", raising=False)
+    assert router._ollama_timeout_s() == 180.0
+
+
+def test_ollama_timeout_reads_env_override(monkeypatch):
+    from cerebral.llm import router
+    monkeypatch.setenv("OLLAMA_TIMEOUT_S", "300")
+    assert router._ollama_timeout_s() == 300.0
+
+
+def test_ollama_timeout_ignores_non_numeric(monkeypatch):
+    from cerebral.llm import router
+    monkeypatch.setenv("OLLAMA_TIMEOUT_S", "soon")
+    assert router._ollama_timeout_s() == 180.0
+
+
+def test_ollama_timeout_ignores_non_positive(monkeypatch):
+    from cerebral.llm import router
+    monkeypatch.setenv("OLLAMA_TIMEOUT_S", "0")
+    assert router._ollama_timeout_s() == 180.0
+
+
+async def test_ollama_complete_uses_configured_timeout(monkeypatch):
+    """OllamaBackend.complete builds its client with the resolved timeout."""
+    from cerebral.llm.router import OllamaBackend
+    import httpx
+
+    monkeypatch.setenv("OLLAMA_TIMEOUT_S", "240")
+    captured = {}
+
+    real_init = httpx.AsyncClient.__init__
+
+    def spy_init(self, *args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return real_init(self, *args, **kwargs)
+
+    async def fake_post(self, url, json=None):
+        return httpx.Response(200, json={"response": "ok"}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", spy_init)
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    backend = OllamaBackend(model="qwen2.5:7b")
+    result = await backend.complete("hi", "chat")
+
+    assert result == "ok"
+    assert captured["timeout"] == 240.0

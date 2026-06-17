@@ -19,10 +19,38 @@ Public interface:
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Callable, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
+
+# Local inference on a CPU-bound box can take 80s+ for a real (large) prompt,
+# so the default Ollama timeout is generous and env-overridable. Cloud
+# (ClawBackend) stays at 60s because cloud inference is fast. See issue #271.
+_DEFAULT_OLLAMA_TIMEOUT_S = 180.0
+
+
+def _ollama_timeout_s() -> float:
+    """Local-inference HTTP timeout in seconds (override via OLLAMA_TIMEOUT_S)."""
+    raw = os.environ.get("OLLAMA_TIMEOUT_S")
+    if raw is None:
+        return _DEFAULT_OLLAMA_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "[router] OLLAMA_TIMEOUT_S=%r is not a number; using default %ss",
+            raw, _DEFAULT_OLLAMA_TIMEOUT_S,
+        )
+        return _DEFAULT_OLLAMA_TIMEOUT_S
+    if value <= 0:
+        logger.warning(
+            "[router] OLLAMA_TIMEOUT_S=%r must be > 0; using default %ss",
+            raw, _DEFAULT_OLLAMA_TIMEOUT_S,
+        )
+        return _DEFAULT_OLLAMA_TIMEOUT_S
+    return value
 
 
 class ModelUnavailableError(Exception):
@@ -239,7 +267,7 @@ class OllamaBackend:
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         import httpx
         payload = {"model": self.model, "prompt": prompt, "stream": False}
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=_ollama_timeout_s()) as client:
             try:
                 resp = await client.post(f"{self.url}/api/generate", json=payload)
                 resp.raise_for_status()
@@ -271,7 +299,7 @@ class OllamaBackend:
             "tools": ollama_tools,
             "stream": False,
         }
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=_ollama_timeout_s()) as client:
             try:
                 resp = await client.post(f"{self.url}/api/chat", json=payload)
                 resp.raise_for_status()
