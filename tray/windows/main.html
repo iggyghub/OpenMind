@@ -88,6 +88,18 @@
       box-shadow: inset 2px 0 0 var(--accent);
     }
 
+    .nav-section { padding: 6px 0 2px; }
+    .nav-section + .nav-section { padding-top: 12px; }
+    .nav-section-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 0 12px 4px;
+      display: block;
+    }
+
     /* ── content (right pane) ───────────────────────────────── */
     .content {
       flex: 1;
@@ -2199,15 +2211,31 @@
   <aside class="sidebar">
     <div class="brand">Felix</div>
     <nav class="nav" id="nav">
-      <button class="nav-item active" data-route="conversation">Conversation</button>
-      <button class="nav-item"        data-route="queue">Queue</button>
-      <button class="nav-item"        data-route="insights">Insights</button>
-      <button class="nav-item"        data-route="memory">Memory</button>
-      <button class="nav-item"        data-route="permissions">Permissions</button>
-      <button class="nav-item"        data-route="credentials">Credentials</button>
-      <button class="nav-item"        data-route="plugins">Plugins</button>
-      <button class="nav-item"        data-route="profiles">Profiles</button>
-      <button class="nav-item"        data-route="settings">Settings</button>
+      <div class="nav-section">
+        <span class="nav-section-title">Chat</span>
+        <button class="nav-item active" data-route="conversation">Conversation</button>
+        <button class="nav-item"        data-route="queue">Queue</button>
+        <button class="nav-item"        data-route="conversations">Conversations</button>
+      </div>
+      <div class="nav-section">
+        <span class="nav-section-title">Mind</span>
+        <button class="nav-item" data-route="insights">Insights</button>
+        <button class="nav-item" data-route="memory">Memory</button>
+        <button class="nav-item" data-route="recipes">Recipes</button>
+      </div>
+      <div class="nav-section">
+        <span class="nav-section-title">Tools</span>
+        <button class="nav-item" data-route="plugins">Plugins</button>
+        <button class="nav-item" data-route="integrations">Integrations</button>
+        <button class="nav-item" data-route="credentials">Credentials</button>
+        <button class="nav-item" data-route="permissions">Permissions</button>
+      </div>
+      <div class="nav-section">
+        <span class="nav-section-title">System</span>
+        <button class="nav-item" data-route="models">Models</button>
+        <button class="nav-item" data-route="settings">Settings</button>
+        <button class="nav-item" data-route="profiles">Profiles</button>
+      </div>
     </nav>
   </aside>
 
@@ -2542,6 +2570,38 @@
             <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
           </label>
         </div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="conversations" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Conversations</div>
+        <div class="placeholder-sub">Saved threads and projects will appear here.</div>
+        <div class="placeholder-issue">Coming in issue #292 (S9)</div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="recipes" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Recipes</div>
+        <div class="placeholder-sub">Named tool-chains you can run on demand.</div>
+        <div class="placeholder-issue">Coming in issue #302 (S19)</div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="integrations" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Integrations</div>
+        <div class="placeholder-sub">OpenClaw harness status and channel configuration.</div>
+        <div class="placeholder-issue">Coming in issue #298 (S15)</div>
+      </div>
+    </section>
+
+    <section class="pane" data-route="models" hidden>
+      <div class="placeholder">
+        <div class="placeholder-title">Models</div>
+        <div class="placeholder-sub">Active model, per-task model assignments, and refresh.</div>
+        <div class="placeholder-issue">Coming in issue #288 (S5)</div>
       </div>
     </section>
   </main>
