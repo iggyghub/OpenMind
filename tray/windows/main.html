@@ -176,7 +176,96 @@
       gap: 12px;
       flex-shrink: 0;
       background: var(--bg);
+      position: relative;
     }
+
+    /* ── federated search shell (S4 -- #287) ─────────────────── */
+    .hdr-search {
+      position: relative;
+      margin-left: 12px;
+      flex: 1;
+      max-width: 360px;
+    }
+    .hdr-search-input {
+      width: 100%;
+      background: var(--bg-elev);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-family: inherit;
+      font-size: 12px;
+      outline: none;
+      transition: border-color 0.12s;
+    }
+    .hdr-search-input:focus { border-color: var(--accent); }
+    .hdr-search-input::placeholder { color: var(--text-muted); }
+
+    .hdr-search-elsewhere {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      padding: 6px 0;
+      max-height: 280px;
+      overflow-y: auto;
+      z-index: 50;
+      display: none;
+    }
+    .hdr-search-elsewhere.is-open { display: block; }
+    .hdr-search-elsewhere-title {
+      padding: 6px 12px 4px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+    .hdr-search-elsewhere-empty {
+      padding: 6px 12px 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+    .hdr-search-hit {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 6px 12px;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      width: 100%;
+      text-align: left;
+      font-family: inherit;
+      font-size: 12px;
+      color: var(--text);
+      transition: background 0.1s;
+    }
+    .hdr-search-hit:hover,
+    .hdr-search-hit:focus {
+      background: rgba(255, 255, 255, 0.04);
+      outline: none;
+    }
+    .hdr-search-hit-label { flex: 1; }
+    .hdr-search-hit-route {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .hdr-search-hit-secondary {
+      font-size: 10px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* Visually hide a row that the in-pane search filter has dropped. */
+    [data-search-hidden] { display: none !important; }
 
     .orb {
       width: 12px;
@@ -2255,6 +2344,20 @@
     <div class="header">
       <div class="orb"></div>
       <div class="title">Felix</div>
+
+      <!-- S4 -- federated search shell (#287). Static across panes. -->
+      <div class="hdr-search">
+        <input type="search" class="hdr-search-input" id="hdr-search-input"
+               placeholder="Search this pane and everywhere else..."
+               autocomplete="off" spellcheck="false" />
+        <div class="hdr-search-elsewhere" id="hdr-search-elsewhere" role="listbox">
+          <div class="hdr-search-elsewhere-title">Found elsewhere</div>
+          <div id="hdr-search-elsewhere-list">
+            <div class="hdr-search-elsewhere-empty">No matches in other panes.</div>
+          </div>
+        </div>
+      </div>
+
       <div class="health">
         <div class="health-dot" id="health-dot" data-health="down" title="Disconnected"></div>
         <div class="health-panel" id="health-panel">
@@ -2633,6 +2736,11 @@
        Dual-mode: feeds Node test suite via require() and this renderer via
        window.SectionCollapse. -->
   <script src="../lib/section-collapse.js"></script>
+
+  <!-- Federated search registry (S4 -- #287) -- providers + ranking.
+       Dual-mode: feeds Node test suite via require() and this renderer via
+       window.SearchRegistry. -->
+  <script src="../lib/search-registry.js"></script>
 
   <script>
     'use strict';
@@ -4683,6 +4791,216 @@
     _sc.init(document.getElementById('plug-main-view'), 'plugins');
     _sc.init(document.querySelector('.prof-body'), 'profiles');
     _sc.init(document.querySelector('.set-body'), 'settings');
+
+    // ── S4 -- federated search shell (#287) ───────────────────────────────
+    // Each pane provides:
+    //   - a provider (query) => [{label, route, anchor, secondary?}] for the
+    //     cross-pane "found elsewhere" index, AND
+    //   - optionally an in-pane filter hook (query) => void that hides
+    //     non-matching rows in the current pane while the search is active.
+    //
+    // SECURITY: the Credentials provider returns labels/status only -- it
+    // never closes over secret values. This satisfies spec rule 2.
+    const _searchInput      = document.getElementById('hdr-search-input');
+    const _searchElsewhere  = document.getElementById('hdr-search-elsewhere');
+    const _searchElseList   = document.getElementById('hdr-search-elsewhere-list');
+    const _searchReg        = window.SearchRegistry;
+    const _inPaneFilters    = new Map();
+
+    function _registerProvider(route, provider) {
+      _searchReg.register(route, provider);
+    }
+    function _registerInPaneFilter(route, fn) {
+      _inPaneFilters.set(route, fn);
+    }
+
+    // Filter helper: toggle the data-search-hidden attr on rows whose label
+    // text doesn't contain the query (case-insensitive). Used by the plugins
+    // pane to reframe its filter onto the shell.
+    function _filterRowsByText(rowSelector, labelSelector, query) {
+      const rows = document.querySelectorAll(rowSelector);
+      const q    = (query || '').trim().toLowerCase();
+      rows.forEach((row) => {
+        if (!q) {
+          row.removeAttribute('data-search-hidden');
+          return;
+        }
+        const labelEl = labelSelector ? row.querySelector(labelSelector) : row;
+        const text = (labelEl ? labelEl.textContent : row.textContent).toLowerCase();
+        if (text.indexOf(q) === -1) row.setAttribute('data-search-hidden', '');
+        else                        row.removeAttribute('data-search-hidden');
+      });
+    }
+
+    // ── Plugins provider + in-pane filter (reframes the existing plugins
+    // filter onto the shell). The plug-row markup is owned by renderPlugins().
+    _registerProvider('plugins', function (_query) {
+      const plugins = (pluginsListData && pluginsListData.plugins) || [];
+      return plugins.map(function (p) {
+        const status = p.status || 'loaded';
+        return {
+          label:     p.name,
+          secondary: status,
+          route:     'plugins',
+          anchor:    'plug-list',
+        };
+      });
+    });
+    _registerInPaneFilter('plugins', function (q) {
+      _filterRowsByText('#plug-list .plug-row', '.plug-row-name', q);
+    });
+
+    // ── Permissions provider + in-pane filter (Tools tab).
+    _registerProvider('permissions', function (_query) {
+      if (!permStore) return [];
+      const tools = permStore.filterTools('') || [];
+      return tools.map(function (t) {
+        return {
+          label:     t.name,
+          secondary: t.plugin || null,
+          route:     'permissions',
+          anchor:    'perm-tool-rows',
+        };
+      });
+    });
+
+    // ── Credentials provider. Labels + status ONLY -- spec rule 2.
+    // The provider closes over credentialsState but NEVER reaches into the
+    // raw token values; the broadcast payload also never carries them back
+    // (write-only contract per renderCredentialsStaticTokens above), so
+    // there is no secret value in scope to leak.
+    _registerProvider('credentials', function (_query) {
+      const hits = [];
+      const state = credentialsState || {};
+      const google = state.google || null;
+      if (google) {
+        const status = google.status || 'not configured';
+        hits.push({
+          label:     'Google OAuth',
+          secondary: status,
+          route:     'credentials',
+          anchor:    'cred-status',
+        });
+      }
+      const staticTokens = state.static_tokens || {};
+      CRED_STATIC_TOKEN_PROVIDERS.forEach(function (p) {
+        const t      = staticTokens[p.id] || {};
+        const source = t.source || 'none';
+        const status = source === 'keyring' ? 'set'
+                     : source === 'env'     ? 'set (env)'
+                     : 'not set';
+        hits.push({
+          label:     p.label + ' API key',
+          secondary: status,
+          route:     'credentials',
+          anchor:    'cred-static-tokens-list',
+        });
+      });
+      return hits;
+    });
+
+    // ── Profiles provider.
+    _registerProvider('profiles', function (_query) {
+      return (profilesList || []).map(function (p) {
+        return {
+          label:     p.name || p.profile_name || String(p.id),
+          secondary: p.active ? 'active' : null,
+          route:     'profiles',
+          anchor:    'prof-list',
+        };
+      });
+    });
+
+    // ── Settings provider: a fixed set of labels for the section headers and
+    // toggles that exist today. Lets the user jump to Settings by typing e.g.
+    // "notifications" from any pane.
+    _registerProvider('settings', function (_query) {
+      return [
+        { label: 'Active model',         route: 'settings', anchor: 'set-active-header' },
+        { label: 'Switch model',         route: 'settings', anchor: 'set-model-list' },
+        { label: 'Per-task models',      route: 'settings', anchor: 'set-task-list' },
+        { label: 'Notifications',        route: 'settings', anchor: 'set-interval-row' },
+        { label: 'Reminder interval',    route: 'settings', anchor: 'set-interval-row' },
+        { label: 'Camera',               route: 'settings', anchor: 'set-camera-toggle' },
+        { label: 'Visualiser',           route: 'settings', anchor: 'set-vis-toggle' },
+      ];
+    });
+
+    function _currentRoute() {
+      return _routeFromHash(location.hash);
+    }
+
+    function _runSearch() {
+      const q    = _searchInput.value;
+      const cur  = _currentRoute();
+      const hook = _inPaneFilters.get(cur);
+      if (hook) hook(q);
+
+      const { elsewhere } = _searchReg.search(q, cur);
+      if (!q.trim()) {
+        _searchElsewhere.classList.remove('is-open');
+        return;
+      }
+      // Render the elsewhere panel.
+      if (elsewhere.length === 0) {
+        _searchElseList.innerHTML =
+          '<div class="hdr-search-elsewhere-empty">No matches in other panes.</div>';
+      } else {
+        _searchElseList.innerHTML = elsewhere.map(function (h) {
+          const sec = h.secondary
+            ? '<span class="hdr-search-hit-secondary">' + escHtml(h.secondary) + '</span>'
+            : '';
+          const anchorAttr = h.anchor ? ' data-anchor="' + escHtml(h.anchor) + '"' : '';
+          return '<button class="hdr-search-hit" type="button"'
+               + ' data-route="' + escHtml(h.route) + '"' + anchorAttr + '>'
+               + '<span class="hdr-search-hit-label">' + escHtml(h.label) + '</span>'
+               + sec
+               + '<span class="hdr-search-hit-route">' + escHtml(h.route) + '</span>'
+               + '</button>';
+        }).join('');
+      }
+      _searchElsewhere.classList.add('is-open');
+    }
+
+    // Jump-link click handler: navigate to the route, then scroll the
+    // anchor element into view (if it exists in the destination pane).
+    _searchElseList.addEventListener('click', function (e) {
+      const btn = e.target.closest('.hdr-search-hit');
+      if (!btn) return;
+      const route  = btn.dataset.route;
+      const anchor = btn.dataset.anchor;
+      if (!route) return;
+      if (location.hash.replace(/^#/, '') === route) {
+        activateRoute(route);
+      } else {
+        location.hash = '#' + route;
+      }
+      // Defer scroll until the pane has un-hidden.
+      setTimeout(function () {
+        if (anchor) {
+          const el = document.getElementById(anchor);
+          if (el && typeof el.scrollIntoView === 'function') {
+            el.scrollIntoView({ block: 'start', behavior: 'auto' });
+          }
+        }
+      }, 0);
+      // Collapse the elsewhere panel; leave the input value so the user can
+      // tweak the query without re-typing.
+      _searchElsewhere.classList.remove('is-open');
+    });
+
+    _searchInput.addEventListener('input', _runSearch);
+    _searchInput.addEventListener('focus', _runSearch);
+    // Re-apply the in-pane filter when the user switches pane while the box
+    // has text in it (so e.g. flipping from Plugins to Permissions filters
+    // the new pane straight away).
+    window.addEventListener('hashchange', _runSearch);
+    // Click outside the search column closes the elsewhere dropdown.
+    document.addEventListener('click', function (e) {
+      if (!_searchElsewhere.classList.contains('is-open')) return;
+      if (e.target.closest('.hdr-search')) return;
+      _searchElsewhere.classList.remove('is-open');
+    });
 
     autosize();
     activateRoute(routeFromHash());

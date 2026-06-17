@@ -57,6 +57,16 @@ const DUAL_MODE_LIBS = [
     global: 'NotificationManagerMod',
     check: (mod) => expect(typeof mod.NotificationManager).toBe('function'),
   },
+  {
+    file: 'section-collapse.js',
+    global: 'SectionCollapse',
+    check: (mod) => expect(typeof mod.init).toBe('function'),
+  },
+  {
+    file: 'search-registry.js',
+    global: 'SearchRegistry',
+    check: (mod) => expect(typeof mod.search).toBe('function'),
+  },
 ];
 
 const SOURCES = DUAL_MODE_LIBS.map((lib) => ({
