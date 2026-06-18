@@ -20,7 +20,7 @@ const ARTIFACT_DIR = path.resolve(__dirname, '../../.claude/tmp/render-smoke');
 // Routes that must have both a pane and a nav item in the current baseline.
 // Extended in S2 with models/conversations/integrations/recipes.
 const SMOKE_ROUTES = [
-  'conversation', 'queue', 'insights', 'memory',
+  'conversation', 'quick-ask', 'queue', 'insights', 'memory',
   'permissions', 'credentials', 'plugins', 'profiles', 'settings',
   'models', 'conversations', 'integrations', 'recipes',
 ];
@@ -262,6 +262,36 @@ test('conversations pane has New project button (S11)', () => {
   const newBtn = pane.querySelector('#conv-new-project');
   expect(newBtn).not.toBeNull();
   expect(newBtn.tagName.toLowerCase()).toBe('button');
+});
+
+// ── S12 — Quick Ask pane ─────────────────────────────────────────────────────
+
+test('quick-ask pane has transcript, input, send, and clear elements (S12)', () => {
+  const pane = root.querySelector('.pane[data-route="quick-ask"]');
+  expect(pane).not.toBeNull();
+
+  const transcript = pane.querySelector('#qa-transcript');
+  expect(transcript).not.toBeNull();
+
+  const input = pane.querySelector('#qa-input');
+  expect(input).not.toBeNull();
+
+  const send = pane.querySelector('#qa-send');
+  expect(send).not.toBeNull();
+  expect(send.tagName.toLowerCase()).toBe('button');
+
+  const clear = pane.querySelector('#qa-clear');
+  expect(clear).not.toBeNull();
+  expect(clear.tagName.toLowerCase()).toBe('button');
+});
+
+test('quick-ask nav item is inside the CHAT section (S12)', () => {
+  const qaNav   = root.querySelector('.nav-item[data-route="quick-ask"]');
+  const convNav = root.querySelector('.nav-item[data-route="conversation"]');
+  expect(qaNav).not.toBeNull();
+  expect(convNav).not.toBeNull();
+  // Both must share the same parent nav-section (CHAT).
+  expect(qaNav.parentNode).toBe(convNav.parentNode);
 });
 
 // ── Script syntax ────────────────────────────────────────────────────────────
