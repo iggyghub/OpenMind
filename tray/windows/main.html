@@ -116,6 +116,7 @@
       flex-direction: column;
       min-height: 0;
       overflow: hidden;
+      position: relative; /* S14 (#297) -- anchors the drag-drop overlay */
     }
     .pane[hidden] { display: none; }
 
@@ -867,6 +868,107 @@
     }
     .send:hover:not(:disabled) { background: var(--accent-dim); }
     .send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── attachments (S14 / #297) ───────────────────────────────────── */
+    .att-attach-btn {
+      background: var(--bg-elev);
+      color: var(--text);
+      border: 1px solid var(--border);
+      font-family: inherit;
+      font-size: 16px;
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .att-attach-btn:hover { border-color: var(--accent); }
+    .att-attach-btn:active { background: var(--bg); }
+    .att-file-input { display: none; }
+
+    .att-pending-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 8px 20px 0;
+      background: var(--bg);
+    }
+    .att-pending-row[hidden] { display: none; }
+    .att-turn-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .att-turn-strip:empty { display: none; }
+
+    .att-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 220px;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 4px 8px 4px 8px;
+      font-size: 12px;
+      color: var(--text);
+      line-height: 1.2;
+    }
+    .att-chip[data-att-kind="image"]  { border-color: var(--accent-dim); }
+    .att-chip[data-att-kind="pdf"]    { border-color: var(--accent-dim); }
+    .att-chip-ico {
+      color: var(--accent);
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .att-chip-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 140px;
+    }
+    .att-chip-meta {
+      color: var(--text-muted);
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+    .att-chip-x {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+      margin-left: 2px;
+    }
+    .att-chip-x:hover { color: var(--text); }
+
+    .att-dropzone {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      backdrop-filter: blur(2px);
+      border: 2px dashed var(--accent);
+      border-radius: 10px;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+    .att-dropzone[hidden] { display: none; }
+    .att-dropzone-inner {
+      color: #fff;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
 
     /* ── header queue badge ─────────────────────────────────── */
     /* Pending-action count surfaced in the chat header so the user
@@ -2855,7 +2957,32 @@
         </div>
       </div>
 
+      <!-- S14 (#297) -- pending attachment chips. Shows files the user
+           dragged or attached but hasn't sent yet. Hidden when empty. -->
+      <div id="att-pending-row" class="att-pending-row" hidden></div>
+
+      <!-- S14 (#297) -- drag-drop overlay over the whole conversation pane.
+           Activated by the section's dragenter handler; the file input lives
+           in the composer next to the paperclip button. -->
+      <div id="att-dropzone" class="att-dropzone" hidden>
+        <div class="att-dropzone-inner">Drop files to attach</div>
+      </div>
+
       <div class="composer">
+        <input
+          type="file"
+          id="att-file-input"
+          class="att-file-input"
+          multiple
+          hidden
+        />
+        <button
+          id="att-attach-btn"
+          class="att-attach-btn"
+          type="button"
+          title="Attach files"
+          aria-label="Attach files"
+        >&#128206;</button>
         <textarea
           id="input"
           class="input"
@@ -3315,6 +3442,11 @@
        Dual-mode: feeds Node test suite via require() and this renderer via
        window.SearchRegistry. -->
   <script src="../lib/search-registry.js"></script>
+
+  <!-- Attachment chips (S14 -- #297) -- file classification + chip DOM
+       helpers. Dual-mode: window.AttachmentChips here, module.exports for
+       jest. Used by both the composer chip row and per-turn chip strips. -->
+  <script src="../lib/attachment-chips.js"></script>
 
   <script>
     'use strict';
@@ -6018,15 +6150,28 @@
     function autosize() {
       input.style.height = '42px';
       input.style.height = Math.min(input.scrollHeight, 200) + 'px';
-      send.disabled = input.value.trim().length === 0;
+      // S14 (#297) -- Send is also enabled when the user has staged at
+      // least one attachment, so they can send a "describe this file"
+      // turn with no typed message.
+      const hasText = input.value.trim().length > 0;
+      const hasAtt  = pendingAttachments.length > 0;
+      send.disabled = !hasText && !hasAtt;
     }
 
     function submit() {
       const text = input.value.trim();
-      if (!text) return;
-      const ok = sendEvent({ type: 'user_text_command', data: { text } });
+      const attIds = pendingAttachments.map(a => a.id);
+      if (!text && attIds.length === 0) return;
+      const ok = sendEvent({
+        type: 'user_text_command',
+        data: { text, attachment_ids: attIds },
+      });
       if (!ok) return;  // wait for reconnect
       input.value = '';
+      // The send hands the chips to Cerebral; clear locally now so the
+      // user can type their next turn without staring at the old chips.
+      pendingAttachments = [];
+      renderPendingAttachments();
       autosize();
       input.focus();
     }
@@ -6039,6 +6184,123 @@
       }
     });
     send.addEventListener('click', submit);
+
+    // ── attachments (S14 / #297) ──────────────────────────────────────────
+    // The renderer never touches the disk -- it base64-encodes the file
+    // bytes and ships them over WS to Cerebral, which writes the bytes
+    // into the per-profile attachment store. We keep a small local list
+    // of staged chip records so Send can ship their ids and the chip row
+    // can re-render without a round-trip per keystroke.
+    const ATT = window.AttachmentChips;
+    const attPendingRow = document.getElementById('att-pending-row');
+    const attFileInput  = document.getElementById('att-file-input');
+    const attAttachBtn  = document.getElementById('att-attach-btn');
+    const attDropzone   = document.getElementById('att-dropzone');
+    const conversationPane = document.querySelector('.pane[data-route="conversation"]');
+    let pendingAttachments = [];
+    let attDragDepth = 0;  // dragenter/leave fire on every child element
+
+    function renderPendingAttachments() {
+      if (!ATT || !attPendingRow) return;
+      const list = pendingAttachments;
+      if (!list.length) {
+        attPendingRow.textContent = '';
+        attPendingRow.hidden = true;
+      } else {
+        ATT.renderInto(attPendingRow, list, {
+          onRemove: (id) => {
+            pendingAttachments = pendingAttachments.filter(a => a.id !== id);
+            renderPendingAttachments();
+            // Tell Cerebral so the file is removed from disk too.
+            sendEvent({
+              type: 'drop_pending_attachments',
+              data: { attachment_ids: [id] },
+            });
+            autosize();
+          },
+        });
+        attPendingRow.hidden = false;
+      }
+      autosize();
+    }
+
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onerror = () => reject(r.error || new Error('read failed'));
+        r.onload = () => {
+          const res = r.result || '';
+          // result is "data:<mime>;base64,<payload>" -- strip the prefix.
+          const i = String(res).indexOf(',');
+          resolve(i >= 0 ? String(res).slice(i + 1) : '');
+        };
+        r.readAsDataURL(file);
+      });
+    }
+
+    async function uploadFiles(fileList) {
+      if (!ATT || !fileList || !fileList.length) return;
+      const files = [];
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i];
+        if (!ATT.isAcceptable(f)) {
+          // Silently skip oversized files; a future toast lib can surface
+          // this. The Files plugin path is the right answer for big files.
+          continue;
+        }
+        try {
+          const b64 = await readFileAsBase64(f);
+          files.push({ name: f.name, mime: f.type || '', data_b64: b64 });
+        } catch (_e) {
+          continue;
+        }
+      }
+      if (!files.length) return;
+      sendEvent({ type: 'attach_files', data: { files } });
+    }
+
+    attAttachBtn.addEventListener('click', () => attFileInput.click());
+    attFileInput.addEventListener('change', () => {
+      const list = Array.from(attFileInput.files || []);
+      attFileInput.value = '';  // allow re-selecting the same file later
+      uploadFiles(list);
+    });
+
+    // Drag-drop on the whole Conversation pane. We track dragenter/leave
+    // depth because those events fire for every child element traversed,
+    // and using a counter is the simplest robust way to know when the
+    // pointer truly left the pane.
+    function activateDropzone() {
+      if (attDropzone) attDropzone.hidden = false;
+    }
+    function deactivateDropzone() {
+      if (attDropzone) attDropzone.hidden = true;
+    }
+    if (conversationPane) {
+      conversationPane.addEventListener('dragenter', (e) => {
+        if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+        e.preventDefault();
+        attDragDepth += 1;
+        activateDropzone();
+      });
+      conversationPane.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      });
+      conversationPane.addEventListener('dragleave', (e) => {
+        if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+        attDragDepth = Math.max(0, attDragDepth - 1);
+        if (attDragDepth === 0) deactivateDropzone();
+      });
+      conversationPane.addEventListener('drop', (e) => {
+        if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+        e.preventDefault();
+        attDragDepth = 0;
+        deactivateDropzone();
+        uploadFiles(e.dataTransfer.files);
+      });
+    }
 
     // S12 (#295) -- Quick Ask event wiring.
     qaInputEl.addEventListener('input', qaAutosize);

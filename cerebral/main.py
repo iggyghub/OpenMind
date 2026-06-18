@@ -56,6 +56,12 @@ from cerebral.db.conversation import (
     KIND_USER_VOICE,
     ConversationStore,
 )
+from cerebral.db.attachments import (
+    AttachmentStore,
+    attach_to_turn_content,
+    attachments_payload,
+    serialise_for_prompt,
+)
 from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
@@ -97,6 +103,7 @@ _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
 _settings = _SettingsStore()
 _conversation = ConversationStore()
+_attachments  = AttachmentStore()
 _recipe_store = RecipeStore()
 
 # S9 (#292) -- one active thread per profile, RAM-only. Profile switch
@@ -1218,13 +1225,23 @@ def _ensure_active_thread_id(profile_id: int) -> int:
     return thread.id
 
 
-async def _record_turn(kind: str, content: dict) -> None:
+async def _record_turn(
+    kind: str,
+    content: dict,
+    *,
+    attachment_ids: list[int] | None = None,
+) -> None:
     """Persist a conversation turn against the active profile and push it
     live to subscribers (Issue #185 / ADR-0007).
 
     Silently skips when no profile is active -- the first-run state has
     no identity to attribute turns to. Persistence/broadcast failures
-    log + swallow so the chat lane never wedges the audio or LLM path."""
+    log + swallow so the chat lane never wedges the audio or LLM path.
+
+    S14 (#297) -- when ``attachment_ids`` is provided, the matching
+    rows (already uploaded into the per-profile store) are bound to the
+    new turn and their public metadata is folded into the turn's
+    ``content.attachments`` for the renderer."""
     if _active_profile is None:
         return
     try:
@@ -1235,9 +1252,21 @@ async def _record_turn(kind: str, content: dict) -> None:
     except Exception:
         logger.exception("[cerebral] conversation_turn append failed (kind=%s)", kind)
         return
+    # S14 -- bind any pending attachments to this turn and re-fetch their
+    # rows so the broadcast carries the public chip metadata.
+    bound: list = []
+    if attachment_ids:
+        try:
+            _attachments.bind_to_turn(list(attachment_ids), turn.id)
+            bound = _attachments.list_for_turn(turn.id)
+        except Exception:
+            logger.exception("[cerebral] attachment bind failed (turn_id=%s)", turn.id)
+    turn_dict = turn.to_dict()
+    if bound:
+        turn_dict["content"] = attach_to_turn_content(turn_dict.get("content") or {}, bound)
     try:
         await _broadcast({"type": "conversation_turn_emitted",
-                          "data": {"turn": turn.to_dict()}})
+                          "data": {"turn": turn_dict}})
         # S9 -- if this turn was felix_speech the store may have just
         # auto-titled the thread; re-broadcast the threads list so the
         # Conversations UI label updates without a separate fetch.
@@ -1273,9 +1302,69 @@ def _conversation_turns_event(limit: int = 50) -> dict:
         "data": {
             "profile_id": _active_profile.id,
             "thread_id": thread_id,
-            "turns": [t.to_dict() for t in turns],
+            "turns": [_turn_with_attachments(t) for t in turns],
         },
     }
+
+
+async def _handle_attach_files(data: dict) -> None:
+    """S14 (#297) -- accept a batch of base64-encoded uploads from the
+    renderer, persist each, and broadcast a ``pending_attachments_state``
+    so the chip row reflects every just-uploaded file.
+
+    The data shape is ``{"files": [{"name": str, "mime": str,
+    "data_b64": str}, ...]}``. Each file is decoded, saved into the
+    profile's local store, and its public chip metadata is folded into
+    the reply. Per-file failures are isolated -- one corrupt base64 chunk
+    doesn't lose the rest of the batch."""
+    import base64
+
+    if _active_profile is None:
+        return
+    files = data.get("files") or []
+    saved = []
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name") or "upload"
+        mime = entry.get("mime") or ""
+        b64  = entry.get("data_b64") or ""
+        try:
+            raw = base64.b64decode(b64, validate=False) if b64 else b""
+        except Exception:
+            logger.warning("[cerebral] attach_files: bad base64 for %s", name)
+            continue
+        try:
+            att = _attachments.save_file(_active_profile.id, name, raw, mime)
+        except Exception:
+            logger.exception("[cerebral] attach_files: save_file failed for %s", name)
+            continue
+        saved.append(att)
+    try:
+        pending = _attachments.list_pending(_active_profile.id)
+    except Exception:
+        pending = []
+    await _broadcast({
+        "type": "pending_attachments_state",
+        "data": {
+            "attachments": attachments_payload(pending),
+            "saved_ids": [a.id for a in saved],
+        },
+    })
+
+
+def _turn_with_attachments(turn) -> dict:
+    """Render a turn dict with its bound attachments folded into content.
+    S14 (#297) -- the renderer reads ``content.attachments`` to draw the
+    paperclip chips on each turn."""
+    d = turn.to_dict()
+    try:
+        atts = _attachments.list_for_turn(turn.id)
+    except Exception:
+        atts = []
+    if atts:
+        d["content"] = attach_to_turn_content(d.get("content") or {}, atts)
+    return d
 
 
 def _threads_list_event() -> dict:
@@ -2057,8 +2146,20 @@ async def _handle_message(msg: dict) -> None:
         # Records the user turn before kicking off the LLM so the Main
         # window's transcript reflects the input the instant it lands,
         # even if the model is slow.
-        text = (msg.get("data") or {}).get("text", "")
-        if isinstance(text, str) and text.strip():
+        _data = msg.get("data") or {}
+        text = _data.get("text", "")
+        # S14 (#297) -- ``attachment_ids`` arrives from the renderer's pending
+        # chip row. The matching files were already uploaded via attach_files;
+        # we just bind them to the new turn and fold their extracted text
+        # into the prompt the LLM sees.
+        _attachment_ids: list[int] = []
+        for raw in _data.get("attachment_ids") or []:
+            try:
+                _attachment_ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        has_text = isinstance(text, str) and text.strip()
+        if has_text or _attachment_ids:
             # S13 -- resolve the active thread's model override, if any.
             _thread_model: str | None = None
             if _active_profile is not None:
@@ -2067,11 +2168,62 @@ async def _handle_message(msg: dict) -> None:
                     _t = _conversation.get_thread(_tid)
                     if _t is not None:
                         _thread_model = _t.model_override
-            await _broadcast({"type": "wake", "data": {"transcript": text}})
-            await _record_turn(KIND_USER_TEXT, {"text": text})
-            asyncio.create_task(
-                _process_command(text, speak=False, thread_model_override=_thread_model)
+            # S14 -- pull the just-uploaded attachments so their extracted
+            # text can ride alongside the user's typed prompt to the LLM.
+            _atts: list = []
+            if _attachment_ids and _active_profile is not None:
+                for _aid in _attachment_ids:
+                    _att = _attachments.get(_aid)
+                    if _att is not None and _att.profile_id == _active_profile.id:
+                        _atts.append(_att)
+            _prompt_text = text if has_text else "(see attached file)"
+            await _broadcast({"type": "wake", "data": {"transcript": _prompt_text}})
+            await _record_turn(
+                KIND_USER_TEXT,
+                {"text": text if has_text else ""},
+                attachment_ids=[a.id for a in _atts],
             )
+            _enriched = serialise_for_prompt(_atts) + _prompt_text
+            asyncio.create_task(
+                _process_command(_enriched, speak=False, thread_model_override=_thread_model)
+            )
+
+    elif t == "attach_files":
+        # S14 (#297) -- the Main window finished reading file bytes and
+        # base64-encoded them. Decode, persist each into the profile's
+        # local attachment store, and reply with the chip metadata the
+        # renderer needs to draw the pending chip row.
+        await _handle_attach_files(msg.get("data") or {})
+
+    elif t == "drop_pending_attachments":
+        # S14 -- the user clicked the X on a chip before sending. Remove
+        # the unbound row + delete the file from disk. Bound rows (already
+        # tied to a recorded turn) are left untouched.
+        ids_raw = (msg.get("data") or {}).get("attachment_ids") or []
+        ids: list[int] = []
+        for raw in ids_raw:
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        if ids:
+            try:
+                _attachments.drop_unbound(ids)
+            except Exception:
+                logger.exception("[cerebral] drop_unbound failed (ids=%s)", ids)
+
+    elif t == "list_pending_attachments":
+        # S14 -- on reconnect the renderer asks for any uploaded-but-not-sent
+        # chips so the chip row survives a WS bounce without losing context.
+        if _active_profile is not None:
+            try:
+                pending = _attachments.list_pending(_active_profile.id)
+            except Exception:
+                pending = []
+            await _broadcast({
+                "type": "pending_attachments_state",
+                "data": {"attachments": attachments_payload(pending)},
+            })
 
     elif t == "list_conversation_turns":
         # Issue #185 / ADR-0007 -- Main window requesting its initial
