@@ -219,6 +219,24 @@ test('settings pane contains TTS on/off, volume slider, and voice picker (S8)', 
   expect(slider.getAttribute('max')).toBe('100');
 });
 
+// ── S9 — conversation thread strip ───────────────────────────────────────────
+
+test('conversation pane contains thread title + New conversation button (S9)', () => {
+  const pane = root.querySelector('.pane[data-route="conversation"]');
+  expect(pane).not.toBeNull();
+  const strip  = pane.querySelector('#conv-thread-strip');
+  const title  = pane.querySelector('#conv-thread-title');
+  const newBtn = pane.querySelector('#conv-thread-new');
+  expect(strip).not.toBeNull();
+  expect(title).not.toBeNull();
+  expect(newBtn).not.toBeNull();
+
+  // Title is editable in-place.
+  expect(title.getAttribute('contenteditable')).toBe('true');
+  // New-conversation control is an explicit button (not a link).
+  expect(newBtn.tagName.toLowerCase()).toBe('button');
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

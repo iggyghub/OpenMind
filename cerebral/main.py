@@ -99,6 +99,11 @@ _settings = _SettingsStore()
 _conversation = ConversationStore()
 _recipe_store = RecipeStore()
 
+# S9 (#292) -- one active thread per profile, RAM-only. Profile switch
+# falls back to the profile's most-recently-updated thread; "New
+# conversation" creates a fresh one and points this here.
+_active_thread_by_profile: dict[int, int] = {}
+
 
 def _new_plugin_flag_for_tool(tool_name: str) -> bool:
     """ACL hook (Issue #51): translate a tool name → owning plugin → flag.
@@ -1184,6 +1189,35 @@ def _env_context_event() -> dict:
     return {"type": "env_context_update", "data": {"context": _env.get_context()}}
 
 
+def _resolve_active_thread_id(profile_id: int) -> int | None:
+    """Return the active thread id for ``profile_id``, picking the
+    profile's most-recently-updated thread on first access. Creates a
+    thread on demand only when the caller is about to append a turn --
+    pure-read paths (``_conversation_turns_event``) leave the DB alone
+    so a fresh profile shows an empty transcript instead of an empty
+    auto-created thread."""
+    cached = _active_thread_by_profile.get(profile_id)
+    if cached is not None:
+        return cached
+    latest = _conversation.latest_thread(profile_id)
+    if latest is not None:
+        _active_thread_by_profile[profile_id] = latest.id
+        return latest.id
+    return None
+
+
+def _ensure_active_thread_id(profile_id: int) -> int:
+    """Like ``_resolve_active_thread_id`` but creates an empty thread if
+    the profile has none -- used on the write path so every persisted
+    turn carries a thread_id (S9 / #292)."""
+    tid = _resolve_active_thread_id(profile_id)
+    if tid is not None:
+        return tid
+    thread = _conversation.create_thread(profile_id, title="")
+    _active_thread_by_profile[profile_id] = thread.id
+    return thread.id
+
+
 async def _record_turn(kind: str, content: dict) -> None:
     """Persist a conversation turn against the active profile and push it
     live to subscribers (Issue #185 / ADR-0007).
@@ -1194,31 +1228,71 @@ async def _record_turn(kind: str, content: dict) -> None:
     if _active_profile is None:
         return
     try:
-        turn = _conversation.append(_active_profile.id, kind, content)
+        thread_id = _ensure_active_thread_id(_active_profile.id)
+        turn = _conversation.append(
+            _active_profile.id, kind, content, thread_id=thread_id,
+        )
     except Exception:
         logger.exception("[cerebral] conversation_turn append failed (kind=%s)", kind)
         return
     try:
         await _broadcast({"type": "conversation_turn_emitted",
                           "data": {"turn": turn.to_dict()}})
+        # S9 -- if this turn was felix_speech the store may have just
+        # auto-titled the thread; re-broadcast the threads list so the
+        # Conversations UI label updates without a separate fetch.
+        if kind == KIND_FELIX_SPEECH:
+            await _broadcast(_threads_list_event())
     except Exception:
         logger.exception("[cerebral] conversation_turn_emitted broadcast failed")
 
 
 def _conversation_turns_event(limit: int = 50) -> dict:
-    """Snapshot of the active profile's last ``limit`` turns, oldest first.
+    """Snapshot of the active profile + active thread's last ``limit``
+    turns, oldest first.
 
     Returns an empty list when no profile is active (Main window opens
-    pre-profile-creation in the first-run flow)."""
+    pre-profile-creation in the first-run flow) or no thread exists yet
+    (fresh profile, before the first turn)."""
     if _active_profile is None:
         return {"type": "conversation_turns_data",
-                "data": {"profile_id": None, "turns": []}}
-    turns = _conversation.list_recent(_active_profile.id, limit=limit)
+                "data": {"profile_id": None, "thread_id": None, "turns": []}}
+    thread_id = _resolve_active_thread_id(_active_profile.id)
+    if thread_id is None:
+        return {
+            "type": "conversation_turns_data",
+            "data": {
+                "profile_id": _active_profile.id,
+                "thread_id": None,
+                "turns": [],
+            },
+        }
+    turns = _conversation.list_recent_for_thread(thread_id, limit=limit)
     return {
         "type": "conversation_turns_data",
         "data": {
             "profile_id": _active_profile.id,
+            "thread_id": thread_id,
             "turns": [t.to_dict() for t in turns],
+        },
+    }
+
+
+def _threads_list_event() -> dict:
+    """Snapshot of the active profile's conversation threads (S9 / #292),
+    plus the active thread id. Newest-updated first."""
+    if _active_profile is None:
+        return {
+            "type": "conversation_threads_data",
+            "data": {"profile_id": None, "threads": [], "active_thread_id": None},
+        }
+    threads = _conversation.list_threads(_active_profile.id)
+    return {
+        "type": "conversation_threads_data",
+        "data": {
+            "profile_id": _active_profile.id,
+            "threads": [t.to_dict() for t in threads],
+            "active_thread_id": _resolve_active_thread_id(_active_profile.id),
         },
     }
 
@@ -1455,6 +1529,10 @@ async def _handle_message(msg: dict) -> None:
                 # Issue #185 / #214 — Record the switch as a system event in
                 # the new profile's transcript, then re-snapshot.
                 await _record_turn(KIND_SYSTEM_EVENT, {"event": "profile_switch", "profile_id": p.id, "profile_name": p.name})
+                # S9 / #292 -- send the new profile's thread list before the
+                # turns snapshot so the renderer's title strip + active id
+                # are up-to-date when it processes the transcript.
+                await _broadcast(_threads_list_event())
                 await _broadcast(_conversation_turns_event())
 
     elif t == "delete_profile":
@@ -1968,6 +2046,54 @@ async def _handle_message(msg: dict) -> None:
             limit = 50
         await _broadcast(_conversation_turns_event(limit=limit))
 
+    elif t == "list_conversation_threads":
+        # S9 / #292 -- Main window asking for the active profile's threads
+        # plus the current active thread id (so it can render the title strip).
+        await _broadcast(_threads_list_event())
+
+    elif t == "new_conversation_thread":
+        # S9 / #292 -- "New conversation" button. Create an empty, untitled
+        # thread, mark it active, and snapshot the (empty) turns so the
+        # transcript clears.
+        if _active_profile is not None:
+            thread = _conversation.create_thread(_active_profile.id, title="")
+            _active_thread_by_profile[_active_profile.id] = thread.id
+            await _broadcast(_threads_list_event())
+            await _broadcast(_conversation_turns_event())
+
+    elif t == "switch_conversation_thread":
+        # S9 / #292 -- Conversations pane / future thread switcher. Activate
+        # the named thread (must belong to the active profile) and snapshot.
+        thread_id_raw = (msg.get("data") or {}).get("thread_id")
+        if _active_profile is not None and thread_id_raw is not None:
+            try:
+                tid = int(thread_id_raw)
+            except (TypeError, ValueError):
+                tid = None
+            if tid is not None:
+                thread = _conversation.get_thread(tid)
+                if thread is not None and thread.profile_id == _active_profile.id:
+                    _active_thread_by_profile[_active_profile.id] = tid
+                    await _broadcast(_threads_list_event())
+                    await _broadcast(_conversation_turns_event())
+
+    elif t == "rename_conversation_thread":
+        # S9 / #292 -- editable auto-title. Empty title is allowed (so a
+        # later felix_speech can re-derive the auto-title).
+        d = msg.get("data") or {}
+        thread_id_raw = d.get("thread_id")
+        title = d.get("title", "")
+        if _active_profile is not None and thread_id_raw is not None and isinstance(title, str):
+            try:
+                tid = int(thread_id_raw)
+            except (TypeError, ValueError):
+                tid = None
+            if tid is not None:
+                thread = _conversation.get_thread(tid)
+                if thread is not None and thread.profile_id == _active_profile.id:
+                    _conversation.rename_thread(tid, title.strip()[:200])
+                    await _broadcast(_threads_list_event())
+
     elif t == "list_queue":
         await _broadcast(_queue_update_event())
 
@@ -2221,6 +2347,7 @@ async def _greet(websocket) -> None:
         _credentials_state_event,
         _settings_state_event,
         _conversation_turns_event,
+        _threads_list_event,
         _recipes_update_event,
     ]
     for build in greetings:

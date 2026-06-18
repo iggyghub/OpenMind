@@ -231,3 +231,63 @@ and creates this document. Verify the harness itself works:
 - [ ] Set volume to 50 and mute TTS. Reload the app. Confirm muted state and
       volume (50%) are restored in both header and Settings.
 - [ ] Unmute and confirm the volume is still 50 after the unmute.
+
+---
+
+## S9 — Conversation threads (#292)
+
+**Thread strip on the Conversation pane**
+
+- [ ] Open the live Felix window and navigate to **Conversation** (CHAT
+      section). Confirm a thin strip is visible at the very top of the
+      pane (above the transcript), containing an editable thread title on
+      the left and a **+ New conversation** button on the right.
+- [ ] On a fresh profile with no turns yet, the title reads
+      **Untitled conversation** in muted/italic text.
+
+**Existing conversations migrate non-destructively**
+
+- [ ] If the profile already had a transcript from before S9 landed,
+      confirm the transcript is still visible (turns intact) and the
+      thread title strip shows **Legacy conversation**. (Schema migration
+      back-fills pre-#292 turns into one per-profile Legacy thread.)
+
+**Auto-title after the first exchange**
+
+- [ ] On a new conversation (click **+ New conversation**), type a
+      message such as **"Plan my Tokyo trip"** and press Enter. Wait for
+      Felix to respond.
+- [ ] After Felix's first response, the title strip updates from
+      **Untitled conversation** to **Plan my Tokyo trip** (truncated to
+      ~60 chars with "..." if longer).
+- [ ] Send a second message. The title does NOT change again -- auto-title
+      fires once, from the first exchange only.
+
+**Editable title**
+
+- [ ] Click the thread title. The title becomes editable (cursor
+      appears, text selectable). Type a new title and press Enter.
+      Confirm the new title persists in the strip.
+- [ ] Click the title and press Escape mid-edit. Confirm the original
+      title is restored (no rename committed).
+- [ ] Reload the app. Confirm the edited title survives.
+
+**New conversation button**
+
+- [ ] With an existing conversation visible (turns in transcript), click
+      **+ New conversation**. The transcript clears to the empty state
+      and the title strip resets to **Untitled conversation**.
+- [ ] Send a message in the new conversation. Confirm the turn appears.
+- [ ] Reload the app. The new thread is the active one on reload
+      (Cerebral remembers the most-recently-updated thread per profile).
+      The previous conversation's turns are NOT visible in the
+      transcript -- they live in their own thread (the saved-list UI
+      ships in S10).
+
+**Profile switch keeps threads isolated**
+
+- [ ] If you have two profiles, send a message in profile A, then switch
+      to profile B (Profiles pane). Confirm profile B's transcript and
+      title strip are independent (B sees its own active thread or
+      Untitled if none).
+- [ ] Switch back to A. Confirm A's thread title and turns are restored.

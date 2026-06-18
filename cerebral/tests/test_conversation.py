@@ -78,6 +78,9 @@ def conv_rig(tmp_path):
     main_mod._broadcast       = fake_broadcast
     main_mod._connected       = set()
     main_mod._process_command = fake_process_command
+    # S9 / #292 -- the active-thread cache is module-level RAM. Reset it so
+    # tests don't see a stale active id from a previous test run.
+    main_mod._active_thread_by_profile.clear()
 
     class Rig:
         def __init__(self) -> None:
@@ -90,9 +93,13 @@ def conv_rig(tmp_path):
         def turns_events(self) -> list[dict]:
             return [e for e in sent if e["type"] == "conversation_turns_data"]
 
+        def threads_events(self) -> list[dict]:
+            return [e for e in sent if e["type"] == "conversation_threads_data"]
+
     try:
         yield Rig()
     finally:
+        main_mod._active_thread_by_profile.clear()
         for k, v in saved.items():
             setattr(main_mod, k, v)
 
@@ -215,3 +222,132 @@ async def test_consent_response_records_system_event(conv_rig):
     assert sys_turns[0].content["event"] == "consent_response"
     assert sys_turns[0].content["choice"] == "once"
     assert sys_turns[0].content["request_id"] == "req-99"
+
+
+# ── S9 / #292 -- conversation threads IPC ────────────────────────────────────
+
+
+async def test_list_conversation_threads_emits_snapshot(conv_rig):
+    conv_rig.store.create_thread(1, title="A")
+    conv_rig.store.create_thread(1, title="B")
+    await conv_rig.handle({"type": "list_conversation_threads"})
+    evts = conv_rig.threads_events()
+    assert len(evts) == 1
+    data = evts[-1]["data"]
+    assert data["profile_id"] == 1
+    titles = [t["title"] for t in data["threads"]]
+    assert set(titles) == {"A", "B"}
+
+
+async def test_new_conversation_thread_creates_and_activates(conv_rig):
+    # Seed an existing thread so we can prove the new one supersedes it.
+    existing = conv_rig.store.create_thread(1, title="prior")
+    conv_rig.store.append(
+        1, KIND_USER_TEXT, {"text": "hello"}, thread_id=existing.id,
+    )
+
+    await conv_rig.handle({"type": "new_conversation_thread"})
+
+    threads = conv_rig.store.list_threads(1)
+    # Two threads now: original + new untitled one.
+    assert len(threads) == 2
+    untitled = [t for t in threads if not t.title]
+    assert len(untitled) == 1
+
+    # The newest broadcast turns-snapshot is for the new (empty) thread.
+    last_turns_event = conv_rig.turns_events()[-1]
+    assert last_turns_event["data"]["thread_id"] == untitled[0].id
+    assert last_turns_event["data"]["turns"] == []
+
+    # The threads-list broadcast reports the new thread as active.
+    last_threads_event = conv_rig.threads_events()[-1]
+    assert last_threads_event["data"]["active_thread_id"] == untitled[0].id
+
+
+async def test_new_conversation_thread_then_record_attaches_to_new(conv_rig):
+    # Existing thread with a turn.
+    a = conv_rig.store.create_thread(1, title="A")
+    conv_rig.store.append(1, KIND_USER_TEXT, {"text": "in A"}, thread_id=a.id)
+
+    # User clicks "New conversation".
+    await conv_rig.handle({"type": "new_conversation_thread"})
+
+    # A subsequent user_text_command must land in the new thread, not A.
+    await conv_rig.handle(
+        {"type": "user_text_command", "data": {"text": "fresh start"}},
+    )
+
+    # Active thread now has exactly one turn.
+    new_threads = [t for t in conv_rig.store.list_threads(1) if t.id != a.id]
+    assert len(new_threads) == 1
+    in_new = conv_rig.store.list_recent_for_thread(new_threads[0].id)
+    assert [t.content["text"] for t in in_new] == ["fresh start"]
+    # And the old thread is untouched.
+    in_a = conv_rig.store.list_recent_for_thread(a.id)
+    assert [t.content["text"] for t in in_a] == ["in A"]
+
+
+async def test_rename_conversation_thread_updates_title(conv_rig):
+    t = conv_rig.store.create_thread(1, title="")
+    await conv_rig.handle({
+        "type": "rename_conversation_thread",
+        "data": {"thread_id": t.id, "title": "Renamed by user"},
+    })
+    assert conv_rig.store.get_thread(t.id).title == "Renamed by user"
+    # And a fresh threads broadcast went out so the UI label updates.
+    assert conv_rig.threads_events(), "expected conversation_threads_data broadcast"
+
+
+async def test_rename_conversation_thread_rejects_other_profile(conv_rig):
+    import cerebral.main as main_mod
+
+    # Create a thread for profile 2 (not the active profile).
+    main_mod._active_profile = None
+    # Borrow the store directly to create a foreign thread without auto-active.
+    foreign = conv_rig.store.create_thread(2, title="P2 owned")
+    main_mod._active_profile = Profile(name="Test", id=1)
+
+    await conv_rig.handle({
+        "type": "rename_conversation_thread",
+        "data": {"thread_id": foreign.id, "title": "HIJACK"},
+    })
+    # Title must not have changed -- the handler scoped to active profile.
+    assert conv_rig.store.get_thread(foreign.id).title == "P2 owned"
+
+
+async def test_switch_conversation_thread_changes_active(conv_rig):
+    a = conv_rig.store.create_thread(1, title="A")
+    b = conv_rig.store.create_thread(1, title="B")
+    conv_rig.store.append(1, KIND_USER_TEXT, {"text": "in A"}, thread_id=a.id)
+    conv_rig.store.append(1, KIND_USER_TEXT, {"text": "in B"}, thread_id=b.id)
+
+    await conv_rig.handle({
+        "type": "switch_conversation_thread",
+        "data": {"thread_id": a.id},
+    })
+
+    last_turns_event = conv_rig.turns_events()[-1]
+    assert last_turns_event["data"]["thread_id"] == a.id
+    texts = [t["content"]["text"] for t in last_turns_event["data"]["turns"]]
+    assert texts == ["in A"]
+
+
+async def test_auto_title_broadcast_after_felix_speech(conv_rig):
+    # User turn first, then a felix_speech triggers the store's auto-title
+    # pass; the IPC layer should re-broadcast conversation_threads_data so
+    # the renderer's title strip refreshes without a separate fetch.
+    await conv_rig.handle({
+        "type": "user_text_command", "data": {"text": "What's the weather?"},
+    })
+    # Simulate the felix response landing via the record_turn path.
+    import cerebral.main as main_mod
+    from cerebral.db.conversation import KIND_FELIX_SPEECH
+    await main_mod._record_turn(KIND_FELIX_SPEECH, {"text": "Sunny."})
+
+    threads_events = conv_rig.threads_events()
+    assert threads_events, "expected a threads-list broadcast after felix_speech"
+    # Newest threads broadcast carries the auto-derived title.
+    last = threads_events[-1]["data"]
+    titles = [t["title"] for t in last["threads"]]
+    assert any("What's the weather?".startswith(title) or title.startswith("What's the weather?")
+               for title in titles)
