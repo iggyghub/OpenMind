@@ -688,6 +688,52 @@
     }
     .conv-thread-move-select:focus { border-color: var(--accent); outline: none; }
 
+    /* ── quick-ask pane (S12 / #295) ──────────────────────── */
+    .qa-strip {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      flex-shrink: 0;
+    }
+    .qa-strip-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      flex: 1;
+    }
+    .qa-badge {
+      font-size: 11px;
+      color: var(--text-muted);
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 2px 8px;
+    }
+    .qa-clear-btn {
+      flex-shrink: 0;
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .qa-clear-btn:hover { color: var(--text); border-color: var(--accent); }
+    .qa-empty {
+      align-self: center;
+      margin: auto;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+      max-width: 320px;
+      line-height: 1.6;
+    }
+
     /* ── transcript ─────────────────────────────────────────── */
     .transcript {
       flex: 1;
@@ -2685,6 +2731,7 @@
     <nav class="nav" id="nav">
       <div class="nav-section">
         <span class="nav-section-title">Chat</span>
+        <button class="nav-item"        data-route="quick-ask">Quick Ask</button>
         <button class="nav-item active" data-route="conversation">Conversation</button>
         <button class="nav-item"        data-route="queue">Queue</button>
         <button class="nav-item"        data-route="conversations">Conversations</button>
@@ -2790,6 +2837,30 @@
           placeholder="Message Felix — Enter to send, Shift+Enter for newline"
         ></textarea>
         <button id="send" class="send" disabled>Send</button>
+      </div>
+    </section>
+
+    <!-- S12 (#295) -- Quick Ask: ephemeral web-first scratch chat. Turns are
+         not saved to SQLite and do not appear in the Conversations pane. -->
+    <section class="pane" data-route="quick-ask" hidden>
+      <div class="qa-strip">
+        <span class="qa-strip-title">Quick Ask</span>
+        <span class="qa-badge">Web &middot; Ephemeral</span>
+        <button class="qa-clear-btn" id="qa-clear" type="button">Clear</button>
+      </div>
+      <div class="transcript" id="qa-transcript">
+        <div class="qa-empty" id="qa-empty">
+          Ask anything &mdash; answered via web search and not saved to your conversations.
+        </div>
+      </div>
+      <div class="composer">
+        <textarea
+          id="qa-input"
+          class="input"
+          rows="1"
+          placeholder="Quick question -- answered by web search, not saved"
+        ></textarea>
+        <button id="qa-send" class="send" disabled>Send</button>
       </div>
     </section>
 
@@ -3243,6 +3314,12 @@
     const emptyState  = document.getElementById('empty-state');
     const input       = document.getElementById('input');
     const send        = document.getElementById('send');
+    // S12 (#295) -- Quick Ask pane elements.
+    const qaTranscriptEl = document.getElementById('qa-transcript');
+    const qaEmptyEl      = document.getElementById('qa-empty');
+    const qaInputEl      = document.getElementById('qa-input');
+    const qaSendBtn      = document.getElementById('qa-send');
+    const qaClearBtn     = document.getElementById('qa-clear');
     const convThreadTitleEl  = document.getElementById('conv-thread-title');
     const convThreadNewBtn   = document.getElementById('conv-thread-new');
     const convListSearchEl   = document.getElementById('conv-list-search');
@@ -3397,6 +3474,10 @@
     // groups are content rows, not section headers, so they reset per session.
     let projectsList = [];
     const projectCollapsed = new Map();  // key: project id (or 'unfiled'), value: bool
+    // S12 (#295) -- Quick Ask ephemeral state. Turns are kept in memory only;
+    // never written to SQLite or shown in the Conversations pane. Trim to
+    // QA_MAX_TURNS so the DOM doesn't grow unbounded across a long session.
+    const QA_MAX_TURNS = 20;
 
     // Cerebral broadcasts heartbeat every 5s. We treat the connection as
     // ok up to 12s after the last one (one missed tick), stale beyond
@@ -3526,6 +3607,16 @@
           if (turn) {
             appendTurn(turn);
             scrollToBottom();
+          }
+          break;
+        }
+        case 'quick_ask_turn_emitted': {
+          // S12 (#295) -- response turn from the web-search backend.
+          const qaTurn = event.data && event.data.turn;
+          if (qaTurn) {
+            const kind = (qaTurn.kind === 'felix_speech') ? 'felix' : 'system';
+            const text = (qaTurn.content && qaTurn.content.text) || '';
+            if (text) qaAppendTurn(kind, text);
           }
           break;
         }
@@ -3780,6 +3871,47 @@
 
     function scrollToBottom() {
       transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    // ── quick ask (S12 / #295) ────────────────────────────────────────────
+    function qaAppendTurn(kind, text) {
+      if (qaEmptyEl) qaEmptyEl.style.display = 'none';
+      const div = document.createElement('div');
+      div.className = 'turn ' + kind;
+      div.textContent = text;
+      qaTranscriptEl.appendChild(div);
+      qaTranscriptEl.scrollTop = qaTranscriptEl.scrollHeight;
+      // Trim to QA_MAX_TURNS oldest entries.
+      const turns = qaTranscriptEl.querySelectorAll('.turn');
+      for (let i = 0; i < turns.length - QA_MAX_TURNS; i++) {
+        turns[i].remove();
+      }
+    }
+
+    function qaClear() {
+      qaTranscriptEl.querySelectorAll('.turn').forEach(function (el) { el.remove(); });
+      if (qaEmptyEl) qaEmptyEl.style.display = '';
+    }
+
+    function qaAutosize() {
+      qaInputEl.style.height = '42px';
+      qaInputEl.style.height = Math.min(qaInputEl.scrollHeight, 200) + 'px';
+      qaSendBtn.disabled = qaInputEl.value.trim().length === 0;
+    }
+
+    function qaSubmit() {
+      var text = qaInputEl.value.trim();
+      if (!text) return;
+      // Optimistically render the user turn — Quick Ask is ephemeral so
+      // there is no DB round-trip that would echo it back.
+      qaAppendTurn('user', text);
+      var ok = sendEvent({ type: 'quick_ask_command', data: { text: text } });
+      if (!ok) {
+        qaAppendTurn('system', 'Not connected -- please wait for reconnect.');
+      }
+      qaInputEl.value = '';
+      qaAutosize();
+      qaInputEl.focus();
     }
 
     // ── conversation threads (S9 / #292) ─────────────────────────────────
@@ -5840,6 +5972,17 @@
     });
     send.addEventListener('click', submit);
 
+    // S12 (#295) -- Quick Ask event wiring.
+    qaInputEl.addEventListener('input', qaAutosize);
+    qaInputEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        qaSubmit();
+      }
+    });
+    qaSendBtn.addEventListener('click', qaSubmit);
+    qaClearBtn.addEventListener('click', qaClear);
+
     // ── sidebar routing (Issue #192, lib extracted Issue #186) ────────────
     // Hash-based routing so the tray can deep-link in later slices
     // (e.g. clicking "Queue" in the tray opens #queue here). Default route
@@ -5867,6 +6010,9 @@
       if (route === 'conversation') {
         // Give the DOM a tick to un-hide before focusing.
         setTimeout(() => input.focus(), 0);
+      } else if (route === 'quick-ask') {
+        // S12 (#295) -- focus the Quick Ask composer on pane activation.
+        setTimeout(function () { qaInputEl.focus(); }, 0);
       } else if (route === 'queue') {
         // Re-pull the snapshot on every activation in case we missed a
         // broadcast (e.g. WS was down when items mutated). Cheap; the

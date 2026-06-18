@@ -421,3 +421,52 @@ and creates this document. Verify the harness itself works:
 - [ ] Create at least one project. Reload the app. Confirm the project
       group + its threads are still present and the meta counts are
       correct.
+
+---
+
+## S12 -- Quick Ask (#295)
+
+**Nav item and pane**
+
+- [ ] Open the live Felix window. Confirm the CHAT section in the sidebar
+      now shows **Quick Ask** as the first item (above Conversation).
+- [ ] Click **Quick Ask**. Confirm a new pane opens with a strip at the top
+      showing the title "Quick Ask", a "Web - Ephemeral" badge, and a
+      **Clear** button.
+- [ ] Confirm the pane shows an empty-state message explaining it is not
+      saved, and a composer at the bottom with a textarea and a **Send**
+      button.
+
+**Sending a message**
+
+- [ ] Type a question (e.g. "What is the current price of Bitcoin?") and
+      press **Enter** (or click **Send**). Confirm the user message appears
+      immediately in the Quick Ask transcript as a user bubble.
+- [ ] With Cerebral running and the web-search plugin active, wait for
+      Felix's response. Confirm it appears as a felix bubble sourced from
+      web search.
+- [ ] Navigate to the **Conversations** pane. Confirm the Quick Ask message
+      does NOT appear in any thread or project folder -- it is ephemeral.
+- [ ] Navigate to the **Conversation** pane. Confirm the Quick Ask message
+      does NOT appear in the main transcript.
+
+**Clear button**
+
+- [ ] Send a few messages in Quick Ask. Click the **Clear** button. Confirm
+      all turns are removed and the empty-state message reappears.
+- [ ] Reload the app. Navigate to Quick Ask. Confirm it is empty -- turns
+      are never persisted across sessions.
+
+**Max-turn trim**
+
+- [ ] Send more than 20 messages in Quick Ask without clearing. Confirm that
+      old turns are removed from the top of the transcript as new ones arrive
+      (the pane keeps at most 20 turns visible).
+
+**Keyboard and focus**
+
+- [ ] Click **Quick Ask** in the sidebar. Confirm the composer textarea
+      receives focus automatically.
+- [ ] Type a multi-line message using Shift+Enter. Confirm the textarea
+      expands. Press Enter alone to send and confirm only the last line is
+      NOT appended (Enter sends, Shift+Enter inserts newline).

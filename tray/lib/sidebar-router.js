@@ -19,7 +19,7 @@
 // scope, which is why the Node test suite never caught this.
 (function () {
   const VALID_ROUTES = new Set([
-    'conversation', 'queue', 'insights', 'memory',
+    'conversation', 'quick-ask', 'queue', 'insights', 'memory',
     'permissions', 'credentials', 'plugins', 'profiles', 'settings', 'recipes',
     'models', 'conversations', 'integrations',
   ]);
