@@ -108,6 +108,10 @@ _conversation = ConversationStore()
 _attachments  = AttachmentStore()
 _recipe_store = RecipeStore()
 
+# S20 (#303) -- the current in-flight planner/chain task, if any.
+# Set when _process_command starts; cleared on normal completion or cancel.
+_active_turn_task: asyncio.Task | None = None
+
 # S9 (#292) -- one active thread per profile, RAM-only. Profile switch
 # falls back to the profile's most-recently-updated thread; "New
 # conversation" creates a fresh one and points this here.
@@ -2186,7 +2190,8 @@ async def _handle_message(msg: dict) -> None:
                 attachment_ids=[a.id for a in _atts],
             )
             _enriched = serialise_for_prompt(_atts) + _prompt_text
-            asyncio.create_task(
+            global _active_turn_task
+            _active_turn_task = asyncio.create_task(
                 _process_command(_enriched, speak=False, thread_model_override=_thread_model)
             )
 
@@ -2734,6 +2739,14 @@ async def _handle_message(msg: dict) -> None:
                 session_key, (text or "")[:40], detail,
             )
 
+    elif t == "interrupt_turn":
+        # S20 (#303) -- cancel the in-flight planner/chain task and silence TTS.
+        # _process_command catches CancelledError, records the interruption turn,
+        # and broadcasts passive state.
+        if _active_turn_task is not None and not _active_turn_task.done():
+            _active_turn_task.cancel()
+        _tts.stop()
+
 
 # ── WebSocket handler ─────────────────────────────────────────────────────────
 
@@ -2832,6 +2845,7 @@ async def _on_passive(transcript: str) -> None:
 
 
 async def _on_wake(transcript: str) -> None:
+    global _active_turn_task
     logger.info("[cerebral] Wake event -- transcript: %r", transcript)
     await _broadcast({"type": "wake", "data": {"transcript": transcript}})
     await _record_turn(KIND_USER_VOICE, {"text": transcript})
@@ -2843,7 +2857,7 @@ async def _on_wake(transcript: str) -> None:
             _wake_t = _conversation.get_thread(_wake_tid)
             if _wake_t is not None:
                 _wake_thread_model = _wake_t.model_override
-    asyncio.create_task(_process_command(transcript, speak=True, thread_model_override=_wake_thread_model))
+    _active_turn_task = asyncio.create_task(_process_command(transcript, speak=True, thread_model_override=_wake_thread_model))
 
 
 async def _process_command(
@@ -2867,9 +2881,13 @@ async def _process_command(
     to the thread's pinned model for the duration of this command, then restores
     the global active model. Ignored when the model id is not in the router.
 
+    S20 (Issue #303): cancellable via interrupt_turn IPC. CancelledError is
+    caught here to record the interruption turn and broadcast passive state.
+
     ``speak=True`` (voice path) routes the response through TTS.
     ``speak=False`` (text path -- Issue #185) skips TTS for typed interactions.
     """
+    global _active_turn_task
     # S13 -- temporarily apply the thread's model pin, if any.
     _prev_model: str | None = None
     if thread_model_override is not None:
@@ -2938,6 +2956,18 @@ async def _process_command(
         enriched = preamble + transcript if preamble else transcript
         response = await chain.run(enriched, tools, on_chain_done=_on_chain_done)
 
+    except asyncio.CancelledError:
+        # S20 (#303) -- interrupt_turn IPC cancelled this task.
+        # Record the interruption, signal passive, then re-raise so asyncio
+        # marks the task cancelled.
+        try:
+            await _record_turn(KIND_SYSTEM_EVENT, {"event": "turn_interrupted"})
+            await _broadcast({"type": "turn_interrupted", "data": {}})
+            await _broadcast({"type": "passive", "data": {"status": "running"}})
+        except Exception:
+            logger.exception("[cerebral] Error during turn interrupt cleanup")
+        _active_turn_task = None
+        raise
     except ModelUnavailableError as exc:
         logger.error("[cerebral] Model unavailable: %s", exc)
         response = "Sorry, I can't reach the language model right now."
@@ -2949,6 +2979,7 @@ async def _process_command(
     if speak:
         await _speak(response)
     await _broadcast({"type": "passive", "data": {"status": "running"}})
+    _active_turn_task = None
     # S13 -- restore the router's active model after a thread-pinned override.
     if _prev_model is not None:
         try:

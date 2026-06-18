@@ -482,6 +482,22 @@ test('inline script fires run_recipe and delete_recipe IPC verbs (S19)', () => {
   expect(inlineScript).toMatch(/['"]list_recipes['"]/);
 });
 
+// ── S20 — stop / interrupt control ───────────────────────────────────────────
+
+test('conversation pane composer has stop-turn button (S20)', () => {
+  const pane = root.querySelector('.pane[data-route="conversation"]');
+  expect(pane).not.toBeNull();
+  const stopBtn = pane.querySelector('#stop-turn-btn');
+  expect(stopBtn).not.toBeNull();
+  expect(stopBtn.tagName.toLowerCase()).toBe('button');
+  // Must be hidden by default (only shown while a turn is in-flight).
+  expect(stopBtn.getAttribute('hidden')).not.toBeNull();
+});
+
+test('inline script fires interrupt_turn IPC verb (S20)', () => {
+  expect(inlineScript).toMatch(/['"]interrupt_turn['"]/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

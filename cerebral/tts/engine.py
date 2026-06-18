@@ -97,6 +97,14 @@ class TTSEngine:
         """Return all Kokoro voices with id, name, accent, gender."""
         return list(_VOICES)
 
+    def stop(self) -> None:
+        """Stop any currently playing audio immediately (S20 / #303)."""
+        try:
+            import sounddevice as sd  # noqa: PLC0415
+            sd.stop()
+        except Exception as exc:
+            logger.debug("[tts] stop() error: %s", exc)
+
     async def speak(
         self,
         text: str,

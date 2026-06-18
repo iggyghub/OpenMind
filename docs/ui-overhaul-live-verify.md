@@ -816,3 +816,42 @@ to gate channel threads -- out of scope for one slice.
 - [ ] Switch to another pane and back to Recipes. Confirm the list
       still shows the correct recipes (re-fetched idempotently on each
       activation).
+
+---
+
+## S20 — Stop / interrupt in-flight turn + TTS (#303)
+
+**Stop button visibility**
+
+- [ ] Open the Conversation pane. Confirm the **Stop** button is NOT visible
+      while Felix is idle (state pill shows "Passive").
+- [ ] Send a text message. Confirm the Stop button appears in the composer
+      area (next to Send) as soon as the state pill changes to "Thinking".
+- [ ] After Felix responds and the state pill returns to "Passive", confirm
+      the Stop button disappears again.
+
+**Interrupting a generation**
+
+- [ ] Send a text message that will take a moment to process (e.g. a complex
+      question). While the state pill shows "Thinking", click **Stop**.
+- [ ] Confirm:
+      - Generation halts promptly (no further response text appended).
+      - The state pill returns to "Passive".
+      - A system turn appears in the transcript indicating the turn was
+        interrupted (e.g. labelled "turn_interrupted").
+
+**Interrupting TTS**
+
+- [ ] Enable TTS (unmute) and trigger a voice wake or send a spoken-path
+      command. While Felix is speaking (state pill shows "Speaking"), click
+      **Stop**.
+- [ ] Confirm:
+      - Audio output stops immediately.
+      - The state pill returns to "Passive".
+      - The interruption is recorded in the transcript.
+
+**No crash when idle**
+
+- [ ] Click the Stop button when it is briefly visible and no actual task is
+      running (race condition test). Confirm the app does not crash or enter
+      a stuck state.
