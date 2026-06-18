@@ -65,6 +65,7 @@ from cerebral.db.attachments import (
 from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
+from cerebral.harness_channels import HarnessChannelStore
 from cerebral.settings import SettingsStore as _SettingsStore
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
@@ -2646,6 +2647,57 @@ async def _handle_message(msg: dict) -> None:
     elif t == "request_harness_status":
         await _broadcast(_harness_status_event())
 
+    elif t == "start_openclaw_daemon":
+        # S16 (#299) -- in-UI daemon control. Idempotent: start_subscriber
+        # ignores a duplicate start. Always rebroadcast so the UI re-syncs
+        # even when the call was a no-op.
+        await _start_openclaw_subscriber()
+        await _broadcast(_harness_status_event())
+
+    elif t == "stop_openclaw_daemon":
+        await _stop_openclaw_subscriber()
+        await _broadcast(_harness_status_event())
+
+    elif t == "restart_openclaw_daemon":
+        await _stop_openclaw_subscriber()
+        await _start_openclaw_subscriber()
+        await _broadcast(_harness_status_event())
+
+    elif t == "set_channel_enabled":
+        d = msg.get("data") or {}
+        ch = d.get("channel")
+        enabled = bool(d.get("enabled"))
+        try:
+            _harness_channels.set_enabled(ch, enabled)
+        except ValueError as exc:
+            logger.warning("[cerebral] set_channel_enabled rejected: %s", exc)
+            return
+        logger.info("[cerebral] Channel %s enabled=%s", ch, enabled)
+        await _broadcast(_harness_status_event())
+
+    elif t == "set_channel_secret":
+        # S16 (#299) -- write-only secret input. The plaintext secret is
+        # written to the OS keyring and IMMEDIATELY discarded; only a
+        # ``secret_set`` boolean is ever broadcast (see _harness_status_event).
+        d = msg.get("data") or {}
+        ch = d.get("channel")
+        secret = d.get("secret")
+        try:
+            _harness_channels.set_secret(ch, secret)
+        except (ValueError, RuntimeError) as exc:
+            logger.warning("[cerebral] set_channel_secret rejected: %s", exc)
+            # No echo of `secret` in any log line -- write-only invariant.
+            return
+        logger.info("[cerebral] Channel %s secret set (value not logged)", ch)
+        await _broadcast(_harness_status_event())
+
+    elif t == "clear_channel_secret":
+        d = msg.get("data") or {}
+        ch = d.get("channel")
+        _harness_channels.clear_secret(ch)
+        logger.info("[cerebral] Channel %s secret cleared", ch)
+        await _broadcast(_harness_status_event())
+
 
 # ── WebSocket handler ─────────────────────────────────────────────────────────
 
@@ -3072,16 +3124,24 @@ def _openclaw_subscriber_running() -> bool:
 
 _HARNESS_CHANNELS = ["WhatsApp", "Telegram", "Discord", "Slack", "Teams"]
 
+_harness_channels = HarnessChannelStore(channels=_HARNESS_CHANNELS)
+
 
 def _harness_status_event() -> dict:
     running = _openclaw_subscriber_running()
     ch_state = "connected" if running else "down"
+    cfg = {row["name"]: row for row in _harness_channels.status()}
     return {
         "type": "harness_status",
         "data": {
             "daemon_running": running,
             "channels": [
-                {"name": ch, "state": ch_state}
+                {
+                    "name": ch,
+                    "state": ch_state,
+                    "enabled": cfg[ch]["enabled"],
+                    "secret_set": cfg[ch]["secret_set"],
+                }
                 for ch in _HARNESS_CHANNELS
             ],
         },

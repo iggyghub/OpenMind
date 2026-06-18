@@ -575,3 +575,58 @@ and creates this document. Verify the harness itself works:
 - [ ] Navigate away to another pane, then return to Integrations. Confirm the
       status rows reflect the current daemon state (re-pull fires on every
       pane activation).
+
+---
+
+## S16 — Integrations: in-UI channel config + control (#299)
+
+**Daemon control buttons**
+
+- [ ] Open **Integrations** with the daemon down. Confirm **Start** is enabled
+      and **Stop** / **Restart** are disabled (grayed out).
+- [ ] Click **Start** (requires a valid OpenClaw token; the call is still safe
+      to issue when none is configured -- it logs a warning and the dot stays
+      red). When the daemon comes up the dot turns green, the label flips to
+      "running", and **Start** disables while **Stop** / **Restart** become
+      enabled.
+- [ ] Click **Stop**. The dot turns red, the label flips to "down", and the
+      button states invert again.
+- [ ] Click **Start** to bring the daemon back up, then click **Restart**.
+      Confirm the dot briefly indicates the down → running transition and ends
+      green / "running".
+
+**Per-channel enable/disable**
+
+- [ ] For each of WhatsApp, Telegram, Discord, Slack, Teams: click the
+      **Disabled** pill on its action row. The pill flips to green
+      "**Enabled**".
+- [ ] Fully close and relaunch the app. Reopen Integrations. Confirm the
+      channels you enabled are still showing **Enabled** (state persisted to
+      `cerebral/data/felix-harness.json`).
+- [ ] Click an **Enabled** pill to flip it back to **Disabled**. Confirm the
+      flip is immediate and persists across a reload.
+
+**Write-only channel secrets**
+
+- [ ] On a channel row, click **Set secret**. A password-masked input + Save /
+      Cancel buttons appear in place of the button.
+- [ ] Type a fake bot token (e.g. `not-a-real-token-123`). Confirm the input is
+      MASKED (dots / asterisks, not the plaintext).
+- [ ] Click **Save**. The editor collapses, the row pill flips from "no
+      secret" to green "**secret set**", and the button label changes to
+      **Replace secret**.
+- [ ] Click **Replace secret**. Confirm the input field is EMPTY (the
+      previously-saved token is NEVER echoed back into the DOM).
+- [ ] Open DevTools (Ctrl+Shift+I) → Network / WS frames. Send a `Reload` and
+      watch the `harness_status` event broadcast. Confirm the channel entries
+      include only `name`, `state`, `enabled`, `secret_set` -- NO `secret`
+      field, NO plaintext token in any frame.
+- [ ] Click **Replace secret** then **Clear**. Confirm the pill flips back to
+      "no secret" and the button reverts to **Set secret**.
+
+**Cancel + empty save**
+
+- [ ] Click **Set secret**, type a value, click **Cancel**. Confirm the form
+      collapses and the row pill is unchanged (no IPC send).
+- [ ] Click **Set secret**, leave the field empty, click **Save**. Confirm the
+      form collapses with no state change (empty saves are ignored).
