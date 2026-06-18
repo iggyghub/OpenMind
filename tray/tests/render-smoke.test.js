@@ -309,6 +309,42 @@ test('conversation pane has model override select in thread strip (S13)', () => 
   expect(defaultOpt).not.toBeNull();
 });
 
+// ── S14 — file upload controls ───────────────────────────────────────────────
+
+test('conversation pane has attach button and drag-drop overlay (S14)', () => {
+  const pane = root.querySelector('.pane[data-route="conversation"]');
+  expect(pane).not.toBeNull();
+  expect(pane.querySelector('#att-attach-btn')).not.toBeNull();
+  expect(pane.querySelector('.att-dropzone')).not.toBeNull();
+  expect(pane.querySelector('.att-pending-row')).not.toBeNull();
+});
+
+// ── S15 — integrations pane HARNESS section ──────────────────────────────────
+
+test('integrations pane has HARNESS section, daemon row, and channels list (S15)', () => {
+  const pane = root.querySelector('.pane[data-route="integrations"]');
+  expect(pane).not.toBeNull();
+
+  // Placeholder must be gone.
+  expect(pane.querySelector('.placeholder')).toBeNull();
+
+  // HARNESS section header.
+  const section = pane.querySelector('#int-harness-section');
+  expect(section).not.toBeNull();
+
+  // OpenClaw daemon row.
+  const daemonRow = pane.querySelector('#int-daemon-row');
+  expect(daemonRow).not.toBeNull();
+
+  // Status dot and text inside the daemon row.
+  expect(daemonRow.querySelector('#int-daemon-dot')).not.toBeNull();
+  expect(daemonRow.querySelector('#int-daemon-text')).not.toBeNull();
+
+  // Channels container.
+  const channelsList = pane.querySelector('#int-channels-list');
+  expect(channelsList).not.toBeNull();
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
