@@ -869,6 +869,23 @@
     .send:hover:not(:disabled) { background: var(--accent-dim); }
     .send:disabled { opacity: 0.4; cursor: not-allowed; }
 
+    /* ── stop-turn button (S20 / #303) ─────────────────────────────── */
+    .stop-turn {
+      background: transparent;
+      color: var(--state-thinking);
+      border: 1px solid var(--state-thinking);
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 13px;
+      padding: 0 18px;
+      height: 42px;
+      border-radius: 10px;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background .15s, opacity .15s;
+    }
+    .stop-turn:hover { background: rgba(255,255,255,.05); }
+
     /* ── attachments (S14 / #297) ───────────────────────────────────── */
     .att-attach-btn {
       background: var(--bg-elev);
@@ -3415,6 +3432,8 @@
           placeholder="Message Felix — Enter to send, Shift+Enter for newline"
         ></textarea>
         <button id="send" class="send" disabled>Send</button>
+        <!-- S20 (#303) -- shown while a turn is in-flight (thinking/speaking); hidden otherwise -->
+        <button id="stop-turn-btn" class="stop-turn" type="button" hidden>Stop</button>
       </div>
     </section>
 
@@ -3917,12 +3936,13 @@
     const CEREBRAL_URL = 'ws://localhost:7766';
     const RECONNECT_DELAY_MS = 2000;
     const STATE_MAP = {
-      wake:            'active',
-      passive:         'passive',
-      tts_speaking:    'speaking',
-      tts_done:        'passive',
-      thinking:        'thinking',
-      model_switching: 'thinking',
+      wake:             'active',
+      passive:          'passive',
+      tts_speaking:     'speaking',
+      tts_done:         'passive',
+      thinking:         'thinking',
+      model_switching:  'thinking',
+      turn_interrupted: 'passive',  // S20 (#303) -- stop control
     };
     const STATE_LABEL = {
       passive:  'Passive',
@@ -3935,6 +3955,7 @@
     const emptyState  = document.getElementById('empty-state');
     const input       = document.getElementById('input');
     const send        = document.getElementById('send');
+    const stopTurnBtn = document.getElementById('stop-turn-btn');  // S20 (#303)
     // S12 (#295) -- Quick Ask pane elements.
     const qaTranscriptEl = document.getElementById('qa-transcript');
     const qaEmptyEl      = document.getElementById('qa-empty');
@@ -4486,6 +4507,8 @@
     function setState(state) {
       statePill.dataset.state = state;
       statePill.textContent = STATE_LABEL[state] || state;
+      // S20 (#303) -- show Stop only while a turn is in-flight.
+      if (stopTurnBtn) stopTurnBtn.hidden = (state !== 'thinking' && state !== 'speaking');
     }
 
     // ── transcript rendering ───────────────────────────────────────────────
@@ -7106,6 +7129,13 @@
       }
     });
     send.addEventListener('click', submit);
+
+    // S20 (#303) -- Stop button: cancel the in-flight turn and silence TTS.
+    if (stopTurnBtn) {
+      stopTurnBtn.addEventListener('click', function () {
+        sendEvent({ type: 'interrupt_turn' });
+      });
+    }
 
     // ── attachments (S14 / #297) ──────────────────────────────────────────
     // The renderer never touches the disk -- it base64-encodes the file
