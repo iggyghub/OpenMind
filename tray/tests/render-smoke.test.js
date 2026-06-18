@@ -345,6 +345,45 @@ test('integrations pane has HARNESS section, daemon row, and channels list (S15)
   expect(channelsList).not.toBeNull();
 });
 
+// ── S16 — integrations pane daemon controls + channel config ────────────────
+
+test('integrations daemon row has Start/Stop/Restart buttons (S16)', () => {
+  const daemonRow = root.querySelector('#int-daemon-row');
+  expect(daemonRow).not.toBeNull();
+
+  const startBtn   = daemonRow.querySelector('#int-daemon-start');
+  const stopBtn    = daemonRow.querySelector('#int-daemon-stop');
+  const restartBtn = daemonRow.querySelector('#int-daemon-restart');
+
+  expect(startBtn).not.toBeNull();
+  expect(stopBtn).not.toBeNull();
+  expect(restartBtn).not.toBeNull();
+
+  expect(startBtn.getAttribute('type')).toBe('button');
+  expect(stopBtn.getAttribute('type')).toBe('button');
+  expect(restartBtn.getAttribute('type')).toBe('button');
+});
+
+test('inline script wires daemon control IPC events (S16)', () => {
+  expect(inlineScript).toMatch(/['"]start_openclaw_daemon['"]/);
+  expect(inlineScript).toMatch(/['"]stop_openclaw_daemon['"]/);
+  expect(inlineScript).toMatch(/['"]restart_openclaw_daemon['"]/);
+});
+
+test('inline script wires channel enable/secret IPC events (S16)', () => {
+  expect(inlineScript).toMatch(/['"]set_channel_enabled['"]/);
+  expect(inlineScript).toMatch(/['"]set_channel_secret['"]/);
+});
+
+test('channel renderer uses password input for the secret field (S16)', () => {
+  // The secret input must be a type="password" element so it never
+  // renders the plaintext on screen. The element is created by the
+  // renderer at click-time, so we grep the inline script for the markup.
+  expect(inlineScript).toMatch(/type="password"/);
+  // Write-only invariant: input.value is cleared BEFORE the IPC send.
+  expect(inlineScript).toMatch(/input\.value\s*=\s*['"]['"]/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

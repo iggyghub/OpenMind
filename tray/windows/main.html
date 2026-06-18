@@ -1034,6 +1034,99 @@
     .int-status-text.is-connected { color: #4bd49a; }
     .int-status-text.is-down      { color: #c44b4b; }
 
+    /* ── S16 / #299: daemon controls + per-channel config ─────── */
+    .int-btn {
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg);
+      color: var(--text-dim);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.01em;
+      transition: color 0.12s, border-color 0.12s, background 0.12s, opacity 0.12s;
+    }
+    .int-btn:hover:not(:disabled) { color: var(--text); border-color: #4a4670; }
+    .int-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .int-btn.is-primary { color: #4bd49a; border-color: #4bd49a55; }
+    .int-btn.is-primary:hover:not(:disabled) { border-color: #4bd49a; }
+    .int-btn.is-danger  { color: #e0855a; border-color: #e0855a55; }
+    .int-btn.is-danger:hover:not(:disabled)  { border-color: #e0855a; }
+
+    /* Channel rows have a 2-line layout: status line + actions line. */
+    .int-channel-row {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 11px 18px;
+      border-bottom: 1px solid #1e1c30;
+    }
+    .int-channel-row:last-child { border-bottom: none; }
+
+    .int-channel-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .int-channel-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    /* Compact 3-state pill: enabled ON/OFF. */
+    .int-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      background: var(--bg);
+      user-select: none;
+    }
+    .int-toggle:hover { color: var(--text-dim); border-color: #4a4670; }
+    .int-toggle.is-on { color: #4bd49a; border-color: #4bd49a55; }
+
+    .int-secret-pill {
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+    .int-secret-pill.is-set { color: #4fc77a; }
+
+    .int-secret-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+      min-width: 0;
+    }
+    .int-secret-row input {
+      flex: 1;
+      min-width: 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 11px;
+      font-family: inherit;
+      padding: 6px 8px;
+      outline: none;
+    }
+    .int-secret-row input:focus { border-color: #e0b755; }
+
     /* ── header queue badge ─────────────────────────────────── */
     /* Pending-action count surfaced in the chat header so the user
        sees it from any pane. Hidden when zero. Click jumps to #queue. */
@@ -3455,6 +3548,9 @@
           <span class="int-row-right">
             <span class="int-status-dot" id="int-daemon-dot"></span>
             <span class="int-status-text" id="int-daemon-text">&#8212;</span>
+            <button class="int-btn is-primary" id="int-daemon-start"  type="button">Start</button>
+            <button class="int-btn is-danger"  id="int-daemon-stop"   type="button">Stop</button>
+            <button class="int-btn"            id="int-daemon-restart" type="button">Restart</button>
           </span>
         </div>
         <div id="int-channels-list"></div>
@@ -3598,6 +3694,9 @@
     const plugBackBtn        = document.getElementById('plug-back-btn');
     const intDaemonDotEl   = document.getElementById('int-daemon-dot');
     const intDaemonTextEl  = document.getElementById('int-daemon-text');
+    const intDaemonStartBtn   = document.getElementById('int-daemon-start');
+    const intDaemonStopBtn    = document.getElementById('int-daemon-stop');
+    const intDaemonRestartBtn = document.getElementById('int-daemon-restart');
     const intChannelsEl    = document.getElementById('int-channels-list');
     const setActiveNameEl  = document.getElementById('set-active-name');
     const setActiveCloudEl = document.getElementById('set-active-cloud');
@@ -5744,9 +5843,14 @@
       });
     }
 
-    // ── Integrations pane (S15 / #298) ───────────────────────────────────────
+    // ── Integrations pane (S15 / #298, S16 / #299) ────────────────────────────
 
     const _INT_CHANNELS = ['WhatsApp', 'Telegram', 'Discord', 'Slack', 'Teams'];
+
+    // Track which channel rows have their secret input expanded (S16). Reset
+    // implicitly on each renderIntegrations call -- the user re-clicks
+    // "Configure" if a broadcast collapsed the form mid-edit.
+    let _intSecretEditing = null;
 
     function renderIntegrations() {
       const d = integrationsData;
@@ -5759,23 +5863,147 @@
       intDaemonTextEl.className = 'int-status-text ' + txtCls;
       intDaemonTextEl.textContent = dotText;
 
+      // Daemon control buttons (S16): Start hidden while running, Stop
+      // hidden while down, Restart only enabled when running.
+      intDaemonStartBtn.disabled   = daemonRunning;
+      intDaemonStopBtn.disabled    = !daemonRunning;
+      intDaemonRestartBtn.disabled = !daemonRunning;
+
       const channels = (d && d.channels) || [];
       if (channels.length === 0) {
         intChannelsEl.innerHTML = '';
         return;
       }
       intChannelsEl.innerHTML = channels.map(function (ch) {
-        var chDotCls = ch.state === 'connected' ? 'is-connected' : 'is-down';
-        var chTxtCls = ch.state === 'connected' ? 'is-connected' : 'is-down';
-        return '<div class="int-row">' +
-          '<span class="int-row-name">' + escHtml(ch.name) + '</span>' +
-          '<span class="int-row-right">' +
+        const chDotCls = ch.state === 'connected' ? 'is-connected' : 'is-down';
+        const chTxtCls = ch.state === 'connected' ? 'is-connected' : 'is-down';
+        const enabled  = !!ch.enabled;
+        const toggleCls    = enabled ? 'int-toggle is-on' : 'int-toggle';
+        const toggleLabel  = enabled ? 'Enabled' : 'Disabled';
+        const secretSet    = !!ch.secret_set;
+        const secretLabel  = secretSet ? 'secret set' : 'no secret';
+        const secretClass  = secretSet ? 'int-secret-pill is-set' : 'int-secret-pill';
+        const editing      = _intSecretEditing === ch.name;
+        const editorHtml   = editing
+          ? ('<div class="int-secret-row">' +
+              '<input type="password" autocomplete="off" data-int-secret-input="' + escHtml(ch.name) + '" ' +
+                'placeholder="Channel secret (write-only)" />' +
+              '<button class="int-btn is-primary" data-int-secret-save="' + escHtml(ch.name) + '" type="button">Save</button>' +
+              '<button class="int-btn"            data-int-secret-cancel="' + escHtml(ch.name) + '" type="button">Cancel</button>' +
+              (secretSet
+                ? '<button class="int-btn is-danger" data-int-secret-clear="' + escHtml(ch.name) + '" type="button">Clear</button>'
+                : '') +
+            '</div>')
+          : ('<button class="int-btn" data-int-secret-edit="' + escHtml(ch.name) + '" type="button">' +
+              (secretSet ? 'Replace secret' : 'Set secret') +
+            '</button>');
+
+        return '<div class="int-channel-row" data-int-channel="' + escHtml(ch.name) + '">' +
+          '<div class="int-channel-head">' +
+            '<span class="int-row-name">' + escHtml(ch.name) + '</span>' +
             '<span class="int-status-dot ' + chDotCls + '"></span>' +
             '<span class="int-status-text ' + chTxtCls + '">' + escHtml(ch.state || 'unknown') + '</span>' +
-          '</span>' +
+            '<span class="' + secretClass + '">' + secretLabel + '</span>' +
+          '</div>' +
+          '<div class="int-channel-actions">' +
+            '<button class="' + toggleCls + '" data-int-toggle="' + escHtml(ch.name) + '" data-int-enabled="' + (enabled ? '1' : '0') + '" type="button">' +
+              toggleLabel +
+            '</button>' +
+            editorHtml +
+          '</div>' +
           '</div>';
       }).join('');
+
+      // Re-focus the secret input after the re-render if the user just
+      // clicked "Set secret" or "Replace secret".
+      if (_intSecretEditing) {
+        const focusInput = intChannelsEl.querySelector(
+          'input[data-int-secret-input="' + cssEscape(_intSecretEditing) + '"]'
+        );
+        if (focusInput) focusInput.focus();
+      }
     }
+
+    function cssEscape(s) {
+      if (window.CSS && CSS.escape) return CSS.escape(s);
+      return String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+    }
+
+    // Daemon control buttons (S16 / #299).
+    intDaemonStartBtn.addEventListener('click', function () {
+      sendEvent({ type: 'start_openclaw_daemon' });
+    });
+    intDaemonStopBtn.addEventListener('click', function () {
+      sendEvent({ type: 'stop_openclaw_daemon' });
+    });
+    intDaemonRestartBtn.addEventListener('click', function () {
+      sendEvent({ type: 'restart_openclaw_daemon' });
+    });
+
+    // Per-channel actions: delegated click handler -- rows are re-rendered
+    // on every harness_status broadcast so per-node listeners would leak.
+    intChannelsEl.addEventListener('click', function (e) {
+      const target = e.target;
+      if (!target || target.nodeType !== 1) return;
+
+      const toggleCh = target.getAttribute('data-int-toggle');
+      if (toggleCh) {
+        const enabled = target.getAttribute('data-int-enabled') === '1';
+        sendEvent({
+          type: 'set_channel_enabled',
+          data: { channel: toggleCh, enabled: !enabled },
+        });
+        return;
+      }
+
+      const editCh = target.getAttribute('data-int-secret-edit');
+      if (editCh) {
+        _intSecretEditing = editCh;
+        renderIntegrations();
+        return;
+      }
+
+      const cancelCh = target.getAttribute('data-int-secret-cancel');
+      if (cancelCh) {
+        _intSecretEditing = null;
+        renderIntegrations();
+        return;
+      }
+
+      const saveCh = target.getAttribute('data-int-secret-save');
+      if (saveCh) {
+        const input = intChannelsEl.querySelector(
+          'input[data-int-secret-input="' + cssEscape(saveCh) + '"]'
+        );
+        if (!input) return;
+        const value = input.value;
+        // Write-only invariant (rule 3): clear the DOM input BEFORE we
+        // even send so the plaintext token cannot be retrieved by a
+        // later DOM inspector / screenshot. Bound checks fall on the
+        // backend.
+        input.value = '';
+        _intSecretEditing = null;
+        if (!value) {
+          renderIntegrations();
+          return;
+        }
+        sendEvent({
+          type: 'set_channel_secret',
+          data: { channel: saveCh, secret: value },
+        });
+        return;
+      }
+
+      const clearCh = target.getAttribute('data-int-secret-clear');
+      if (clearCh) {
+        _intSecretEditing = null;
+        sendEvent({
+          type: 'clear_channel_secret',
+          data: { channel: clearCh },
+        });
+        return;
+      }
+    });
 
     // Open the per-plugin settings sub-pane for `pluginName`.
     function openPluginSettings(pluginName) {
