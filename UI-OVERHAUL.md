@@ -16,9 +16,9 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **S10 — #293** (Save/delete/search conversations)
+Active slice: **S11 — #294** (Projects)
 
-Model: sonnet
+Model: opus
 Status: ready
 
 (`Model:`/`Status:` are read directly by `scripts/run-ui-overhaul.ps1`. Allowed:
@@ -42,7 +42,7 @@ Phase 1 — Models & settings
 
 Phase 2 — Conversations
 9.  [x] S9 — #292 Conversation threads (thread_id + auto-title) — Model: opus
-10. [ ] S10 — #293 Save/delete/search conversations — Model: sonnet
+10. [x] S10 — #293 Save/delete/search conversations — Model: sonnet
 11. [ ] S11 — #294 Projects (folders) — Model: opus
 12. [ ] S12 — #295 Quick Ask (ephemeral web-first chat) — Model: sonnet
 13. [ ] S13 — #296 Per-conversation model override — Model: sonnet
@@ -71,3 +71,4 @@ Phase 5 — Control surfaces
 - S7 — #290 → PR #310 (Mic-mode control: Passive/PTT/Disabled in header + Settings)
 - S8 — #291 → PR #311 (TTS controls: inline mute/volume + voice picker per profile)
 - S9 — #292 → PR #312 (Conversation threads: thread_id schema + auto-title + New conversation button)
+- S10 — #293 → PR #313 (Save/delete/search conversations: list pane + delete IPC + search provider)
