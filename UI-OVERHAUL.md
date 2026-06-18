@@ -16,9 +16,9 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **S14 — #297** (File upload: attach + extract + local store)
+Active slice: **S15 — #298** (Integrations tab: harness status)
 
-Model: opus
+Model: sonnet
 Status: ready
 
 (`Model:`/`Status:` are read directly by `scripts/run-ui-overhaul.ps1`. Allowed:
@@ -48,7 +48,7 @@ Phase 2 — Conversations
 13. [x] S13 — #296 Per-conversation model override — Model: sonnet
 
 Phase 3 — Files
-14. [ ] S14 — #297 File upload (attach + extract + local store) — Model: opus
+14. [x] S14 — #297 File upload (attach + extract + local store) — Model: opus
 
 Phase 4 — Integrations / harness
 15. [ ] S15 — #298 Integrations tab: harness status — Model: sonnet
@@ -75,3 +75,4 @@ Phase 5 — Control surfaces
 - S11 — #294 → PR #314 (Projects: project folders, group threads, Unfiled default, delete-leaves-unfiled)
 - S12 — #295 → PR #315 (Quick Ask: ephemeral web-first scratch chat, not saved to Conversations)
 - S13 — #296 → PR #316 (Per-conversation model override: thread-pinned model, strip select + row badge)
+- S14 — #297 → PR #317 (File upload: attach + extract + per-profile local store + attachment chips)
