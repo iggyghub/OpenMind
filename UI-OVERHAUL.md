@@ -16,7 +16,7 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **S19 — #302** (Recipes pane (list/run/delete))
+Active slice: **S20 — #303** (Stop / interrupt in-flight turn + TTS)
 
 Model: sonnet
 Status: ready
@@ -57,7 +57,7 @@ Phase 4 — Integrations / harness
 18. [x] S18 — #301 Unified inbox for incoming channel messages — Model: opus
 
 Phase 5 — Control surfaces
-19. [ ] S19 — #302 Recipes pane (list/run/delete) — Model: sonnet
+19. [x] S19 — #302 Recipes pane (list/run/delete) — Model: sonnet
 20. [ ] S20 — #303 Stop / interrupt in-flight turn + TTS — Model: sonnet
 
 ### Landed PRs (append as slices merge)
@@ -80,3 +80,4 @@ Phase 5 — Control surfaces
 - S16 — #299 → PR #319 (Integrations: in-UI channel config + control — daemon start/stop/restart, enable toggle, write-only secret)
 - S17 — #300 → PR #320 (Integrations: service directory — CONTEXT.md registry grouped by category, Connect deep-links to Credentials)
 - S18 — #301 → PR #321 (Unified channel inbox in Integrations pane — inbound surface + reply textarea wired to openclaw_messages_send)
+- S19 — #302 → PR #322 (Recipes pane — list/run/delete saved tool-chains, run_recipe IPC wired to _replay_recipe gate path)
