@@ -16,9 +16,9 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **S17 — #300** (Integrations: service directory)
+Active slice: **S18 — #301** (Unified inbox for incoming channel messages)
 
-Model: sonnet
+Model: opus
 Status: ready
 
 (`Model:`/`Status:` are read directly by `scripts/run-ui-overhaul.ps1`. Allowed:
@@ -53,7 +53,7 @@ Phase 3 — Files
 Phase 4 — Integrations / harness
 15. [x] S15 — #298 Integrations tab: harness status — Model: sonnet
 16. [x] S16 — #299 Integrations: in-UI channel config + control — Model: opus
-17. [ ] S17 — #300 Integrations: service directory — Model: sonnet
+17. [x] S17 — #300 Integrations: service directory — Model: sonnet
 18. [ ] S18 — #301 Unified inbox for incoming channel messages — Model: opus
 
 Phase 5 — Control surfaces
@@ -78,3 +78,4 @@ Phase 5 — Control surfaces
 - S14 — #297 → PR #317 (File upload: attach + extract + per-profile local store + attachment chips)
 - S15 — #298 → PR #318 (Integrations tab: HARNESS section with daemon + per-channel status)
 - S16 — #299 → PR #319 (Integrations: in-UI channel config + control — daemon start/stop/restart, enable toggle, write-only secret)
+- S17 — #300 → PR #320 (Integrations: service directory — CONTEXT.md registry grouped by category, Connect deep-links to Credentials)
