@@ -595,6 +595,99 @@
       text-align: center;
     }
 
+    /* S11 (#294) -- project folders in the Conversations pane. */
+    .conv-projects-toolbar {
+      display: flex;
+      justify-content: flex-end;
+      padding: 0 0 10px 0;
+    }
+    .conv-new-project-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 4px 10px;
+      font-size: 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .conv-new-project-btn:hover { color: var(--text); border-color: var(--accent); }
+    .conv-project-group {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-bottom: 8px;
+      background: var(--bg);
+      overflow: hidden;
+    }
+    .conv-project-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--bg-elev);
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+    }
+    .conv-project-chevron {
+      font-size: 10px;
+      color: var(--text-muted);
+      width: 12px;
+      text-align: center;
+    }
+    .conv-project-name {
+      flex: 1;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: 0.02em;
+      outline: none;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .conv-project-name.is-untitled { color: var(--text-muted); font-style: italic; }
+    .conv-project-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .conv-project-actions {
+      display: flex;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .conv-project-del-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .conv-project-del-btn:hover { color: #c44b4b; border-color: #c44b4b; }
+    .conv-project-body { padding: 0; }
+    .conv-project-body.is-collapsed { display: none; }
+    .conv-project-empty {
+      padding: 12px 16px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+    .conv-thread-move-select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 3px 6px;
+      font-size: 11px;
+      color: var(--text);
+      font-family: inherit;
+      max-width: 110px;
+    }
+    .conv-thread-move-select:focus { border-color: var(--accent); outline: none; }
+
     /* ── transcript ─────────────────────────────────────────── */
     .transcript {
       flex: 1;
@@ -3046,6 +3139,11 @@
           <input type="search" id="conv-list-search" class="conv-list-search-input"
                  placeholder="Filter by title or content...">
         </div>
+        <div class="conv-projects-toolbar">
+          <button id="conv-new-project" class="conv-new-project-btn" type="button">
+            + New project
+          </button>
+        </div>
         <div id="conv-thread-list"></div>
         <div id="conv-list-empty" class="conv-list-empty" hidden>
           No saved conversations yet. Start a new conversation to see it here.
@@ -3150,6 +3248,7 @@
     const convListSearchEl   = document.getElementById('conv-list-search');
     const convThreadListEl   = document.getElementById('conv-thread-list');
     const convListEmptyEl    = document.getElementById('conv-list-empty');
+    const convNewProjectBtn  = document.getElementById('conv-new-project');
     const statePill   = document.getElementById('state-pill');
     const healthDot   = document.getElementById('health-dot');
     const healthPanel = document.getElementById('health-panel');
@@ -3291,6 +3390,13 @@
     // IPC search returns results it holds the matching subset instead.
     let convListQuery  = '';
     let convSearchHits = null;
+    // S11 (#294) -- project folders snapshot + per-group collapse state.
+    // The collapse state is RAM-only: groups default to expanded on reload,
+    // which matches the spec's "groups by project (collapsible per S3)" --
+    // S3-style persistence is per-section header in localStorage; project
+    // groups are content rows, not section headers, so they reset per session.
+    let projectsList = [];
+    const projectCollapsed = new Map();  // key: project id (or 'unfiled'), value: bool
 
     // Cerebral broadcasts heartbeat every 5s. We treat the connection as
     // ok up to 12s after the last one (one missed tick), stale beyond
@@ -3445,6 +3551,14 @@
           } else {
             convSearchHits = null;
           }
+          renderConversationsList();
+          break;
+        }
+        case 'conversation_projects_data': {
+          // S11 / #294 -- project folders snapshot. Renderer pairs with the
+          // threads list to group rows under their parent project.
+          const d = event.data || {};
+          projectsList = d.projects || [];
           renderConversationsList();
           break;
         }
@@ -3689,7 +3803,47 @@
       }
     }
 
-    // ── conversations list pane (S10 / #293) ─────────────────────────────
+    // ── conversations list pane (S10 / #293, S11 / #294) ─────────────────
+    function _renderThreadRow(t) {
+      const title    = (t.title || '').trim();
+      const isActive = (t.id === activeThreadId);
+      const count    = (typeof t.turn_count === 'number') ? t.turn_count : 0;
+      const ts       = t.updated_at ? new Date(t.updated_at).toLocaleDateString() : '';
+      const meta     = [
+        count ? (count + ' turn' + (count === 1 ? '' : 's')) : '',
+        ts,
+      ].filter(Boolean).join(' · ');
+      const activeClass = isActive ? ' is-active' : '';
+      const titleClass  = title ? '' : ' is-untitled';
+      const safeId  = escHtml(String(t.id));
+      // S11 (#294) -- per-row move dropdown. "Unfiled" is the empty option;
+      // each project a real option. The current project_id is selected so the
+      // user can see where the thread lives without opening the menu.
+      const currentPid = (t.project_id == null) ? '' : String(t.project_id);
+      const moveOpts = [
+        '<option value=""' + (currentPid === '' ? ' selected' : '') + '>Unfiled</option>',
+      ].concat(projectsList.map(function (p) {
+        const pid = String(p.id);
+        const sel = (pid === currentPid) ? ' selected' : '';
+        const name = (p.name || '').trim() || 'Untitled project';
+        return '<option value="' + escHtml(pid) + '"' + sel + '>' + escHtml(name) + '</option>';
+      })).join('');
+      return '<div class="conv-thread-row' + activeClass + '" data-tid="' + safeId + '">' +
+        '<div class="conv-thread-row-info">' +
+        '<div class="conv-thread-row-title' + titleClass + '">' +
+        escHtml(title || 'Untitled conversation') + '</div>' +
+        '<div class="conv-thread-row-meta">' + escHtml(meta) + '</div>' +
+        '</div>' +
+        '<div class="conv-thread-row-actions">' +
+        '<select class="conv-thread-move-select" data-tid="' + safeId + '">' +
+        moveOpts +
+        '</select>' +
+        '<button class="conv-thread-open-btn" data-tid="' + safeId + '">Open</button>' +
+        '<button class="conv-thread-del-btn"  data-tid="' + safeId + '">Delete</button>' +
+        '</div>' +
+        '</div>';
+    }
+
     function renderConversationsList() {
       if (!convThreadListEl) return;
       // Use IPC search results when available; fall back to full threads list.
@@ -3706,30 +3860,86 @@
         if (visible.length === 0) convListEmptyEl.removeAttribute('hidden');
         else                      convListEmptyEl.setAttribute('hidden', '');
       }
-      convThreadListEl.innerHTML = visible.map(function (t) {
-        const title    = (t.title || '').trim();
-        const isActive = (t.id === activeThreadId);
-        const count    = (typeof t.turn_count === 'number') ? t.turn_count : 0;
-        const ts       = t.updated_at ? new Date(t.updated_at).toLocaleDateString() : '';
-        const meta     = [
-          count ? (count + ' turn' + (count === 1 ? '' : 's')) : '',
-          ts,
-        ].filter(Boolean).join(' · ');
-        const activeClass = isActive ? ' is-active' : '';
-        const titleClass  = title ? '' : ' is-untitled';
-        const safeId  = escHtml(String(t.id));
-        return '<div class="conv-thread-row' + activeClass + '" data-tid="' + safeId + '">' +
-          '<div class="conv-thread-row-info">' +
-          '<div class="conv-thread-row-title' + titleClass + '">' +
-          escHtml(title || 'Untitled conversation') + '</div>' +
-          '<div class="conv-thread-row-meta">' + escHtml(meta) + '</div>' +
+
+      // S11 (#294) -- group visible threads by project. "Unfiled" bucket
+      // sits at the top so a brand-new conversation is visible without the
+      // user having to expand a project. Each project (oldest-first to match
+      // the projects list order) follows.
+      const threadsByProject = new Map();
+      threadsByProject.set('unfiled', []);
+      projectsList.forEach(function (p) {
+        threadsByProject.set(String(p.id), []);
+      });
+      visible.forEach(function (t) {
+        const key = (t.project_id == null) ? 'unfiled' : String(t.project_id);
+        if (!threadsByProject.has(key)) threadsByProject.set(key, []);
+        threadsByProject.get(key).push(t);
+      });
+
+      const groups = [];
+
+      // Unfiled bucket -- only render if it has threads OR there are no
+      // projects yet (so a fresh profile still sees an empty list, not
+      // an empty container).
+      const unfiledThreads = threadsByProject.get('unfiled') || [];
+      if (unfiledThreads.length > 0 || projectsList.length === 0) {
+        const collapsed = projectCollapsed.get('unfiled') === true;
+        const chev = collapsed ? '▸' : '▾';
+        const bodyCls = collapsed ? ' is-collapsed' : '';
+        const meta = unfiledThreads.length
+          ? unfiledThreads.length + ' thread' + (unfiledThreads.length === 1 ? '' : 's')
+          : 'empty';
+        groups.push(
+          '<div class="conv-project-group" data-pid="unfiled">' +
+          '<div class="conv-project-header" data-pid="unfiled">' +
+          '<span class="conv-project-chevron">' + chev + '</span>' +
+          '<span class="conv-project-name">Unfiled</span>' +
+          '<span class="conv-project-meta">' + escHtml(meta) + '</span>' +
           '</div>' +
-          '<div class="conv-thread-row-actions">' +
-          '<button class="conv-thread-open-btn" data-tid="' + safeId + '">Open</button>' +
-          '<button class="conv-thread-del-btn"  data-tid="' + safeId + '">Delete</button>' +
+          '<div class="conv-project-body' + bodyCls + '" data-pid="unfiled">' +
+          (unfiledThreads.length === 0
+            ? '<div class="conv-project-empty">No conversations here yet.</div>'
+            : unfiledThreads.map(_renderThreadRow).join('')) +
           '</div>' +
-          '</div>';
-      }).join('');
+          '</div>'
+        );
+      }
+
+      // Real projects (oldest-first to match projectsList order).
+      projectsList.forEach(function (p) {
+        const key = String(p.id);
+        const rows = threadsByProject.get(key) || [];
+        const collapsed = projectCollapsed.get(key) === true;
+        const chev = collapsed ? '▸' : '▾';
+        const bodyCls = collapsed ? ' is-collapsed' : '';
+        const name = (p.name || '').trim();
+        const titleClass = name ? '' : ' is-untitled';
+        const meta = rows.length
+          ? rows.length + ' thread' + (rows.length === 1 ? '' : 's')
+          : 'empty';
+        groups.push(
+          '<div class="conv-project-group" data-pid="' + escHtml(key) + '">' +
+          '<div class="conv-project-header" data-pid="' + escHtml(key) + '">' +
+          '<span class="conv-project-chevron">' + chev + '</span>' +
+          '<span class="conv-project-name' + titleClass + '" ' +
+          'contenteditable="true" spellcheck="false" data-pid="' + escHtml(key) + '">' +
+          escHtml(name || 'Untitled project') +
+          '</span>' +
+          '<span class="conv-project-meta">' + escHtml(meta) + '</span>' +
+          '<span class="conv-project-actions">' +
+          '<button class="conv-project-del-btn" data-pid="' + escHtml(key) + '" type="button">Delete</button>' +
+          '</span>' +
+          '</div>' +
+          '<div class="conv-project-body' + bodyCls + '" data-pid="' + escHtml(key) + '">' +
+          (rows.length === 0
+            ? '<div class="conv-project-empty">No conversations here yet.</div>'
+            : rows.map(_renderThreadRow).join('')) +
+          '</div>' +
+          '</div>'
+        );
+      });
+
+      convThreadListEl.innerHTML = groups.join('');
     }
 
     // In-pane search: title filter (client-side) + IPC full-text fallback.
@@ -3745,18 +3955,22 @@
       });
     }
 
-    // Event delegation for Open and Delete buttons in the thread list.
+    // Event delegation for Open / Delete / project header / project delete.
     if (convThreadListEl) {
       convThreadListEl.addEventListener('click', function (e) {
-        const openBtn = e.target.closest('.conv-thread-open-btn');
-        const delBtn  = e.target.closest('.conv-thread-del-btn');
+        const openBtn      = e.target.closest('.conv-thread-open-btn');
+        const delBtn       = e.target.closest('.conv-thread-del-btn');
+        const projDelBtn   = e.target.closest('.conv-project-del-btn');
+        const projHeader   = e.target.closest('.conv-project-header');
         if (openBtn) {
           const tid = parseInt(openBtn.dataset.tid, 10);
           if (!isNaN(tid)) {
             sendEvent({ type: 'switch_conversation_thread', data: { thread_id: tid } });
             location.hash = '#conversation';
           }
-        } else if (delBtn) {
+          return;
+        }
+        if (delBtn) {
           const tid = parseInt(delBtn.dataset.tid, 10);
           if (!isNaN(tid)) {
             const row   = delBtn.closest('.conv-thread-row');
@@ -3767,7 +3981,94 @@
               sendEvent({ type: 'delete_conversation_thread', data: { thread_id: tid } });
             }
           }
+          return;
         }
+        if (projDelBtn) {
+          // S11 (#294) -- project delete. Threads inside the project are NOT
+          // deleted; they fall back into "Unfiled" (spec AC). The confirmation
+          // copy says so explicitly to set the right expectation.
+          const pid = parseInt(projDelBtn.dataset.pid, 10);
+          if (!isNaN(pid)) {
+            const group = projDelBtn.closest('.conv-project-group');
+            const name = group
+              ? (group.querySelector('.conv-project-name') || {}).textContent || 'this project'
+              : 'this project';
+            if (window.confirm('Delete project "' + name.trim() + '"? Conversations inside it will move to Unfiled.')) {
+              sendEvent({ type: 'delete_conversation_project', data: { project_id: pid } });
+            }
+          }
+          return;
+        }
+        if (projHeader) {
+          // Avoid collapsing when the user is editing the project name or
+          // pressing the Delete button (handled above already).
+          if (e.target.closest('.conv-project-name')) return;
+          if (e.target.closest('.conv-project-actions')) return;
+          const key = projHeader.dataset.pid;
+          if (!key) return;
+          const cur = projectCollapsed.get(key) === true;
+          projectCollapsed.set(key, !cur);
+          renderConversationsList();
+          return;
+        }
+      });
+
+      // S11 (#294) -- inline project rename. Commit on blur, Enter blurs,
+      // Escape reverts to the last broadcast name from projectsList.
+      convThreadListEl.addEventListener('keydown', function (e) {
+        const nameEl = e.target.closest && e.target.closest('.conv-project-name');
+        if (!nameEl || !nameEl.hasAttribute('contenteditable')) return;
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          nameEl.blur();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          renderConversationsList();
+          if (nameEl.blur) nameEl.blur();
+        }
+      });
+      convThreadListEl.addEventListener('blur', function (e) {
+        const nameEl = e.target;
+        if (!nameEl || !nameEl.classList || !nameEl.classList.contains('conv-project-name')) return;
+        if (!nameEl.hasAttribute('contenteditable')) return;
+        const pid = parseInt(nameEl.dataset.pid, 10);
+        if (isNaN(pid)) return;
+        const raw = (nameEl.textContent || '').trim();
+        const placeholder = 'Untitled project';
+        const next = (raw === placeholder) ? '' : raw;
+        const project = projectsList.find(function (p) { return p.id === pid; });
+        const current = (project && project.name) || '';
+        if (next === current) {
+          renderConversationsList();
+          return;
+        }
+        sendEvent({
+          type: 'rename_conversation_project',
+          data: { project_id: pid, name: next },
+        });
+      }, true);
+
+      // S11 (#294) -- per-row move dropdown. value "" = Unfiled = project_id null.
+      convThreadListEl.addEventListener('change', function (e) {
+        const sel = e.target.closest('.conv-thread-move-select');
+        if (!sel) return;
+        const tid = parseInt(sel.dataset.tid, 10);
+        if (isNaN(tid)) return;
+        const raw = sel.value;
+        const projectId = (raw === '' || raw == null) ? null : parseInt(raw, 10);
+        if (projectId !== null && isNaN(projectId)) return;
+        sendEvent({
+          type: 'move_conversation_thread',
+          data: { thread_id: tid, project_id: projectId },
+        });
+      });
+    }
+
+    // S11 (#294) -- "+ New project" button. Creates an empty project; the
+    // user inline-renames on the freshly broadcast row.
+    if (convNewProjectBtn) {
+      convNewProjectBtn.addEventListener('click', function () {
+        sendEvent({ type: 'create_conversation_project', data: { name: '' } });
       });
     }
 

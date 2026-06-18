@@ -10,6 +10,11 @@ S9 (#292) adds ``conversation_threads`` and a ``thread_id`` column on
 ``conversation_turns``. Existing turns are back-filled into one "Legacy"
 thread per profile so the migration is non-destructive (ADR-0007).
 
+S11 (#294) adds ``conversation_projects`` and a ``project_id`` column on
+``conversation_threads``. "Unfiled" = ``project_id IS NULL``; deleting a
+project sets its threads' ``project_id`` to NULL via ``ON DELETE SET NULL``
+so we never lose conversation history when a folder is removed.
+
 Retention is infinite in v1 (ADR-0007 / privacy debt acknowledged); the
 manual-purge UX is a v2 deepening. Raw audio is never written -- only
 post-Whisper text and Felix's response text.
@@ -78,6 +83,7 @@ class ConversationThread:
     title: str
     created_at: str
     updated_at: str
+    project_id: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -86,6 +92,23 @@ class ConversationThread:
             "title": self.title,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "project_id": self.project_id,
+        }
+
+
+@dataclass
+class ConversationProject:
+    id: int
+    profile_id: int
+    name: str
+    created_at: str
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "profile_id": self.profile_id,
+            "name": self.name,
+            "created_at": self.created_at,
         }
 
 
@@ -109,6 +132,16 @@ class ConversationStore:
         # Sequence: tables (no thread_id index) -> ALTER ADD COLUMN ->
         # backfill -> index that references thread_id.
         self._con.executescript("""
+            CREATE TABLE IF NOT EXISTS conversation_projects (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id  INTEGER NOT NULL,
+                name        TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_conversation_projects_profile
+                ON conversation_projects (profile_id);
+
             CREATE TABLE IF NOT EXISTS conversation_threads (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id  INTEGER NOT NULL,
@@ -120,7 +153,9 @@ class ConversationStore:
                 -- "most recent" thread on rapid creates.
                 created_at  TEXT    DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
                 updated_at  TEXT    DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
-                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+                project_id  INTEGER,
+                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+                FOREIGN KEY (project_id) REFERENCES conversation_projects(id) ON DELETE SET NULL
             );
             CREATE INDEX IF NOT EXISTS idx_conversation_threads_profile_updated
                 ON conversation_threads (profile_id, updated_at);
@@ -151,6 +186,19 @@ class ConversationStore:
         self._con.execute(
             "CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread_ts "
             "ON conversation_turns (thread_id, ts)"
+        )
+        self._con.commit()
+        # S11 migration: pre-#294 DBs lack the project_id column on threads.
+        try:
+            self._con.execute(
+                "ALTER TABLE conversation_threads ADD COLUMN project_id INTEGER"
+            )
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        self._con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversation_threads_project "
+            "ON conversation_threads (project_id)"
         )
         self._con.commit()
         self._backfill_legacy_threads()
@@ -396,6 +444,7 @@ class ConversationStore:
         rows = self._con.execute(
             """
             SELECT ct.id, ct.profile_id, ct.title, ct.created_at, ct.updated_at,
+                   ct.project_id,
                    COUNT(ctu.id) AS turn_count
             FROM conversation_threads ct
             LEFT JOIN conversation_turns ctu ON ctu.thread_id = ct.id
@@ -423,7 +472,7 @@ class ConversationStore:
         rows = self._con.execute(
             """
             SELECT DISTINCT ct.id, ct.profile_id, ct.title,
-                   ct.created_at, ct.updated_at,
+                   ct.created_at, ct.updated_at, ct.project_id,
                    (SELECT COUNT(*) FROM conversation_turns
                     WHERE thread_id = ct.id) AS turn_count
             FROM conversation_threads ct
@@ -441,6 +490,103 @@ class ConversationStore:
             d["turn_count"] = r["turn_count"]
             result.append(d)
         return result
+
+    # -- projects (S11 / #294) -------------------------------------------
+
+    def create_project(self, profile_id: int, name: str = "") -> ConversationProject:
+        """Create a new project folder for the profile. Empty names are allowed
+        so the UI can hand back a fresh row for inline rename."""
+        cur = self._con.execute(
+            "INSERT INTO conversation_projects (profile_id, name) VALUES (?, ?)",
+            (profile_id, (name or "").strip()),
+        )
+        self._con.commit()
+        return self._get_project(cur.lastrowid)  # type: ignore[arg-type]
+
+    def list_projects(self, profile_id: int) -> list[ConversationProject]:
+        """All projects for a profile, oldest-first so the order is stable
+        across reloads (created_at is a string but lexicographically sorts
+        by time at ms resolution)."""
+        rows = self._con.execute(
+            "SELECT * FROM conversation_projects "
+            "WHERE profile_id = ? ORDER BY created_at ASC, id ASC",
+            (profile_id,),
+        ).fetchall()
+        return [_row_to_project(r) for r in rows]
+
+    def list_projects_with_counts(self, profile_id: int) -> list[dict]:
+        """Like ``list_projects`` but each dict carries ``thread_count``."""
+        rows = self._con.execute(
+            """
+            SELECT cp.id, cp.profile_id, cp.name, cp.created_at,
+                   COUNT(ct.id) AS thread_count
+            FROM conversation_projects cp
+            LEFT JOIN conversation_threads ct ON ct.project_id = cp.id
+            WHERE cp.profile_id = ?
+            GROUP BY cp.id
+            ORDER BY cp.created_at ASC, cp.id ASC
+            """,
+            (profile_id,),
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = _row_to_project(r).to_dict()
+            d["thread_count"] = r["thread_count"]
+            result.append(d)
+        return result
+
+    def get_project(self, project_id: int) -> ConversationProject | None:
+        row = self._con.execute(
+            "SELECT * FROM conversation_projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        return _row_to_project(row) if row else None
+
+    def _get_project(self, project_id: int) -> ConversationProject:
+        row = self._con.execute(
+            "SELECT * FROM conversation_projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"conversation project {project_id} not found")
+        return _row_to_project(row)
+
+    def rename_project(self, project_id: int, name: str) -> bool:
+        cur = self._con.execute(
+            "UPDATE conversation_projects SET name = ? WHERE id = ?",
+            ((name or "").strip(), project_id),
+        )
+        self._con.commit()
+        return cur.rowcount > 0
+
+    def delete_project(self, project_id: int) -> bool:
+        """Delete a project. Threads inside are NOT deleted -- their
+        ``project_id`` is set to NULL so they fall back into "Unfiled"
+        (S11 acceptance criterion). Done manually rather than relying on
+        the ON DELETE SET NULL FK so the store works regardless of the
+        connection's foreign_keys pragma."""
+        self._con.execute(
+            "UPDATE conversation_threads SET project_id = NULL "
+            "WHERE project_id = ?",
+            (project_id,),
+        )
+        cur = self._con.execute(
+            "DELETE FROM conversation_projects WHERE id = ?", (project_id,)
+        )
+        self._con.commit()
+        return cur.rowcount > 0
+
+    def move_thread_to_project(
+        self, thread_id: int, project_id: int | None
+    ) -> bool:
+        """Reassign a thread to a project (or to Unfiled when ``project_id``
+        is None). Updates the thread's ``updated_at`` so it floats to the
+        top of the project list, mirroring "user just touched this"."""
+        cur = self._con.execute(
+            "UPDATE conversation_threads SET project_id = ?, "
+            "updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = ?",
+            (project_id, thread_id),
+        )
+        self._con.commit()
+        return cur.rowcount > 0
 
 
 def _row_to_turn(row: sqlite3.Row) -> ConversationTurn:
@@ -464,10 +610,26 @@ def _row_to_turn(row: sqlite3.Row) -> ConversationTurn:
 
 
 def _row_to_thread(row: sqlite3.Row) -> ConversationThread:
+    # ``project_id`` may be absent on a row pulled from a query that pre-dates
+    # the S11 column add; tolerate that so older fetch sites keep working.
+    try:
+        project_id = row["project_id"]
+    except (IndexError, KeyError):
+        project_id = None
     return ConversationThread(
         id=row["id"],
         profile_id=row["profile_id"],
         title=row["title"] or "",
         created_at=row["created_at"] or "",
         updated_at=row["updated_at"] or "",
+        project_id=project_id,
+    )
+
+
+def _row_to_project(row: sqlite3.Row) -> ConversationProject:
+    return ConversationProject(
+        id=row["id"],
+        profile_id=row["profile_id"],
+        name=row["name"] or "",
+        created_at=row["created_at"] or "",
     )
