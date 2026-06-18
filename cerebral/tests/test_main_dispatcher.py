@@ -277,7 +277,10 @@ def conversation_rig(monkeypatch):
     async def fake_broadcast(event):
         broadcasts.append(event)
 
-    async def fake_record_turn(kind, content):
+    async def fake_record_turn(kind, content, **_kw):
+        # S14 (#297) introduced an optional ``attachment_ids`` kwarg on
+        # _record_turn. The dispatcher tests don't care about attachments
+        # so the rig accepts and ignores any keyword extras.
         recorded.append((kind, content))
 
     async def fake_process_command(text, *, speak=True, thread_model_override=None):
