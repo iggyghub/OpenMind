@@ -486,6 +486,54 @@
     .health-row .v.warn { color: #d4b04b; }
     .health-row .v.good { color: #4bd49a; }
 
+    /* ── conversation thread strip (S9 / #292) ──────────────── */
+    .conv-thread-strip {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      flex-shrink: 0;
+    }
+    .conv-thread-title {
+      flex: 1;
+      min-width: 0;
+      font-size: 13px;
+      color: var(--text);
+      padding: 4px 8px;
+      border-radius: 6px;
+      cursor: text;
+      border: 1px solid transparent;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      background: transparent;
+      font-family: inherit;
+    }
+    .conv-thread-title:hover { background: var(--bg-elev); }
+    .conv-thread-title:focus {
+      outline: none;
+      background: var(--bg-elev);
+      border-color: var(--accent);
+    }
+    .conv-thread-title.is-untitled { color: var(--text-muted); font-style: italic; }
+    .conv-thread-newbtn {
+      flex-shrink: 0;
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .conv-thread-newbtn:hover {
+      color: var(--text);
+      border-color: var(--accent);
+    }
+
     /* ── transcript ─────────────────────────────────────────── */
     .transcript {
       flex: 1;
@@ -2560,6 +2608,19 @@
     </div>
 
     <section class="pane" data-route="conversation">
+      <!-- S9 (#292) -- active-thread title + New conversation button. Title
+           is contenteditable: blur or Enter commits, Escape reverts. -->
+      <div class="conv-thread-strip" id="conv-thread-strip">
+        <div class="conv-thread-title is-untitled"
+             id="conv-thread-title"
+             contenteditable="true"
+             spellcheck="false"
+             role="textbox"
+             aria-label="Conversation title">Untitled conversation</div>
+        <button class="conv-thread-newbtn" id="conv-thread-new" type="button"
+                title="Start a new conversation thread">+ New conversation</button>
+      </div>
+
       <div class="transcript" id="transcript">
         <div class="empty" id="empty-state">
           Felix is ready. Type a command below, or just talk — the visualiser orb shows
@@ -3017,6 +3078,8 @@
     const emptyState  = document.getElementById('empty-state');
     const input       = document.getElementById('input');
     const send        = document.getElementById('send');
+    const convThreadTitleEl = document.getElementById('conv-thread-title');
+    const convThreadNewBtn  = document.getElementById('conv-thread-new');
     const statePill   = document.getElementById('state-pill');
     const healthDot   = document.getElementById('health-dot');
     const healthPanel = document.getElementById('health-panel');
@@ -3150,6 +3213,9 @@
     let ws = null;
     let activeProfileId = null;
     let renderedTurnIds = new Set();
+    // S9 (#292) -- active conversation thread + threads snapshot.
+    let activeThreadId = null;
+    let threadsList = [];
 
     // Cerebral broadcasts heartbeat every 5s. We treat the connection as
     // ok up to 12s after the last one (one missed tick), stale beyond
@@ -3191,6 +3257,11 @@
         sendEvent({ type: 'list_settings' });
         // S8 -- voices catalogue for the voice picker.
         sendEvent({ type: 'list_voices' });
+        // S9 (#292) -- prime the conversation threads list + active id so
+        // the title strip on the Conversation pane is correct on first
+        // paint. The turns snapshot (list_conversation_turns) is sent by
+        // Cerebral as part of the connect-time greeting.
+        sendEvent({ type: 'list_conversation_threads' });
       });
       ws.addEventListener('close', () => {
         wsConnected = false;
@@ -3259,6 +3330,10 @@
           // Profile snapshot replaces the visible transcript — covers
           // initial load AND profile switch.
           activeProfileId = d.profile_id;
+          // S9 / #292 -- active thread id rides on the same envelope.
+          if (typeof d.thread_id !== 'undefined') {
+            activeThreadId = d.thread_id;
+          }
           renderedTurnIds = new Set();
           clearTranscript();
           (d.turns || []).forEach(appendTurn);
@@ -3271,6 +3346,15 @@
             appendTurn(turn);
             scrollToBottom();
           }
+          break;
+        }
+        case 'conversation_threads_data': {
+          // S9 / #292 -- threads list + active_thread_id snapshot.
+          const d = event.data || {};
+          threadsList = d.threads || [];
+          activeThreadId = (typeof d.active_thread_id !== 'undefined')
+            ? d.active_thread_id : activeThreadId;
+          renderThreadTitle();
           break;
         }
         case 'first_run':
@@ -3491,6 +3575,79 @@
 
     function scrollToBottom() {
       transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    // ── conversation threads (S9 / #292) ─────────────────────────────────
+    function activeThread() {
+      if (activeThreadId == null) return null;
+      return threadsList.find(t => t.id === activeThreadId) || null;
+    }
+
+    function renderThreadTitle() {
+      if (!convThreadTitleEl) return;
+      // Don't trample an in-progress edit.
+      if (document.activeElement === convThreadTitleEl) return;
+      const t = activeThread();
+      const title = (t && t.title) ? t.title : '';
+      if (title) {
+        convThreadTitleEl.textContent = title;
+        convThreadTitleEl.classList.remove('is-untitled');
+      } else {
+        convThreadTitleEl.textContent = 'Untitled conversation';
+        convThreadTitleEl.classList.add('is-untitled');
+      }
+    }
+
+    function commitThreadTitleEdit() {
+      if (!convThreadTitleEl || activeThreadId == null) {
+        renderThreadTitle();
+        return;
+      }
+      const raw = (convThreadTitleEl.textContent || '').trim();
+      const placeholder = 'Untitled conversation';
+      const next = (raw === placeholder) ? '' : raw;
+      const current = (activeThread() && activeThread().title) || '';
+      if (next === current) {
+        renderThreadTitle();
+        return;
+      }
+      sendEvent({
+        type: 'rename_conversation_thread',
+        data: { thread_id: activeThreadId, title: next },
+      });
+    }
+
+    if (convThreadTitleEl) {
+      convThreadTitleEl.addEventListener('focus', () => {
+        // On first edit of an Untitled thread clear the placeholder so the
+        // user types from an empty box, not on top of the grey text.
+        if (convThreadTitleEl.classList.contains('is-untitled')) {
+          convThreadTitleEl.textContent = '';
+          convThreadTitleEl.classList.remove('is-untitled');
+        }
+        // Select all so a typed character replaces the title.
+        const range = document.createRange();
+        range.selectNodeContents(convThreadTitleEl);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      });
+      convThreadTitleEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          convThreadTitleEl.blur();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          renderThreadTitle();
+          convThreadTitleEl.blur();
+        }
+      });
+      convThreadTitleEl.addEventListener('blur', commitThreadTitleEdit);
+    }
+    if (convThreadNewBtn) {
+      convThreadNewBtn.addEventListener('click', () => {
+        sendEvent({ type: 'new_conversation_thread' });
+      });
     }
 
     // ── inline consent cards (Issue #189) ────────────────────────────────
