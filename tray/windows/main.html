@@ -534,6 +534,67 @@
       border-color: var(--accent);
     }
 
+    /* ── conversations list pane (S10 / #293) ──────────────── */
+    .conv-list-controls {
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--border);
+    }
+    .conv-list-search-input {
+      width: 100%;
+      box-sizing: border-box;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--text);
+      font-family: inherit;
+      outline: none;
+    }
+    .conv-list-search-input:focus { border-color: var(--accent); }
+    .conv-thread-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--border);
+      cursor: default;
+    }
+    .conv-thread-row:hover { background: var(--bg-elev); }
+    .conv-thread-row.is-active { border-left: 3px solid var(--accent); padding-left: 15px; }
+    .conv-thread-row-info { flex: 1; min-width: 0; }
+    .conv-thread-row-title {
+      font-size: 13px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 3px;
+    }
+    .conv-thread-row-title.is-untitled { color: var(--text-muted); font-style: italic; }
+    .conv-thread-row-meta { font-size: 11px; color: var(--text-muted); }
+    .conv-thread-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .conv-thread-open-btn,
+    .conv-thread-del-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .conv-thread-open-btn { color: var(--text-muted); }
+    .conv-thread-open-btn:hover { color: var(--text); border-color: var(--accent); }
+    .conv-thread-del-btn { color: var(--text-muted); }
+    .conv-thread-del-btn:hover { color: #c44b4b; border-color: #c44b4b; }
+    .conv-list-empty {
+      padding: 24px 18px;
+      font-size: 13px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
     /* ── transcript ─────────────────────────────────────────── */
     .transcript {
       flex: 1;
@@ -2979,10 +3040,16 @@
     </section>
 
     <section class="pane" data-route="conversations" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Conversations</div>
-        <div class="placeholder-sub">Saved threads and projects will appear here.</div>
-        <div class="placeholder-issue">Coming in issue #292 (S9)</div>
+      <div class="set-body" id="conv-list-body">
+        <div class="set-section">Saved conversations</div>
+        <div class="conv-list-controls">
+          <input type="search" id="conv-list-search" class="conv-list-search-input"
+                 placeholder="Filter by title or content...">
+        </div>
+        <div id="conv-thread-list"></div>
+        <div id="conv-list-empty" class="conv-list-empty" hidden>
+          No saved conversations yet. Start a new conversation to see it here.
+        </div>
       </div>
     </section>
 
@@ -3078,8 +3145,11 @@
     const emptyState  = document.getElementById('empty-state');
     const input       = document.getElementById('input');
     const send        = document.getElementById('send');
-    const convThreadTitleEl = document.getElementById('conv-thread-title');
-    const convThreadNewBtn  = document.getElementById('conv-thread-new');
+    const convThreadTitleEl  = document.getElementById('conv-thread-title');
+    const convThreadNewBtn   = document.getElementById('conv-thread-new');
+    const convListSearchEl   = document.getElementById('conv-list-search');
+    const convThreadListEl   = document.getElementById('conv-thread-list');
+    const convListEmptyEl    = document.getElementById('conv-list-empty');
     const statePill   = document.getElementById('state-pill');
     const healthDot   = document.getElementById('health-dot');
     const healthPanel = document.getElementById('health-panel');
@@ -3216,6 +3286,11 @@
     // S9 (#292) -- active conversation thread + threads snapshot.
     let activeThreadId = null;
     let threadsList = [];
+    // S10 (#293) -- conversations pane search state.
+    // convSearchHits is null when the list shows all threads; when a full-text
+    // IPC search returns results it holds the matching subset instead.
+    let convListQuery  = '';
+    let convSearchHits = null;
 
     // Cerebral broadcasts heartbeat every 5s. We treat the connection as
     // ok up to 12s after the last one (one missed tick), stale beyond
@@ -3350,11 +3425,27 @@
         }
         case 'conversation_threads_data': {
           // S9 / #292 -- threads list + active_thread_id snapshot.
+          // S10 / #293 -- threadsList now carries turn_count per thread.
           const d = event.data || {};
           threadsList = d.threads || [];
           activeThreadId = (typeof d.active_thread_id !== 'undefined')
             ? d.active_thread_id : activeThreadId;
+          // Clear IPC search results when the threads list is refreshed so
+          // the pane returns to the unfiltered view.
+          if (convListQuery === '') convSearchHits = null;
           renderThreadTitle();
+          renderConversationsList();
+          break;
+        }
+        case 'conversation_search_results': {
+          // S10 / #293 -- IPC full-text search result from Cerebral.
+          const d = event.data || {};
+          if (d.query === convListQuery && convListQuery !== '') {
+            convSearchHits = d.results || [];
+          } else {
+            convSearchHits = null;
+          }
+          renderConversationsList();
           break;
         }
         case 'first_run':
@@ -3596,6 +3687,88 @@
         convThreadTitleEl.textContent = 'Untitled conversation';
         convThreadTitleEl.classList.add('is-untitled');
       }
+    }
+
+    // ── conversations list pane (S10 / #293) ─────────────────────────────
+    function renderConversationsList() {
+      if (!convThreadListEl) return;
+      // Use IPC search results when available; fall back to full threads list.
+      const source = convSearchHits !== null ? convSearchHits : threadsList;
+      // Client-side title filter (synchronous, covers the typing-delay gap
+      // before the IPC search_conversations response arrives).
+      const q = convListQuery.trim().toLowerCase();
+      const visible = (convSearchHits !== null || !q)
+        ? source
+        : source.filter(function (t) {
+            return (t.title || '').toLowerCase().indexOf(q) !== -1;
+          });
+      if (convListEmptyEl) {
+        if (visible.length === 0) convListEmptyEl.removeAttribute('hidden');
+        else                      convListEmptyEl.setAttribute('hidden', '');
+      }
+      convThreadListEl.innerHTML = visible.map(function (t) {
+        const title    = (t.title || '').trim();
+        const isActive = (t.id === activeThreadId);
+        const count    = (typeof t.turn_count === 'number') ? t.turn_count : 0;
+        const ts       = t.updated_at ? new Date(t.updated_at).toLocaleDateString() : '';
+        const meta     = [
+          count ? (count + ' turn' + (count === 1 ? '' : 's')) : '',
+          ts,
+        ].filter(Boolean).join(' · ');
+        const activeClass = isActive ? ' is-active' : '';
+        const titleClass  = title ? '' : ' is-untitled';
+        const safeId  = escHtml(String(t.id));
+        return '<div class="conv-thread-row' + activeClass + '" data-tid="' + safeId + '">' +
+          '<div class="conv-thread-row-info">' +
+          '<div class="conv-thread-row-title' + titleClass + '">' +
+          escHtml(title || 'Untitled conversation') + '</div>' +
+          '<div class="conv-thread-row-meta">' + escHtml(meta) + '</div>' +
+          '</div>' +
+          '<div class="conv-thread-row-actions">' +
+          '<button class="conv-thread-open-btn" data-tid="' + safeId + '">Open</button>' +
+          '<button class="conv-thread-del-btn"  data-tid="' + safeId + '">Delete</button>' +
+          '</div>' +
+          '</div>';
+      }).join('');
+    }
+
+    // In-pane search: title filter (client-side) + IPC full-text fallback.
+    if (convListSearchEl) {
+      convListSearchEl.addEventListener('input', function () {
+        convListQuery  = convListSearchEl.value;
+        convSearchHits = null;  // reset IPC results; show client filter first
+        renderConversationsList();
+        // Fire IPC search for turn content when query is non-empty.
+        if (convListQuery.trim()) {
+          sendEvent({ type: 'search_conversations', data: { query: convListQuery.trim() } });
+        }
+      });
+    }
+
+    // Event delegation for Open and Delete buttons in the thread list.
+    if (convThreadListEl) {
+      convThreadListEl.addEventListener('click', function (e) {
+        const openBtn = e.target.closest('.conv-thread-open-btn');
+        const delBtn  = e.target.closest('.conv-thread-del-btn');
+        if (openBtn) {
+          const tid = parseInt(openBtn.dataset.tid, 10);
+          if (!isNaN(tid)) {
+            sendEvent({ type: 'switch_conversation_thread', data: { thread_id: tid } });
+            location.hash = '#conversation';
+          }
+        } else if (delBtn) {
+          const tid = parseInt(delBtn.dataset.tid, 10);
+          if (!isNaN(tid)) {
+            const row   = delBtn.closest('.conv-thread-row');
+            const label = row
+              ? (row.querySelector('.conv-thread-row-title') || {}).textContent || 'this conversation'
+              : 'this conversation';
+            if (window.confirm('Delete "' + label.trim() + '"? This will permanently remove all its turns.')) {
+              sendEvent({ type: 'delete_conversation_thread', data: { thread_id: tid } });
+            }
+          }
+        }
+      });
     }
 
     function commitThreadTitleEdit() {
@@ -5601,6 +5774,29 @@
         { label: 'Camera',            route: 'settings', anchor: 'set-camera-toggle' },
         { label: 'Visualiser',        route: 'settings', anchor: 'set-vis-toggle' },
       ];
+    });
+
+    // ── Conversations provider (S10 / #293). Searches thread titles from the
+    // in-memory threadsList snapshot. Turn-content search is IPC-async (handled
+    // in the Conversations pane itself); the global provider stays synchronous
+    // so the "found elsewhere" panel renders without latency.
+    _registerProvider('conversations', function (query) {
+      const q = (query || '').trim().toLowerCase();
+      return threadsList
+        .filter(function (t) {
+          if (!q) return true;
+          return (t.title || '').toLowerCase().indexOf(q) !== -1;
+        })
+        .map(function (t) {
+          const title = (t.title || '').trim() || 'Untitled conversation';
+          const count = (typeof t.turn_count === 'number') ? t.turn_count : 0;
+          return {
+            label:     title,
+            secondary: count ? (count + ' turn' + (count === 1 ? '' : 's')) : null,
+            route:     'conversations',
+            anchor:    'conv-thread-list',
+          };
+        });
     });
 
     function _currentRoute() {

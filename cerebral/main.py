@@ -1280,18 +1280,21 @@ def _conversation_turns_event(limit: int = 50) -> dict:
 
 def _threads_list_event() -> dict:
     """Snapshot of the active profile's conversation threads (S9 / #292),
-    plus the active thread id. Newest-updated first."""
+    plus the active thread id. Newest-updated first.
+
+    Each thread dict carries ``turn_count`` (S10 / #293) so the
+    Conversations pane can render the meta line without a separate query."""
     if _active_profile is None:
         return {
             "type": "conversation_threads_data",
             "data": {"profile_id": None, "threads": [], "active_thread_id": None},
         }
-    threads = _conversation.list_threads(_active_profile.id)
+    threads = _conversation.list_threads_with_counts(_active_profile.id)
     return {
         "type": "conversation_threads_data",
         "data": {
             "profile_id": _active_profile.id,
-            "threads": [t.to_dict() for t in threads],
+            "threads": threads,
             "active_thread_id": _resolve_active_thread_id(_active_profile.id),
         },
     }
@@ -2093,6 +2096,40 @@ async def _handle_message(msg: dict) -> None:
                 if thread is not None and thread.profile_id == _active_profile.id:
                     _conversation.rename_thread(tid, title.strip()[:200])
                     await _broadcast(_threads_list_event())
+
+    elif t == "delete_conversation_thread":
+        # S10 / #293 -- Delete a thread and all its turns. If the deleted
+        # thread was the active one, drop the cache entry so the next
+        # resolve picks the newest remaining thread (or creates a fresh one
+        # on the next new-turn call).
+        thread_id_raw = (msg.get("data") or {}).get("thread_id")
+        if _active_profile is not None and thread_id_raw is not None:
+            try:
+                tid = int(thread_id_raw)
+            except (TypeError, ValueError):
+                tid = None
+            if tid is not None:
+                thread = _conversation.get_thread(tid)
+                if thread is not None and thread.profile_id == _active_profile.id:
+                    _conversation.delete_thread(tid)
+                    if _active_thread_by_profile.get(_active_profile.id) == tid:
+                        _active_thread_by_profile.pop(_active_profile.id, None)
+                    await _broadcast(_threads_list_event())
+                    await _broadcast(_conversation_turns_event())
+
+    elif t == "search_conversations":
+        # S10 / #293 -- Full-text search through thread titles and turn
+        # content. Returns matching threads (with turn_count) so the
+        # Conversations pane can replace its list with search results.
+        query = (msg.get("data") or {}).get("query", "")
+        if _active_profile is not None and isinstance(query, str) and query.strip():
+            results = _conversation.search_threads(_active_profile.id, query.strip())
+        else:
+            results = []
+        await _broadcast({
+            "type": "conversation_search_results",
+            "data": {"query": query if isinstance(query, str) else "", "results": results},
+        })
 
     elif t == "list_queue":
         await _broadcast(_queue_update_event())

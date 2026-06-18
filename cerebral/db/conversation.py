@@ -376,6 +376,72 @@ class ConversationStore:
         self._con.commit()
         return cur.rowcount
 
+    def delete_thread(self, thread_id: int) -> bool:
+        """Delete a thread and all its turns. Returns True if the thread existed.
+
+        Turns carry ``ON DELETE SET NULL`` on thread_id in the schema, so we
+        delete them explicitly before dropping the thread to satisfy the
+        S10 spec requirement that deleting purges turns."""
+        self._con.execute(
+            "DELETE FROM conversation_turns WHERE thread_id = ?", (thread_id,)
+        )
+        cur = self._con.execute(
+            "DELETE FROM conversation_threads WHERE id = ?", (thread_id,)
+        )
+        self._con.commit()
+        return cur.rowcount > 0
+
+    def list_threads_with_counts(self, profile_id: int) -> list[dict]:
+        """Like ``list_threads`` but each dict also carries ``turn_count``."""
+        rows = self._con.execute(
+            """
+            SELECT ct.id, ct.profile_id, ct.title, ct.created_at, ct.updated_at,
+                   COUNT(ctu.id) AS turn_count
+            FROM conversation_threads ct
+            LEFT JOIN conversation_turns ctu ON ctu.thread_id = ct.id
+            WHERE ct.profile_id = ?
+            GROUP BY ct.id
+            ORDER BY ct.updated_at DESC, ct.id DESC
+            """,
+            (profile_id,),
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = _row_to_thread(r).to_dict()
+            d["turn_count"] = r["turn_count"]
+            result.append(d)
+        return result
+
+    def search_threads(
+        self, profile_id: int, query: str, limit: int = 20
+    ) -> list[dict]:
+        """Search threads by title and turn content. Returns dicts with turn_count.
+
+        Searches ``content_json`` as raw text so it catches any key/value
+        that contains the query string without needing full-text indexing."""
+        q = f"%{query}%"
+        rows = self._con.execute(
+            """
+            SELECT DISTINCT ct.id, ct.profile_id, ct.title,
+                   ct.created_at, ct.updated_at,
+                   (SELECT COUNT(*) FROM conversation_turns
+                    WHERE thread_id = ct.id) AS turn_count
+            FROM conversation_threads ct
+            LEFT JOIN conversation_turns ctu ON ctu.thread_id = ct.id
+            WHERE ct.profile_id = ?
+              AND (ct.title LIKE ? OR ctu.content_json LIKE ?)
+            ORDER BY ct.updated_at DESC, ct.id DESC
+            LIMIT ?
+            """,
+            (profile_id, q, q, limit),
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = _row_to_thread(r).to_dict()
+            d["turn_count"] = r["turn_count"]
+            result.append(d)
+        return result
+
 
 def _row_to_turn(row: sqlite3.Row) -> ConversationTurn:
     try:
