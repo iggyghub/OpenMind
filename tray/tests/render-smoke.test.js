@@ -384,6 +384,36 @@ test('channel renderer uses password input for the secret field (S16)', () => {
   expect(inlineScript).toMatch(/input\.value\s*=\s*['"]['"]/);
 });
 
+// ── S17 — service directory ──────────────────────────────────────────────────
+
+test('integrations pane has SERVICES section and svc body container (S17)', () => {
+  const pane = root.querySelector('.pane[data-route="integrations"]');
+  expect(pane).not.toBeNull();
+
+  const svcSection = pane.querySelector('#int-svc-section');
+  expect(svcSection).not.toBeNull();
+
+  const svcBody = pane.querySelector('#int-svc-body');
+  expect(svcBody).not.toBeNull();
+});
+
+test('credential cards have anchor IDs for Connect deep-link (S17)', () => {
+  const googleCard  = root.querySelector('#cred-card-google');
+  const apiKeysCard = root.querySelector('#cred-card-api-keys');
+  expect(googleCard).not.toBeNull();
+  expect(apiKeysCard).not.toBeNull();
+});
+
+test('service-registry.js script tag is present (S17)', () => {
+  const srcTags = root.querySelectorAll('script[src]');
+  const found = srcTags.some(s => (s.getAttribute('src') || '').includes('service-registry'));
+  expect(found).toBe(true);
+});
+
+test('inline script references service directory Connect handler (S17)', () => {
+  expect(inlineScript).toMatch(/data-svc-connect/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
