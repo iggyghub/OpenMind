@@ -1127,6 +1127,61 @@
     }
     .int-secret-row input:focus { border-color: #e0b755; }
 
+    /* ── S17 / #300: service directory ─────────────────────── */
+    .int-svc-cat-header {
+      padding: 10px 18px 4px;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .int-svc-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 18px 9px 24px;
+      border-bottom: 1px solid #1e1c30;
+    }
+    .int-svc-row:last-child { border-bottom: none; }
+
+    .int-svc-name {
+      flex: 1;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+
+    .int-svc-status {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      min-width: 80px;
+      justify-content: flex-end;
+    }
+    .int-svc-status.is-connected { color: #4bd49a; }
+    .int-svc-status .int-status-dot { flex-shrink: 0; }
+
+    .int-svc-connect {
+      padding: 3px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg);
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.01em;
+      transition: color 0.12s, border-color 0.12s;
+    }
+    .int-svc-connect:hover { color: var(--text); border-color: #4a4670; }
+    .int-svc-connect.is-connected { color: #4bd49a; border-color: #4bd49a55; }
+    .int-svc-connect.is-connected:hover { border-color: #4bd49a; }
+
     /* ── header queue badge ─────────────────────────────────── */
     /* Pending-action count surfaced in the chat header so the user
        sees it from any pane. Hidden when zero. Click jumps to #queue. */
@@ -3250,7 +3305,7 @@
 
     <section class="pane" data-route="credentials" hidden>
       <div class="cred-body">
-        <div class="cred-card">
+        <div class="cred-card" id="cred-card-google">
           <div class="cred-card-title">Google</div>
           <div class="cred-status" id="cred-status">
             <span class="cred-status-dot"></span>
@@ -3281,7 +3336,7 @@
           </div>
         </div>
 
-        <div class="cred-card">
+        <div class="cred-card" id="cred-card-api-keys">
           <div class="cred-card-title">API keys</div>
           <div id="cred-static-tokens-list">
             <!-- rows rendered by renderStaticTokens() -->
@@ -3554,6 +3609,12 @@
           </span>
         </div>
         <div id="int-channels-list"></div>
+
+        <!-- S17 (#300) -- service directory -->
+        <div class="int-section" id="int-svc-section">Services</div>
+        <div id="int-svc-body">
+          <!-- rows rendered by renderServiceDirectory() -->
+        </div>
       </div>
     </section>
 
@@ -3613,6 +3674,11 @@
        helpers. Dual-mode: window.AttachmentChips here, module.exports for
        jest. Used by both the composer chip row and per-turn chip strips. -->
   <script src="../lib/attachment-chips.js"></script>
+
+  <!-- Service registry (S17 -- #300) -- integration catalogue grouped by
+       category. Dual-mode: window.ServiceRegistry here, module.exports for
+       Node tests. -->
+  <script src="../lib/service-registry.js"></script>
 
   <script>
     'use strict';
@@ -3698,6 +3764,7 @@
     const intDaemonStopBtn    = document.getElementById('int-daemon-stop');
     const intDaemonRestartBtn = document.getElementById('int-daemon-restart');
     const intChannelsEl    = document.getElementById('int-channels-list');
+    const intSvcBodyEl     = document.getElementById('int-svc-body');
     const setActiveNameEl  = document.getElementById('set-active-name');
     const setActiveCloudEl = document.getElementById('set-active-cloud');
     const setLastLineEl    = document.getElementById('set-last-line');
@@ -4026,6 +4093,7 @@
         case 'credentials_state':
           credentialsState = event.data || null;
           renderCredentials();
+          renderServiceDirectory();
           break;
         case 'permissions_state':
           if (permStore) permStore.applyState(event.data || {});
@@ -5271,6 +5339,74 @@
     // First render of the static-tokens section before any state arrives so
     // the card isn't blank on initial paint.
     renderCredentialsStaticTokens(null);
+
+    // ── S17 (#300): service directory ────────────────────────────────────
+    // Renders the CONTEXT.md integration registry grouped by category.
+    // Google services reflect live credentials_state; others show "available".
+    const _svcReg = window.ServiceRegistry;
+
+    function renderServiceDirectory() {
+      if (!intSvcBodyEl || !_svcReg) return;
+      const googleStatus = (credentialsState && credentialsState.google &&
+                            credentialsState.google.status) || 'not configured';
+      const googleConnected = googleStatus === 'connected';
+
+      const grouped = _svcReg.byCategory();
+      var html = '';
+      grouped.forEach(function (services, category) {
+        html += '<div class="int-svc-cat-header">' + escHtml(category) + '</div>';
+        for (var i = 0; i < services.length; i++) {
+          var svc = services[i];
+          var isGoogle = svc.credAnchor === 'cred-card-google';
+          var connected = isGoogle ? googleConnected : false;
+          var local = svc.credAnchor === null;
+          var dotCls  = connected ? 'int-status-dot is-connected' : 'int-status-dot';
+          var svcStat = connected ? 'connected' : (local ? 'local' : 'available');
+          var statusCls = connected ? 'int-svc-status is-connected' : 'int-svc-status';
+          var connectHtml = '';
+          if (!local) {
+            var btnCls = connected ? 'int-svc-connect is-connected' : 'int-svc-connect';
+            var btnLabel = connected ? 'Connected' : 'Connect';
+            connectHtml = '<button class="' + btnCls + '" type="button"' +
+              ' data-svc-connect="' + escHtml(svc.credAnchor) + '">' +
+              btnLabel + '</button>';
+          }
+          html += '<div class="int-svc-row">' +
+            '<span class="int-svc-name">' + escHtml(svc.name) + '</span>' +
+            '<span class="' + statusCls + '">' +
+              '<span class="' + dotCls + '"></span>' +
+              escHtml(svcStat) +
+            '</span>' +
+            connectHtml +
+          '</div>';
+        }
+      });
+      intSvcBodyEl.innerHTML = html;
+    }
+
+    // Initial render (before any credentials_state arrives).
+    renderServiceDirectory();
+
+    // Connect button: navigate to Credentials pane and scroll to the target card.
+    intSvcBodyEl.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-svc-connect]');
+      if (!btn) return;
+      var anchor = btn.getAttribute('data-svc-connect');
+      if (location.hash.replace(/^#/, '') === 'credentials') {
+        if (anchor) {
+          var el = document.getElementById(anchor);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      } else {
+        location.hash = '#credentials';
+        if (anchor) {
+          setTimeout(function () {
+            var el = document.getElementById(anchor);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }, 80);
+        }
+      }
+    });
 
     // ── permissions pane (Issue #202) ────────────────────────────────────
     // The store is the renderer-portable resolver from
@@ -6922,9 +7058,9 @@
         });
     });
 
-    // ── Integrations provider (S15 / #298).
+    // ── Integrations provider (S15 / #298, extended S17 / #300).
     _registerProvider('integrations', function (_query) {
-      return [
+      var hits = [
         { label: 'OpenClaw daemon', route: 'integrations', anchor: 'int-harness-section' },
         { label: 'WhatsApp',        route: 'integrations', anchor: 'int-channels-list' },
         { label: 'Telegram',        route: 'integrations', anchor: 'int-channels-list' },
@@ -6932,6 +7068,19 @@
         { label: 'Slack',           route: 'integrations', anchor: 'int-channels-list' },
         { label: 'Teams',           route: 'integrations', anchor: 'int-channels-list' },
       ];
+      // S17: include service directory entries so users can find services by
+      // name from the cross-pane search shell.
+      if (_svcReg) {
+        _svcReg.SERVICES.forEach(function (svc) {
+          hits.push({
+            label:     svc.name,
+            secondary: svc.category,
+            route:     'integrations',
+            anchor:    'int-svc-section',
+          });
+        });
+      }
+      return hits;
     });
 
     function _currentRoute() {

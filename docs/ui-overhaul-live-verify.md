@@ -630,3 +630,50 @@ and creates this document. Verify the harness itself works:
       collapses and the row pill is unchanged (no IPC send).
 - [ ] Click **Set secret**, leave the field empty, click **Save**. Confirm the
       form collapses with no state change (empty saves are ignored).
+
+---
+
+## S17 -- Integrations: service directory (#300)
+
+**Service directory renders**
+
+- [ ] Open Felix and navigate to **Integrations**. Scroll below the HARNESS
+      section. Confirm a **SERVICES** section header appears, followed by
+      category sub-headers (GOOGLE, DEV, INFORMATION, SECURITY, HARDWARE,
+      FINANCE, COMMUNICATION, PRODUCTIVITY, SOCIAL, CREATIVE, SMART HOME,
+      HEALTH) each with their service rows.
+- [ ] Each service row shows the service name, a status indicator
+      (dot + text), and -- for services that need credentials -- a
+      **Connect** button.
+- [ ] Services with `credAnchor: null` (Git, Docker, Wikipedia, Weather, etc.)
+      show "local" status and no Connect button.
+
+**Connect deep-link**
+
+- [ ] Click **Connect** on any Google-category service row (e.g. Gmail).
+      Confirm the UI navigates to the **Credentials** pane and scrolls the
+      **Google** card into view.
+- [ ] Click **Connect** on any non-Google service row (e.g. GitHub / GitLab).
+      Confirm the UI navigates to the **Credentials** pane and scrolls the
+      **API keys** card into view.
+- [ ] While already on the Credentials pane, click a Connect button from
+      another pane (navigate back to Integrations first, then Connect).
+      Confirm the scroll-into-view works whether you were already on
+      Credentials or navigating fresh to it.
+
+**Connected state reflection**
+
+- [ ] Without a Google account connected, all Google-service rows show a grey
+      "available" status and a plain "Connect" button.
+- [ ] Connect a Google account (Credentials pane). Return to Integrations.
+      Confirm all Google-category rows now show a green dot and
+      "connected" status, and the Connect button is styled green
+      ("Connected").
+
+**Federated search**
+
+- [ ] Open the search bar. Type "Gmail". Confirm Gmail appears in the
+      "Found elsewhere" panel pointing to the Integrations pane.
+- [ ] Type "Bitwarden". Confirm it appears in search results.
+- [ ] Click a search hit for a service. Confirm it navigates to the
+      Integrations pane and scrolls the SERVICES section into view.
