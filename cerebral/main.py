@@ -2612,6 +2612,21 @@ async def _handle_message(msg: dict) -> None:
             if ok:
                 await _broadcast(_recipes_update_event())
 
+    elif t == "run_recipe":
+        recipe_id = msg.get("data", {}).get("recipe_id")
+        if recipe_id and _active_profile:
+            recipe = _recipe_store.get(recipe_id)
+            if recipe is not None:
+                result = await _replay_recipe(recipe.synthetic_tool_name, _active_profile.id)
+                await _broadcast({
+                    "type": "recipe_run_result",
+                    "data": {
+                        "recipe_id": recipe_id,
+                        "ok": not result.is_error,
+                        "message": result.content,
+                    },
+                })
+
     elif t == "list_settings":
         await _broadcast(_settings_state_event())
 

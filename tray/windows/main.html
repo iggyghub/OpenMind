@@ -1715,6 +1715,119 @@
     }
     .mem-btn-delete:hover { color: #e05555; border-color: #e05555; }
 
+    /* ── recipes pane ──────────────────────────────────────── */
+    /* Named tool-chains. Accent: teal (#4bd4c8), distinct from memory green. */
+    .pane[data-route="recipes"] { background: var(--bg); }
+
+    .rcp-body {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .rcp-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+    }
+    .rcp-list::-webkit-scrollbar { width: 4px; }
+    .rcp-list::-webkit-scrollbar-track { background: transparent; }
+    .rcp-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .rcp-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 8px;
+      color: var(--text-muted);
+      user-select: none;
+    }
+    .rcp-empty-icon { font-size: 28px; opacity: 0.5; }
+    .rcp-empty-text { font-size: 13px; }
+
+    .rcp-item {
+      padding: 10px 18px;
+      border-bottom: 1px solid #1e1c30;
+      animation: rcp-fadeIn 0.15s ease;
+    }
+    .rcp-item:last-child { border-bottom: none; }
+
+    @keyframes rcp-fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .rcp-item-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+
+    .rcp-item-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      flex: 1;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .rcp-item-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+
+    .rcp-item-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .rcp-btn {
+      padding: 4px 10px;
+      border: none;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.1s, background 0.12s, color 0.12s, border-color 0.12s;
+      letter-spacing: 0.01em;
+    }
+    .rcp-btn:active { opacity: 0.75; }
+    .rcp-btn:disabled { opacity: 0.45; cursor: default; }
+
+    .rcp-btn-run {
+      background: #4bd4c8;
+      color: var(--bg);
+    }
+    .rcp-btn-run:hover:not(:disabled) { background: #6dded4; }
+
+    .rcp-btn-delete {
+      background: var(--bg-elev);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      margin-left: auto;
+    }
+    .rcp-btn-delete:hover { color: #e05555; border-color: #e05555; }
+
+    .rcp-run-feedback {
+      font-size: 11px;
+      margin-top: 4px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      display: none;
+    }
+    .rcp-run-feedback.ok  { color: #4bd4c8; }
+    .rcp-run-feedback.err { color: #e05555; }
+    .rcp-run-feedback.visible { display: block; }
+
     /* ── credentials pane ───────────────────────────────────── */
     /* Lifted from the retired tray/windows/credentials.html; class names are
        prefixed with `cred-` so the pane doesn't collide with Conversation's
@@ -3687,11 +3800,15 @@
       </div>
     </section>
 
+    <!-- S19 (#302) -- Recipes pane: list / run / delete saved tool-chains -->
     <section class="pane" data-route="recipes" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Recipes</div>
-        <div class="placeholder-sub">Named tool-chains you can run on demand.</div>
-        <div class="placeholder-issue">Coming in issue #302 (S19)</div>
+      <div class="rcp-body">
+        <div class="rcp-list" id="rcp-list">
+          <div class="rcp-empty" id="rcp-empty">
+            <span class="rcp-empty-icon">&#9874;</span>
+            <span class="rcp-empty-text">No saved Recipes yet.</span>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -3972,6 +4089,7 @@
     // Integrations pane state (S15 / #298). Populated by harness_status
     // broadcasts; null until the first reply arrives.
     let integrationsData = null;
+    let recipesData = null;
 
     // S18 (#301) -- channel inbox state. Populated by channel_inbox_update
     // broadcasts. _intInboxReplyDraft preserves per-session_key drafts as
@@ -4238,6 +4356,13 @@
         case 'harness_status':
           integrationsData = event.data || null;
           renderIntegrations();
+          break;
+        case 'recipes_update':
+          recipesData = event.data || null;
+          renderRecipes();
+          break;
+        case 'recipe_run_result':
+          _onRecipeRunResult(event.data || {});
           break;
         case 'channel_inbox_update':
           // S18 (#301) -- inbound channel message arrived or a manual
@@ -5206,6 +5331,83 @@
       } else if (e.key === 'Escape') {
         e.preventDefault();
         cancelInsightEdit(card);
+      }
+    });
+
+    // ── recipes pane (S19 -- #302) ───────────────────────────────────────
+    // Renders the list of saved Recipes. Each row shows name, step count,
+    // run count, and last-run date with Run and Delete action buttons.
+    // Running fires run_recipe IPC which calls _replay_recipe on the backend,
+    // re-gating every step per ADR-0005. Deleting fires delete_recipe IPC.
+
+    const rcpListEl  = document.getElementById('rcp-list');
+    const rcpEmptyEl = document.getElementById('rcp-empty');
+
+    function renderRecipes() {
+      rcpListEl.querySelectorAll('.rcp-item').forEach(function (el) { el.remove(); });
+      const recipes = (recipesData && recipesData.recipes) || [];
+      const staleIds = new Set((recipesData && recipesData.stale_ids) || []);
+      if (recipes.length === 0) {
+        rcpEmptyEl.style.display = 'flex';
+        return;
+      }
+      rcpEmptyEl.style.display = 'none';
+
+      recipes.forEach(function (rcp) {
+        const el = document.createElement('div');
+        el.className = 'rcp-item';
+        el.dataset.id = rcp.id;
+        const stepCount = Array.isArray(rcp.steps) ? rcp.steps.length : 0;
+        const metaParts = [
+          stepCount + ' step' + (stepCount === 1 ? '' : 's'),
+          'run ' + (rcp.run_count || 0) + '\xd7',
+        ];
+        if (rcp.last_run_at) {
+          metaParts.push('last ' + fmtDate(rcp.last_run_at));
+        }
+        if (staleIds.has(rcp.id)) {
+          metaParts.push('stale');
+        }
+        el.innerHTML =
+          '<div class="rcp-item-header">' +
+            '<span class="rcp-item-name">' + escHtml(rcp.name) + '</span>' +
+          '</div>' +
+          '<div class="rcp-item-meta">' + escHtml(metaParts.join(' \xb7 ')) + '</div>' +
+          '<div class="rcp-item-actions">' +
+            '<button class="rcp-btn rcp-btn-run"    type="button" data-rcp-run="'    + rcp.id + '">Run</button>' +
+            '<button class="rcp-btn rcp-btn-delete" type="button" data-rcp-delete="' + rcp.id + '">Delete</button>' +
+          '</div>' +
+          '<div class="rcp-run-feedback" id="rcp-fb-' + rcp.id + '"></div>';
+        rcpListEl.appendChild(el);
+      });
+    }
+
+    function _onRecipeRunResult(data) {
+      const fbEl = document.getElementById('rcp-fb-' + data.recipe_id);
+      if (!fbEl) return;
+      const item = fbEl.closest('.rcp-item');
+      const runBtn = item && item.querySelector('.rcp-btn-run');
+      if (runBtn) runBtn.disabled = false;
+      fbEl.textContent = data.ok ? 'Done.' : ('Error: ' + escHtml(data.message || 'unknown'));
+      fbEl.className = 'rcp-run-feedback visible ' + (data.ok ? 'ok' : 'err');
+      setTimeout(function () {
+        fbEl.className = 'rcp-run-feedback';
+        fbEl.textContent = '';
+      }, 4000);
+    }
+
+    rcpListEl.addEventListener('click', function (e) {
+      const runBtn = e.target.closest('[data-rcp-run]');
+      if (runBtn) {
+        const id = parseInt(runBtn.dataset.rcpRun, 10);
+        runBtn.disabled = true;
+        sendEvent({ type: 'run_recipe', data: { recipe_id: id } });
+        return;
+      }
+      const delBtn = e.target.closest('[data-rcp-delete]');
+      if (delBtn) {
+        const id = parseInt(delBtn.dataset.rcpDelete, 10);
+        sendEvent({ type: 'delete_recipe', data: { recipe_id: id } });
       }
     });
 
@@ -7109,6 +7311,10 @@
         // the channel inbox.
         sendEvent({ type: 'request_harness_status' });
         sendEvent({ type: 'request_channel_inbox' });
+      } else if (route === 'recipes') {
+        // S19 (#302) -- defensive re-pull on activation; recipes_update
+        // renders idempotently.
+        sendEvent({ type: 'list_recipes' });
       }
     }
 
@@ -7331,6 +7537,15 @@
         anchor: 'int-inbox-section',
       });
       return hits;
+    });
+
+    // ── Recipes provider (S19 / #302).
+    _registerProvider('recipes', function (query) {
+      const recipes = (recipesData && recipesData.recipes) || [];
+      const q = query.toLowerCase();
+      return recipes
+        .filter(function (r) { return r.name.toLowerCase().includes(q); })
+        .map(function (r) { return { label: r.name, route: 'recipes', anchor: '' }; });
     });
 
     function _currentRoute() {

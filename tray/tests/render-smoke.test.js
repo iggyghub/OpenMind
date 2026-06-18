@@ -455,6 +455,33 @@ test('inbox reply composer is a textarea bound to send_channel_reply (S18)', () 
   expect(inlineScript).toMatch(/data-int-inbox-send/);
 });
 
+// ── S19 — recipes pane ───────────────────────────────────────────────────────
+
+test('recipes pane has list container and empty state (S19)', () => {
+  const pane = root.querySelector('.pane[data-route="recipes"]');
+  expect(pane).not.toBeNull();
+
+  // Placeholder must be gone.
+  expect(pane.querySelector('.placeholder')).toBeNull();
+
+  const list = pane.querySelector('#rcp-list');
+  expect(list).not.toBeNull();
+
+  const empty = pane.querySelector('#rcp-empty');
+  expect(empty).not.toBeNull();
+});
+
+test('inline script handles recipes_update and recipe_run_result events (S19)', () => {
+  expect(inlineScript).toMatch(/['"]recipes_update['"]/);
+  expect(inlineScript).toMatch(/['"]recipe_run_result['"]/);
+});
+
+test('inline script fires run_recipe and delete_recipe IPC verbs (S19)', () => {
+  expect(inlineScript).toMatch(/['"]run_recipe['"]/);
+  expect(inlineScript).toMatch(/['"]delete_recipe['"]/);
+  expect(inlineScript).toMatch(/['"]list_recipes['"]/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

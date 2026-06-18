@@ -760,3 +760,59 @@ to gate channel threads -- out of scope for one slice.
       the Inbox is empty again -- channel transcripts remain durable on
       the channel side; the local inbox is a "what's new since the
       daemon came up" surface, not a persistent log.
+
+---
+
+## S19 -- Recipes pane (#302)
+
+**Empty state**
+
+- [ ] Open the MIND > Recipes pane with no saved Recipes. Confirm the
+      empty state ("No saved Recipes yet.") is displayed.
+
+**List populates after creating a Recipe via voice**
+
+- [ ] Ask Felix to do two distinct tasks (e.g. "search the web for
+      OpenMind news, then read my unread emails"). After the chain
+      completes, Felix should offer to save it as a Recipe.
+- [ ] Accept the offer and give it a name (e.g. "Morning briefing").
+- [ ] Open MIND > Recipes. Confirm the new recipe row appears with:
+      - The name "Morning briefing"
+      - Step count shown (e.g. "2 steps")
+      - Run count "run 0x"
+      - A "Run" button and a "Delete" button
+
+**Run a Recipe**
+
+- [ ] Click the **Run** button on a recipe row. Confirm:
+      - The Run button becomes disabled while the recipe runs.
+      - A teal "Done." feedback message appears briefly under the row.
+      - The run count increments (e.g. "run 1x").
+      - The last-run date appears in the row metadata.
+- [ ] If a recipe step requires a permission gate, confirm the gate
+      fires and the recipe pauses for approval as normal.
+
+**Delete a Recipe**
+
+- [ ] Click the **Delete** button on a recipe row. Confirm:
+      - The row disappears immediately.
+      - If it was the last recipe, the empty state reappears.
+
+**Error feedback**
+
+- [ ] Temporarily disable a plugin used by a recipe (e.g. rename its
+      .py file). Click Run. Confirm a red "Error: ..." feedback message
+      appears under the row and the Run button re-enables.
+
+**Federated search**
+
+- [ ] From any other pane, type the recipe name into the header search
+      bar. Confirm the recipe title appears in the "Found elsewhere"
+      list under route `recipes`. Click it and confirm the Recipes pane
+      activates.
+
+**Re-pull on pane activation**
+
+- [ ] Switch to another pane and back to Recipes. Confirm the list
+      still shows the correct recipes (re-fetched idempotently on each
+      activation).
