@@ -291,3 +291,56 @@ and creates this document. Verify the harness itself works:
       title strip are independent (B sees its own active thread or
       Untitled if none).
 - [ ] Switch back to A. Confirm A's thread title and turns are restored.
+
+---
+
+## S10 — Save / delete / search conversations (#293)
+
+**Conversations pane list**
+
+- [ ] Open the live Felix window and click **Conversations** in the CHAT section
+      of the sidebar. Confirm the pane is no longer a placeholder: it shows a
+      "Saved conversations" section header, a search input, and the list of saved
+      threads (one row per thread showing its title, turn count, and date).
+- [ ] Confirm the currently-active thread row has a left accent border (is-active
+      highlight) distinguishing it from other rows.
+- [ ] On a fresh profile with no conversations yet, confirm the empty state message
+      ("No saved conversations yet.") is shown instead of an empty list.
+
+**Open a thread**
+
+- [ ] In the Conversations pane, click the **Open** button on any thread that is
+      NOT the active one. Confirm the view switches to the Conversation pane and
+      the correct thread's transcript and title are shown.
+- [ ] Confirm the thread that was opened is now the active one (returning to
+      Conversations shows its row with the accent border).
+
+**Delete a thread**
+
+- [ ] Click the **Delete** button on a thread. Confirm a confirmation dialog
+      appears naming the thread being deleted.
+- [ ] Click **Cancel** in the dialog. Confirm the thread is still in the list.
+- [ ] Click **Delete** again and confirm in the dialog. Confirm the thread row
+      disappears from the list and the turn count in the list updates.
+- [ ] If the deleted thread was the active one, confirm the Conversation pane
+      switches to another thread (or shows the empty state) automatically.
+- [ ] With Cerebral running, confirm that after deleting a thread its turns are
+      gone from the DB: reloading the app does not bring them back.
+
+**In-pane search**
+
+- [ ] Type a substring of a thread title into the search input in the
+      Conversations pane. Confirm the list filters to show only matching threads.
+- [ ] Clear the search input. Confirm all threads return.
+- [ ] Type text that appears in the BODY of a turn (not the title). After a
+      brief moment, confirm the Conversations pane updates to show the thread(s)
+      that contain that turn text.
+- [ ] Type a query that matches nothing. Confirm the empty state message appears.
+
+**Global search provider**
+
+- [ ] Navigate to any pane other than Conversations. Type a partial thread title
+      in the header search bar. Confirm a hit for that thread appears in the
+      "Found elsewhere" list with route `conversations`.
+- [ ] Click the jump link. Confirm the Conversations pane activates and the
+      matching thread is visible in the list.

@@ -237,6 +237,23 @@ test('conversation pane contains thread title + New conversation button (S9)', (
   expect(newBtn.tagName.toLowerCase()).toBe('button');
 });
 
+// ── S10 — conversations list pane ────────────────────────────────────────────
+
+test('conversations pane has search input, thread list, and empty state (S10)', () => {
+  const pane = root.querySelector('.pane[data-route="conversations"]');
+  expect(pane).not.toBeNull();
+
+  const searchEl = pane.querySelector('#conv-list-search');
+  expect(searchEl).not.toBeNull();
+  expect(searchEl.getAttribute('type')).toBe('search');
+
+  const listEl = pane.querySelector('#conv-thread-list');
+  expect(listEl).not.toBeNull();
+
+  const emptyEl = pane.querySelector('#conv-list-empty');
+  expect(emptyEl).not.toBeNull();
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
