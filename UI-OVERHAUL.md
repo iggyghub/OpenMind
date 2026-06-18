@@ -16,10 +16,10 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **S20 — #303** (Stop / interrupt in-flight turn + TTS)
+Active slice: **S20 — #303** (Stop / interrupt in-flight turn + TTS) — LANDED
 
 Model: sonnet
-Status: ready
+Status: done
 
 (`Model:`/`Status:` are read directly by `scripts/run-ui-overhaul.ps1`. Allowed:
 haiku | sonnet | opus | fable. `Status: ready` = run the active slice; `blocked` =
@@ -58,7 +58,7 @@ Phase 4 — Integrations / harness
 
 Phase 5 — Control surfaces
 19. [x] S19 — #302 Recipes pane (list/run/delete) — Model: sonnet
-20. [ ] S20 — #303 Stop / interrupt in-flight turn + TTS — Model: sonnet
+20. [x] S20 — #303 Stop / interrupt in-flight turn + TTS — Model: sonnet
 
 ### Landed PRs (append as slices merge)
 
@@ -81,3 +81,4 @@ Phase 5 — Control surfaces
 - S17 — #300 → PR #320 (Integrations: service directory — CONTEXT.md registry grouped by category, Connect deep-links to Credentials)
 - S18 — #301 → PR #321 (Unified channel inbox in Integrations pane — inbound surface + reply textarea wired to openclaw_messages_send)
 - S19 — #302 → PR #322 (Recipes pane — list/run/delete saved tool-chains, run_recipe IPC wired to _replay_recipe gate path)
+- S20 — #303 → PR #323 (Stop / interrupt in-flight turn + TTS — stop button in composer, interrupt_turn IPC, CancelledError handling in _process_command)
