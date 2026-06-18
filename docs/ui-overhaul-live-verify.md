@@ -543,3 +543,35 @@ and creates this document. Verify the harness itself works:
 
 - [ ] Reload the app and reopen the thread. Confirm the attachment chip still
       shows on the historical turn (bound to the turn, stored per-profile).
+
+---
+
+## S15 — Integrations tab: harness status (#298)
+
+**Pane navigation**
+
+- [ ] Click **Integrations** in the TOOLS section of the sidebar. Confirm the
+      Integrations pane opens (no placeholder, no crash).
+
+**HARNESS section — daemon row**
+
+- [ ] With Cerebral running but OpenClaw not configured (no
+      `~/.openclaw/openclaw.json` or `OPENCLAW_GATEWAY_TOKEN`), confirm the
+      **OpenClaw** row shows a red dot and the label "down".
+- [ ] With a valid OpenClaw token and the subscriber started, confirm the
+      **OpenClaw** row shows a green dot and the label "running".
+
+**Channel rows**
+
+- [ ] Confirm all five channels are listed: WhatsApp, Telegram, Discord,
+      Slack, Teams.
+- [ ] When the daemon is down, confirm every channel row shows a red dot and
+      the label "down".
+- [ ] When the daemon is running (connected to the gateway), confirm every
+      channel row shows a green dot and the label "connected".
+
+**Live refresh**
+
+- [ ] Navigate away to another pane, then return to Integrations. Confirm the
+      status rows reflect the current daemon state (re-pull fires on every
+      pane activation).

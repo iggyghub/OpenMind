@@ -2643,6 +2643,9 @@ async def _handle_message(msg: dict) -> None:
     elif t == "get_env_context":
         await _broadcast(_env_context_event())
 
+    elif t == "request_harness_status":
+        await _broadcast(_harness_status_event())
+
 
 # ── WebSocket handler ─────────────────────────────────────────────────────────
 
@@ -2669,6 +2672,7 @@ async def _greet(websocket) -> None:
         _permissions_state_event,
         _credentials_state_event,
         _settings_state_event,
+        _harness_status_event,
         _conversation_turns_event,
         _threads_list_event,
         _projects_list_event,
@@ -3064,6 +3068,24 @@ def _openclaw_subscriber_running() -> bool:
         return bool(fn())
     except Exception:  # pragma: no cover -- defensive
         return False
+
+
+_HARNESS_CHANNELS = ["WhatsApp", "Telegram", "Discord", "Slack", "Teams"]
+
+
+def _harness_status_event() -> dict:
+    running = _openclaw_subscriber_running()
+    ch_state = "connected" if running else "down"
+    return {
+        "type": "harness_status",
+        "data": {
+            "daemon_running": running,
+            "channels": [
+                {"name": ch, "state": ch_state}
+                for ch in _HARNESS_CHANNELS
+            ],
+        },
+    }
 
 
 # ── Discord user-account subscriber lifecycle (Issue #175) ────────────────────

@@ -970,6 +970,70 @@
       letter-spacing: 0.04em;
     }
 
+    /* ── integrations pane (S15 / #298) ────────────────────────────── */
+    .pane[data-route="integrations"] { background: var(--bg); }
+
+    .int-body {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .int-body::-webkit-scrollbar { width: 4px; }
+    .int-body::-webkit-scrollbar-track { background: transparent; }
+    .int-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .int-section {
+      padding: 14px 18px 6px;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-top: 1px solid #1e1c30;
+    }
+    .int-section:first-child { border-top: none; }
+
+    .int-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 11px 18px;
+      border-bottom: 1px solid #1e1c30;
+    }
+    .int-row:last-child { border-bottom: none; }
+
+    .int-row-name {
+      flex: 1;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .int-row-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .int-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      flex-shrink: 0;
+    }
+    .int-status-dot.is-running,
+    .int-status-dot.is-connected { background: #4bd49a; box-shadow: 0 0 6px #4bd49a88; }
+    .int-status-dot.is-down      { background: #c44b4b; box-shadow: 0 0 6px #c44b4b88; }
+
+    .int-status-text {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .int-status-text.is-running,
+    .int-status-text.is-connected { color: #4bd49a; }
+    .int-status-text.is-down      { color: #c44b4b; }
+
     /* ── header queue badge ─────────────────────────────────── */
     /* Pending-action count surfaced in the chat header so the user
        sees it from any pane. Hidden when zero. Click jumps to #queue. */
@@ -3384,10 +3448,16 @@
     </section>
 
     <section class="pane" data-route="integrations" hidden>
-      <div class="placeholder">
-        <div class="placeholder-title">Integrations</div>
-        <div class="placeholder-sub">OpenClaw harness status and channel configuration.</div>
-        <div class="placeholder-issue">Coming in issue #298 (S15)</div>
+      <div class="int-body" id="int-body">
+        <div class="int-section" id="int-harness-section">Harness</div>
+        <div class="int-row" id="int-daemon-row">
+          <span class="int-row-name">OpenClaw</span>
+          <span class="int-row-right">
+            <span class="int-status-dot" id="int-daemon-dot"></span>
+            <span class="int-status-text" id="int-daemon-text">&#8212;</span>
+          </span>
+        </div>
+        <div id="int-channels-list"></div>
       </div>
     </section>
 
@@ -3526,6 +3596,9 @@
     const plugSettingsTitleEl = document.getElementById('plug-settings-title');
     const plugSettingsBodyEl  = document.getElementById('plug-settings-body');
     const plugBackBtn        = document.getElementById('plug-back-btn');
+    const intDaemonDotEl   = document.getElementById('int-daemon-dot');
+    const intDaemonTextEl  = document.getElementById('int-daemon-text');
+    const intChannelsEl    = document.getElementById('int-channels-list');
     const setActiveNameEl  = document.getElementById('set-active-name');
     const setActiveCloudEl = document.getElementById('set-active-cloud');
     const setLastLineEl    = document.getElementById('set-last-line');
@@ -3612,6 +3685,10 @@
       tts_muted:                 false,
       tts_volume:                100,
     };
+
+    // Integrations pane state (S15 / #298). Populated by harness_status
+    // broadcasts; null until the first reply arrives.
+    let integrationsData = null;
 
     let activeProfileVoice = 'af_heart';
 
@@ -3867,6 +3944,10 @@
             errors:  (event.data && event.data.errors)  || [],
           };
           renderPlugins();
+          break;
+        case 'harness_status':
+          integrationsData = event.data || null;
+          renderIntegrations();
           break;
         case 'plugin_settings':
           // Issue #187 — per-plugin settings sub-pane.
@@ -5663,6 +5744,39 @@
       });
     }
 
+    // ── Integrations pane (S15 / #298) ───────────────────────────────────────
+
+    const _INT_CHANNELS = ['WhatsApp', 'Telegram', 'Discord', 'Slack', 'Teams'];
+
+    function renderIntegrations() {
+      const d = integrationsData;
+      const daemonRunning = d && d.daemon_running;
+      const dotCls  = daemonRunning ? 'is-running' : 'is-down';
+      const txtCls  = daemonRunning ? 'is-running' : 'is-down';
+      const dotText = daemonRunning ? 'running' : 'down';
+
+      intDaemonDotEl.className  = 'int-status-dot ' + dotCls;
+      intDaemonTextEl.className = 'int-status-text ' + txtCls;
+      intDaemonTextEl.textContent = dotText;
+
+      const channels = (d && d.channels) || [];
+      if (channels.length === 0) {
+        intChannelsEl.innerHTML = '';
+        return;
+      }
+      intChannelsEl.innerHTML = channels.map(function (ch) {
+        var chDotCls = ch.state === 'connected' ? 'is-connected' : 'is-down';
+        var chTxtCls = ch.state === 'connected' ? 'is-connected' : 'is-down';
+        return '<div class="int-row">' +
+          '<span class="int-row-name">' + escHtml(ch.name) + '</span>' +
+          '<span class="int-row-right">' +
+            '<span class="int-status-dot ' + chDotCls + '"></span>' +
+            '<span class="int-status-text ' + chTxtCls + '">' + escHtml(ch.state || 'unknown') + '</span>' +
+          '</span>' +
+          '</div>';
+      }).join('');
+    }
+
     // Open the per-plugin settings sub-pane for `pluginName`.
     function openPluginSettings(pluginName) {
       pluginSettingsActive = pluginName;
@@ -6383,6 +6497,10 @@
         // any missed broadcast.
         sendEvent({ type: 'refresh_models' });
         sendEvent({ type: 'list_settings' });
+      } else if (route === 'integrations') {
+        // Defensive re-pull on each activation; harness_status renders
+        // idempotently so this is cheap.
+        sendEvent({ type: 'request_harness_status' });
       }
     }
 
@@ -6574,6 +6692,18 @@
             anchor:    'conv-thread-list',
           };
         });
+    });
+
+    // ── Integrations provider (S15 / #298).
+    _registerProvider('integrations', function (_query) {
+      return [
+        { label: 'OpenClaw daemon', route: 'integrations', anchor: 'int-harness-section' },
+        { label: 'WhatsApp',        route: 'integrations', anchor: 'int-channels-list' },
+        { label: 'Telegram',        route: 'integrations', anchor: 'int-channels-list' },
+        { label: 'Discord',         route: 'integrations', anchor: 'int-channels-list' },
+        { label: 'Slack',           route: 'integrations', anchor: 'int-channels-list' },
+        { label: 'Teams',           route: 'integrations', anchor: 'int-channels-list' },
+      ];
     });
 
     function _currentRoute() {
