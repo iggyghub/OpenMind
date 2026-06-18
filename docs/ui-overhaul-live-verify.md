@@ -513,3 +513,33 @@ and creates this document. Verify the harness itself works:
       Confirm the override is still set in the dropdown (persisted across
       restarts).
 
+
+---
+
+## S14 — File upload (#297)
+
+**Attach via paperclip**
+
+- [ ] In the **Conversation** composer, click the paperclip and pick a file.
+      Confirm an attachment chip appears showing the filename and type icon.
+- [ ] Click the chip's remove (x) before sending. Confirm it is removed and
+      not attached to the next turn.
+
+**Drag-and-drop**
+
+- [ ] Drag a file from Explorer onto the composer. Confirm a chip appears the
+      same as the paperclip path.
+
+**Extraction routing**
+
+- [ ] Attach a PDF or .txt, send "summarise this". Confirm Felix's reply
+      reflects the file's text content (extraction path).
+- [ ] Attach an image, send "describe this". Confirm Felix describes the image
+      (vision path), if a vision-capable model is active.
+- [ ] Attach an arbitrary binary (e.g. a .zip). Confirm it is stored and
+      referenced on the turn without erroring.
+
+**Persistence**
+
+- [ ] Reload the app and reopen the thread. Confirm the attachment chip still
+      shows on the historical turn (bound to the turn, stored per-profile).
