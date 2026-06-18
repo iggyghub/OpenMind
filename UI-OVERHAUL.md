@@ -16,7 +16,7 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **S12 — #295** (Quick Ask)
+Active slice: **S13 — #296** (Per-conversation model override)
 
 Model: sonnet
 Status: ready
@@ -44,7 +44,7 @@ Phase 2 — Conversations
 9.  [x] S9 — #292 Conversation threads (thread_id + auto-title) — Model: opus
 10. [x] S10 — #293 Save/delete/search conversations — Model: sonnet
 11. [x] S11 — #294 Projects (folders) — Model: opus
-12. [ ] S12 — #295 Quick Ask (ephemeral web-first chat) — Model: sonnet
+12. [x] S12 — #295 Quick Ask (ephemeral web-first chat) — Model: sonnet
 13. [ ] S13 — #296 Per-conversation model override — Model: sonnet
 
 Phase 3 — Files
@@ -73,3 +73,4 @@ Phase 5 — Control surfaces
 - S9 — #292 → PR #312 (Conversation threads: thread_id schema + auto-title + New conversation button)
 - S10 — #293 → PR #313 (Save/delete/search conversations: list pane + delete IPC + search provider)
 - S11 — #294 → PR #314 (Projects: project folders, group threads, Unfiled default, delete-leaves-unfiled)
+- S12 — #295 → PR #315 (Quick Ask: ephemeral web-first scratch chat, not saved to Conversations)
