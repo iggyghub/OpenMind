@@ -470,3 +470,46 @@ and creates this document. Verify the harness itself works:
 - [ ] Type a multi-line message using Shift+Enter. Confirm the textarea
       expands. Press Enter alone to send and confirm only the last line is
       NOT appended (Enter sends, Shift+Enter inserts newline).
+
+---
+
+## S13 -- Per-conversation model override (#296)
+
+**Thread strip model select**
+
+- [ ] Open the live Felix window and navigate to the **Conversation** pane.
+      Confirm a model select dropdown is visible in the thread strip, to the
+      left of the "+ New conversation" button.
+- [ ] Confirm the select defaults to "Global default" on a fresh thread with
+      no override set.
+- [ ] Confirm the select is populated with all available models (same list as
+      the Models pane).
+
+**Setting an override**
+
+- [ ] With at least two models available, select a non-default model from the
+      thread strip dropdown. Confirm the selection is saved (navigate away and
+      back -- the dropdown still shows the pinned model).
+- [ ] Send a message in that thread. Confirm (via Cerebral logs or response
+      characteristics) that the response uses the pinned model rather than
+      the global active model.
+
+**Conversations list badge**
+
+- [ ] Navigate to the **Conversations** pane. Confirm the thread with the
+      pinned model shows a model badge next to its title (e.g. "[Claude Sonnet 4.6]").
+- [ ] A thread with no override shows no badge.
+
+**Clearing the override**
+
+- [ ] Return to the **Conversation** pane for the pinned thread. Change the
+      model select back to "Global default". Confirm the badge disappears
+      from the thread row in the Conversations pane.
+- [ ] Send another message. Confirm it uses the global active model again.
+
+**Persistence**
+
+- [ ] Reload the app. Navigate to a thread that had a model override pinned.
+      Confirm the override is still set in the dropdown (persisted across
+      restarts).
+

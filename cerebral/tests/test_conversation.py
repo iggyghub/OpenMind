@@ -62,7 +62,9 @@ def conv_rig(tmp_path):
     async def fake_broadcast(event: dict) -> None:
         sent.append(event)
 
-    async def fake_process_command(text: str, *, speak: bool = True) -> None:
+    async def fake_process_command(
+        text: str, *, speak: bool = True, thread_model_override=None
+    ) -> None:
         pass
 
     saved = {
@@ -472,3 +474,66 @@ async def test_auto_title_broadcast_after_felix_speech(conv_rig):
     titles = [t["title"] for t in last["threads"]]
     assert any("What's the weather?".startswith(title) or title.startswith("What's the weather?")
                for title in titles)
+
+
+# ── S13 — per-conversation model override ───────────────────────────────────
+
+async def test_set_thread_model_persists_override(conv_rig):
+    t = conv_rig.store.create_thread(1, title="Research")
+    await conv_rig.handle({
+        "type": "set_thread_model",
+        "data": {"thread_id": t.id, "model_id": "claude/sonnet"},
+    })
+    updated = conv_rig.store.get_thread(t.id)
+    assert updated is not None
+    assert updated.model_override == "claude/sonnet"
+    # Threads broadcast went out.
+    assert conv_rig.threads_events()
+
+
+async def test_set_thread_model_clear_override(conv_rig):
+    t = conv_rig.store.create_thread(1, title="Research")
+    conv_rig.store.set_thread_model_override(t.id, "claude/sonnet")
+    await conv_rig.handle({
+        "type": "set_thread_model",
+        "data": {"thread_id": t.id, "model_id": None},
+    })
+    updated = conv_rig.store.get_thread(t.id)
+    assert updated is not None
+    assert updated.model_override is None
+
+
+async def test_set_thread_model_empty_string_clears(conv_rig):
+    t = conv_rig.store.create_thread(1, title="Test")
+    conv_rig.store.set_thread_model_override(t.id, "claude/haiku")
+    await conv_rig.handle({
+        "type": "set_thread_model",
+        "data": {"thread_id": t.id, "model_id": ""},
+    })
+    assert conv_rig.store.get_thread(t.id).model_override is None
+
+
+async def test_set_thread_model_rejects_foreign_thread(conv_rig):
+    import cerebral.main as main_mod
+    main_mod._active_profile = None
+    foreign = conv_rig.store.create_thread(2, title="Other")
+    main_mod._active_profile = __import__("cerebral.db.profiles", fromlist=["Profile"]).Profile(name="Test", id=1)
+    await conv_rig.handle({
+        "type": "set_thread_model",
+        "data": {"thread_id": foreign.id, "model_id": "claude/sonnet"},
+    })
+    # Foreign thread must not be modified.
+    assert conv_rig.store.get_thread(foreign.id).model_override is None
+
+
+async def test_set_thread_model_in_threads_list(conv_rig):
+    """model_override is included in the conversation_threads_data broadcast."""
+    t = conv_rig.store.create_thread(1, title="Work")
+    conv_rig.store.set_thread_model_override(t.id, "claude/haiku")
+    await conv_rig.handle({"type": "list_conversation_threads"})
+    evts = conv_rig.threads_events()
+    assert evts
+    threads = evts[-1]["data"]["threads"]
+    match = next((th for th in threads if th["id"] == t.id), None)
+    assert match is not None
+    assert match["model_override"] == "claude/haiku"

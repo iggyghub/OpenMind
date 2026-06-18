@@ -294,6 +294,21 @@ test('quick-ask nav item is inside the CHAT section (S12)', () => {
   expect(qaNav.parentNode).toBe(convNav.parentNode);
 });
 
+// ── S13 — per-conversation model override ────────────────────────────────────
+
+test('conversation pane has model override select in thread strip (S13)', () => {
+  const pane = root.querySelector('.pane[data-route="conversation"]');
+  expect(pane).not.toBeNull();
+  const strip    = pane.querySelector('#conv-thread-strip');
+  const modelSel = pane.querySelector('#conv-thread-model');
+  expect(strip).not.toBeNull();
+  expect(modelSel).not.toBeNull();
+  expect(modelSel.tagName.toLowerCase()).toBe('select');
+  // Must include a "Global default" option (value="").
+  const defaultOpt = modelSel.querySelector('option[value=""]');
+  expect(defaultOpt).not.toBeNull();
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

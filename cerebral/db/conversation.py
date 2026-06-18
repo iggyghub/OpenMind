@@ -84,6 +84,7 @@ class ConversationThread:
     created_at: str
     updated_at: str
     project_id: int | None = None
+    model_override: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -93,6 +94,7 @@ class ConversationThread:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "project_id": self.project_id,
+            "model_override": self.model_override,
         }
 
 
@@ -201,6 +203,14 @@ class ConversationStore:
             "ON conversation_threads (project_id)"
         )
         self._con.commit()
+        # S13 migration: pre-#296 DBs lack the model_override column on threads.
+        try:
+            self._con.execute(
+                "ALTER TABLE conversation_threads ADD COLUMN model_override TEXT"
+            )
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
         self._backfill_legacy_threads()
 
     def _backfill_legacy_threads(self) -> None:
@@ -444,7 +454,7 @@ class ConversationStore:
         rows = self._con.execute(
             """
             SELECT ct.id, ct.profile_id, ct.title, ct.created_at, ct.updated_at,
-                   ct.project_id,
+                   ct.project_id, ct.model_override,
                    COUNT(ctu.id) AS turn_count
             FROM conversation_threads ct
             LEFT JOIN conversation_turns ctu ON ctu.thread_id = ct.id
@@ -472,7 +482,7 @@ class ConversationStore:
         rows = self._con.execute(
             """
             SELECT DISTINCT ct.id, ct.profile_id, ct.title,
-                   ct.created_at, ct.updated_at, ct.project_id,
+                   ct.created_at, ct.updated_at, ct.project_id, ct.model_override,
                    (SELECT COUNT(*) FROM conversation_turns
                     WHERE thread_id = ct.id) AS turn_count
             FROM conversation_threads ct
@@ -574,6 +584,18 @@ class ConversationStore:
         self._con.commit()
         return cur.rowcount > 0
 
+    def set_thread_model_override(self, thread_id: int, model_id: str | None) -> bool:
+        """Pin or clear the per-thread model override (S13 / #296).
+
+        Pass model_id=None to clear the override and fall back to the
+        global active model. Returns True if the thread was found."""
+        cur = self._con.execute(
+            "UPDATE conversation_threads SET model_override = ? WHERE id = ?",
+            (model_id, thread_id),
+        )
+        self._con.commit()
+        return cur.rowcount > 0
+
     def move_thread_to_project(
         self, thread_id: int, project_id: int | None
     ) -> bool:
@@ -610,12 +632,16 @@ def _row_to_turn(row: sqlite3.Row) -> ConversationTurn:
 
 
 def _row_to_thread(row: sqlite3.Row) -> ConversationThread:
-    # ``project_id`` may be absent on a row pulled from a query that pre-dates
-    # the S11 column add; tolerate that so older fetch sites keep working.
+    # ``project_id`` / ``model_override`` may be absent on rows from queries
+    # that pre-date those columns; tolerate so older fetch sites keep working.
     try:
         project_id = row["project_id"]
     except (IndexError, KeyError):
         project_id = None
+    try:
+        model_override = row["model_override"]
+    except (IndexError, KeyError):
+        model_override = None
     return ConversationThread(
         id=row["id"],
         profile_id=row["profile_id"],
@@ -623,6 +649,7 @@ def _row_to_thread(row: sqlite3.Row) -> ConversationThread:
         created_at=row["created_at"] or "",
         updated_at=row["updated_at"] or "",
         project_id=project_id,
+        model_override=model_override,
     )
 
 

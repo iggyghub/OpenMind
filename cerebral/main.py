@@ -2059,9 +2059,19 @@ async def _handle_message(msg: dict) -> None:
         # even if the model is slow.
         text = (msg.get("data") or {}).get("text", "")
         if isinstance(text, str) and text.strip():
+            # S13 -- resolve the active thread's model override, if any.
+            _thread_model: str | None = None
+            if _active_profile is not None:
+                _tid = _resolve_active_thread_id(_active_profile.id)
+                if _tid is not None:
+                    _t = _conversation.get_thread(_tid)
+                    if _t is not None:
+                        _thread_model = _t.model_override
             await _broadcast({"type": "wake", "data": {"transcript": text}})
             await _record_turn(KIND_USER_TEXT, {"text": text})
-            asyncio.create_task(_process_command(text, speak=False))
+            asyncio.create_task(
+                _process_command(text, speak=False, thread_model_override=_thread_model)
+            )
 
     elif t == "list_conversation_turns":
         # Issue #185 / ADR-0007 -- Main window requesting its initial
@@ -2236,6 +2246,24 @@ async def _handle_message(msg: dict) -> None:
                     if ok:
                         _conversation.move_thread_to_project(tid, pid)
                         await _broadcast(_threads_list_event())
+
+    elif t == "set_thread_model":
+        # S13 / #296 -- pin or clear a model override on a thread. Passing
+        # model_id="" or null clears the override (falls back to global).
+        d = msg.get("data") or {}
+        thread_id_raw = d.get("thread_id")
+        model_id_raw  = d.get("model_id")  # str or None
+        if _active_profile is not None and thread_id_raw is not None:
+            try:
+                tid = int(thread_id_raw)
+            except (TypeError, ValueError):
+                tid = None
+            if tid is not None:
+                thread = _conversation.get_thread(tid)
+                if thread is not None and thread.profile_id == _active_profile.id:
+                    override = (model_id_raw or "").strip() or None
+                    _conversation.set_thread_model_override(tid, override)
+                    await _broadcast(_threads_list_event())
 
     elif t == "list_queue":
         await _broadcast(_queue_update_event())
@@ -2559,13 +2587,26 @@ async def _on_passive(transcript: str) -> None:
 
 
 async def _on_wake(transcript: str) -> None:
-    logger.info("[cerebral] Wake event — transcript: %r", transcript)
+    logger.info("[cerebral] Wake event -- transcript: %r", transcript)
     await _broadcast({"type": "wake", "data": {"transcript": transcript}})
     await _record_turn(KIND_USER_VOICE, {"text": transcript})
-    asyncio.create_task(_process_command(transcript, speak=True))
+    # S13 -- resolve the active thread's model override, if any.
+    _wake_thread_model: str | None = None
+    if _active_profile is not None:
+        _wake_tid = _resolve_active_thread_id(_active_profile.id)
+        if _wake_tid is not None:
+            _wake_t = _conversation.get_thread(_wake_tid)
+            if _wake_t is not None:
+                _wake_thread_model = _wake_t.model_override
+    asyncio.create_task(_process_command(transcript, speak=True, thread_model_override=_wake_thread_model))
 
 
-async def _process_command(transcript: str, *, speak: bool = True) -> None:
+async def _process_command(
+    transcript: str,
+    *,
+    speak: bool = True,
+    thread_model_override: str | None = None,
+) -> None:
     """Run the planner chain and dispatch tool calls, or fall back to chat text.
 
     S2 (Issue #275): the planner is wrapped in a ChainEngine that loops until
@@ -2577,9 +2618,25 @@ async def _process_command(transcript: str, *, speak: bool = True) -> None:
     completion a save-offer system event is broadcast. Recipe replay re-gates
     every stored step (no standing grant per ADR-0005 amendment).
 
+    S13 (Issue #296): ``thread_model_override`` temporarily switches the router
+    to the thread's pinned model for the duration of this command, then restores
+    the global active model. Ignored when the model id is not in the router.
+
     ``speak=True`` (voice path) routes the response through TTS.
     ``speak=False`` (text path -- Issue #185) skips TTS for typed interactions.
     """
+    # S13 -- temporarily apply the thread's model pin, if any.
+    _prev_model: str | None = None
+    if thread_model_override is not None:
+        _saved = _router.active_model
+        try:
+            _router.switch_model(thread_model_override)
+            _prev_model = _saved
+        except ValueError:
+            logger.debug(
+                "[cerebral] thread model_override %r not in router; ignoring",
+                thread_model_override,
+            )
     base_tools = _orc.tools_for_llm
     profile_id = _active_profile.id if _active_profile else None
     recipe_tools = _recipe_store.get_synthetic_tools(profile_id) if profile_id else []
@@ -2647,6 +2704,12 @@ async def _process_command(transcript: str, *, speak: bool = True) -> None:
     if speak:
         await _speak(response)
     await _broadcast({"type": "passive", "data": {"status": "running"}})
+    # S13 -- restore the router's active model after a thread-pinned override.
+    if _prev_model is not None:
+        try:
+            _router.switch_model(_prev_model)
+        except ValueError:
+            pass  # original model removed mid-request; leave as-is
 
 
 async def _replay_recipe(synthetic_name: str, profile_id: int) -> ToolResult:
