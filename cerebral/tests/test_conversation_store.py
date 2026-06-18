@@ -254,3 +254,99 @@ def test_list_recent_for_thread_scopes_to_thread(store):
     store.append(1, KIND_USER_TEXT, {"text": "bx"}, thread_id=b.id)
     in_a = store.list_recent_for_thread(a.id)
     assert [t.content["text"] for t in in_a] == ["ax", "ay"]
+
+
+# ── S11 / #294 -- conversation projects (folders) ───────────────────────────
+
+
+def test_create_project_persists_metadata(store):
+    project = store.create_project(1, name="Trips")
+    assert project.id > 0
+    assert project.profile_id == 1
+    assert project.name == "Trips"
+    assert project.created_at
+
+
+def test_list_projects_isolates_by_profile(store):
+    p1 = store.create_project(1, name="A")
+    p2 = store.create_project(2, name="B")
+    assert [p.id for p in store.list_projects(1)] == [p1.id]
+    assert [p.id for p in store.list_projects(2)] == [p2.id]
+
+
+def test_rename_project_updates_name(store):
+    p = store.create_project(1, name="Old")
+    assert store.rename_project(p.id, "New")
+    assert store.get_project(p.id).name == "New"
+
+
+def test_thread_defaults_to_unfiled(store):
+    """A freshly-created thread carries project_id = NULL ("Unfiled")."""
+    t = store.create_thread(1, title="solo")
+    fetched = store.get_thread(t.id)
+    assert fetched.project_id is None
+
+
+def test_move_thread_assigns_project(store):
+    project = store.create_project(1, name="Cooking")
+    thread = store.create_thread(1, title="Pasta")
+    assert store.move_thread_to_project(thread.id, project.id)
+    assert store.get_thread(thread.id).project_id == project.id
+
+
+def test_move_thread_to_none_unfiles_it(store):
+    project = store.create_project(1, name="Cooking")
+    thread = store.create_thread(1, title="Pasta")
+    store.move_thread_to_project(thread.id, project.id)
+    assert store.move_thread_to_project(thread.id, None)
+    assert store.get_thread(thread.id).project_id is None
+
+
+def test_delete_project_leaves_threads_unfiled(store):
+    """Spec AC: deleting a project leaves its threads Unfiled, not deleted."""
+    project = store.create_project(1, name="Trips")
+    t = store.create_thread(1, title="Tokyo")
+    store.move_thread_to_project(t.id, project.id)
+    store.append(1, KIND_USER_TEXT, {"text": "hi"}, thread_id=t.id)
+    assert store.delete_project(project.id)
+    # The thread itself survives, but is now Unfiled.
+    survivor = store.get_thread(t.id)
+    assert survivor is not None
+    assert survivor.project_id is None
+    # Its turns survive too.
+    turns = store.list_recent_for_thread(t.id)
+    assert [tu.content["text"] for tu in turns] == ["hi"]
+    # And the project row is gone.
+    assert store.get_project(project.id) is None
+
+
+def test_list_projects_with_counts_reports_thread_count(store):
+    p = store.create_project(1, name="Trips")
+    a = store.create_thread(1, title="A")
+    b = store.create_thread(1, title="B")
+    store.move_thread_to_project(a.id, p.id)
+    store.move_thread_to_project(b.id, p.id)
+    rows = store.list_projects_with_counts(1)
+    assert len(rows) == 1
+    assert rows[0]["thread_count"] == 2
+
+
+def test_list_threads_with_counts_carries_project_id(store):
+    p = store.create_project(1, name="P")
+    a = store.create_thread(1, title="A")  # filed
+    store.create_thread(1, title="B")  # unfiled
+    store.move_thread_to_project(a.id, p.id)
+    rows = store.list_threads_with_counts(1)
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[a.id]["project_id"] == p.id
+    other = next(r for r in rows if r["id"] != a.id)
+    assert other["project_id"] is None
+
+
+def test_search_threads_carries_project_id(store):
+    p = store.create_project(1, name="P")
+    a = store.create_thread(1, title="Trip planning")
+    store.move_thread_to_project(a.id, p.id)
+    hits = store.search_threads(1, "Trip")
+    assert hits
+    assert hits[0]["project_id"] == p.id

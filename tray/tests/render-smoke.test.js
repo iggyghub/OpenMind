@@ -254,6 +254,16 @@ test('conversations pane has search input, thread list, and empty state (S10)', 
   expect(emptyEl).not.toBeNull();
 });
 
+// ── S11 — projects (folders) toolbar in Conversations pane ───────────────────
+
+test('conversations pane has New project button (S11)', () => {
+  const pane = root.querySelector('.pane[data-route="conversations"]');
+  expect(pane).not.toBeNull();
+  const newBtn = pane.querySelector('#conv-new-project');
+  expect(newBtn).not.toBeNull();
+  expect(newBtn.tagName.toLowerCase()).toBe('button');
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

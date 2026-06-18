@@ -344,3 +344,80 @@ and creates this document. Verify the harness itself works:
       "Found elsewhere" list with route `conversations`.
 - [ ] Click the jump link. Confirm the Conversations pane activates and the
       matching thread is visible in the list.
+
+---
+
+## S11 -- Projects (folders) (#294)
+
+**Projects toolbar + Unfiled bucket**
+
+- [ ] Open the live Felix window and click **Conversations** in the CHAT
+      section. Confirm a **+ New project** button is visible at the top
+      right of the list, above the conversations.
+- [ ] On a fresh profile (or one without projects), confirm there is a
+      single project group titled **Unfiled** containing all saved
+      conversations (or the empty-list message if there are none).
+- [ ] The Unfiled group's header shows a chevron, the label "Unfiled", and
+      a meta count (e.g. "3 threads" or "empty"). Unfiled has NO Delete
+      button (it cannot be removed).
+
+**Create a project**
+
+- [ ] Click **+ New project**. A new project group appears below Unfiled,
+      with its name shown as **"Untitled project"** in muted italic text.
+- [ ] Click the project name text. It becomes editable. Type a name (e.g.
+      **"Trips"**) and press Enter. Confirm the name persists and the muted
+      italic styling is gone.
+- [ ] Reload the app. Navigate back to Conversations. Confirm the project
+      still exists with the same name.
+
+**Move a thread between projects**
+
+- [ ] In any conversation row inside Unfiled, click the dropdown showing
+      "Unfiled" on the right side. Select your **"Trips"** project.
+- [ ] Confirm the thread row jumps from the Unfiled group into the Trips
+      group. The Trips header meta updates to reflect the new thread count.
+- [ ] In the now-moved row, change the dropdown back to "Unfiled".
+      Confirm the row returns to the Unfiled group.
+
+**Rename a project**
+
+- [ ] Click the **"Trips"** project name. Edit it to **"Travel plans"**
+      and press Enter. Confirm the name updates in the header.
+- [ ] Click the project name and press Escape mid-edit. Confirm the
+      original name is restored (no rename committed).
+
+**Collapsible groups (per S3 styling)**
+
+- [ ] Click the **"Travel plans"** project header (NOT the name or the
+      Delete button). Confirm the body collapses (threads hidden) and the
+      chevron changes to ▸. Click again -- the body expands and the
+      chevron is ▾ again.
+- [ ] Click the Unfiled header. Confirm Unfiled also collapses/expands.
+
+**Delete a project leaves threads Unfiled (spec AC)**
+
+- [ ] Move a thread into the **"Travel plans"** project so it has at
+      least one thread.
+- [ ] Click the **Delete** button on the Travel plans header. Confirm a
+      confirmation dialog warns that **conversations inside it will move
+      to Unfiled** (and not be deleted).
+- [ ] Click Cancel. Confirm the project is still present.
+- [ ] Click Delete again and confirm in the dialog. Confirm the project
+      row disappears. The thread that was inside it is now visible in the
+      Unfiled group (its turns are intact -- click Open and verify the
+      transcript is unchanged).
+
+**Profile isolation**
+
+- [ ] If you have two profiles, create a project under profile A, then
+      switch to profile B. Confirm profile B's Conversations pane does
+      NOT show profile A's project (each profile's projects are scoped to
+      that profile).
+- [ ] Switch back to A. Confirm A's project (and its threads) reappear.
+
+**Persistence**
+
+- [ ] Create at least one project. Reload the app. Confirm the project
+      group + its threads are still present and the meta counts are
+      correct.

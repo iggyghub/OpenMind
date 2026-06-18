@@ -96,6 +96,9 @@ def conv_rig(tmp_path):
         def threads_events(self) -> list[dict]:
             return [e for e in sent if e["type"] == "conversation_threads_data"]
 
+        def projects_events(self) -> list[dict]:
+            return [e for e in sent if e["type"] == "conversation_projects_data"]
+
     try:
         yield Rig()
     finally:
@@ -330,6 +333,124 @@ async def test_switch_conversation_thread_changes_active(conv_rig):
     assert last_turns_event["data"]["thread_id"] == a.id
     texts = [t["content"]["text"] for t in last_turns_event["data"]["turns"]]
     assert texts == ["in A"]
+
+
+# ── S11 / #294 -- conversation projects IPC ─────────────────────────────────
+
+
+async def test_list_conversation_projects_emits_snapshot(conv_rig):
+    conv_rig.store.create_project(1, name="P1")
+    conv_rig.store.create_project(1, name="P2")
+    await conv_rig.handle({"type": "list_conversation_projects"})
+    evts = conv_rig.projects_events()
+    assert len(evts) == 1
+    data = evts[-1]["data"]
+    assert data["profile_id"] == 1
+    names = [p["name"] for p in data["projects"]]
+    assert set(names) == {"P1", "P2"}
+
+
+async def test_create_conversation_project_persists_and_broadcasts(conv_rig):
+    await conv_rig.handle({
+        "type": "create_conversation_project",
+        "data": {"name": "Trips"},
+    })
+    projects = conv_rig.store.list_projects(1)
+    assert [p.name for p in projects] == ["Trips"]
+    assert conv_rig.projects_events(), "expected a projects broadcast"
+
+
+async def test_rename_conversation_project_updates_name(conv_rig):
+    p = conv_rig.store.create_project(1, name="Old")
+    await conv_rig.handle({
+        "type": "rename_conversation_project",
+        "data": {"project_id": p.id, "name": "New"},
+    })
+    assert conv_rig.store.get_project(p.id).name == "New"
+
+
+async def test_rename_conversation_project_rejects_other_profile(conv_rig):
+    """A project created against a different profile cannot be renamed."""
+    import cerebral.main as main_mod
+    main_mod._active_profile = None
+    foreign = conv_rig.store.create_project(2, name="P2-owned")
+    main_mod._active_profile = Profile(name="Test", id=1)
+    await conv_rig.handle({
+        "type": "rename_conversation_project",
+        "data": {"project_id": foreign.id, "name": "HIJACK"},
+    })
+    assert conv_rig.store.get_project(foreign.id).name == "P2-owned"
+
+
+async def test_delete_conversation_project_unfiles_threads(conv_rig):
+    """Spec AC: deleting a project leaves its threads Unfiled."""
+    p = conv_rig.store.create_project(1, name="Trips")
+    t = conv_rig.store.create_thread(1, title="Tokyo")
+    conv_rig.store.move_thread_to_project(t.id, p.id)
+    await conv_rig.handle({
+        "type": "delete_conversation_project",
+        "data": {"project_id": p.id},
+    })
+    assert conv_rig.store.get_project(p.id) is None
+    # Thread survives and is now Unfiled.
+    survivor = conv_rig.store.get_thread(t.id)
+    assert survivor is not None
+    assert survivor.project_id is None
+    # Both projects + threads broadcasts went out.
+    assert conv_rig.projects_events()
+    assert conv_rig.threads_events()
+
+
+async def test_move_conversation_thread_assigns_project(conv_rig):
+    p = conv_rig.store.create_project(1, name="Cooking")
+    t = conv_rig.store.create_thread(1, title="Pasta")
+    await conv_rig.handle({
+        "type": "move_conversation_thread",
+        "data": {"thread_id": t.id, "project_id": p.id},
+    })
+    assert conv_rig.store.get_thread(t.id).project_id == p.id
+    # Threads broadcast went out so the renderer can re-group.
+    assert conv_rig.threads_events()
+
+
+async def test_move_conversation_thread_to_none_unfiles(conv_rig):
+    p = conv_rig.store.create_project(1, name="P")
+    t = conv_rig.store.create_thread(1, title="X")
+    conv_rig.store.move_thread_to_project(t.id, p.id)
+    await conv_rig.handle({
+        "type": "move_conversation_thread",
+        "data": {"thread_id": t.id, "project_id": None},
+    })
+    assert conv_rig.store.get_thread(t.id).project_id is None
+
+
+async def test_move_conversation_thread_rejects_foreign_thread(conv_rig):
+    """A thread belonging to another profile can't be moved by the
+    active profile, even with a valid project_id under the active profile."""
+    import cerebral.main as main_mod
+    main_mod._active_profile = None
+    foreign = conv_rig.store.create_thread(2, title="P2 thread")
+    main_mod._active_profile = Profile(name="Test", id=1)
+    p = conv_rig.store.create_project(1, name="P1 project")
+    await conv_rig.handle({
+        "type": "move_conversation_thread",
+        "data": {"thread_id": foreign.id, "project_id": p.id},
+    })
+    # Thread's project_id unchanged.
+    assert conv_rig.store.get_thread(foreign.id).project_id is None
+
+
+async def test_move_conversation_thread_rejects_foreign_project(conv_rig):
+    import cerebral.main as main_mod
+    main_mod._active_profile = None
+    foreign_project = conv_rig.store.create_project(2, name="P2 project")
+    main_mod._active_profile = Profile(name="Test", id=1)
+    t = conv_rig.store.create_thread(1, title="P1 thread")
+    await conv_rig.handle({
+        "type": "move_conversation_thread",
+        "data": {"thread_id": t.id, "project_id": foreign_project.id},
+    })
+    assert conv_rig.store.get_thread(t.id).project_id is None
 
 
 async def test_auto_title_broadcast_after_felix_speech(conv_rig):

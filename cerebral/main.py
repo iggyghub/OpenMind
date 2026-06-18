@@ -1282,8 +1282,9 @@ def _threads_list_event() -> dict:
     """Snapshot of the active profile's conversation threads (S9 / #292),
     plus the active thread id. Newest-updated first.
 
-    Each thread dict carries ``turn_count`` (S10 / #293) so the
-    Conversations pane can render the meta line without a separate query."""
+    Each thread dict carries ``turn_count`` (S10 / #293) and
+    ``project_id`` (S11 / #294 -- nullable; NULL = Unfiled) so the
+    Conversations pane can render groups without a separate query."""
     if _active_profile is None:
         return {
             "type": "conversation_threads_data",
@@ -1296,6 +1297,27 @@ def _threads_list_event() -> dict:
             "profile_id": _active_profile.id,
             "threads": threads,
             "active_thread_id": _resolve_active_thread_id(_active_profile.id),
+        },
+    }
+
+
+def _projects_list_event() -> dict:
+    """Snapshot of the active profile's project folders (S11 / #294).
+
+    The renderer pairs this with ``conversation_threads_data`` to group
+    threads under their parent project; ``Unfiled`` is the implicit bucket
+    for any thread with ``project_id`` NULL, so it does not appear here."""
+    if _active_profile is None:
+        return {
+            "type": "conversation_projects_data",
+            "data": {"profile_id": None, "projects": []},
+        }
+    projects = _conversation.list_projects_with_counts(_active_profile.id)
+    return {
+        "type": "conversation_projects_data",
+        "data": {
+            "profile_id": _active_profile.id,
+            "projects": projects,
         },
     }
 
@@ -1535,6 +1557,9 @@ async def _handle_message(msg: dict) -> None:
                 # S9 / #292 -- send the new profile's thread list before the
                 # turns snapshot so the renderer's title strip + active id
                 # are up-to-date when it processes the transcript.
+                # S11 / #294 -- ship the project list alongside so the
+                # Conversations pane re-groups for the new profile.
+                await _broadcast(_projects_list_event())
                 await _broadcast(_threads_list_event())
                 await _broadcast(_conversation_turns_event())
 
@@ -2131,6 +2156,87 @@ async def _handle_message(msg: dict) -> None:
             "data": {"query": query if isinstance(query, str) else "", "results": results},
         })
 
+    elif t == "list_conversation_projects":
+        # S11 / #294 -- Main window asking for the active profile's project
+        # folders so it can render the Conversations groups.
+        await _broadcast(_projects_list_event())
+
+    elif t == "create_conversation_project":
+        # S11 / #294 -- create a new project folder. Empty names are
+        # permitted so the UI can render an "Untitled project" row and
+        # let the user rename inline.
+        name = (msg.get("data") or {}).get("name", "")
+        if _active_profile is not None and isinstance(name, str):
+            _conversation.create_project(_active_profile.id, name.strip()[:200])
+            await _broadcast(_projects_list_event())
+
+    elif t == "rename_conversation_project":
+        # S11 / #294 -- rename, scoped to the active profile so a forged
+        # project_id from another profile can't be touched.
+        d = msg.get("data") or {}
+        project_id_raw = d.get("project_id")
+        name = d.get("name", "")
+        if _active_profile is not None and project_id_raw is not None and isinstance(name, str):
+            try:
+                pid = int(project_id_raw)
+            except (TypeError, ValueError):
+                pid = None
+            if pid is not None:
+                project = _conversation.get_project(pid)
+                if project is not None and project.profile_id == _active_profile.id:
+                    _conversation.rename_project(pid, name.strip()[:200])
+                    await _broadcast(_projects_list_event())
+
+    elif t == "delete_conversation_project":
+        # S11 / #294 -- delete the folder. Threads inside fall back to
+        # Unfiled (project_id = NULL); they are NOT deleted (acceptance
+        # criterion). Re-broadcast threads so the UI re-groups them.
+        project_id_raw = (msg.get("data") or {}).get("project_id")
+        if _active_profile is not None and project_id_raw is not None:
+            try:
+                pid = int(project_id_raw)
+            except (TypeError, ValueError):
+                pid = None
+            if pid is not None:
+                project = _conversation.get_project(pid)
+                if project is not None and project.profile_id == _active_profile.id:
+                    _conversation.delete_project(pid)
+                    await _broadcast(_projects_list_event())
+                    await _broadcast(_threads_list_event())
+
+    elif t == "move_conversation_thread":
+        # S11 / #294 -- move a thread to a project (or to Unfiled when
+        # project_id is None). Both thread and project (if any) must
+        # belong to the active profile.
+        d = msg.get("data") or {}
+        thread_id_raw = d.get("thread_id")
+        project_id_raw = d.get("project_id")  # may be None for Unfiled
+        if _active_profile is not None and thread_id_raw is not None:
+            try:
+                tid = int(thread_id_raw)
+            except (TypeError, ValueError):
+                tid = None
+            pid: int | None
+            if project_id_raw is None:
+                pid = None
+            else:
+                try:
+                    pid = int(project_id_raw)
+                except (TypeError, ValueError):
+                    pid = None
+                    tid = None  # bad payload -> bail
+            if tid is not None:
+                thread = _conversation.get_thread(tid)
+                if thread is not None and thread.profile_id == _active_profile.id:
+                    ok = True
+                    if pid is not None:
+                        project = _conversation.get_project(pid)
+                        if project is None or project.profile_id != _active_profile.id:
+                            ok = False
+                    if ok:
+                        _conversation.move_thread_to_project(tid, pid)
+                        await _broadcast(_threads_list_event())
+
     elif t == "list_queue":
         await _broadcast(_queue_update_event())
 
@@ -2385,6 +2491,7 @@ async def _greet(websocket) -> None:
         _settings_state_event,
         _conversation_turns_event,
         _threads_list_event,
+        _projects_list_event,
         _recipes_update_event,
     ]
     for build in greetings:
