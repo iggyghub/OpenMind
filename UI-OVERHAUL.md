@@ -16,9 +16,9 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **S15 — #298** (Integrations tab: harness status)
+Active slice: **S16 — #299** (Integrations: in-UI channel config + control)
 
-Model: sonnet
+Model: opus
 Status: ready
 
 (`Model:`/`Status:` are read directly by `scripts/run-ui-overhaul.ps1`. Allowed:
@@ -51,7 +51,7 @@ Phase 3 — Files
 14. [x] S14 — #297 File upload (attach + extract + local store) — Model: opus
 
 Phase 4 — Integrations / harness
-15. [ ] S15 — #298 Integrations tab: harness status — Model: sonnet
+15. [x] S15 — #298 Integrations tab: harness status — Model: sonnet
 16. [ ] S16 — #299 Integrations: in-UI channel config + control — Model: opus
 17. [ ] S17 — #300 Integrations: service directory — Model: sonnet
 18. [ ] S18 — #301 Unified inbox for incoming channel messages — Model: opus
@@ -76,3 +76,4 @@ Phase 5 — Control surfaces
 - S12 — #295 → PR #315 (Quick Ask: ephemeral web-first scratch chat, not saved to Conversations)
 - S13 — #296 → PR #316 (Per-conversation model override: thread-pinned model, strip select + row badge)
 - S14 — #297 → PR #317 (File upload: attach + extract + per-profile local store + attachment chips)
+- S15 — #298 → PR #318 (Integrations tab: HARNESS section with daemon + per-channel status)
