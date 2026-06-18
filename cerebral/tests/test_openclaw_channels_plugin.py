@@ -51,13 +51,19 @@ def _reset_module_state():
     tests don't leak state into one another."""
     PLUGIN_MOD.set_token_provider(lambda: None)
     PLUGIN_MOD.set_inbound_callback(_unused_callback)  # type: ignore[arg-type]
+    PLUGIN_MOD.set_inbox_observer(_unused_observer)    # type: ignore[arg-type]
     yield
     PLUGIN_MOD.set_token_provider(lambda: None)
     PLUGIN_MOD.set_inbound_callback(_unused_callback)  # type: ignore[arg-type]
+    PLUGIN_MOD.set_inbox_observer(_unused_observer)    # type: ignore[arg-type]
 
 
 async def _unused_callback(transcript: str, history: list[dict]) -> str:
     return "<unused>"
+
+
+async def _unused_observer(session_key: str, text: str, reply) -> None:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +211,7 @@ def _make_plugin(
     token: str = "test-token-redacted",
     session: Optional[FakeSession] = None,
     inbound_callback=None,
+    inbox_observer=None,
     history_limit: int = 16,
     session_factory=None,
 ):
@@ -215,6 +222,7 @@ def _make_plugin(
             _session_factory(session) if session is not None else None
         ),
         inbound_callback=inbound_callback,
+        inbox_observer=inbox_observer,
         history_limit=history_limit,
         events_wait_timeout_ms=50,
         error_backoff_seconds=0.02,
@@ -380,6 +388,64 @@ async def test_event_drives_callback_and_messages_send_reply():
         "session_key": "telegram:alice",
         "text": "Felix: I heard 'hello Felix'",
     }
+
+
+# ===========================================================================
+# Inbox observer seam -- S18 / Issue #301
+# ===========================================================================
+
+async def test_inbox_observer_called_with_inbound_text_and_auto_reply():
+    """After process_event runs, the observer sees (session_key, text, reply)."""
+    seen: list[tuple[str, str, Optional[str]]] = []
+
+    async def observer(session_key, text, reply):
+        seen.append((session_key, text, reply))
+
+    async def callback(text, history):
+        return "auto reply!"
+
+    session = FakeSession(events_queue=[
+        {"cursor": 1, "session_key": "telegram:u1", "text": "ping"},
+    ])
+    plugin = _make_plugin(
+        session=session,
+        inbound_callback=callback,
+        inbox_observer=observer,
+    )
+    await plugin.start_subscriber()
+    try:
+        ok = await _drain_until(lambda: len(seen) >= 1)
+        assert ok
+    finally:
+        await plugin.stop_subscriber()
+    assert seen[0] == ("telegram:u1", "ping", "auto reply!")
+
+
+async def test_inbox_observer_failure_does_not_break_subscriber_loop():
+    """An observer that raises must NOT kill the events_wait loop."""
+    sent_calls: list[dict] = []
+
+    async def observer(session_key, text, reply):
+        raise RuntimeError("inbox blew up")
+
+    async def callback(text, history):
+        return "yes"
+
+    session = FakeSession(events_queue=[
+        {"cursor": 1, "session_key": "telegram:u1", "text": "first"},
+        {"cursor": 2, "session_key": "telegram:u1", "text": "second"},
+    ])
+    plugin = _make_plugin(
+        session=session,
+        inbound_callback=callback,
+        inbox_observer=observer,
+    )
+    await plugin.start_subscriber()
+    try:
+        ok = await _drain_until(lambda: len(session.send_calls) >= 2)
+        assert ok, "second event never landed -- observer raise killed the loop"
+    finally:
+        await plugin.stop_subscriber()
 
 
 async def test_event_without_inline_text_falls_back_to_messages_read():

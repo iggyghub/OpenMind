@@ -66,6 +66,7 @@ from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
 from cerebral.harness_channels import HarnessChannelStore
+from cerebral.channel_inbox import ChannelInbox
 from cerebral.settings import SettingsStore as _SettingsStore
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
@@ -2698,6 +2699,26 @@ async def _handle_message(msg: dict) -> None:
         logger.info("[cerebral] Channel %s secret cleared", ch)
         await _broadcast(_harness_status_event())
 
+    elif t == "request_channel_inbox":
+        # S18 (#301) -- the UI just opened the Integrations pane and
+        # wants the latest inbox snapshot. Idempotent re-broadcast.
+        await _broadcast(_channel_inbox_event())
+
+    elif t == "send_channel_reply":
+        # S18 (#301) -- manual reply typed in the Integrations Inbox.
+        # Routes through openclaw_messages_send so the capability gate
+        # still fires (external_data_write); on success the outbound
+        # entry is added to the inbox and broadcast.
+        d = msg.get("data") or {}
+        session_key = d.get("session_key")
+        text = d.get("text")
+        ok, detail = await _send_channel_reply(session_key, text)
+        if not ok:
+            logger.warning(
+                "[cerebral] send_channel_reply rejected (%s -> %r): %s",
+                session_key, (text or "")[:40], detail,
+            )
+
 
 # ── WebSocket handler ─────────────────────────────────────────────────────────
 
@@ -2725,6 +2746,7 @@ async def _greet(websocket) -> None:
         _credentials_state_event,
         _settings_state_event,
         _harness_status_event,
+        _channel_inbox_event,
         _conversation_turns_event,
         _threads_list_event,
         _projects_list_event,
@@ -3041,6 +3063,7 @@ def _wire_plugin_seams() -> None:
         ("google_maps",  "set_token_provider",  _get_google_maps_token_provider),    # #226
         ("openclaw_channels", "set_token_provider", _get_openclaw_token_provider),  # #168
         ("openclaw_channels", "set_inbound_callback", _bridge_process),     # #168
+        ("openclaw_channels", "set_inbox_observer", _channel_inbox_observer),  # #301
         ("discord_user",      "set_token_provider", _get_discord_user_token_provider),  # #175
         ("discord_user",      "set_draft_callback", _surface_discord_draft),          # #175
     ]
@@ -3146,6 +3169,75 @@ def _harness_status_event() -> dict:
             ],
         },
     }
+
+
+# ── Channel inbox (S18 / Issue #301) ──────────────────────────────────────────
+#
+# In-RAM record of inbound channel messages + their auto-replies, plus
+# manual replies the user sends from the Integrations pane. Fed by the
+# openclaw plugin's inbox observer seam (set_inbox_observer) and drained
+# by the tray over WS as `channel_inbox_update`.
+#
+# Implementer's choice (the spec leaves it open): a dedicated inbox
+# surface inside the Integrations pane rather than routing channel
+# messages into the Conversations schema. Doing the latter would force a
+# conversation_turns migration to carry channel tags AND project filters
+# to gate channel threads, which is well beyond a single slice. The
+# dedicated inbox surface keeps S18 self-contained and leaves the
+# Conversations work (S9 / S10 / S11) untouched.
+
+_channel_inbox = ChannelInbox()
+
+
+def _channel_inbox_event() -> dict:
+    return {
+        "type": "channel_inbox_update",
+        "data": {"entries": _channel_inbox.snapshot()},
+    }
+
+
+async def _channel_inbox_observer(
+    session_key: str, inbound_text: str, auto_reply: str | None,
+) -> None:
+    """Record an inbound channel message + Felix's auto-reply and broadcast.
+
+    Wired into the openclaw plugin's ``set_inbox_observer`` seam at
+    startup. The plugin invokes this after each fully processed inbound
+    event; we add the entry to ``_channel_inbox`` and fan-out a
+    ``channel_inbox_update`` to every connected tray client."""
+    _channel_inbox.record_inbound(
+        session_key, inbound_text, auto_reply=auto_reply,
+    )
+    await _broadcast(_channel_inbox_event())
+
+
+async def _send_channel_reply(session_key: str, text: str) -> tuple[bool, str]:
+    """Send a manual reply through the OpenClaw channel and update the inbox.
+
+    Routes through the orchestrator's ``openclaw_messages_send`` tool so
+    the existing capability gate (ADR-0005 ``external_data_write``) still
+    fires -- a manual reply from the UI is functionally identical to the
+    LLM driving the same tool, so the same gate applies. On success the
+    text is appended to ``_channel_inbox`` as an outbound entry and a
+    ``channel_inbox_update`` broadcast follows. Returns ``(ok, detail)``.
+    Tests patch this helper directly (the same posture as
+    ``_start_openclaw_subscriber``)."""
+    if not isinstance(session_key, str) or not session_key:
+        return False, "missing session_key"
+    if not isinstance(text, str) or not text.strip():
+        return False, "missing reply text"
+    try:
+        result = await _orc.call_tool(
+            "openclaw_messages_send",
+            {"session_key": session_key, "text": text},
+        )
+    except Exception as exc:  # pragma: no cover -- defensive
+        return False, f"openclaw_messages_send raised: {exc}"
+    if getattr(result, "is_error", False):
+        return False, getattr(result, "content", "openclaw_messages_send error")
+    _channel_inbox.record_outbound(session_key, text)
+    await _broadcast(_channel_inbox_event())
+    return True, ""
 
 
 # ── Discord user-account subscriber lifecycle (Issue #175) ────────────────────

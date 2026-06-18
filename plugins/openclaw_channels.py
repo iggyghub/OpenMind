@@ -185,6 +185,31 @@ def set_inbound_callback(fn: InboundCallback) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Inbox observer seam -- S18 / Issue #301
+# ---------------------------------------------------------------------------
+#
+# After an inbound event is processed and Felix's auto-reply has been
+# resolved (success or ERROR_REPLY), the plugin notifies the UI-side
+# inbox so the Integrations pane can render it.
+
+InboxObserver = Callable[[str, str, Optional[str]], Awaitable[None]]
+
+_inbox_observer: Optional[InboxObserver] = None
+
+
+def set_inbox_observer(fn: InboxObserver) -> None:
+    """Wire main.py's channel-inbox observer -- called once at startup.
+
+    The observer is invoked as ``await observer(session_key, inbound_text,
+    auto_reply)`` after each fully processed inbound event. Optional --
+    if not wired, the plugin still auto-replies; only the UI surface
+    misses the update.
+    """
+    global _inbox_observer
+    _inbox_observer = fn
+
+
+# ---------------------------------------------------------------------------
 # MCP session shape -- production wires the real mcp SDK; tests inject a fake
 # ---------------------------------------------------------------------------
 
@@ -414,6 +439,7 @@ class OpenClawChannelsPlugin:
         token_provider: Optional[TokenProvider] = None,
         session_factory: Optional[Callable[..., AsyncContextManager[_McpSession]]] = None,
         inbound_callback: Optional[InboundCallback] = None,
+        inbox_observer: Optional[InboxObserver] = None,
         history_limit: int = DEFAULT_HISTORY_LIMIT,
         url: Optional[str] = None,
         channel_mode: str = "off",
@@ -425,6 +451,7 @@ class OpenClawChannelsPlugin:
         self._provider_override = token_provider
         self._session_factory_override = session_factory
         self._inbound_override = inbound_callback
+        self._inbox_observer_override = inbox_observer
         self._history_limit = max(2, history_limit)
         self._url = url or os.environ.get(_ENV_URL) or None
         self._channel_mode = channel_mode
@@ -737,6 +764,11 @@ class OpenClawChannelsPlugin:
             return self._inbound_override
         return _inbound_callback
 
+    def _resolve_inbox_observer(self) -> Optional[InboxObserver]:
+        if self._inbox_observer_override is not None:
+            return self._inbox_observer_override
+        return _inbox_observer
+
     async def _ensure_session(self) -> tuple[Optional[_McpSession], Optional[str]]:
         """Lazy session bring-up. Returns ``(session, None)`` on success
         or ``(None, error_msg)`` on graceful-degradation."""
@@ -977,6 +1009,19 @@ class OpenClawChannelsPlugin:
         else:
             self._append_history(session_key, "user", text)
             self._append_history(session_key, "assistant", reply)
+
+        # S18 -- forward the (inbound, auto-reply) pair to the UI inbox
+        # observer regardless of whether messages_send succeeds below; the
+        # message was received and the user wants to see it.
+        observer = self._resolve_inbox_observer()
+        if observer is not None:
+            try:
+                await observer(session_key, text, reply or None)
+            except Exception as exc:
+                logger.warning(
+                    "[openclaw_channels] inbox observer raised for %s: %s",
+                    session_key, self._scrub(str(exc)),
+                )
 
         if not reply:
             return

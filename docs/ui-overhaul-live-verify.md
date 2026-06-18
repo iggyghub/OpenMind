@@ -677,3 +677,86 @@ and creates this document. Verify the harness itself works:
 - [ ] Type "Bitwarden". Confirm it appears in search results.
 - [ ] Click a search hit for a service. Confirm it navigates to the
       Integrations pane and scrolls the SERVICES section into view.
+
+---
+
+## S18 -- Unified channel inbox (#301)
+
+**Implementer's choice (per spec):** a dedicated **Inbox** section
+inside the Integrations pane, rather than routing channel messages into
+the Conversations schema. Doing the latter would force a
+`conversation_turns` migration to carry channel tags + project filters
+to gate channel threads -- out of scope for one slice.
+
+**Inbox section renders**
+
+- [ ] Open Felix and navigate to **Integrations** (TOOLS section in the
+      sidebar). Scroll past the HARNESS and SERVICES sections. Confirm a
+      third section header labelled **INBOX** appears.
+- [ ] On a fresh boot with no inbound channel messages, confirm the
+      Inbox section shows the empty-state line "No channel messages
+      yet." (muted italic, centred).
+
+**Inbound message surfaces without restart**
+
+- [ ] With the OpenClaw daemon running and the Telegram (or any
+      configured) channel connected, ask a friend to send you a message
+      via that channel.
+- [ ] Without reloading the Felix window, confirm the message appears
+      in the Inbox: a new group row keyed by the channel + session_key
+      (e.g. "TELEGRAM  telegram:12345" with a HH:MM timestamp), the
+      message bubble itself labelled "Them" on the left edge.
+- [ ] Confirm Felix's auto-reply (from `_bridge_process`) appears below
+      the message as a faded italic bubble labelled "Felix auto-reply".
+
+**Manual reply routes back out through the channel**
+
+- [ ] Type a reply into the textarea under the message group. Press
+      **Send** (or **Enter**). Confirm:
+      - The textarea clears immediately.
+      - An outbound bubble labelled "You" appears at the bottom of the
+        group.
+      - On the channel side, your friend receives the typed reply
+        through the same channel (e.g. on their Telegram app).
+- [ ] Type a reply and press **Shift+Enter**. Confirm a newline is
+      inserted in the textarea and the reply is NOT sent.
+- [ ] Try to send an empty reply (textarea blank). Confirm nothing
+      happens (no outbound bubble appears, no IPC call fires).
+
+**Live updates: multiple sessions**
+
+- [ ] Have two friends message you on different channels (or two
+      different conversations within the same channel). Confirm the
+      Inbox shows two separate groups, each keyed by its own
+      session_key, newest session first.
+- [ ] When a new message arrives in an older session, confirm that
+      session jumps to the top of the list (sorted by most recent
+      activity).
+
+**Drafts survive re-renders**
+
+- [ ] Start typing a reply on one channel group, then have a different
+      channel receive a new inbound message (so the inbox re-renders).
+      Confirm the draft text in the FIRST group's textarea is
+      preserved.
+
+**Federated search finds the inbox**
+
+- [ ] From any other pane, type "inbox" in the header search bar.
+      Confirm a "Channel inbox" hit appears in the "Found elsewhere"
+      list with route `integrations`. Click it -- confirm the
+      Integrations pane activates and scrolls the INBOX section into
+      view.
+
+**Re-pull on pane activation**
+
+- [ ] Switch to another pane and back to Integrations. Confirm the
+      Inbox still shows the same groups (state was re-broadcast and
+      re-rendered idempotently).
+
+**Reset on Cerebral restart (in-RAM only)**
+
+- [ ] Fully restart Cerebral. Reopen the Integrations pane. Confirm
+      the Inbox is empty again -- channel transcripts remain durable on
+      the channel side; the local inbox is a "what's new since the
+      daemon came up" surface, not a persistent log.

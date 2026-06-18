@@ -1182,6 +1182,106 @@
     .int-svc-connect.is-connected { color: #4bd49a; border-color: #4bd49a55; }
     .int-svc-connect.is-connected:hover { border-color: #4bd49a; }
 
+    /* ── S18 / #301: channel inbox ─────────────────────────── */
+    .int-inbox-empty {
+      padding: 18px;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-style: italic;
+      text-align: center;
+    }
+    .int-inbox-group {
+      border-bottom: 1px solid #1e1c30;
+    }
+    .int-inbox-group:last-child { border-bottom: none; }
+
+    .int-inbox-group-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 18px 6px;
+    }
+    .int-inbox-group-chan {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .int-inbox-group-key {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .int-inbox-group-time {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .int-inbox-entries {
+      padding: 0 18px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .int-inbox-entry {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: #1a182a;
+      max-width: 88%;
+      font-size: 12px;
+      color: var(--text);
+      word-wrap: break-word;
+    }
+    .int-inbox-entry.is-inbound {
+      align-self: flex-start;
+      border-left: 2px solid var(--accent);
+    }
+    .int-inbox-entry.is-outbound {
+      align-self: flex-end;
+      background: #20203a;
+      border-right: 2px solid #4bd49a;
+    }
+    .int-inbox-entry-meta {
+      font-size: 10px;
+      color: var(--text-muted);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .int-inbox-autoreply {
+      align-self: flex-end;
+      background: #1c2333;
+      border-right: 2px solid #5e7fce;
+      color: var(--text-dim);
+      font-style: italic;
+    }
+    .int-inbox-reply-row {
+      display: flex;
+      gap: 6px;
+      padding: 6px 18px 12px;
+    }
+    .int-inbox-reply-row textarea {
+      flex: 1;
+      min-height: 28px;
+      max-height: 80px;
+      resize: vertical;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+      padding: 6px 8px;
+      outline: none;
+    }
+    .int-inbox-reply-row textarea:focus { border-color: #4bd49a55; }
+
     /* ── header queue badge ─────────────────────────────────── */
     /* Pending-action count surfaced in the chat header so the user
        sees it from any pane. Hidden when zero. Click jumps to #queue. */
@@ -3615,6 +3715,15 @@
         <div id="int-svc-body">
           <!-- rows rendered by renderServiceDirectory() -->
         </div>
+
+        <!-- S18 (#301) -- channel inbox: inbound channel messages + reply -->
+        <div class="int-section" id="int-inbox-section">Inbox</div>
+        <div id="int-inbox-body">
+          <div class="int-inbox-empty" id="int-inbox-empty">
+            No channel messages yet.
+          </div>
+          <div id="int-inbox-list" hidden></div>
+        </div>
       </div>
     </section>
 
@@ -3679,6 +3788,11 @@
        category. Dual-mode: window.ServiceRegistry here, module.exports for
        Node tests. -->
   <script src="../lib/service-registry.js"></script>
+
+  <!-- Channel inbox helpers (S18 -- #301) -- groups inbox entries by
+       session_key for the Integrations Inbox surface. Dual-mode:
+       window.ChannelInbox here, module.exports for Node tests. -->
+  <script src="../lib/channel-inbox.js"></script>
 
   <script>
     'use strict';
@@ -3765,6 +3879,9 @@
     const intDaemonRestartBtn = document.getElementById('int-daemon-restart');
     const intChannelsEl    = document.getElementById('int-channels-list');
     const intSvcBodyEl     = document.getElementById('int-svc-body');
+    // S18 (#301) -- channel inbox elements
+    const intInboxListEl   = document.getElementById('int-inbox-list');
+    const intInboxEmptyEl  = document.getElementById('int-inbox-empty');
     const setActiveNameEl  = document.getElementById('set-active-name');
     const setActiveCloudEl = document.getElementById('set-active-cloud');
     const setLastLineEl    = document.getElementById('set-last-line');
@@ -3855,6 +3972,12 @@
     // Integrations pane state (S15 / #298). Populated by harness_status
     // broadcasts; null until the first reply arrives.
     let integrationsData = null;
+
+    // S18 (#301) -- channel inbox state. Populated by channel_inbox_update
+    // broadcasts. _intInboxReplyDraft preserves per-session_key drafts as
+    // the user types so a passive re-render doesn't wipe the textarea.
+    let channelInboxEntries = [];
+    const _intInboxReplyDraft = Object.create(null);
 
     let activeProfileVoice = 'af_heart';
 
@@ -4115,6 +4238,12 @@
         case 'harness_status':
           integrationsData = event.data || null;
           renderIntegrations();
+          break;
+        case 'channel_inbox_update':
+          // S18 (#301) -- inbound channel message arrived or a manual
+          // reply just landed; the Inbox section re-renders in place.
+          channelInboxEntries = (event.data && event.data.entries) || [];
+          renderChannelInbox();
           break;
         case 'plugin_settings':
           // Issue #187 — per-plugin settings sub-pane.
@@ -6141,6 +6270,119 @@
       }
     });
 
+    // ── Channel inbox (S18 / #301) ──────────────────────────────────────
+    //
+    // Renders the channel_inbox_update payload into a grouped transcript
+    // inside the Integrations pane. Each group is one session_key; an
+    // inline reply composer sends `send_channel_reply` over IPC, which
+    // Cerebral funnels through openclaw_messages_send (capability-gated).
+
+    function renderChannelInbox() {
+      const entries = channelInboxEntries || [];
+      if (entries.length === 0) {
+        intInboxListEl.hidden = true;
+        intInboxListEl.innerHTML = '';
+        intInboxEmptyEl.hidden = false;
+        return;
+      }
+      intInboxEmptyEl.hidden = true;
+      intInboxListEl.hidden = false;
+
+      const groups = window.ChannelInbox.groupBySession(entries);
+      intInboxListEl.innerHTML = groups.map(function (g) {
+        const entriesHtml = g.entries.map(function (e) {
+          const t   = window.ChannelInbox.formatTimestamp(e.ts);
+          const dir = e.direction === 'outbound' ? 'outbound' : 'inbound';
+          const cls = dir === 'outbound' ? 'int-inbox-entry is-outbound'
+                                         : 'int-inbox-entry is-inbound';
+          const metaLabel = dir === 'outbound' ? 'You' : 'Them';
+          const main = '<div class="' + cls + '">' +
+                         '<div class="int-inbox-entry-meta">' + escHtml(metaLabel) +
+                           (t ? ' &middot; ' + escHtml(t) : '') +
+                         '</div>' +
+                         '<div>' + escHtml(e.text || '') + '</div>' +
+                       '</div>';
+          const auto = (dir === 'inbound' && e.auto_reply)
+            ? '<div class="int-inbox-entry int-inbox-autoreply">' +
+                '<div class="int-inbox-entry-meta">Felix auto-reply</div>' +
+                '<div>' + escHtml(e.auto_reply) + '</div>' +
+              '</div>'
+            : '';
+          return main + auto;
+        }).join('');
+
+        const groupTime = window.ChannelInbox.formatTimestamp(g.last_ts);
+        const draft = _intInboxReplyDraft[g.session_key] || '';
+
+        return '<div class="int-inbox-group" data-int-inbox-key="' + escHtml(g.session_key) + '">' +
+          '<div class="int-inbox-group-head">' +
+            '<span class="int-inbox-group-chan">' + escHtml(g.channel_label) + '</span>' +
+            '<span class="int-inbox-group-key">' + escHtml(g.session_key) + '</span>' +
+            (groupTime ? '<span class="int-inbox-group-time">' + escHtml(groupTime) + '</span>' : '') +
+          '</div>' +
+          '<div class="int-inbox-entries">' + entriesHtml + '</div>' +
+          '<div class="int-inbox-reply-row">' +
+            '<textarea ' +
+              'data-int-inbox-reply="' + escHtml(g.session_key) + '" ' +
+              'placeholder="Reply on ' + escHtml(g.channel_label) + '..." ' +
+              'rows="1">' + escHtml(draft) + '</textarea>' +
+            '<button class="int-btn is-primary" ' +
+              'data-int-inbox-send="' + escHtml(g.session_key) + '" ' +
+              'type="button">Send</button>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    // Per-session draft + send wiring. Delegated like the channel-config
+    // handler above so the listeners survive re-renders.
+    intInboxListEl.addEventListener('input', function (e) {
+      const target = e.target;
+      if (!target) return;
+      const key = target.getAttribute('data-int-inbox-reply');
+      if (key) _intInboxReplyDraft[key] = target.value;
+    });
+    intInboxListEl.addEventListener('click', function (e) {
+      const target = e.target;
+      if (!target || target.nodeType !== 1) return;
+      const sendKey = target.getAttribute('data-int-inbox-send');
+      if (!sendKey) return;
+      const ta = intInboxListEl.querySelector(
+        'textarea[data-int-inbox-reply="' + cssEscape(sendKey) + '"]'
+      );
+      const text = (ta && ta.value || '').trim();
+      if (!text) return;
+      // Optimistic clear: the outbound entry will appear on the
+      // channel_inbox_update echo. If Cerebral rejects the send (denied
+      // by the capability gate, no session, etc.), the user re-types.
+      if (ta) { ta.value = ''; }
+      delete _intInboxReplyDraft[sendKey];
+      sendEvent({
+        type: 'send_channel_reply',
+        data: { session_key: sendKey, text: text },
+      });
+    });
+    // Enter sends; Shift+Enter inserts a newline. Mirrors the conversation
+    // composer's keyboard contract.
+    intInboxListEl.addEventListener('keydown', function (e) {
+      const target = e.target;
+      if (!target) return;
+      if (!target.matches('textarea[data-int-inbox-reply]')) return;
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const sendKey = target.getAttribute('data-int-inbox-reply');
+        if (!sendKey) return;
+        const text = (target.value || '').trim();
+        if (!text) return;
+        target.value = '';
+        delete _intInboxReplyDraft[sendKey];
+        sendEvent({
+          type: 'send_channel_reply',
+          data: { session_key: sendKey, text: text },
+        });
+      }
+    });
+
     // Open the per-plugin settings sub-pane for `pluginName`.
     function openPluginSettings(pluginName) {
       pluginSettingsActive = pluginName;
@@ -6863,8 +7105,10 @@
         sendEvent({ type: 'list_settings' });
       } else if (route === 'integrations') {
         // Defensive re-pull on each activation; harness_status renders
-        // idempotently so this is cheap.
+        // idempotently so this is cheap. S18 (#301) -- same posture for
+        // the channel inbox.
         sendEvent({ type: 'request_harness_status' });
+        sendEvent({ type: 'request_channel_inbox' });
       }
     }
 
@@ -7080,6 +7324,12 @@
           });
         });
       }
+      // S18: expose the channel inbox so search can jump to it.
+      hits.push({
+        label:  'Channel inbox',
+        route:  'integrations',
+        anchor: 'int-inbox-section',
+      });
       return hits;
     });
 
