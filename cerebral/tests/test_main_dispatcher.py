@@ -280,7 +280,7 @@ def conversation_rig(monkeypatch):
     async def fake_record_turn(kind, content):
         recorded.append((kind, content))
 
-    async def fake_process_command(text, *, speak=True):
+    async def fake_process_command(text, *, speak=True, thread_model_override=None):
         processed.append((text, speak))
 
     monkeypatch.setattr(main_mod, "_broadcast", fake_broadcast)

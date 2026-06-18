@@ -518,6 +518,27 @@
       border-color: var(--accent);
     }
     .conv-thread-title.is-untitled { color: var(--text-muted); font-style: italic; }
+    /* S13 (#296) -- per-thread model override selector */
+    .conv-thread-model-sel {
+      flex-shrink: 0;
+      background: var(--bg-elev);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 6px;
+      font-size: 11px;
+      cursor: pointer;
+      font-family: inherit;
+      max-width: 150px;
+    }
+    .conv-thread-model-sel:focus { outline: none; border-color: var(--accent); }
+    .conv-thread-model-sel:hover { color: var(--text); }
+    /* thread row model badge */
+    .conv-thread-row-model {
+      font-size: 10px;
+      color: var(--accent);
+      margin-left: 4px;
+    }
     .conv-thread-newbtn {
       flex-shrink: 0;
       background: transparent;
@@ -2818,6 +2839,11 @@
              spellcheck="false"
              role="textbox"
              aria-label="Conversation title">Untitled conversation</div>
+        <!-- S13 (#296) -- per-thread model override. "Global default" = no override. -->
+        <select class="conv-thread-model-sel" id="conv-thread-model"
+                title="Pin a model to this conversation (overrides the global default)">
+          <option value="">Global default</option>
+        </select>
         <button class="conv-thread-newbtn" id="conv-thread-new" type="button"
                 title="Start a new conversation thread">+ New conversation</button>
       </div>
@@ -3321,6 +3347,7 @@
     const qaSendBtn      = document.getElementById('qa-send');
     const qaClearBtn     = document.getElementById('qa-clear');
     const convThreadTitleEl  = document.getElementById('conv-thread-title');
+    const convThreadModelSel = document.getElementById('conv-thread-model');  // S13
     const convThreadNewBtn   = document.getElementById('conv-thread-new');
     const convListSearchEl   = document.getElementById('conv-list-search');
     const convThreadListEl   = document.getElementById('conv-thread-list');
@@ -3730,6 +3757,7 @@
             task_models:     d.task_models     || {},
           };
           renderSettings();
+          renderThreadModelSelect();  // S13 -- refresh override select with current model list
           break;
         }
         case 'settings_updated':
@@ -3933,6 +3961,35 @@
         convThreadTitleEl.textContent = 'Untitled conversation';
         convThreadTitleEl.classList.add('is-untitled');
       }
+      renderThreadModelSelect();  // S13 -- keep model select in sync with active thread
+    }
+
+    // S13 (#296) -- populate the per-thread model override select and set its value.
+    function renderThreadModelSelect() {
+      if (!convThreadModelSel) return;
+      const t = activeThread();
+      const current = (t && t.model_override) ? t.model_override : '';
+      // Rebuild options only when needed (avoids blinking on rapid re-renders).
+      const expectedCount = 1 + modelsState.models.length;
+      if (convThreadModelSel.options.length !== expectedCount) {
+        convThreadModelSel.innerHTML =
+          '<option value="">Global default</option>' +
+          modelsState.models.map(function (m) {
+            return '<option value="' + escHtml(m.id) + '">' + escHtml(m.label) + '</option>';
+          }).join('');
+      }
+      convThreadModelSel.value = current;
+    }
+
+    if (convThreadModelSel) {
+      convThreadModelSel.addEventListener('change', function () {
+        if (activeThreadId == null) return;
+        const modelId = convThreadModelSel.value || null;
+        sendEvent({
+          type: 'set_thread_model',
+          data: { thread_id: activeThreadId, model_id: modelId },
+        });
+      });
     }
 
     // ── conversations list pane (S10 / #293, S11 / #294) ─────────────────
@@ -3941,6 +3998,14 @@
       const isActive = (t.id === activeThreadId);
       const count    = (typeof t.turn_count === 'number') ? t.turn_count : 0;
       const ts       = t.updated_at ? new Date(t.updated_at).toLocaleDateString() : '';
+      // S13 (#296) -- show pinned model label if override is set.
+      const modelOverride = t.model_override || null;
+      const modelLabel = modelOverride
+        ? (function () {
+            const m = modelsState.models.find(function (mo) { return mo.id === modelOverride; });
+            return m ? m.label : modelOverride;
+          }())
+        : null;
       const meta     = [
         count ? (count + ' turn' + (count === 1 ? '' : 's')) : '',
         ts,
@@ -3960,10 +4025,13 @@
         const name = (p.name || '').trim() || 'Untitled project';
         return '<option value="' + escHtml(pid) + '"' + sel + '>' + escHtml(name) + '</option>';
       })).join('');
+      const modelBadge = modelLabel
+        ? '<span class="conv-thread-row-model" title="Pinned model: ' + escHtml(modelLabel) + '">[' + escHtml(modelLabel) + ']</span>'
+        : '';
       return '<div class="conv-thread-row' + activeClass + '" data-tid="' + safeId + '">' +
         '<div class="conv-thread-row-info">' +
         '<div class="conv-thread-row-title' + titleClass + '">' +
-        escHtml(title || 'Untitled conversation') + '</div>' +
+        escHtml(title || 'Untitled conversation') + modelBadge + '</div>' +
         '<div class="conv-thread-row-meta">' + escHtml(meta) + '</div>' +
         '</div>' +
         '<div class="conv-thread-row-actions">' +
