@@ -498,6 +498,28 @@ test('inline script fires interrupt_turn IPC verb (S20)', () => {
   expect(inlineScript).toMatch(/['"]interrupt_turn['"]/);
 });
 
+// ── F3 — mic input device picker (#326) ──────────────────────────────────────
+
+test('settings pane contains mic input device select (F3)', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  expect(pane).not.toBeNull();
+  const sel = pane.querySelector('#set-mic-device-select');
+  expect(sel).not.toBeNull();
+  // Must have at least one option (System default).
+  const opts = pane.querySelectorAll('#set-mic-device-select option');
+  expect(opts.length).toBeGreaterThanOrEqual(1);
+  // First option is always "System default" (value="").
+  expect(opts[0].getAttribute('value')).toBe('');
+});
+
+test('inline script calls populateMicDevices on init (F3)', () => {
+  expect(inlineScript).toMatch(/populateMicDevices/);
+});
+
+test('inline script persists mic_input_device via set_setting IPC (F3)', () => {
+  expect(inlineScript).toMatch(/['"]mic_input_device['"]/);
+});
+
 // ── F2 — window-resize layout (#325) ─────────────────────────────────────────
 
 test('conversation pane is the column chain body > .content > .pane (F2)', () => {

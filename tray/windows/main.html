@@ -3223,6 +3223,17 @@
     }
     .set-interval-select:hover,
     .set-interval-select:focus { border-color: #ff8c69; }
+    /* F3 (#326) -- inline link-style button for mic-device grant prompt */
+    .set-link-btn {
+      background: none;
+      border: none;
+      color: var(--accent);
+      font-family: inherit;
+      font-size: inherit;
+      cursor: pointer;
+      padding: 0;
+      text-decoration: underline;
+    }
     .set-interval-label {
       font-size: 11px;
       color: var(--text-muted);
@@ -3748,6 +3759,16 @@
             <option value="disabled">Disabled</option>
           </select>
         </div>
+        <!-- F3 (#326) -- microphone input device picker -->
+        <div class="set-toggle-row" id="set-mic-device-row">
+          <div>
+            <div class="set-toggle-label">Input device</div>
+            <div class="set-toggle-sub" id="set-mic-device-sub">Restart Cerebral after changing</div>
+          </div>
+          <select class="set-interval-select" id="set-mic-device-select">
+            <option value="">System default</option>
+          </select>
+        </div>
 
         <div class="set-section">Voice output</div>
         <div class="set-toggle-row">
@@ -4132,6 +4153,7 @@
       mic_mode:                  'passive',
       tts_muted:                 false,
       tts_volume:                100,
+      mic_input_device:          '',
     };
 
     // Integrations pane state (S15 / #298). Populated by harness_status
@@ -6862,6 +6884,10 @@
     const hdrMicSegs      = hdrMicMode ? Array.from(hdrMicMode.querySelectorAll('.hdr-mic-seg')) : [];
     const setMicModeSelect = document.getElementById('set-mic-mode-select');
 
+    // F3 (#326) -- mic input device picker
+    const setMicDeviceSelect = document.getElementById('set-mic-device-select');
+    const setMicDeviceSub    = document.getElementById('set-mic-device-sub');
+
     // S8 -- TTS controls (#291)
     const hdrTtsMute      = document.getElementById('hdr-tts-mute');
     const hdrTtsVol       = document.getElementById('hdr-tts-vol');
@@ -6877,6 +6903,58 @@
       });
       // Update settings select.
       if (setMicModeSelect) setMicModeSelect.value = mode;
+    }
+
+    // F3 (#326) -- populate the mic input device picker.
+    // Uses navigator.mediaDevices.enumerateDevices() (audioinput only).
+    // Labels are only populated after mic permission is granted; if empty we
+    // show a prompt so the user can grant access without leaving Settings.
+    // The stored value is the device label string; Cerebral matches it against
+    // sounddevice's device list on startup (device change requires restart).
+    async function populateMicDevices() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        if (setMicDeviceSub) setMicDeviceSub.textContent = 'Device enumeration not available in this context';
+        return;
+      }
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const inputs  = devices.filter(function(d) { return d.kind === 'audioinput' && d.label; });
+        if (!setMicDeviceSelect) return;
+        const current = setMicDeviceSelect.value;
+        // Rebuild options, preserving "System default" at index 0.
+        while (setMicDeviceSelect.options.length > 1) setMicDeviceSelect.remove(1);
+        if (inputs.length === 0) {
+          if (setMicDeviceSub) {
+            setMicDeviceSub.innerHTML =
+              'Grant mic access to list devices: ' +
+              '<button type="button" class="set-link-btn" id="set-mic-grant-btn">Allow</button>';
+            var grantBtn = document.getElementById('set-mic-grant-btn');
+            if (grantBtn) {
+              grantBtn.addEventListener('click', function() {
+                navigator.mediaDevices.getUserMedia({ audio: true })
+                  .then(function(stream) {
+                    stream.getTracks().forEach(function(t) { t.stop(); });
+                    populateMicDevices();
+                  })
+                  .catch(function() {
+                    if (setMicDeviceSub) setMicDeviceSub.textContent = 'Mic access denied -- using system default';
+                  });
+              });
+            }
+          }
+        } else {
+          for (var i = 0; i < inputs.length; i++) {
+            var opt = document.createElement('option');
+            opt.value = inputs[i].label;
+            opt.textContent = inputs[i].label;
+            setMicDeviceSelect.appendChild(opt);
+          }
+          setMicDeviceSelect.value = current;
+          if (setMicDeviceSub) setMicDeviceSub.textContent = 'Restart Cerebral after changing';
+        }
+      } catch (err) {
+        if (setMicDeviceSub) setMicDeviceSub.textContent = 'Could not enumerate devices';
+      }
     }
 
     function applyTTS(muted, volume) {
@@ -6906,6 +6984,10 @@
       setVisToggle.checked    = !!s.visualiser_visible;
       applyMicMode(s.mic_mode || 'passive');
       applyTTS(!!s.tts_muted, s.tts_volume ?? 100);
+      // F3 (#326) -- restore persisted mic device selection.
+      if (setMicDeviceSelect && s.mic_input_device !== undefined) {
+        setMicDeviceSelect.value = s.mic_input_device || '';
+      }
     }
 
     setNotifToggle.addEventListener('change', () => {
@@ -6939,6 +7021,16 @@
         applyMicMode(mode);
       });
     }
+
+    // F3 (#326) -- mic input device picker: persist selection + populate on init.
+    if (setMicDeviceSelect) {
+      setMicDeviceSelect.addEventListener('change', function() {
+        sendEvent({ type: 'set_setting', data: { key: 'mic_input_device', value: setMicDeviceSelect.value } });
+      });
+    }
+    // Enumerate devices after the page loads so labels are available if mic
+    // permission was already granted in a previous session.
+    populateMicDevices();
 
     // S8 -- TTS mute button in header.
     if (hdrTtsMute) {

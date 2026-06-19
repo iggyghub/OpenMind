@@ -5,7 +5,8 @@ The Main window (ADR-0007) cannot call Node fs APIs directly, so all
 settings must be read and written via WebSocket to Cerebral.
 
 Keys: notifications_enabled, reminder_interval_minutes, camera_enabled,
-      visualiser_visible, mic_mode, tts_muted, tts_volume
+      visualiser_visible, mic_mode, tts_muted, tts_volume,
+      mic_input_device
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ _DEFAULTS: dict[str, Any] = {
     "mic_mode":                  "passive",
     "tts_muted":                 False,
     "tts_volume":                100,
+    "mic_input_device":          "",
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -37,6 +39,7 @@ _TYPES: dict[str, type] = {
     "mic_mode":                  str,
     "tts_muted":                 bool,
     "tts_volume":                int,
+    "mic_input_device":          str,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})

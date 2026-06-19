@@ -73,10 +73,14 @@ class AudioPipeline:
         on_wake: Callable[[str], Awaitable[None]],
         on_passive: Callable[[str], Awaitable[None]] | None = None,
         signal_words: list[str] | None = None,
+        device: str = "",
     ) -> None:
         self._on_wake = on_wake
         self._on_passive = on_passive
         self.signal_words: list[str] = signal_words if signal_words is not None else []
+        # F3 (#326): preferred input device label (empty = sounddevice default).
+        # Changing this requires a pipeline restart; it is applied only in start().
+        self._device: str = device
         self._buffer = RollingBuffer()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stream = None
@@ -119,6 +123,7 @@ class AudioPipeline:
             dtype="int16",
             blocksize=BLOCK_SIZE,
             callback=self._audio_callback,
+            device=self._device or None,
         )
         self._stream.start()
         # Default signal words if none were provided at construction time

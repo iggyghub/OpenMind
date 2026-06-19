@@ -3502,6 +3502,7 @@ async def main() -> None:
             on_wake=_on_wake,
             on_passive=_on_passive,
             signal_words=list(DEFAULT_SIGNAL_WORDS),
+            device=_settings.get('mic_input_device') or '',
         )
         await loop.run_in_executor(None, lambda: pipeline.start(loop))
         audio_active = True
