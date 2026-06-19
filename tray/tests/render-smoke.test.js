@@ -572,6 +572,24 @@ test('inline script handles apply_appearance broadcast (F4)', () => {
   expect(inlineScript).toMatch(/handleApplyAppearance/);
 });
 
+// ── F5 — in-conversation backlog panel (#328) ─────────────────────────────────
+
+test('conversation pane has backlog panel elements (F5)', () => {
+  // The backlog panel and its inner scroll container must be in the DOM.
+  expect(root.querySelector('#conv-backlog-panel')).not.toBeNull();
+  expect(root.querySelector('#conv-backlog-inner')).not.toBeNull();
+  expect(root.querySelector('#conv-backlog-toggle')).not.toBeNull();
+  // conv-pane-body wraps the backlog panel + transcript side by side.
+  expect(root.querySelector('.conv-pane-body')).not.toBeNull();
+  expect(root.querySelector('.conv-pane-body > #transcript')).not.toBeNull();
+});
+
+test('inline script has backlog panel render function (F5)', () => {
+  expect(inlineScript).toMatch(/renderBacklogPanel/);
+  expect(inlineScript).toMatch(/applyBacklogPanelState/);
+  expect(inlineScript).toMatch(/backlogPanelCollapsed/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
