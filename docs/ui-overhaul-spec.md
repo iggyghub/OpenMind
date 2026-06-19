@@ -218,3 +218,33 @@ pill returns to passive/active.
 2. Render-smoke (S1) passes, including the assertion the slice added.
 3. The slice's human live-verify steps are appended to
    `docs/ui-overhaul-live-verify.md` for the author to run in the real app.
+
+---
+
+# Phase 6 — Fixes round 2 (F1-F5)
+
+Post-testing fixes/features reported by the author after the 20-slice campaign
+landed. Same cross-cutting rules and verification gate as above. Issues #324-#328.
+
+**F1 — Orb window icon (#324).** `BrowserWindow`s in `tray/main.js` set no `icon:`,
+so Windows shows Electron's default atom logo. Set `icon:` on every window (main,
+visualiser, modal) to the orb; generate a multi-res `.ico` in `create-icon.js`.
+
+**F2 — Window-resize layout (#325).** Content detaches/floats at narrow/odd sizes.
+Fix the flex column chain (`body` row -> `.content` -> `.pane` -> `.transcript` +
+`.composer`) so header/thread-strip/transcript/composer stay anchored down to the
+720x480 min; transcript scrolls internally. Add a render-smoke assertion.
+
+**F3 — Microphone device picker (#326).** Settings dropdown of input devices
+(`enumerateDevices`), persisted as a system setting; Cerebral captures from it (or
+document the wiring gap honestly if backend plumbing is out of this slice).
+
+**F4 — Voice/typed settings control, gated (#327).** A settings-control MCP tool
+exposing changeable **system settings** only; planner selects it (ADR-0008) and it
+dispatches through the ADR-0005 ask-class gate (consent card) with `passive=False` —
+applies only on approval, reflected live. No profile-scoped state via this tool.
+
+**F5 — In-conversation backlog panel (#328).** A collapsible thread-history panel
+docked in the Conversation pane, grouped by project (each group collapsible, reusing
+the S3 collapse helper + S10/S11 store), active thread highlighted, panel itself
+collapsible. The Conversations tab stays the full manager; no store duplication.

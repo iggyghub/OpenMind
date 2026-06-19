@@ -16,10 +16,10 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **S20 — #303** (Stop / interrupt in-flight turn + TTS) — LANDED
+Active slice: **F1 — #324** (App/taskbar/titlebar icon: orb not Electron atom)
 
 Model: sonnet
-Status: done
+Status: ready
 
 (`Model:`/`Status:` are read directly by `scripts/run-ui-overhaul.ps1`. Allowed:
 haiku | sonnet | opus | fable. `Status: ready` = run the active slice; `blocked` =
@@ -59,6 +59,13 @@ Phase 4 — Integrations / harness
 Phase 5 — Control surfaces
 19. [x] S19 — #302 Recipes pane (list/run/delete) — Model: sonnet
 20. [x] S20 — #303 Stop / interrupt in-flight turn + TTS — Model: sonnet
+
+Phase 6 — Fixes round 2 (post-test author feedback)
+21. [ ] F1 — #324 App/taskbar/titlebar icon: orb not Electron atom — Model: sonnet
+22. [ ] F2 — #325 Window-resize layout: content detaches/floats at odd sizes — Model: opus
+23. [ ] F3 — #326 Microphone input device selection — Model: sonnet
+24. [ ] F4 — #327 Voice/typed control of settings, ADR-0005 gated — Model: opus
+25. [ ] F5 — #328 In-conversation collapsible chat backlog panel — Model: sonnet
 
 ### Landed PRs (append as slices merge)
 
