@@ -970,3 +970,75 @@ to gate channel threads -- out of scope for one slice.
       - "settings pane contains mic input device select (F3)"
       - "inline script calls populateMicDevices on init (F3)"
       - "inline script persists mic_input_device via set_setting IPC (F3)"
+
+---
+
+## F4 — Voice/typed control of settings, ADR-0005 gated (#327)
+
+**Tool surface (planner-visible)**
+
+- [ ] Start Cerebral. Open the Plugins pane and confirm a `settings_control`
+      plugin row is listed with one tool: `set_system_setting`.
+- [ ] Confirm the tool's declared capability is `fs_write` (Plugins row shows
+      the capability badges; FS_WRITE is the ask-class capability that makes
+      this tool gate through the consent card).
+- [ ] In Settings, expand the Permissions pane and confirm `fs_write` is
+      still ASK-class by default for the active profile.
+
+**Typed control (Conversation pane)**
+
+- [ ] In the Conversation composer, type: `Felix, turn TTS volume to 40%`.
+      Send the message.
+- [ ] An inline consent card appears in the transcript naming the tool
+      `set_system_setting` and the capability `FS Write`. Buttons: Once /
+      Session / Persistent / Deny.
+- [ ] Click **Deny**. Confirm the TTS volume row in Settings remains unchanged.
+- [ ] Repeat the request. Click **Once**. Confirm:
+      * The Settings → System → TTS volume slider moves to 40.
+      * The conversation header TTS slider also moves to 40 (single source of
+        truth via `settings_updated` broadcast).
+      * The `felix-settings.json` file on disk shows `"tts_volume": 40`.
+- [ ] Type: `Felix, switch to push-to-talk`. Approve. Confirm the Settings →
+      Voice input → Mic mode control AND the conversation header mic-mode
+      buttons both switch to PTT.
+- [ ] Type: `Felix, use the Light theme`. Approve. Confirm the window
+      repaints with the Light theme; the Settings → Appearance → Theme chips
+      reflect the new selection; reload the window and confirm the theme
+      persists (renderer-owned via localStorage `om:appearance`).
+- [ ] Type: `Felix, set UI scale to 1.25`. Approve. Confirm the UI scales up
+      and Settings → Appearance → UI scale dropdown shows `125%`.
+- [ ] Type: `Felix, change my voice to Bella`. Confirm the request is NOT
+      satisfied through this tool (voice is profile-scoped and explicitly
+      out of scope). Felix either falls back to chat ("I can't change that
+      via settings_control") or selects a different tool; the consent card
+      should not name `set_system_setting`.
+
+**Voice control (when audio is up)**
+
+- [ ] Say `Felix, mute TTS`. Confirm a consent card surfaces in the
+      conversation pane (or the voice prompt fires when the tray window is
+      not focused). Approve. Confirm the conversation-header speaker icon
+      goes muted and `tts_muted` is `true` in `felix-settings.json`.
+
+**Negative paths**
+
+- [ ] Without an active tray subscriber (close the window briefly via the
+      system tray), trigger a typed `Felix, change TTS volume to 80`. The
+      gate should fail closed (no apply, error surfaced in the next render).
+- [ ] Type: `Felix, set my wake name to lucy`. The tool's schema does not
+      include profile-scoped keys, so even if the planner picks
+      `set_system_setting` the call must error with
+      "Unsupported setting key". The wake name stays unchanged.
+
+**Render-smoke**
+
+- [ ] Run `npm test` inside `tray/`. Confirm the F4 assertion
+      "inline script handles apply_appearance broadcast (F4)" passes.
+
+**Backend tests**
+
+- [ ] Run `python -m pytest -c cerebral/pytest.ini cerebral/tests/test_settings_control.py -v`.
+      Confirm all 13 tests pass, including:
+      - `test_consent_accept_invokes_apply_and_returns_ok`
+      - `test_consent_deny_blocks_apply`
+      - `test_no_consent_surface_fails_closed`

@@ -562,6 +562,16 @@ test('flex column chain has the min-height / min-width / overflow rules (F2)', (
   expect(html).toMatch(/\.conv-thread-strip\s*\{[^}]*flex-wrap:\s*wrap/);
 });
 
+// ── F4 — voice/typed settings control (#327) ─────────────────────────────────
+
+test('inline script handles apply_appearance broadcast (F4)', () => {
+  // The settings_control plugin routes ui_scale/ui_theme/ui_accent changes
+  // back through an apply_appearance broadcast; the renderer must own that
+  // case in the IPC switch + persist via the existing appearance helper.
+  expect(inlineScript).toMatch(/['"]apply_appearance['"]/);
+  expect(inlineScript).toMatch(/handleApplyAppearance/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
