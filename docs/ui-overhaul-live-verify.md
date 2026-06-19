@@ -882,3 +882,52 @@ to gate channel threads -- out of scope for one slice.
 
 - [ ] Tray icon still shows the purple orb in the system tray (no change expected).
 - [ ] All other windows open and behave normally.
+
+---
+
+## F2 — Window-resize layout (#325)
+
+**Conversation pane stays anchored at the min size**
+
+- [ ] Launch Felix and open the Conversation pane.
+- [ ] Send 5-10 messages so the transcript has real content.
+- [ ] Drag the window down to the minimum size (`720 x 480`). Confirm:
+      - The static header is anchored at the top (it may wrap to two rows but
+        does not visually detach or overlap the transcript).
+      - The thread strip (title + model selector + "+ New conversation") stays
+        directly under the header and stays anchored.
+      - The transcript scrolls **internally** -- chat bubbles do NOT float
+        above the composer or appear "detached" from the sidebar column.
+      - The composer (paperclip + textarea + Send + Stop) is anchored to the
+        bottom of the pane. At the narrowest width the row may wrap; the
+        textarea must still be usable.
+
+**Resize stress test (no detached/floating content)**
+
+- [ ] From maximized, slowly drag one window corner inward to the min size.
+      Confirm no point during the resize causes chat bubbles to "float" away
+      from the column, escape the right edge, or stack at the top with a
+      large empty gap under them.
+- [ ] Repeat by dragging only the height down to 480px. Confirm the transcript
+      shrinks and scrolls internally; the composer stays pinned to the bottom.
+- [ ] Repeat by dragging only the width down to 720px. Confirm the header,
+      thread strip, and composer wrap gracefully and stay inside the column;
+      message bubbles remain right- (user) / left- (Felix) aligned to the
+      transcript column, not the full window.
+
+**Other panes**
+
+- [ ] Open the Quick Ask pane. Resize to min size. Confirm the qa-strip,
+      transcript, and composer stay in a clean column with no detached items.
+- [ ] Open the Conversations pane and resize. Confirm the thread list keeps
+      its column shape (no floating rows) and the action buttons stay inside
+      each row.
+- [ ] Open Models, Settings, Integrations. Resize each to min size and
+      confirm no content overflows horizontally or detaches from the sidebar.
+
+**Render-smoke**
+
+- [ ] Run `npm test` inside `tray/`. Confirm the F2 assertions
+      ("flex column chain has the min-height / min-width / overflow rules"
+      and "conversation pane is the column chain body > .content > .pane")
+      pass alongside every other suite.

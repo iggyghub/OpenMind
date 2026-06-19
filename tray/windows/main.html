@@ -176,9 +176,14 @@
       display: flex;
       align-items: center;
       gap: 12px;
+      /* F2 (#325): header items wrap to a second row at narrow widths instead
+         of bleeding past the .content clip and detaching the column below. */
+      flex-wrap: wrap;
+      row-gap: 8px;
       flex-shrink: 0;
       background: var(--bg);
       position: relative;
+      min-width: 0;
     }
 
     /* ── federated search shell (S4 -- #287) ─────────────────── */
@@ -496,6 +501,11 @@
       border-bottom: 1px solid var(--border);
       background: var(--bg);
       flex-shrink: 0;
+      /* F2 (#325): wrap thread strip at narrow widths so title/model/new
+         button stay inside the column rather than overflowing. */
+      flex-wrap: wrap;
+      row-gap: 6px;
+      min-width: 0;
     }
     .conv-thread-title {
       flex: 1;
@@ -719,6 +729,10 @@
       border-bottom: 1px solid var(--border);
       background: var(--bg);
       flex-shrink: 0;
+      /* F2 (#325): wrap Quick Ask strip on narrow windows. */
+      flex-wrap: wrap;
+      row-gap: 6px;
+      min-width: 0;
     }
     .qa-strip-title {
       font-size: 13px;
@@ -759,6 +773,11 @@
     /* ── transcript ─────────────────────────────────────────── */
     .transcript {
       flex: 1;
+      /* F2 (#325): without min-height:0 a column flex child defaults to
+         min-content height, so overflow-y:auto cannot actually shrink the
+         scroll area -- content overflows the pane and detaches/floats. */
+      min-height: 0;
+      min-width: 0;
       overflow-y: auto;
       padding: 20px 24px;
       display: flex;
@@ -830,12 +849,20 @@
       display: flex;
       gap: 10px;
       align-items: flex-end;
+      /* F2 (#325): allow composer rows to wrap at narrow widths so the
+         textarea + buttons stay inside the column instead of overflowing. */
+      flex-wrap: wrap;
+      row-gap: 8px;
       flex-shrink: 0;
       background: var(--bg);
+      min-width: 0;
     }
 
     .input {
       flex: 1;
+      /* F2 (#325): textarea must be allowed to shrink past its intrinsic
+         content width or the composer overflows on narrow windows. */
+      min-width: 0;
       background: var(--bg-elev);
       border: 1px solid var(--border);
       color: var(--text);

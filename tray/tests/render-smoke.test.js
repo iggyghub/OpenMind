@@ -498,6 +498,48 @@ test('inline script fires interrupt_turn IPC verb (S20)', () => {
   expect(inlineScript).toMatch(/['"]interrupt_turn['"]/);
 });
 
+// ── F2 — window-resize layout (#325) ─────────────────────────────────────────
+
+test('conversation pane is the column chain body > .content > .pane (F2)', () => {
+  const pane = root.querySelector('.pane[data-route="conversation"]');
+  expect(pane).not.toBeNull();
+  // .pane sits inside .content, which sits inside <body>.
+  let el = pane.parentNode;
+  let insideContent = false;
+  while (el) {
+    const cls = el.classNames || '';
+    const has = (name) => cls.split(/\s+/).includes(name);
+    if (has('content')) insideContent = true;
+    el = el.parentNode;
+  }
+  expect(insideContent).toBe(true);
+
+  // The pane's children must include the thread strip, transcript, and
+  // composer (the anchored header / scroll body / composer column).
+  expect(pane.querySelector('#conv-thread-strip')).not.toBeNull();
+  expect(pane.querySelector('#transcript')).not.toBeNull();
+  expect(pane.querySelector('.composer')).not.toBeNull();
+});
+
+test('flex column chain has the min-height / min-width / overflow rules (F2)', () => {
+  const html = fs.readFileSync(HTML_PATH, 'utf8');
+
+  // .content keeps min-width:0 + overflow:hidden so the column can shrink.
+  expect(html).toMatch(/\.content\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidden/);
+  // .pane keeps min-height:0 + overflow:hidden so the transcript can scroll.
+  expect(html).toMatch(/\.pane\s*\{[^}]*min-height:\s*0[^}]*overflow:\s*hidden/);
+  // .transcript must declare min-height:0 -- the canonical fix for
+  // flex-column scrolling, missing of which lets the transcript overflow
+  // its pane at narrow heights (issue #325).
+  expect(html).toMatch(/\.transcript\s*\{[^}]*min-height:\s*0/);
+  // .composer and .header must wrap on narrow widths instead of letting
+  // their fixed-shrink children spill past the .content clip.
+  expect(html).toMatch(/\.composer\s*\{[^}]*flex-wrap:\s*wrap/);
+  expect(html).toMatch(/\.header\s*\{[^}]*flex-wrap:\s*wrap/);
+  // .conv-thread-strip wraps too so the title row never detaches at min size.
+  expect(html).toMatch(/\.conv-thread-strip\s*\{[^}]*flex-wrap:\s*wrap/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
