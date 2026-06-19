@@ -10,6 +10,7 @@ build/
 # Node
 node_modules/
 tray/assets/icon.png
+tray/assets/icon.ico
 
 # Generated data
 cerebral/data/

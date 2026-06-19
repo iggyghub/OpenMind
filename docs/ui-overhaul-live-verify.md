@@ -855,3 +855,30 @@ to gate channel threads -- out of scope for one slice.
 - [ ] Click the Stop button when it is briefly visible and no actual task is
       running (race condition test). Confirm the app does not crash or enter
       a stuck state.
+
+---
+
+## F1 — App/taskbar/titlebar icon: orb not Electron atom (#324)
+
+**Icon asset generation**
+
+- [ ] Run `npm run prepare` inside `tray/` and confirm both files are written:
+      - `tray/assets/icon.png` (32x32, tray icon)
+      - `tray/assets/icon.ico` (multi-res 16/32/48/256 px, window icon)
+
+**Main window**
+
+- [ ] Launch the Felix tray app (`npm start` or double-click the launcher).
+- [ ] Click the tray icon to open the main window.
+- [ ] Confirm the titlebar shows the purple orb (not the Electron atom).
+- [ ] Confirm the Windows taskbar button for the Felix window shows the purple orb.
+
+**Irreversible-modal window**
+
+- [ ] Trigger an irreversible action that opens the confirm modal (e.g. a
+      destructive plugin action). Confirm the modal titlebar shows the orb.
+
+**No regression**
+
+- [ ] Tray icon still shows the purple orb in the system tray (no change expected).
+- [ ] All other windows open and behave normally.
