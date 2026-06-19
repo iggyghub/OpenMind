@@ -36,6 +36,7 @@ class TestSettingsStore:
         assert store.get("mic_mode") == "passive"
         assert store.get("tts_muted") is False
         assert store.get("tts_volume") == 100
+        assert store.get("mic_input_device") == ""
 
     def test_all_returns_all_keys(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")
@@ -48,6 +49,7 @@ class TestSettingsStore:
             "mic_mode",
             "tts_muted",
             "tts_volume",
+            "mic_input_device",
         }
 
     def test_set_and_get_roundtrip(self, tmp_path):
@@ -160,6 +162,27 @@ class TestSettingsStore:
         store = SettingsStore(tmp_path / "s.json")
         with pytest.raises(ValueError, match="expects int"):
             store.set("tts_volume", "loud")
+
+    def test_mic_input_device_default_is_empty_string(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("mic_input_device") == ""
+
+    def test_mic_input_device_set_and_get(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("mic_input_device", "Built-in Microphone")
+        assert store.get("mic_input_device") == "Built-in Microphone"
+
+    def test_mic_input_device_persists_to_disk(self, tmp_path):
+        p = tmp_path / "s.json"
+        s1 = SettingsStore(p)
+        s1.set("mic_input_device", "USB Audio Device")
+        s2 = SettingsStore(p)
+        assert s2.get("mic_input_device") == "USB Audio Device"
+
+    def test_mic_input_device_wrong_type_raises(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        with pytest.raises(ValueError, match="expects str"):
+            store.set("mic_input_device", 42)
 
 
 # ── WS IPC tests ──────────────────────────────────────────────────────────────

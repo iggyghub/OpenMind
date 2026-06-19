@@ -931,3 +931,42 @@ to gate channel threads -- out of scope for one slice.
       ("flex column chain has the min-height / min-width / overflow rules"
       and "conversation pane is the column chain body > .content > .pane")
       pass alongside every other suite.
+
+---
+
+## F3 — Microphone input device selection (#326)
+
+**Settings pane — Voice input section**
+
+- [ ] Open Settings. Under "Voice input", confirm two rows appear: "Mic mode"
+      (existing) and a new "Input device" row with a dropdown.
+- [ ] The dropdown always contains at least one option labelled "System default"
+      (value `""`).
+- [ ] If microphone access was previously granted, the dropdown lists the real
+      audio input devices reported by the browser (e.g. "Built-in Microphone",
+      "USB Audio Device"). Each option's text matches its device label.
+- [ ] If microphone access has **not** yet been granted, the sub-label under
+      "Input device" shows a prompt with an "Allow" link. Clicking it triggers
+      the browser mic permission dialog; after granting, the dropdown
+      re-populates with real device names.
+- [ ] Select a non-default device. The selection persists after refreshing/
+      reloading the app window (the setting is stored in felix-settings.json as
+      `mic_input_device`).
+- [ ] Confirm the sub-label reads "Restart Cerebral after changing" when device
+      labels are available, to communicate the restart-required behaviour.
+
+**Backend wiring gap (documented)**
+
+- [ ] Note: changing `mic_input_device` takes effect only after restarting
+      Cerebral. The pipeline opens the sounddevice stream at startup with
+      `device=stored_label or None`; there is no hot-switch path in this slice.
+- [ ] To verify backend wiring: stop Cerebral, set a device in Settings, start
+      Cerebral, and confirm it opens the correct sounddevice stream (check logs
+      for any "invalid device" warnings from sounddevice).
+
+**Render-smoke**
+
+- [ ] Run `npm test` inside `tray/`. Confirm the three F3 assertions pass:
+      - "settings pane contains mic input device select (F3)"
+      - "inline script calls populateMicDevices on init (F3)"
+      - "inline script persists mic_input_device via set_setting IPC (F3)"
