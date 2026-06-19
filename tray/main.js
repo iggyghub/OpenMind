@@ -12,6 +12,7 @@ const { ModalManager }         = require('./lib/modal-manager');
 
 const CEREBRAL_URL    = 'ws://localhost:7766';
 const ICON_PATH       = path.join(__dirname, 'assets', 'icon.png');
+const ICO_PATH        = path.join(__dirname, 'assets', 'icon.ico');
 const VIS_POS_PATH    = path.join(__dirname, '..', 'cerebral', 'data', 'visualiser-pos.json');
 const LAUNCHER_LOG    = path.join(__dirname, '..', 'launcher.log');
 const CEREBRAL_LOG    = path.join(__dirname, '..', 'cerebral.log');
@@ -298,6 +299,7 @@ function openMainWindow(hash) {
     minWidth:        720,
     minHeight:       480,
     title:           'Felix',
+    icon:            ICO_PATH,
     backgroundColor: '#12101e',
     webPreferences: {
       nodeIntegration:  false,
@@ -368,6 +370,7 @@ function openModalWindow(record) {
     height:          320,
     resizable:       false,
     title:           'Felix — Confirm',
+    icon:            ICO_PATH,
     backgroundColor: '#12101e',
     alwaysOnTop:     true,
     skipTaskbar:     true,
@@ -444,6 +447,7 @@ function openVisualiserWindow() {
     resizable:       false,
     hasShadow:       false,
     roundedCorners:  false,
+    icon:            ICO_PATH,
     webPreferences: {
       nodeIntegration:  true,
       contextIsolation: false,
