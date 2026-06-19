@@ -1042,3 +1042,50 @@ to gate channel threads -- out of scope for one slice.
       - `test_consent_accept_invokes_apply_and_returns_ok`
       - `test_consent_deny_blocks_apply`
       - `test_no_consent_surface_fails_closed`
+
+---
+
+## F5 — In-conversation collapsible chat backlog panel (#328)
+
+**Panel visibility**
+
+- [ ] Open the app and navigate to the Conversation pane. A narrow "Threads" panel is
+      visible docked to the left of the transcript area.
+- [ ] The panel lists saved conversation threads grouped under project headers
+      (e.g. "Unfiled"). If there are threads they appear as rows showing the thread title.
+
+**Panel collapse/expand**
+
+- [ ] Click the ◀ toggle button in the panel header. The panel collapses to a thin
+      strip (showing only the toggle button).
+- [ ] Click the ► toggle button again. The panel expands back to full width.
+- [ ] Reload the app. The collapse state (collapsed or expanded) is preserved.
+
+**Group collapse/expand**
+
+- [ ] Click a project group header (e.g. "Unfiled"). The group's thread rows collapse
+      and the chevron changes from ▾ to ▸.
+- [ ] Click the same header again. The rows expand and the chevron returns to ▾.
+- [ ] Reload the app. The per-group collapse state is preserved.
+
+**Active thread highlight**
+
+- [ ] The currently active thread is highlighted with an accent-colour left border in
+      the backlog list.
+
+**Thread switching**
+
+- [ ] Click a different thread row in the backlog panel. The transcript updates to show
+      that thread's turns.
+- [ ] The active-thread highlight moves to the clicked thread row.
+
+**No store duplication**
+
+- [ ] Open the Conversations tab. The same threads and projects visible in the backlog
+      panel also appear in the Conversations pane (no duplicate or stale entries).
+
+**Render-smoke**
+
+- [ ] Run `npm test` inside `tray/`. Confirm the F5 assertions
+      "conversation pane has backlog panel elements (F5)" and
+      "inline script has backlog panel render function (F5)" pass.

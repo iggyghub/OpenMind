@@ -708,6 +708,127 @@
       color: var(--text-muted);
       font-style: italic;
     }
+
+    /* F5 (#328) -- in-conversation collapsible backlog panel */
+    .conv-pane-body {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: row;
+      overflow: hidden;
+    }
+    .conv-backlog-panel {
+      width: 200px;
+      min-width: 200px;
+      border-right: 1px solid var(--border);
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow: hidden;
+      transition: width 0.15s ease, min-width 0.15s ease;
+    }
+    .conv-backlog-panel.is-collapsed {
+      width: 28px;
+      min-width: 28px;
+    }
+    .conv-backlog-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 5px 6px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elev);
+      flex-shrink: 0;
+    }
+    .conv-backlog-title {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .conv-backlog-panel.is-collapsed .conv-backlog-title { display: none; }
+    .conv-backlog-toggle {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 10px;
+      padding: 2px 3px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .conv-backlog-toggle:hover { color: var(--text); }
+    .conv-backlog-inner {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    .conv-backlog-panel.is-collapsed .conv-backlog-inner { display: none; }
+    .conv-backlog-inner::-webkit-scrollbar { width: 4px; }
+    .conv-backlog-inner::-webkit-scrollbar-track { background: transparent; }
+    .conv-backlog-inner::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    .conv-backlog-group-header {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 8px;
+      background: var(--bg-elev);
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+    }
+    .conv-backlog-group-chev {
+      font-size: 9px;
+      color: var(--text-muted);
+      width: 10px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+    .conv-backlog-group-name {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-dim);
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+      min-width: 0;
+    }
+    .conv-backlog-group-body.is-collapsed { display: none; }
+    .conv-backlog-thread {
+      display: flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--text);
+    }
+    .conv-backlog-thread:hover { background: var(--bg-elev); }
+    .conv-backlog-thread.is-active {
+      border-left: 3px solid var(--accent);
+      padding-left: 7px;
+    }
+    .conv-backlog-thread-title {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+      min-width: 0;
+    }
+    .conv-backlog-thread-title.is-untitled { color: var(--text-muted); font-style: italic; }
+    .conv-backlog-empty {
+      padding: 8px 10px;
+      font-size: 10px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
     .conv-thread-move-select {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -3430,10 +3551,22 @@
                 title="Start a new conversation thread">+ New conversation</button>
       </div>
 
-      <div class="transcript" id="transcript">
-        <div class="empty" id="empty-state">
-          Felix is ready. Type a command below, or just talk — the visualiser orb shows
-          voice state.<br><br>Conversation is per-profile and persists across restarts.
+      <!-- F5 (#328): row wrapper holds backlog panel + transcript side by side -->
+      <div class="conv-pane-body">
+        <!-- F5 (#328): collapsible thread-history panel docked left of the transcript -->
+        <div class="conv-backlog-panel" id="conv-backlog-panel">
+          <div class="conv-backlog-header">
+            <span class="conv-backlog-title">Threads</span>
+            <button class="conv-backlog-toggle" id="conv-backlog-toggle"
+                    type="button" title="Toggle thread list">&#9664;</button>
+          </div>
+          <div class="conv-backlog-inner" id="conv-backlog-inner"></div>
+        </div>
+        <div class="transcript" id="transcript">
+          <div class="empty" id="empty-state">
+            Felix is ready. Type a command below, or just talk — the visualiser orb shows
+            voice state.<br><br>Conversation is per-profile and persists across restarts.
+          </div>
         </div>
       </div>
 
@@ -4017,6 +4150,9 @@
     const convThreadListEl   = document.getElementById('conv-thread-list');
     const convListEmptyEl    = document.getElementById('conv-list-empty');
     const convNewProjectBtn  = document.getElementById('conv-new-project');
+    // F5 (#328) -- backlog panel elements
+    const backlogPanelEl  = document.getElementById('conv-backlog-panel');
+    const backlogInnerEl  = document.getElementById('conv-backlog-inner');
     const statePill   = document.getElementById('state-pill');
     const healthDot   = document.getElementById('health-dot');
     const healthPanel = document.getElementById('health-panel');
@@ -4187,6 +4323,20 @@
     // groups are content rows, not section headers, so they reset per session.
     let projectsList = [];
     const projectCollapsed = new Map();  // key: project id (or 'unfiled'), value: bool
+    // F5 (#328) -- backlog panel state. Panel collapse is persisted to
+    // localStorage; per-group collapse is also persisted so groups stay
+    // closed across reloads (unlike projectCollapsed in the Conversations
+    // pane which resets per session per the S11 comment above).
+    let backlogPanelCollapsed = false;
+    try { backlogPanelCollapsed = localStorage.getItem('backlog-panel-collapsed') === '1'; } catch (_e) {}
+    const backlogGroupCollapsed = new Map();
+    function _backlogGroupIsCollapsed(pid) {
+      if (backlogGroupCollapsed.has(pid)) return backlogGroupCollapsed.get(pid);
+      var v = false;
+      try { v = localStorage.getItem('backlog-grp:' + pid) === '1'; } catch (_e) {}
+      backlogGroupCollapsed.set(pid, v);
+      return v;
+    }
     // S12 (#295) -- Quick Ask ephemeral state. Turns are kept in memory only;
     // never written to SQLite or shown in the Conversations pane. Trim to
     // QA_MAX_TURNS so the DOM doesn't grow unbounded across a long session.
@@ -4855,6 +5005,8 @@
       });
 
       convThreadListEl.innerHTML = groups.join('');
+      // F5 (#328) -- keep backlog panel in sync with the same data.
+      renderBacklogPanel();
     }
 
     // In-pane search: title filter (client-side) + IPC full-text fallback.
@@ -4984,6 +5136,134 @@
     if (convNewProjectBtn) {
       convNewProjectBtn.addEventListener('click', function () {
         sendEvent({ type: 'create_conversation_project', data: { name: '' } });
+      });
+    }
+
+    // ── backlog panel (F5 / #328) ─────────────────────────────────────────
+    function applyBacklogPanelState() {
+      if (!backlogPanelEl) return;
+      const btn = document.getElementById('conv-backlog-toggle');
+      if (backlogPanelCollapsed) {
+        backlogPanelEl.classList.add('is-collapsed');
+        if (btn) btn.innerHTML = '&#9654;';   // ► = expand
+      } else {
+        backlogPanelEl.classList.remove('is-collapsed');
+        if (btn) btn.innerHTML = '&#9664;';   // ◀ = collapse
+      }
+      try {
+        if (backlogPanelCollapsed) {
+          localStorage.setItem('backlog-panel-collapsed', '1');
+        } else {
+          localStorage.removeItem('backlog-panel-collapsed');
+        }
+      } catch (_e) {}
+    }
+
+    function renderBacklogPanel() {
+      if (!backlogInnerEl) return;
+      var groups = [];
+
+      var threadsByProject = new Map();
+      threadsByProject.set('unfiled', []);
+      projectsList.forEach(function (p) {
+        threadsByProject.set(String(p.id), []);
+      });
+      threadsList.forEach(function (t) {
+        var key = (t.project_id == null) ? 'unfiled' : String(t.project_id);
+        if (!threadsByProject.has(key)) threadsByProject.set(key, []);
+        threadsByProject.get(key).push(t);
+      });
+
+      function _threadRow(t) {
+        var title = (t.title || '').trim();
+        var isActive = (t.id === activeThreadId);
+        return '<div class="conv-backlog-thread' + (isActive ? ' is-active' : '') +
+          '" data-tid="' + escHtml(String(t.id)) + '">' +
+          '<span class="conv-backlog-thread-title' + (title ? '' : ' is-untitled') + '">' +
+          escHtml(title || 'Untitled') + '</span>' +
+          '</div>';
+      }
+
+      var unfiledThreads = threadsByProject.get('unfiled') || [];
+      if (unfiledThreads.length > 0 || projectsList.length === 0) {
+        var uCollapsed = _backlogGroupIsCollapsed('unfiled');
+        groups.push(
+          '<div class="conv-backlog-group">' +
+          '<div class="conv-backlog-group-header" data-bpid="unfiled">' +
+          '<span class="conv-backlog-group-chev">' + (uCollapsed ? '▸' : '▾') + '</span>' +
+          '<span class="conv-backlog-group-name">Unfiled</span>' +
+          '</div>' +
+          '<div class="conv-backlog-group-body' + (uCollapsed ? ' is-collapsed' : '') + '">' +
+          (unfiledThreads.length
+            ? unfiledThreads.map(_threadRow).join('')
+            : '<div class="conv-backlog-empty">No threads yet.</div>') +
+          '</div></div>'
+        );
+      }
+
+      projectsList.forEach(function (p) {
+        var key = String(p.id);
+        var rows = (threadsByProject.get(key) || []).map(_threadRow);
+        var pCollapsed = _backlogGroupIsCollapsed(key);
+        var name = (p.name || '').trim() || 'Untitled project';
+        groups.push(
+          '<div class="conv-backlog-group">' +
+          '<div class="conv-backlog-group-header" data-bpid="' + escHtml(key) + '">' +
+          '<span class="conv-backlog-group-chev">' + (pCollapsed ? '▸' : '▾') + '</span>' +
+          '<span class="conv-backlog-group-name">' + escHtml(name) + '</span>' +
+          '</div>' +
+          '<div class="conv-backlog-group-body' + (pCollapsed ? ' is-collapsed' : '') + '">' +
+          (rows.length
+            ? rows.join('')
+            : '<div class="conv-backlog-empty">No threads yet.</div>') +
+          '</div></div>'
+        );
+      });
+
+      backlogInnerEl.innerHTML = groups.length
+        ? groups.join('')
+        : '<div class="conv-backlog-empty">No threads yet.</div>';
+    }
+
+    // Apply initial panel collapse state on load.
+    applyBacklogPanelState();
+
+    // Toggle button: collapse/expand the whole panel.
+    var backlogToggleBtn = document.getElementById('conv-backlog-toggle');
+    if (backlogToggleBtn) {
+      backlogToggleBtn.addEventListener('click', function () {
+        backlogPanelCollapsed = !backlogPanelCollapsed;
+        applyBacklogPanelState();
+      });
+    }
+
+    // Event delegation: thread click -> switch thread; group header -> toggle collapse.
+    if (backlogInnerEl) {
+      backlogInnerEl.addEventListener('click', function (e) {
+        var grpHdr = e.target.closest('.conv-backlog-group-header');
+        if (grpHdr) {
+          var pid = grpHdr.dataset.bpid;
+          if (!pid) return;
+          var cur = _backlogGroupIsCollapsed(pid);
+          backlogGroupCollapsed.set(pid, !cur);
+          try {
+            if (!cur) {
+              localStorage.setItem('backlog-grp:' + pid, '1');
+            } else {
+              localStorage.removeItem('backlog-grp:' + pid);
+            }
+          } catch (_e) {}
+          renderBacklogPanel();
+          return;
+        }
+        var threadRow = e.target.closest('.conv-backlog-thread');
+        if (threadRow) {
+          var tid = parseInt(threadRow.dataset.tid, 10);
+          if (!isNaN(tid)) {
+            sendEvent({ type: 'switch_conversation_thread', data: { thread_id: tid } });
+          }
+          return;
+        }
       });
     }
 
