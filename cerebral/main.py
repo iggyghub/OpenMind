@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+from typing import Any
 
 import websockets
 from websockets.asyncio.server import serve
@@ -3075,6 +3076,52 @@ def _attach_builder_plugin() -> None:
     logger.info("[cerebral] Plugin builder attached (pip_allowlist=5 packages)")
 
 
+_APPEARANCE_KEYS: frozenset[str] = frozenset({"ui_scale", "ui_theme", "ui_accent"})
+_APPEARANCE_THEMES: frozenset[str] = frozenset({"midnight", "light", "hc"})
+
+
+async def _apply_settings_control(key: str, value: Any) -> None:
+    """Apply a setting change requested by the settings_control plugin (F4 #327).
+
+    Called only after the ADR-0005 ask-class gate accepts (consent card).
+    Mirrors the existing ``set_setting`` IPC handler for Cerebral-owned
+    keys so the apply path is identical -- single source of truth, the
+    same ``settings_updated`` broadcast keeps Settings/Models/header in
+    sync. Renderer-owned appearance keys (scale/theme/accent live in
+    localStorage under ``om:appearance``) are routed back through an
+    ``apply_appearance`` broadcast the renderer handles + persists.
+    """
+    if key in _APPEARANCE_KEYS:
+        if not isinstance(value, str):
+            raise ValueError(
+                f"appearance setting {key!r} expects a string value, "
+                f"got {type(value).__name__}"
+            )
+        if key == "ui_theme" and value not in _APPEARANCE_THEMES:
+            raise ValueError(
+                f"ui_theme must be one of {sorted(_APPEARANCE_THEMES)}, "
+                f"got {value!r}"
+            )
+        await _broadcast({
+            "type": "apply_appearance",
+            "data": {"key": key, "value": value},
+        })
+        logger.info("[cerebral] settings_control apply_appearance %s=%r", key, value)
+        return
+
+    # Cerebral-owned key -- delegate to the SettingsStore. ValueError
+    # bubbles up to the plugin so the ToolResult carries a clear reason.
+    _settings.set(key, value)
+    logger.info("[cerebral] settings_control set %s=%r", key, value)
+    if key == "camera_enabled":
+        if value:
+            _env.enable_camera()
+        else:
+            _env.disable_camera()
+        await _broadcast(_env_context_event())
+    await _broadcast(_settings_state_event())
+
+
 def _wire_plugin_seams() -> None:
     """Inject per-plugin factories into the orchestrator-loaded modules.
 
@@ -3094,6 +3141,7 @@ def _wire_plugin_seams() -> None:
     """
     seams: list[tuple[str, str, object]] = [
         # plugin name, seam method, factory
+        ("settings_control", "set_apply_callback", _apply_settings_control),  # F4 #327
         ("memory",   "set_memory_factory",  _get_memory),                   # #79
         ("gmail",    "set_token_provider",  _get_gmail_token_provider),     # #115
         ("calendar",     "set_token_provider",  _get_calendar_token_provider),     # #117

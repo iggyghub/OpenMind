@@ -4469,6 +4469,15 @@
           systemSettingsData = event.data || {};
           renderSystemSettings();
           break;
+        case 'apply_appearance':
+          // F4 (#327) — voice/typed settings control. Cerebral routes
+          // appearance changes (ui_scale / ui_theme / ui_accent) back
+          // through this broadcast after the ADR-0005 consent card is
+          // approved. The renderer is still the single source of truth
+          // for appearance (persisted in localStorage under
+          // APPEARANCE_LS_KEY); this handler updates and persists.
+          handleApplyAppearance(event.data || {});
+          break;
         case 'consent_request':
           // Issue #189 — inline consent card replaces the standalone
           // consent.html window. main.js ensures this window is open;
@@ -7185,6 +7194,23 @@
     let appearancePrefs = loadAppearance();
     // Apply immediately so the UI renders with the persisted theme+scale.
     applyAppearance(appearancePrefs);
+
+    // F4 (#327) -- Cerebral routes voice/typed appearance changes here
+    // after the ADR-0005 consent card is approved. Mutates the live prefs,
+    // persists to localStorage, and re-applies so Settings + :root vars
+    // stay in sync with the same single-source-of-truth used by the
+    // inline Settings controls.
+    function handleApplyAppearance(payload) {
+      const key = payload && payload.key;
+      const value = payload && payload.value;
+      if (typeof key !== 'string' || value == null) return;
+      if (key === 'ui_scale')       appearancePrefs.scale  = String(value);
+      else if (key === 'ui_theme')  appearancePrefs.theme  = String(value);
+      else if (key === 'ui_accent') appearancePrefs.accent = String(value);
+      else return;
+      saveAppearance(appearancePrefs);
+      applyAppearance(appearancePrefs);
+    }
 
     const setScaleSelectEl  = document.getElementById('set-scale-select');
     const setThemeChipsEl   = document.getElementById('set-theme-chips');
