@@ -16,10 +16,10 @@ After landing a slice, **update this block**: tick the entry in the queue, set t
 next unticked entry's `#N` + `Model:` as the active slice here, and set `Status:`
 (`ready` while slices remain; `done` after S20 lands).
 
-Active slice: **F5 — #328** (In-conversation collapsible chat backlog panel)
+Active slice: **done**
 
 Model: sonnet
-Status: ready
+Status: done
 
 (`Model:`/`Status:` are read directly by `scripts/run-ui-overhaul.ps1`. Allowed:
 haiku | sonnet | opus | fable. `Status: ready` = run the active slice; `blocked` =
@@ -65,7 +65,7 @@ Phase 6 — Fixes round 2 (post-test author feedback)
 22. [x] F2 — #325 Window-resize layout: content detaches/floats at odd sizes — Model: opus
 23. [x] F3 — #326 Microphone input device selection — Model: sonnet
 24. [x] F4 — #327 Voice/typed control of settings, ADR-0005 gated — Model: opus
-25. [ ] F5 — #328 In-conversation collapsible chat backlog panel — Model: sonnet
+25. [x] F5 — #328 In-conversation collapsible chat backlog panel — Model: sonnet
 
 ### Landed PRs (append as slices merge)
 
@@ -93,3 +93,4 @@ Phase 6 — Fixes round 2 (post-test author feedback)
 - F2 — #325 → PR #330 (Window-resize layout: min-height:0 on .transcript + flex-wrap on header/composer/thread-strip so the conversation column stays anchored at min size)
 - F3 — #326 → PR #331 (Mic input device picker: Settings dropdown via enumerateDevices(), mic_input_device system setting, AudioPipeline device param, sounddevice label match)
 - F4 — #327 → PR #332 (Voice/typed settings control: settings_control plugin + set_system_setting tool, fs_write ASK-class gate, _apply_settings_control wiring + apply_appearance broadcast for renderer-owned theme/scale/accent)
+- F5 — #328 → PR #333 (Collapsible thread-history backlog panel in Conversation pane: grouped by project, per-group collapse + panel collapse both persisted to localStorage, reads same store as Conversations tab)
