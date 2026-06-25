@@ -346,6 +346,27 @@ def _get_credential_store() -> CredentialStore:
     return CredentialStore()
 
 
+def _get_browser_session():
+    """Return a (not-yet-opened) BrowserSession for the active profile's
+    ``google_web`` browser-automation account, or None when no profile is
+    loaded (ADR-0005 amendment 2026-06-25).
+
+    Wired into plugins/browser_session.py via ``set_session_factory``. The real
+    PlaywrightDriver is imported lazily so a Cerebral without the (optional,
+    heavy) browser harness still imports main.py. Re-resolves the active
+    profile each call, so a profile switch is picked up by the next
+    browser_open_session."""
+    if _active_profile is None:
+        return None
+    from cerebral.browser import BrowserSession
+    from cerebral.browser.session import PlaywrightDriver
+    return BrowserSession(
+        _active_profile.id,
+        driver=PlaywrightDriver(),
+        store=_get_credential_store(),
+    )
+
+
 def _get_oauth_flow(store: CredentialStore) -> GoogleOAuthFlow:
     """Return the #113 installed-app OAuth flow bound to `store`.
 
@@ -3380,6 +3401,7 @@ def _wire_plugin_seams() -> None:
         # plugin name, seam method, factory
         ("settings_control", "set_apply_callback", _apply_settings_control),  # F4 #327
         ("memory",   "set_memory_factory",  _get_memory),                   # #79
+        ("browser_session", "set_session_factory", _get_browser_session),   # browser harness (ADR-0005 2026-06-25)
         ("gmail",    "set_token_provider",  _get_gmail_token_provider),     # #115
         ("calendar",     "set_token_provider",  _get_calendar_token_provider),     # #117
         ("google_docs",    "set_token_provider",  _get_google_docs_token_provider),    # #224
