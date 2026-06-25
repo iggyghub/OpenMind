@@ -104,7 +104,7 @@ def test_get_secret_absent_returns_none():
     assert cs.get_secret(1, "google", "access_token") is None
 
 
-@pytest.mark.parametrize("bad", ["api_key", "", "password", "client_secretx"])
+@pytest.mark.parametrize("bad", ["api_key", "", "passwordx", "client_secretx"])
 def test_secret_rejects_unknown_field(bad):
     cs, _ = _cs()
     with pytest.raises(ValueError):
@@ -202,10 +202,13 @@ def test_secret_value_never_logged(caplog):
 
 def test_api_token_in_secret_fields():
     """api_token is the fourth canonical secret field (after the three
-    OAuth fields). delete_credential must iterate it; set/get must accept."""
+    OAuth fields); password is the fifth (2026-06-25, browser web-login).
+    delete_credential must iterate them; set/get must accept."""
     assert "api_token" in SECRET_FIELDS
+    assert "password" in SECRET_FIELDS
     assert SECRET_FIELDS == (
         "client_secret", "refresh_token", "access_token", "api_token",
+        "password",
     )
 
 
@@ -257,6 +260,39 @@ def test_static_token_metadata_row_is_degenerate():
     assert row["client_id"] == ""
     assert row["email"] == ""
     assert row["scopes"] == []
+
+
+# ── password field (2026-06-25 amendment, browser web-login) ──────────────────
+
+def test_set_get_password_roundtrip():
+    """password is the fifth secret field — stored in the keyring like the
+    others, namespaced per profile. Used by the browser-automation harness
+    to re-login a dedicated web account unattended."""
+    cs, kr = _cs()
+    cs.set_secret(1, "google_web", "password", "hunter2-secondary")
+    assert cs.get_secret(1, "google_web", "password") == "hunter2-secondary"
+    assert ("openmind", "profile_1/google_web/password") in kr.store
+
+
+def test_delete_credential_wipes_password():
+    """delete_credential iterates SECRET_FIELDS — the password entry must be
+    swept alongside the metadata row so no orphaned secret survives."""
+    cs, kr = _cs()
+    cs.set_credential(1, "google_web", email="bot@gmail.com", status="connected")
+    cs.set_secret(1, "google_web", "password", "secret-pw")
+    cs.delete_credential(1, "google_web")
+    assert cs.get_credential(1, "google_web") is None
+    assert cs.get_secret(1, "google_web", "password") is None
+    assert kr.store == {}
+
+
+def test_password_value_never_logged(caplog):
+    cs, _ = _cs()
+    with caplog.at_level("DEBUG"):
+        cs.set_secret(1, "google_web", "password", "DO-NOT-LOG-PASSWORD")
+        cs.get_secret(1, "google_web", "password")
+        cs.delete_credential(1, "google_web")
+    assert "DO-NOT-LOG-PASSWORD" not in caplog.text
 
 
 # ── 18–22 keyring missing → env-only fallback (Issue #157) ────────────────────

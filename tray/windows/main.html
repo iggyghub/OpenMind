@@ -2151,6 +2151,11 @@
       gap: 6px;
       align-items: center;
     }
+    .cred-token-row-note {
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--text-dim, #9a9a9a);
+    }
     .cred-token-row-actions input {
       flex: 1;
       background: var(--bg);
@@ -3750,6 +3755,20 @@
             key falls back to the environment variable if one is set.
           </div>
         </div>
+
+        <div class="cred-card" id="cred-card-browser-logins">
+          <div class="cred-card-title">Browser logins</div>
+          <div id="cred-browser-logins-list">
+            <!-- rows rendered by renderCredentialsBrowserLogins() -->
+          </div>
+          <div class="cred-hint">
+            Web accounts the browser-automation harness signs in as. Use a
+            DEDICATED secondary account, never your primary one. The email is
+            stored locally; the password lives in your OS keyring and is never
+            shown again. Felix normally logs in once by hand and reuses the
+            session — the password is only the unattended re-login fallback.
+          </div>
+        </div>
       </div>
     </section>
 
@@ -4173,6 +4192,7 @@
     const credBtnConnect    = document.getElementById('cred-btn-connect');
     const credBtnDisconnect = document.getElementById('cred-btn-disconnect');
     const credStaticTokensListEl = document.getElementById('cred-static-tokens-list');
+    const credBrowserLoginsListEl = document.getElementById('cred-browser-logins-list');
     const permCapRowsEl     = document.getElementById('perm-capability-rows');
     const permSessionRowsEl = document.getElementById('perm-session-rows');
     const permPluginRowsEl  = document.getElementById('perm-plugin-rows');
@@ -4233,6 +4253,12 @@
     // document level so the cards stay current whether the pane is visible
     // or not.
     let credentialsState = null;
+
+    // Transient attended-login status per browser-login provider, keyed by
+    // provider id (ADR-0005 amendment 2026-06-25). Driven by browser_login_seed
+    // pulses while a "Log in now" window is open; cleared on a terminal state.
+    // Never persisted and never carries a secret.
+    let browserSeedStatus = {};
 
     // Permissions UI state (Issue #202 — migrated from permissions.html).
     // The PermissionsStore is loaded from window.PermissionsStoreMod via
@@ -4556,6 +4582,22 @@
           renderCredentials();
           renderServiceDirectory();
           break;
+        case 'browser_login_seed': {
+          // Transient pulse from the attended "Log in now" seed. "seeding"
+          // means a window is open; any other state is terminal and clears
+          // shortly after so the row returns to its stored status.
+          const d = event.data || {};
+          if (!d.provider) break;
+          browserSeedStatus[d.provider] = { state: d.state, reason: d.reason || '' };
+          renderCredentialsBrowserLogins((credentialsState || {}).browser_logins);
+          if (d.state !== 'seeding') {
+            setTimeout(() => {
+              delete browserSeedStatus[d.provider];
+              renderCredentialsBrowserLogins((credentialsState || {}).browser_logins);
+            }, 6000);
+          }
+          break;
+        }
         case 'permissions_state':
           if (permStore) permStore.applyState(event.data || {});
           break;
@@ -5921,10 +5963,40 @@
       return 'Not set';
     }
 
+    // Browser-login provider list — render order fixed here (mirrors
+    // _BROWSER_LOGIN_PROVIDERS in cerebral/main.py).
+    const CRED_BROWSER_LOGIN_PROVIDERS = [
+      { id: 'google_web', label: 'Google (browser)' },
+    ];
+
+    function credBrowserPillClass(status) {
+      if (status === 'connected')      return 'is-token-set-keyring';
+      if (status === 'needs password') return 'is-token-set-env';
+      return '';
+    }
+    function credBrowserPillLabel(status) {
+      if (status === 'connected')      return 'Saved';
+      if (status === 'needs password') return 'Needs password';
+      return 'Not set';
+    }
+    // Human-readable line for a transient attended-login (seed) state.
+    function credBrowserSeedMessage(seed) {
+      if (!seed) return '';
+      switch (seed.state) {
+        case 'seeding': return 'A login window is open — finish signing in there.';
+        case 'manual':  return 'Logged in — session saved.';
+        case 'reused':  return 'Already logged in — session reused.';
+        case 'busy':    return seed.reason || 'A login window is already open.';
+        case 'failed':  return 'Login failed: ' + (seed.reason || 'try again.');
+        default:        return '';
+      }
+    }
+
     function renderCredentials() {
       const payload = credentialsState || {};
       renderCredentialsGoogle(payload.google);
       renderCredentialsStaticTokens(payload.static_tokens);
+      renderCredentialsBrowserLogins(payload.browser_logins);
     }
 
     function renderCredentialsGoogle(google) {
@@ -5991,6 +6063,76 @@
       }
     }
 
+    function renderCredentialsBrowserLogins(browserLogins) {
+      const logins = browserLogins || {};
+      // Preserve a focused half-typed field across background re-renders.
+      const focused = (document.activeElement &&
+                       document.activeElement.dataset &&
+                       (document.activeElement.dataset.credBrowserEmail ||
+                        document.activeElement.dataset.credBrowserPassword)) || null;
+      const focusedKind = document.activeElement &&
+                          document.activeElement.dataset &&
+                          (document.activeElement.dataset.credBrowserPassword
+                            ? 'password' : 'email');
+      const focusedValue = focused ? document.activeElement.value : '';
+
+      credBrowserLoginsListEl.innerHTML = CRED_BROWSER_LOGIN_PROVIDERS.map((p) => {
+        const e = logins[p.id] || { status: 'not configured', email: '', has_password: false };
+        const status = e.status || 'not configured';
+        const isSet = status !== 'not configured';
+        const pillClass = credBrowserPillClass(status);
+        const pillLabel = credBrowserPillLabel(status);
+        // email is non-secret — pre-fill so the user sees the active account.
+        const emailVal = e.email ? ` value="${escHtml(e.email)}"` : '';
+        const hasEmail = !!e.email;
+        const seed = browserSeedStatus[p.id] || null;
+        const seeding = seed && seed.state === 'seeding';
+        // "Log in now" opens the attended manual-login window (Cerebral runs
+        // in the user's session). Needs a saved email; disabled while a window
+        // is already open for this account.
+        const seedDisabled = (!hasEmail || seeding) ? 'disabled' : '';
+        const seedLabel = seeding ? 'Logging in…' : 'Log in now';
+        const seedMsg = seed ? credBrowserSeedMessage(seed) : '';
+        const seedMsgHtml = seedMsg
+          ? `<div class="cred-token-row-note">${escHtml(seedMsg)}</div>`
+          : '';
+        return `
+          <div class="cred-token-row">
+            <div class="cred-token-row-head">
+              <span class="cred-token-row-name">${escHtml(p.label)}</span>
+              <span class="cred-token-row-pill ${pillClass}">${escHtml(pillLabel)}</span>
+            </div>
+            <div class="cred-token-row-actions">
+              <input type="text" autocomplete="off"
+                     data-cred-browser-email="${escHtml(p.id)}"
+                     placeholder="Account email"${emailVal} />
+              <input type="password" autocomplete="off"
+                     data-cred-browser-password="${escHtml(p.id)}"
+                     placeholder="Password (write-only)" />
+              <button class="cred-btn cred-btn-secondary"
+                      data-cred-browser-set="${escHtml(p.id)}">Save</button>
+              <button class="cred-btn cred-btn-primary"
+                      data-cred-browser-seed="${escHtml(p.id)}"
+                      ${seedDisabled}>${escHtml(seedLabel)}</button>
+              <button class="cred-btn cred-btn-danger"
+                      data-cred-browser-clear="${escHtml(p.id)}"
+                      ${isSet ? '' : 'disabled'}>Clear</button>
+            </div>
+            ${seedMsgHtml}
+          </div>
+        `;
+      }).join('');
+
+      if (focused) {
+        const attr = focusedKind === 'password'
+          ? 'data-cred-browser-password' : 'data-cred-browser-email';
+        const el = credBrowserLoginsListEl.querySelector(
+          `[${attr}="${CSS.escape(focused)}"]`
+        );
+        if (el) { el.value = focusedValue; el.focus(); }
+      }
+    }
+
     credBtnSave.addEventListener('click', () => {
       const client_id     = credClientIdEl.value.trim();
       const client_secret = credClientSecretEl.value.trim();
@@ -6031,6 +6173,43 @@
     // First render of the static-tokens section before any state arrives so
     // the card isn't blank on initial paint.
     renderCredentialsStaticTokens(null);
+
+    credBrowserLoginsListEl.addEventListener('click', (ev) => {
+      const setBtn   = ev.target.closest('[data-cred-browser-set]');
+      const seedBtn  = ev.target.closest('[data-cred-browser-seed]');
+      const clearBtn = ev.target.closest('[data-cred-browser-clear]');
+      if (seedBtn) {
+        const provider = seedBtn.dataset.credBrowserSeed;
+        if (!provider) return;
+        // Optimistically reflect "seeding" so the button disables immediately;
+        // the backend confirms with its own browser_login_seed pulse.
+        browserSeedStatus[provider] = { state: 'seeding', reason: '' };
+        renderCredentialsBrowserLogins((credentialsState || {}).browser_logins);
+        sendEvent({ type: 'seed_browser_login', data: { provider } });
+        return;
+      }
+      if (setBtn) {
+        const provider = setBtn.dataset.credBrowserSet;
+        const emailEl = credBrowserLoginsListEl.querySelector(
+          `[data-cred-browser-email="${CSS.escape(provider)}"]`
+        );
+        const pwEl = credBrowserLoginsListEl.querySelector(
+          `[data-cred-browser-password="${CSS.escape(provider)}"]`
+        );
+        const email = emailEl ? emailEl.value.trim() : '';
+        const password = pwEl ? pwEl.value : '';   // not trimmed — see backend
+        if (!provider || !email || !password) return;
+        sendEvent({ type: 'set_browser_login', data: { provider, email, password } });
+        if (pwEl) pwEl.value = '';   // never keep the password in the DOM
+      } else if (clearBtn) {
+        const provider = clearBtn.dataset.credBrowserClear;
+        if (!provider) return;
+        sendEvent({ type: 'clear_browser_login', data: { provider } });
+      }
+    });
+
+    // First render of the browser-logins section before any state arrives.
+    renderCredentialsBrowserLogins(null);
 
     // ── S17 (#300): service directory ────────────────────────────────────
     // Renders the CONTEXT.md integration registry grouped by category.

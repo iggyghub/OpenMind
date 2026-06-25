@@ -627,6 +627,52 @@ _STATIC_TOKEN_PROVIDER_NAMES: frozenset[str] = frozenset(
 )
 
 
+# ADR-0005 amendment 2026-06-25 — Browser web-login credentials.
+#
+# The browser-automation harness drives a dedicated secondary web account
+# while logged in (cerebral/browser/session.py). Unlike static tokens, a
+# browser login is an (email + password) pair: the email is non-secret
+# metadata (#112 SQLite), the password is a secret keyring field ("password",
+# the fifth SECRET_FIELDS entry). The tray Credentials window iterates this
+# list for the "Browser logins" section; _credentials_state_event reports
+# per-provider status (email + whether a password is stored) from it, NEVER
+# the password value (write-only contract, same as static tokens).
+_BROWSER_LOGIN_PROVIDERS: list[tuple[str, str]] = [
+    ("google_web", "Google (browser)"),
+]
+
+_BROWSER_LOGIN_PROVIDER_NAMES: frozenset[str] = frozenset(
+    p for p, _ in _BROWSER_LOGIN_PROVIDERS
+)
+
+# In-flight guard for the attended "Log in now" seed (seed_browser_login). The
+# manual-login window blocks for up to manual_login_timeout while a human
+# completes login + 2FA; a second click must NOT open a second window. Keyed by
+# (profile_id, provider).
+_browser_seed_inflight: set[tuple[int, str]] = set()
+
+
+def _browser_login_seed_event(
+    provider: str, state: str, *, email: str = "", reason: str = ""
+) -> dict:
+    """A non-persisted status pulse for the attended browser-login seed.
+
+    ``state`` is one of:
+      - "seeding"   : the visible window is open, awaiting a human login.
+      - "reused"/"manual"/"failed" : the ``LoginState`` outcome, lowercased.
+      - "busy"      : a seed for this (profile, provider) is already running.
+    Carries NO secret; ``reason`` is a human-readable failure detail."""
+    return {
+        "type": "browser_login_seed",
+        "data": {
+            "provider": provider,
+            "state": state,
+            "email": email,
+            "reason": reason,
+        },
+    }
+
+
 def _static_token_from_store_or_env(
     provider: str, env_var: str
 ) -> tuple[str | None, str]:
@@ -1099,6 +1145,7 @@ def _credentials_state_event(
                 "google": {"status": "not configured", "email": "",
                            "client_id": "", "detail": ""},
                 "static_tokens": {},
+                "browser_logins": {},
             },
         }
     store = _get_credential_store()
@@ -1124,8 +1171,45 @@ def _credentials_state_event(
                 "detail": detail,
             },
             "static_tokens": _static_tokens_state(),
+            "browser_logins": _browser_logins_state(),
         },
     }
+
+
+def _browser_logins_state() -> dict[str, dict[str, object]]:
+    """Per-provider {status, email, has_password} for the active profile's
+    browser logins (ADR-0005 amendment 2026-06-25).
+
+    Iterates ``_BROWSER_LOGIN_PROVIDERS`` (canonical UI render order). The
+    email is non-secret and surfaced so the user sees which account is set;
+    ``has_password`` is a boolean presence flag derived from the keyring —
+    the password VALUE is never returned (write-only contract). ``status``:
+      - "connected"      : email AND password both stored (re-login ready)
+      - "needs password" : email stored but no password (manual-login only)
+      - "not configured" : nothing stored
+    Returns an empty dict when no profile is active."""
+    if _active_profile is None:
+        return {}
+    store = _get_credential_store()
+    out: dict[str, dict[str, object]] = {}
+    for provider, _label in _BROWSER_LOGIN_PROVIDERS:
+        meta = store.get_credential(_active_profile.id, provider) or {}
+        email = meta.get("email", "")
+        has_password = store.get_secret(
+            _active_profile.id, provider, "password"
+        ) is not None
+        if email and has_password:
+            status = "connected"
+        elif email:
+            status = "needs password"
+        else:
+            status = "not configured"
+        out[provider] = {
+            "status": status,
+            "email": email,
+            "has_password": has_password,
+        }
+    return out
 
 
 def _static_tokens_state() -> dict[str, dict[str, str]]:
@@ -2046,6 +2130,159 @@ async def _handle_message(msg: dict) -> None:
             _active_profile.id, provider,
         )
         await _broadcast(_credentials_state_event())
+
+    elif t == "set_browser_login":
+        # ADR-0005 amendment 2026-06-25 — user entered a browser web-login
+        # (email + password) in the tray Credentials window's "Browser
+        # logins" section. The email is non-secret metadata; the password
+        # goes to the keyring under field "password" via #112. The password
+        # is NEVER logged or echoed back to the renderer (write-only).
+        if _active_profile is None:
+            logger.warning("[cerebral] set_browser_login with no active profile")
+            return
+        d = msg.get("data") or {}
+        provider = (d.get("provider") or "").strip()
+        email = (d.get("email") or "").strip()
+        # Do NOT strip the password — leading/trailing characters may be
+        # significant; only reject a wholly empty one below.
+        password = d.get("password") or ""
+        if provider not in _BROWSER_LOGIN_PROVIDER_NAMES:
+            logger.warning(
+                "[cerebral] set_browser_login unknown provider=%r", provider
+            )
+            return
+        if not email or not password:
+            logger.warning(
+                "[cerebral] set_browser_login missing %s for provider=%s",
+                "email" if not email else "password", provider,
+            )
+            return
+        store = _get_credential_store()
+        store.set_secret(_active_profile.id, provider, "password", password)
+        # Explicit full row — set_credential defaults omitted columns to ""/[]
+        # and would silently blank a future metadata extension (#112 trap).
+        store.set_credential(
+            _active_profile.id, provider,
+            client_id="", email=email, scopes=[], status="connected",
+        )
+        logger.info(
+            "[cerebral] Browser login set for profile %d provider=%s",
+            _active_profile.id, provider,
+        )
+        await _broadcast(_credentials_state_event())
+
+    elif t == "clear_browser_login":
+        # ADR-0005 amendment 2026-06-25 — drop the metadata row + the keyring
+        # "password" entry for a browser-login provider (#112 delete is
+        # idempotent and iterates SECRET_FIELDS, which includes "password").
+        if _active_profile is None:
+            logger.warning("[cerebral] clear_browser_login with no active profile")
+            return
+        d = msg.get("data") or {}
+        provider = (d.get("provider") or "").strip()
+        if provider not in _BROWSER_LOGIN_PROVIDER_NAMES:
+            logger.warning(
+                "[cerebral] clear_browser_login unknown provider=%r", provider
+            )
+            return
+        _get_credential_store().delete_credential(_active_profile.id, provider)
+        logger.info(
+            "[cerebral] Browser login cleared for profile %d provider=%s",
+            _active_profile.id, provider,
+        )
+        await _broadcast(_credentials_state_event())
+
+    elif t == "seed_browser_login":
+        # ADR-0005 amendment 2026-06-25 — the user clicked "Log in now" on the
+        # Browser logins card. Cerebral runs in the user's interactive session,
+        # so (unlike the agent's Bash subprocess) it CAN open a visible window.
+        # ensure_logged_in(unattended=False) opens that window and polls up to
+        # manual_login_timeout for the human to finish login + 2FA; that blocks,
+        # so it runs in a background task and the loop stays responsive. A
+        # write-only contract is preserved: only the LoginState outcome (never
+        # the password) is broadcast back.
+        if _active_profile is None:
+            logger.warning("[cerebral] seed_browser_login with no active profile")
+            return
+        d = msg.get("data") or {}
+        provider = (d.get("provider") or "").strip()
+        if provider not in _BROWSER_LOGIN_PROVIDER_NAMES:
+            logger.warning(
+                "[cerebral] seed_browser_login unknown provider=%r", provider
+            )
+            return
+        profile_id = _active_profile.id
+        store = _get_credential_store()
+        meta = store.get_credential(profile_id, provider) or {}
+        email = meta.get("email", "")
+        if not email:
+            # Nothing to seed against — the account email must be saved first.
+            logger.warning(
+                "[cerebral] seed_browser_login no email stored profile=%d "
+                "provider=%s", profile_id, provider,
+            )
+            await _broadcast(_browser_login_seed_event(
+                provider, "failed",
+                reason="save the account email first",
+            ))
+            return
+        key = (profile_id, provider)
+        if key in _browser_seed_inflight:
+            # A window is already open for this account — don't open a second.
+            logger.info(
+                "[cerebral] seed_browser_login already in flight profile=%d "
+                "provider=%s", profile_id, provider,
+            )
+            await _broadcast(_browser_login_seed_event(
+                provider, "busy", email=email,
+                reason="a login window is already open",
+            ))
+            return
+        _browser_seed_inflight.add(key)
+        await _broadcast(_browser_login_seed_event(
+            provider, "seeding", email=email,
+        ))
+
+        async def _run_seed(
+            pid: int = profile_id, prov: str = provider, mail: str = email,
+        ) -> None:
+            # Lazy import: Playwright is a heavy, optional dependency — keep it
+            # out of module import so a Cerebral with no browser harness still
+            # starts.
+            from cerebral.browser import BrowserSession, LoginState
+            from cerebral.browser.session import PlaywrightDriver
+
+            session = BrowserSession(
+                pid, provider=prov,
+                driver=PlaywrightDriver(), store=store,
+            )
+            try:
+                result = await session.ensure_logged_in(unattended=False)
+                logger.info(
+                    "[cerebral] seed_browser_login profile=%d provider=%s -> %s",
+                    pid, prov, result.state.value,
+                )
+                await _broadcast(_browser_login_seed_event(
+                    prov, result.state.value, email=mail, reason=result.reason,
+                ))
+            except Exception as exc:  # never leak transport/browser internals
+                logger.warning(
+                    "[cerebral] seed_browser_login error profile=%d "
+                    "provider=%s: %s", pid, prov, exc,
+                )
+                await _broadcast(_browser_login_seed_event(
+                    prov, "failed", email=mail, reason="login window failed",
+                ))
+            finally:
+                _browser_seed_inflight.discard((pid, prov))
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+                # Refresh the card so a new session flips the pill to connected.
+                await _broadcast(_credentials_state_event())
+
+        asyncio.create_task(_run_seed())
 
     elif t == "consent_response":
         d = msg.get("data") or {}

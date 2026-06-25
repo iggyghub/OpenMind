@@ -519,3 +519,328 @@ async def test_clear_static_token_leaves_other_providers_intact(cred_rig):
     })
     assert cred_rig.store.get_secret(1, "youtube", "api_token") is None
     assert cred_rig.store.get_secret(1, "todoist", "api_token") == "t-key"
+
+
+# ── ADR-0005 2026-06-25 — browser-login state in credentials_state ───────────
+
+def _last_browser(cred_rig):
+    return cred_rig.states()[-1]["data"]["browser_logins"]
+
+
+async def test_browser_logins_not_configured_when_empty(cred_rig):
+    await cred_rig.handle({"type": "list_credentials"})
+    e = _last_browser(cred_rig)["google_web"]
+    assert e == {"status": "not configured", "email": "", "has_password": False}
+
+
+async def test_browser_logins_needs_password_when_email_only(cred_rig):
+    cred_rig.store.set_credential(1, "google_web", email="bot@gmail.com",
+                                  status="connected")
+    await cred_rig.handle({"type": "list_credentials"})
+    e = _last_browser(cred_rig)["google_web"]
+    assert e["status"] == "needs password"
+    assert e["email"] == "bot@gmail.com"
+    assert e["has_password"] is False
+
+
+async def test_browser_logins_connected_when_email_and_password(cred_rig):
+    cred_rig.store.set_credential(1, "google_web", email="bot@gmail.com",
+                                  status="connected")
+    cred_rig.store.set_secret(1, "google_web", "password", "pw")
+    await cred_rig.handle({"type": "list_credentials"})
+    e = _last_browser(cred_rig)["google_web"]
+    assert e["status"] == "connected"
+    assert e["has_password"] is True
+
+
+async def test_browser_logins_empty_when_no_profile(cred_rig):
+    cred_rig.no_profile()
+    await cred_rig.handle({"type": "list_credentials"})
+    assert cred_rig.states()[-1]["data"]["browser_logins"] == {}
+
+
+async def test_browser_logins_payload_never_carries_password(cred_rig):
+    cred_rig.store.set_credential(1, "google_web", email="bot@gmail.com",
+                                  status="connected")
+    cred_rig.store.set_secret(1, "google_web", "password", "PW-MUST-NOT-LEAK")
+    await cred_rig.handle({"type": "list_credentials"})
+    assert "PW-MUST-NOT-LEAK" not in repr(cred_rig.states()[-1])
+
+
+# ── ADR-0005 2026-06-25 — set_browser_login ──────────────────────────────────
+
+async def test_set_browser_login_persists_email_meta_and_password_keyring(cred_rig):
+    await cred_rig.handle({
+        "type": "set_browser_login",
+        "data": {"provider": "google_web", "email": "bot@gmail.com",
+                 "password": "s3cret"},
+    })
+    meta = cred_rig.store.get_credential(1, "google_web")
+    assert meta["email"] == "bot@gmail.com"
+    assert meta["status"] == "connected"
+    assert cred_rig.store.get_secret(1, "google_web", "password") == "s3cret"
+
+
+async def test_set_browser_login_broadcasts_connected_state(cred_rig):
+    await cred_rig.handle({
+        "type": "set_browser_login",
+        "data": {"provider": "google_web", "email": "bot@gmail.com",
+                 "password": "pw"},
+    })
+    e = _last_browser(cred_rig)["google_web"]
+    assert e["status"] == "connected"
+    assert e["email"] == "bot@gmail.com"
+    assert e["has_password"] is True
+
+
+async def test_set_browser_login_password_never_broadcast(cred_rig):
+    await cred_rig.handle({
+        "type": "set_browser_login",
+        "data": {"provider": "google_web", "email": "a@b.c",
+                 "password": "WRITE-ONLY-PW"},
+    })
+    assert "WRITE-ONLY-PW" not in repr(cred_rig.sent)
+
+
+async def test_set_browser_login_password_never_logged(cred_rig, caplog):
+    with caplog.at_level("INFO"):
+        await cred_rig.handle({
+            "type": "set_browser_login",
+            "data": {"provider": "google_web", "email": "a@b.c",
+                     "password": "LOG-FORBIDDEN-PW"},
+        })
+    assert "LOG-FORBIDDEN-PW" not in caplog.text
+
+
+async def test_set_browser_login_does_not_strip_password(cred_rig):
+    await cred_rig.handle({
+        "type": "set_browser_login",
+        "data": {"provider": "google_web", "email": "a@b.c",
+                 "password": "  pad ded  "},
+    })
+    assert cred_rig.store.get_secret(1, "google_web", "password") == "  pad ded  "
+
+
+async def test_set_browser_login_missing_email_no_op(cred_rig):
+    await cred_rig.handle({
+        "type": "set_browser_login",
+        "data": {"provider": "google_web", "email": "", "password": "pw"},
+    })
+    assert cred_rig.store.get_credential(1, "google_web") is None
+    assert cred_rig.states() == []
+
+
+async def test_set_browser_login_missing_password_no_op(cred_rig):
+    await cred_rig.handle({
+        "type": "set_browser_login",
+        "data": {"provider": "google_web", "email": "a@b.c", "password": ""},
+    })
+    assert cred_rig.store.get_secret(1, "google_web", "password") is None
+    assert cred_rig.states() == []
+
+
+async def test_set_browser_login_unknown_provider_no_op(cred_rig):
+    await cred_rig.handle({
+        "type": "set_browser_login",
+        "data": {"provider": "google", "email": "a@b.c", "password": "pw"},
+    })
+    # The OAuth "google" provider must not gain a password via this path.
+    assert cred_rig.store.get_secret(1, "google", "password") is None
+    assert cred_rig.states() == []
+
+
+async def test_set_browser_login_no_profile_no_op(cred_rig):
+    cred_rig.no_profile()
+    await cred_rig.handle({
+        "type": "set_browser_login",
+        "data": {"provider": "google_web", "email": "a@b.c", "password": "pw"},
+    })
+    assert cred_rig.store.get_secret(1, "google_web", "password") is None
+
+
+# ── ADR-0005 2026-06-25 — clear_browser_login ────────────────────────────────
+
+async def test_clear_browser_login_deletes_email_and_password(cred_rig):
+    cred_rig.store.set_credential(1, "google_web", email="a@b.c",
+                                  status="connected")
+    cred_rig.store.set_secret(1, "google_web", "password", "pw")
+    await cred_rig.handle({
+        "type": "clear_browser_login",
+        "data": {"provider": "google_web"},
+    })
+    assert cred_rig.store.get_credential(1, "google_web") is None
+    assert cred_rig.store.get_secret(1, "google_web", "password") is None
+    assert _last_browser(cred_rig)["google_web"]["status"] == "not configured"
+
+
+async def test_clear_browser_login_idempotent(cred_rig):
+    await cred_rig.handle({
+        "type": "clear_browser_login", "data": {"provider": "google_web"},
+    })
+    await cred_rig.handle({
+        "type": "clear_browser_login", "data": {"provider": "google_web"},
+    })
+    assert len(cred_rig.states()) == 2
+
+
+async def test_clear_browser_login_unknown_provider_no_op(cred_rig):
+    cred_rig.store.set_secret(1, "google_web", "password", "pw")
+    await cred_rig.handle({
+        "type": "clear_browser_login", "data": {"provider": "google"},
+    })
+    assert cred_rig.store.get_secret(1, "google_web", "password") == "pw"
+    assert cred_rig.states() == []
+
+
+async def test_clear_browser_login_no_profile_no_op(cred_rig):
+    cred_rig.store.set_secret(1, "google_web", "password", "pw")
+    cred_rig.no_profile()
+    await cred_rig.handle({
+        "type": "clear_browser_login", "data": {"provider": "google_web"},
+    })
+    assert cred_rig.store.get_secret(1, "google_web", "password") == "pw"
+
+
+# ── ADR-0005 2026-06-25 — seed_browser_login (attended "Log in now") ──────────
+#
+# The handler opens a VISIBLE login window via a background task; here we swap
+# in a fake BrowserSession so no real browser launches and the LoginState
+# outcome is deterministic. Cerebral is the launcher because it (unlike the
+# agent's Bash subprocess) runs in the user's interactive desktop session.
+
+def _seed_events(cred_rig):
+    return [e for e in cred_rig.sent if e["type"] == "browser_login_seed"]
+
+
+def _install_fake_session(monkeypatch, *, result=None, raises=None):
+    """Patch cerebral.browser.BrowserSession (the name _run_seed imports) with
+    a fake that returns ``result`` from ensure_logged_in (or raises)."""
+    import cerebral.browser as browser_mod
+
+    captured = {}
+
+    class _FakeSession:
+        def __init__(self, profile_id, *, provider, driver, store):
+            captured["profile_id"] = profile_id
+            captured["provider"] = provider
+            captured["driver"] = driver
+            captured["store"] = store
+            captured["closed"] = False
+
+        async def ensure_logged_in(self, *, unattended):
+            captured["unattended"] = unattended
+            if raises is not None:
+                raise raises
+            return result
+
+        async def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(browser_mod, "BrowserSession", _FakeSession)
+    return captured
+
+
+def _login_result(state_value: str, reason: str = ""):
+    from cerebral.browser.session import LoginResult, LoginState
+    return LoginResult(state=LoginState(state_value), email="bot@gmail.com",
+                       reason=reason)
+
+
+async def test_seed_browser_login_reused_path(cred_rig, monkeypatch):
+    cred_rig.module._browser_seed_inflight.clear()
+    cred_rig.store.set_credential(1, "google_web", email="bot@gmail.com",
+                                  status="connected")
+    captured = _install_fake_session(
+        monkeypatch, result=_login_result("reused"))
+    await cred_rig.handle({
+        "type": "seed_browser_login", "data": {"provider": "google_web"},
+    })
+    await cred_rig.drain()
+    states = [e["data"]["state"] for e in _seed_events(cred_rig)]
+    assert states == ["seeding", "reused"]
+    assert captured["unattended"] is False     # attended manual-login path
+    assert captured["provider"] == "google_web"
+    assert captured["closed"] is True          # session torn down (flushes disk)
+    # in-flight key released so a re-seed is possible
+    assert (1, "google_web") not in cred_rig.module._browser_seed_inflight
+
+
+async def test_seed_browser_login_manual_path(cred_rig, monkeypatch):
+    cred_rig.module._browser_seed_inflight.clear()
+    cred_rig.store.set_credential(1, "google_web", email="bot@gmail.com",
+                                  status="connected")
+    _install_fake_session(monkeypatch, result=_login_result("manual"))
+    await cred_rig.handle({
+        "type": "seed_browser_login", "data": {"provider": "google_web"},
+    })
+    await cred_rig.drain()
+    states = [e["data"]["state"] for e in _seed_events(cred_rig)]
+    assert states == ["seeding", "manual"]
+
+
+async def test_seed_browser_login_no_email_fails_without_window(cred_rig, monkeypatch):
+    cred_rig.module._browser_seed_inflight.clear()
+    captured = _install_fake_session(monkeypatch, result=_login_result("reused"))
+    await cred_rig.handle({
+        "type": "seed_browser_login", "data": {"provider": "google_web"},
+    })
+    await cred_rig.drain()
+    seeds = _seed_events(cred_rig)
+    assert [e["data"]["state"] for e in seeds] == ["failed"]
+    # No session was ever constructed (no email to seed against).
+    assert captured == {}
+
+
+async def test_seed_browser_login_busy_when_inflight(cred_rig, monkeypatch):
+    cred_rig.module._browser_seed_inflight.clear()
+    cred_rig.store.set_credential(1, "google_web", email="bot@gmail.com",
+                                  status="connected")
+    # Simulate a window already open for this (profile, provider).
+    cred_rig.module._browser_seed_inflight.add((1, "google_web"))
+    _install_fake_session(monkeypatch, result=_login_result("reused"))
+    await cred_rig.handle({
+        "type": "seed_browser_login", "data": {"provider": "google_web"},
+    })
+    await cred_rig.drain()
+    assert [e["data"]["state"] for e in _seed_events(cred_rig)] == ["busy"]
+    cred_rig.module._browser_seed_inflight.clear()
+
+
+async def test_seed_browser_login_driver_error_broadcasts_failed(cred_rig, monkeypatch):
+    cred_rig.module._browser_seed_inflight.clear()
+    cred_rig.store.set_credential(1, "google_web", email="bot@gmail.com",
+                                  status="connected")
+    _install_fake_session(monkeypatch, raises=RuntimeError("boom"))
+    await cred_rig.handle({
+        "type": "seed_browser_login", "data": {"provider": "google_web"},
+    })
+    await cred_rig.drain()
+    states = [e["data"]["state"] for e in _seed_events(cred_rig)]
+    assert states == ["seeding", "failed"]
+    # Internal error text is not leaked to the renderer.
+    assert "boom" not in repr(_seed_events(cred_rig))
+    # Key released even on failure.
+    assert (1, "google_web") not in cred_rig.module._browser_seed_inflight
+
+
+async def test_seed_browser_login_unknown_provider_no_op(cred_rig, monkeypatch):
+    cred_rig.module._browser_seed_inflight.clear()
+    captured = _install_fake_session(monkeypatch, result=_login_result("reused"))
+    await cred_rig.handle({
+        "type": "seed_browser_login", "data": {"provider": "google"},
+    })
+    await cred_rig.drain()
+    assert cred_rig.sent == []
+    assert captured == {}
+
+
+async def test_seed_browser_login_no_profile_no_op(cred_rig, monkeypatch):
+    cred_rig.module._browser_seed_inflight.clear()
+    cred_rig.no_profile()
+    captured = _install_fake_session(monkeypatch, result=_login_result("reused"))
+    await cred_rig.handle({
+        "type": "seed_browser_login", "data": {"provider": "google_web"},
+    })
+    await cred_rig.drain()
+    assert cred_rig.sent == []
+    assert captured == {}

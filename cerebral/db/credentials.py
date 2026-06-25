@@ -89,10 +89,16 @@ DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
 # entries survive (the keyring API has no per-namespace enumeration), so
 # set_secret rejects any field outside it — an un-deletable secret would
 # break the delete-completeness invariant (ADR-0005 amendment).
-# Three OAuth fields (2026-05-18) + one static-API field (2026-05-23);
-# the same per-profile keyring/SQLite split applies to both shapes.
+# Three OAuth fields (2026-05-18) + one static-API field (2026-05-23) +
+# one browser web-login field (2026-06-25); the same per-profile
+# keyring/SQLite split applies to all shapes. NOTE: "password" is the lone
+# *unscoped, non-revocable* secret in this set — it grants full account
+# access, unlike the scoped/revocable OAuth tokens and API keys. It exists
+# only for the unattended browser-automation re-login path (the dedicated
+# secondary account in the `google_web` provider); see the 2026-06-25
+# ADR-0005 amendment for why that trade-off is bounded.
 SECRET_FIELDS: tuple[str, ...] = (
-    "client_secret", "refresh_token", "access_token", "api_token",
+    "client_secret", "refresh_token", "access_token", "api_token", "password",
 )
 
 _KEYRING_SERVICE = "openmind"
