@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from cerebral.browser.session import (  # noqa: E402
     BrowserSession,
     LoginState,
+    PageView,
 )
 from cerebral.db.credentials import CredentialStore  # noqa: E402
 
@@ -65,6 +66,9 @@ class FakeDriver:
         self.opened_headless: bool | None = None
         self.opened_dir: Path | None = None
         self.password_seen: tuple[str, str] | None = None
+        self.filled: list[tuple[str, str]] = []
+        self.clicked: list[str] = []
+        self.last_url: str | None = None
 
     async def open(self, user_data_dir, *, headless):
         self.calls.append("open")
@@ -85,6 +89,26 @@ class FakeDriver:
         self.calls.append("wait_for_manual_login")
         self._logged_in = self._manual_ok
         return self._manual_ok
+
+    async def goto(self, url):
+        self.calls.append("goto")
+        self.last_url = url
+        self._url = url
+        return url
+
+    async def current_page(self):
+        self.calls.append("current_page")
+        return PageView(url=getattr(self, "_url", "about:blank"),
+                        title="Fake Title", text="fake body text")
+
+    async def fill(self, selector, value):
+        self.calls.append("fill")
+        self.filled.append((selector, value))
+
+    async def click(self, selector):
+        self.calls.append("click")
+        self.clicked.append(selector)
+        return getattr(self, "_url", "about:blank")
 
     async def close(self):
         self.calls.append("close")
@@ -235,3 +259,55 @@ async def test_close_delegates_to_driver(tmp_path):
     sess = _session(driver, store, tmp_path)
     await sess.close()
     assert "close" in driver.calls
+
+
+# ── page driving (S1 — the in-session MCP tool primitives) ──────────────────────
+
+async def test_read_page_with_url_navigates_then_snapshots(tmp_path):
+    store = _store()
+    driver = FakeDriver(logged_in=True)
+    sess = _session(driver, store, tmp_path)
+
+    view = await sess.read_page("https://example.com/x")
+
+    assert driver.calls == ["goto", "current_page"]
+    assert driver.last_url == "https://example.com/x"
+    assert isinstance(view, PageView)
+    assert view.url == "https://example.com/x"
+    assert view.title == "Fake Title"
+    assert view.text == "fake body text"
+
+
+async def test_read_page_without_url_snapshots_current_only(tmp_path):
+    store = _store()
+    driver = FakeDriver(logged_in=True)
+    sess = _session(driver, store, tmp_path)
+
+    await sess.read_page()
+
+    # No navigation when no url is given.
+    assert "goto" not in driver.calls
+    assert driver.calls == ["current_page"]
+
+
+async def test_fill_fields_fills_each_in_order(tmp_path):
+    store = _store()
+    driver = FakeDriver(logged_in=True)
+    sess = _session(driver, store, tmp_path)
+
+    await sess.fill_fields([("#email", "a@b.c"), ("#q", "hello")])
+
+    assert driver.filled == [("#email", "a@b.c"), ("#q", "hello")]
+    assert driver.calls == ["fill", "fill"]
+
+
+async def test_click_returns_resulting_url(tmp_path):
+    store = _store()
+    driver = FakeDriver(logged_in=True)
+    sess = _session(driver, store, tmp_path)
+    await driver.goto("https://example.com/after")
+
+    url = await sess.click("#submit")
+
+    assert driver.clicked == ["#submit"]
+    assert url == "https://example.com/after"

@@ -70,6 +70,15 @@ class LoginResult:
         return self.state is not LoginState.FAILED
 
 
+@dataclass
+class PageView:
+    """A read-only snapshot of the current page for the page-driving tools."""
+
+    url: str = ""
+    title: str = ""
+    text: str = ""
+
+
 @runtime_checkable
 class BrowserDriver(Protocol):
     """The browser side-effects ``BrowserSession`` orchestrates.
@@ -93,6 +102,26 @@ class BrowserDriver(Protocol):
 
     async def wait_for_manual_login(self, *, timeout: float) -> bool:
         """Poll until logged in or ``timeout`` seconds elapse. Return success."""
+        ...
+
+    # ── page driving (in-session MCP tools) ──────────────────────────────────
+    # These operate on the already-open authenticated context. They carry no
+    # credential logic — the session must already be logged in.
+
+    async def goto(self, url: str) -> str:
+        """Navigate to ``url``; return the final URL after any redirect."""
+        ...
+
+    async def current_page(self) -> "PageView":
+        """Snapshot the current page (url / title / visible text)."""
+        ...
+
+    async def fill(self, selector: str, value: str) -> None:
+        """Type ``value`` into the element matched by ``selector``."""
+        ...
+
+    async def click(self, selector: str) -> str:
+        """Click the element matched by ``selector``; return the resulting URL."""
         ...
 
     async def close(self) -> None:
@@ -214,6 +243,26 @@ class BrowserSession:
                    "(2FA / bot-wall / wrong password)",
         )
 
+    # ── page driving ─────────────────────────────────────────────────────────
+    # Thin pass-throughs to the driver so the page-driving MCP tools stay
+    # unit-testable against a fake driver (same seam the login orchestration
+    # uses). Callers must have established a session via ensure_logged_in.
+
+    async def read_page(self, url: str | None = None) -> PageView:
+        """Optionally navigate to ``url``, then snapshot the current page."""
+        if url:
+            await self._driver.goto(url)
+        return await self._driver.current_page()
+
+    async def fill_fields(self, fields: list[tuple[str, str]]) -> None:
+        """Fill each ``(selector, value)`` in order on the current page."""
+        for selector, value in fields:
+            await self._driver.fill(selector, value)
+
+    async def click(self, selector: str) -> str:
+        """Click ``selector``; return the resulting URL."""
+        return await self._driver.click(selector)
+
     async def close(self) -> None:
         await self._driver.close()
 
@@ -306,6 +355,33 @@ class PlaywrightDriver:
                 return True
             await asyncio.sleep(self._poll_interval)
         return False
+
+    async def goto(self, url: str) -> str:
+        assert self._page is not None, "open() must be called first"
+        await self._page.goto(url, wait_until="domcontentloaded")
+        return self._page.url
+
+    async def current_page(self) -> PageView:
+        assert self._page is not None, "open() must be called first"
+        title = await self._page.title()
+        try:
+            # Visible body text — the page-driving tools want readable content,
+            # not raw HTML. inner_text skips script/style and hidden nodes.
+            text = await self._page.inner_text("body")
+        except Exception:
+            text = ""
+        return PageView(url=self._page.url, title=title, text=text)
+
+    async def fill(self, selector: str, value: str) -> None:
+        assert self._page is not None, "open() must be called first"
+        await self._page.fill(selector, value)
+
+    async def click(self, selector: str) -> str:
+        assert self._page is not None, "open() must be called first"
+        await self._page.click(selector)
+        # Let any navigation the click triggered settle before reporting URL.
+        await self._page.wait_for_load_state("domcontentloaded")
+        return self._page.url
 
     async def close(self) -> None:
         if self._context is not None:
