@@ -1268,6 +1268,21 @@ async def _send(websocket, event: dict) -> None:
         pass
 
 
+def _user_notification_event(title: str, body: str) -> dict:
+    """A direct user-facing OS notification request for the tray.
+
+    The tray raises an Electron Notification (gated by its notifications_enabled
+    cache). Used when a flow needs the user's attention out-of-band — e.g. a
+    browser-automation tool hit a human-verification wall the user must clear."""
+    return {"type": "user_notification", "data": {"title": title, "body": body}}
+
+
+async def _notify_user(title: str, body: str) -> None:
+    """Broadcast a user-facing notification to the tray. Best-effort: when no
+    tray is connected the broadcast is a no-op (the caller's flow continues)."""
+    await _broadcast(_user_notification_event(title, body))
+
+
 def _profile_event(profile: Profile) -> dict:
     return {"type": "profile_loaded", "data": profile.to_dict()}
 

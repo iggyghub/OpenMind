@@ -167,6 +167,17 @@ function handleCerebralEvent(event) {
       notifManager.handleQueueUpdate((event.data && event.data.items) || []);
       break;
 
+    case 'user_notification': {
+      // A direct, user-facing OS notification from Cerebral (e.g. a browser
+      // automation flow needs the user to clear a verification wall). Gated by
+      // notifications_enabled like every other OS notification; clicking it
+      // opens the Main window so the user can act.
+      if (!settingsCache.notifications_enabled) break;
+      const d = event.data || {};
+      electronNotify(d.title || 'Felix', d.body || '', () => openMainWindow());
+      break;
+    }
+
     case 'queue_item_result':
       // Routed straight to the Main window renderer via the shared WS
       // since Issue #194; main.js no longer forwards it.
