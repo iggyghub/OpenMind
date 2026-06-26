@@ -269,3 +269,100 @@ async def test_read_page_swallows_driver_exception():
     assert res.is_error
     # Internal exception text is not leaked.
     assert "selector blew up" not in res.content
+
+
+# ── S7: verification-wall escalation (pause + notify) ────────────────────────────
+
+def _login_result(state_value, reason=""):
+    return LoginResult(state=LoginState(state_value), email="bot@gmail.com",
+                       reason=reason)
+
+
+class _NotifySpy:
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(self, title, body):
+        self.calls.append((title, body))
+
+
+def _factory_of(*sessions):
+    queue = list(sessions)
+
+    def factory():
+        return queue.pop(0) if queue else None
+
+    return factory
+
+
+def _plugin_seamed(*sessions, notifier=None, pause_check=None):
+    # Make sure module-level seams don't leak in from another test.
+    bsp._notifier = None
+    bsp._pause_check = None
+    return bsp.BrowserSessionPlugin(
+        _factory_of(*sessions), notifier=notifier, pause_check=pause_check,
+    )
+
+
+async def test_verification_wall_escalates_notifies_and_opens_window():
+    wall = FakeSession(login=_login_result("needs_verification"))
+    cleared = FakeSession(login=_login_result("manual"))
+    spy = _NotifySpy()
+    plugin = _plugin_seamed(wall, cleared, notifier=spy, pause_check=lambda: True)
+
+    res = await _open(plugin)
+
+    assert not res.is_error
+    payload = json.loads(res.content)
+    assert payload["state"] == "manual"
+    assert payload["verified"] is True
+    # Notified the user about the wall.
+    assert len(spy.calls) == 1 and "verify" in spy.calls[0][0].lower()
+    # First (headless) attempt was unattended; escalation opened a visible
+    # (attended) window.
+    assert wall.unattended is True
+    assert cleared.unattended is False
+    # The headless context was released before re-opening headed.
+    assert wall.closed == 1
+    assert plugin._open_session is cleared
+
+
+async def test_verification_wall_pause_off_returns_hint_without_notify():
+    wall = FakeSession(login=_login_result("needs_verification"))
+    spy = _NotifySpy()
+    plugin = _plugin_seamed(wall, notifier=spy, pause_check=lambda: False)
+
+    res = await _open(plugin)
+
+    assert res.is_error
+    assert "human verification needed" in res.content
+    assert spy.calls == []                # no notification when paused off
+    assert wall.closed == 1
+    assert plugin._open_session is None
+
+
+async def test_verification_wall_escalation_window_not_completed():
+    wall = FakeSession(login=_login_result("needs_verification"))
+    stillblocked = FakeSession(login=_login_result("failed", "timeout"))
+    spy = _NotifySpy()
+    plugin = _plugin_seamed(wall, stillblocked, notifier=spy, pause_check=lambda: True)
+
+    res = await _open(plugin)
+
+    assert res.is_error
+    assert "not completed" in res.content
+    assert len(spy.calls) == 1
+    assert stillblocked.closed == 1
+    assert plugin._open_session is None
+
+
+async def test_should_pause_defaults_true_without_seam():
+    plugin = bsp.BrowserSessionPlugin(session_factory=lambda: None)
+    bsp._pause_check = None
+    assert plugin._should_pause_on_verification() is True
+
+
+async def test_notify_is_noop_without_notifier():
+    plugin = bsp.BrowserSessionPlugin(session_factory=lambda: None)
+    bsp._notifier = None
+    await plugin._notify("t", "b")  # must not raise

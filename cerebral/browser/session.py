@@ -56,6 +56,8 @@ class LoginState(str, Enum):
     REUSED = "reused"                  # session on disk was still valid
     MANUAL = "manual"                  # human completed an attended login
     REAUTHENTICATED = "reauthenticated"  # password fallback succeeded
+    NEEDS_VERIFICATION = "needs_verification"  # logged in, but a human step-up
+                                       # wall ("verify it's you") blocks reuse
     FAILED = "failed"                  # could not establish a session
 
 
@@ -67,7 +69,10 @@ class LoginResult:
 
     @property
     def ok(self) -> bool:
-        return self.state is not LoginState.FAILED
+        # Both FAILED and NEEDS_VERIFICATION lack a usable, drivable session.
+        return self.state not in (
+            LoginState.FAILED, LoginState.NEEDS_VERIFICATION,
+        )
 
 
 @dataclass
@@ -196,6 +201,23 @@ class BrowserSession:
                 self.profile_id, self.provider,
             )
             return LoginResult(state=LoginState.REUSED, email=email)
+
+        # A logged-in session can still be bounced to a human-verification
+        # ("verify it's you") wall on a sensitive surface. A password login
+        # cannot clear a step-up challenge, so on an UNATTENDED run surface it
+        # as NEEDS_VERIFICATION for the caller to escalate to a human rather
+        # than burning a doomed (and bot-wall-tripping) password attempt. On an
+        # ATTENDED run fall through — the human at the keyboard clears it.
+        if await self._driver.needs_verification():
+            if unattended:
+                logger.info(
+                    "[browser] verification wall profile=%d provider=%s",
+                    self.profile_id, self.provider,
+                )
+                return LoginResult(
+                    state=LoginState.NEEDS_VERIFICATION, email=email,
+                    reason="human verification required",
+                )
 
         if unattended:
             return await self._login_unattended(email)

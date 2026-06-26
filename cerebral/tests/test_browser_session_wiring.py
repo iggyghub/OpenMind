@@ -50,6 +50,21 @@ def test_loaded_module_exposes_session_factory_seam(tmp_path):
     assert hasattr(module, "set_session_factory")
 
 
+def test_loaded_module_exposes_escalation_seams(tmp_path):
+    orc = _discover_isolated(tmp_path)
+    module = orc.get_plugin_module("browser_session")
+    assert hasattr(module, "set_notifier")
+    assert hasattr(module, "set_pause_on_verification")
+
+
+def test_escalation_seams_present_in_main_source():
+    src = (_ROOT / "cerebral" / "main.py").read_text(encoding="utf-8")
+    assert re.search(r'"browser_session"\s*,\s*"set_notifier"\s*,\s*_notify_user', src)
+    assert re.search(
+        r'"browser_session"\s*,\s*"set_pause_on_verification"', src
+    )
+
+
 # ── main._get_browser_session contract ────────────────────────────────────────
 
 def test_get_browser_session_none_without_profile(monkeypatch):

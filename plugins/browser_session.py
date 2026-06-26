@@ -33,9 +33,9 @@ plugin's ``set_memory_factory``.
 
 import json
 import logging
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
-from cerebral.browser import BrowserSession
+from cerebral.browser import BrowserSession, LoginState
 from cerebral.mcp.orchestrator import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -70,10 +70,14 @@ _GENERIC_ERROR_MSG = "Browser operation failed"
 _MAX_TEXT_CHARS = 5000
 
 SessionFactory = Callable[[], Optional[BrowserSession]]
+Notifier = Callable[[str, str], Awaitable[None]]
+PauseCheck = Callable[[], bool]
 
-# Module-level factory set by cerebral/main.py via set_session_factory(). Tests
-# bypass this by passing a factory directly to the plugin constructor.
+# Module-level seams set by cerebral/main.py at startup. Tests bypass these by
+# passing them directly to the plugin constructor.
 _session_factory: Optional[SessionFactory] = None
+_notifier: Optional[Notifier] = None
+_pause_check: Optional[PauseCheck] = None
 
 
 def set_session_factory(fn: SessionFactory) -> None:
@@ -88,13 +92,36 @@ def set_session_factory(fn: SessionFactory) -> None:
     _session_factory = fn
 
 
+def set_notifier(fn: Notifier) -> None:
+    """Wire main.py's ``_notify_user`` so the verification escalation can raise
+    an OS notification asking the user to clear a "verify it's you" wall."""
+    global _notifier
+    _notifier = fn
+
+
+def set_pause_on_verification(fn: PauseCheck) -> None:
+    """Wire a getter for the ``browser_pause_on_verification`` setting. When it
+    returns True (the default), a verification wall escalates to a visible
+    attended window; when False, the tool just returns the seed-hint error."""
+    global _pause_check
+    _pause_check = fn
+
+
 class BrowserSessionPlugin:
     name = PLUGIN_NAME
 
-    def __init__(self, session_factory: Optional[SessionFactory] = None) -> None:
-        # Constructor-injected factory wins over the module-level setter (tests
-        # pass directly; production leaves this None and main.py wires it).
+    def __init__(
+        self,
+        session_factory: Optional[SessionFactory] = None,
+        *,
+        notifier: Optional[Notifier] = None,
+        pause_check: Optional[PauseCheck] = None,
+    ) -> None:
+        # Constructor-injected seams win over the module-level setters (tests
+        # pass directly; production leaves these None and main.py wires them).
         self._factory = session_factory
+        self._notifier = notifier
+        self._pause_check = pause_check
         # The currently-open authenticated session, or None. Holds the live
         # Playwright context across read/fill/click calls.
         self._open_session: Optional[BrowserSession] = None
@@ -215,6 +242,35 @@ class BrowserSessionPlugin:
             return None, _NO_ACTIVE_PROFILE_MSG
         return session, None
 
+    def _should_pause_on_verification(self) -> bool:
+        """Whether to escalate a verification wall to a visible window. Defaults
+        to True (the setting's default) when no seam is wired."""
+        check = self._pause_check or _pause_check
+        if check is None:
+            return True
+        try:
+            return bool(check())
+        except Exception:
+            logger.warning("[browser_session] pause-check failed", exc_info=True)
+            return True
+
+    async def _notify(self, title: str, body: str) -> None:
+        """Best-effort OS notification (no-op when no notifier is wired)."""
+        notifier = self._notifier or _notifier
+        if notifier is None:
+            return
+        try:
+            await notifier(title, body)
+        except Exception:
+            logger.warning("[browser_session] notify failed", exc_info=True)
+
+    @staticmethod
+    async def _safe_close(session: BrowserSession) -> None:
+        try:
+            await session.close()
+        except Exception:
+            logger.warning("[browser_session] close failed", exc_info=True)
+
     # ------------------------------------------------------------------
     # Tools
     # ------------------------------------------------------------------
@@ -227,34 +283,71 @@ class BrowserSessionPlugin:
         # Close any prior context first — its persistent-context dir is locked
         # while Chromium runs, so a second open() on the same dir would fail.
         if self._open_session is not None:
-            try:
-                await self._open_session.close()
-            except Exception:
-                logger.warning("[browser_session] prior close failed", exc_info=True)
+            await self._safe_close(self._open_session)
             self._open_session = None
 
         try:
             result = await session.ensure_logged_in(unattended=True)
         except Exception:
             logger.warning("[browser_session] open failed", exc_info=True)
-            try:
-                await session.close()
-            except Exception:
-                pass
+            await self._safe_close(session)
             return ToolResult(content=_GENERIC_ERROR_MSG, is_error=True)
 
-        if not result.ok:
-            try:
-                await session.close()
-            except Exception:
-                pass
-            return ToolResult(content=f"{_SEED_HINT}.", is_error=True)
+        if result.ok:
+            self._open_session = session
+            return ToolResult(content=json.dumps({
+                "state": result.state.value,
+                "email": result.email,
+            }))
 
-        self._open_session = session
-        return ToolResult(content=json.dumps({
-            "state": result.state.value,
-            "email": result.email,
-        }))
+        # Hit a human-verification ("verify it's you") wall? If the user opted
+        # in (browser_pause_on_verification, default ON), escalate: notify them
+        # and open a VISIBLE window so they can clear it by hand, then resume.
+        # Cerebral runs in the user's interactive session, so it CAN open that
+        # window (unlike the agent's headless subprocess).
+        if (result.state is LoginState.NEEDS_VERIFICATION
+                and self._should_pause_on_verification()):
+            # Release the headless context's dir lock before re-opening headed.
+            await self._safe_close(session)
+            await self._notify(
+                "Felix needs you to verify the browser sign-in",
+                f"Google wants to confirm it's you for "
+                f"{result.email or 'the browser account'}. "
+                "Click to open the window and finish.",
+            )
+            session2, err2 = self._resolve_session()
+            if err2 is not None:
+                return ToolResult(content=err2, is_error=True)
+            try:
+                # unattended=False opens a visible window + waits for the human.
+                escalated = await session2.ensure_logged_in(unattended=False)
+            except Exception:
+                logger.warning("[browser_session] escalation failed", exc_info=True)
+                await self._safe_close(session2)
+                return ToolResult(content=_GENERIC_ERROR_MSG, is_error=True)
+            if escalated.ok:
+                self._open_session = session2
+                return ToolResult(content=json.dumps({
+                    "state": escalated.state.value,
+                    "email": escalated.email,
+                    "verified": True,
+                }))
+            await self._safe_close(session2)
+            return ToolResult(
+                content="verification was not completed in the window — "
+                        "open the browser login and finish 'verify it's you'.",
+                is_error=True,
+            )
+
+        # NEEDS_VERIFICATION with pause OFF, or a plain FAILED.
+        await self._safe_close(session)
+        if result.state is LoginState.NEEDS_VERIFICATION:
+            return ToolResult(
+                content="human verification needed — finish 'verify it's you' "
+                        "via the tray 'Log in now', then retry.",
+                is_error=True,
+            )
+        return ToolResult(content=f"{_SEED_HINT}.", is_error=True)
 
     async def _read_page(self, args: dict) -> ToolResult:
         if self._open_session is None:

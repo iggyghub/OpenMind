@@ -3417,6 +3417,9 @@ def _wire_plugin_seams() -> None:
         ("settings_control", "set_apply_callback", _apply_settings_control),  # F4 #327
         ("memory",   "set_memory_factory",  _get_memory),                   # #79
         ("browser_session", "set_session_factory", _get_browser_session),   # browser harness (ADR-0005 2026-06-25)
+        ("browser_session", "set_notifier", _notify_user),                  # verification-wall escalation
+        ("browser_session", "set_pause_on_verification",
+         lambda: _settings.get("browser_pause_on_verification")),
         ("gmail",    "set_token_provider",  _get_gmail_token_provider),     # #115
         ("calendar",     "set_token_provider",  _get_calendar_token_provider),     # #117
         ("google_docs",    "set_token_provider",  _get_google_docs_token_provider),    # #224

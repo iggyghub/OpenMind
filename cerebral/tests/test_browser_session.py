@@ -444,3 +444,32 @@ async def test_session_needs_verification_delegates_to_driver(tmp_path):
     sess = _session(driver, store, tmp_path)
     assert await sess.needs_verification() is True
     assert "needs_verification" in driver.calls
+
+
+async def test_unattended_verification_wall_short_circuits_without_password(tmp_path):
+    store = _store()
+    _seed_creds(store)  # email + password present
+    driver = FakeDriver(logged_in=False, needs_verification=True, password_ok=True)
+    sess = _session(driver, store, tmp_path)
+
+    result = await sess.ensure_logged_in(unattended=True)
+
+    assert result.state is LoginState.NEEDS_VERIFICATION
+    assert not result.ok
+    # A step-up wall can't be cleared by a password — must NOT attempt one.
+    assert "login_with_password" not in driver.calls
+    assert driver.password_seen is None
+
+
+async def test_attended_verification_wall_falls_through_to_manual(tmp_path):
+    store = _store()
+    _seed_creds(store)
+    # Wall present, but attended: the human at the keyboard clears it via the
+    # manual-login wait.
+    driver = FakeDriver(logged_in=False, needs_verification=True, manual_ok=True)
+    sess = _session(driver, store, tmp_path)
+
+    result = await sess.ensure_logged_in(unattended=False)
+
+    assert result.state is LoginState.MANUAL
+    assert "wait_for_manual_login" in driver.calls
