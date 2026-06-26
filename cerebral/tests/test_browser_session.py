@@ -21,6 +21,10 @@ from cerebral.browser.session import (  # noqa: E402
     BrowserSession,
     LoginState,
     PageView,
+    PlaywrightDriver,
+    _ACCOUNT_URL,
+    _LOGIN_URL,
+    _ACCOUNT_HOST,
 )
 from cerebral.db.credentials import CredentialStore  # noqa: E402
 
@@ -311,3 +315,86 @@ async def test_click_returns_resulting_url(tmp_path):
 
     assert driver.clicked == ["#submit"]
     assert url == "https://example.com/after"
+
+
+# ── PlaywrightDriver.wait_for_manual_login — non-destructive poll ────────────────
+# Regression for the "redirects to an about/help page mid-login" bug: the poll
+# must NOT navigate the user's sign-in page; it probes login state on a separate
+# page in the same (cookie-sharing) context.
+
+class _FakePwPage:
+    """Minimal stand-in for a Playwright page for the manual-login poll."""
+
+    def __init__(self, *, login_after=0):
+        self.url = "about:blank"
+        self.goto_calls: list[str] = []
+        self.closed = False
+        self._account_visits = 0
+        self._login_after = login_after
+
+    async def goto(self, url, wait_until=None):
+        self.goto_calls.append(url)
+        if url == _ACCOUNT_URL:
+            self._account_visits += 1
+            # Becomes "logged in" (stays on myaccount) only after N visits.
+            self.url = (_ACCOUNT_URL if self._account_visits > self._login_after
+                        else "https://www.google.com/account/about/")
+        else:
+            self.url = url
+
+    async def wait_for_url(self, predicate, timeout=None):
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+        if predicate(self.url):
+            return
+        raise PlaywrightTimeoutError("stayed on myaccount")
+
+    async def bring_to_front(self):
+        self.brought_to_front = getattr(self, "brought_to_front", 0) + 1
+
+    async def close(self):
+        self.closed = True
+
+
+class _FakePwContext:
+    def __init__(self, probe):
+        self._probe = probe
+        self.new_page_calls = 0
+
+    async def new_page(self):
+        self.new_page_calls += 1
+        return self._probe
+
+
+async def test_manual_login_polls_probe_page_not_user_page():
+    drv = PlaywrightDriver(poll_interval=0.001, settle_ms=5)
+    user = _FakePwPage()
+    probe = _FakePwPage(login_after=1)   # logs in on the 2nd myaccount visit
+    drv._page = user
+    drv._context = _FakePwContext(probe)
+
+    ok = await drv.wait_for_manual_login(timeout=5)
+
+    assert ok is True
+    # The user's page is navigated exactly once — to the sign-in form — and
+    # NEVER to the myaccount URL that caused the mid-login bounce.
+    assert user.goto_calls == [_LOGIN_URL]
+    assert _ACCOUNT_URL not in user.goto_calls
+    # The probe page is the one doing the myaccount polling, then is closed.
+    assert _ACCOUNT_URL in probe.goto_calls
+    assert probe.closed is True
+    # The sign-in tab is kept in front so the probe never steals focus.
+    assert getattr(user, "brought_to_front", 0) >= 1
+
+
+async def test_manual_login_times_out_without_touching_user_page():
+    drv = PlaywrightDriver(poll_interval=0.001, settle_ms=5)
+    user = _FakePwPage()
+    probe = _FakePwPage(login_after=10_000)  # never logs in
+    drv._page = user
+    drv._context = _FakePwContext(probe)
+
+    ok = await drv.wait_for_manual_login(timeout=0.05)
+
+    assert ok is False
+    assert user.goto_calls == [_LOGIN_URL]
+    assert probe.closed is True

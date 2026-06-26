@@ -315,22 +315,30 @@ class PlaywrightDriver:
         pages = self._context.pages
         self._page = pages[0] if pages else await self._context.new_page()
 
-    async def is_logged_in(self) -> bool:
-        assert self._page is not None, "open() must be called first"
+    async def _is_logged_in_on(self, page) -> bool:
+        """Logged-in check that navigates ``page`` to myaccount and back.
+
+        Factored out so the manual-login poll can run it on a SEPARATE probe
+        page — running it on the user's login page would navigate them off the
+        form mid-login (see ``wait_for_manual_login``)."""
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-        await self._page.goto(_ACCOUNT_URL, wait_until="domcontentloaded")
+        await page.goto(_ACCOUNT_URL, wait_until="domcontentloaded")
         # An UNauthenticated visit gets bounced OFF the myaccount host (to a
         # public landing page or the signin host); that bounce can land after
         # domcontentloaded, so wait briefly for the URL to leave myaccount. If
         # it never leaves, the session is authenticated.
         try:
-            await self._page.wait_for_url(
+            await page.wait_for_url(
                 lambda url: _ACCOUNT_HOST not in url, timeout=self._settle_ms
             )
         except PlaywrightTimeoutError:
             pass
-        return _ACCOUNT_HOST in self._page.url
+        return _ACCOUNT_HOST in page.url
+
+    async def is_logged_in(self) -> bool:
+        assert self._page is not None, "open() must be called first"
+        return await self._is_logged_in_on(self._page)
 
     async def login_with_password(self, email: str, password: str) -> bool:
         assert self._page is not None, "open() must be called first"
@@ -348,13 +356,32 @@ class PlaywrightDriver:
     async def wait_for_manual_login(self, *, timeout: float) -> bool:
         import asyncio
 
+        assert self._page is not None and self._context is not None, (
+            "open() must be called first"
+        )
+        # Show the human the sign-in form ONCE, then NEVER navigate this page
+        # again. Polling is_logged_in() on it would call page.goto(myaccount)
+        # every poll, which — while the user is still signing in — bounces to
+        # the public account/about page and yanks them off the form, making
+        # login impossible. Poll on a SEPARATE probe page instead; the
+        # persistent context shares cookies, so the probe sees the login the
+        # instant it completes without touching the user's page.
         await self._page.goto(_LOGIN_URL, wait_until="domcontentloaded")
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
-            if await self.is_logged_in():
-                return True
-            await asyncio.sleep(self._poll_interval)
-        return False
+        probe = await self._context.new_page()
+        # Keep the sign-in tab in front so the background probe never steals
+        # focus while the human is typing credentials / a 2FA code.
+        await self._page.bring_to_front()
+        try:
+            deadline = asyncio.get_event_loop().time() + timeout
+            while asyncio.get_event_loop().time() < deadline:
+                logged_in = await self._is_logged_in_on(probe)
+                await self._page.bring_to_front()
+                if logged_in:
+                    return True
+                await asyncio.sleep(self._poll_interval)
+            return False
+        finally:
+            await probe.close()
 
     async def goto(self, url: str) -> str:
         assert self._page is not None, "open() must be called first"
