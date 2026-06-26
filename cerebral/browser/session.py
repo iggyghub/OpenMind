@@ -195,29 +195,32 @@ class BrowserSession:
         # runs go headless.
         await self._driver.open(self.user_data_dir, headless=unattended)
 
-        if await self._driver.is_logged_in():
+        reused = await self._driver.is_logged_in()
+        # A "verify it's you" step-up can redirect in JUST AFTER myaccount
+        # loads, so a brief is_logged_in=True is not conclusive — check for a
+        # wall too. A wall means the session is NOT actually reusable: a
+        # password cannot clear a step-up, so on an UNATTENDED run surface it as
+        # NEEDS_VERIFICATION for the caller to escalate to a human rather than
+        # burning a doomed (and bot-wall-tripping) password attempt. On an
+        # ATTENDED run fall through — the human at the keyboard clears it.
+        wall = await self._driver.needs_verification()
+
+        if reused and not wall:
             logger.info(
                 "[browser] session reused profile=%d provider=%s",
                 self.profile_id, self.provider,
             )
             return LoginResult(state=LoginState.REUSED, email=email)
 
-        # A logged-in session can still be bounced to a human-verification
-        # ("verify it's you") wall on a sensitive surface. A password login
-        # cannot clear a step-up challenge, so on an UNATTENDED run surface it
-        # as NEEDS_VERIFICATION for the caller to escalate to a human rather
-        # than burning a doomed (and bot-wall-tripping) password attempt. On an
-        # ATTENDED run fall through — the human at the keyboard clears it.
-        if await self._driver.needs_verification():
-            if unattended:
-                logger.info(
-                    "[browser] verification wall profile=%d provider=%s",
-                    self.profile_id, self.provider,
-                )
-                return LoginResult(
-                    state=LoginState.NEEDS_VERIFICATION, email=email,
-                    reason="human verification required",
-                )
+        if wall and unattended:
+            logger.info(
+                "[browser] verification wall profile=%d provider=%s",
+                self.profile_id, self.provider,
+            )
+            return LoginResult(
+                state=LoginState.NEEDS_VERIFICATION, email=email,
+                reason="human verification required",
+            )
 
         if unattended:
             return await self._login_unattended(email)

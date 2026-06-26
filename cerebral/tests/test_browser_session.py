@@ -461,6 +461,21 @@ async def test_unattended_verification_wall_short_circuits_without_password(tmp_
     assert driver.password_seen is None
 
 
+async def test_unattended_wall_wins_over_brief_logged_in(tmp_path):
+    # The live race: is_logged_in briefly True (myaccount loaded) but a step-up
+    # redirect lands right after, so needs_verification is also True. The wall
+    # must win — NEEDS_VERIFICATION, not a premature REUSED.
+    store = _store()
+    _seed_creds(store)
+    driver = FakeDriver(logged_in=True, needs_verification=True, password_ok=True)
+    sess = _session(driver, store, tmp_path)
+
+    result = await sess.ensure_logged_in(unattended=True)
+
+    assert result.state is LoginState.NEEDS_VERIFICATION
+    assert "login_with_password" not in driver.calls
+
+
 async def test_attended_verification_wall_falls_through_to_manual(tmp_path):
     store = _store()
     _seed_creds(store)
