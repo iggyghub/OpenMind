@@ -22,6 +22,7 @@ from cerebral.browser.session import (  # noqa: E402
     LoginState,
     PageView,
     PlaywrightDriver,
+    is_verification_wall,
     _ACCOUNT_URL,
     _LOGIN_URL,
     _ACCOUNT_HOST,
@@ -62,10 +63,12 @@ def _seed_creds(store, *, email="bot@gmail.com", password="secret-pw",
 class FakeDriver:
     """Records calls; returns configured login-state signals."""
 
-    def __init__(self, *, logged_in=False, manual_ok=False, password_ok=False):
+    def __init__(self, *, logged_in=False, manual_ok=False, password_ok=False,
+                 needs_verification=False):
         self._logged_in = logged_in
         self._manual_ok = manual_ok
         self._password_ok = password_ok
+        self._needs_verification = needs_verification
         self.calls: list[str] = []
         self.opened_headless: bool | None = None
         self.opened_dir: Path | None = None
@@ -82,6 +85,10 @@ class FakeDriver:
     async def is_logged_in(self):
         self.calls.append("is_logged_in")
         return self._logged_in
+
+    async def needs_verification(self):
+        self.calls.append("needs_verification")
+        return self._needs_verification
 
     async def login_with_password(self, email, password):
         self.calls.append("login_with_password")
@@ -398,3 +405,42 @@ async def test_manual_login_times_out_without_touching_user_page():
     assert ok is False
     assert user.goto_calls == [_LOGIN_URL]
     assert probe.closed is True
+
+
+# ── S5: human-verification wall detection ───────────────────────────────────────
+
+def test_is_verification_wall_matches_confirmidentifier_url():
+    assert is_verification_wall(
+        "https://accounts.google.com/v3/signin/confirmidentifier?authuser=0", ""
+    )
+
+
+def test_is_verification_wall_matches_challenge_url():
+    assert is_verification_wall("https://accounts.google.com/signin/v2/challenge/pwd", "")
+
+
+def test_is_verification_wall_matches_verify_text_straight_and_curly():
+    assert is_verification_wall("https://mail.google.com/", "Verify it's you to continue")
+    assert is_verification_wall("https://mail.google.com/", "Verify it’s you to continue")
+
+
+def test_is_verification_wall_matches_couldnt_sign_in_text():
+    assert is_verification_wall("https://x/", "Couldn't sign you in right now")
+
+
+def test_is_verification_wall_false_on_normal_page():
+    assert not is_verification_wall("https://myaccount.google.com/", "Welcome, Felix")
+    assert not is_verification_wall("https://www.youtube.com/", "Home - YouTube")
+
+
+def test_is_verification_wall_tolerates_empty():
+    assert not is_verification_wall("", "")
+    assert not is_verification_wall(None, None)
+
+
+async def test_session_needs_verification_delegates_to_driver(tmp_path):
+    store = _store()
+    driver = FakeDriver(logged_in=True, needs_verification=True)
+    sess = _session(driver, store, tmp_path)
+    assert await sess.needs_verification() is True
+    assert "needs_verification" in driver.calls

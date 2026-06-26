@@ -96,6 +96,10 @@ class BrowserDriver(Protocol):
         """True iff the current session is authenticated to the provider."""
         ...
 
+    async def needs_verification(self) -> bool:
+        """True iff the current page is a human-verification (step-up) wall."""
+        ...
+
     async def login_with_password(self, email: str, password: str) -> bool:
         """Drive the provider login form. Return True iff it ended logged in."""
         ...
@@ -263,6 +267,10 @@ class BrowserSession:
         """Click ``selector``; return the resulting URL."""
         return await self._driver.click(selector)
 
+    async def needs_verification(self) -> bool:
+        """True iff the current page is a human-verification (step-up) wall."""
+        return await self._driver.needs_verification()
+
     async def close(self) -> None:
         await self._driver.close()
 
@@ -282,6 +290,39 @@ class BrowserSession:
 _ACCOUNT_URL = "https://myaccount.google.com/"
 _ACCOUNT_HOST = "myaccount.google.com"
 _LOGIN_URL = "https://accounts.google.com/signin/v2/identifier"
+
+# Human-verification ("verify it's you" / step-up) wall detection. When an
+# otherwise-authenticated session hits one of these, automation cannot proceed
+# without a human — the escalation path (pause + notify) keys off this.
+_VERIFICATION_URL_MARKERS = (
+    "confirmidentifier",
+    "/signin/v2/challenge",
+    "/signin/challenge",
+    "/challenge/",
+    "/signin/rejected",
+    "/deniedsigninrejected",
+)
+_VERIFICATION_TEXT_MARKERS = (
+    "verify it's you",
+    "verify it’s you",      # curly apostrophe
+    "confirm it's you",
+    "confirm it’s you",
+    "verify your identity",
+    "couldn't sign you in",
+    "couldn’t sign you in",
+)
+
+
+def is_verification_wall(url: str, text: str) -> bool:
+    """True iff ``url``/``text`` look like a Google human-verification wall.
+
+    Pure (no browser) so the heuristic is unit-testable; ``PlaywrightDriver.
+    needs_verification`` feeds it the live page's URL + body text."""
+    u = (url or "").lower()
+    if any(marker in u for marker in _VERIFICATION_URL_MARKERS):
+        return True
+    t = (text or "").lower()
+    return any(marker in t for marker in _VERIFICATION_TEXT_MARKERS)
 
 
 class PlaywrightDriver:
@@ -339,6 +380,14 @@ class PlaywrightDriver:
     async def is_logged_in(self) -> bool:
         assert self._page is not None, "open() must be called first"
         return await self._is_logged_in_on(self._page)
+
+    async def needs_verification(self) -> bool:
+        assert self._page is not None, "open() must be called first"
+        try:
+            text = await self._page.inner_text("body")
+        except Exception:
+            text = ""
+        return is_verification_wall(self._page.url, text)
 
     async def login_with_password(self, email: str, password: str) -> bool:
         assert self._page is not None, "open() must be called first"

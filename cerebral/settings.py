@@ -6,7 +6,7 @@ settings must be read and written via WebSocket to Cerebral.
 
 Keys: notifications_enabled, reminder_interval_minutes, camera_enabled,
       visualiser_visible, mic_mode, tts_muted, tts_volume,
-      mic_input_device
+      mic_input_device, browser_pause_on_verification
 """
 from __future__ import annotations
 
@@ -26,6 +26,11 @@ _DEFAULTS: dict[str, Any] = {
     "tts_muted":                 False,
     "tts_volume":                100,
     "mic_input_device":          "",
+    # When a browser-automation tool hits a human-verification wall (e.g.
+    # Google's "verify it's you" step-up), pause and notify the user to clear
+    # it in a visible window rather than silently failing. Default ON — failing
+    # loud beats stalling.
+    "browser_pause_on_verification": True,
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -40,6 +45,7 @@ _TYPES: dict[str, type] = {
     "tts_muted":                 bool,
     "tts_volume":                int,
     "mic_input_device":          str,
+    "browser_pause_on_verification": bool,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})

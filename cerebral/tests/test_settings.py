@@ -50,7 +50,20 @@ class TestSettingsStore:
             "tts_muted",
             "tts_volume",
             "mic_input_device",
+            "browser_pause_on_verification",
         }
+
+    def test_browser_pause_on_verification_defaults_on(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("browser_pause_on_verification") is True
+
+    def test_browser_pause_on_verification_roundtrip_and_type(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("browser_pause_on_verification", False)
+        assert store.get("browser_pause_on_verification") is False
+        import pytest
+        with pytest.raises(ValueError):
+            store.set("browser_pause_on_verification", "nope")
 
     def test_set_and_get_roundtrip(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")
