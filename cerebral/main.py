@@ -67,6 +67,7 @@ from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
 from cerebral.harness_channels import HarnessChannelStore
+from plugins.job_search import JobSearchStore as _JobSearchStore  # S1 #334
 from cerebral.channel_inbox import ChannelInbox
 from cerebral.settings import SettingsStore as _SettingsStore
 
@@ -107,7 +108,8 @@ _env = EnvironmentContext()
 _settings = _SettingsStore()
 _conversation = ConversationStore()
 _attachments  = AttachmentStore()
-_recipe_store = RecipeStore()
+_recipe_store    = RecipeStore()
+_job_search_store = _JobSearchStore()  # S1 #334
 
 # S20 (#303) -- the current in-flight planner/chain task, if any.
 # Set when _process_command starts; cleared on normal completion or cancel.
@@ -311,6 +313,11 @@ def _recipes_update_event() -> dict:
             "duplicate_ids": list(dups),
         },
     }
+
+
+def _jobs_update_event() -> dict:  # S1 #334
+    postings = _job_search_store.list_postings()
+    return {"type": "jobs_update", "data": {"postings": postings}}
 
 
 # ── Connected-account credentials (Issue #114, ADR-0005) ──────────────────────
@@ -2864,6 +2871,18 @@ async def _handle_message(msg: dict) -> None:
     elif t == "list_recipes":
         await _broadcast(_recipes_update_event())
 
+    elif t == "list_job_postings":  # S1 #334
+        await _broadcast(_jobs_update_event())
+
+    elif t == "jobs_fetch_postings":  # S1 #334 — tray "Check for new jobs" button
+        try:
+            result = await _orc.call_tool("jobs_fetch_postings", {})
+            postings = _job_search_store.list_postings()
+            await _broadcast({"type": "jobs_update", "data": {"postings": postings}})
+        except Exception as exc:
+            logger.warning("[cerebral] jobs_fetch_postings failed: %s", exc)
+            await _broadcast({"type": "jobs_update", "data": {"postings": []}})
+
     elif t == "save_recipe":
         d = msg.get("data", {})
         name = d.get("name", "").strip()
@@ -3437,6 +3456,7 @@ def _wire_plugin_seams() -> None:
         ("openclaw_channels", "set_inbox_observer", _channel_inbox_observer),  # #301
         ("discord_user",      "set_token_provider", _get_discord_user_token_provider),  # #175
         ("discord_user",      "set_draft_callback", _surface_discord_draft),          # #175
+        ("job_search", "set_store", _job_search_store),                              # S1 #334
     ]
     for name, seam, factory in seams:
         try:

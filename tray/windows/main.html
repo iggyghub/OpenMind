@@ -3041,8 +3041,84 @@
     /* Issues #208 (Models) + #209 (System settings). Class prefix `set-*`;
        accent coral (#ff8c69) — eighth distinct pane colour.
        S5 moved model controls to models pane; settings keeps notifications/system. */
-    .pane[data-route="models"]   { background: var(--bg); }
-    .pane[data-route="settings"] { background: var(--bg); }
+    .pane[data-route="models"]    { background: var(--bg); }
+    .pane[data-route="settings"]  { background: var(--bg); }
+    .pane[data-route="job-search"] { background: var(--bg); }
+
+    /* ── Job Search panel (Issue #334) ──────────────────────────────── */
+    .jobs-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+    .jobs-body::-webkit-scrollbar { width: 4px; }
+    .jobs-body::-webkit-scrollbar-track { background: transparent; }
+    .jobs-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .jobs-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .jobs-check-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .jobs-check-btn:disabled { opacity: 0.5; cursor: default; }
+    .jobs-status { font-size: 12px; color: var(--text-muted); }
+
+    .jobs-date-group { margin-bottom: 18px; }
+    .jobs-date-header {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    .jobs-card {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+    }
+    .jobs-card-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .jobs-card-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .jobs-card-snapshot {
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.4;
+      margin-bottom: 8px;
+    }
+    .jobs-card-link {
+      font-size: 12px;
+      color: var(--accent);
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .jobs-card-link:hover { text-decoration: underline; }
+    .jobs-empty {
+      color: var(--text-muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 40px 0;
+    }
 
     .set-body {
       flex: 1;
@@ -3477,6 +3553,10 @@
         <button class="nav-item" data-route="integrations">Integrations</button>
         <button class="nav-item" data-route="credentials">Credentials</button>
         <button class="nav-item" data-route="permissions">Permissions</button>
+      </div>
+      <div class="nav-section">
+        <span class="nav-section-title">Work</span>
+        <button class="nav-item" data-route="job-search">Job Search</button>
       </div>
       <div class="nav-section">
         <span class="nav-section-title">System</span>
@@ -4063,6 +4143,23 @@
       </div>
     </section>
 
+    <!-- Job Search panel (Issue #334 — S1) -->
+    <section class="pane" data-route="job-search" hidden>
+      <div class="jobs-body">
+        <div class="jobs-toolbar">
+          <button class="jobs-check-btn" id="jobs-check-btn" type="button">
+            Check for new jobs
+          </button>
+          <span class="jobs-status" id="jobs-status"></span>
+        </div>
+        <div id="jobs-list">
+          <div class="jobs-empty" id="jobs-empty">
+            No job postings yet. Click "Check for new jobs" to fetch the latest.
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="pane" data-route="models" hidden>
       <div class="set-body">
         <div class="set-section">Active model</div>
@@ -4622,6 +4719,14 @@
         case 'recipes_update':
           recipesData = event.data || null;
           renderRecipes();
+          break;
+        case 'jobs_update':
+          jobPostings = (event.data && event.data.postings) || [];
+          renderJobSearch();
+          jobsCheckBtn.disabled = false;
+          jobsStatusEl.textContent = jobPostings.length
+            ? jobPostings.length + ' posting' + (jobPostings.length === 1 ? '' : 's') + ' stored'
+            : 'No postings found';
           break;
         case 'recipe_run_result':
           _onRecipeRunResult(event.data || {});
@@ -5812,6 +5917,56 @@
         const id = parseInt(delBtn.dataset.rcpDelete, 10);
         sendEvent({ type: 'delete_recipe', data: { recipe_id: id } });
       }
+    });
+
+    // ── Job Search panel (Issue #334 — S1) ───────────────────────────────
+    let jobPostings = [];
+    const jobsListEl   = document.getElementById('jobs-list');
+    const jobsEmptyEl  = document.getElementById('jobs-empty');
+    const jobsCheckBtn = document.getElementById('jobs-check-btn');
+    const jobsStatusEl = document.getElementById('jobs-status');
+
+    function renderJobSearch() {
+      jobsListEl.querySelectorAll('.jobs-date-group').forEach(function (el) { el.remove(); });
+      if (jobPostings.length === 0) {
+        jobsEmptyEl.hidden = false;
+        return;
+      }
+      jobsEmptyEl.hidden = true;
+      // Group by fetched_at date (YYYY-MM-DD)
+      const byDate = Object.create(null);
+      jobPostings.forEach(function (p) {
+        const day = (p.fetched_at || '').slice(0, 10) || 'Unknown date';
+        (byDate[day] = byDate[day] || []).push(p);
+      });
+      Object.keys(byDate).sort().reverse().forEach(function (day) {
+        const group = document.createElement('div');
+        group.className = 'jobs-date-group';
+        const hdr = document.createElement('div');
+        hdr.className = 'jobs-date-header';
+        hdr.textContent = day;
+        group.appendChild(hdr);
+        byDate[day].forEach(function (p) {
+          const card = document.createElement('div');
+          card.className = 'jobs-card';
+          const metaParts = [];
+          if (p.company) metaParts.push(escHtml(p.company));
+          if (p.pay)     metaParts.push(escHtml(p.pay));
+          card.innerHTML =
+            '<div class="jobs-card-title">' + escHtml(p.title || 'Untitled') + '</div>' +
+            (metaParts.length ? '<div class="jobs-card-meta">' + metaParts.join(' \xb7 ') + '</div>' : '') +
+            (p.snapshot ? '<div class="jobs-card-snapshot">' + escHtml(p.snapshot.slice(0, 160)) + '…</div>' : '') +
+            (p.url ? '<a class="jobs-card-link" href="' + escHtml(p.url) + '" target="_blank" rel="noopener">' + escHtml(p.url) + '</a>' : '');
+          group.appendChild(card);
+        });
+        jobsListEl.appendChild(group);
+      });
+    }
+
+    jobsCheckBtn.addEventListener('click', function () {
+      jobsCheckBtn.disabled = true;
+      jobsStatusEl.textContent = 'Checking...';
+      sendEvent({ type: 'jobs_fetch_postings' });
     });
 
     // ── memory pane (Issue #198) ──────────────────────────────────────────
@@ -7949,6 +8104,9 @@
         // S19 (#302) -- defensive re-pull on activation; recipes_update
         // renders idempotently.
         sendEvent({ type: 'list_recipes' });
+      } else if (route === 'job-search') {
+        // S1 (#334) -- re-pull stored postings on panel activation.
+        sendEvent({ type: 'list_job_postings' });
       }
     }
 
