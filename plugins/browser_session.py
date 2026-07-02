@@ -310,10 +310,10 @@ class BrowserSessionPlugin:
             # Release the headless context's dir lock before re-opening headed.
             await self._safe_close(session)
             await self._notify(
-                "Felix needs you to verify the browser sign-in",
-                f"Google wants to confirm it's you for "
-                f"{result.email or 'the browser account'}. "
-                "Click to open the window and finish.",
+                "Felix needs you to sign in to the browser account",
+                f"The saved Google sign-in for "
+                f"{result.email or 'the browser account'} needs you to finish "
+                "it. Click to open the window and complete the sign-in.",
             )
             session2, err2 = self._resolve_session()
             if err2 is not None:

@@ -316,8 +316,8 @@ async def test_verification_wall_escalates_notifies_and_opens_window():
     payload = json.loads(res.content)
     assert payload["state"] == "manual"
     assert payload["verified"] is True
-    # Notified the user about the wall.
-    assert len(spy.calls) == 1 and "verify" in spy.calls[0][0].lower()
+    # Notified the user to finish the sign-in.
+    assert len(spy.calls) == 1 and "sign in" in spy.calls[0][0].lower()
     # First (headless) attempt was unattended; escalation opened a visible
     # (attended) window.
     assert wall.unattended is True

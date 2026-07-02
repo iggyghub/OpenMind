@@ -4,10 +4,10 @@ browser-automation harness (ADR-0005 amendment 2026-06-25).
 
 A FakeDriver stands in for Playwright so every login branch is exercised
 without a real browser:
-  - REUSED            : on-disk session still valid; no credentials touched
-  - MANUAL            : attended human login completes / times out
-  - REAUTHENTICATED   : unattended password fallback succeeds / fails
-  - FAILED            : missing email or password short-circuits, fail-closed
+  - REUSED             : on-disk session still valid; no credentials touched
+  - MANUAL             : attended human login completes / times out
+  - NEEDS_VERIFICATION : unattended reuse failed (dead session or step-up wall)
+                         -> escalate to a human; the password is never read
 
 The real PlaywrightDriver's Google specifics are intentionally NOT unit-tested
 (selectors / bot-wall behaviour are a live-verification concern).
@@ -190,56 +190,39 @@ async def test_attended_timeout_fails(tmp_path):
     assert "timeout" in result.reason
 
 
-# ── REAUTHENTICATED / FAILED (unattended) ───────────────────────────────────────
+# ── NEEDS_VERIFICATION (unattended reuse-failure escalates to a human) ───────────
+# Google can't be re-logged unattended (headless password login trips its bot
+# wall), so ANY unattended reuse failure -- a dead session OR a step-up wall --
+# returns NEEDS_VERIFICATION for the plugin to escalate to a visible attended
+# window. The stored password is never read on an unattended run.
 
-async def test_unattended_password_relogin_succeeds(tmp_path):
+async def test_unattended_dead_session_needs_verification(tmp_path):
     store = _store()
     _seed_creds(store, email="bot@gmail.com", password="hunter2")
-    driver = FakeDriver(logged_in=False, password_ok=True)
+    driver = FakeDriver(logged_in=False)  # dead session, no wall detected
     sess = _session(driver, store, tmp_path)
 
     result = await sess.ensure_logged_in(unattended=True)
 
-    assert result.state is LoginState.REAUTHENTICATED
-    assert result.ok
-    assert driver.password_seen == ("bot@gmail.com", "hunter2")
-    assert driver.opened_headless is True  # unattended runs headless
-
-
-async def test_unattended_password_relogin_failure_reports_botwall(tmp_path):
-    store = _store()
-    _seed_creds(store, password="wrong")
-    driver = FakeDriver(logged_in=False, password_ok=False)
-    sess = _session(driver, store, tmp_path)
-
-    result = await sess.ensure_logged_in(unattended=True)
-    assert result.state is LoginState.FAILED
-    assert "2FA" in result.reason or "bot-wall" in result.reason
-
-
-async def test_unattended_without_stored_password_fails_closed(tmp_path):
-    store = _store()
-    _seed_creds(store, email="bot@gmail.com", password=None)  # email only
-    driver = FakeDriver(logged_in=False, password_ok=True)
-    sess = _session(driver, store, tmp_path)
-
-    result = await sess.ensure_logged_in(unattended=True)
-    assert result.state is LoginState.FAILED
-    assert "password" in result.reason
-    # Must not have attempted a login with an empty password.
+    assert result.state is LoginState.NEEDS_VERIFICATION
+    assert not result.ok
+    assert driver.opened_headless is True  # the reuse probe runs headless
+    # The stored password must never be touched on an unattended run.
     assert "login_with_password" not in driver.calls
+    assert driver.password_seen is None
 
 
-async def test_unattended_without_email_fails_closed(tmp_path):
+async def test_unattended_never_reads_password_even_without_creds(tmp_path):
+    # No stored creds at all still just escalates -- it no longer fails-closed
+    # on a password read, because no password read happens.
     store = _store()
-    _seed_creds(store, email=None, password="pw")  # password only, no metadata
-    driver = FakeDriver(logged_in=False, password_ok=True)
+    driver = FakeDriver(logged_in=False)
     sess = _session(driver, store, tmp_path)
 
     result = await sess.ensure_logged_in(unattended=True)
-    assert result.state is LoginState.FAILED
-    assert "email" in result.reason
+    assert result.state is LoginState.NEEDS_VERIFICATION
     assert "login_with_password" not in driver.calls
+    assert driver.password_seen is None
 
 
 # ── paths + lifecycle ───────────────────────────────────────────────────────────

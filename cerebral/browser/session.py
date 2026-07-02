@@ -212,18 +212,25 @@ class BrowserSession:
             )
             return LoginResult(state=LoginState.REUSED, email=email)
 
-        if wall and unattended:
+        # Reuse failed: the on-disk session is dead and/or Google is showing a
+        # "verify it's you" step-up wall. Either way a Google account cannot be
+        # re-logged unattended -- a headless stored-password login trips its bot
+        # wall (live-verified 2026-06-25). So rather than burn a doomed password
+        # attempt, signal that a human must finish the sign-in: the
+        # browser_session plugin escalates to an OS notification + a VISIBLE
+        # attended window. ADR-0005's stored-password fallback is retained in
+        # _login_unattended but is no longer auto-driven.
+        # ponytail: password path kept dormant, not deleted; removing it
+        # cascades into keyring + tray UI + ADR-0005 -- a deliberate follow-up.
+        if unattended:
             logger.info(
-                "[browser] verification wall profile=%d provider=%s",
-                self.profile_id, self.provider,
+                "[browser] session needs human sign-in profile=%d provider=%s "
+                "(wall=%s)", self.profile_id, self.provider, wall,
             )
             return LoginResult(
                 state=LoginState.NEEDS_VERIFICATION, email=email,
-                reason="human verification required",
+                reason="human sign-in required",
             )
-
-        if unattended:
-            return await self._login_unattended(email)
         return await self._login_attended(email)
 
     async def _login_attended(self, email: str) -> LoginResult:
@@ -242,6 +249,10 @@ class BrowserSession:
         )
 
     async def _login_unattended(self, email: str) -> LoginResult:
+        # DORMANT (2026-07-02): no longer called by ensure_logged_in -- Google
+        # can't be re-logged unattended (bot wall), so reuse-failure escalates
+        # to an attended window instead. Retained pending an ADR-0005 revisit on
+        # whether to drop stored-password support entirely.
         password = self._password()
         if not email or not password:
             # Fail closed rather than half-driving a login with no creds.
