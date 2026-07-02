@@ -18,7 +18,7 @@ top-down; the order already satisfies every `Blocked by`. After landing a slice,
 `#N` + `Model:` as the active slice here, and set `Status:` (`ready` while slices
 remain; `done` after S7 lands — S8 is optional and left for a human to trigger).
 
-Active slice: **S1 — #334**
+Active slice: **S2 — #335**
 
 Model: sonnet
 Status: ready
@@ -30,7 +30,7 @@ human; `done` = stop. Stop gracefully any time with `scripts/stop-jobs.ps1`.)
 
 ### Slice queue (work top-down; spec = CONTEXT.md + ADR-0009; issue body = detail)
 
-1. [ ] S1 — #334 Job board -> Job postings in a Job Search panel — Model: sonnet
+1. [x] S1 — #334 Job board -> Job postings in a Job Search panel — Model: sonnet
 2. [ ] S2 — #335 Resume ingestion -> Applicant dossier — Model: sonnet
 3. [ ] S3 — #336 Shortlist: fit-score + user approval — Model: sonnet
 4. [ ] S4 — #337 Apply to ONE clean ATS end-to-end (spine), review-before-submit — Model: sonnet
@@ -41,7 +41,7 @@ human; `done` = stop. Stop gracefully any time with `scripts/stop-jobs.ps1`.)
 
 ### Landed PRs
 
-_(none yet)_
+- S1 #334 — PR #342 (feat(jobs): S1 — Job board -> Job postings in a Job Search panel)
 
 ---
 
