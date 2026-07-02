@@ -22,7 +22,7 @@ const ARTIFACT_DIR = path.resolve(__dirname, '../../.claude/tmp/render-smoke');
 const SMOKE_ROUTES = [
   'conversation', 'quick-ask', 'queue', 'insights', 'memory',
   'permissions', 'credentials', 'plugins', 'profiles', 'settings',
-  'models', 'conversations', 'integrations', 'recipes',
+  'models', 'conversations', 'integrations', 'recipes', 'job-search',
 ];
 
 let root;
