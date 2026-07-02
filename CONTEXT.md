@@ -79,6 +79,28 @@ PWA serving from Cerebral (a local HTTP server + service-worker shell) is **out 
 
 **Initial Main-window load.** On open, the Conversation pane shows the most recent ~50 turns of the active profile, scrolled to bottom, with a "load older" affordance at the top.
 
+### Job-application pipeline
+
+**Job board** — the aggregator Felix reads for openings. v1 target: Rat Race Rebellion (`ratracerebellion.com/job-postings`), a curated work-from-home feed that is fully readable **logged-out**, so Felix reads it anonymously (the `browser` plugin's `navigate` / Readability path — no login, no bot-wall). It only *links out*; applications are never submitted on the Job board itself. _Avoid_: treating the Job board as the place applications happen.
+
+**Job posting** — one opening in the Job board feed (title, company, pay, snapshot, date, and an outbound link to an employer **ATS**). The unit Felix ranks, dedups, and applies against. Dedup key is the outbound URL.
+
+**ATS (Applicant Tracking System)** — the employer's own application system a Job posting links out to (Greenhouse, Lever, Workday, or a bespoke career site). Heterogeneous — Felix drives them with a **generic form-filler** (LLM maps live DOM fields to known values), never per-ATS code. An ATS that requires login is a **Connected account** provider like any other. Felix bails and notifies on any ATS it cannot reliably drive (Workday is the expected hard case) rather than submitting a half-filled form.
+
+**Résumé artifact** — the single-page PDF the user uploads conversationally ("store this as my résumé"). Stored on disk, uploaded verbatim to ATS file fields. Felix never rewrites it per job.
+
+**Applicant dossier** — the structured, form-fillable facts about the user (name, contact, work history, education, links) that Felix extracts from the **Résumé artifact** and fills discrete ATS fields from. Per-profile (SQLite). Distinct from **Profile** (Felix-identity container) and from the Résumé artifact (the PDF). _Avoid_: calling it a "profile" — Profile is the user-identity term.
+
+**Answer bank** — the growing store of answers to ATS questions Felix has learned (work-authorization, years-with-X, salary expectation, …). Source of truth in SQLite; indexed in ChromaDB so a reworded question on a different ATS still matches a known answer — the `recall()` pattern from Long-term memory, pointed at application answers. Together with the Applicant dossier it forms the set of **known values**.
+
+**Known value** — a field value that came from the Applicant dossier or the Answer bank (never inferred). The **zero-guessed rule** governs autonomy: Felix auto-submits an **Application** only when every filled field is a Known value. A required field with no Known value → Felix stops, notifies the user, stores the answer (making it Known next time). Eligibility/knockout questions (work authorization, sponsorship, relocation, start date, salary) always escalate on first encounter regardless. See ADR-0009.
+
+**Application** — Felix's attempt to apply to one Job posting: its status (`shortlisted` / `awaiting-input` / `submitted` / `failed` / `skipped`), the ATS, and the Known values used. Logged in SQLite, deduped on the posting's outbound URL — the same posting is never applied to twice, but different roles at one employer are separate Applications. Rendered date-foldered in the **Job Search panel**.
+
+**Shortlist** — the ranked subset of new Job postings Felix proposes for a run, scored against the Applicant dossier and the user's targeting (AI/tech + IT). The user approves entries before Felix applies (v1); the user's approval is the fit/pay filter. Post-v1 this converges toward threshold auto-selection.
+
+**Job Search panel** — the Main-window sidebar panel for the pipeline: the date-foldered Application list, a "Check for new jobs" action (on-demand cadence in v1), and a link across to the **Credentials** panel, where the ATS and jobs-email Connected accounts live (not duplicated here). _Avoid_: "Job Search tab" — Main-window surfaces are panels.
+
 ---
 
 ## Architecture
