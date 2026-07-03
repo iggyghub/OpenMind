@@ -3150,6 +3150,75 @@
       font-style: italic;
     }
 
+    /* S3 #336 — Shortlist section */
+    .jobs-shortlist-section {
+      border-top: 1px solid var(--border);
+      padding: 14px 0 6px;
+    }
+    .jobs-shortlist-header {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .jobs-shortlist-empty {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-style: italic;
+      padding: 6px 0 10px;
+    }
+    .jobs-shortlist-card {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+    }
+    .jobs-shortlist-card.is-shortlisted { border-color: var(--state-active); }
+    .jobs-shortlist-card-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .jobs-shortlist-card-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .jobs-shortlist-card-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .jobs-approve-btn, .jobs-reject-btn {
+      font-size: 12px;
+      border: none;
+      border-radius: 5px;
+      padding: 4px 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .jobs-approve-btn {
+      background: var(--state-active);
+      color: #0a1a0a;
+    }
+    .jobs-approve-btn:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .jobs-reject-btn {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+    .jobs-score-badge {
+      font-size: 11px;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
     .set-body {
       flex: 1;
       overflow-y: auto;
@@ -4191,6 +4260,15 @@
             </div>
           </div>
         </div>
+        <!-- S3 #336 — Shortlist -->
+        <div class="jobs-shortlist-section" id="jobs-shortlist-section">
+          <div class="jobs-shortlist-header">Shortlist</div>
+          <div id="jobs-shortlist-list">
+            <div class="jobs-shortlist-empty" id="jobs-shortlist-empty">
+              Fetch new jobs to build your shortlist.
+            </div>
+          </div>
+        </div>
         <div id="jobs-list">
           <div class="jobs-empty" id="jobs-empty">
             No job postings yet. Click "Check for new jobs" to fetch the latest.
@@ -4761,9 +4839,11 @@
           break;
         case 'jobs_update':
           jobPostings = (event.data && event.data.postings) || [];
-          jobDossier = (event.data && event.data.dossier) || null;  // S2 #335
+          jobDossier = (event.data && event.data.dossier) || null;   // S2 #335
+          jobShortlist = (event.data && event.data.shortlist) || []; // S3 #336
           renderJobSearch();
-          renderJobDossier();  // S2 #335
+          renderJobDossier();    // S2 #335
+          renderJobShortlist();  // S3 #336
           jobsCheckBtn.disabled = false;
           jobsStatusEl.textContent = jobPostings.length
             ? jobPostings.length + ' posting' + (jobPostings.length === 1 ? '' : 's') + ' stored'
@@ -5960,14 +6040,17 @@
       }
     });
 
-    // ── Job Search panel (Issue #334 — S1; Issue #335 — S2) ─────────────
+    // ── Job Search panel (Issue #334 — S1; Issue #335 — S2; Issue #336 — S3) ─
     let jobPostings = [];
     let jobDossier  = null;  // S2 #335
-    const jobsListEl     = document.getElementById('jobs-list');
-    const jobsEmptyEl    = document.getElementById('jobs-empty');
-    const jobsCheckBtn   = document.getElementById('jobs-check-btn');
-    const jobsStatusEl   = document.getElementById('jobs-status');
-    const jobsDossierEl  = document.getElementById('jobs-dossier-body');  // S2 #335
+    let jobShortlist = [];   // S3 #336
+    const jobsListEl        = document.getElementById('jobs-list');
+    const jobsEmptyEl       = document.getElementById('jobs-empty');
+    const jobsCheckBtn      = document.getElementById('jobs-check-btn');
+    const jobsStatusEl      = document.getElementById('jobs-status');
+    const jobsDossierEl     = document.getElementById('jobs-dossier-body');   // S2 #335
+    const jobsShortlistEl   = document.getElementById('jobs-shortlist-list'); // S3 #336
+    const jobsShortlistEmpty = document.getElementById('jobs-shortlist-empty'); // S3 #336
 
     function renderJobSearch() {
       jobsListEl.querySelectorAll('.jobs-date-group').forEach(function (el) { el.remove(); });
@@ -6027,6 +6110,45 @@
         (meta.length  ? '<div class="jobs-dossier-meta">'  + meta.join('  \xb7  ')  + '</div>' : '') +
         (links.length ? '<div class="jobs-dossier-meta">'  + links.join('  \xb7  ') + '</div>' : '');
     }
+
+    // S3 #336 — render ranked Shortlist with approve/reject per entry.
+    function renderJobShortlist() {
+      if (!jobsShortlistEl) return;
+      jobsShortlistEl.querySelectorAll('.jobs-shortlist-card').forEach(function (el) { el.remove(); });
+      if (jobShortlist.length === 0) {
+        jobsShortlistEmpty.hidden = false;
+        return;
+      }
+      jobsShortlistEmpty.hidden = true;
+      jobShortlist.forEach(function (p) {
+        var card = document.createElement('div');
+        card.className = 'jobs-shortlist-card' + (p.status === 'shortlisted' ? ' is-shortlisted' : '');
+        card.dataset.url = p.url || '';
+        var metaParts = [];
+        if (p.company) metaParts.push(escHtml(p.company));
+        if (p.pay)     metaParts.push(escHtml(p.pay));
+        var scoreLabel = p.fit_score != null ? '<span class="jobs-score-badge">Score: ' + (+p.fit_score).toFixed(1) + '</span>' : '';
+        var approved = p.status === 'shortlisted';
+        card.innerHTML =
+          '<div class="jobs-shortlist-card-title">' + escHtml(p.title || 'Untitled') + '</div>' +
+          (metaParts.length || scoreLabel ? '<div class="jobs-shortlist-card-meta">' + (metaParts.length ? metaParts.join(' \xb7 ') + (scoreLabel ? '  ' : '') : '') + scoreLabel + '</div>' : '') +
+          '<div class="jobs-shortlist-card-actions">' +
+            '<button class="jobs-approve-btn"' + (approved ? ' disabled' : '') + ' data-approve="true">' + (approved ? 'Approved' : 'Approve') + '</button>' +
+            '<button class="jobs-reject-btn" data-approve="false">Reject</button>' +
+          '</div>';
+        jobsShortlistEl.insertBefore(card, jobsShortlistEmpty);
+      });
+    }
+
+    jobsShortlistEl && jobsShortlistEl.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-approve]');
+      if (!btn) return;
+      var card = btn.closest('.jobs-shortlist-card');
+      if (!card) return;
+      var url = card.dataset.url;
+      var approved = btn.dataset.approve === 'true';
+      sendEvent({ type: 'jobs_set_approval', data: { url: url, approved: approved } });
+    });
 
     jobsCheckBtn.addEventListener('click', function () {
       jobsCheckBtn.disabled = true;
