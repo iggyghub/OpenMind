@@ -1,7 +1,7 @@
 """
-Job Search MCP plugin — Issues #334 (S1) + #335 (S2).
+Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3).
 
-Tools: jobs_fetch_postings, jobs_store_resume.
+Tools: jobs_fetch_postings, jobs_store_resume, jobs_score_shortlist, jobs_set_approval.
 
 S1: Reads Rat Race Rebellion job board logged-out via OpenClaw navigate/Readability.
     Parses Job postings and upserts into SQLite job_postings table.
@@ -10,9 +10,14 @@ S2: Accepts a resume PDF text + path, persists the Resume artifact path per-prof
     extracts structured Applicant dossier fields via injectable extract_fn (LLM in
     prod, stub in tests), and upserts into SQLite resume_artifacts + applicant_dossier.
 
+S3: Scores new Job postings for fit via injectable score_fn (LLM in prod, stub in tests),
+    persists fit_score + status on job_postings, and returns a ranked Shortlist.
+    User approve/reject transitions: shortlisted | rejected.
+
 All network I/O is injected via navigate_fn.
 All DB I/O is injectable via a JobSearchStore seam.
 LLM extraction is injectable via set_extract_fn.
+LLM fit-scoring is injectable via set_score_fn.
 """
 import json
 import logging
@@ -174,9 +179,20 @@ class JobSearchStore:
                 pay         TEXT    NOT NULL DEFAULT '',
                 snapshot    TEXT    NOT NULL DEFAULT '',
                 posted_date TEXT    NOT NULL DEFAULT '',
-                fetched_at  TEXT    NOT NULL
+                fetched_at  TEXT    NOT NULL,
+                fit_score   REAL,
+                status      TEXT    NOT NULL DEFAULT 'new'
             )
         """)
+        # S3 #336 — upgrade existing DB rows that pre-date these columns.
+        for stmt in (
+            "ALTER TABLE job_postings ADD COLUMN fit_score REAL",
+            "ALTER TABLE job_postings ADD COLUMN status TEXT NOT NULL DEFAULT 'new'",
+        ):
+            try:
+                self._con.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # column already exists
         # S2 #335 — Resume artifact: one PDF path per profile (UNIQUE on profile_id).
         self._con.execute("""
             CREATE TABLE IF NOT EXISTS resume_artifacts (
@@ -304,6 +320,36 @@ class JobSearchStore:
                 d[key] = []
         return d
 
+    # ── S3 #336 — Shortlist scoring + approval ─────────────────────────────
+
+    def set_score(self, url: str, score: float) -> None:
+        self._con.execute(
+            "UPDATE job_postings SET fit_score = ? WHERE url = ?", (score, url)
+        )
+        self._con.commit()
+
+    def set_status(self, url: str, status: str) -> None:
+        self._con.execute(
+            "UPDATE job_postings SET status = ? WHERE url = ?", (status, url)
+        )
+        self._con.commit()
+
+    def list_unscored(self) -> list[dict]:
+        """Return new postings that have not been scored yet."""
+        cur = self._con.execute(
+            "SELECT * FROM job_postings WHERE fit_score IS NULL AND status = 'new'"
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    def list_shortlist(self) -> list[dict]:
+        """Return scored, non-rejected postings ranked by fit_score DESC."""
+        cur = self._con.execute("""
+            SELECT * FROM job_postings
+            WHERE fit_score IS NOT NULL AND status != 'rejected'
+            ORDER BY fit_score DESC, id DESC
+        """)
+        return [dict(row) for row in cur.fetchall()]
+
 
 # ── Module-level seams ────────────────────────────────────────────────────────
 
@@ -312,6 +358,7 @@ _store: JobSearchStore | None = None
 _active_profile_id: int | None = None
 _pending_resume_path: str = ""
 _extract_fn: Callable[[str], Any] | None = None  # sync or async (str) -> dict
+_score_fn: Callable[[dict, dict], Any] | None = None  # sync or async (posting, dossier) -> float
 
 
 def set_navigate_fn(fn: Callable[[str], Awaitable[str]]) -> None:
@@ -339,6 +386,12 @@ def set_extract_fn(fn: Callable[[str], Any]) -> None:
     """Inject the LLM extractor (sync or async fn(text) -> dict)."""
     global _extract_fn
     _extract_fn = fn
+
+
+def set_score_fn(fn: Callable[[dict, dict], Any]) -> None:
+    """Inject the LLM fit-scorer (sync or async fn(posting, dossier) -> float). S3 #336."""
+    global _score_fn
+    _score_fn = fn
 
 
 # ── Default navigate fn (calls OpenClaw) ──────────────────────────────────────
@@ -374,10 +427,12 @@ class JobSearchPlugin:
         navigate_fn: Callable[[str], Awaitable[str]] | None = None,
         store: JobSearchStore | None = None,
         extract_fn: Callable[[str], Any] | None = None,
+        score_fn: Callable[[dict, dict], Any] | None = None,
     ) -> None:
         self._navigate = navigate_fn or _default_navigate
         self._store = store
         self._extract_fn = extract_fn  # overrides module-level _extract_fn when set
+        self._score_fn = score_fn       # overrides module-level _score_fn when set
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -411,6 +466,39 @@ class JobSearchPlugin:
                     "required": ["pdf_text"],
                 },
             ),
+            Tool(
+                name="jobs_score_shortlist",
+                description=(
+                    "Score new Job postings for fit against the Applicant dossier and "
+                    "AI/tech+IT targeting. Returns a ranked Shortlist for user approval. "
+                    "Run after fetching new postings."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="jobs_set_approval",
+                description=(
+                    "Approve or reject a Job posting from the Shortlist. "
+                    "Approved entries move to shortlisted status (input for the apply step); "
+                    "rejected entries are skipped and not re-surfaced."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "ATS URL of the Job posting.",
+                        },
+                        "approved": {
+                            "type": "boolean",
+                            "description": "True to approve (shortlisted), false to reject.",
+                        },
+                    },
+                    "required": ["url", "approved"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -418,7 +506,54 @@ class JobSearchPlugin:
             return await self._fetch_postings()
         if tool_name == "jobs_store_resume":
             return await self._store_resume(args.get("pdf_text", ""))
+        if tool_name == "jobs_score_shortlist":
+            return await self._score_shortlist()
+        if tool_name == "jobs_set_approval":
+            return await self._set_approval(args.get("url", ""), bool(args.get("approved")))
         return ToolResult(content=f"Unknown tool: {tool_name!r}", is_error=True)
+
+    async def _score_shortlist(self) -> ToolResult:
+        """S3 #336 — score unscored postings via injected scorer, return ranked shortlist."""
+        import asyncio
+        store = self._store or _store
+        if store is None:
+            return ToolResult(content="Job search store not initialised", is_error=True)
+        profile_id = _active_profile_id
+        if profile_id is None:
+            return ToolResult(content="No active profile", is_error=True)
+        dossier = store.get_dossier(profile_id)
+        if not dossier:
+            return ToolResult(
+                content="No Applicant dossier found — store your resume first", is_error=True
+            )
+        score = self._score_fn or _score_fn
+        if score is None:
+            return ToolResult(content="No scorer configured", is_error=True)
+        unscored = store.list_unscored()
+        for posting in unscored:
+            try:
+                result = score(posting, dossier)
+                if asyncio.iscoroutine(result):
+                    val = float(await result)
+                else:
+                    val = float(result)
+                store.set_score(posting["url"], val)
+            except Exception as exc:
+                logger.error("[job_search] scoring failed for %s: %s", posting.get("url"), exc)
+        shortlist = store.list_shortlist()
+        return ToolResult(content=json.dumps({"scored": len(unscored), "shortlist": shortlist}))
+
+    async def _set_approval(self, url: str, approved: bool) -> ToolResult:
+        """S3 #336 — approve or reject a shortlist entry."""
+        store = self._store or _store
+        if store is None:
+            return ToolResult(content="Job search store not initialised", is_error=True)
+        if not url:
+            return ToolResult(content="url is required", is_error=True)
+        status = "shortlisted" if approved else "rejected"
+        store.set_status(url, status)
+        shortlist = store.list_shortlist()
+        return ToolResult(content=json.dumps({"url": url, "status": status, "shortlist": shortlist}))
 
     async def _store_resume(self, pdf_text: str) -> ToolResult:
         """S2 #335 — persist Resume artifact + extract Applicant dossier."""
@@ -488,5 +623,6 @@ def create(
     navigate_fn: Callable[[str], Awaitable[str]] | None = None,
     store: "JobSearchStore | None" = None,
     extract_fn: "Callable[[str], Any] | None" = None,
+    score_fn: "Callable[[dict, dict], Any] | None" = None,
 ) -> JobSearchPlugin:
-    return JobSearchPlugin(navigate_fn=navigate_fn, store=store, extract_fn=extract_fn)
+    return JobSearchPlugin(navigate_fn=navigate_fn, store=store, extract_fn=extract_fn, score_fn=score_fn)

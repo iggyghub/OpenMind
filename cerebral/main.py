@@ -67,11 +67,12 @@ from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
 from cerebral.harness_channels import HarnessChannelStore
-from plugins.job_search import (  # S1 #334 / S2 #335
+from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336
     JobSearchStore as _JobSearchStore,
     set_active_profile_id as _js_set_profile,
     set_pending_resume_path as _js_set_resume_path,
     set_extract_fn as _js_set_extract_fn,
+    set_score_fn as _js_set_score_fn,
 )
 from cerebral.channel_inbox import ChannelInbox
 from cerebral.settings import SettingsStore as _SettingsStore
@@ -139,6 +140,35 @@ async def _extract_dossier(pdf_text: str) -> dict:  # S2 #335
         return {}
 
 _js_set_extract_fn(_extract_dossier)  # S2 #335
+
+
+async def _score_posting(posting: dict, dossier: dict) -> float:  # S3 #336
+    """LLM fit-scorer injected into job_search plugin. Returns 0.0–10.0."""
+    import json as _json
+    prompt = (
+        "Score this job posting's fit for the applicant on a scale of 0.0 to 10.0. "
+        "Higher = better match. Prefer AI, tech, and IT roles. "
+        "Consider: skills overlap, experience level, role type.\n"
+        "Posting: " + _json.dumps({
+            "title": posting.get("title"),
+            "company": posting.get("company"),
+            "snapshot": (posting.get("snapshot") or "")[:400],
+        }) + "\n"
+        "Applicant skills: " + _json.dumps(dossier.get("skills_json") or []) + "\n"
+        "Work history: " + _json.dumps([
+            f"{w.get('title')} at {w.get('company')}"
+            for w in (dossier.get("work_history_json") or [])[:3]
+        ]) + "\n"
+        "Reply with ONLY a single float number, e.g. 7.5"
+    )
+    raw = await _router.complete(prompt, task_type="chat")
+    try:
+        return float(str(raw).strip().split()[0])
+    except (ValueError, IndexError):
+        return 5.0  # fallback mid-score
+
+
+_js_set_score_fn(_score_posting)  # S3 #336
 
 # S20 (#303) -- the current in-flight planner/chain task, if any.
 # Set when _process_command starts; cleared on normal completion or cancel.
@@ -347,7 +377,8 @@ def _recipes_update_event() -> dict:
 def _jobs_update_event() -> dict:  # S1 #334
     postings = _job_search_store.list_postings()
     dossier = _job_search_store.get_dossier(_active_profile.id) if _active_profile else None  # S2 #335
-    return {"type": "jobs_update", "data": {"postings": postings, "dossier": dossier}}
+    shortlist = _job_search_store.list_shortlist()  # S3 #336
+    return {"type": "jobs_update", "data": {"postings": postings, "dossier": dossier, "shortlist": shortlist}}
 
 
 # ── Connected-account credentials (Issue #114, ADR-0005) ──────────────────────
@@ -2911,12 +2942,35 @@ async def _handle_message(msg: dict) -> None:
     elif t == "jobs_fetch_postings":  # S1 #334 — tray "Check for new jobs" button
         try:
             await _orc.call_tool("jobs_fetch_postings", {})
-            await _broadcast(_jobs_update_event())
         except Exception as exc:
             logger.warning("[cerebral] jobs_fetch_postings failed: %s", exc)
-            await _broadcast(_jobs_update_event())
+        # S3 #336 — auto-score new postings if dossier exists
+        if _active_profile and _job_search_store.get_dossier(_active_profile.id):
+            try:
+                await _orc.call_tool("jobs_score_shortlist", {})
+            except Exception as exc:
+                logger.warning("[cerebral] auto-score after fetch failed: %s", exc)
+        await _broadcast(_jobs_update_event())
 
     elif t == "jobs_get_dossier":  # S2 #335 — tray requests current dossier
+        await _broadcast(_jobs_update_event())
+
+    elif t == "jobs_score_shortlist":  # S3 #336 — score unscored postings
+        try:
+            await _orc.call_tool("jobs_score_shortlist", {})
+        except Exception as exc:
+            logger.warning("[cerebral] jobs_score_shortlist failed: %s", exc)
+        await _broadcast(_jobs_update_event())
+
+    elif t == "jobs_set_approval":  # S3 #336 — approve/reject a shortlist entry
+        d = msg.get("data", {})
+        try:
+            await _orc.call_tool("jobs_set_approval", {
+                "url": d.get("url", ""),
+                "approved": bool(d.get("approved")),
+            })
+        except Exception as exc:
+            logger.warning("[cerebral] jobs_set_approval failed: %s", exc)
         await _broadcast(_jobs_update_event())
 
     elif t == "save_recipe":
@@ -3494,6 +3548,7 @@ def _wire_plugin_seams() -> None:
         ("discord_user",      "set_draft_callback", _surface_discord_draft),          # #175
         ("job_search", "set_store", _job_search_store),                              # S1 #334
         ("job_search", "set_extract_fn", _extract_dossier),                          # S2 #335
+        ("job_search", "set_score_fn", _score_posting),                              # S3 #336
     ]
     for name, seam, factory in seams:
         try:

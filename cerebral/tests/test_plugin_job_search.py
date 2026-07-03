@@ -87,7 +87,7 @@ class TestPluginMeta:
     def test_lists_tools(self):
         from plugins.job_search import JobSearchPlugin
         names = {t.name for t in JobSearchPlugin().list_tools()}
-        assert names == {"jobs_fetch_postings", "jobs_store_resume"}  # S1 + S2
+        assert names == {"jobs_fetch_postings", "jobs_store_resume", "jobs_score_shortlist", "jobs_set_approval"}  # S1+S2+S3
 
     def test_required_capabilities(self):
         from plugins.job_search import REQUIRED_CAPABILITIES
@@ -504,3 +504,290 @@ class TestStoreResumeTool:
         d = store.get_dossier(_PROFILE_ID)
         assert d is not None
         assert RESUME_FIXTURE_TEXT[:100] in d["raw_text"]
+
+
+# ── S3 helpers ────────────────────────────────────────────────────────────────
+
+_ATS_URL_1 = "https://boards.greenhouse.io/acme/jobs/123"
+_ATS_URL_2 = "https://jobs.lever.co/beta/456"
+
+def _seed_postings(store):
+    """Insert two postings into the store (urls from RRR fixture)."""
+    from plugins.job_search import parse_postings
+    for p in parse_postings(RRR_FIXTURE_HTML):
+        if p.get("url"):
+            store.upsert(p)
+
+def _stub_scorer(posting: dict, dossier: dict) -> float:
+    """Return a deterministic score based on ATS URL so tests can check ordering."""
+    return 8.0 if "greenhouse" in posting.get("url", "") else 4.0
+
+async def _async_stub_scorer(posting: dict, dossier: dict) -> float:
+    return _stub_scorer(posting, dossier)
+
+def _make_scored_plugin(store):
+    import plugins.job_search as jm
+    jm._active_profile_id = _PROFILE_ID
+    jm._pending_resume_path = _RESUME_PATH
+    from plugins.job_search import JobSearchPlugin
+    return JobSearchPlugin(store=store, extract_fn=_stub_extract, score_fn=_stub_scorer)
+
+
+# ── Cycle 7 — JobSearchStore shortlist columns ────────────────────────────────
+
+class TestShortlistStore:
+    def test_new_posting_has_null_score(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        rows = store.list_postings()
+        assert all(r["fit_score"] is None for r in rows)
+
+    def test_new_posting_has_status_new(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        rows = store.list_postings()
+        assert all(r["status"] == "new" for r in rows)
+
+    def test_set_score_persists(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.set_score(_ATS_URL_1, 7.5)
+        row = next(r for r in store.list_postings() if r["url"] == _ATS_URL_1)
+        assert row["fit_score"] == pytest.approx(7.5)
+
+    def test_set_status_persists(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.set_status(_ATS_URL_1, "shortlisted")
+        row = next(r for r in store.list_postings() if r["url"] == _ATS_URL_1)
+        assert row["status"] == "shortlisted"
+
+    def test_list_unscored_returns_new_only(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.set_score(_ATS_URL_1, 9.0)
+        unscored = store.list_unscored()
+        urls = {r["url"] for r in unscored}
+        assert _ATS_URL_1 not in urls
+        assert _ATS_URL_2 in urls
+
+    def test_list_shortlist_ordered_by_score_desc(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.set_score(_ATS_URL_1, 8.0)
+        store.set_score(_ATS_URL_2, 4.0)
+        shortlist = store.list_shortlist()
+        assert len(shortlist) == 2
+        assert shortlist[0]["url"] == _ATS_URL_1
+        assert shortlist[1]["url"] == _ATS_URL_2
+
+    def test_list_shortlist_excludes_rejected(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.set_score(_ATS_URL_1, 8.0)
+        store.set_score(_ATS_URL_2, 4.0)
+        store.set_status(_ATS_URL_2, "rejected")
+        shortlist = store.list_shortlist()
+        assert len(shortlist) == 1
+        assert shortlist[0]["url"] == _ATS_URL_1
+
+    def test_list_shortlist_empty_when_none_scored(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        assert store.list_shortlist() == []
+
+    def test_shortlisted_entry_included_in_shortlist(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.set_score(_ATS_URL_1, 8.0)
+        store.set_status(_ATS_URL_1, "shortlisted")
+        shortlist = store.list_shortlist()
+        assert any(r["url"] == _ATS_URL_1 for r in shortlist)
+
+
+# ── Cycle 8 — jobs_score_shortlist tool ──────────────────────────────────────
+
+class TestScoreShortlistTool:
+    def _make_plugin_with_dossier(self, store):
+        """Seed store with postings + dossier, return ready plugin."""
+        _seed_postings(store)
+        store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+        return _make_scored_plugin(store)
+
+    @pytest.mark.asyncio
+    async def test_tool_listed(self):
+        from plugins.job_search import JobSearchPlugin
+        names = {t.name for t in JobSearchPlugin().list_tools()}
+        assert "jobs_score_shortlist" in names
+
+    @pytest.mark.asyncio
+    async def test_scores_unscored_postings(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin_with_dossier(store)
+        result = await plugin.call_tool("jobs_score_shortlist", {})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["scored"] == 2
+
+    @pytest.mark.asyncio
+    async def test_shortlist_in_response(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin_with_dossier(store)
+        result = await plugin.call_tool("jobs_score_shortlist", {})
+        data = json.loads(result.content)
+        assert len(data["shortlist"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_shortlist_ordered_by_score(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin_with_dossier(store)
+        result = await plugin.call_tool("jobs_score_shortlist", {})
+        data = json.loads(result.content)
+        scores = [p["fit_score"] for p in data["shortlist"]]
+        assert scores == sorted(scores, reverse=True)
+
+    @pytest.mark.asyncio
+    async def test_scores_persisted_in_store(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin_with_dossier(store)
+        await plugin.call_tool("jobs_score_shortlist", {})
+        row = next(r for r in store.list_postings() if r["url"] == _ATS_URL_1)
+        assert row["fit_score"] == pytest.approx(8.0)
+
+    @pytest.mark.asyncio
+    async def test_idempotent_second_run(self):
+        """Second call scores 0 new entries (all already scored)."""
+        store = _in_memory_store()
+        plugin = self._make_plugin_with_dossier(store)
+        await plugin.call_tool("jobs_score_shortlist", {})
+        result2 = await plugin.call_tool("jobs_score_shortlist", {})
+        data = json.loads(result2.content)
+        assert data["scored"] == 0
+
+    @pytest.mark.asyncio
+    async def test_async_scorer(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store, score_fn=_async_stub_scorer)
+        result = await plugin.call_tool("jobs_score_shortlist", {})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["scored"] == 2
+
+    @pytest.mark.asyncio
+    async def test_no_dossier_returns_error(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store, score_fn=_stub_scorer)
+        result = await plugin.call_tool("jobs_score_shortlist", {})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_no_store_returns_error(self):
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=None, score_fn=_stub_scorer)
+        result = await plugin.call_tool("jobs_score_shortlist", {})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_no_profile_returns_error(self):
+        import plugins.job_search as jm
+        jm._active_profile_id = None
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=_in_memory_store(), score_fn=_stub_scorer)
+        result = await plugin.call_tool("jobs_score_shortlist", {})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_no_scorer_returns_error(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        jm._score_fn = None
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store, score_fn=None)
+        result = await plugin.call_tool("jobs_score_shortlist", {})
+        assert result.is_error
+
+
+# ── Cycle 9 — jobs_set_approval tool ─────────────────────────────────────────
+
+class TestSetApprovalTool:
+    def _make_plugin_scored(self, store):
+        _seed_postings(store)
+        store.set_score(_ATS_URL_1, 8.0)
+        store.set_score(_ATS_URL_2, 4.0)
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        from plugins.job_search import JobSearchPlugin
+        return JobSearchPlugin(store=store)
+
+    @pytest.mark.asyncio
+    async def test_tool_listed(self):
+        from plugins.job_search import JobSearchPlugin
+        names = {t.name for t in JobSearchPlugin().list_tools()}
+        assert "jobs_set_approval" in names
+
+    @pytest.mark.asyncio
+    async def test_approve_sets_shortlisted(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin_scored(store)
+        result = await plugin.call_tool("jobs_set_approval", {"url": _ATS_URL_1, "approved": True})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "shortlisted"
+        row = next(r for r in store.list_postings() if r["url"] == _ATS_URL_1)
+        assert row["status"] == "shortlisted"
+
+    @pytest.mark.asyncio
+    async def test_reject_sets_rejected(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin_scored(store)
+        result = await plugin.call_tool("jobs_set_approval", {"url": _ATS_URL_1, "approved": False})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "rejected"
+
+    @pytest.mark.asyncio
+    async def test_rejected_removed_from_shortlist(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin_scored(store)
+        result = await plugin.call_tool("jobs_set_approval", {"url": _ATS_URL_1, "approved": False})
+        data = json.loads(result.content)
+        urls = {p["url"] for p in data["shortlist"]}
+        assert _ATS_URL_1 not in urls
+
+    @pytest.mark.asyncio
+    async def test_approved_remains_in_shortlist(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin_scored(store)
+        result = await plugin.call_tool("jobs_set_approval", {"url": _ATS_URL_1, "approved": True})
+        data = json.loads(result.content)
+        urls = {p["url"] for p in data["shortlist"]}
+        assert _ATS_URL_1 in urls
+
+    @pytest.mark.asyncio
+    async def test_no_store_returns_error(self):
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=None)
+        result = await plugin.call_tool("jobs_set_approval", {"url": _ATS_URL_1, "approved": True})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_empty_url_returns_error(self):
+        store = _in_memory_store()
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store)
+        result = await plugin.call_tool("jobs_set_approval", {"url": "", "approved": True})
+        assert result.is_error
