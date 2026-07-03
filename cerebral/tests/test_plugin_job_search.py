@@ -87,7 +87,11 @@ class TestPluginMeta:
     def test_lists_tools(self):
         from plugins.job_search import JobSearchPlugin
         names = {t.name for t in JobSearchPlugin().list_tools()}
-        assert names == {"jobs_fetch_postings", "jobs_store_resume", "jobs_score_shortlist", "jobs_set_approval", "jobs_apply_start", "jobs_apply_submit"}  # S1+S2+S3+S4
+        assert names == {
+            "jobs_fetch_postings", "jobs_store_resume", "jobs_score_shortlist",
+            "jobs_set_approval", "jobs_apply_start", "jobs_apply_submit",
+            "jobs_answer_field",  # S5
+        }
 
     def test_required_capabilities(self):
         from plugins.job_search import REQUIRED_CAPABILITIES
@@ -1176,13 +1180,14 @@ class TestApplySubmit:
 # ── Cycle 14 — updated plugin meta ────────────────────────────────────────────
 
 class TestPluginMetaS4:
-    def test_lists_six_tools(self):
+    def test_lists_tools(self):
         from plugins.job_search import JobSearchPlugin
         names = {t.name for t in JobSearchPlugin().list_tools()}
         assert names == {
             "jobs_fetch_postings", "jobs_store_resume",
             "jobs_score_shortlist", "jobs_set_approval",
             "jobs_apply_start", "jobs_apply_submit",
+            "jobs_answer_field",  # S5
         }
 
     def test_required_capabilities_includes_data_write(self):
@@ -1198,3 +1203,274 @@ class TestPluginMetaS4:
         from plugins.job_search import JobSearchPlugin
         tools = {t.name: t for t in JobSearchPlugin().list_tools()}
         assert not tools["jobs_apply_start"].irreversible
+
+
+# ── S5 fixtures ───────────────────────────────────────────────────────────────
+
+# Fields where "Work Authorization" is required but empty (not in dossier).
+_FIXTURE_FIELDS_WORK_AUTH = [
+    {"selector": "input[name=first_name]", "label": "First Name",        "value": "John", "required": True,  "is_file_upload": False},
+    {"selector": "input[name=work_auth]",  "label": "Work Authorization", "value": "",     "required": True,  "is_file_upload": False},
+]
+
+
+def _stub_driver_work_auth(url, dossier, resume_path):
+    return {"fields": _FIXTURE_FIELDS_WORK_AUTH, "submit_selector": 'button[type="submit"]'}
+
+
+def _make_stub_recall(bank: dict):
+    """Exact-match recall stub: returns the stored answer or None."""
+    async def _fn(profile_id: int, question: str) -> str | None:
+        return bank.get(question)
+    return _fn
+
+
+def _make_fuzzy_recall(bank: dict):
+    """Simulates semantic matching via lowercase+strip (stands in for vector similarity)."""
+    async def _fn(profile_id: int, question: str) -> str | None:
+        return bank.get(question.lower().strip())
+    return _fn
+
+
+# ── Cycle 15 — Answer bank store ─────────────────────────────────────────────
+
+class TestAnswerBankStore:
+    def test_list_answers_empty(self):
+        store = _in_memory_store()
+        assert store.list_answers(_PROFILE_ID) == []
+
+    def test_upsert_answer_stores(self):
+        store = _in_memory_store()
+        store.upsert_answer(_PROFILE_ID, "Work Authorization", "US Citizen")
+        answers = store.list_answers(_PROFILE_ID)
+        assert len(answers) == 1
+        assert answers[0]["question"] == "Work Authorization"
+        assert answers[0]["answer"] == "US Citizen"
+
+    def test_upsert_answer_replaces(self):
+        store = _in_memory_store()
+        store.upsert_answer(_PROFILE_ID, "Work Authorization", "Visa")
+        store.upsert_answer(_PROFILE_ID, "Work Authorization", "US Citizen")
+        answers = store.list_answers(_PROFILE_ID)
+        assert len(answers) == 1
+        assert answers[0]["answer"] == "US Citizen"
+
+    def test_different_questions_stored_separately(self):
+        store = _in_memory_store()
+        store.upsert_answer(_PROFILE_ID, "Work Authorization", "US Citizen")
+        store.upsert_answer(_PROFILE_ID, "Salary Expectation", "$80k")
+        assert len(store.list_answers(_PROFILE_ID)) == 2
+
+    def test_different_profiles_isolated(self):
+        store = _in_memory_store()
+        store.upsert_answer(1, "Salary", "$80k")
+        store.upsert_answer(2, "Salary", "$90k")
+        assert store.list_answers(1)[0]["answer"] == "$80k"
+        assert store.list_answers(2)[0]["answer"] == "$90k"
+
+
+# ── Cycle 16 — jobs_answer_field tool ────────────────────────────────────────
+
+class TestAnswerFieldTool:
+    def _make_plugin(self, store=None, recall_fn=None, index_answer_fn=None):
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        jm._recall_fn = None
+        jm._index_answer_fn = None
+        from plugins.job_search import JobSearchPlugin
+        return JobSearchPlugin(
+            store=store or _in_memory_store(),
+            recall_fn=recall_fn,
+            index_answer_fn=index_answer_fn,
+        )
+
+    @pytest.mark.asyncio
+    async def test_tool_listed(self):
+        from plugins.job_search import JobSearchPlugin
+        names = {t.name for t in JobSearchPlugin().list_tools()}
+        assert "jobs_answer_field" in names
+
+    @pytest.mark.asyncio
+    async def test_store_answer_success(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin(store=store)
+        result = await plugin.call_tool("jobs_answer_field", {"question": "Work Auth", "answer": "US Citizen"})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "stored"
+        assert any(a["question"] == "Work Auth" for a in store.list_answers(_PROFILE_ID))
+
+    @pytest.mark.asyncio
+    async def test_empty_question_returns_error(self):
+        plugin = self._make_plugin()
+        result = await plugin.call_tool("jobs_answer_field", {"question": "  ", "answer": "US Citizen"})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_calls_index_fn(self):
+        indexed = []
+        async def capture_index(pid, q, a):
+            indexed.append((q, a))
+        store = _in_memory_store()
+        plugin = self._make_plugin(store=store, index_answer_fn=capture_index)
+        await plugin.call_tool("jobs_answer_field", {"question": "Work Auth", "answer": "Yes"})
+        assert ("Work Auth", "Yes") in indexed
+
+    @pytest.mark.asyncio
+    async def test_index_fn_not_required(self):
+        """Omitting index_fn is fine — SQLite persistence still works."""
+        store = _in_memory_store()
+        plugin = self._make_plugin(store=store, index_answer_fn=None)
+        result = await plugin.call_tool("jobs_answer_field", {"question": "q", "answer": "a"})
+        assert not result.is_error
+
+    @pytest.mark.asyncio
+    async def test_no_store_returns_error(self):
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=None)
+        result = await plugin.call_tool("jobs_answer_field", {"question": "q", "answer": "a"})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_no_profile_returns_error(self):
+        import plugins.job_search as jm
+        jm._active_profile_id = None
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=_in_memory_store())
+        result = await plugin.call_tool("jobs_answer_field", {"question": "q", "answer": "a"})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_answer_returned_in_bank_list(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin(store=store)
+        result = await plugin.call_tool("jobs_answer_field", {"question": "Salary", "answer": "$80k"})
+        data = json.loads(result.content)
+        assert any(a["question"] == "Salary" for a in data["answer_bank"])
+
+
+# ── Cycle 17 — semantic field-matching in _apply_start ───────────────────────
+
+class TestSemanticFieldMatching:
+    """S5: Answer bank auto-fills a required field when recall_fn returns a match."""
+
+    def _make_plugin(self, store, recall_fn=None, driver_fn=None):
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        jm._pending_resume_path = _RESUME_PATH
+        jm._pending_application = None
+        jm._recall_fn = None
+        from plugins.job_search import JobSearchPlugin
+        return JobSearchPlugin(
+            store=store,
+            extract_fn=_stub_extract,
+            score_fn=_stub_scorer,
+            apply_driver_fn=driver_fn or _stub_driver_work_auth,
+            apply_submit_fn=_stub_apply_submit,
+            recall_fn=recall_fn,
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_recall_fn_triggers_awaiting_input(self):
+        """Without recall_fn the missing required field still escalates."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = self._make_plugin(store, recall_fn=None)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "awaiting-input"
+
+    @pytest.mark.asyncio
+    async def test_exact_match_fills_field_ready_to_submit(self):
+        """Exact match in Answer bank fills missing required field -> ready_to_submit."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        recall = _make_stub_recall({"Work Authorization": "US Citizen"})
+        plugin = self._make_plugin(store, recall_fn=recall)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "ready_to_submit"
+
+    @pytest.mark.asyncio
+    async def test_no_match_triggers_awaiting_input_with_field_name(self):
+        """No Answer-bank match -> escalate, missing_fields contains the label."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        recall = _make_stub_recall({})  # empty bank
+        plugin = self._make_plugin(store, recall_fn=recall)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "awaiting-input"
+        assert "Work Authorization" in data["missing_fields"]
+
+    @pytest.mark.asyncio
+    async def test_semantic_match_fills_field(self):
+        """Fuzzy/semantic stub matches the label and fills the field."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        # Stub treats lowercase+stripped label as the semantic key
+        recall = _make_fuzzy_recall({"work authorization": "US Citizen"})
+        plugin = self._make_plugin(store, recall_fn=recall)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "ready_to_submit"
+
+    @pytest.mark.asyncio
+    async def test_store_then_recall_end_to_end(self):
+        """Store answer via jobs_answer_field then re-apply — field filled via recall."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+
+        # Shared in-memory bank backing both indexer and recall
+        live_bank: dict = {}
+
+        async def indexer(pid, q, a):
+            live_bank[q] = a
+
+        async def recall(pid, q):
+            return live_bank.get(q)
+
+        plugin = self._make_plugin(store, recall_fn=recall)
+        plugin._index_answer_fn = indexer
+
+        # First apply: Work Authorization missing -> awaiting-input
+        result1 = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result1.is_error
+        data1 = json.loads(result1.content)
+        assert data1["status"] == "awaiting-input"
+
+        # User provides the answer
+        import plugins.job_search as jm
+        jm._pending_application = None
+        result2 = await plugin.call_tool(
+            "jobs_answer_field", {"question": "Work Authorization", "answer": "US Citizen"}
+        )
+        assert not result2.is_error
+
+        # Second apply: recall fills the field -> ready_to_submit
+        result3 = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert not result3.is_error
+        data3 = json.loads(result3.content)
+        assert data3["status"] == "ready_to_submit"
+
+    @pytest.mark.asyncio
+    async def test_filled_field_value_present_in_response(self):
+        """The recalled answer appears in the filled fields returned by apply_start."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        recall = _make_stub_recall({"Work Authorization": "US Citizen"})
+        plugin = self._make_plugin(store, recall_fn=recall)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert not result.is_error
+        data = json.loads(result.content)
+        work_auth_field = next(
+            (f for f in data["fields"] if f.get("label") == "Work Authorization"), None
+        )
+        assert work_auth_field is not None
+        assert work_auth_field["value"] == "US Citizen"
