@@ -18,7 +18,7 @@ top-down; the order already satisfies every `Blocked by`. After landing a slice,
 `#N` + `Model:` as the active slice here, and set `Status:` (`ready` while slices
 remain; `done` after S7 lands — S8 is optional and left for a human to trigger).
 
-Active slice: **S5 — #338**
+Active slice: **S6 — #339**
 
 Model: sonnet
 Status: ready
@@ -34,7 +34,7 @@ human; `done` = stop. Stop gracefully any time with `scripts/stop-jobs.ps1`.)
 2. [x] S2 — #335 Resume ingestion -> Applicant dossier — Model: sonnet
 3. [x] S3 — #336 Shortlist: fit-score + user approval — Model: sonnet
 4. [x] S4 — #337 Apply to ONE clean ATS end-to-end (spine), review-before-submit — Model: sonnet
-5. [ ] S5 — #338 Answer bank + ChromaDB semantic matching + notify-and-learn — Model: sonnet
+5. [x] S5 — #338 Answer bank + ChromaDB semantic matching + notify-and-learn — Model: sonnet
 6. [ ] S6 — #339 Account-creation + email verification — Model: sonnet
 7. [ ] S7 — #340 Gated auto-submit (ADR-0009) — supervised ramp + zero-guessed — Model: sonnet
 8. [ ] S8 — #341 (OPTIONAL — human triggers) Undrivable-ATS bail-and-notify — Model: haiku
@@ -45,6 +45,7 @@ human; `done` = stop. Stop gracefully any time with `scripts/stop-jobs.ps1`.)
 - S2 #335 — PR #343 (feat(jobs): S2 — Resume ingestion -> Applicant dossier)
 - S3 #336 — PR #344 (feat(jobs): S3 — Shortlist: fit-score Job postings + user approval)
 - S4 #337 — PR #345 (feat(jobs): S4 — Apply spine: Greenhouse/Lever guest-apply, review-before-submit)
+- S5 #338 — PR #346 (feat(jobs): S5 — Answer bank + ChromaDB semantic field-matching + notify-and-learn)
 
 ---
 
