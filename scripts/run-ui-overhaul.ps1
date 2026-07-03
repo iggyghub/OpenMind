@@ -64,15 +64,20 @@ try {
     # Parse "...resets 7:20pm..." into seconds-from-now until that clock time.
     function Get-SecondsUntilReset($text) {
         $buffer = 120
-        $capSec = 19800
+        $capSec = 28800   # 8h ceiling: enough to cover an overnight reset in one wait
         $default = 18900
         if ($text -match 'resets?\s+(\d{1,2}(:\d{2})?\s*[ap]\.?m\.?)') {
             $clock = $matches[1] -replace '\.', ''
             try {
                 $target = [DateTime]::Parse($clock)
                 $now = Get-Date
-                if ($target -le $now.AddMinutes(1)) { return 300 }
+                # The reset clock time is the NEXT occurrence. If it has already
+                # passed today (e.g. "2am" seen at 10pm), roll it to tomorrow --
+                # otherwise the target is in the past and we'd thrash on the 300s
+                # floor, re-hitting the limit every 5 min instead of waiting.
+                if ($target -le $now) { $target = $target.AddDays(1) }
                 $sec = [int]($target - $now).TotalSeconds + $buffer
+                if ($sec -lt 300) { return 300 }
                 if ($sec -gt $capSec) { return $capSec }
                 return $sec
             } catch { return $default }
