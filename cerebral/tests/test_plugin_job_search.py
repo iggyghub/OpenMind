@@ -90,7 +90,8 @@ class TestPluginMeta:
         assert names == {
             "jobs_fetch_postings", "jobs_store_resume", "jobs_score_shortlist",
             "jobs_set_approval", "jobs_apply_start", "jobs_apply_submit",
-            "jobs_answer_field",  # S5
+            "jobs_answer_field",    # S5
+            "jobs_set_auto_submit", # S7
         }
 
     def test_required_capabilities(self):
@@ -1188,7 +1189,8 @@ class TestPluginMetaS4:
             "jobs_fetch_postings", "jobs_store_resume",
             "jobs_score_shortlist", "jobs_set_approval",
             "jobs_apply_start", "jobs_apply_submit",
-            "jobs_answer_field",  # S5
+            "jobs_answer_field",    # S5
+            "jobs_set_auto_submit", # S7
         }
 
     def test_required_capabilities_includes_data_write(self):
@@ -1999,14 +2001,15 @@ class TestPluginMetaS6:
         from plugins.job_search import REQUIRED_CAPABILITIES
         assert "secrets_read" in REQUIRED_CAPABILITIES
 
-    def test_tool_list_unchanged_by_s6(self):
-        """S6 adds no new tools — the existing tool set is sufficient."""
+    def test_tool_list_has_expected_tools(self):
+        """S6 adds no new tools; S7 adds jobs_set_auto_submit."""
         from plugins.job_search import JobSearchPlugin
         names = {t.name for t in JobSearchPlugin().list_tools()}
         assert names == {
             "jobs_fetch_postings", "jobs_store_resume", "jobs_score_shortlist",
             "jobs_set_approval", "jobs_apply_start", "jobs_apply_submit",
             "jobs_answer_field",
+            "jobs_set_auto_submit",  # S7 #340
         }
 
     def test_create_factory_accepts_s6_seams(self):
@@ -2016,3 +2019,483 @@ class TestPluginMetaS6:
             get_jobs_email_fn=lambda pid: "jobs@example.com",
         )
         assert isinstance(p, JobSearchPlugin)
+
+
+# ── S7 helpers ────────────────────────────────────────────────────────────────
+
+def _pending_app_clean():
+    """Pending application with all Known fields — passes zero-guessed check."""
+    return {
+        "url": _ATS_URL_1,
+        "ats_type": "greenhouse",
+        "fields": [
+            {"label": "First Name", "value": "John",               "required": True,  "is_known": True},
+            {"label": "Email",      "value": "john@example.com",   "required": True,  "is_known": True},
+        ],
+        "has_new_eligibility": False,
+    }
+
+
+def _pending_app_guessed():
+    """Pending application with one guessed (is_known=False) field."""
+    return {
+        "url": _ATS_URL_1,
+        "ats_type": "greenhouse",
+        "fields": [
+            {"label": "First Name",     "value": "John",         "required": True, "is_known": True},
+            {"label": "Desired Salary", "value": "$80,000",      "required": True, "is_known": False},
+        ],
+        "has_new_eligibility": False,
+    }
+
+
+def _pending_app_new_eligibility():
+    """Pending application with a newly-encountered eligibility question."""
+    return {
+        "url": _ATS_URL_1,
+        "ats_type": "greenhouse",
+        "fields": [
+            {"label": "First Name",         "value": "John",  "required": True, "is_known": True},
+            {"label": "Work Authorization", "value": "Yes",   "required": True, "is_known": False},
+        ],
+        "has_new_eligibility": True,
+    }
+
+
+def _store_with_ramp_complete(auto_submit_enabled=True, reviewed_count=5, threshold=5):
+    store = _in_memory_store()
+    store.set_auto_submit(_PROFILE_ID, auto_submit_enabled)
+    if reviewed_count > 0:
+        for _ in range(reviewed_count):
+            store.increment_reviewed_count(_PROFILE_ID)
+    return store
+
+
+def _make_auto_submit_plugin(store, *, auto_submit=True):
+    """Plugin wired for auto-submit gate tests."""
+    import plugins.job_search as jm
+    jm._active_profile_id = _PROFILE_ID
+    jm._pending_resume_path = _RESUME_PATH
+    jm._pending_application = None
+    jm._recall_fn = None
+    from plugins.job_search import JobSearchPlugin
+    return JobSearchPlugin(
+        store=store,
+        extract_fn=_stub_extract,
+        score_fn=_stub_scorer,
+        apply_driver_fn=_stub_apply_driver,
+        apply_submit_fn=_stub_apply_submit,
+    )
+
+
+# ── Cycle 22 — job_search_settings store ─────────────────────────────────────
+
+class TestJobSettingsStore:
+    def test_get_settings_returns_defaults_for_new_profile(self):
+        store = _in_memory_store()
+        s = store.get_job_settings(_PROFILE_ID)
+        assert s["auto_submit_enabled"] == 0
+        assert s["reviewed_count"] == 0
+        assert s["ramp_threshold"] == 5
+
+    def test_set_auto_submit_true(self):
+        store = _in_memory_store()
+        store.set_auto_submit(_PROFILE_ID, True)
+        s = store.get_job_settings(_PROFILE_ID)
+        assert s["auto_submit_enabled"] == 1
+
+    def test_set_auto_submit_false(self):
+        store = _in_memory_store()
+        store.set_auto_submit(_PROFILE_ID, True)
+        store.set_auto_submit(_PROFILE_ID, False)
+        s = store.get_job_settings(_PROFILE_ID)
+        assert s["auto_submit_enabled"] == 0
+
+    def test_increment_reviewed_count(self):
+        store = _in_memory_store()
+        n = store.increment_reviewed_count(_PROFILE_ID)
+        assert n == 1
+        n2 = store.increment_reviewed_count(_PROFILE_ID)
+        assert n2 == 2
+
+    def test_increment_reviewed_count_from_zero(self):
+        store = _in_memory_store()
+        store.increment_reviewed_count(_PROFILE_ID)
+        store.increment_reviewed_count(_PROFILE_ID)
+        s = store.get_job_settings(_PROFILE_ID)
+        assert s["reviewed_count"] == 2
+
+    def test_different_profiles_isolated(self):
+        store = _in_memory_store()
+        store.set_auto_submit(1, True)
+        store.increment_reviewed_count(1)
+        assert store.get_job_settings(2)["auto_submit_enabled"] == 0
+        assert store.get_job_settings(2)["reviewed_count"] == 0
+
+
+# ── Cycle 23 — check_auto_submit_gate pure function ──────────────────────────
+
+class TestAutoSubmitGate:
+    """Gate logic: 5 branches — opted-out, pre-ramp, guessed-field,
+    new-eligibility, clean-auto. NO real submissions."""
+
+    def test_opted_out_fails(self):
+        from plugins.job_search import check_auto_submit_gate
+        store = _in_memory_store()
+        # auto_submit_enabled defaults to False
+        ok, reason = check_auto_submit_gate(_PROFILE_ID, store, _pending_app_clean())
+        assert not ok
+        assert "opted" in reason
+
+    def test_pre_ramp_fails(self):
+        from plugins.job_search import check_auto_submit_gate
+        store = _in_memory_store()
+        store.set_auto_submit(_PROFILE_ID, True)
+        # reviewed_count = 0, threshold = 5 → ramp incomplete
+        ok, reason = check_auto_submit_gate(_PROFILE_ID, store, _pending_app_clean())
+        assert not ok
+        assert "ramp" in reason.lower() or "pre-ramp" in reason.lower()
+
+    def test_guessed_field_fails(self):
+        from plugins.job_search import check_auto_submit_gate
+        store = _store_with_ramp_complete()
+        ok, reason = check_auto_submit_gate(_PROFILE_ID, store, _pending_app_guessed())
+        assert not ok
+        assert "guessed" in reason.lower() or "salary" in reason.lower()
+
+    def test_new_eligibility_fails(self):
+        from plugins.job_search import check_auto_submit_gate
+        store = _store_with_ramp_complete()
+        ok, reason = check_auto_submit_gate(_PROFILE_ID, store, _pending_app_new_eligibility())
+        assert not ok
+        assert "eligibility" in reason.lower() or "work authorization" in reason.lower()
+
+    def test_clean_auto_passes(self):
+        from plugins.job_search import check_auto_submit_gate
+        store = _store_with_ramp_complete()
+        ok, reason = check_auto_submit_gate(_PROFILE_ID, store, _pending_app_clean())
+        assert ok
+        assert reason == "ok"
+
+    def test_eligibility_before_guessed_in_check_order(self):
+        """Eligibility check comes before guessed-field check per ADR-0009."""
+        from plugins.job_search import check_auto_submit_gate
+        store = _store_with_ramp_complete()
+        # Field is both eligibility AND not known — eligibility reason should appear
+        pending = {
+            "url": _ATS_URL_1,
+            "ats_type": "greenhouse",
+            "fields": [
+                {"label": "Work Authorization", "value": "Yes", "required": True, "is_known": False},
+            ],
+        }
+        ok, reason = check_auto_submit_gate(_PROFILE_ID, store, pending)
+        assert not ok
+        assert "eligibility" in reason.lower()
+
+    def test_partial_ramp_still_fails(self):
+        from plugins.job_search import check_auto_submit_gate
+        store = _in_memory_store()
+        store.set_auto_submit(_PROFILE_ID, True)
+        store.increment_reviewed_count(_PROFILE_ID)  # 1 / 5
+        ok, reason = check_auto_submit_gate(_PROFILE_ID, store, _pending_app_clean())
+        assert not ok
+
+    def test_exactly_at_threshold_passes(self):
+        from plugins.job_search import check_auto_submit_gate
+        store = _in_memory_store()
+        store.set_auto_submit(_PROFILE_ID, True)
+        for _ in range(5):
+            store.increment_reviewed_count(_PROFILE_ID)
+        ok, _ = check_auto_submit_gate(_PROFILE_ID, store, _pending_app_clean())
+        assert ok
+
+    def test_eligibility_known_does_not_fail(self):
+        """Eligibility question filled from bank (is_known=True) does NOT fail gate."""
+        from plugins.job_search import check_auto_submit_gate
+        store = _store_with_ramp_complete()
+        pending = {
+            "url": _ATS_URL_1,
+            "ats_type": "greenhouse",
+            "fields": [
+                {"label": "Work Authorization", "value": "Yes", "required": True, "is_known": True},
+            ],
+        }
+        ok, _ = check_auto_submit_gate(_PROFILE_ID, store, pending)
+        assert ok
+
+
+# ── Cycle 24 — is_eligibility_question ───────────────────────────────────────
+
+class TestIsEligibilityQuestion:
+    def test_work_authorization(self):
+        from plugins.job_search import is_eligibility_question
+        assert is_eligibility_question("Work Authorization")
+
+    def test_sponsorship(self):
+        from plugins.job_search import is_eligibility_question
+        assert is_eligibility_question("Will you require sponsorship?")
+
+    def test_salary(self):
+        from plugins.job_search import is_eligibility_question
+        assert is_eligibility_question("Desired Salary")
+
+    def test_relocation(self):
+        from plugins.job_search import is_eligibility_question
+        assert is_eligibility_question("Are you willing to relocate?")
+
+    def test_start_date(self):
+        from plugins.job_search import is_eligibility_question
+        assert is_eligibility_question("Earliest Start Date")
+
+    def test_non_eligibility(self):
+        from plugins.job_search import is_eligibility_question
+        assert not is_eligibility_question("First Name")
+        assert not is_eligibility_question("LinkedIn Profile URL")
+
+
+# ── Cycle 25 — jobs_set_auto_submit tool ─────────────────────────────────────
+
+class TestSetAutoSubmitTool:
+    def _make_plugin(self, store):
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        from plugins.job_search import JobSearchPlugin
+        return JobSearchPlugin(store=store)
+
+    @pytest.mark.asyncio
+    async def test_enable_auto_submit(self):
+        store = _in_memory_store()
+        plugin = self._make_plugin(store)
+        result = await plugin.call_tool("jobs_set_auto_submit", {"enabled": True})
+        assert not result.is_error
+        import json
+        data = json.loads(result.content)
+        assert data["auto_submit_enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_disable_auto_submit(self):
+        store = _in_memory_store()
+        store.set_auto_submit(_PROFILE_ID, True)
+        plugin = self._make_plugin(store)
+        result = await plugin.call_tool("jobs_set_auto_submit", {"enabled": False})
+        assert not result.is_error
+        import json
+        data = json.loads(result.content)
+        assert data["auto_submit_enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_profile_returns_error(self):
+        import plugins.job_search as jm
+        jm._active_profile_id = None
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=_in_memory_store())
+        result = await plugin.call_tool("jobs_set_auto_submit", {"enabled": True})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_no_store_returns_error(self):
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=None)
+        result = await plugin.call_tool("jobs_set_auto_submit", {"enabled": True})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_response_includes_ramp_info(self):
+        store = _in_memory_store()
+        store.increment_reviewed_count(_PROFILE_ID)
+        plugin = self._make_plugin(store)
+        result = await plugin.call_tool("jobs_set_auto_submit", {"enabled": True})
+        import json
+        data = json.loads(result.content)
+        assert data["reviewed_count"] == 1
+        assert data["ramp_threshold"] == 5
+
+
+# ── Cycle 26 — _apply_submit ramp tracking ───────────────────────────────────
+
+class TestApplySubmitRampTracking:
+    """S7: reviewed_count increments on modal-confirmed (gate-failed) submissions;
+    does NOT increment on auto-submit (gate-passed) submissions."""
+
+    def _seed_and_start(self, store):
+        """Seed a shortlisted posting, start the apply flow, return plugin."""
+        _seed_shortlisted(store)
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        jm._pending_resume_path = _RESUME_PATH
+        jm._pending_application = None
+        jm._recall_fn = None
+        from plugins.job_search import JobSearchPlugin
+        return JobSearchPlugin(
+            store=store,
+            extract_fn=_stub_extract,
+            score_fn=_stub_scorer,
+            apply_driver_fn=_stub_apply_driver,
+            apply_submit_fn=_stub_apply_submit,
+        )
+
+    @pytest.mark.asyncio
+    async def test_modal_path_increments_reviewed_count(self):
+        """Gate fails (pre-ramp) → modal path → reviewed_count incremented."""
+        store = _in_memory_store()
+        # auto_submit disabled → gate always fails → modal path
+        plugin = self._seed_and_start(store)
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        await plugin.call_tool("jobs_apply_submit", {})
+        s = store.get_job_settings(_PROFILE_ID)
+        assert s["reviewed_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_modal_path_accumulates_across_submissions(self):
+        """Each modal-confirmed submission increments the count."""
+        store = _in_memory_store()
+        plugin = self._seed_and_start(store)
+        # First apply cycle
+        _seed_shortlisted(store)
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        await plugin.call_tool("jobs_apply_submit", {})
+        # Second apply cycle (different URL)
+        store.upsert({"url": _ATS_URL_2, "title": "Job2", "company": "Corp2",
+                      "pay": "", "snapshot": "", "posted_date": ""})
+        store.set_status(_ATS_URL_2, "shortlisted")
+        store.upsert_application(_ATS_URL_2, _ATS_URL_2, "lever", "shortlisted", [])
+        import plugins.job_search as jm
+        jm._pending_application = None
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_2})
+        await plugin.call_tool("jobs_apply_submit", {})
+        s = store.get_job_settings(_PROFILE_ID)
+        assert s["reviewed_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_auto_submit_does_not_increment_reviewed_count(self):
+        """Gate passes (all conditions met) → auto-submit → count NOT incremented."""
+        store = _store_with_ramp_complete()
+        plugin = self._seed_and_start(store)
+        initial = store.get_job_settings(_PROFILE_ID)["reviewed_count"]
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        await plugin.call_tool("jobs_apply_submit", {})
+        final = store.get_job_settings(_PROFILE_ID)["reviewed_count"]
+        assert final == initial  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_submit_result_includes_auto_submitted_flag(self):
+        """Response body includes auto_submitted=True when gate passed."""
+        store = _store_with_ramp_complete()
+        plugin = self._seed_and_start(store)
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        result = await plugin.call_tool("jobs_apply_submit", {})
+        import json
+        data = json.loads(result.content)
+        assert data["auto_submitted"] is True
+
+    @pytest.mark.asyncio
+    async def test_modal_submit_result_has_auto_submitted_false(self):
+        """Response body includes auto_submitted=False when gate failed (modal path)."""
+        store = _in_memory_store()  # gate fails: opted-out
+        plugin = self._seed_and_start(store)
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        result = await plugin.call_tool("jobs_apply_submit", {})
+        import json
+        data = json.loads(result.content)
+        assert data["auto_submitted"] is False
+
+
+# ── Cycle 27 — ModalSurface auto_gate_fn (ADR-0009) ─────────────────────────
+
+class TestModalSurfaceAutoGate:
+    """Unit tests for the auto_gate_fn bypass in ModalSurface (ADR-0009 exception)."""
+
+    @pytest.mark.asyncio
+    async def test_auto_gate_approves_when_true(self):
+        """auto_gate_fn returning True → SILENT (auto-approve) without prompting."""
+        from cerebral.security.modal import ModalSurface
+        from cerebral.security.gate import Decision, Capability
+
+        prompt_called = []
+        async def _prompt(req):
+            prompt_called.append(req)
+            return "cancel"
+
+        surface = ModalSurface(
+            prompt_fn=_prompt,
+            auto_gate_fn=lambda tool, args: True,
+        )
+        result = await surface.request(Capability.EXTERNAL_DATA_WRITE, "jobs_apply_submit", {})
+        assert result is Decision.SILENT
+        assert prompt_called == []  # modal was NOT shown
+
+    @pytest.mark.asyncio
+    async def test_auto_gate_false_falls_through_to_modal(self):
+        """auto_gate_fn returning False → modal prompt is shown normally."""
+        from cerebral.security.modal import ModalSurface
+        from cerebral.security.gate import Decision, Capability
+
+        prompt_called = []
+        async def _prompt(req):
+            prompt_called.append(req)
+            return "accept"
+
+        surface = ModalSurface(
+            prompt_fn=_prompt,
+            has_subscriber_fn=lambda: True,
+            auto_gate_fn=lambda tool, args: False,
+        )
+        result = await surface.request(Capability.EXTERNAL_DATA_WRITE, "jobs_apply_submit", {})
+        assert result is Decision.SILENT
+        assert len(prompt_called) == 1  # modal WAS shown
+
+    @pytest.mark.asyncio
+    async def test_auto_gate_none_falls_through_to_modal(self):
+        """No auto_gate_fn → modal prompt shown as before."""
+        from cerebral.security.modal import ModalSurface
+        from cerebral.security.gate import Decision, Capability
+
+        prompt_called = []
+        async def _prompt(req):
+            prompt_called.append(req)
+            return "cancel"
+
+        surface = ModalSurface(prompt_fn=_prompt, has_subscriber_fn=lambda: True)
+        result = await surface.request(Capability.EXTERNAL_DATA_WRITE, "jobs_apply_submit", {})
+        assert result is Decision.DENY
+        assert len(prompt_called) == 1
+
+    def test_set_auto_gate_fn_setter(self):
+        """set_auto_gate_fn installs / updates the gate function."""
+        from cerebral.security.modal import ModalSurface
+
+        async def _dummy_prompt(req): return "cancel"
+        surface = ModalSurface(prompt_fn=_dummy_prompt)
+        assert surface._auto_gate_fn is None
+        surface.set_auto_gate_fn(lambda tool, args: True)
+        assert surface._auto_gate_fn is not None
+        surface.set_auto_gate_fn(None)
+        assert surface._auto_gate_fn is None
+
+
+# ── Cycle 28 — S7 meta ───────────────────────────────────────────────────────
+
+class TestPluginMetaS7:
+    def test_jobs_set_auto_submit_in_tool_list(self):
+        from plugins.job_search import JobSearchPlugin
+        names = {t.name for t in JobSearchPlugin().list_tools()}
+        assert "jobs_set_auto_submit" in names
+
+    def test_jobs_set_auto_submit_not_irreversible(self):
+        """Toggling auto-submit is reversible — no modal needed."""
+        from plugins.job_search import JobSearchPlugin
+        tool = next(t for t in JobSearchPlugin().list_tools() if t.name == "jobs_set_auto_submit")
+        assert not tool.irreversible
+
+    def test_jobs_apply_submit_still_irreversible(self):
+        """jobs_apply_submit retains irreversible=True; gate is the bypass, not removal."""
+        from plugins.job_search import JobSearchPlugin
+        tool = next(t for t in JobSearchPlugin().list_tools() if t.name == "jobs_apply_submit")
+        assert tool.irreversible
+
+    def test_eligibility_keywords_nonempty(self):
+        from plugins.job_search import ELIGIBILITY_KEYWORDS
+        assert len(ELIGIBILITY_KEYWORDS) > 5

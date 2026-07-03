@@ -67,7 +67,7 @@ from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
 from cerebral.harness_channels import HarnessChannelStore
-from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S5 #338 / S6 #339
+from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S5 #338 / S6 #339 / S7 #340
     JobSearchStore as _JobSearchStore,
     set_active_profile_id as _js_set_profile,
     set_pending_resume_path as _js_set_resume_path,
@@ -83,6 +83,7 @@ from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S5 #
     set_store_ats_password_fn as _js_set_store_ats_password_fn,  # S6 #339
     set_read_verify_link_fn as _js_set_read_verify_link_fn,    # S6 #339
     set_click_verify_link_fn as _js_set_click_verify_link_fn,  # S6 #339
+    check_auto_submit_gate as _js_check_auto_submit_gate,      # S7 #340
 )
 from cerebral.channel_inbox import ChannelInbox
 from cerebral.settings import SettingsStore as _SettingsStore
@@ -481,9 +482,29 @@ async def _modal_prompt(req: ModalRequest) -> str:
         _pending_modals.pop(req.request_id, None)
 
 
+def _job_apply_auto_gate(tool_name: str, args: object) -> bool:
+    """ADR-0009 exception: auto-approve jobs_apply_submit when all gate conditions hold.
+
+    Scoped strictly to job_apply_submit — no other irreversible tool is affected.
+    """
+    if tool_name != "jobs_apply_submit":
+        return False
+    import plugins.job_search as _js_mod
+    pending = _js_mod._pending_application
+    profile_id = _js_mod._active_profile_id
+    if pending is None or profile_id is None:
+        return False
+    try:
+        ok, _ = _js_check_auto_submit_gate(profile_id, _job_search_store, pending)
+        return ok
+    except Exception:
+        return False
+
+
 _modal_surface = ModalSurface(
     prompt_fn=_modal_prompt,
     has_subscriber_fn=_consent_has_subscriber,
+    auto_gate_fn=_job_apply_auto_gate,  # S7 #340: ADR-0009 tool-scoped exception
 )
 _orc.set_modal_surface(_modal_surface)
 
@@ -574,7 +595,7 @@ def _recipes_update_event() -> dict:
     }
 
 
-def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 #339
+def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 #339 / S7 #340
     postings = _job_search_store.list_postings()
     dossier = _job_search_store.get_dossier(_active_profile.id) if _active_profile else None
     shortlist = _job_search_store.list_shortlist()
@@ -585,6 +606,10 @@ def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 
     if _active_profile:
         cred = _get_credential_store().get_credential(_active_profile.id, _JOBS_EMAIL_PROVIDER)
         jobs_email_configured = bool(cred and cred.get("email"))
+    # S7 #340: per-profile auto-submit settings for the Job Search panel toggle.
+    job_settings = (
+        _job_search_store.get_job_settings(_active_profile.id) if _active_profile else None
+    )
     return {
         "type": "jobs_update",
         "data": {
@@ -593,6 +618,7 @@ def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 
             "shortlist": shortlist,
             "applications": applications,
             "jobs_email_configured": jobs_email_configured,  # S6: link to Credentials panel
+            "job_settings": job_settings,  # S7: auto-submit toggle + ramp progress
         },
     }
 
@@ -3202,6 +3228,16 @@ async def _handle_message(msg: dict) -> None:
             await _orc.call_tool("jobs_apply_submit", {})
         except Exception as exc:
             logger.warning("[cerebral] jobs_apply_submit failed: %s", exc)
+        await _broadcast(_jobs_update_event())
+
+    elif t == "jobs_set_auto_submit":  # S7 #340 — toggle auto-submit opt-in (ADR-0009)
+        d = msg.get("data", {})
+        try:
+            await _orc.call_tool("jobs_set_auto_submit", {
+                "enabled": bool(d.get("enabled")),
+            })
+        except Exception as exc:
+            logger.warning("[cerebral] jobs_set_auto_submit failed: %s", exc)
         await _broadcast(_jobs_update_event())
 
     elif t == "save_recipe":

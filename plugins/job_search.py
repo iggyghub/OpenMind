@@ -1,9 +1,10 @@
 """
 Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3) + #337 (S4) + #338 (S5)
-                         + #339 (S6).
+                         + #339 (S6) + #340 (S7).
 
 Tools: jobs_fetch_postings, jobs_store_resume, jobs_score_shortlist,
-       jobs_set_approval, jobs_apply_start, jobs_apply_submit, jobs_answer_field.
+       jobs_set_approval, jobs_apply_start, jobs_apply_submit, jobs_answer_field,
+       jobs_set_auto_submit.
 
 S1: Reads Rat Race Rebellion job board logged-out via OpenClaw navigate/Readability.
     Parses Job postings and upserts into SQLite job_postings table.
@@ -36,6 +37,14 @@ S6 (Account-creation + email verification): When apply_driver_fn signals
     (click_verify_link_fn). Control then returns to the apply flow logged in.
     ATS accounts are persisted in SQLite ats_accounts table. All seams are injectable
     for fake-only testing; no real account creation or email in tests.
+
+S7 (Gated auto-submit — ADR-0009 exception): Supervised ramp + opt-in auto-submit.
+    Per-profile reviewed_count tracks modal-confirmed submissions (the ramp). Once
+    opted-in AND ramp complete AND zero-guessed AND no new eligibility question,
+    jobs_apply_submit bypasses the ADR-0005 modal (auto-approves via ModalSurface
+    auto_gate_fn). Every other case routes through the modal as before. Eligibility/
+    knockout questions (work auth, sponsorship, relocation, start date, salary) always
+    escalate on first encounter. Settings in SQLite job_search_settings table.
 
 All network I/O is injected via navigate_fn.
 All DB I/O is injectable via a JobSearchStore seam.
@@ -84,6 +93,55 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
 SUPPORTED_ATS_TYPES: frozenset[str] = frozenset({"greenhouse", "lever"})
 
 _DB_PATH = Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db"
+
+# S7 #340 — Eligibility/knockout question keywords (ADR-0009).
+# Any ATS field whose label matches one of these always escalates on first encounter
+# (i.e., when is_known=False). Once in the Answer bank (is_known=True) it flows normally.
+ELIGIBILITY_KEYWORDS: frozenset[str] = frozenset({
+    "work authorization", "authorized to work", "legally authorized",
+    "visa", "sponsorship", "require sponsorship",
+    "work in the us", "eligible to work",
+    "relocation", "relocate", "willing to relocate",
+    "start date", "available to start", "earliest start",
+    "salary", "salary expectation", "desired salary", "pay expectation",
+    "compensation", "expected compensation",
+})
+
+
+def is_eligibility_question(label: str) -> bool:
+    """True if the field label matches an eligibility/knockout keyword (ADR-0009)."""
+    lower = label.lower()
+    return any(kw in lower for kw in ELIGIBILITY_KEYWORDS)
+
+
+def check_auto_submit_gate(
+    profile_id: int,
+    store: "JobSearchStore",
+    pending_app: dict,
+) -> tuple[bool, str]:
+    """Return (can_auto_submit, reason).
+
+    can_auto_submit is True ONLY when all ADR-0009 gate conditions hold:
+    1. auto_submit_enabled for this profile (opt-in)
+    2. reviewed_count >= ramp_threshold (supervised ramp complete)
+    3. every filled field is a Known value (is_known=True or not set)
+    4. no eligibility/knockout question was newly encountered (is_known=False)
+    """
+    settings = store.get_job_settings(profile_id)
+    if not settings.get("auto_submit_enabled"):
+        return False, "opted-out"
+    if settings["reviewed_count"] < settings["ramp_threshold"]:
+        return False, f"pre-ramp ({settings['reviewed_count']}/{settings['ramp_threshold']})"
+    fields = pending_app.get("fields", [])
+    # Eligibility check first — ADR-0009: always escalate on first encounter
+    for f in fields:
+        if is_eligibility_question(f.get("label", "")) and not f.get("is_known", True):
+            return False, f"new eligibility: {f.get('label', '?')}"
+    # Zero-guessed: every field with a value must be a Known value
+    for f in fields:
+        if f.get("value") and not f.get("is_known", True):
+            return False, f"guessed field: {f.get('label', '?')}"
+    return True, "ok"
 
 
 # ── ATS detection ─────────────────────────────────────────────────────────────
@@ -310,6 +368,18 @@ class JobSearchStore:
                 status       TEXT    NOT NULL DEFAULT 'created',
                 created_at   TEXT    NOT NULL,
                 UNIQUE(profile_id, ats_provider)
+            )
+        """)
+        # S7 #340 — Per-profile auto-submit settings (ADR-0009 gated exception).
+        # auto_submit_enabled: user opted in (default OFF).
+        # reviewed_count: number of modal-confirmed submissions (the supervised ramp).
+        # ramp_threshold: how many reviews before auto-submit is allowed (default 5).
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS job_search_settings (
+                profile_id          INTEGER PRIMARY KEY,
+                auto_submit_enabled INTEGER NOT NULL DEFAULT 0,
+                reviewed_count      INTEGER NOT NULL DEFAULT 0,
+                ramp_threshold      INTEGER NOT NULL DEFAULT 5
             )
         """)
         self._con.commit()
@@ -550,6 +620,42 @@ class JobSearchStore:
             (profile_id,),
         )
         return [dict(row) for row in cur.fetchall()]
+
+    # ── S7 #340 — Auto-submit settings ────────────────────────────────────
+
+    def get_job_settings(self, profile_id: int) -> dict:
+        """Return auto-submit settings for profile_id (defaults if row absent)."""
+        row = self._con.execute(
+            "SELECT * FROM job_search_settings WHERE profile_id = ?", (profile_id,)
+        ).fetchone()
+        if row:
+            return dict(row)
+        return {
+            "profile_id": profile_id,
+            "auto_submit_enabled": 0,
+            "reviewed_count": 0,
+            "ramp_threshold": 5,
+        }
+
+    def set_auto_submit(self, profile_id: int, enabled: bool) -> None:
+        self._con.execute("""
+            INSERT INTO job_search_settings (profile_id, auto_submit_enabled)
+            VALUES (?, ?)
+            ON CONFLICT(profile_id) DO UPDATE SET auto_submit_enabled = excluded.auto_submit_enabled
+        """, (profile_id, int(enabled)))
+        self._con.commit()
+
+    def increment_reviewed_count(self, profile_id: int) -> int:
+        """Increment reviewed_count for profile, returning the new value."""
+        self._con.execute("""
+            INSERT INTO job_search_settings (profile_id, reviewed_count)
+            VALUES (?, 1)
+            ON CONFLICT(profile_id) DO UPDATE SET reviewed_count = reviewed_count + 1
+        """, (profile_id,))
+        self._con.commit()
+        return self._con.execute(
+            "SELECT reviewed_count FROM job_search_settings WHERE profile_id = ?", (profile_id,)
+        ).fetchone()[0]
 
 
 # ── Module-level seams ────────────────────────────────────────────────────────
@@ -877,6 +983,27 @@ class JobSearchPlugin:
                     "required": ["question", "answer"],
                 },
             ),
+            Tool(
+                name="jobs_set_auto_submit",
+                description=(
+                    "Enable or disable auto-submit for the active profile (ADR-0009). "
+                    "Auto-submit allows jobs_apply_submit to bypass the irreversible modal "
+                    "ONLY when: opted-in AND supervised ramp complete AND zero-guessed AND "
+                    "no new eligibility question. Default is OFF (review-before-submit). "
+                    "Call this when the user explicitly asks to enable or disable auto-submit."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "True to enable auto-submit, false to disable.",
+                        },
+                    },
+                    "required": ["enabled"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -894,6 +1021,8 @@ class JobSearchPlugin:
             return await self._apply_submit()
         if tool_name == "jobs_answer_field":
             return await self._answer_field(args.get("question", ""), args.get("answer", ""))
+        if tool_name == "jobs_set_auto_submit":
+            return await self._set_auto_submit(bool(args.get("enabled")))
         return ToolResult(content=f"Unknown tool: {tool_name!r}", is_error=True)
 
     async def _score_shortlist(self) -> ToolResult:
@@ -1032,7 +1161,11 @@ class JobSearchPlugin:
                 )
 
         # Copy field dicts so we can mutate values without touching driver-stub constants.
+        # S7: is_known defaults to True for dossier-filled fields; set to False for guesses.
         fields = [dict(f) for f in draft.get("fields", [])]
+        for f in fields:
+            if "is_known" not in f:
+                f["is_known"] = bool(f.get("value"))  # driver-filled = treat as known
 
         # S5 #338: try Answer bank semantic recall for required fields the dossier didn't fill.
         recall = self._recall_fn or _recall_fn
@@ -1044,7 +1177,8 @@ class JobSearchPlugin:
                         if asyncio.iscoroutine(recalled):
                             recalled = await recalled
                         if recalled is not None:
-                            f["value"] = recalled  # Known value from Answer bank
+                            f["value"] = recalled   # Known value from Answer bank
+                            f["is_known"] = True    # S7: explicitly Known (from bank)
                     except Exception as exc:
                         logger.warning(
                             "[job_search] recall failed for %r: %s", f.get("label"), exc
@@ -1066,12 +1200,19 @@ class JobSearchPlugin:
                 is_error=True,
             )
 
+        # S7 #340: detect newly-encountered eligibility questions (is_known=False).
+        has_new_eligibility = any(
+            is_eligibility_question(f.get("label", "")) and not f.get("is_known", True)
+            for f in fields
+        )
+
         # Form is filled (by the driver side-effect); store pending for submit
         _pending_application = {
             "url": url,
             "ats_type": ats_type,
             "fields": fields,
             "submit_selector": draft.get("submit_selector", 'button[type="submit"]'),
+            "has_new_eligibility": has_new_eligibility,  # S7: gate condition 4
         }
         store.upsert_application(
             url=url, posting_url=url, ats_type=ats_type,
@@ -1184,8 +1325,30 @@ class JobSearchPlugin:
             store.upsert_ats_account(profile_id, ats_provider, jobs_email, "verified")
         return True
 
+    async def _set_auto_submit(self, enabled: bool) -> ToolResult:
+        """S7 #340 — toggle auto-submit opt-in for the active profile (ADR-0009)."""
+        store = self._store or _store
+        if store is None:
+            return ToolResult(content="Job search store not initialised", is_error=True)
+        profile_id = _active_profile_id
+        if profile_id is None:
+            return ToolResult(content="No active profile", is_error=True)
+        store.set_auto_submit(profile_id, enabled)
+        settings = store.get_job_settings(profile_id)
+        return ToolResult(content=json.dumps({
+            "status": "ok",
+            "auto_submit_enabled": bool(settings["auto_submit_enabled"]),
+            "reviewed_count": settings["reviewed_count"],
+            "ramp_threshold": settings["ramp_threshold"],
+        }))
+
     async def _apply_submit(self) -> ToolResult:
-        """S4 #337 — submit the pending application (irreversible=True, ADR-0009)."""
+        """S4 #337 / S7 #340 — submit the pending application (irreversible=True, ADR-0009).
+
+        S7: When the auto-submit gate passes, the ModalSurface auto-approves and this
+        method runs unattended. When the gate fails, the modal was shown to the user
+        (supervised ramp), so increment reviewed_count to track ramp progress.
+        """
         global _pending_application
         import asyncio
 
@@ -1204,6 +1367,17 @@ class JobSearchPlugin:
         if submitter is None:
             return ToolResult(content="Apply submit action not configured", is_error=True)
 
+        profile_id = _active_profile_id
+        # S7 #340: check gate to determine whether this was a modal-confirmed or auto-submit.
+        # Gate failing means the modal WAS shown (supervised ramp path) → increment count.
+        # Gate passing means the modal was bypassed (auto-submit path) → don't increment.
+        auto_gate_passed = False
+        if profile_id is not None:
+            try:
+                auto_gate_passed, _ = check_auto_submit_gate(profile_id, store, pending)
+            except Exception:
+                auto_gate_passed = False
+
         url = pending["url"]
         try:
             result = submitter()
@@ -1217,14 +1391,22 @@ class JobSearchPlugin:
 
         submitted_at = datetime.now(timezone.utc).isoformat()
         store.set_application_status(url, "submitted", submitted_at=submitted_at)
+
+        # S7: increment reviewed_count when modal was shown (gate failed = modal path).
+        if profile_id is not None and not auto_gate_passed:
+            store.increment_reviewed_count(profile_id)
+
         _pending_application = None
 
         apps = store.list_applications()
+        settings = store.get_job_settings(profile_id) if profile_id is not None else {}
         return ToolResult(content=json.dumps({
             "status": "submitted",
             "url": url,
             "submitted_at": submitted_at,
+            "auto_submitted": auto_gate_passed,
             "applications": apps,
+            "job_settings": settings,
         }))
 
     async def _set_approval(self, url: str, approved: bool) -> ToolResult:
