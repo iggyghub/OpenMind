@@ -1,15 +1,18 @@
 """
-Job Search MCP plugin — Issue #334 (S1).
+Job Search MCP plugin — Issues #334 (S1) + #335 (S2).
 
-Tools: jobs_fetch_postings.
+Tools: jobs_fetch_postings, jobs_store_resume.
 
-Reads the Rat Race Rebellion job board (ratracerebellion.com/job-postings)
-logged-out via OpenClaw's navigate/Readability path. Parses Job postings
-(title, company, pay, snapshot, date, outbound URL) and upserts them into
-a new SQLite table (job_postings). Dedup key is the outbound ATS URL.
+S1: Reads Rat Race Rebellion job board logged-out via OpenClaw navigate/Readability.
+    Parses Job postings and upserts into SQLite job_postings table.
 
-All network I/O is injected via navigate_fn for testing.
+S2: Accepts a resume PDF text + path, persists the Resume artifact path per-profile,
+    extracts structured Applicant dossier fields via injectable extract_fn (LLM in
+    prod, stub in tests), and upserts into SQLite resume_artifacts + applicant_dossier.
+
+All network I/O is injected via navigate_fn.
 All DB I/O is injectable via a JobSearchStore seam.
+LLM extraction is injectable via set_extract_fn.
 """
 import json
 import logging
@@ -18,7 +21,7 @@ import sqlite3
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
 
@@ -28,13 +31,14 @@ PLUGIN_NAME = "job_search"
 RRR_URL = "https://ratracerebellion.com/job-postings"
 OPENCLAW_BASE = "http://localhost:3000"
 
-# ADR-0005 / Issue #334 — jobs_fetch_postings fetches a public web page via
-# OpenClaw's navigate path (network_egress_cloud + external_data_read) and
-# persists results to SQLite (fs_write).
+# ADR-0005 / Issue #334 — jobs_fetch_postings: network_egress_cloud + external_data_read + fs_write.
+# Issue #335 — jobs_store_resume: fs_read (PDF artifact) + fs_write (dossier).
+# network_egress_cloud covers cloud-LLM extraction; llm_call is not in the 16-class vocabulary.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
     "external_data_read",
     "network_egress_cloud",
     "fs_write",
+    "fs_read",
 })
 
 _DB_PATH = Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db"
@@ -173,6 +177,34 @@ class JobSearchStore:
                 fetched_at  TEXT    NOT NULL
             )
         """)
+        # S2 #335 — Resume artifact: one PDF path per profile (UNIQUE on profile_id).
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS resume_artifacts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id  INTEGER UNIQUE NOT NULL,
+                pdf_path    TEXT    NOT NULL DEFAULT '',
+                updated_at  TEXT    NOT NULL
+            )
+        """)
+        # S2 #335 — Applicant dossier: structured fields extracted from Resume artifact.
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS applicant_dossier (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id         INTEGER UNIQUE NOT NULL,
+                name               TEXT NOT NULL DEFAULT '',
+                email              TEXT NOT NULL DEFAULT '',
+                phone              TEXT NOT NULL DEFAULT '',
+                location           TEXT NOT NULL DEFAULT '',
+                linkedin           TEXT NOT NULL DEFAULT '',
+                github             TEXT NOT NULL DEFAULT '',
+                website            TEXT NOT NULL DEFAULT '',
+                work_history_json  TEXT NOT NULL DEFAULT '[]',
+                education_json     TEXT NOT NULL DEFAULT '[]',
+                skills_json        TEXT NOT NULL DEFAULT '[]',
+                raw_text           TEXT NOT NULL DEFAULT '',
+                updated_at         TEXT NOT NULL
+            )
+        """)
         self._con.commit()
 
     def upsert(self, posting: dict) -> None:
@@ -200,11 +232,86 @@ class JobSearchStore:
     def count(self) -> int:
         return self._con.execute("SELECT COUNT(*) FROM job_postings").fetchone()[0]
 
+    # ── S2 #335 — Resume artifact ──────────────────────────────────────────
+
+    def upsert_resume_artifact(self, profile_id: int, pdf_path: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._con.execute("""
+            INSERT INTO resume_artifacts (profile_id, pdf_path, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(profile_id) DO UPDATE SET
+                pdf_path   = excluded.pdf_path,
+                updated_at = excluded.updated_at
+        """, (profile_id, pdf_path, now))
+        self._con.commit()
+
+    def get_resume_artifact(self, profile_id: int) -> dict | None:
+        row = self._con.execute(
+            "SELECT * FROM resume_artifacts WHERE profile_id = ?", (profile_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    # ── S2 #335 — Applicant dossier ────────────────────────────────────────
+
+    def upsert_dossier(self, profile_id: int, fields: dict) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._con.execute("""
+            INSERT INTO applicant_dossier
+                (profile_id, name, email, phone, location, linkedin, github, website,
+                 work_history_json, education_json, skills_json, raw_text, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id) DO UPDATE SET
+                name               = excluded.name,
+                email              = excluded.email,
+                phone              = excluded.phone,
+                location           = excluded.location,
+                linkedin           = excluded.linkedin,
+                github             = excluded.github,
+                website            = excluded.website,
+                work_history_json  = excluded.work_history_json,
+                education_json     = excluded.education_json,
+                skills_json        = excluded.skills_json,
+                raw_text           = excluded.raw_text,
+                updated_at         = excluded.updated_at
+        """, (
+            profile_id,
+            fields.get("name", ""),
+            fields.get("email", ""),
+            fields.get("phone", ""),
+            fields.get("location", ""),
+            fields.get("linkedin", ""),
+            fields.get("github", ""),
+            fields.get("website", ""),
+            json.dumps(fields.get("work_history", [])),
+            json.dumps(fields.get("education", [])),
+            json.dumps(fields.get("skills", [])),
+            fields.get("raw_text", ""),
+            now,
+        ))
+        self._con.commit()
+
+    def get_dossier(self, profile_id: int) -> dict | None:
+        row = self._con.execute(
+            "SELECT * FROM applicant_dossier WHERE profile_id = ?", (profile_id,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        for key in ("work_history_json", "education_json", "skills_json"):
+            try:
+                d[key] = json.loads(d[key])
+            except (json.JSONDecodeError, TypeError):
+                d[key] = []
+        return d
+
 
 # ── Module-level seams ────────────────────────────────────────────────────────
 
 _navigate_fn: Callable[[str], Awaitable[str]] | None = None
 _store: JobSearchStore | None = None
+_active_profile_id: int | None = None
+_pending_resume_path: str = ""
+_extract_fn: Callable[[str], Any] | None = None  # sync or async (str) -> dict
 
 
 def set_navigate_fn(fn: Callable[[str], Awaitable[str]]) -> None:
@@ -215,6 +322,23 @@ def set_navigate_fn(fn: Callable[[str], Awaitable[str]]) -> None:
 def set_store(store: "JobSearchStore") -> None:
     global _store
     _store = store
+
+
+def set_active_profile_id(profile_id: int | None) -> None:
+    global _active_profile_id
+    _active_profile_id = profile_id
+
+
+def set_pending_resume_path(path: str) -> None:
+    """Called by Cerebral when a PDF attachment is uploaded so the tool knows where it was stored."""
+    global _pending_resume_path
+    _pending_resume_path = path or ""
+
+
+def set_extract_fn(fn: Callable[[str], Any]) -> None:
+    """Inject the LLM extractor (sync or async fn(text) -> dict)."""
+    global _extract_fn
+    _extract_fn = fn
 
 
 # ── Default navigate fn (calls OpenClaw) ──────────────────────────────────────
@@ -249,9 +373,11 @@ class JobSearchPlugin:
         self,
         navigate_fn: Callable[[str], Awaitable[str]] | None = None,
         store: JobSearchStore | None = None,
+        extract_fn: Callable[[str], Any] | None = None,
     ) -> None:
         self._navigate = navigate_fn or _default_navigate
         self._store = store
+        self._extract_fn = extract_fn  # overrides module-level _extract_fn when set
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -265,12 +391,73 @@ class JobSearchPlugin:
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="jobs_store_resume",
+                description=(
+                    "Store the user's resume PDF as their Resume artifact and parse it into "
+                    "a structured Applicant dossier (name, contact, work history, education, "
+                    "links). Call this when the user says 'store this as my resume' or "
+                    "similar upload intent. Pass the full extracted text from the PDF."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "pdf_text": {
+                            "type": "string",
+                            "description": "The full text extracted from the uploaded resume PDF.",
+                        },
+                    },
+                    "required": ["pdf_text"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         if tool_name == "jobs_fetch_postings":
             return await self._fetch_postings()
+        if tool_name == "jobs_store_resume":
+            return await self._store_resume(args.get("pdf_text", ""))
         return ToolResult(content=f"Unknown tool: {tool_name!r}", is_error=True)
+
+    async def _store_resume(self, pdf_text: str) -> ToolResult:
+        """S2 #335 — persist Resume artifact + extract Applicant dossier."""
+        import asyncio
+        store = self._store or _store
+        if store is None:
+            return ToolResult(content="Job search store not initialised", is_error=True)
+        profile_id = _active_profile_id
+        if profile_id is None:
+            return ToolResult(content="No active profile", is_error=True)
+        if not pdf_text.strip():
+            return ToolResult(content="pdf_text is empty", is_error=True)
+
+        # Record the pending resume path (set by Cerebral when a PDF was uploaded)
+        pdf_path = _pending_resume_path
+        store.upsert_resume_artifact(profile_id, pdf_path)
+
+        # Extract structured dossier fields
+        extract = self._extract_fn or _extract_fn
+        if extract is None:
+            fields: dict = {}
+        else:
+            try:
+                result = extract(pdf_text)
+                if asyncio.iscoroutine(result):
+                    fields = await result
+                else:
+                    fields = result
+                if not isinstance(fields, dict):
+                    fields = {}
+            except Exception as exc:
+                logger.error("[job_search] dossier extraction failed: %s", exc)
+                return ToolResult(content=f"Dossier extraction failed: {exc}", is_error=True)
+
+        fields["raw_text"] = pdf_text[:10_000]
+        store.upsert_dossier(profile_id, fields)
+
+        dossier = store.get_dossier(profile_id)
+        return ToolResult(content=json.dumps({"status": "stored", "dossier": dossier}))
 
     async def _fetch_postings(self) -> ToolResult:
         store = self._store or _store
@@ -300,5 +487,6 @@ class JobSearchPlugin:
 def create(
     navigate_fn: Callable[[str], Awaitable[str]] | None = None,
     store: "JobSearchStore | None" = None,
+    extract_fn: "Callable[[str], Any] | None" = None,
 ) -> JobSearchPlugin:
-    return JobSearchPlugin(navigate_fn=navigate_fn, store=store)
+    return JobSearchPlugin(navigate_fn=navigate_fn, store=store, extract_fn=extract_fn)

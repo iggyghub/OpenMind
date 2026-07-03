@@ -67,7 +67,12 @@ from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
 from cerebral.harness_channels import HarnessChannelStore
-from plugins.job_search import JobSearchStore as _JobSearchStore  # S1 #334
+from plugins.job_search import (  # S1 #334 / S2 #335
+    JobSearchStore as _JobSearchStore,
+    set_active_profile_id as _js_set_profile,
+    set_pending_resume_path as _js_set_resume_path,
+    set_extract_fn as _js_set_extract_fn,
+)
 from cerebral.channel_inbox import ChannelInbox
 from cerebral.settings import SettingsStore as _SettingsStore
 
@@ -109,7 +114,31 @@ _settings = _SettingsStore()
 _conversation = ConversationStore()
 _attachments  = AttachmentStore()
 _recipe_store    = RecipeStore()
-_job_search_store = _JobSearchStore()  # S1 #334
+_job_search_store = _JobSearchStore()  # S1 #334 / S2 #335
+if _active_profile:                      # S2 #335 — seed profile-id seam at startup
+    _js_set_profile(_active_profile.id)
+
+async def _extract_dossier(pdf_text: str) -> dict:  # S2 #335
+    """LLM extractor injected into job_search plugin for Applicant dossier parsing."""
+    prompt = (
+        "Extract the applicant's details from the resume text below.\n"
+        "Return ONLY valid JSON with keys: name, email, phone, location, linkedin, "
+        "github, website, work_history (list of {title, company, years}), "
+        "education (list of {degree, school, year}), skills (list of strings).\n"
+        "Resume:\n" + pdf_text[:8000]
+    )
+    raw = await _router.complete(prompt, task_type="chat")
+    import re as _re
+    m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+    if not m:
+        return {}
+    try:
+        import json as _json
+        return _json.loads(m.group(0))
+    except Exception:
+        return {}
+
+_js_set_extract_fn(_extract_dossier)  # S2 #335
 
 # S20 (#303) -- the current in-flight planner/chain task, if any.
 # Set when _process_command starts; cleared on normal completion or cancel.
@@ -317,7 +346,8 @@ def _recipes_update_event() -> dict:
 
 def _jobs_update_event() -> dict:  # S1 #334
     postings = _job_search_store.list_postings()
-    return {"type": "jobs_update", "data": {"postings": postings}}
+    dossier = _job_search_store.get_dossier(_active_profile.id) if _active_profile else None  # S2 #335
+    return {"type": "jobs_update", "data": {"postings": postings, "dossier": dossier}}
 
 
 # ── Connected-account credentials (Issue #114, ADR-0005) ──────────────────────
@@ -1474,6 +1504,8 @@ async def _handle_attach_files(data: dict) -> None:
             logger.exception("[cerebral] attach_files: save_file failed for %s", name)
             continue
         saved.append(att)
+        if att.kind == "pdf":  # S2 #335 — record path so jobs_store_resume can claim it
+            _js_set_resume_path(att.stored_path)
     try:
         pending = _attachments.list_pending(_active_profile.id)
     except Exception:
@@ -1751,6 +1783,7 @@ async def _handle_message(msg: dict) -> None:
         )
         _pm.set_active(p.id)
         _active_profile = p
+        _js_set_profile(p.id)  # S2 #335
         _orc.set_acl(_build_acl(p))
         logger.info("[cerebral] Profile created: %s (id=%d)", p.name, p.id)
         await _broadcast(_profile_event(p))
@@ -1764,6 +1797,7 @@ async def _handle_message(msg: dict) -> None:
             if p:
                 _pm.set_active(p.id)
                 _active_profile = p
+                _js_set_profile(p.id)  # S2 #335
                 # Rebuild the ACL on profile switch — Issue #45 / ADR-0005
                 # mandates that once + session grants clear on switch.
                 _orc.set_acl(_build_acl(p))
@@ -2876,12 +2910,14 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "jobs_fetch_postings":  # S1 #334 — tray "Check for new jobs" button
         try:
-            result = await _orc.call_tool("jobs_fetch_postings", {})
-            postings = _job_search_store.list_postings()
-            await _broadcast({"type": "jobs_update", "data": {"postings": postings}})
+            await _orc.call_tool("jobs_fetch_postings", {})
+            await _broadcast(_jobs_update_event())
         except Exception as exc:
             logger.warning("[cerebral] jobs_fetch_postings failed: %s", exc)
-            await _broadcast({"type": "jobs_update", "data": {"postings": []}})
+            await _broadcast(_jobs_update_event())
+
+    elif t == "jobs_get_dossier":  # S2 #335 — tray requests current dossier
+        await _broadcast(_jobs_update_event())
 
     elif t == "save_recipe":
         d = msg.get("data", {})
@@ -3457,6 +3493,7 @@ def _wire_plugin_seams() -> None:
         ("discord_user",      "set_token_provider", _get_discord_user_token_provider),  # #175
         ("discord_user",      "set_draft_callback", _surface_discord_draft),          # #175
         ("job_search", "set_store", _job_search_store),                              # S1 #334
+        ("job_search", "set_extract_fn", _extract_dossier),                          # S2 #335
     ]
     for name, seam, factory in seams:
         try:
