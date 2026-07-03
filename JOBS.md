@@ -18,10 +18,10 @@ top-down; the order already satisfies every `Blocked by`. After landing a slice,
 `#N` + `Model:` as the active slice here, and set `Status:` (`ready` while slices
 remain; `done` after S7 lands — S8 is optional and left for a human to trigger).
 
-Active slice: **S7 — #340**
+Active slice: **S8 — #341**
 
-Model: sonnet
-Status: ready
+Model: haiku
+Status: done
 
 (`Model:`/`Status:` are read directly by `scripts/run-jobs.ps1`. Allowed:
 haiku | sonnet | opus | fable — prefer haiku/sonnet, this is meant to run on an
@@ -36,7 +36,7 @@ human; `done` = stop. Stop gracefully any time with `scripts/stop-jobs.ps1`.)
 4. [x] S4 — #337 Apply to ONE clean ATS end-to-end (spine), review-before-submit — Model: sonnet
 5. [x] S5 — #338 Answer bank + ChromaDB semantic matching + notify-and-learn — Model: sonnet
 6. [x] S6 — #339 Account-creation + email verification — Model: sonnet
-7. [ ] S7 — #340 Gated auto-submit (ADR-0009) — supervised ramp + zero-guessed — Model: sonnet
+7. [x] S7 — #340 Gated auto-submit (ADR-0009) — supervised ramp + zero-guessed — Model: sonnet
 8. [ ] S8 — #341 (OPTIONAL — human triggers) Undrivable-ATS bail-and-notify — Model: haiku
 
 ### Landed PRs
@@ -47,6 +47,7 @@ human; `done` = stop. Stop gracefully any time with `scripts/stop-jobs.ps1`.)
 - S4 #337 — PR #345 (feat(jobs): S4 — Apply spine: Greenhouse/Lever guest-apply, review-before-submit)
 - S5 #338 — PR #346 (feat(jobs): S5 — Answer bank + ChromaDB semantic field-matching + notify-and-learn)
 - S6 #339 — PR #347 (feat(jobs): S6 -- Account-creation + email verification)
+- S7 #340 — PR #348 (feat(jobs): S7 -- Gated auto-submit (ADR-0009): supervised ramp + zero-guessed exception)
 
 ---
 
