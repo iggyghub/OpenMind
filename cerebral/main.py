@@ -67,7 +67,7 @@ from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
 from cerebral.harness_channels import HarnessChannelStore
-from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336 / S4 #337
+from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S5 #338 / S6 #339
     JobSearchStore as _JobSearchStore,
     set_active_profile_id as _js_set_profile,
     set_pending_resume_path as _js_set_resume_path,
@@ -75,6 +75,14 @@ from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336 / S4 #337
     set_score_fn as _js_set_score_fn,
     set_apply_driver_fn as _js_set_apply_driver_fn,
     set_apply_submit_fn as _js_set_apply_submit_fn,
+    set_recall_fn as _js_set_recall_fn,                        # S5 #338
+    set_index_answer_fn as _js_set_index_answer_fn,            # S5 #338
+    set_gen_password_fn as _js_set_gen_password_fn,            # S6 #339
+    set_create_ats_account_fn as _js_set_create_ats_account_fn,  # S6 #339
+    set_get_jobs_email_fn as _js_set_get_jobs_email_fn,        # S6 #339
+    set_store_ats_password_fn as _js_set_store_ats_password_fn,  # S6 #339
+    set_read_verify_link_fn as _js_set_read_verify_link_fn,    # S6 #339
+    set_click_verify_link_fn as _js_set_click_verify_link_fn,  # S6 #339
 )
 from cerebral.channel_inbox import ChannelInbox
 from cerebral.settings import SettingsStore as _SettingsStore
@@ -242,6 +250,124 @@ async def _jobs_apply_submit() -> None:  # S4 #337
 
 _js_set_apply_driver_fn(_jobs_apply_driver)   # S4 #337
 _js_set_apply_submit_fn(_jobs_apply_submit)   # S4 #337
+
+
+# ── S5 #338 — Answer bank prod seams ─────────────────────────────────────────
+
+async def _jobs_recall(profile_id: int, question: str) -> str | None:  # S5 #338
+    """Prod recall: semantic search of ChromaDB answer bank for closest question."""
+    try:
+        from cerebral.memory import MemoryManager
+        mgr = MemoryManager()
+        hits = await mgr.recall(question, n_results=1)
+        if hits:
+            return hits[0].get("answer") or hits[0].get("text")
+    except Exception as exc:
+        logger.warning("[jobs] recall failed: %s", exc)
+    return None
+
+
+async def _jobs_index_answer(profile_id: int, question: str, answer: str) -> None:  # S5 #338
+    """Prod indexer: upsert (question, answer) into ChromaDB answer bank."""
+    try:
+        from cerebral.memory import MemoryManager
+        mgr = MemoryManager()
+        await mgr.store(f"{question}: {answer}")
+    except Exception as exc:
+        logger.warning("[jobs] index_answer failed: %s", exc)
+
+
+_js_set_recall_fn(_jobs_recall)          # S5 #338
+_js_set_index_answer_fn(_jobs_index_answer)  # S5 #338
+
+
+# ── S6 #339 — Account-creation + email-verification prod seams ────────────────
+
+_JOBS_EMAIL_PROVIDER = "jobs_email"    # Connected account provider name for the jobs inbox
+
+
+async def _jobs_get_email(profile_id: int) -> str | None:  # S6 #339
+    """Return the jobs-email address from the credential store."""
+    cred = _get_credential_store().get_credential(profile_id, _JOBS_EMAIL_PROVIDER)
+    return cred.get("email") if cred else None
+
+
+async def _jobs_create_ats_account(ats_url: str, email: str, password: str) -> bool:  # S6 #339
+    """Prod: drive the browser to the ATS registration page and create an account.
+    Requires an open BrowserSession (call browser_open_session first)."""
+    from plugins import browser_session as _bsp
+    sess = _bsp.get_open_session()
+    if sess is None:
+        raise RuntimeError("No open browser session — call browser_open_session first")
+    import json as _json, re as _re
+    view = await sess.read_page(ats_url)
+    # LLM locates the registration form and fills it
+    prompt = (
+        "You are creating a new job application account. Given the page text, return a JSON "
+        "array of form fields to fill for account registration (email, password). Each object: "
+        "selector (CSS), value (string). Reply ONLY with a JSON array.\n"
+        "Page text (first 2000 chars):\n" + (view.text or "")[:2000] + "\n\n"
+        f"Email: {email}\nPassword: {password}"
+    )
+    raw = await _router.complete(prompt, task_type="chat")
+    m = _re.search(r"\[.*\]", raw, _re.DOTALL)
+    try:
+        fields = _json.loads(m.group(0)) if m else []
+    except Exception:
+        fields = []
+    pairs = [(f["selector"], f["value"]) for f in fields if f.get("selector") and f.get("value")]
+    if pairs:
+        await sess.fill_fields(pairs)
+    # ponytail: submit is best-effort; live-verify checks the real outcome
+    try:
+        await sess.click('button[type="submit"]')
+    except Exception:
+        pass
+    return True
+
+
+async def _jobs_store_ats_password(profile_id: int, ats_provider: str, email: str, password: str) -> None:  # S6 #339
+    """Store the ATS account password in the credential store / keyring."""
+    cs = _get_credential_store()
+    cs.set_credential(profile_id, ats_provider, email=email, status="connected")
+    cs.set_secret(profile_id, ats_provider, "password", password)
+
+
+async def _jobs_read_verify_link(profile_id: int) -> str | None:  # S6 #339
+    """Read the jobs inbox via the open BrowserSession for a verification link."""
+    import re as _re
+    from plugins import browser_session as _bsp
+    sess = _bsp.get_open_session()
+    if sess is None:
+        return None
+    try:
+        view = await sess.read_page("https://mail.google.com/mail/u/0/#inbox")
+        m = _re.search(r"https?://[^\s\"'<>]+verif[^\s\"'<>]*", view.text or "", _re.I)
+        return m.group(0) if m else None
+    except Exception as exc:
+        logger.warning("[jobs] read_verify_link failed: %s", exc)
+        return None
+
+
+async def _jobs_click_verify_link(verify_url: str) -> bool:  # S6 #339
+    """Navigate to the verification URL to activate the ATS account."""
+    from plugins import browser_session as _bsp
+    sess = _bsp.get_open_session()
+    if sess is None:
+        return False
+    try:
+        await sess.read_page(verify_url)
+        return True
+    except Exception as exc:
+        logger.warning("[jobs] click_verify_link failed: %s", exc)
+        return False
+
+
+_js_set_get_jobs_email_fn(_jobs_get_email)               # S6 #339
+_js_set_create_ats_account_fn(_jobs_create_ats_account)  # S6 #339
+_js_set_store_ats_password_fn(_jobs_store_ats_password)  # S6 #339
+_js_set_read_verify_link_fn(_jobs_read_verify_link)      # S6 #339
+_js_set_click_verify_link_fn(_jobs_click_verify_link)    # S6 #339
 
 
 # S20 (#303) -- the current in-flight planner/chain task, if any.
@@ -448,11 +574,17 @@ def _recipes_update_event() -> dict:
     }
 
 
-def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337
+def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 #339
     postings = _job_search_store.list_postings()
     dossier = _job_search_store.get_dossier(_active_profile.id) if _active_profile else None
     shortlist = _job_search_store.list_shortlist()
     applications = _job_search_store.list_applications()  # S4 #337
+    # S6 #339: include jobs-email Connected account status so the Job Search panel
+    # can show the "link to Credentials" prompt when the jobs email isn't set up.
+    jobs_email_configured = False
+    if _active_profile:
+        cred = _get_credential_store().get_credential(_active_profile.id, _JOBS_EMAIL_PROVIDER)
+        jobs_email_configured = bool(cred and cred.get("email"))
     return {
         "type": "jobs_update",
         "data": {
@@ -460,6 +592,7 @@ def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337
             "dossier": dossier,
             "shortlist": shortlist,
             "applications": applications,
+            "jobs_email_configured": jobs_email_configured,  # S6: link to Credentials panel
         },
     }
 
@@ -3649,6 +3782,13 @@ def _wire_plugin_seams() -> None:
         ("job_search", "set_score_fn", _score_posting),                              # S3 #336
         ("job_search", "set_apply_driver_fn", _jobs_apply_driver),                   # S4 #337
         ("job_search", "set_apply_submit_fn", _jobs_apply_submit),                   # S4 #337
+        ("job_search", "set_recall_fn", _jobs_recall),                               # S5 #338
+        ("job_search", "set_index_answer_fn", _jobs_index_answer),                   # S5 #338
+        ("job_search", "set_get_jobs_email_fn", _jobs_get_email),                    # S6 #339
+        ("job_search", "set_create_ats_account_fn", _jobs_create_ats_account),       # S6 #339
+        ("job_search", "set_store_ats_password_fn", _jobs_store_ats_password),       # S6 #339
+        ("job_search", "set_read_verify_link_fn", _jobs_read_verify_link),           # S6 #339
+        ("job_search", "set_click_verify_link_fn", _jobs_click_verify_link),         # S6 #339
     ]
     for name, seam, factory in seams:
         try:
