@@ -15,6 +15,56 @@ to run by hand once the code has landed. Each slice appends its live checks belo
 
 ---
 
+## Getting started — your first live run
+
+**Do the checks in this order:** S4 (guest-apply) first — it needs no jobs email
+and no account, so it is the cheapest way to prove the spine. Only then S5
+(answer bank), then S6 (account-creation, which needs the jobs Gmail), then S7
+(auto-submit, which needs ~5 reviewed submits first).
+
+### One-time prerequisites
+
+1. **Start Cerebral:** `python -m cerebral.main`. Open Felix from the tray
+   (`Open Felix`).
+2. **Upload your resume:** in the Conversation, attach the single-page PDF and
+   say "store this as my resume". This populates the **Applicant dossier**
+   (name, contact, work history) that fills form fields. Verify it under the
+   **Job Search panel** (or ask Felix "what's in my applicant dossier?").
+3. **(S6 only) Create the dedicated jobs Gmail** and seed it as the `jobs_email`
+   Connected account in the **Credentials panel** (attended login, same flow as
+   `scripts/seed_browser_login.py`). Not needed for S4/S5 guest-apply.
+
+### Running S4 (guest-apply) — the safe first test
+
+1. Open the **Job Search panel** → **Check for new jobs**. Felix reads the RRR
+   feed, scores postings, and shows a **Shortlist**.
+2. **Approve one** posting whose apply link is a **Greenhouse or Lever
+   guest-apply** form (open the RRR link in a browser first to confirm it does
+   NOT ask you to create an account).
+3. Trigger the apply. Felix opens the ATS, fills fields from the dossier, and
+   uploads the resume. **Walk the S4 checklist below** against what you see.
+4. **STOP at the review-before-submit modal to verify everything WITHOUT sending
+   a real application.** Reaching the modal proves fetch → score → fill → upload
+   → required-field detection. Do NOT click confirm unless you actually want to
+   apply to that job.
+
+> **These are REAL applications to REAL employers.** Clicking the
+> review-before-submit modal sends a genuine application. For verification,
+> reach the modal and cancel; only confirm on jobs you truly want. There is no
+> "undo".
+
+### After S4 passes
+
+- **S5:** repeat on a posting with a custom question; answer once, confirm it is
+  reused (and semantically matched) next time.
+- **S6:** with the jobs Gmail seeded, pick a login-gated ATS and verify
+  account-creation + email verification.
+- **S7:** only after ~5 reviewed submits (the supervised ramp), enable
+  **auto-submit** in the panel and confirm it still stops on any guessed field
+  or new eligibility question.
+
+---
+
 ## Checklist
 
 _(slices append their live-verify items here as they land)_
