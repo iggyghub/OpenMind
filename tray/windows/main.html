@@ -4269,6 +4269,15 @@
             </div>
           </div>
         </div>
+        <!-- S4 #337 — Applications -->
+        <div class="jobs-applications-section" id="jobs-applications-section">
+          <div class="jobs-applications-header">Applications</div>
+          <div id="jobs-applications-list">
+            <div class="jobs-applications-empty" id="jobs-applications-empty">
+              No applications yet. Approve a shortlisted job and ask Felix to apply.
+            </div>
+          </div>
+        </div>
         <div id="jobs-list">
           <div class="jobs-empty" id="jobs-empty">
             No job postings yet. Click "Check for new jobs" to fetch the latest.
@@ -4839,11 +4848,13 @@
           break;
         case 'jobs_update':
           jobPostings = (event.data && event.data.postings) || [];
-          jobDossier = (event.data && event.data.dossier) || null;   // S2 #335
-          jobShortlist = (event.data && event.data.shortlist) || []; // S3 #336
+          jobDossier = (event.data && event.data.dossier) || null;        // S2 #335
+          jobShortlist = (event.data && event.data.shortlist) || [];      // S3 #336
+          jobApplications = (event.data && event.data.applications) || []; // S4 #337
           renderJobSearch();
-          renderJobDossier();    // S2 #335
-          renderJobShortlist();  // S3 #336
+          renderJobDossier();        // S2 #335
+          renderJobShortlist();      // S3 #336
+          renderJobApplications();   // S4 #337
           jobsCheckBtn.disabled = false;
           jobsStatusEl.textContent = jobPostings.length
             ? jobPostings.length + ' posting' + (jobPostings.length === 1 ? '' : 's') + ' stored'
@@ -6044,6 +6055,7 @@
     let jobPostings = [];
     let jobDossier  = null;  // S2 #335
     let jobShortlist = [];   // S3 #336
+    let jobApplications = [];  // S4 #337
     const jobsListEl        = document.getElementById('jobs-list');
     const jobsEmptyEl       = document.getElementById('jobs-empty');
     const jobsCheckBtn      = document.getElementById('jobs-check-btn');
@@ -6051,6 +6063,8 @@
     const jobsDossierEl     = document.getElementById('jobs-dossier-body');   // S2 #335
     const jobsShortlistEl   = document.getElementById('jobs-shortlist-list'); // S3 #336
     const jobsShortlistEmpty = document.getElementById('jobs-shortlist-empty'); // S3 #336
+    const jobsApplicationsEl    = document.getElementById('jobs-applications-list');  // S4 #337
+    const jobsApplicationsEmpty = document.getElementById('jobs-applications-empty'); // S4 #337
 
     function renderJobSearch() {
       jobsListEl.querySelectorAll('.jobs-date-group').forEach(function (el) { el.remove(); });
@@ -6139,6 +6153,61 @@
         jobsShortlistEl.insertBefore(card, jobsShortlistEmpty);
       });
     }
+
+    // S4 #337 — render date-foldered Applications list.
+    var _JOB_STATUS_LABEL = {
+      'shortlisted': 'Ready to submit',
+      'awaiting-input': 'Needs info',
+      'submitted': 'Submitted',
+      'failed': 'Failed',
+      'skipped': 'Skipped',
+    };
+    function renderJobApplications() {
+      if (!jobsApplicationsEl) return;
+      jobsApplicationsEl.querySelectorAll('.jobs-app-date-group').forEach(function (el) { el.remove(); });
+      if (jobApplications.length === 0) {
+        jobsApplicationsEmpty.hidden = false;
+        return;
+      }
+      jobsApplicationsEmpty.hidden = true;
+      var byDate = Object.create(null);
+      jobApplications.forEach(function (a) {
+        var day = (a.created_at || '').slice(0, 10) || 'Unknown date';
+        (byDate[day] = byDate[day] || []).push(a);
+      });
+      Object.keys(byDate).sort().reverse().forEach(function (day) {
+        var group = document.createElement('div');
+        group.className = 'jobs-app-date-group';
+        var hdr = document.createElement('div');
+        hdr.className = 'jobs-app-date-header';
+        hdr.textContent = day;
+        group.appendChild(hdr);
+        byDate[day].forEach(function (a) {
+          var card = document.createElement('div');
+          card.className = 'jobs-app-card jobs-app-' + (a.status || 'unknown');
+          var statusLabel = _JOB_STATUS_LABEL[a.status] || a.status || '';
+          card.innerHTML =
+            '<div class="jobs-app-card-url">' + escHtml((a.url || '').replace(/^https?:\/\//, '').slice(0, 80)) + '</div>' +
+            '<div class="jobs-app-card-meta">' +
+              '<span class="jobs-app-status">' + escHtml(statusLabel) + '</span>' +
+              (a.ats_type ? ' \xb7 <span class="jobs-app-ats">' + escHtml(a.ats_type) + '</span>' : '') +
+            '</div>' +
+            (a.status === 'shortlisted'
+              ? '<div class="jobs-app-card-actions">' +
+                  '<button class="jobs-submit-btn" data-url="' + escHtml(a.url || '') + '">Review &amp; Submit</button>' +
+                '</div>'
+              : '');
+          group.appendChild(card);
+        });
+        jobsApplicationsEl.insertBefore(group, jobsApplicationsEmpty);
+      });
+    }
+
+    jobsApplicationsEl && jobsApplicationsEl.addEventListener('click', function (e) {
+      var btn = e.target.closest('.jobs-submit-btn');
+      if (!btn) return;
+      sendEvent({ type: 'jobs_apply_submit', data: {} });
+    });
 
     jobsShortlistEl && jobsShortlistEl.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-approve]');

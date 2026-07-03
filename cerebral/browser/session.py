@@ -133,6 +133,10 @@ class BrowserDriver(Protocol):
         """Click the element matched by ``selector``; return the resulting URL."""
         ...
 
+    async def upload_file(self, selector: str, file_path: str) -> None:
+        """Set ``file_path`` on the file input matched by ``selector``."""
+        ...
+
     async def close(self) -> None:
         """Tear down the context, flushing the session to disk."""
         ...
@@ -302,6 +306,10 @@ class BrowserSession:
     async def click(self, selector: str) -> str:
         """Click ``selector``; return the resulting URL."""
         return await self._driver.click(selector)
+
+    async def upload_file(self, selector: str, file_path: str) -> None:
+        """Set ``file_path`` on the file input matched by ``selector``."""
+        await self._driver.upload_file(selector, file_path)
 
     async def needs_verification(self) -> bool:
         """True iff the current page is a human-verification (step-up) wall."""
@@ -494,6 +502,10 @@ class PlaywrightDriver:
         # Let any navigation the click triggered settle before reporting URL.
         await self._page.wait_for_load_state("domcontentloaded")
         return self._page.url
+
+    async def upload_file(self, selector: str, file_path: str) -> None:
+        assert self._page is not None, "open() must be called first"
+        await self._page.set_input_files(selector, file_path)
 
     async def close(self) -> None:
         if self._context is not None:

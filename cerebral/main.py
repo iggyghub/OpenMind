@@ -67,12 +67,14 @@ from cerebral.db.credentials import CredentialStore
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
 from cerebral.harness_channels import HarnessChannelStore
-from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336
+from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336 / S4 #337
     JobSearchStore as _JobSearchStore,
     set_active_profile_id as _js_set_profile,
     set_pending_resume_path as _js_set_resume_path,
     set_extract_fn as _js_set_extract_fn,
     set_score_fn as _js_set_score_fn,
+    set_apply_driver_fn as _js_set_apply_driver_fn,
+    set_apply_submit_fn as _js_set_apply_submit_fn,
 )
 from cerebral.channel_inbox import ChannelInbox
 from cerebral.settings import SettingsStore as _SettingsStore
@@ -169,6 +171,78 @@ async def _score_posting(posting: dict, dossier: dict) -> float:  # S3 #336
 
 
 _js_set_score_fn(_score_posting)  # S3 #336
+
+
+async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:  # S4 #337
+    """Prod apply driver: navigates open BrowserSession to ATS URL, LLM-maps fields,
+    fills them, uploads resume, returns draft for review. Leaves form open for submit."""
+    import json as _json, re as _re
+    from plugins import browser_session as _bsp
+    sess = _bsp.get_open_session()
+    if sess is None:
+        raise RuntimeError(
+            "No open browser session — call browser_open_session first"
+        )
+    # Navigate to the ATS URL and read the page
+    view = await sess.read_page(url)
+    # LLM maps the visible form text to dossier values
+    prompt = (
+        "You are filling a job application form. Given the form page text and the "
+        "applicant dossier, return a JSON array of field objects to fill. Each object "
+        "must have: selector (CSS selector string), label (human-readable field name), "
+        "value (string from dossier, or empty string if unknown), required (boolean), "
+        "is_file_upload (boolean, true only for resume/file inputs).\n"
+        "Include ONLY fields visible in the form. For unknown required fields, set "
+        "value to empty string. Do NOT guess. Reply with ONLY a JSON array.\n"
+        "Form page text (first 4000 chars):\n" + (view.text or "")[:4000] + "\n\n"
+        "Applicant dossier:\n" + _json.dumps({
+            "name": dossier.get("name", ""),
+            "email": dossier.get("email", ""),
+            "phone": dossier.get("phone", ""),
+            "location": dossier.get("location", ""),
+            "linkedin": dossier.get("linkedin", ""),
+            "github": dossier.get("github", ""),
+            "website": dossier.get("website", ""),
+        })
+    )
+    raw = await _router.complete(prompt, task_type="chat")
+    m = _re.search(r"\[.*\]", raw, _re.DOTALL)
+    try:
+        fields = _json.loads(m.group(0)) if m else []
+    except Exception:
+        fields = []
+    # Fill text fields in the browser (side-effect on open session)
+    text_pairs = [
+        (f["selector"], f["value"])
+        for f in fields
+        if not f.get("is_file_upload") and f.get("value") and f.get("selector")
+    ]
+    if text_pairs:
+        await sess.fill_fields(text_pairs)
+    # Upload resume to file inputs
+    file_inputs = [f for f in fields if f.get("is_file_upload") and f.get("selector")]
+    if file_inputs and resume_path:
+        await sess.upload_file(file_inputs[0]["selector"], resume_path)
+    return {
+        "fields": fields,
+        "submit_selector": 'button[type="submit"]',
+    }
+
+
+async def _jobs_apply_submit() -> None:  # S4 #337
+    """Prod submit action: clicks the submit button on the open browser session."""
+    from plugins import browser_session as _bsp
+    sess = _bsp.get_open_session()
+    if sess is None:
+        raise RuntimeError(
+            "No open browser session — call browser_open_session first"
+        )
+    await sess.click('button[type="submit"]')
+
+
+_js_set_apply_driver_fn(_jobs_apply_driver)   # S4 #337
+_js_set_apply_submit_fn(_jobs_apply_submit)   # S4 #337
+
 
 # S20 (#303) -- the current in-flight planner/chain task, if any.
 # Set when _process_command starts; cleared on normal completion or cancel.
@@ -374,11 +448,20 @@ def _recipes_update_event() -> dict:
     }
 
 
-def _jobs_update_event() -> dict:  # S1 #334
+def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337
     postings = _job_search_store.list_postings()
-    dossier = _job_search_store.get_dossier(_active_profile.id) if _active_profile else None  # S2 #335
-    shortlist = _job_search_store.list_shortlist()  # S3 #336
-    return {"type": "jobs_update", "data": {"postings": postings, "dossier": dossier, "shortlist": shortlist}}
+    dossier = _job_search_store.get_dossier(_active_profile.id) if _active_profile else None
+    shortlist = _job_search_store.list_shortlist()
+    applications = _job_search_store.list_applications()  # S4 #337
+    return {
+        "type": "jobs_update",
+        "data": {
+            "postings": postings,
+            "dossier": dossier,
+            "shortlist": shortlist,
+            "applications": applications,
+        },
+    }
 
 
 # ── Connected-account credentials (Issue #114, ADR-0005) ──────────────────────
@@ -2973,6 +3056,21 @@ async def _handle_message(msg: dict) -> None:
             logger.warning("[cerebral] jobs_set_approval failed: %s", exc)
         await _broadcast(_jobs_update_event())
 
+    elif t == "jobs_apply_start":  # S4 #337 — fill ATS form + show review
+        d = msg.get("data", {})
+        try:
+            await _orc.call_tool("jobs_apply_start", {"url": d.get("url", "")})
+        except Exception as exc:
+            logger.warning("[cerebral] jobs_apply_start failed: %s", exc)
+        await _broadcast(_jobs_update_event())
+
+    elif t == "jobs_apply_submit":  # S4 #337 — submit pending application (irreversible)
+        try:
+            await _orc.call_tool("jobs_apply_submit", {})
+        except Exception as exc:
+            logger.warning("[cerebral] jobs_apply_submit failed: %s", exc)
+        await _broadcast(_jobs_update_event())
+
     elif t == "save_recipe":
         d = msg.get("data", {})
         name = d.get("name", "").strip()
@@ -3549,6 +3647,8 @@ def _wire_plugin_seams() -> None:
         ("job_search", "set_store", _job_search_store),                              # S1 #334
         ("job_search", "set_extract_fn", _extract_dossier),                          # S2 #335
         ("job_search", "set_score_fn", _score_posting),                              # S3 #336
+        ("job_search", "set_apply_driver_fn", _jobs_apply_driver),                   # S4 #337
+        ("job_search", "set_apply_submit_fn", _jobs_apply_submit),                   # S4 #337
     ]
     for name, seam, factory in seams:
         try:

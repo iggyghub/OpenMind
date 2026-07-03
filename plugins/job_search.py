@@ -1,7 +1,8 @@
 """
-Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3).
+Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3) + #337 (S4).
 
-Tools: jobs_fetch_postings, jobs_store_resume, jobs_score_shortlist, jobs_set_approval.
+Tools: jobs_fetch_postings, jobs_store_resume, jobs_score_shortlist,
+       jobs_set_approval, jobs_apply_start, jobs_apply_submit.
 
 S1: Reads Rat Race Rebellion job board logged-out via OpenClaw navigate/Readability.
     Parses Job postings and upserts into SQLite job_postings table.
@@ -14,10 +15,18 @@ S3: Scores new Job postings for fit via injectable score_fn (LLM in prod, stub i
     persists fit_score + status on job_postings, and returns a ranked Shortlist.
     User approve/reject transitions: shortlisted | rejected.
 
+S4 (ADR-0009): Apply spine — navigate to ATS URL, detect supported ATS (Greenhouse/
+    Lever), generic-fill form from dossier (via injectable apply_driver_fn), upload
+    resume, check for unfilled required fields, stop for user review, then submit
+    (irreversible=True, ADR-0005 modal). Applications are logged in SQLite
+    (URL-deduped). Unsupported ATS -> bail + mark failed.
+
 All network I/O is injected via navigate_fn.
 All DB I/O is injectable via a JobSearchStore seam.
 LLM extraction is injectable via set_extract_fn.
 LLM fit-scoring is injectable via set_score_fn.
+Browser driving + LLM field-mapping is injectable via set_apply_driver_fn.
+Submit action is injectable via set_apply_submit_fn.
 """
 import json
 import logging
@@ -38,15 +47,36 @@ OPENCLAW_BASE = "http://localhost:3000"
 
 # ADR-0005 / Issue #334 — jobs_fetch_postings: network_egress_cloud + external_data_read + fs_write.
 # Issue #335 — jobs_store_resume: fs_read (PDF artifact) + fs_write (dossier).
-# network_egress_cloud covers cloud-LLM extraction; llm_call is not in the 16-class vocabulary.
+# Issue #337 (S4) — jobs_apply_submit: external_data_write (submitting to ATS is a write).
+# network_egress_cloud covers cloud-LLM extraction + field-mapping; llm_call is not in the 16-class vocabulary.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
     "external_data_read",
+    "external_data_write",
     "network_egress_cloud",
     "fs_write",
     "fs_read",
 })
 
+# ATSes Felix can drive generically (guest-apply, clean DOM form).
+SUPPORTED_ATS_TYPES: frozenset[str] = frozenset({"greenhouse", "lever"})
+
 _DB_PATH = Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db"
+
+
+# ── ATS detection ─────────────────────────────────────────────────────────────
+
+def detect_ats_type(url: str) -> str:
+    """Classify the ATS from the outbound URL hostname. Returns 'unknown' if unsupported."""
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return "unknown"
+    if "greenhouse.io" in host:
+        return "greenhouse"
+    if "lever.co" in host:
+        return "lever"
+    return "unknown"
 
 
 # ── HTML parser ───────────────────────────────────────────────────────────────
@@ -221,6 +251,19 @@ class JobSearchStore:
                 updated_at         TEXT NOT NULL
             )
         """)
+        # S4 #337 — Applications: one row per outbound ATS URL (dedup key).
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS applications (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                url                 TEXT    UNIQUE NOT NULL,
+                posting_url         TEXT    NOT NULL DEFAULT '',
+                ats_type            TEXT    NOT NULL DEFAULT '',
+                status              TEXT    NOT NULL DEFAULT 'awaiting-input',
+                filled_fields_json  TEXT    NOT NULL DEFAULT '[]',
+                submitted_at        TEXT,
+                created_at          TEXT    NOT NULL
+            )
+        """)
         self._con.commit()
 
     def upsert(self, posting: dict) -> None:
@@ -350,6 +393,70 @@ class JobSearchStore:
         """)
         return [dict(row) for row in cur.fetchall()]
 
+    def get_posting_by_url(self, url: str) -> dict | None:
+        row = self._con.execute(
+            "SELECT * FROM job_postings WHERE url = ?", (url,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    # ── S4 #337 — Applications ─────────────────────────────────────────────
+
+    def upsert_application(
+        self, url: str, posting_url: str, ats_type: str,
+        status: str, fields: list,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._con.execute("""
+            INSERT INTO applications
+                (url, posting_url, ats_type, status, filled_fields_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(url) DO UPDATE SET
+                posting_url         = excluded.posting_url,
+                ats_type            = excluded.ats_type,
+                status              = excluded.status,
+                filled_fields_json  = excluded.filled_fields_json
+        """, (url, posting_url, ats_type, status, json.dumps(fields), now))
+        self._con.commit()
+
+    def set_application_status(self, url: str, status: str, submitted_at: str | None = None) -> None:
+        if submitted_at:
+            self._con.execute(
+                "UPDATE applications SET status = ?, submitted_at = ? WHERE url = ?",
+                (status, submitted_at, url),
+            )
+        else:
+            self._con.execute(
+                "UPDATE applications SET status = ? WHERE url = ?", (status, url)
+            )
+        self._con.commit()
+
+    def get_application(self, url: str) -> dict | None:
+        row = self._con.execute(
+            "SELECT * FROM applications WHERE url = ?", (url,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["filled_fields_json"] = json.loads(d["filled_fields_json"])
+        except (json.JSONDecodeError, TypeError):
+            d["filled_fields_json"] = []
+        return d
+
+    def list_applications(self) -> list[dict]:
+        cur = self._con.execute(
+            "SELECT * FROM applications ORDER BY created_at DESC, id DESC"
+        )
+        rows = []
+        for row in cur.fetchall():
+            d = dict(row)
+            try:
+                d["filled_fields_json"] = json.loads(d["filled_fields_json"])
+            except (json.JSONDecodeError, TypeError):
+                d["filled_fields_json"] = []
+            rows.append(d)
+        return rows
+
 
 # ── Module-level seams ────────────────────────────────────────────────────────
 
@@ -359,6 +466,19 @@ _active_profile_id: int | None = None
 _pending_resume_path: str = ""
 _extract_fn: Callable[[str], Any] | None = None  # sync or async (str) -> dict
 _score_fn: Callable[[dict, dict], Any] | None = None  # sync or async (posting, dossier) -> float
+
+# S4 #337 — injectable apply driver (browser nav + LLM field-mapping + form fill + upload).
+# async (posting_url: str, dossier: dict, resume_path: str) -> dict:
+#   {"fields": [{selector, label, value, required, is_file_upload}], "submit_selector": str}
+# Side effect in prod: navigates to URL, fills form fields, uploads resume, leaves form open.
+_apply_driver_fn: Callable | None = None
+
+# S4 #337 — injectable submit action (clicks the submit button on the open page).
+# async () -> None
+_apply_submit_fn: Callable | None = None
+
+# S4 #337 — pending application held between jobs_apply_start and jobs_apply_submit.
+_pending_application: dict | None = None
 
 
 def set_navigate_fn(fn: Callable[[str], Awaitable[str]]) -> None:
@@ -392,6 +512,18 @@ def set_score_fn(fn: Callable[[dict, dict], Any]) -> None:
     """Inject the LLM fit-scorer (sync or async fn(posting, dossier) -> float). S3 #336."""
     global _score_fn
     _score_fn = fn
+
+
+def set_apply_driver_fn(fn: Callable) -> None:
+    """Inject the apply driver (async fn(url, dossier, resume_path) -> draft). S4 #337."""
+    global _apply_driver_fn
+    _apply_driver_fn = fn
+
+
+def set_apply_submit_fn(fn: Callable) -> None:
+    """Inject the submit action (async fn() -> None). S4 #337."""
+    global _apply_submit_fn
+    _apply_submit_fn = fn
 
 
 # ── Default navigate fn (calls OpenClaw) ──────────────────────────────────────
@@ -428,11 +560,15 @@ class JobSearchPlugin:
         store: JobSearchStore | None = None,
         extract_fn: Callable[[str], Any] | None = None,
         score_fn: Callable[[dict, dict], Any] | None = None,
+        apply_driver_fn: Callable | None = None,
+        apply_submit_fn: Callable | None = None,
     ) -> None:
         self._navigate = navigate_fn or _default_navigate
         self._store = store
-        self._extract_fn = extract_fn  # overrides module-level _extract_fn when set
-        self._score_fn = score_fn       # overrides module-level _score_fn when set
+        self._extract_fn = extract_fn      # overrides module-level _extract_fn when set
+        self._score_fn = score_fn          # overrides module-level _score_fn when set
+        self._apply_driver_fn = apply_driver_fn  # S4: overrides module-level _apply_driver_fn
+        self._apply_submit_fn = apply_submit_fn  # S4: overrides module-level _apply_submit_fn
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -499,6 +635,41 @@ class JobSearchPlugin:
                     "required": ["url", "approved"],
                 },
             ),
+            Tool(
+                name="jobs_apply_start",
+                description=(
+                    "Start an application for a shortlisted Job posting. Opens the "
+                    "ATS URL, detects the ATS type (Greenhouse/Lever), fills form "
+                    "fields from the Applicant dossier, uploads the Resume artifact, "
+                    "and stops for user review before submit. Returns a review payload "
+                    "or an error if a required field has no known value or the ATS is "
+                    "unsupported (which marks the application as failed)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "ATS URL of the shortlisted Job posting to apply to.",
+                        },
+                    },
+                    "required": ["url"],
+                },
+            ),
+            Tool(
+                name="jobs_apply_submit",
+                description=(
+                    "Submit the pending application after user review. "
+                    "IRREVERSIBLE — routes through the ADR-0005 modal for explicit "
+                    "confirmation before submitting. Logs the Application as submitted "
+                    "and updates the Job Search panel. Call only after jobs_apply_start "
+                    "has returned a ready_to_submit review payload."
+                ),
+                plugin=PLUGIN_NAME,
+                irreversible=True,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -510,6 +681,10 @@ class JobSearchPlugin:
             return await self._score_shortlist()
         if tool_name == "jobs_set_approval":
             return await self._set_approval(args.get("url", ""), bool(args.get("approved")))
+        if tool_name == "jobs_apply_start":
+            return await self._apply_start(args.get("url", ""))
+        if tool_name == "jobs_apply_submit":
+            return await self._apply_submit()
         return ToolResult(content=f"Unknown tool: {tool_name!r}", is_error=True)
 
     async def _score_shortlist(self) -> ToolResult:
@@ -542,6 +717,151 @@ class JobSearchPlugin:
                 logger.error("[job_search] scoring failed for %s: %s", posting.get("url"), exc)
         shortlist = store.list_shortlist()
         return ToolResult(content=json.dumps({"scored": len(unscored), "shortlist": shortlist}))
+
+    async def _apply_start(self, url: str) -> ToolResult:
+        """S4 #337 — open ATS, fill form, upload resume, stop for review."""
+        global _pending_application
+        import asyncio
+        store = self._store or _store
+        if store is None:
+            return ToolResult(content="Job search store not initialised", is_error=True)
+        if not url:
+            return ToolResult(content="url is required", is_error=True)
+        profile_id = _active_profile_id
+        if profile_id is None:
+            return ToolResult(content="No active profile", is_error=True)
+
+        # Verify posting is shortlisted
+        posting = store.get_posting_by_url(url)
+        if posting is None or posting.get("status") != "shortlisted":
+            return ToolResult(
+                content="Posting not found or not shortlisted — approve it first",
+                is_error=True,
+            )
+
+        dossier = store.get_dossier(profile_id)
+        if not dossier:
+            return ToolResult(
+                content="No Applicant dossier — store your resume first", is_error=True
+            )
+
+        resume = store.get_resume_artifact(profile_id)
+        resume_path = (resume or {}).get("pdf_path", "")
+
+        # Detect ATS type from URL; bail immediately if unsupported
+        ats_type = detect_ats_type(url)
+        if ats_type not in SUPPORTED_ATS_TYPES:
+            store.upsert_application(
+                url=url, posting_url=url, ats_type=ats_type,
+                status="failed", fields=[],
+            )
+            return ToolResult(
+                content=json.dumps({
+                    "status": "failed",
+                    "reason": f"Unsupported ATS '{ats_type}' — Felix cannot reliably drive this site",
+                    "url": url,
+                }),
+                is_error=True,
+            )
+
+        # Drive browser: navigate, map fields, fill, upload (all injected for tests)
+        driver = self._apply_driver_fn or _apply_driver_fn
+        if driver is None:
+            return ToolResult(content="Apply driver not configured", is_error=True)
+
+        try:
+            result = driver(url, dossier, resume_path)
+            if asyncio.iscoroutine(result):
+                draft = await result
+            else:
+                draft = result
+        except Exception as exc:
+            logger.error("[job_search] apply_driver failed for %s: %s", url, exc)
+            store.upsert_application(
+                url=url, posting_url=url, ats_type=ats_type,
+                status="failed", fields=[],
+            )
+            return ToolResult(content=f"Apply driver error: {exc}", is_error=True)
+
+        fields = draft.get("fields", [])
+
+        # Zero-guessed rule: any required field with no known value -> stop, never guess
+        missing = [f for f in fields if f.get("required") and not f.get("value")]
+        if missing:
+            store.upsert_application(
+                url=url, posting_url=url, ats_type=ats_type,
+                status="awaiting-input", fields=fields,
+            )
+            return ToolResult(
+                content=json.dumps({
+                    "status": "awaiting-input",
+                    "url": url,
+                    "missing_fields": [f.get("label", f.get("selector", "?")) for f in missing],
+                }),
+                is_error=True,
+            )
+
+        # Form is filled (by the driver side-effect); store pending for submit
+        _pending_application = {
+            "url": url,
+            "ats_type": ats_type,
+            "fields": fields,
+            "submit_selector": draft.get("submit_selector", 'button[type="submit"]'),
+        }
+        store.upsert_application(
+            url=url, posting_url=url, ats_type=ats_type,
+            status="shortlisted", fields=fields,
+        )
+
+        return ToolResult(content=json.dumps({
+            "status": "ready_to_submit",
+            "url": url,
+            "ats_type": ats_type,
+            "fields": fields,
+        }))
+
+    async def _apply_submit(self) -> ToolResult:
+        """S4 #337 — submit the pending application (irreversible=True, ADR-0009)."""
+        global _pending_application
+        import asyncio
+
+        pending = _pending_application
+        if not pending:
+            return ToolResult(
+                content="No pending application — call jobs_apply_start first",
+                is_error=True,
+            )
+
+        store = self._store or _store
+        if store is None:
+            return ToolResult(content="Job search store not initialised", is_error=True)
+
+        submitter = self._apply_submit_fn or _apply_submit_fn
+        if submitter is None:
+            return ToolResult(content="Apply submit action not configured", is_error=True)
+
+        url = pending["url"]
+        try:
+            result = submitter()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as exc:
+            logger.error("[job_search] apply_submit failed for %s: %s", url, exc)
+            store.set_application_status(url, "failed")
+            _pending_application = None
+            return ToolResult(content=f"Submit failed: {exc}", is_error=True)
+
+        submitted_at = datetime.now(timezone.utc).isoformat()
+        store.set_application_status(url, "submitted", submitted_at=submitted_at)
+        _pending_application = None
+
+        apps = store.list_applications()
+        return ToolResult(content=json.dumps({
+            "status": "submitted",
+            "url": url,
+            "submitted_at": submitted_at,
+            "applications": apps,
+        }))
 
     async def _set_approval(self, url: str, approved: bool) -> ToolResult:
         """S3 #336 — approve or reject a shortlist entry."""
@@ -624,5 +944,11 @@ def create(
     store: "JobSearchStore | None" = None,
     extract_fn: "Callable[[str], Any] | None" = None,
     score_fn: "Callable[[dict, dict], Any] | None" = None,
+    apply_driver_fn: "Callable | None" = None,
+    apply_submit_fn: "Callable | None" = None,
 ) -> JobSearchPlugin:
-    return JobSearchPlugin(navigate_fn=navigate_fn, store=store, extract_fn=extract_fn, score_fn=score_fn)
+    return JobSearchPlugin(
+        navigate_fn=navigate_fn, store=store,
+        extract_fn=extract_fn, score_fn=score_fn,
+        apply_driver_fn=apply_driver_fn, apply_submit_fn=apply_submit_fn,
+    )

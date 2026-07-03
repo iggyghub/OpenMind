@@ -87,12 +87,13 @@ class TestPluginMeta:
     def test_lists_tools(self):
         from plugins.job_search import JobSearchPlugin
         names = {t.name for t in JobSearchPlugin().list_tools()}
-        assert names == {"jobs_fetch_postings", "jobs_store_resume", "jobs_score_shortlist", "jobs_set_approval"}  # S1+S2+S3
+        assert names == {"jobs_fetch_postings", "jobs_store_resume", "jobs_score_shortlist", "jobs_set_approval", "jobs_apply_start", "jobs_apply_submit"}  # S1+S2+S3+S4
 
     def test_required_capabilities(self):
         from plugins.job_search import REQUIRED_CAPABILITIES
         assert REQUIRED_CAPABILITIES == frozenset({
             "external_data_read",
+            "external_data_write",   # S4: submitting an application
             "network_egress_cloud",
             "fs_write",
             "fs_read",   # S2: read resume PDF artifact
@@ -791,3 +792,409 @@ class TestSetApprovalTool:
         plugin = JobSearchPlugin(store=store)
         result = await plugin.call_tool("jobs_set_approval", {"url": "", "approved": True})
         assert result.is_error
+
+
+# ── S4 fixtures ───────────────────────────────────────────────────────────────
+
+_ATS_UNKNOWN_URL = "https://workday.com/apply/something"
+
+# Stub fields the apply_driver_fn returns — all required fields have values.
+_FIXTURE_FIELDS_OK = [
+    {"selector": "input[name=first_name]", "label": "First Name", "value": "John",                 "required": True,  "is_file_upload": False},
+    {"selector": "input[name=email]",      "label": "Email",      "value": "john.doe@example.com", "required": True,  "is_file_upload": False},
+    {"selector": "input[name=phone]",      "label": "Phone",      "value": "555-123-4567",         "required": False, "is_file_upload": False},
+    {"selector": "input[type=file]",       "label": "Resume",     "value": "",                     "required": False, "is_file_upload": True},
+]
+
+# Fields with an unfilled required field — triggers awaiting-input.
+_FIXTURE_FIELDS_MISSING = [
+    {"selector": "input[name=first_name]", "label": "First Name", "value": "John", "required": True,  "is_file_upload": False},
+    {"selector": "input[name=auth]",       "label": "Work Auth",  "value": "",     "required": True,  "is_file_upload": False},
+]
+
+
+def _stub_apply_driver(url, dossier, resume_path):
+    return {"fields": _FIXTURE_FIELDS_OK, "submit_selector": 'button[type="submit"]'}
+
+
+def _stub_apply_driver_missing(url, dossier, resume_path):
+    return {"fields": _FIXTURE_FIELDS_MISSING, "submit_selector": 'button[type="submit"]'}
+
+
+def _stub_apply_submit():
+    pass
+
+
+def _make_apply_plugin(store, apply_driver_fn=None, apply_submit_fn=None):
+    import plugins.job_search as jm
+    jm._active_profile_id = _PROFILE_ID
+    jm._pending_resume_path = _RESUME_PATH
+    jm._pending_application = None
+    from plugins.job_search import JobSearchPlugin
+    return JobSearchPlugin(
+        store=store,
+        extract_fn=_stub_extract,
+        score_fn=_stub_scorer,
+        apply_driver_fn=apply_driver_fn or _stub_apply_driver,
+        apply_submit_fn=apply_submit_fn or _stub_apply_submit,
+    )
+
+
+def _seed_shortlisted(store):
+    """Seed store with a shortlisted Greenhouse posting + dossier + resume."""
+    _seed_postings(store)
+    store.set_score(_ATS_URL_1, 8.0)
+    store.set_status(_ATS_URL_1, "shortlisted")
+    store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+    store.upsert_resume_artifact(_PROFILE_ID, _RESUME_PATH)
+
+
+# ── Cycle 10 — detect_ats_type ────────────────────────────────────────────────
+
+class TestDetectAtsType:
+    def test_greenhouse(self):
+        from plugins.job_search import detect_ats_type
+        assert detect_ats_type("https://boards.greenhouse.io/acme/jobs/123") == "greenhouse"
+
+    def test_lever(self):
+        from plugins.job_search import detect_ats_type
+        assert detect_ats_type("https://jobs.lever.co/beta/456") == "lever"
+
+    def test_unknown_returns_unknown(self):
+        from plugins.job_search import detect_ats_type
+        assert detect_ats_type("https://www.workday.com/apply/123") == "unknown"
+
+    def test_empty_returns_unknown(self):
+        from plugins.job_search import detect_ats_type
+        assert detect_ats_type("") == "unknown"
+
+    def test_greenhouse_subdomain(self):
+        from plugins.job_search import detect_ats_type
+        assert detect_ats_type("https://boards.greenhouse.io/acme") == "greenhouse"
+
+    def test_lever_subdomain(self):
+        from plugins.job_search import detect_ats_type
+        assert detect_ats_type("https://jobs.lever.co/company/position") == "lever"
+
+
+# ── Cycle 11 — ApplicationStore ──────────────────────────────────────────────
+
+class TestApplicationStore:
+    def test_list_applications_empty(self):
+        store = _in_memory_store()
+        assert store.list_applications() == []
+
+    def test_upsert_application_stores_row(self):
+        store = _in_memory_store()
+        store.upsert_application(
+            url="https://boards.greenhouse.io/acme/jobs/1",
+            posting_url="https://boards.greenhouse.io/acme/jobs/1",
+            ats_type="greenhouse", status="shortlisted",
+            fields=[{"selector": "input[name=email]", "value": "a@b.com"}],
+        )
+        apps = store.list_applications()
+        assert len(apps) == 1
+        assert apps[0]["status"] == "shortlisted"
+        assert apps[0]["ats_type"] == "greenhouse"
+
+    def test_upsert_application_dedup_on_url(self):
+        store = _in_memory_store()
+        url = "https://boards.greenhouse.io/acme/jobs/1"
+        store.upsert_application(url=url, posting_url=url, ats_type="greenhouse", status="shortlisted", fields=[])
+        store.upsert_application(url=url, posting_url=url, ats_type="greenhouse", status="submitted", fields=[])
+        assert len(store.list_applications()) == 1
+        assert store.get_application(url)["status"] == "submitted"
+
+    def test_set_application_status(self):
+        store = _in_memory_store()
+        url = "https://boards.greenhouse.io/acme/jobs/1"
+        store.upsert_application(url=url, posting_url=url, ats_type="greenhouse", status="shortlisted", fields=[])
+        store.set_application_status(url, "submitted", submitted_at="2026-07-02T00:00:00Z")
+        app = store.get_application(url)
+        assert app["status"] == "submitted"
+        assert app["submitted_at"] == "2026-07-02T00:00:00Z"
+
+    def test_get_application_none(self):
+        store = _in_memory_store()
+        assert store.get_application("https://missing.example.com/") is None
+
+    def test_filled_fields_json_deserialised(self):
+        store = _in_memory_store()
+        url = "https://boards.greenhouse.io/acme/jobs/1"
+        fields = [{"selector": "input[name=email]", "value": "a@b.com"}]
+        store.upsert_application(url=url, posting_url=url, ats_type="greenhouse", status="shortlisted", fields=fields)
+        app = store.get_application(url)
+        assert isinstance(app["filled_fields_json"], list)
+        assert app["filled_fields_json"][0]["selector"] == "input[name=email]"
+
+    def test_get_posting_by_url(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        posting = store.get_posting_by_url(_ATS_URL_1)
+        assert posting is not None
+        assert "greenhouse" in posting["url"]
+
+    def test_get_posting_by_url_missing(self):
+        store = _in_memory_store()
+        assert store.get_posting_by_url("https://nope.example.com/") is None
+
+
+# ── Cycle 12 — jobs_apply_start tool ─────────────────────────────────────────
+
+class TestApplyStart:
+    @pytest.mark.asyncio
+    async def test_tool_listed(self):
+        from plugins.job_search import JobSearchPlugin
+        names = {t.name for t in JobSearchPlugin().list_tools()}
+        assert "jobs_apply_start" in names
+
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_ready_to_submit(self):
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_apply_plugin(store)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "ready_to_submit"
+        assert data["ats_type"] == "greenhouse"
+
+    @pytest.mark.asyncio
+    async def test_happy_path_stores_application_as_shortlisted(self):
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_apply_plugin(store)
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        app = store.get_application(_ATS_URL_1)
+        assert app is not None
+        assert app["status"] == "shortlisted"
+
+    @pytest.mark.asyncio
+    async def test_unsupported_ats_bails_and_marks_failed(self):
+        store = _in_memory_store()
+        store.upsert({
+            "url": _ATS_UNKNOWN_URL, "title": "Workday Job", "company": "Co",
+            "pay": "", "snapshot": "", "posted_date": "",
+        })
+        store.set_score(_ATS_UNKNOWN_URL, 7.0)
+        store.set_status(_ATS_UNKNOWN_URL, "shortlisted")
+        store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+        store.upsert_resume_artifact(_PROFILE_ID, _RESUME_PATH)
+        plugin = _make_apply_plugin(store)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_UNKNOWN_URL})
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "failed"
+        app = store.get_application(_ATS_UNKNOWN_URL)
+        assert app is not None
+        assert app["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_missing_required_field_stops_awaiting_input(self):
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_apply_plugin(store, apply_driver_fn=_stub_apply_driver_missing)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "awaiting-input"
+        assert "Work Auth" in data["missing_fields"]
+        app = store.get_application(_ATS_URL_1)
+        assert app is not None
+        assert app["status"] == "awaiting-input"
+
+    @pytest.mark.asyncio
+    async def test_no_store_returns_error(self):
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=None, apply_driver_fn=_stub_apply_driver)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_no_profile_returns_error(self):
+        import plugins.job_search as jm
+        jm._active_profile_id = None
+        store = _in_memory_store()
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store, apply_driver_fn=_stub_apply_driver)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_empty_url_returns_error(self):
+        store = _in_memory_store()
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store, apply_driver_fn=_stub_apply_driver)
+        result = await plugin.call_tool("jobs_apply_start", {"url": ""})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_not_shortlisted_returns_error(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.set_score(_ATS_URL_1, 8.0)
+        store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+        store.upsert_resume_artifact(_PROFILE_ID, _RESUME_PATH)
+        plugin = _make_apply_plugin(store)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_no_dossier_returns_error(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.set_score(_ATS_URL_1, 8.0)
+        store.set_status(_ATS_URL_1, "shortlisted")
+        plugin = _make_apply_plugin(store)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_no_apply_driver_returns_error(self):
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        jm._apply_driver_fn = None
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store, apply_driver_fn=None)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_lever_ats_supported(self):
+        store = _in_memory_store()
+        _seed_postings(store)
+        store.set_score(_ATS_URL_2, 7.0)
+        store.set_status(_ATS_URL_2, "shortlisted")
+        store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+        store.upsert_resume_artifact(_PROFILE_ID, _RESUME_PATH)
+        plugin = _make_apply_plugin(store)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_2})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["ats_type"] == "lever"
+
+
+# ── Cycle 13 — jobs_apply_submit tool ────────────────────────────────────────
+
+class TestApplySubmit:
+    @pytest.mark.asyncio
+    async def test_tool_is_irreversible(self):
+        from plugins.job_search import JobSearchPlugin
+        tools = {t.name: t for t in JobSearchPlugin().list_tools()}
+        assert tools["jobs_apply_submit"].irreversible is True
+
+    @pytest.mark.asyncio
+    async def test_submit_succeeds_after_start(self):
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_apply_plugin(store)
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        result = await plugin.call_tool("jobs_apply_submit", {})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "submitted"
+        assert data["url"] == _ATS_URL_1
+
+    @pytest.mark.asyncio
+    async def test_submit_calls_submit_fn(self):
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        calls = []
+        def recorder():
+            calls.append("submit")
+        plugin = _make_apply_plugin(store, apply_submit_fn=recorder)
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        await plugin.call_tool("jobs_apply_submit", {})
+        assert "submit" in calls
+
+    @pytest.mark.asyncio
+    async def test_submit_logs_application_as_submitted(self):
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_apply_plugin(store)
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        await plugin.call_tool("jobs_apply_submit", {})
+        app = store.get_application(_ATS_URL_1)
+        assert app is not None
+        assert app["status"] == "submitted"
+        assert app["submitted_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_submit_without_start_returns_error(self):
+        store = _in_memory_store()
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        jm._pending_application = None
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store, apply_submit_fn=_stub_apply_submit)
+        result = await plugin.call_tool("jobs_apply_submit", {})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_submit_no_store_returns_error(self):
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        jm._pending_application = {"url": _ATS_URL_1, "ats_type": "greenhouse"}
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=None, apply_submit_fn=_stub_apply_submit)
+        result = await plugin.call_tool("jobs_apply_submit", {})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_submit_no_submit_fn_returns_error(self):
+        store = _in_memory_store()
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        jm._pending_application = {"url": _ATS_URL_1, "ats_type": "greenhouse"}
+        jm._apply_submit_fn = None
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store, apply_submit_fn=None)
+        result = await plugin.call_tool("jobs_apply_submit", {})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_submit_deduped_on_url(self):
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_apply_plugin(store)
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        await plugin.call_tool("jobs_apply_submit", {})
+        store.set_status(_ATS_URL_1, "shortlisted")
+        plugin2 = _make_apply_plugin(store)
+        await plugin2.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        await plugin2.call_tool("jobs_apply_submit", {})
+        apps = store.list_applications()
+        assert len(apps) == 1  # same URL deduped
+
+
+# ── Cycle 14 — updated plugin meta ────────────────────────────────────────────
+
+class TestPluginMetaS4:
+    def test_lists_six_tools(self):
+        from plugins.job_search import JobSearchPlugin
+        names = {t.name for t in JobSearchPlugin().list_tools()}
+        assert names == {
+            "jobs_fetch_postings", "jobs_store_resume",
+            "jobs_score_shortlist", "jobs_set_approval",
+            "jobs_apply_start", "jobs_apply_submit",
+        }
+
+    def test_required_capabilities_includes_data_write(self):
+        from plugins.job_search import REQUIRED_CAPABILITIES
+        assert "external_data_write" in REQUIRED_CAPABILITIES
+
+    def test_jobs_apply_submit_is_irreversible(self):
+        from plugins.job_search import JobSearchPlugin
+        tools = {t.name: t for t in JobSearchPlugin().list_tools()}
+        assert tools["jobs_apply_submit"].irreversible is True
+
+    def test_jobs_apply_start_not_irreversible(self):
+        from plugins.job_search import JobSearchPlugin
+        tools = {t.name: t for t in JobSearchPlugin().list_tools()}
+        assert not tools["jobs_apply_start"].irreversible

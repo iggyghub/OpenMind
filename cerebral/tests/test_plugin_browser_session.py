@@ -64,6 +64,10 @@ class FakeSession:
         self.calls.append("close")
         self.closed += 1
 
+    async def upload_file(self, selector, file_path):
+        self.calls.append("upload_file")
+        self.uploaded = (selector, file_path)
+
 
 def _plugin(*sessions):
     """Plugin whose factory yields the given sessions in order (one per
@@ -88,9 +92,9 @@ def test_required_capabilities():
     )
 
 
-def test_lists_four_tools():
+def test_lists_five_tools():
     names = {t.name for t in _plugin().list_tools()}
-    assert names == {"browser_open_session", "read_page", "fill_form", "click"}
+    assert names == {"browser_open_session", "read_page", "fill_form", "click", "upload_file"}
     for t in _plugin().list_tools():
         assert t.plugin == "browser_session"
 
@@ -366,3 +370,49 @@ async def test_notify_is_noop_without_notifier():
     plugin = bsp.BrowserSessionPlugin(session_factory=lambda: None)
     bsp._notifier = None
     await plugin._notify("t", "b")  # must not raise
+
+
+# ── upload_file tool (S4 #337) ────────────────────────────────────────────────
+
+async def test_upload_file_requires_open_session():
+    plugin = _plugin(FakeSession())
+    res = await plugin.call_tool("upload_file", {"selector": "input[type=file]", "file_path": "/tmp/cv.pdf"})
+    assert res.is_error
+    assert "No open browser session" in res.content
+
+
+async def test_upload_file_delegates_to_session():
+    sess = FakeSession()
+    plugin = _plugin(sess)
+    await _open(plugin)
+    res = await plugin.call_tool("upload_file", {"selector": "input[type=file]", "file_path": "/tmp/cv.pdf"})
+    assert not res.is_error
+    import json
+    payload = json.loads(res.content)
+    assert payload["uploaded"] == "/tmp/cv.pdf"
+    assert "upload_file" in sess.calls
+    assert sess.uploaded == ("input[type=file]", "/tmp/cv.pdf")
+
+
+async def test_upload_file_missing_selector_returns_error():
+    sess = FakeSession()
+    plugin = _plugin(sess)
+    await _open(plugin)
+    res = await plugin.call_tool("upload_file", {"file_path": "/tmp/cv.pdf"})
+    assert res.is_error
+
+
+async def test_upload_file_missing_file_path_returns_error():
+    sess = FakeSession()
+    plugin = _plugin(sess)
+    await _open(plugin)
+    res = await plugin.call_tool("upload_file", {"selector": "input[type=file]"})
+    assert res.is_error
+
+
+async def test_upload_file_empty_selector_returns_error():
+    sess = FakeSession()
+    plugin = _plugin(sess)
+    await _open(plugin)
+    res = await plugin.call_tool("upload_file", {"selector": "", "file_path": "/tmp/cv.pdf"})
+    assert res.is_error
