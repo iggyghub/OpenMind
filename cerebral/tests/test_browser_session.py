@@ -121,6 +121,10 @@ class FakeDriver:
         self.clicked.append(selector)
         return getattr(self, "_url", "about:blank")
 
+    async def upload_file(self, selector, file_path):
+        self.calls.append("upload_file")
+        self.uploaded = (selector, file_path)
+
     async def close(self):
         self.calls.append("close")
 
@@ -471,3 +475,18 @@ async def test_attended_verification_wall_falls_through_to_manual(tmp_path):
 
     assert result.state is LoginState.MANUAL
     assert "wait_for_manual_login" in driver.calls
+
+
+# ── upload_file (S4 #337) ─────────────────────────────────────────────────────
+
+async def test_upload_file_delegates_to_driver(tmp_path):
+    store = _store()
+    _seed_creds(store)
+    driver = FakeDriver(logged_in=True)
+    sess = _session(driver, store, tmp_path)
+    await sess.ensure_logged_in(unattended=True)
+
+    await sess.upload_file("input[type=file]", "/tmp/resume.pdf")
+
+    assert "upload_file" in driver.calls
+    assert driver.uploaded == ("input[type=file]", "/tmp/resume.pdf")

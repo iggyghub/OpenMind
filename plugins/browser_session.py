@@ -78,6 +78,14 @@ PauseCheck = Callable[[], bool]
 _session_factory: Optional[SessionFactory] = None
 _notifier: Optional[Notifier] = None
 _pause_check: Optional[PauseCheck] = None
+# Singleton plugin instance set by create(); lets other plugins (job_search)
+# read the currently-open session without an orchestrator reference.
+_plugin_instance: Optional["BrowserSessionPlugin"] = None
+
+
+def get_open_session() -> Optional["BrowserSession"]:
+    """Return the plugin's currently-open BrowserSession, or None."""
+    return _plugin_instance._open_session if _plugin_instance else None
 
 
 def set_session_factory(fn: SessionFactory) -> None:
@@ -128,6 +136,30 @@ class BrowserSessionPlugin:
 
     def list_tools(self) -> list[Tool]:
         return [
+            Tool(
+                name="upload_file",
+                description=(
+                    "Upload a local file to a file input on the current page. "
+                    "Provide the CSS selector for the file input and the absolute "
+                    "local path to the file. Requires an open session "
+                    "(browser_open_session)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "selector": {
+                            "type": "string",
+                            "description": "CSS selector for the file input element.",
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Absolute local path to the file to upload.",
+                        },
+                    },
+                    "required": ["selector", "file_path"],
+                },
+            ),
             Tool(
                 name="browser_open_session",
                 description=(
@@ -226,6 +258,8 @@ class BrowserSessionPlugin:
             return await self._fill_form(args)
         if tool_name == "click":
             return await self._click(args)
+        if tool_name == "upload_file":
+            return await self._upload_file(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -406,6 +440,24 @@ class BrowserSessionPlugin:
             return ToolResult(content=_GENERIC_ERROR_MSG, is_error=True)
         return ToolResult(content=json.dumps({"url": url}))
 
+    async def _upload_file(self, args: dict) -> ToolResult:
+        if self._open_session is None:
+            return ToolResult(content=_NOT_OPEN_MSG, is_error=True)
+        selector = args.get("selector")
+        file_path = args.get("file_path")
+        if not isinstance(selector, str) or not selector:
+            return ToolResult(content=_BLANK_SELECTOR_MSG, is_error=True)
+        if not isinstance(file_path, str) or not file_path:
+            return ToolResult(content="'file_path' is required", is_error=True)
+        try:
+            await self._open_session.upload_file(selector, file_path)
+        except Exception:
+            logger.warning("[browser_session] upload_file failed", exc_info=True)
+            return ToolResult(content=_GENERIC_ERROR_MSG, is_error=True)
+        return ToolResult(content=json.dumps({"uploaded": file_path}))
+
 
 def create() -> BrowserSessionPlugin:
-    return BrowserSessionPlugin()
+    global _plugin_instance
+    _plugin_instance = BrowserSessionPlugin()
+    return _plugin_instance
