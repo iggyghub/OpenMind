@@ -1,8 +1,8 @@
 """
-Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3) + #337 (S4).
+Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3) + #337 (S4) + #338 (S5).
 
 Tools: jobs_fetch_postings, jobs_store_resume, jobs_score_shortlist,
-       jobs_set_approval, jobs_apply_start, jobs_apply_submit.
+       jobs_set_approval, jobs_apply_start, jobs_apply_submit, jobs_answer_field.
 
 S1: Reads Rat Race Rebellion job board logged-out via OpenClaw navigate/Readability.
     Parses Job postings and upserts into SQLite job_postings table.
@@ -21,12 +21,20 @@ S4 (ADR-0009): Apply spine — navigate to ATS URL, detect supported ATS (Greenh
     (irreversible=True, ADR-0005 modal). Applications are logged in SQLite
     (URL-deduped). Unsupported ATS -> bail + mark failed.
 
+S5 (Answer bank): Unknown required field -> try semantic recall from Answer bank
+    (via injectable recall_fn) before escalating to user. If no match, notify and
+    wait. User provides answer via jobs_answer_field -> stored in SQLite answer_bank
+    table, indexed in ChromaDB (via injectable index_answer_fn). Next apply for a
+    semantically-equivalent field auto-fills from the bank (Known value).
+
 All network I/O is injected via navigate_fn.
 All DB I/O is injectable via a JobSearchStore seam.
 LLM extraction is injectable via set_extract_fn.
 LLM fit-scoring is injectable via set_score_fn.
 Browser driving + LLM field-mapping is injectable via set_apply_driver_fn.
 Submit action is injectable via set_apply_submit_fn.
+Answer bank recall is injectable via set_recall_fn.
+Answer bank ChromaDB indexing is injectable via set_index_answer_fn.
 """
 import json
 import logging
@@ -264,6 +272,18 @@ class JobSearchStore:
                 created_at          TEXT    NOT NULL
             )
         """)
+        # S5 #338 — Answer bank: ATS question -> user answer, per-profile.
+        # SQLite is source of truth; ChromaDB holds the semantic index (via index_answer_fn).
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS answer_bank (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id  INTEGER NOT NULL,
+                question    TEXT    NOT NULL,
+                answer      TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL,
+                UNIQUE(profile_id, question)
+            )
+        """)
         self._con.commit()
 
     def upsert(self, posting: dict) -> None:
@@ -457,6 +477,25 @@ class JobSearchStore:
             rows.append(d)
         return rows
 
+    # ── S5 #338 — Answer bank ──────────────────────────────────────────────
+
+    def upsert_answer(self, profile_id: int, question: str, answer: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._con.execute("""
+            INSERT INTO answer_bank (profile_id, question, answer, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(profile_id, question) DO UPDATE SET answer = excluded.answer
+        """, (profile_id, question, answer, now))
+        self._con.commit()
+
+    def list_answers(self, profile_id: int) -> list[dict]:
+        cur = self._con.execute(
+            "SELECT question, answer, created_at FROM answer_bank"
+            " WHERE profile_id = ? ORDER BY created_at DESC",
+            (profile_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
 
 # ── Module-level seams ────────────────────────────────────────────────────────
 
@@ -479,6 +518,12 @@ _apply_submit_fn: Callable | None = None
 
 # S4 #337 — pending application held between jobs_apply_start and jobs_apply_submit.
 _pending_application: dict | None = None
+
+# S5 #338 — Answer bank seams (both injectable so tests need no live ChromaDB/model).
+# async (profile_id: int, question: str) -> str | None  (None = no match / below threshold)
+_recall_fn: Callable | None = None
+# async (profile_id: int, question: str, answer: str) -> None
+_index_answer_fn: Callable | None = None
 
 
 def set_navigate_fn(fn: Callable[[str], Awaitable[str]]) -> None:
@@ -526,6 +571,18 @@ def set_apply_submit_fn(fn: Callable) -> None:
     _apply_submit_fn = fn
 
 
+def set_recall_fn(fn: Callable) -> None:
+    """Inject Answer bank recall (async fn(profile_id, question) -> str|None). S5 #338."""
+    global _recall_fn
+    _recall_fn = fn
+
+
+def set_index_answer_fn(fn: Callable) -> None:
+    """Inject ChromaDB indexer (async fn(profile_id, question, answer) -> None). S5 #338."""
+    global _index_answer_fn
+    _index_answer_fn = fn
+
+
 # ── Default navigate fn (calls OpenClaw) ──────────────────────────────────────
 
 async def _default_navigate(url: str) -> str:
@@ -562,13 +619,17 @@ class JobSearchPlugin:
         score_fn: Callable[[dict, dict], Any] | None = None,
         apply_driver_fn: Callable | None = None,
         apply_submit_fn: Callable | None = None,
+        recall_fn: Callable | None = None,
+        index_answer_fn: Callable | None = None,
     ) -> None:
         self._navigate = navigate_fn or _default_navigate
         self._store = store
-        self._extract_fn = extract_fn      # overrides module-level _extract_fn when set
-        self._score_fn = score_fn          # overrides module-level _score_fn when set
-        self._apply_driver_fn = apply_driver_fn  # S4: overrides module-level _apply_driver_fn
-        self._apply_submit_fn = apply_submit_fn  # S4: overrides module-level _apply_submit_fn
+        self._extract_fn = extract_fn
+        self._score_fn = score_fn
+        self._apply_driver_fn = apply_driver_fn
+        self._apply_submit_fn = apply_submit_fn
+        self._recall_fn = recall_fn        # S5: Answer bank semantic recall
+        self._index_answer_fn = index_answer_fn  # S5: ChromaDB indexer
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -670,6 +731,31 @@ class JobSearchPlugin:
                 irreversible=True,
                 schema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="jobs_answer_field",
+                description=(
+                    "Store an answer to an ATS question in the Answer bank. "
+                    "Call this after jobs_apply_start reports a missing required field. "
+                    "The answer is stored in SQLite and indexed semantically in ChromaDB "
+                    "so future forms with the same or similar question are auto-filled "
+                    "(Known value, zero-guessed rule — ADR-0009)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "The field label or question from the ATS form.",
+                        },
+                        "answer": {
+                            "type": "string",
+                            "description": "The user's answer to store.",
+                        },
+                    },
+                    "required": ["question", "answer"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -685,6 +771,8 @@ class JobSearchPlugin:
             return await self._apply_start(args.get("url", ""))
         if tool_name == "jobs_apply_submit":
             return await self._apply_submit()
+        if tool_name == "jobs_answer_field":
+            return await self._answer_field(args.get("question", ""), args.get("answer", ""))
         return ToolResult(content=f"Unknown tool: {tool_name!r}", is_error=True)
 
     async def _score_shortlist(self) -> ToolResult:
@@ -783,9 +871,26 @@ class JobSearchPlugin:
             )
             return ToolResult(content=f"Apply driver error: {exc}", is_error=True)
 
-        fields = draft.get("fields", [])
+        # Copy field dicts so we can mutate values without touching driver-stub constants.
+        fields = [dict(f) for f in draft.get("fields", [])]
 
-        # Zero-guessed rule: any required field with no known value -> stop, never guess
+        # S5 #338: try Answer bank semantic recall for required fields the dossier didn't fill.
+        recall = self._recall_fn or _recall_fn
+        if recall:
+            for f in fields:
+                if f.get("required") and not f.get("value"):
+                    try:
+                        recalled = recall(profile_id, f.get("label", ""))
+                        if asyncio.iscoroutine(recalled):
+                            recalled = await recalled
+                        if recalled is not None:
+                            f["value"] = recalled  # Known value from Answer bank
+                    except Exception as exc:
+                        logger.warning(
+                            "[job_search] recall failed for %r: %s", f.get("label"), exc
+                        )
+
+        # Zero-guessed rule: any required field still without a Known value -> escalate.
         missing = [f for f in fields if f.get("required") and not f.get("value")]
         if missing:
             store.upsert_application(
@@ -818,6 +923,36 @@ class JobSearchPlugin:
             "url": url,
             "ats_type": ats_type,
             "fields": fields,
+        }))
+
+    async def _answer_field(self, question: str, answer: str) -> ToolResult:
+        """S5 #338 — capture user answer, store in Answer bank, index in ChromaDB."""
+        import asyncio
+        store = self._store or _store
+        if store is None:
+            return ToolResult(content="Job search store not initialised", is_error=True)
+        profile_id = _active_profile_id
+        if profile_id is None:
+            return ToolResult(content="No active profile", is_error=True)
+        if not question.strip():
+            return ToolResult(content="question is required", is_error=True)
+
+        store.upsert_answer(profile_id, question, answer)
+
+        indexer = self._index_answer_fn or _index_answer_fn
+        if indexer:
+            try:
+                result = indexer(profile_id, question, answer)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as exc:
+                logger.warning("[job_search] index_answer failed for %r: %s", question, exc)
+
+        return ToolResult(content=json.dumps({
+            "status": "stored",
+            "question": question,
+            "answer": answer,
+            "answer_bank": store.list_answers(profile_id),
         }))
 
     async def _apply_submit(self) -> ToolResult:
@@ -940,15 +1075,18 @@ class JobSearchPlugin:
 
 
 def create(
-    navigate_fn: Callable[[str], Awaitable[str]] | None = None,
+    navigate_fn: "Callable[[str], Awaitable[str]] | None" = None,
     store: "JobSearchStore | None" = None,
     extract_fn: "Callable[[str], Any] | None" = None,
     score_fn: "Callable[[dict, dict], Any] | None" = None,
     apply_driver_fn: "Callable | None" = None,
     apply_submit_fn: "Callable | None" = None,
+    recall_fn: "Callable | None" = None,
+    index_answer_fn: "Callable | None" = None,
 ) -> JobSearchPlugin:
     return JobSearchPlugin(
         navigate_fn=navigate_fn, store=store,
         extract_fn=extract_fn, score_fn=score_fn,
         apply_driver_fn=apply_driver_fn, apply_submit_fn=apply_submit_fn,
+        recall_fn=recall_fn, index_answer_fn=index_answer_fn,
     )
