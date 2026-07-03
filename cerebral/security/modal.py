@@ -107,6 +107,11 @@ class ModalSurface:
     one with an injected ``prompt_fn`` and ``has_subscriber_fn``. The
     surface intentionally does NOT carry an ACL — irreversible
     acceptance is one-shot, never persisted (ADR-0005 / AC#4).
+
+    ``auto_gate_fn`` is the single deliberate ADR-0009 exception: a callable
+    (tool_name, args) -> bool that, when it returns True, auto-approves the
+    call without showing the modal. Only wired for ``job_apply_submit``; no
+    other irreversible tool is affected. See docs/adr/0009-job-application-automation.md.
     """
 
     def __init__(
@@ -115,10 +120,19 @@ class ModalSurface:
         *,
         has_subscriber_fn: HasSubscriberFn | None = None,
         request_id_fn: Callable[[], str] | None = None,
+        auto_gate_fn: Callable[[str, Mapping[str, object]], bool] | None = None,
     ) -> None:
         self._prompt = prompt_fn
         self._has_subscriber = has_subscriber_fn or (lambda: True)
         self._request_id_fn = request_id_fn or (lambda: str(uuid.uuid4()))
+        # ponytail: ADR-0009 exception — only job_apply_submit wires this; no global loosening
+        self._auto_gate_fn = auto_gate_fn
+
+    def set_auto_gate_fn(
+        self, fn: Callable[[str, Mapping[str, object]], bool] | None
+    ) -> None:
+        """Wire (or unwire) the ADR-0009 auto-approve gate (job_apply_submit only)."""
+        self._auto_gate_fn = fn
 
     async def request(
         self,
@@ -128,8 +142,24 @@ class ModalSurface:
         flags: CallFlags | None = None,
     ) -> Decision:
         """Ask the user. Returns SILENT on Accept, DENY on Cancel /
-        timeout / no-surface / unknown-choice."""
+        timeout / no-surface / unknown-choice.
+
+        ADR-0009 exception: if auto_gate_fn returns True for this tool_name,
+        auto-approve without prompting (scoped to job_apply_submit only).
+        """
         flags = flags or CallFlags()
+
+        # S7 #340 — ADR-0009 tool-scoped exception: bypass modal when gate passes.
+        if self._auto_gate_fn is not None:
+            try:
+                if self._auto_gate_fn(tool_name, args or {}):
+                    logger.info(
+                        "[modal] ADR-0009 auto-gate approved '%s' — skipping modal",
+                        tool_name,
+                    )
+                    return Decision.SILENT
+            except Exception as exc:
+                logger.warning("[modal] auto_gate_fn raised for '%s': %s", tool_name, exc)
 
         if not self._has_subscriber():
             logger.info(

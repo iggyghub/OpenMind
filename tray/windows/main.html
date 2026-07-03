@@ -3219,6 +3219,42 @@
       font-weight: 600;
     }
 
+    /* S7 #340 -- Auto-submit section */
+    .jobs-auto-submit-section {
+      border-top: 1px solid var(--border);
+      padding: 12px 0 4px;
+    }
+    .jobs-auto-submit-header {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    .jobs-auto-submit-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .jobs-auto-submit-toggle {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      accent-color: var(--accent);
+    }
+    .jobs-auto-submit-label {
+      font-size: 13px;
+      color: var(--text);
+    }
+    .jobs-ramp-progress {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .jobs-ramp-complete { color: var(--state-active); }
+
     .set-body {
       flex: 1;
       overflow-y: auto;
@@ -4278,6 +4314,17 @@
             </div>
           </div>
         </div>
+        <!-- S7 #340 — Auto-submit opt-in (ADR-0009) -->
+        <div class="jobs-auto-submit-section">
+          <div class="jobs-auto-submit-header">Auto-Submit</div>
+          <div class="jobs-auto-submit-row">
+            <input type="checkbox" class="jobs-auto-submit-toggle" id="jobs-auto-submit-toggle" />
+            <label class="jobs-auto-submit-label" for="jobs-auto-submit-toggle">Enable auto-submit</label>
+          </div>
+          <div class="jobs-ramp-progress" id="jobs-ramp-progress">
+            Complete 5 reviewed submissions to enable.
+          </div>
+        </div>
         <div id="jobs-list">
           <div class="jobs-empty" id="jobs-empty">
             No job postings yet. Click "Check for new jobs" to fetch the latest.
@@ -4851,10 +4898,12 @@
           jobDossier = (event.data && event.data.dossier) || null;        // S2 #335
           jobShortlist = (event.data && event.data.shortlist) || [];      // S3 #336
           jobApplications = (event.data && event.data.applications) || []; // S4 #337
+          jobSettings = (event.data && event.data.job_settings) || null;  // S7 #340
           renderJobSearch();
           renderJobDossier();        // S2 #335
           renderJobShortlist();      // S3 #336
           renderJobApplications();   // S4 #337
+          renderJobAutoSubmit();     // S7 #340
           jobsCheckBtn.disabled = false;
           jobsStatusEl.textContent = jobPostings.length
             ? jobPostings.length + ' posting' + (jobPostings.length === 1 ? '' : 's') + ' stored'
@@ -6056,6 +6105,7 @@
     let jobDossier  = null;  // S2 #335
     let jobShortlist = [];   // S3 #336
     let jobApplications = [];  // S4 #337
+    let jobSettings = null;    // S7 #340 — auto-submit settings
     const jobsListEl        = document.getElementById('jobs-list');
     const jobsEmptyEl       = document.getElementById('jobs-empty');
     const jobsCheckBtn      = document.getElementById('jobs-check-btn');
@@ -6065,6 +6115,8 @@
     const jobsShortlistEmpty = document.getElementById('jobs-shortlist-empty'); // S3 #336
     const jobsApplicationsEl    = document.getElementById('jobs-applications-list');  // S4 #337
     const jobsApplicationsEmpty = document.getElementById('jobs-applications-empty'); // S4 #337
+    const jobsAutoSubmitToggle  = document.getElementById('jobs-auto-submit-toggle');  // S7 #340
+    const jobsRampProgressEl    = document.getElementById('jobs-ramp-progress');       // S7 #340
 
     function renderJobSearch() {
       jobsListEl.querySelectorAll('.jobs-date-group').forEach(function (el) { el.remove(); });
@@ -6202,6 +6254,28 @@
         jobsApplicationsEl.insertBefore(group, jobsApplicationsEmpty);
       });
     }
+
+    // S7 #340 -- render auto-submit toggle and ramp progress.
+    function renderJobAutoSubmit() {
+      if (!jobsAutoSubmitToggle || !jobsRampProgressEl) return;
+      var s = jobSettings || { auto_submit_enabled: 0, reviewed_count: 0, ramp_threshold: 5 };
+      var enabled = !!s.auto_submit_enabled;
+      var reviewed = s.reviewed_count || 0;
+      var threshold = s.ramp_threshold || 5;
+      var rampDone = reviewed >= threshold;
+      jobsAutoSubmitToggle.checked = enabled;
+      if (rampDone) {
+        jobsRampProgressEl.textContent = 'Ramp complete (' + reviewed + '/' + threshold + ' reviewed).';
+        jobsRampProgressEl.className = 'jobs-ramp-progress jobs-ramp-complete';
+      } else {
+        jobsRampProgressEl.textContent = 'Reviewed ' + reviewed + '/' + threshold + ' — complete ramp to enable auto-submit.';
+        jobsRampProgressEl.className = 'jobs-ramp-progress';
+      }
+    }
+
+    jobsAutoSubmitToggle && jobsAutoSubmitToggle.addEventListener('change', function () {
+      sendEvent({ type: 'jobs_set_auto_submit', data: { enabled: this.checked } });
+    });
 
     jobsApplicationsEl && jobsApplicationsEl.addEventListener('click', function (e) {
       var btn = e.target.closest('.jobs-submit-btn');
