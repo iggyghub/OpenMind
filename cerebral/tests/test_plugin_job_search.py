@@ -100,7 +100,8 @@ class TestPluginMeta:
             "external_data_write",   # S4: submitting an application
             "network_egress_cloud",
             "fs_write",
-            "fs_read",   # S2: read resume PDF artifact
+            "fs_read",               # S2: read resume PDF artifact
+            "secrets_read",          # S6: reading ATS account passwords (ADR-0009)
         })
 
     def test_create_factory(self):
@@ -1474,3 +1475,544 @@ class TestSemanticFieldMatching:
         )
         assert work_auth_field is not None
         assert work_auth_field["value"] == "US Citizen"
+
+
+# ── S6 fixtures ───────────────────────────────────────────────────────────────
+#
+# Stubs for: get_jobs_email_fn, create_ats_account_fn, store_ats_password_fn,
+#            read_verify_link_fn, click_verify_link_fn, gen_password_fn.
+# All async; no real network, inbox, browser, or keyring.
+
+_JOBS_EMAIL = "jobs@example.com"
+_FAKE_VERIFY_URL = "https://greenhouse.io/verify?token=abc123"
+_FAKE_PASSWORD = "FakePass123!"
+
+
+def _make_s6_plugin(
+    store,
+    *,
+    jobs_email=_JOBS_EMAIL,
+    create_ok=True,
+    verify_url=_FAKE_VERIFY_URL,
+    click_ok=True,
+    driver_fn=None,
+    second_driver_fn=None,
+):
+    """Build a plugin wired with S6 fakes. second_driver_fn replaces driver after login."""
+    import plugins.job_search as jm
+    jm._active_profile_id = _PROFILE_ID
+    jm._pending_resume_path = _RESUME_PATH
+    jm._pending_application = None
+    jm._recall_fn = None
+
+    # The driver call counter lets us swap behaviour after login.
+    call_counter = [0]
+    base_driver = driver_fn or _stub_apply_driver
+    post_driver = second_driver_fn
+
+    def _driver(url, dossier, resume_path):
+        call_counter[0] += 1
+        if call_counter[0] == 1 and post_driver is not None:
+            # first call: signal needs_login (caller provides via driver_fn)
+            return base_driver(url, dossier, resume_path)
+        if call_counter[0] >= 2 and post_driver is not None:
+            return post_driver(url, dossier, resume_path)
+        return base_driver(url, dossier, resume_path)
+
+    async def _get_email(pid):
+        return jobs_email
+
+    async def _create(url, email, password):
+        return create_ok
+
+    stored = {}
+
+    async def _store_pw(pid, provider, email, password):
+        stored[(pid, provider)] = (email, password)
+
+    async def _read_link(pid):
+        return verify_url
+
+    async def _click(url):
+        return click_ok
+
+    from plugins.job_search import JobSearchPlugin
+    p = JobSearchPlugin(
+        store=store,
+        extract_fn=_stub_extract,
+        score_fn=_stub_scorer,
+        apply_driver_fn=_driver,
+        apply_submit_fn=_stub_apply_submit,
+        get_jobs_email_fn=_get_email,
+        create_ats_account_fn=_create,
+        store_ats_password_fn=_store_pw,
+        read_verify_link_fn=_read_link,
+        click_verify_link_fn=_click,
+        gen_password_fn=lambda: _FAKE_PASSWORD,
+    )
+    p._stored_passwords = stored  # expose for assertions
+    return p
+
+
+def _stub_driver_needs_login(url, dossier, resume_path):
+    """Apply driver that signals the ATS requires login."""
+    return {"needs_login": True, "ats_provider": "greenhouse"}
+
+
+# ── Cycle 18 — ATS accounts store ────────────────────────────────────────────
+
+class TestAtsAccountStore:
+    def test_list_ats_accounts_empty(self):
+        store = _in_memory_store()
+        assert store.list_ats_accounts(_PROFILE_ID) == []
+
+    def test_upsert_ats_account_stores(self):
+        store = _in_memory_store()
+        store.upsert_ats_account(_PROFILE_ID, "greenhouse", _JOBS_EMAIL, "created")
+        accounts = store.list_ats_accounts(_PROFILE_ID)
+        assert len(accounts) == 1
+        assert accounts[0]["ats_provider"] == "greenhouse"
+        assert accounts[0]["email"] == _JOBS_EMAIL
+        assert accounts[0]["status"] == "created"
+
+    def test_upsert_ats_account_dedup_on_provider(self):
+        store = _in_memory_store()
+        store.upsert_ats_account(_PROFILE_ID, "greenhouse", _JOBS_EMAIL, "created")
+        store.upsert_ats_account(_PROFILE_ID, "greenhouse", _JOBS_EMAIL, "verified")
+        accounts = store.list_ats_accounts(_PROFILE_ID)
+        assert len(accounts) == 1
+        assert accounts[0]["status"] == "verified"
+
+    def test_get_ats_account_none(self):
+        store = _in_memory_store()
+        assert store.get_ats_account(_PROFILE_ID, "greenhouse") is None
+
+    def test_get_ats_account_returns_row(self):
+        store = _in_memory_store()
+        store.upsert_ats_account(_PROFILE_ID, "greenhouse", _JOBS_EMAIL, "verified")
+        acct = store.get_ats_account(_PROFILE_ID, "greenhouse")
+        assert acct is not None
+        assert acct["status"] == "verified"
+
+    def test_different_profiles_isolated(self):
+        store = _in_memory_store()
+        store.upsert_ats_account(1, "greenhouse", "a@example.com", "created")
+        store.upsert_ats_account(2, "greenhouse", "b@example.com", "created")
+        assert store.get_ats_account(1, "greenhouse")["email"] == "a@example.com"
+        assert store.get_ats_account(2, "greenhouse")["email"] == "b@example.com"
+
+    def test_different_providers_stored_separately(self):
+        store = _in_memory_store()
+        store.upsert_ats_account(_PROFILE_ID, "greenhouse", _JOBS_EMAIL, "verified")
+        store.upsert_ats_account(_PROFILE_ID, "lever", _JOBS_EMAIL, "created")
+        assert len(store.list_ats_accounts(_PROFILE_ID)) == 2
+        assert store.get_ats_account(_PROFILE_ID, "lever")["status"] == "created"
+
+
+# ── Cycle 19 — _ensure_ats_login orchestration ───────────────────────────────
+
+class TestEnsureAtsLogin:
+    """Unit tests for _ensure_ats_login: all seams are fakes; no real network/email."""
+
+    @pytest.mark.asyncio
+    async def test_already_verified_returns_true_immediately(self):
+        store = _in_memory_store()
+        store.upsert_ats_account(_PROFILE_ID, "greenhouse", _JOBS_EMAIL, "verified")
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store)
+        result = await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_no_jobs_email_fn_returns_false(self):
+        store = _in_memory_store()
+        from plugins.job_search import JobSearchPlugin
+        import plugins.job_search as jm
+        jm._get_jobs_email_fn = None
+        plugin = JobSearchPlugin(store=store, get_jobs_email_fn=None)
+        result = await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_no_jobs_email_value_returns_false(self):
+        store = _in_memory_store()
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store, get_jobs_email_fn=lambda pid: None)
+        result = await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_create_account_failure_marks_failed_and_returns_false(self):
+        store = _in_memory_store()
+        from plugins.job_search import JobSearchPlugin
+
+        async def _email(pid): return _JOBS_EMAIL
+        async def _create_fail(url, email, pw): return False
+
+        plugin = JobSearchPlugin(
+            store=store,
+            get_jobs_email_fn=_email,
+            create_ats_account_fn=_create_fail,
+        )
+        result = await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert result is False
+        acct = store.get_ats_account(_PROFILE_ID, "greenhouse")
+        assert acct is not None
+        assert acct["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_no_verify_link_returns_false_and_status_created(self):
+        store = _in_memory_store()
+        from plugins.job_search import JobSearchPlugin
+
+        async def _email(pid): return _JOBS_EMAIL
+        async def _create_ok(url, email, pw): return True
+        async def _no_link(pid): return None
+
+        plugin = JobSearchPlugin(
+            store=store,
+            get_jobs_email_fn=_email,
+            create_ats_account_fn=_create_ok,
+            read_verify_link_fn=_no_link,
+        )
+        result = await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert result is False
+        # Status stays at 'created' (link never arrived)
+        acct = store.get_ats_account(_PROFILE_ID, "greenhouse")
+        assert acct is not None
+        assert acct["status"] == "created"
+
+    @pytest.mark.asyncio
+    async def test_click_link_failure_marks_failed(self):
+        store = _in_memory_store()
+        from plugins.job_search import JobSearchPlugin
+
+        async def _email(pid): return _JOBS_EMAIL
+        async def _create_ok(url, email, pw): return True
+        async def _link(pid): return _FAKE_VERIFY_URL
+        async def _click_fail(url): return False
+
+        plugin = JobSearchPlugin(
+            store=store,
+            get_jobs_email_fn=_email,
+            create_ats_account_fn=_create_ok,
+            read_verify_link_fn=_link,
+            click_verify_link_fn=_click_fail,
+        )
+        result = await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert result is False
+        acct = store.get_ats_account(_PROFILE_ID, "greenhouse")
+        assert acct["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_true_and_marks_verified(self):
+        store = _in_memory_store()
+        from plugins.job_search import JobSearchPlugin
+
+        async def _email(pid): return _JOBS_EMAIL
+        async def _create_ok(url, email, pw): return True
+        async def _link(pid): return _FAKE_VERIFY_URL
+        async def _click_ok(url): return True
+
+        plugin = JobSearchPlugin(
+            store=store,
+            get_jobs_email_fn=_email,
+            create_ats_account_fn=_create_ok,
+            read_verify_link_fn=_link,
+            click_verify_link_fn=_click_ok,
+        )
+        result = await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert result is True
+        acct = store.get_ats_account(_PROFILE_ID, "greenhouse")
+        assert acct is not None
+        assert acct["status"] == "verified"
+        assert acct["email"] == _JOBS_EMAIL
+
+    @pytest.mark.asyncio
+    async def test_happy_path_calls_store_password_fn(self):
+        store = _in_memory_store()
+        calls = []
+
+        async def _email(pid): return _JOBS_EMAIL
+        async def _create_ok(url, email, pw): return True
+        async def _link(pid): return _FAKE_VERIFY_URL
+        async def _click_ok(url): return True
+        async def _store_pw(pid, provider, email, pw):
+            calls.append((pid, provider, email, pw))
+
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(
+            store=store,
+            get_jobs_email_fn=_email,
+            create_ats_account_fn=_create_ok,
+            store_ats_password_fn=_store_pw,
+            read_verify_link_fn=_link,
+            click_verify_link_fn=_click_ok,
+            gen_password_fn=lambda: _FAKE_PASSWORD,
+        )
+        await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert len(calls) == 1
+        pid, provider, email, pw = calls[0]
+        assert pid == _PROFILE_ID
+        assert provider == "greenhouse"
+        assert email == _JOBS_EMAIL
+        assert pw == _FAKE_PASSWORD
+
+    @pytest.mark.asyncio
+    async def test_gen_password_fn_used(self):
+        """Custom gen_password_fn is called; the generated password reaches create_account_fn."""
+        passwords_used = []
+
+        async def _email(pid): return _JOBS_EMAIL
+        async def _create_capture(url, email, pw):
+            passwords_used.append(pw)
+            return True
+        async def _link(pid): return _FAKE_VERIFY_URL
+        async def _click_ok(url): return True
+
+        store = _in_memory_store()
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(
+            store=store,
+            get_jobs_email_fn=_email,
+            create_ats_account_fn=_create_capture,
+            read_verify_link_fn=_link,
+            click_verify_link_fn=_click_ok,
+            gen_password_fn=lambda: "CustomPass!42",
+        )
+        await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert passwords_used == ["CustomPass!42"]
+
+    @pytest.mark.asyncio
+    async def test_default_password_generated_when_no_fn(self):
+        """When gen_password_fn is None, secrets.token_urlsafe is used (non-empty, URL-safe)."""
+        import re as _re
+        passwords = []
+
+        async def _email(pid): return _JOBS_EMAIL
+        async def _create_capture(url, email, pw):
+            passwords.append(pw)
+            return True
+        async def _link(pid): return _FAKE_VERIFY_URL
+        async def _click_ok(url): return True
+
+        store = _in_memory_store()
+        from plugins.job_search import JobSearchPlugin
+        import plugins.job_search as jm
+        jm._gen_password_fn = None
+        plugin = JobSearchPlugin(
+            store=store,
+            get_jobs_email_fn=_email,
+            create_ats_account_fn=_create_capture,
+            read_verify_link_fn=_link,
+            click_verify_link_fn=_click_ok,
+            gen_password_fn=None,
+        )
+        await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert len(passwords) == 1
+        assert len(passwords[0]) >= 16
+        assert _re.match(r"^[A-Za-z0-9_-]+$", passwords[0])
+
+    @pytest.mark.asyncio
+    async def test_idempotent_second_call_with_verified_account(self):
+        """Second call when account is already verified skips all creation steps."""
+        store = _in_memory_store()
+        store.upsert_ats_account(_PROFILE_ID, "greenhouse", _JOBS_EMAIL, "verified")
+        create_calls = []
+
+        async def _create_should_not_be_called(url, email, pw):
+            create_calls.append(pw)
+            return True
+
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(
+            store=store,
+            get_jobs_email_fn=lambda pid: _JOBS_EMAIL,
+            create_ats_account_fn=_create_should_not_be_called,
+        )
+        result = await plugin._ensure_ats_login(_PROFILE_ID, "greenhouse", _ATS_URL_1)
+        assert result is True
+        assert create_calls == []  # account creation never called
+
+
+# ── Cycle 20 — needs_login flow in jobs_apply_start ──────────────────────────
+
+class TestApplyStartNeedsLogin:
+    """S6: apply_driver signals needs_login -> ensure_ats_login -> retry driver."""
+
+    @pytest.mark.asyncio
+    async def test_needs_login_triggers_account_creation_and_returns_ready(self):
+        """Full happy path: driver needs login -> account created -> retry succeeds."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_s6_plugin(
+            store,
+            driver_fn=_stub_driver_needs_login,
+            second_driver_fn=_stub_apply_driver,  # second call returns filled fields
+        )
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "ready_to_submit"
+
+    @pytest.mark.asyncio
+    async def test_needs_login_marks_ats_account_verified(self):
+        """ATS account row is written to the store after a successful login flow."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_s6_plugin(
+            store,
+            driver_fn=_stub_driver_needs_login,
+            second_driver_fn=_stub_apply_driver,
+        )
+        await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        acct = store.get_ats_account(_PROFILE_ID, "greenhouse")
+        assert acct is not None
+        assert acct["status"] == "verified"
+
+    @pytest.mark.asyncio
+    async def test_needs_login_no_jobs_email_returns_failed(self):
+        """Missing jobs email -> login fails -> application marked failed."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        # Override: no jobs email
+        plugin = _make_s6_plugin(store, jobs_email=None, driver_fn=_stub_driver_needs_login)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "failed"
+        app = store.get_application(_ATS_URL_1)
+        assert app is not None
+        assert app["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_needs_login_account_create_failure_returns_failed(self):
+        """Account creation fails -> login fails -> application marked failed."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_s6_plugin(
+            store,
+            create_ok=False,
+            driver_fn=_stub_driver_needs_login,
+        )
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_needs_login_no_verify_link_returns_failed(self):
+        """No verification link in inbox -> login fails."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_s6_plugin(
+            store,
+            verify_url=None,
+            driver_fn=_stub_driver_needs_login,
+        )
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_needs_login_click_fail_returns_failed(self):
+        """Verification link click fails -> login fails."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_s6_plugin(
+            store,
+            click_ok=False,
+            driver_fn=_stub_driver_needs_login,
+        )
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_needs_login_retry_still_needs_login_returns_failed(self):
+        """Even after login, driver still signals needs_login -> bail."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        # both calls return needs_login
+        plugin = _make_s6_plugin(
+            store,
+            driver_fn=_stub_driver_needs_login,
+            second_driver_fn=_stub_driver_needs_login,
+        )
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_already_verified_skips_creation_on_second_apply(self):
+        """If account already verified, driver skips creation on re-apply."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        # Pre-seed verified account
+        store.upsert_ats_account(_PROFILE_ID, "greenhouse", _JOBS_EMAIL, "verified")
+
+        create_calls = []
+        async def _create_track(url, email, pw):
+            create_calls.append(pw)
+            return True
+
+        import plugins.job_search as jm
+        jm._active_profile_id = _PROFILE_ID
+        jm._pending_resume_path = _RESUME_PATH
+        jm._pending_application = None
+        jm._recall_fn = None
+
+        from plugins.job_search import JobSearchPlugin
+        # two-shot driver: first signals needs_login, second fills OK
+        call_n = [0]
+        def _two_shot(url, dossier, resume_path):
+            call_n[0] += 1
+            if call_n[0] == 1:
+                return {"needs_login": True, "ats_provider": "greenhouse"}
+            return _stub_apply_driver(url, dossier, resume_path)
+
+        plugin = JobSearchPlugin(
+            store=store,
+            extract_fn=_stub_extract,
+            score_fn=_stub_scorer,
+            apply_driver_fn=_two_shot,
+            apply_submit_fn=_stub_apply_submit,
+            get_jobs_email_fn=lambda pid: _JOBS_EMAIL,
+            create_ats_account_fn=_create_track,
+            read_verify_link_fn=lambda pid: _FAKE_VERIFY_URL,
+            click_verify_link_fn=lambda url: True,
+            gen_password_fn=lambda: _FAKE_PASSWORD,
+        )
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert not result.is_error
+        # Account was already verified; _ensure_ats_login returned True immediately
+        assert create_calls == []
+
+
+# ── Cycle 21 — capabilities + meta ───────────────────────────────────────────
+
+class TestPluginMetaS6:
+    def test_secrets_read_in_capabilities(self):
+        from plugins.job_search import REQUIRED_CAPABILITIES
+        assert "secrets_read" in REQUIRED_CAPABILITIES
+
+    def test_tool_list_unchanged_by_s6(self):
+        """S6 adds no new tools — the existing tool set is sufficient."""
+        from plugins.job_search import JobSearchPlugin
+        names = {t.name for t in JobSearchPlugin().list_tools()}
+        assert names == {
+            "jobs_fetch_postings", "jobs_store_resume", "jobs_score_shortlist",
+            "jobs_set_approval", "jobs_apply_start", "jobs_apply_submit",
+            "jobs_answer_field",
+        }
+
+    def test_create_factory_accepts_s6_seams(self):
+        from plugins.job_search import create, JobSearchPlugin
+        p = create(
+            gen_password_fn=lambda: "pw",
+            get_jobs_email_fn=lambda pid: "jobs@example.com",
+        )
+        assert isinstance(p, JobSearchPlugin)

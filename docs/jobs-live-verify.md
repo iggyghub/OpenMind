@@ -42,3 +42,26 @@ _(slices append their live-verify items here as they land)_
 - [ ] Verify that re-running `jobs_apply_start` on a URL that already has a `submitted`
       Application row (same ATS URL) either warns or upserts -- never produces a second
       row (URL dedup invariant).
+
+### S6 -- #339: Account-creation + email verification
+
+- [ ] Seed the jobs-email Connected account via the Credentials panel (provider
+      `jobs_email`): set the email address. Confirm it appears as `jobs_email_configured:
+      true` in the `jobs_update` event the tray receives.
+- [ ] Open a Greenhouse posting that requires an account (login-gated, not guest-apply):
+      call `browser_open_session`, then `jobs_apply_start` with its URL. Verify the
+      `apply_driver_fn` returns `needs_login: true` and `_ensure_ats_login` is invoked.
+- [ ] Confirm that `_ensure_ats_login` creates an ATS account using the jobs email +
+      a Felix-generated password, and the `ats_accounts` SQLite row is written with
+      `status="created"`.
+- [ ] Confirm that the verification email arrives in the jobs inbox, `_read_verify_link_fn`
+      extracts the link, and `_click_verify_link_fn` navigates to it successfully.
+- [ ] Confirm the `ats_accounts` row updates to `status="verified"` after verification.
+- [ ] Confirm that the password is stored in the keyring under the per-provider provider
+      name (e.g. `greenhouse`) via `CredentialStore.get_secret(profile_id, "greenhouse", "password")`.
+- [ ] After verification, confirm control returns to `jobs_apply_start`, the driver
+      re-navigates to the ATS URL now logged in, and the application proceeds to
+      `ready_to_submit` (or `awaiting-input` for unknown fields).
+- [ ] Run `jobs_apply_start` a second time on the same URL: confirm `_ensure_ats_login`
+      detects the existing `verified` account and skips account-creation entirely.
+- [ ] Confirm that a Lever login-gated posting follows the same flow end-to-end.

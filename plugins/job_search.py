@@ -1,5 +1,6 @@
 """
-Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3) + #337 (S4) + #338 (S5).
+Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3) + #337 (S4) + #338 (S5)
+                         + #339 (S6).
 
 Tools: jobs_fetch_postings, jobs_store_resume, jobs_score_shortlist,
        jobs_set_approval, jobs_apply_start, jobs_apply_submit, jobs_answer_field.
@@ -27,6 +28,15 @@ S5 (Answer bank): Unknown required field -> try semantic recall from Answer bank
     table, indexed in ChromaDB (via injectable index_answer_fn). Next apply for a
     semantically-equivalent field auto-fills from the bank (Known value).
 
+S6 (Account-creation + email verification): When apply_driver_fn signals
+    {"needs_login": True}, Felix creates an ATS account using the jobs-email
+    Connected account (via injectable get_jobs_email_fn), a Felix-generated password
+    (gen_password_fn), stores it in the keyring (store_ats_password_fn), reads the
+    jobs inbox for the verification link (read_verify_link_fn), and clicks it
+    (click_verify_link_fn). Control then returns to the apply flow logged in.
+    ATS accounts are persisted in SQLite ats_accounts table. All seams are injectable
+    for fake-only testing; no real account creation or email in tests.
+
 All network I/O is injected via navigate_fn.
 All DB I/O is injectable via a JobSearchStore seam.
 LLM extraction is injectable via set_extract_fn.
@@ -35,6 +45,9 @@ Browser driving + LLM field-mapping is injectable via set_apply_driver_fn.
 Submit action is injectable via set_apply_submit_fn.
 Answer bank recall is injectable via set_recall_fn.
 Answer bank ChromaDB indexing is injectable via set_index_answer_fn.
+S6 account/email seams: set_gen_password_fn, set_create_ats_account_fn,
+    set_get_jobs_email_fn, set_store_ats_password_fn, set_read_verify_link_fn,
+    set_click_verify_link_fn.
 """
 import json
 import logging
@@ -56,6 +69,7 @@ OPENCLAW_BASE = "http://localhost:3000"
 # ADR-0005 / Issue #334 — jobs_fetch_postings: network_egress_cloud + external_data_read + fs_write.
 # Issue #335 — jobs_store_resume: fs_read (PDF artifact) + fs_write (dossier).
 # Issue #337 (S4) — jobs_apply_submit: external_data_write (submitting to ATS is a write).
+# Issue #339 (S6) — ATS account passwords: secrets_read (per ADR-0009).
 # network_egress_cloud covers cloud-LLM extraction + field-mapping; llm_call is not in the 16-class vocabulary.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
     "external_data_read",
@@ -63,6 +77,7 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
     "network_egress_cloud",
     "fs_write",
     "fs_read",
+    "secrets_read",  # S6 #339: reading ATS account passwords from keyring (ADR-0009)
 })
 
 # ATSes Felix can drive generically (guest-apply, clean DOM form).
@@ -284,6 +299,19 @@ class JobSearchStore:
                 UNIQUE(profile_id, question)
             )
         """)
+        # S6 #339 — ATS accounts: per-profile per-provider account created by Felix.
+        # Password is in the keyring (store_ats_password_fn); only non-secret metadata here.
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS ats_accounts (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id   INTEGER NOT NULL,
+                ats_provider TEXT    NOT NULL,
+                email        TEXT    NOT NULL DEFAULT '',
+                status       TEXT    NOT NULL DEFAULT 'created',
+                created_at   TEXT    NOT NULL,
+                UNIQUE(profile_id, ats_provider)
+            )
+        """)
         self._con.commit()
 
     def upsert(self, posting: dict) -> None:
@@ -496,6 +524,33 @@ class JobSearchStore:
         )
         return [dict(row) for row in cur.fetchall()]
 
+    # ── S6 #339 — ATS accounts ─────────────────────────────────────────────
+
+    def upsert_ats_account(self, profile_id: int, ats_provider: str, email: str, status: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._con.execute("""
+            INSERT INTO ats_accounts (profile_id, ats_provider, email, status, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, ats_provider) DO UPDATE SET
+                email  = excluded.email,
+                status = excluded.status
+        """, (profile_id, ats_provider, email, status, now))
+        self._con.commit()
+
+    def get_ats_account(self, profile_id: int, ats_provider: str) -> dict | None:
+        row = self._con.execute(
+            "SELECT * FROM ats_accounts WHERE profile_id = ? AND ats_provider = ?",
+            (profile_id, ats_provider),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_ats_accounts(self, profile_id: int) -> list[dict]:
+        cur = self._con.execute(
+            "SELECT * FROM ats_accounts WHERE profile_id = ? ORDER BY created_at DESC",
+            (profile_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
 
 # ── Module-level seams ────────────────────────────────────────────────────────
 
@@ -524,6 +579,20 @@ _pending_application: dict | None = None
 _recall_fn: Callable | None = None
 # async (profile_id: int, question: str, answer: str) -> None
 _index_answer_fn: Callable | None = None
+
+# S6 #339 — Account-creation + email verification seams (all injectable; tests use fakes).
+# () -> str — generate a random password for a new ATS account
+_gen_password_fn: Callable | None = None
+# async (ats_url: str, email: str, password: str) -> bool — create account on the ATS
+_create_ats_account_fn: Callable | None = None
+# async (profile_id: int) -> str | None — return the jobs email address
+_get_jobs_email_fn: Callable | None = None
+# async (profile_id: int, ats_provider: str, email: str, password: str) -> None
+_store_ats_password_fn: Callable | None = None
+# async (profile_id: int) -> str | None — read jobs inbox, return verification URL
+_read_verify_link_fn: Callable | None = None
+# async (verify_url: str) -> bool — navigate to the verification link
+_click_verify_link_fn: Callable | None = None
 
 
 def set_navigate_fn(fn: Callable[[str], Awaitable[str]]) -> None:
@@ -583,6 +652,44 @@ def set_index_answer_fn(fn: Callable) -> None:
     _index_answer_fn = fn
 
 
+# S6 #339 setters ─────────────────────────────────────────────────────────────
+
+def set_gen_password_fn(fn: Callable) -> None:
+    """Inject password generator (() -> str). S6 #339."""
+    global _gen_password_fn
+    _gen_password_fn = fn
+
+
+def set_create_ats_account_fn(fn: Callable) -> None:
+    """Inject ATS account creator (async fn(ats_url, email, password) -> bool). S6 #339."""
+    global _create_ats_account_fn
+    _create_ats_account_fn = fn
+
+
+def set_get_jobs_email_fn(fn: Callable) -> None:
+    """Inject jobs-email getter (async fn(profile_id) -> str | None). S6 #339."""
+    global _get_jobs_email_fn
+    _get_jobs_email_fn = fn
+
+
+def set_store_ats_password_fn(fn: Callable) -> None:
+    """Inject keyring password writer (async fn(profile_id, ats_provider, email, password) -> None). S6 #339."""
+    global _store_ats_password_fn
+    _store_ats_password_fn = fn
+
+
+def set_read_verify_link_fn(fn: Callable) -> None:
+    """Inject jobs-inbox verifier (async fn(profile_id) -> str | None). S6 #339."""
+    global _read_verify_link_fn
+    _read_verify_link_fn = fn
+
+
+def set_click_verify_link_fn(fn: Callable) -> None:
+    """Inject link-clicker (async fn(verify_url) -> bool). S6 #339."""
+    global _click_verify_link_fn
+    _click_verify_link_fn = fn
+
+
 # ── Default navigate fn (calls OpenClaw) ──────────────────────────────────────
 
 async def _default_navigate(url: str) -> str:
@@ -621,6 +728,13 @@ class JobSearchPlugin:
         apply_submit_fn: Callable | None = None,
         recall_fn: Callable | None = None,
         index_answer_fn: Callable | None = None,
+        # S6 #339 — account-creation + email-verification seams
+        gen_password_fn: Callable | None = None,
+        create_ats_account_fn: Callable | None = None,
+        get_jobs_email_fn: Callable | None = None,
+        store_ats_password_fn: Callable | None = None,
+        read_verify_link_fn: Callable | None = None,
+        click_verify_link_fn: Callable | None = None,
     ) -> None:
         self._navigate = navigate_fn or _default_navigate
         self._store = store
@@ -628,8 +742,15 @@ class JobSearchPlugin:
         self._score_fn = score_fn
         self._apply_driver_fn = apply_driver_fn
         self._apply_submit_fn = apply_submit_fn
-        self._recall_fn = recall_fn        # S5: Answer bank semantic recall
+        self._recall_fn = recall_fn          # S5: Answer bank semantic recall
         self._index_answer_fn = index_answer_fn  # S5: ChromaDB indexer
+        # S6 #339
+        self._gen_password_fn = gen_password_fn
+        self._create_ats_account_fn = create_ats_account_fn
+        self._get_jobs_email_fn = get_jobs_email_fn
+        self._store_ats_password_fn = store_ats_password_fn
+        self._read_verify_link_fn = read_verify_link_fn
+        self._click_verify_link_fn = click_verify_link_fn
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -871,6 +992,45 @@ class JobSearchPlugin:
             )
             return ToolResult(content=f"Apply driver error: {exc}", is_error=True)
 
+        # S6 #339: ATS requires login -> create account + verify email, then retry driver.
+        if draft.get("needs_login"):
+            ats_prov = draft.get("ats_provider") or ats_type
+            login_ok = await self._ensure_ats_login(profile_id, ats_prov, url)
+            if not login_ok:
+                store.upsert_application(
+                    url=url, posting_url=url, ats_type=ats_type,
+                    status="failed", fields=[],
+                )
+                return ToolResult(
+                    content=json.dumps({
+                        "status": "failed",
+                        "reason": "ATS login/account-creation failed — check jobs email credential",
+                        "url": url,
+                    }),
+                    is_error=True,
+                )
+            # Retry driver now logged in
+            try:
+                result2 = driver(url, dossier, resume_path)
+                if asyncio.iscoroutine(result2):
+                    draft = await result2
+                else:
+                    draft = result2
+            except Exception as exc:
+                logger.error("[job_search] apply_driver (post-login) failed for %s: %s", url, exc)
+                store.upsert_application(url=url, posting_url=url, ats_type=ats_type, status="failed", fields=[])
+                return ToolResult(content=f"Apply driver (post-login) error: {exc}", is_error=True)
+            if draft.get("needs_login"):
+                store.upsert_application(url=url, posting_url=url, ats_type=ats_type, status="failed", fields=[])
+                return ToolResult(
+                    content=json.dumps({
+                        "status": "failed",
+                        "reason": "ATS still requires login after account verification",
+                        "url": url,
+                    }),
+                    is_error=True,
+                )
+
         # Copy field dicts so we can mutate values without touching driver-stub constants.
         fields = [dict(f) for f in draft.get("fields", [])]
 
@@ -954,6 +1114,75 @@ class JobSearchPlugin:
             "answer": answer,
             "answer_bank": store.list_answers(profile_id),
         }))
+
+    async def _ensure_ats_login(self, profile_id: int, ats_provider: str, ats_url: str) -> bool:
+        """S6 #339 — create ATS account + verify email. Returns True when ready to apply logged in."""
+        import asyncio
+        store = self._store or _store
+
+        # 1. Already verified — nothing to do.
+        existing = store.get_ats_account(profile_id, ats_provider) if store else None
+        if existing and existing["status"] == "verified":
+            return True
+
+        # 2. Get the jobs email address (Connected account, per-profile).
+        get_email = self._get_jobs_email_fn or _get_jobs_email_fn
+        if get_email is None:
+            logger.warning("[job_search] no get_jobs_email_fn — cannot create ATS account")
+            return False
+        r = get_email(profile_id)
+        jobs_email = (await r) if asyncio.iscoroutine(r) else r
+        if not jobs_email:
+            logger.warning("[job_search] jobs email not configured for profile %d", profile_id)
+            return False
+
+        # 3. Generate a random password for the new ATS account.
+        import secrets as _secrets
+        gen_pw = self._gen_password_fn or _gen_password_fn
+        password = gen_pw() if gen_pw is not None else _secrets.token_urlsafe(16)
+
+        # 4. Create account on the ATS (attended browser or fake in tests).
+        create = self._create_ats_account_fn or _create_ats_account_fn
+        if create is not None:
+            r2 = create(ats_url, jobs_email, password)
+            ok = (await r2) if asyncio.iscoroutine(r2) else r2
+            if not ok:
+                if store:
+                    store.upsert_ats_account(profile_id, ats_provider, jobs_email, "failed")
+                return False
+
+        # 5. Persist account as 'created' + store password in keyring.
+        if store:
+            store.upsert_ats_account(profile_id, ats_provider, jobs_email, "created")
+        store_pw = self._store_ats_password_fn or _store_ats_password_fn
+        if store_pw is not None:
+            r3 = store_pw(profile_id, ats_provider, jobs_email, password)
+            if asyncio.iscoroutine(r3):
+                await r3
+
+        # 6. Read jobs inbox for the verification link.
+        read_link = self._read_verify_link_fn or _read_verify_link_fn
+        verify_url = None
+        if read_link is not None:
+            r4 = read_link(profile_id)
+            verify_url = (await r4) if asyncio.iscoroutine(r4) else r4
+        if not verify_url:
+            logger.warning("[job_search] no verification link found in jobs inbox")
+            return False
+
+        # 7. Click the verification link to complete account activation.
+        click = self._click_verify_link_fn or _click_verify_link_fn
+        if click is not None:
+            r5 = click(verify_url)
+            click_ok = (await r5) if asyncio.iscoroutine(r5) else r5
+            if not click_ok:
+                if store:
+                    store.upsert_ats_account(profile_id, ats_provider, jobs_email, "failed")
+                return False
+
+        if store:
+            store.upsert_ats_account(profile_id, ats_provider, jobs_email, "verified")
+        return True
 
     async def _apply_submit(self) -> ToolResult:
         """S4 #337 — submit the pending application (irreversible=True, ADR-0009)."""
@@ -1083,10 +1312,23 @@ def create(
     apply_submit_fn: "Callable | None" = None,
     recall_fn: "Callable | None" = None,
     index_answer_fn: "Callable | None" = None,
+    # S6 #339
+    gen_password_fn: "Callable | None" = None,
+    create_ats_account_fn: "Callable | None" = None,
+    get_jobs_email_fn: "Callable | None" = None,
+    store_ats_password_fn: "Callable | None" = None,
+    read_verify_link_fn: "Callable | None" = None,
+    click_verify_link_fn: "Callable | None" = None,
 ) -> JobSearchPlugin:
     return JobSearchPlugin(
         navigate_fn=navigate_fn, store=store,
         extract_fn=extract_fn, score_fn=score_fn,
         apply_driver_fn=apply_driver_fn, apply_submit_fn=apply_submit_fn,
         recall_fn=recall_fn, index_answer_fn=index_answer_fn,
+        gen_password_fn=gen_password_fn,
+        create_ats_account_fn=create_ats_account_fn,
+        get_jobs_email_fn=get_jobs_email_fn,
+        store_ats_password_fn=store_ats_password_fn,
+        read_verify_link_fn=read_verify_link_fn,
+        click_verify_link_fn=click_verify_link_fn,
     )
