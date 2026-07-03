@@ -3120,6 +3120,36 @@
       padding: 40px 0;
     }
 
+    /* S2 #335 — Applicant dossier section */
+    .jobs-dossier {
+      border-top: 1px solid var(--border);
+      padding: 14px 0 6px;
+    }
+    .jobs-dossier-header {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .jobs-dossier-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .jobs-dossier-meta {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .jobs-dossier-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
     .set-body {
       flex: 1;
       overflow-y: auto;
@@ -4152,6 +4182,15 @@
           </button>
           <span class="jobs-status" id="jobs-status"></span>
         </div>
+        <!-- S2 #335 — Applicant dossier -->
+        <div class="jobs-dossier" id="jobs-dossier">
+          <div class="jobs-dossier-header">My Resume</div>
+          <div id="jobs-dossier-body">
+            <div class="jobs-dossier-hint">
+              Upload your resume PDF and tell Felix "store this as my resume" to populate your Applicant dossier.
+            </div>
+          </div>
+        </div>
         <div id="jobs-list">
           <div class="jobs-empty" id="jobs-empty">
             No job postings yet. Click "Check for new jobs" to fetch the latest.
@@ -4722,7 +4761,9 @@
           break;
         case 'jobs_update':
           jobPostings = (event.data && event.data.postings) || [];
+          jobDossier = (event.data && event.data.dossier) || null;  // S2 #335
           renderJobSearch();
+          renderJobDossier();  // S2 #335
           jobsCheckBtn.disabled = false;
           jobsStatusEl.textContent = jobPostings.length
             ? jobPostings.length + ' posting' + (jobPostings.length === 1 ? '' : 's') + ' stored'
@@ -5919,12 +5960,14 @@
       }
     });
 
-    // ── Job Search panel (Issue #334 — S1) ───────────────────────────────
+    // ── Job Search panel (Issue #334 — S1; Issue #335 — S2) ─────────────
     let jobPostings = [];
-    const jobsListEl   = document.getElementById('jobs-list');
-    const jobsEmptyEl  = document.getElementById('jobs-empty');
-    const jobsCheckBtn = document.getElementById('jobs-check-btn');
-    const jobsStatusEl = document.getElementById('jobs-status');
+    let jobDossier  = null;  // S2 #335
+    const jobsListEl     = document.getElementById('jobs-list');
+    const jobsEmptyEl    = document.getElementById('jobs-empty');
+    const jobsCheckBtn   = document.getElementById('jobs-check-btn');
+    const jobsStatusEl   = document.getElementById('jobs-status');
+    const jobsDossierEl  = document.getElementById('jobs-dossier-body');  // S2 #335
 
     function renderJobSearch() {
       jobsListEl.querySelectorAll('.jobs-date-group').forEach(function (el) { el.remove(); });
@@ -5961,6 +6004,28 @@
         });
         jobsListEl.appendChild(group);
       });
+    }
+
+    // S2 #335 — render Applicant dossier summary in the Job Search panel.
+    function renderJobDossier() {
+      if (!jobsDossierEl) return;
+      if (!jobDossier || !jobDossier.name) {
+        jobsDossierEl.innerHTML = '<div class="jobs-dossier-hint">Upload your resume PDF and tell Felix "store this as my resume" to populate your Applicant dossier.</div>';
+        return;
+      }
+      var d = jobDossier;
+      var meta = [];
+      if (d.email)    meta.push(escHtml(d.email));
+      if (d.phone)    meta.push(escHtml(d.phone));
+      if (d.location) meta.push(escHtml(d.location));
+      var links = [];
+      if (d.linkedin) links.push('<a href="' + escHtml(d.linkedin) + '" target="_blank" rel="noopener">LinkedIn</a>');
+      if (d.github)   links.push('<a href="' + escHtml(d.github)   + '" target="_blank" rel="noopener">GitHub</a>');
+      if (d.website)  links.push('<a href="' + escHtml(d.website)  + '" target="_blank" rel="noopener">Website</a>');
+      jobsDossierEl.innerHTML =
+        '<div class="jobs-dossier-name">' + escHtml(d.name) + '</div>' +
+        (meta.length  ? '<div class="jobs-dossier-meta">'  + meta.join('  \xb7  ')  + '</div>' : '') +
+        (links.length ? '<div class="jobs-dossier-meta">'  + links.join('  \xb7  ') + '</div>' : '');
     }
 
     jobsCheckBtn.addEventListener('click', function () {
