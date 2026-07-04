@@ -10,6 +10,7 @@ import ctypes
 import ctypes.wintypes as wt
 import os
 import subprocess
+import sys
 import threading
 import uuid
 from typing import Optional
@@ -418,6 +419,28 @@ class WindowsSandbox(Sandbox):
     use_appcontainer=True (default): Job Object + AppContainer network-deny + workdir ACL + env scrub.
     use_appcontainer=False: Job Object only + env scrub (no network isolation; tests only).
     """
+
+    @classmethod
+    def available(cls) -> bool:
+        """True when the sandbox backend is usable: Windows + pywin32 + AppContainer API."""
+        if sys.platform != "win32":
+            return False
+        try:
+            import win32api  # pywin32
+            import win32job
+            # AppContainer APIs (CreateAppContainerProfile) were added in Windows 8.
+            # Set proper argtypes so the 64-bit HMODULE is passed correctly.
+            k32 = ctypes.windll.kernel32
+            k32.GetModuleHandleW.restype  = ctypes.c_void_p
+            k32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+            k32.LoadLibraryW.restype      = ctypes.c_void_p
+            k32.LoadLibraryW.argtypes     = [ctypes.c_wchar_p]
+            k32.GetProcAddress.restype    = ctypes.c_void_p
+            k32.GetProcAddress.argtypes   = [ctypes.c_void_p, ctypes.c_char_p]
+            hmod = k32.GetModuleHandleW("userenv.dll") or k32.LoadLibraryW("userenv.dll")
+            return bool(hmod and k32.GetProcAddress(hmod, b"CreateAppContainerProfile"))
+        except Exception:
+            return False
 
     def __init__(
         self,

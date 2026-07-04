@@ -2,4 +2,10 @@
 from cerebral.sandbox._interface import SandboxResult, Sandbox
 from cerebral.sandbox._windows import WindowsSandbox
 
-__all__ = ["SandboxResult", "Sandbox", "WindowsSandbox"]
+
+def available() -> bool:
+    """True when a sandbox backend is usable on this host (fail-closed)."""
+    return WindowsSandbox.available()
+
+
+__all__ = ["SandboxResult", "Sandbox", "WindowsSandbox", "available"]
