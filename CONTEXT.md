@@ -44,6 +44,8 @@ If no tool exists, the growth loop begins.
 
 **The growth loop** — when Felix lacks a tool: identify the gap → run /grill-me to design it → build it as an MCP server → register it → Felix has it permanently.
 
+**Shell sandbox** — the OS containment a `shell_exec` command always runs inside (ADR-0010). A Windows AppContainer child wrapped in a Job Object: writes confined to a per-profile workdir by a kernel ACL (not a path denylist), no network capability, a scrubbed minimal environment (no secrets), and resource caps (1 GB / 32 procs / 120 s wall). Execution is never un-sandboxed. `shell_exec` stays deny-by-default per ADR-0005; the sandbox makes the one-time deny→ask opt-in *safe*, not automatic, and is only offered where a sandbox backend exists — other platforms keep `shell_exec` denied (fail-closed). This is the "future subprocess sandbox" ADR-0005's gate-location note reserved a slot for. _Avoid_: calling it a VM (it is an in-OS boundary, not a virtual machine); calling the file boundary a "denylist" (it is a kernel ACL allowlisting one workdir).
+
 **Chain** — the active loop run as a loop: the planner picks a tool, sees the result, picks the next, and repeats until it returns final text or hits the step cap (default 8). A single tool call is a chain of length one. Chaining is the real target; the single-step engine is its stepping stone.
 
 **Recipe** — a saved, named, user-approved **chain** (a frozen sequence of tool calls) a user re-runs on command, scoped per profile. Replaying a Recipe re-fires every per-step ADR-0005 gate — a Recipe saves the *plan*, never a *grant*. Distinct from the growth loop, which builds a *new* tool: a Recipe just remembers a sequence of tools that already exist.
