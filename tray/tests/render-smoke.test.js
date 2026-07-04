@@ -119,6 +119,13 @@ test('models pane contains model control elements (S5)', () => {
   expect(pane.querySelector('#set-refresh-btn')).not.toBeNull();
 });
 
+test('models pane task cards include tool + quality task types (#349)', () => {
+  const m = inlineScript.match(/SET_TASK_TYPES\s*=\s*\[([^\]]*)\]/);
+  expect(m).not.toBeNull();
+  expect(m[1]).toContain("'tool'");
+  expect(m[1]).toContain("'quality'");
+});
+
 test('settings pane no longer contains model control elements (S5)', () => {
   const pane = root.querySelector('.pane[data-route="settings"]');
   expect(pane).not.toBeNull();

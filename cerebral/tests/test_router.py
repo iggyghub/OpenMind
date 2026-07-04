@@ -255,6 +255,73 @@ def test_task_models_returns_copy():
 
 
 # ---------------------------------------------------------------------------
+# Issue #349 — graceful fallback + default "quality" seeding
+# ---------------------------------------------------------------------------
+
+
+async def test_complete_falls_back_to_active_when_task_model_offline(caplog):
+    active = AsyncMock(); active.complete.return_value = "from active"
+    quality = AsyncMock(); quality.complete.side_effect = ConnectionError("gone")
+    router = ModelRouter(backends={"ollama/qwen2.5:7b": active, "ollama/qwen3:8b": quality})
+    router.set_task_model("quality", "ollama/qwen3:8b")
+
+    with caplog.at_level(_logging.WARNING, logger="cerebral.llm.router"):
+        result = await router.complete("map fields", task_type="quality")
+
+    assert result == "from active"
+    assert "falling back" in caplog.text
+    assert router.last_model == "ollama/qwen2.5:7b"
+
+
+async def test_complete_falls_back_when_task_mapping_points_at_missing_backend(caplog):
+    active = AsyncMock(); active.complete.return_value = "ok"
+    router = ModelRouter(backends={"ollama/qwen2.5:7b": active})
+    # Stale mapping (set_task_model validates, so poke the dict directly —
+    # mirrors a model uninstalled outside refresh_local_backends).
+    router._task_models["quality"] = "ollama/uninstalled"
+
+    with caplog.at_level(_logging.WARNING, logger="cerebral.llm.router"):
+        assert await router.complete("hi", task_type="quality") == "ok"
+
+    assert "not available" in caplog.text
+
+
+async def test_complete_still_raises_when_active_also_offline():
+    a = AsyncMock(); a.complete.side_effect = ConnectionError("no a")
+    b = AsyncMock(); b.complete.side_effect = ConnectionError("no b")
+    router = ModelRouter(backends={"ollama/a": a, "ollama/b": b})
+    router.set_task_model("quality", "ollama/b")
+    with pytest.raises(ModelUnavailableError, match="ollama/a"):
+        await router.complete("hi", task_type="quality")
+
+
+def test_seed_quality_default_prefers_local_qwen3():
+    router = ModelRouter(backends={
+        "ollama/qwen2.5:7b": AsyncMock(),
+        "ollama/qwen3:8b": AsyncMock(),
+        "claude/sonnet": AsyncMock(),
+    })
+    assert router.seed_quality_default() == "ollama/qwen3:8b"
+    assert router.get_task_model("quality") == "ollama/qwen3:8b"
+
+
+def test_seed_quality_default_falls_back_to_cloud():
+    router = ModelRouter(backends={
+        "ollama/qwen2.5:7b": AsyncMock(),
+        "claude/sonnet": AsyncMock(),
+    })
+    assert router.seed_quality_default() == "claude/sonnet"
+    assert router.get_task_model("quality") == "claude/sonnet"
+
+
+def test_seed_quality_default_none_when_nothing_preferred():
+    router = ModelRouter(backends={"ollama/qwen2.5:7b": AsyncMock()})
+    assert router.seed_quality_default() is None
+    # Unmapped — "quality" resolves to the active model.
+    assert router.get_task_model("quality") == "ollama/qwen2.5:7b"
+
+
+# ---------------------------------------------------------------------------
 # Slice 7 — Ollama auto-discovery (Issue #37)
 # ---------------------------------------------------------------------------
 

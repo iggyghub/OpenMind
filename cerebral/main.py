@@ -118,6 +118,11 @@ if _active_profile and _active_profile.active_model:
             _active_profile.active_model,
             _router.active_model,
         )
+# Issue #349 — default "quality" mapping (local qwen3:8b, else cloud Sonnet).
+# User-overridable via the set_task_model IPC / Settings → Models.
+_quality_default = _router.seed_quality_default()
+if _quality_default:
+    logger.info("[cerebral] Quality tasks default to %s", _quality_default)
 _orc = MCPOrchestrator()
 _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
@@ -139,7 +144,7 @@ async def _extract_dossier(pdf_text: str) -> dict:  # S2 #335
         "education (list of {degree, school, year}), skills (list of strings).\n"
         "Resume:\n" + pdf_text[:8000]
     )
-    raw = await _router.complete(prompt, task_type="chat")
+    raw = await _router.complete(prompt, task_type="quality")  # #349
     import re as _re
     m = _re.search(r"\{.*\}", raw, _re.DOTALL)
     if not m:
@@ -172,7 +177,7 @@ async def _score_posting(posting: dict, dossier: dict) -> float:  # S3 #336
         ]) + "\n"
         "Reply with ONLY a single float number, e.g. 7.5"
     )
-    raw = await _router.complete(prompt, task_type="chat")
+    raw = await _router.complete(prompt, task_type="quality")  # #349
     try:
         return float(str(raw).strip().split()[0])
     except (ValueError, IndexError):
@@ -214,7 +219,7 @@ async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:
             "website": dossier.get("website", ""),
         })
     )
-    raw = await _router.complete(prompt, task_type="chat")
+    raw = await _router.complete(prompt, task_type="quality")  # #349
     m = _re.search(r"\[.*\]", raw, _re.DOTALL)
     try:
         fields = _json.loads(m.group(0)) if m else []

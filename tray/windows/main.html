@@ -4573,7 +4573,9 @@
       active_is_cloud: false,
       task_models:     {},
     };
-    const SET_TASK_TYPES = ['chat', 'extraction'];
+    // 'tool' = planner tool-selection; 'quality' = correctness-critical jobs
+    // reasoning (field-mapping, fit-scoring, dossier extraction) — #349.
+    const SET_TASK_TYPES = ['chat', 'tool', 'extraction', 'quality'];
 
     // Settings v2 state (Issue #209). Owned by Cerebral; received via
     // settings_updated broadcasts. Defaults match Cerebral's _DEFAULTS.

@@ -70,6 +70,14 @@ class Backend(Protocol):
     async def complete_with_tools(self, prompt: str, tools: list[dict]) -> ToolCall | str: ...
 
 
+# Preferred models for the "quality" task type (issue #349), best first.
+# Local-first: qwen3:8b gives better args than qwen2.5:7b (A/B 2026-07-03)
+# and still fits the 8GB card; cloud Sonnet is the fallback when it isn't
+# pulled. Correctness-critical code paths (jobs field-mapping, fit-scoring,
+# dossier extraction) tag task_type="quality" to land here.
+QUALITY_TASK = "quality"
+QUALITY_PREFERRED = ("ollama/qwen3:8b", "claude/sonnet")
+
 # Cloud entries are constants; local entries are discovered at runtime.
 CLOUD_MODELS = {
     "claude/haiku":  {"label": "Claude Haiku 4.5",  "is_cloud": True,
@@ -155,6 +163,17 @@ class ModelRouter:
     def task_models(self) -> dict[str, str]:
         return dict(self._task_models)
 
+    def seed_quality_default(self) -> str | None:
+        """Seed the default "quality" mapping (issue #349): first installed
+        model from QUALITY_PREFERRED wins. Returns the chosen id, or None
+        when none is installed — "quality" then resolves to the active model.
+        """
+        for mid in QUALITY_PREFERRED:
+            if mid in self._backends:
+                self.set_task_model(QUALITY_TASK, mid)
+                return mid
+        return None
+
     def refresh_local_backends(
         self,
         tags_fetch_fn: Callable[[str], dict] | None = None,
@@ -192,13 +211,33 @@ class ModelRouter:
 
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         model_id = self._task_models.get(task_type, self._active_model)
-        backend = self._backends[model_id]
+        # Graceful fallback (issue #349): a per-task model that is missing or
+        # unreachable falls back to the active model with a log. The active
+        # model itself failing still raises — never a silent cloud fallback.
+        if model_id not in self._backends:
+            logger.warning(
+                "[router] task '%s' model '%s' not available — using active %s",
+                task_type, model_id, self._active_model,
+            )
+            model_id = self._active_model
         try:
-            response = await backend.complete(prompt, task_type)
+            response = await self._backends[model_id].complete(prompt, task_type)
         except (OSError, ConnectionError) as exc:
-            raise ModelUnavailableError(
-                f"model '{model_id}' unavailable: {exc}"
-            ) from exc
+            if model_id == self._active_model:
+                raise ModelUnavailableError(
+                    f"model '{model_id}' unavailable: {exc}"
+                ) from exc
+            logger.warning(
+                "[router] task '%s' model '%s' unavailable (%s) — falling back to active %s",
+                task_type, model_id, exc, self._active_model,
+            )
+            model_id = self._active_model
+            try:
+                response = await self._backends[model_id].complete(prompt, task_type)
+            except (OSError, ConnectionError) as exc2:
+                raise ModelUnavailableError(
+                    f"model '{model_id}' unavailable: {exc2}"
+                ) from exc2
         self._last_model = model_id
         logger.info("[router] %s handled request", model_id)
         return response
