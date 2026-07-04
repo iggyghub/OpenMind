@@ -315,7 +315,7 @@ async def _jobs_create_ats_account(ats_url: str, email: str, password: str) -> b
         "Page text (first 2000 chars):\n" + (view.text or "")[:2000] + "\n\n"
         f"Email: {email}\nPassword: {password}"
     )
-    raw = await _router.complete(prompt, task_type="chat")
+    raw = await _router.complete(prompt, task_type="quality")  # #349 follow-up
     m = _re.search(r"\[.*\]", raw, _re.DOTALL)
     try:
         fields = _json.loads(m.group(0)) if m else []
