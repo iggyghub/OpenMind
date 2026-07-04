@@ -38,6 +38,11 @@ try {
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
     Set-Location $repoRoot
 
+    # SBX-2 failed x3 on "response exceeded the 32000 output token maximum" -- the
+    # AppContainer/ctypes slices emit large single responses. Raise the per-response
+    # output cap; inherited by the child claude sessions via the process env.
+    $env:CLAUDE_CODE_MAX_OUTPUT_TOKENS = "64000"
+
     $driver = Join-Path $repoRoot "SANDBOX-BUILD.md"
     if (-not (Test-Path $driver)) { throw "SANDBOX-BUILD.md not found at $driver" }
 
