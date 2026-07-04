@@ -64,6 +64,7 @@ from cerebral.db.attachments import (
     serialise_for_prompt,
 )
 from cerebral.db.credentials import CredentialStore
+from cerebral.sandbox import available as _sandbox_available
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
 from cerebral.harness_channels import HarnessChannelStore
@@ -1916,6 +1917,7 @@ def _permissions_state_event() -> dict:
                 "persistent_tool_overrides": {},
                 "session_class_grants": {},
                 "shell_exec_unlocked": False,
+                "sandbox_available": _sandbox_available(),
             },
         }
     acl = _orc.acl
@@ -1940,6 +1942,7 @@ def _permissions_state_event() -> dict:
             "persistent_tool_overrides": tool_overrides,
             "session_class_grants": session_grants,
             "shell_exec_unlocked": _active_profile.shell_exec_unlocked,
+            "sandbox_available": _sandbox_available(),
         },
     }
 
@@ -2264,6 +2267,13 @@ async def _handle_message(msg: dict) -> None:
             logger.warning(
                 "[cerebral] set_class_policy refused: shell_exec is locked for profile %d",
                 _active_profile.id,
+            )
+            return
+        # SBX-4: shell_exec opt-in is only honored when a sandbox backend is present.
+        # Without a sandbox, the class stays denied regardless of the setting (fail-closed).
+        if cap is Capability.SHELL_EXEC and not _sandbox_available():
+            logger.warning(
+                "[cerebral] set_class_policy refused: shell_exec requires sandbox backend (not available on this host)",
             )
             return
         # Default-matching writes still create a row — the user's

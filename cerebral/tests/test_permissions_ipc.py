@@ -464,3 +464,65 @@ def test_capability_vocabulary_is_closed_to_known_classes(main_rig):
     assert extra == set()
     missing = {c.value for c in Capability} - seen
     assert missing == set()
+
+
+# ---------------------------------------------------------------------------
+# Slice 10 — SBX-4: sandbox availability gate (ADR-0010)
+# ---------------------------------------------------------------------------
+
+
+def test_state_event_carries_sandbox_available_field(monkeypatch, main_rig):
+    """permissions_state must include sandbox_available so the UI can surface a reason."""
+    import cerebral.sandbox as _sb_mod
+    monkeypatch.setattr(_sb_mod, "available", lambda: False)
+    import cerebral.main as main_mod
+    monkeypatch.setattr(main_mod, "_sandbox_available", lambda: False)
+    assert "sandbox_available" in main_rig.state_event()["data"]
+    assert main_rig.state_event()["data"]["sandbox_available"] is False
+
+    monkeypatch.setattr(main_mod, "_sandbox_available", lambda: True)
+    assert main_rig.state_event()["data"]["sandbox_available"] is True
+
+
+async def test_shell_exec_refused_when_sandbox_unavailable(monkeypatch, main_rig):
+    """With sandbox unavailable, set_class_policy shell_exec=ask must be refused (fail-closed)."""
+    import cerebral.main as main_mod
+    await main_rig.handle({"type": "unlock_shell_exec"})
+    monkeypatch.setattr(main_mod, "_sandbox_available", lambda: False)
+    await main_rig.handle({
+        "type": "set_class_policy",
+        "data": {"capability": "shell_exec", "decision": "ask"},
+    })
+    assert not any(
+        g["scope"] == "class" and g["target"] == "shell_exec"
+        for g in main_rig.acl.list_persistent_grants()
+    )
+
+
+async def test_shell_exec_honoured_when_sandbox_available(monkeypatch, main_rig):
+    """With sandbox available, the opt-in flips shell_exec deny->ask as ADR-0005 specifies."""
+    import cerebral.main as main_mod
+    await main_rig.handle({"type": "unlock_shell_exec"})
+    monkeypatch.setattr(main_mod, "_sandbox_available", lambda: True)
+    await main_rig.handle({
+        "type": "set_class_policy",
+        "data": {"capability": "shell_exec", "decision": "ask"},
+    })
+    assert any(
+        g["scope"] == "class" and g["target"] == "shell_exec" and g["policy"] == "ask"
+        for g in main_rig.acl.list_persistent_grants()
+    )
+
+
+def test_sandbox_base_class_available_is_false():
+    """Sandbox base class is fail-closed: available() returns False."""
+    from cerebral.sandbox._interface import Sandbox
+    assert Sandbox.available() is False
+
+
+def test_windows_sandbox_available_non_windows(monkeypatch):
+    """Non-Windows path: available() is False (fail-closed)."""
+    import sys
+    import cerebral.sandbox._windows as _win_mod
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _win_mod.WindowsSandbox.available() is False

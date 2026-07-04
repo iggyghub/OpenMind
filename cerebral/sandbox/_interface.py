@@ -1,7 +1,7 @@
 """Thin Sandbox interface seam — platform impls fulfil this contract."""
 from __future__ import annotations
 import abc
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -15,6 +15,11 @@ class SandboxResult:
 
 class Sandbox(abc.ABC):
     """Platform sandbox backend.  spawn() is the only required surface."""
+
+    @classmethod
+    def available(cls) -> bool:
+        """True when this backend is usable on the current host. Fail-closed default."""
+        return False
 
     @abc.abstractmethod
     def spawn(
