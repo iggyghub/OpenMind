@@ -539,6 +539,17 @@ def _get_memory() -> MemoryManager | None:
     return MemoryManager(profile_id=_active_profile.id)
 
 
+_SANDBOX_WORKDIR_BASE = Path(__file__).parent / "data" / "sandbox"
+
+
+def _get_shell_workdir() -> str:
+    """Return the per-profile sandbox workdir, creating it on demand (SBX-3)."""
+    profile_id = _active_profile.id if _active_profile is not None else "default"
+    wd = _SANDBOX_WORKDIR_BASE / str(profile_id)
+    wd.mkdir(parents=True, exist_ok=True)
+    return str(wd)
+
+
 # Issue #85 — auto-inject recalled memory into the LLM context. ADR-0005
 # threat #1: stored facts are attacker-influenceable (a poisoned page/email
 # can drive a hostile string in via memory_remember), so the block is
@@ -3797,6 +3808,7 @@ def _wire_plugin_seams() -> None:
         # plugin name, seam method, factory
         ("settings_control", "set_apply_callback", _apply_settings_control),  # F4 #327
         ("memory",   "set_memory_factory",  _get_memory),                   # #79
+        ("shell",    "set_workdir_fn",      _get_shell_workdir),            # SBX-3 #354
         ("browser_session", "set_session_factory", _get_browser_session),   # browser harness (ADR-0005 2026-06-25)
         ("browser_session", "set_notifier", _notify_user),                  # verification-wall escalation
         ("browser_session", "set_pause_on_verification",

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import os
 import subprocess
 import threading
 import uuid
@@ -24,12 +25,29 @@ JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE          = 0x00002000
 JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x00000400
 JobObjectExtendedLimitInformation           = 9
 
-CREATE_SUSPENDED = 0x00000004
-CREATE_NO_WINDOW = 0x08000000
+CREATE_SUSPENDED            = 0x00000004
+CREATE_NO_WINDOW            = 0x08000000
+CREATE_UNICODE_ENVIRONMENT  = 0x00000400
 
 EXTENDED_STARTUPINFO_PRESENT = 0x00080000
 STARTF_USESTDHANDLES         = 0x00000100
 PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
+
+# ---------------------------------------------------------------------------
+# Env scrub (SBX-3) — child receives only these vars, no secrets
+# ---------------------------------------------------------------------------
+# LOCALAPPDATA is required: AppContainer setup resolves the container profile path via this var.
+_SCRUBBED_ENV_KEYS = frozenset({"PATH", "TEMP", "TMP", "SystemRoot", "WINDIR", "LOCALAPPDATA"})
+
+
+def _build_scrubbed_env() -> dict[str, str]:
+    return {k: os.environ[k] for k in _SCRUBBED_ENV_KEYS if k in os.environ}
+
+
+def _env_dict_to_block(env: dict[str, str]) -> ctypes.Array:
+    """Build double-null-terminated WCHAR env block for CreateProcessW lpEnvironment."""
+    s = "".join(f"{k}={v}\0" for k, v in env.items()) + "\0"
+    return (ctypes.c_wchar * len(s))(*s)
 
 # HRESULT (signed int32)
 _S_OK                   = 0
@@ -339,6 +357,7 @@ def _ac_spawn(
     workdir: str,
     sec_caps: _SECURITY_CAPABILITIES,
     extra_flags: int,
+    env_block=None,
 ) -> tuple:
     """
     Launch cmd inside an AppContainer (CREATE_SUSPENDED + EXTENDED_STARTUPINFO_PRESENT).
@@ -365,13 +384,15 @@ def _ac_spawn(
         pi      = _PROCESS_INFORMATION()
         cmd_buf = ctypes.create_unicode_buffer(subprocess.list2cmdline(cmd))
         flags   = extra_flags | EXTENDED_STARTUPINFO_PRESENT
+        if env_block is not None:
+            flags |= CREATE_UNICODE_ENVIRONMENT
 
         ok = k.CreateProcessW(
             None, cmd_buf,
             None, None,
             True,   # bInheritHandles
             flags,
-            None,   # environment (SBX-3 will scrub)
+            env_block,
             workdir,
             ctypes.byref(si_ex),
             ctypes.byref(pi),
@@ -392,11 +413,10 @@ def _ac_spawn(
 # Public class
 # ---------------------------------------------------------------------------
 class WindowsSandbox(Sandbox):
-    """Job Object + optional AppContainer sandbox (ADR-0010).
+    """Job Object + AppContainer sandbox (ADR-0010).
 
-    use_appcontainer=False (current default): Job Object only (SBX-1).
-    use_appcontainer=True: Job Object + AppContainer network-deny + workdir ACL (SBX-2).
-    SBX-3 flips use_appcontainer=True as the permanent default.
+    use_appcontainer=True (default): Job Object + AppContainer network-deny + workdir ACL + env scrub.
+    use_appcontainer=False: Job Object only + env scrub (no network isolation; tests only).
     """
 
     def __init__(
@@ -405,7 +425,7 @@ class WindowsSandbox(Sandbox):
         timeout_s:        float = _DEFAULT_TIMEOUT_S,
         max_procs:        int   = _DEFAULT_MAX_PROCS,
         max_commit_bytes: int   = _DEFAULT_MAX_COMMIT,
-        use_appcontainer: bool  = False,  # ponytail: False until SBX-3 wires it
+        use_appcontainer: bool  = True,
     ) -> None:
         self._timeout_s        = timeout_s
         self._max_procs        = max_procs
@@ -422,23 +442,25 @@ class WindowsSandbox(Sandbox):
         import win32api, win32job
 
         effective_timeout = timeout_s if timeout_s is not None else self._timeout_s
+        scrubbed = _build_scrubbed_env()
         job = win32job.CreateJobObject(None, "")
         try:
             _apply_limits(job, self._max_procs, self._max_commit_bytes)
             if self._use_appcontainer:
-                return self._run_appcontainer(cmd, workdir, job, effective_timeout)
-            return self._run(cmd, workdir, job, effective_timeout)
+                return self._run_appcontainer(cmd, workdir, job, effective_timeout, scrubbed)
+            return self._run(cmd, workdir, job, effective_timeout, scrubbed)
         finally:
             win32api.CloseHandle(job)
 
     # ------------------------------------------------------------------ SBX-1
-    def _run(self, cmd, workdir, job, timeout_s: float) -> SandboxResult:
+    def _run(self, cmd, workdir, job, timeout_s: float, env: dict) -> SandboxResult:
         import win32api, win32job, win32con
 
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             cwd=workdir,
+            env=env,
             creationflags=CREATE_SUSPENDED | CREATE_NO_WINDOW,
         )
 
@@ -477,8 +499,8 @@ class WindowsSandbox(Sandbox):
             killed_reason="wall_clock" if killed[0] else None,
         )
 
-    # ------------------------------------------------------------------ SBX-2
-    def _run_appcontainer(self, cmd, workdir, job, timeout_s: float) -> SandboxResult:
+    # ------------------------------------------------------------------ SBX-2/3
+    def _run_appcontainer(self, cmd, workdir, job, timeout_s: float, env: dict) -> SandboxResult:
         import win32api, win32job, win32con
 
         # Unique profile name: <=64 chars, alphanumeric + hyphens
@@ -497,9 +519,11 @@ class WindowsSandbox(Sandbox):
             sec_caps.CapabilityCount = 0
             sec_caps.Reserved        = 0
 
+            env_block = _env_dict_to_block(env)
             hproc, hthread, pid, stdout_r, stderr_r = _ac_spawn(
                 cmd, workdir, sec_caps,
                 CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                env_block,
             )
 
             k = ctypes.windll.kernel32
