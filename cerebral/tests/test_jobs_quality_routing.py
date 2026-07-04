@@ -64,6 +64,31 @@ async def test_apply_driver_uses_quality(monkeypatch):
     assert router.task_types == ["quality"]
 
 
+async def test_create_ats_account_uses_quality(monkeypatch):
+    router = _RecordingRouter("[]")
+    monkeypatch.setattr(main, "_router", router)
+
+    class _FakeView:
+        text = "Email:\nPassword:\n"
+
+    class _FakeSession:
+        async def read_page(self, url):
+            return _FakeView()
+
+        async def fill_fields(self, pairs):
+            pass
+
+        async def click(self, selector):
+            pass
+
+    from plugins import browser_session as bsp
+    monkeypatch.setattr(bsp, "get_open_session", lambda: _FakeSession())
+
+    ok = await main._jobs_create_ats_account("https://ats.example/register", "a@b.c", "pw")
+    assert ok is True
+    assert router.task_types == ["quality"]
+
+
 def test_startup_quality_seeding_present_in_main_source():
     """Guard the one-line default seeding at startup (issue #349)."""
     src = (_ROOT / "cerebral" / "main.py").read_text(encoding="utf-8")
