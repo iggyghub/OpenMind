@@ -11,19 +11,19 @@ master before the next starts (successive slices edit the same `cerebral/sandbox
 
 ## Next slice — start here
 
-- **Active:** SBX-1 — #352
+- **Active:** SBX-2 — #353
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] SBX-1 — #352 — Job Object resource caps + wall-clock kill (Python/pywin32)
+- [x] SBX-1 — #352 — Job Object resource caps + wall-clock kill (Python/pywin32)
 - [ ] SBX-2 — #353 — AppContainer network-deny + per-profile workdir kernel ACL
 - [ ] SBX-3 — #354 — env scrub + wire shell_exec to always execute sandboxed
 - [ ] SBX-4 — #355 — gate shell_exec deny→ask opt-in on sandbox availability (fail-closed)
 
 ## Landed PRs
 
-<!-- session appends: "SBX-1 -> PR #NNN" as each merges -->
+- SBX-1 -> PR #356
 
 ## SAFETY
 
