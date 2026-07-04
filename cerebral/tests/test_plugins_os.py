@@ -304,29 +304,39 @@ class TestShellPlugin:
         assert data["exit_code"] != 0
 
     @pytest.mark.asyncio
-    async def test_run_command_timeout_returns_error(self):
-        from plugins.shell import create
-        plugin = create()
-        # cmd.exe has no `sleep` builtin, so use the interpreter for a
-        # long-running command that exists on every platform
-        sleep_cmd = f'"{sys.executable}" -c "import time; time.sleep(10)"'
-        result = await plugin.call_tool("run_command", {"command": sleep_cmd, "timeout": 0.1})
+    async def test_run_command_timeout_returns_error(self, tmp_path):
+        """Wall-clock kill returns is_error=True (SBX-3 sandbox replaces subprocess timeout)."""
+        from plugins.shell import ShellPlugin
+        import plugins.shell as _shell_mod
+        from cerebral.sandbox._interface import Sandbox, SandboxResult
+
+        class _KilledSandbox(Sandbox):
+            def spawn(self, cmd, workdir, *, timeout_s=None):
+                return SandboxResult(stdout="", stderr="", exit_code=-1, killed_reason="wall_clock")
+
+        _shell_mod.set_workdir_fn(lambda: str(tmp_path))
+        plugin = ShellPlugin(sandbox=_KilledSandbox())
+        result = await plugin.call_tool("run_command", {"command": "sleep 10", "timeout": 0.1})
         assert result.is_error
 
     @pytest.mark.asyncio
-    async def test_run_command_injected_runner(self):
-        """Injected runner avoids real subprocess — tests isolation."""
+    async def test_run_command_injected_runner(self, tmp_path):
+        """Injected sandbox avoids real subprocess -- tests isolation."""
         from plugins.shell import ShellPlugin
-        fake_run = MagicMock(return_value=MagicMock(
-            stdout="fake out", stderr="", returncode=0
-        ))
-        plugin = ShellPlugin(run_fn=fake_run)
+        import plugins.shell as _shell_mod
+        from cerebral.sandbox._interface import Sandbox, SandboxResult
+
+        class _FakeSandbox(Sandbox):
+            def spawn(self, cmd, workdir, *, timeout_s=None):
+                return SandboxResult(stdout="fake out", stderr="", exit_code=0)
+
+        _shell_mod.set_workdir_fn(lambda: str(tmp_path))
+        plugin = ShellPlugin(sandbox=_FakeSandbox())
         result = await plugin.call_tool("run_command", {"command": "anything"})
         assert not result.is_error
         data = json.loads(result.content)
         assert data["stdout"] == "fake out"
         assert data["exit_code"] == 0
-        fake_run.assert_called_once()
 
     def test_list_tools_exposes_run_command(self):
         from plugins.shell import create
