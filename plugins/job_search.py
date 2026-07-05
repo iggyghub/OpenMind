@@ -262,8 +262,71 @@ class _RRRParser(HTMLParser):
         return self._results
 
 
+# Live RRR listing-page format (2026 — issue #380): repeating labeled entries
+#   <p><strong>Company</strong>: {company}<!-- rrr-job-id: RRR-YYYYMMDD-NNN --><br>
+#   <strong>Job/Gig</strong>: <a href="{rrr_article_url}">{title}</a>…<br>
+#   <strong>Pay</strong>: {pay}</p>
+#   <p><strong>Snapshot</strong>: {snapshot}</p>
+# The only link on the listing page is the per-job RRR article; the employer/ATS
+# link lives on that article page. ``url`` therefore carries the article URL
+# (unique dedup key); apply-time resolution of the outbound link is follow-up work.
+_LABELED_ENTRY_RE = re.compile(
+    r"<p><strong>Company</strong>:\s*(?P<company>[^<]*?)\s*"
+    r"(?:<!--\s*rrr-job-id:\s*(?P<jid>[\w-]+)\s*-->)?\s*<br\s*/?>\s*"
+    r"<strong>Job/Gig</strong>:\s*<a\s+href=\"(?P<url>[^\"]+)\"[^>]*>(?P<title>.*?)</a>"
+    r"(?P<rest>.*?)</p>"
+    r"(?:\s*<p><strong>Snapshot</strong>:\s*(?P<snapshot>.*?)</p>)?",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _plain(fragment: str) -> str:
+    import html as _html
+
+    return _html.unescape(_TAG_RE.sub("", fragment or "")).strip()
+
+
+def _parse_labeled_postings(html: str) -> list[dict]:
+    results: list[dict] = []
+    for m in _LABELED_ENTRY_RE.finditer(html):
+        title = _plain(m.group("title"))
+        if not title:
+            continue
+        pay = ""
+        pay_m = re.search(
+            r"<strong>Pay</strong>:\s*(.*?)$", m.group("rest") or "",
+            re.DOTALL | re.IGNORECASE,
+        )
+        if pay_m:
+            pay = _plain(pay_m.group(1))
+        posted = ""
+        jid = m.group("jid") or ""
+        date_m = re.match(r"RRR-(\d{4})(\d{2})(\d{2})-", jid)
+        if date_m:
+            posted = "-".join(date_m.groups())
+        results.append({
+            "title": title,
+            "company": _plain(m.group("company")),
+            "pay": pay,
+            "snapshot": _plain(m.group("snapshot") or "")[:400],
+            "posted_date": posted,
+            "url": m.group("url"),
+        })
+    return results
+
+
 def parse_postings(html: str) -> list[dict]:
-    """Parse Readability-processed RRR HTML, return list of posting dicts."""
+    """Parse the RRR job-board HTML, return list of posting dicts.
+
+    Tries the live labeled-entry format first (what the real page serves —
+    issue #380); falls back to the legacy Readability heading parser the S1
+    fixtures use.
+    """
+    labeled = _parse_labeled_postings(html)
+    if labeled:
+        return labeled
     p = _RRRParser()
     p.feed(html)
     return p.results()

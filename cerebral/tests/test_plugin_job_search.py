@@ -2553,3 +2553,52 @@ class TestStoreResumeFileFallback:
         plugin = JobSearchPlugin(store=_in_memory_store(), extract_fn=_stub_extract)
         result = await plugin.call_tool("jobs_store_resume", {"pdf_text": "   "})
         assert result.is_error
+
+
+# ── live labeled-entry format (issue #380) ────────────────────────────────────
+
+_LIVE_RRR_HTML = """
+<p><strong>Company</strong>: Muck Rack<!-- rrr-job-id: RRR-20260622-038 --><br>
+<strong>Job/Gig</strong>: <a href="https://ratracerebellion.com/remote-press-ops-26/" target="_blank"><strong>Night Shift &#8212; Remote Operations Specialist</strong></a><strong><a href="https://ratracerebellion.com/remote-press-ops-26/">&#128293;</a></strong><br>
+<strong>Pay</strong>: $27.00/hr.</p>
+<p><strong>Snapshot</strong>: Assist in distributing press releases effectively.</p> <hr>
+<p><strong>Company</strong>: Cigna<!-- rrr-job-id: RRR-20260630-043 --><br>
+<strong>Job/Gig</strong>: <a href="https://ratracerebellion.com/remote-claims-rep-26/"><strong>Non-Phone &#8212; Claims Representative Remote</strong></a><br>
+<strong>Pay</strong>: $17.75 &#8211; $26.00/hr.</p>
+<p><strong>Snapshot</strong>: Process claims remotely.</p>
+"""
+
+
+class TestLiveLabeledFormat:
+    def test_parses_labeled_entries(self):
+        from plugins.job_search import parse_postings
+
+        postings = parse_postings(_LIVE_RRR_HTML)
+        assert len(postings) == 2
+        first = postings[0]
+        assert first["company"] == "Muck Rack"
+        assert "Remote Operations Specialist" in first["title"]
+        assert first["pay"] == "$27.00/hr."
+        assert first["posted_date"] == "2026-06-22"
+        assert first["url"] == "https://ratracerebellion.com/remote-press-ops-26/"
+        assert first["snapshot"].startswith("Assist in distributing")
+
+    def test_entities_unescaped_and_tags_stripped(self):
+        from plugins.job_search import parse_postings
+
+        postings = parse_postings(_LIVE_RRR_HTML)
+        assert "—" in postings[0]["title"]        # &#8212; em dash
+        assert "<strong>" not in postings[0]["title"]
+        assert "–" in postings[1]["pay"]          # &#8211; en dash
+
+    def test_legacy_fixture_format_still_parses(self):
+        from plugins.job_search import parse_postings
+
+        legacy = (
+            '<h2><a href="https://ratracerebellion.com/some-job/">Support Rep — Acme</a></h2>'
+            '<p>Help customers. $20/hr</p>'
+            '<a href="https://boards.greenhouse.io/acme/jobs/1">Apply</a>'
+        )
+        postings = parse_postings(legacy)
+        assert len(postings) == 1
+        assert postings[0]["url"] == "https://boards.greenhouse.io/acme/jobs/1"
