@@ -11,6 +11,8 @@ both. A system-prompt instruction tells the model to ask a clarifying question
 (return text) when it cannot confidently select a tool.
 """
 
+import re
+
 from cerebral.llm.router import ToolCall
 
 _SYSTEM_PROMPT = (
@@ -60,6 +62,34 @@ def validate_tool_args(
                 )
 
     return None
+
+
+def shortlist_tools(
+    transcript: str, tools: list[dict], limit: int = 30
+) -> list[dict]:
+    """Rank tools by lexical overlap with the transcript; keep the top ``limit``.
+
+    The full registry (~200 tool schemas) serialises to ~19k tokens — past the
+    local model's context window, so sending everything makes Ollama silently
+    truncate the payload and the model "loses" its tools (it then replies that
+    it has no such access). A small, relevant subset keeps native tool-calling
+    inside the window.
+
+    Words shorter than 4 chars are ignored (drops "my/as/the" noise); a word
+    matching the tool *name* counts triple. Ties keep registration order
+    (sorted() is stable).
+    ponytail: lexical overlap; upgrade to embedding recall if misses show up.
+    """
+    words = {w for w in re.findall(r"[a-z0-9]+", transcript.lower()) if len(w) >= 4}
+    if not words or len(tools) <= limit:
+        return list(tools)
+
+    def score(t: dict) -> int:
+        name_words = set((t.get("name") or "").lower().split("_"))
+        desc_words = set(re.findall(r"[a-z0-9]+", (t.get("description") or "").lower()))
+        return 3 * len(words & name_words) + len(words & desc_words)
+
+    return sorted(tools, key=score, reverse=True)[:limit]
 
 
 class Planner:

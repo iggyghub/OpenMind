@@ -2499,3 +2499,57 @@ class TestPluginMetaS7:
     def test_eligibility_keywords_nonempty(self):
         from plugins.job_search import ELIGIBILITY_KEYWORDS
         assert len(ELIGIBILITY_KEYWORDS) > 5
+
+
+# ── file fallback — jobs_store_resume prefers the stored PDF over the arg ────
+
+class TestStoreResumeFileFallback:
+    @pytest.mark.asyncio
+    async def test_empty_arg_falls_back_to_stored_pdf(self, tmp_path, monkeypatch):
+        import cerebral.db.attachments as att
+        import plugins.job_search as jm
+        from plugins.job_search import JobSearchPlugin
+
+        pdf = tmp_path / "resume.pdf"
+        pdf.write_bytes(b"%PDF-fake")
+        monkeypatch.setattr(att, "_extract_pdf_text", lambda data: RESUME_FIXTURE_TEXT)
+        jm._active_profile_id = _PROFILE_ID
+        jm._pending_resume_path = str(pdf)
+
+        store = _in_memory_store()
+        plugin = JobSearchPlugin(store=store, extract_fn=_stub_extract)
+        result = await plugin.call_tool("jobs_store_resume", {"pdf_text": ""})
+        assert not result.is_error
+        d = store.get_dossier(_PROFILE_ID)
+        assert RESUME_FIXTURE_TEXT[:100] in d["raw_text"]
+
+    @pytest.mark.asyncio
+    async def test_longer_file_text_wins_over_truncated_arg(self, tmp_path, monkeypatch):
+        import cerebral.db.attachments as att
+        import plugins.job_search as jm
+        from plugins.job_search import JobSearchPlugin
+
+        pdf = tmp_path / "resume.pdf"
+        pdf.write_bytes(b"%PDF-fake")
+        monkeypatch.setattr(att, "_extract_pdf_text", lambda data: RESUME_FIXTURE_TEXT)
+        jm._active_profile_id = _PROFILE_ID
+        jm._pending_resume_path = str(pdf)
+
+        store = _in_memory_store()
+        plugin = JobSearchPlugin(store=store, extract_fn=_stub_extract)
+        truncated = RESUME_FIXTURE_TEXT[:50]
+        result = await plugin.call_tool("jobs_store_resume", {"pdf_text": truncated})
+        assert not result.is_error
+        d = store.get_dossier(_PROFILE_ID)
+        assert RESUME_FIXTURE_TEXT[:100] in d["raw_text"]
+
+    @pytest.mark.asyncio
+    async def test_missing_file_and_empty_arg_still_errors(self):
+        import plugins.job_search as jm
+        from plugins.job_search import JobSearchPlugin
+
+        jm._active_profile_id = _PROFILE_ID
+        jm._pending_resume_path = "/nonexistent/resume.pdf"
+        plugin = JobSearchPlugin(store=_in_memory_store(), extract_fn=_stub_extract)
+        result = await plugin.call_tool("jobs_store_resume", {"pdf_text": "   "})
+        assert result.is_error

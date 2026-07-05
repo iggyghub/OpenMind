@@ -1430,8 +1430,26 @@ class JobSearchPlugin:
         profile_id = _active_profile_id
         if profile_id is None:
             return ToolResult(content="No active profile", is_error=True)
+
+        # The stored PDF is ground truth; the pdf_text arg is an LLM-copied
+        # (possibly truncated/paraphrased) rendition. Prefer whichever is
+        # longer so a lazy model call still stores the full resume.
+        if _pending_resume_path:
+            try:
+                from pathlib import Path
+
+                from cerebral.db.attachments import _extract_pdf_text
+
+                file_text = _extract_pdf_text(Path(_pending_resume_path).read_bytes())
+                if len(file_text.strip()) > len(pdf_text.strip()):
+                    pdf_text = file_text
+            except Exception:
+                pass  # unreadable/missing file -- fall back to the arg
         if not pdf_text.strip():
-            return ToolResult(content="pdf_text is empty", is_error=True)
+            return ToolResult(
+                content="pdf_text is empty and no uploaded resume PDF was found",
+                is_error=True,
+            )
 
         # Record the pending resume path (set by Cerebral when a PDF was uploaded)
         pdf_path = _pending_resume_path
