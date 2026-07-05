@@ -71,6 +71,7 @@ from cerebral.harness_channels import HarnessChannelStore
 from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S5 #338 / S6 #339 / S7 #340
     JobSearchStore as _JobSearchStore,
     set_active_profile_id as _js_set_profile,
+    set_navigate_fn as _js_set_navigate_fn,
     set_pending_resume_path as _js_set_resume_path,
     set_extract_fn as _js_set_extract_fn,
     set_score_fn as _js_set_score_fn,
@@ -255,6 +256,27 @@ async def _jobs_apply_submit() -> None:  # S4 #337
     await sess.click('button[type="submit"]')
 
 
+async def _jobs_navigate(url: str) -> str:  # S1 #334 / #380
+    """Headless Playwright fetch for the public job board.
+
+    The plugin's default navigate posts to an OpenClaw HTTP endpoint that
+    does not exist in OpenClaw 2026.5.28 (same phantom-:3000 family as
+    #378). RRR is readable logged-out, so a throwaway headless page is all
+    the fetch needs -- no profile, no login, no attended window.
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        try:
+            page = await browser.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            return await page.content()
+        finally:
+            await browser.close()
+
+
+_js_set_navigate_fn(_jobs_navigate)           # S1 #334 / #380
 _js_set_apply_driver_fn(_jobs_apply_driver)   # S4 #337
 _js_set_apply_submit_fn(_jobs_apply_submit)   # S4 #337
 
