@@ -87,7 +87,7 @@ Verify: `claude --version`
 npx skills@latest add mattpocock/skills --agent "claude-code" --skill "*" --yes
 ```
 
-Skills are installed to `.claude/skills/` and `.claude/commands/`.
+Skills are installed to `.claude/skills/`.
 
 Available skills: `caveman`, `diagnose`, `grill-me`, `grill-with-docs`, `improve-codebase-architecture`, `setup-matt-pocock-skills`, `tdd`, `to-issues`, `to-prd`, `triage`, `write-a-skill`, `zoom-out`.
 
