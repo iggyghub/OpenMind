@@ -4810,6 +4810,14 @@
           renderConversationsList();
           break;
         }
+        case 'pending_attachments_state': {
+          // S14 (#297) -- Cerebral saved the uploaded files; show their
+          // chips in the pending row so Send can bind them to the turn.
+          const d = event.data || {};
+          pendingAttachments = d.attachments || [];
+          renderPendingAttachments();
+          break;
+        }
         case 'conversation_projects_data': {
           // S11 / #294 -- project folders snapshot. Renderer pairs with the
           // threads list to group rows under their parent project.
@@ -5076,6 +5084,15 @@
         meta.className = 'turn-meta';
         meta.textContent = 'voice';
         div.appendChild(meta);
+      }
+
+      // S14 (#297) -- paperclip chips for attachments bound to this turn.
+      const atts = (turn.content && turn.content.attachments) || [];
+      if (atts.length && window.AttachmentChips) {
+        const strip = document.createElement('span');
+        strip.className = 'att-turn-strip';
+        window.AttachmentChips.renderInto(strip, atts);
+        div.appendChild(strip);
       }
 
       transcript.appendChild(div);
