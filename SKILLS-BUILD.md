@@ -11,12 +11,12 @@ collide, but the loop still lands each PR before the next for a clean master.
 
 ## Next slice — start here
 
-- **Active:** SK-1 — #360
+- **Active:** SK-2 — #361
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] SK-1 — #360 — campaign-scaffold (generate a loop campaign)
+- [x] SK-1 — #360 — campaign-scaffold (generate a loop campaign)
 - [ ] SK-2 — #361 — loop-doctor (diagnose + heal a stalled loop)
 - [ ] SK-3 — #362 — plugin-scaffold (ADR-0005-compliant MCP plugin skeleton)
 - [ ] SK-4 — #363 — live-verify (exercise a slice against real Cerebral)
@@ -24,7 +24,7 @@ collide, but the loop still lands each PR before the next for a clean master.
 
 ## Landed PRs
 
-<!-- session appends: "SK-1 -> PR #NNN" as each merges -->
+- SK-1 -> PR #365
 
 ## SAFETY
 
