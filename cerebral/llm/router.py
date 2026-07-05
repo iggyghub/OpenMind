@@ -275,12 +275,18 @@ def _real_backends() -> dict[str, Backend]:
     """Build backends from whatever Ollama has installed + the fixed cloud entries.
 
     Ollama-offline path: returns just the cloud entries so cloud chat still works.
+    Cloud entries use the Anthropic API directly when ANTHROPIC_API_KEY is set;
+    otherwise they keep the legacy ClawBackend (OpenClaw) wiring.
     """
     backends: dict[str, Backend] = {}
     for name in OllamaBackend.list_installed_models():
         backends[f"ollama/{name}"] = OllamaBackend(model=name)
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
     for cid, info in CLOUD_MODELS.items():
-        backends[cid] = ClawBackend(model=info["claw_model"])
+        if api_key:
+            backends[cid] = AnthropicBackend(model=info["claw_model"], api_key=api_key)
+        else:
+            backends[cid] = ClawBackend(model=info["claw_model"])
     return backends
 
 
@@ -462,3 +468,65 @@ class ClawBackend:
             return ToolCall(name=fn["name"], args=args)
         # Fail-soft: no tool_calls → return text content
         return message.get("content") or ""
+
+
+class AnthropicBackend:
+    """Calls the Anthropic API directly via the official SDK.
+
+    Used for the CLOUD_MODELS entries when ANTHROPIC_API_KEY is set —
+    OpenClaw 2026.5.28 exposes no HTTP inference endpoint, so ClawBackend's
+    /v1/chat/completions path never worked live (issue #378). Tool schemas
+    from ``tools_for_llm`` are already the Anthropic tool-use format, so
+    they pass through untranslated.
+    """
+
+    def __init__(
+        self,
+        model: str = "claude-haiku-4-5",
+        api_key: str | None = None,
+        client=None,  # injectable AsyncAnthropic for tests
+    ):
+        self.model = model
+        self._api_key = api_key
+        self._client = client
+
+    def _get_client(self):
+        if self._client is None:
+            from anthropic import AsyncAnthropic
+
+            self._client = AsyncAnthropic(api_key=self._api_key)
+        return self._client
+
+    async def complete(self, prompt: str, task_type: str = "chat") -> str:
+        import anthropic
+
+        try:
+            resp = await self._get_client().messages.create(
+                model=self.model,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except anthropic.APIError as exc:
+            raise ConnectionError(str(exc)) from exc
+        return "".join(b.text for b in resp.content if b.type == "text")
+
+    async def complete_with_tools(
+        self, prompt: str, tools: list[dict]
+    ) -> ToolCall | str:
+        """Native Anthropic tool use; ToolCall on tool_use, str otherwise."""
+        import anthropic
+
+        try:
+            resp = await self._get_client().messages.create(
+                model=self.model,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+                tools=tools,
+            )
+        except anthropic.APIError as exc:
+            raise ConnectionError(str(exc)) from exc
+        for block in resp.content:
+            if block.type == "tool_use":
+                args = block.input if isinstance(block.input, dict) else {}
+                return ToolCall(name=block.name, args=args)
+        return "".join(b.text for b in resp.content if b.type == "text")
