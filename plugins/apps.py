@@ -93,7 +93,12 @@ class AppsPlugin:
     def _launch_app(self, args: dict) -> ToolResult:
         app = args["app"]
         try:
-            proc = self._popen_fn(app, shell=True)
+            # Security (#369): no shell. shell=True let LLM-supplied strings
+            # reach cmd.exe silently (device_control is auto-allowed), which
+            # bypassed the shell_exec deny-default + ADR-0010 sandbox. A
+            # single-element argv launches the named app with no shell
+            # metacharacters, and makes FileNotFoundError below actually fire.
+            proc = self._popen_fn([app])
             return ToolResult(content=json.dumps({"pid": proc.pid, "ok": True}))
         except FileNotFoundError:
             return ToolResult(content=f"App not found: '{app}'", is_error=True)
