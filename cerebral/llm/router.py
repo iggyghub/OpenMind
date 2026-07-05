@@ -337,6 +337,11 @@ class OllamaBackend:
             "messages": [{"role": "user", "content": prompt}],
             "tools": ollama_tools,
             "stream": False,
+            # Ollama's default num_ctx (4096) silently truncates the tool
+            # schemas + prompt. 8192 fits a 30-tool shortlist plus attachment
+            # text, and its KV cache still fits alongside an 8B Q4 model on
+            # an 8GB GPU (32k would not).
+            "options": {"num_ctx": 8192},
         }
         async with httpx.AsyncClient(timeout=_ollama_timeout_s()) as client:
             try:

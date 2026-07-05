@@ -220,3 +220,48 @@ async def test_claw_complete_with_tools_fail_soft():
         pytest.skip("OpenClaw not reachable")
 
     assert isinstance(result, (ToolCall, str))
+
+
+# ── shortlist_tools — context-window tool pre-selection ───────────────────────
+
+def _fake_registry(n: int = 200) -> list[dict]:
+    tools = [
+        {
+            "name": f"filler_tool_{i}",
+            "description": f"Filler capability number {i} for padding the registry",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+        for i in range(n)
+    ]
+    tools.append({
+        "name": "jobs_store_resume",
+        "description": (
+            "Store the user's resume PDF as their Resume artifact and parse it "
+            "into a structured Applicant dossier"
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    })
+    return tools
+
+
+def test_shortlist_ranks_matching_tool_into_subset():
+    from cerebral.llm.planner import shortlist_tools
+
+    subset = shortlist_tools("store this as my resume", _fake_registry(), limit=30)
+    assert len(subset) == 30
+    assert any(t["name"] == "jobs_store_resume" for t in subset)
+
+
+def test_shortlist_small_registry_passes_through():
+    from cerebral.llm.planner import shortlist_tools
+
+    tools = _fake_registry(10)
+    assert shortlist_tools("store this as my resume", tools, limit=30) == tools
+
+
+def test_shortlist_no_usable_words_passes_through():
+    from cerebral.llm.planner import shortlist_tools
+
+    tools = _fake_registry()
+    # every word under 4 chars -> no signal -> don't guess, send everything
+    assert shortlist_tools("hi do it now", tools, limit=30) == tools

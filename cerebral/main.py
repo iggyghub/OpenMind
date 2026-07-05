@@ -24,7 +24,7 @@ from pathlib import Path
 from cerebral.audio.pipeline import AudioPipeline, DEFAULT_SIGNAL_WORDS
 from cerebral.db.profiles import Profile, ProfileManager
 from cerebral.llm.router import ModelRouter, ModelUnavailableError, ToolCall
-from cerebral.llm.planner import Planner, validate_tool_args
+from cerebral.llm.planner import Planner, shortlist_tools, validate_tool_args
 from cerebral.llm.chain_engine import ChainEngine
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
@@ -3576,7 +3576,11 @@ async def _process_command(
                 "[cerebral] thread model_override %r not in router; ignoring",
                 thread_model_override,
             )
-    base_tools = _orc.tools_for_llm
+    # Shortlist so the tool payload fits the local model's context window —
+    # the full registry is ~19k tokens and Ollama silently truncates past
+    # num_ctx, leaving the model "toolless". Recipes ride along un-ranked
+    # (profile-named; the user refers to them explicitly).
+    base_tools = shortlist_tools(transcript, _orc.tools_for_llm)
     profile_id = _active_profile.id if _active_profile else None
     recipe_tools = _recipe_store.get_synthetic_tools(profile_id) if profile_id else []
     tools = base_tools + recipe_tools
