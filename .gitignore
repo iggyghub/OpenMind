@@ -30,3 +30,6 @@ Thumbs.db
 # Run-and-fix loop smoke-test scratch (sessions write these while smoking Cerebral)
 cerebral.smoke*
 smoke_client*.py
+
+# Machine-local Claude Code config (permissions/hooks) -- not for the public repo
+.claude/settings.local.json
