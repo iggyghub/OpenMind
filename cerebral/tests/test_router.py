@@ -551,3 +551,108 @@ async def test_ollama_complete_uses_configured_timeout(monkeypatch):
 
     assert result == "ok"
     assert captured["timeout"] == 240.0
+
+
+# ── AnthropicBackend — direct Anthropic API (issue #378) ─────────────────────
+
+class _FakeBlock:
+    def __init__(self, type, **kw):
+        self.type = type
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+
+class _FakeAnthropicClient:
+    """Stands in for AsyncAnthropic; returns a canned response object."""
+
+    def __init__(self, content_blocks):
+        self._blocks = content_blocks
+        self.last_kwargs = None
+
+        class _Messages:
+            def __init__(self, outer):
+                self._outer = outer
+
+            async def create(self, **kwargs):
+                self._outer.last_kwargs = kwargs
+
+                class _Resp:
+                    content = self._outer._blocks
+
+                return _Resp()
+
+        self.messages = _Messages(self)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_backend_tool_use_returns_toolcall():
+    from cerebral.llm.router import AnthropicBackend, ToolCall
+
+    fake = _FakeAnthropicClient([
+        _FakeBlock("tool_use", name="jobs_store_resume", input={"pdf_text": "abc"}),
+    ])
+    backend = AnthropicBackend(model="claude-haiku-4-5", client=fake)
+    result = await backend.complete_with_tools("store my resume", [{"name": "jobs_store_resume"}])
+    assert isinstance(result, ToolCall)
+    assert result.name == "jobs_store_resume"
+    assert result.args == {"pdf_text": "abc"}
+    # tools pass through untranslated (already Anthropic format)
+    assert fake.last_kwargs["tools"] == [{"name": "jobs_store_resume"}]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_backend_text_reply_returns_str():
+    from cerebral.llm.router import AnthropicBackend
+
+    fake = _FakeAnthropicClient([_FakeBlock("text", text="Hello there")])
+    backend = AnthropicBackend(client=fake)
+    result = await backend.complete_with_tools("hi", [])
+    assert result == "Hello there"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_backend_complete_joins_text_blocks():
+    from cerebral.llm.router import AnthropicBackend
+
+    fake = _FakeAnthropicClient([
+        _FakeBlock("text", text="part one "),
+        _FakeBlock("text", text="part two"),
+    ])
+    backend = AnthropicBackend(client=fake)
+    assert await backend.complete("hi") == "part one part two"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_backend_api_error_maps_to_connection_error():
+    from cerebral.llm.router import AnthropicBackend
+    import anthropic
+    import httpx
+
+    class _ErrClient:
+        class messages:
+            @staticmethod
+            async def create(**kwargs):
+                raise anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
+
+    backend = AnthropicBackend(client=_ErrClient())
+    with pytest.raises(ConnectionError):
+        await backend.complete("hi")
+
+
+def test_real_backends_prefer_anthropic_when_key_set(monkeypatch):
+    from cerebral.llm import router as r
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(r.OllamaBackend, "list_installed_models", staticmethod(lambda: []))
+    backends = r._real_backends()
+    assert all(isinstance(b, r.AnthropicBackend) for b in backends.values())
+    assert set(backends) == set(r.CLOUD_MODELS)
+
+
+def test_real_backends_fall_back_to_claw_without_key(monkeypatch):
+    from cerebral.llm import router as r
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(r.OllamaBackend, "list_installed_models", staticmethod(lambda: []))
+    backends = r._real_backends()
+    assert all(isinstance(b, r.ClawBackend) for b in backends.values())
