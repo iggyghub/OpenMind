@@ -641,6 +641,8 @@ def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 
     job_settings = (
         _job_search_store.get_job_settings(_active_profile.id) if _active_profile else None
     )
+    # S1 #396: job_boards mirrors tray jobBoards state (#390 pairing).
+    job_boards = _job_search_store.list_boards()
     return {
         "type": "jobs_update",
         "data": {
@@ -650,6 +652,7 @@ def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 
             "applications": applications,
             "jobs_email_configured": jobs_email_configured,  # S6: link to Credentials panel
             "job_settings": job_settings,  # S7: auto-submit toggle + ramp progress
+            "job_boards": job_boards,      # S1 #396: mirrors tray jobBoards
         },
     }
 
@@ -3284,6 +3287,34 @@ async def _handle_message(msg: dict) -> None:
             })
         except Exception as exc:
             logger.warning("[cerebral] jobs_set_auto_submit failed: %s", exc)
+        await _broadcast(_jobs_update_event())
+
+    elif t == "list_job_boards":  # S1 #396 — tray requests current board list
+        await _broadcast(_jobs_update_event())
+
+    elif t == "add_job_board":  # S1 #396 — add a new board URL
+        d = msg.get("data", {})
+        url = (d.get("url") or "").strip()
+        label = (d.get("label") or "").strip()
+        if url:
+            try:
+                _job_search_store.add_board(url, label)
+            except Exception as exc:
+                logger.warning("[cerebral] add_job_board failed: %s", exc)
+        await _broadcast(_jobs_update_event())
+
+    elif t == "remove_job_board":  # S1 #396 — remove a board by URL
+        d = msg.get("data", {})
+        url = (d.get("url") or "").strip()
+        if url:
+            _job_search_store.remove_board(url)
+        await _broadcast(_jobs_update_event())
+
+    elif t == "set_job_board_enabled":  # S1 #396 — enable/disable a board
+        d = msg.get("data", {})
+        url = (d.get("url") or "").strip()
+        if url:
+            _job_search_store.set_board_enabled(url, bool(d.get("enabled", True)))
         await _broadcast(_jobs_update_event())
 
     elif t == "save_recipe":
