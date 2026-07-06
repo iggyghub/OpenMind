@@ -13,7 +13,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
+from cerebral.paths import data_dir
+
+DB_PATH = data_dir() / "openmind.db"
 
 
 @dataclass

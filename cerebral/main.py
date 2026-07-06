@@ -562,7 +562,9 @@ def _get_memory() -> MemoryManager | None:
     return MemoryManager(profile_id=_active_profile.id)
 
 
-_SANDBOX_WORKDIR_BASE = Path(__file__).parent / "data" / "sandbox"
+from cerebral.paths import data_dir as _data_dir
+
+_SANDBOX_WORKDIR_BASE = _data_dir() / "sandbox"
 
 
 def _get_shell_workdir() -> str:

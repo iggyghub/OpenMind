@@ -36,7 +36,9 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
     "fs_write",
 })
 
-_DEFAULT_DB = Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db"
+from cerebral.paths import data_dir
+
+_DEFAULT_DB = data_dir() / "openmind.db"
 
 _DEFAULT_MAX_NEW = 50
 

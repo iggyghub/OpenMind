@@ -21,7 +21,9 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"shell_exec", "fs_write"})
 # Wired by main.py via set_workdir_fn; returns the per-profile sandbox workdir.
 _workdir_fn: Callable[[], str] | None = None
 
-_DEFAULT_WORKDIR = str(Path(__file__).parent.parent / "cerebral" / "data" / "sandbox" / "default")
+from cerebral.paths import data_dir
+
+_DEFAULT_WORKDIR = str(data_dir() / "sandbox" / "default")
 
 
 def set_workdir_fn(fn: Callable[[], str]) -> None:

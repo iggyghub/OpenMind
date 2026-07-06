@@ -17,7 +17,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
+from cerebral.paths import data_dir
+
+DB_PATH = data_dir() / "openmind.db"
 
 STALE_DAYS = 30
 

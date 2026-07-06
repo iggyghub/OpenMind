@@ -35,8 +35,10 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-DB_PATH        = Path(__file__).parent.parent / "data" / "openmind.db"
-DEFAULT_STORE_ROOT = Path(__file__).parent.parent / "data" / "attachments"
+from cerebral.paths import data_dir
+
+DB_PATH        = data_dir() / "openmind.db"
+DEFAULT_STORE_ROOT = data_dir() / "attachments"
 
 # Cap on per-file extracted text folded into the LLM prompt. PDF/text
 # decode is bounded so a 50MB log doesn't blow up the model's context.

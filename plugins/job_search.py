@@ -92,7 +92,9 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
 # ATSes Felix can drive generically (guest-apply, clean DOM form).
 SUPPORTED_ATS_TYPES: frozenset[str] = frozenset({"greenhouse", "lever"})
 
-_DB_PATH = Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db"
+from cerebral.paths import data_dir
+
+_DB_PATH = data_dir() / "openmind.db"
 
 # S7 #340 — Eligibility/knockout question keywords (ADR-0009).
 # Any ATS field whose label matches one of these always escalates on first encounter

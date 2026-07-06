@@ -30,7 +30,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
+from cerebral.paths import data_dir
+
+DB_PATH = data_dir() / "openmind.db"
 
 
 @dataclass

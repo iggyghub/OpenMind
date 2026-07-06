@@ -27,7 +27,9 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
+from cerebral.paths import data_dir
+
+DB_PATH = data_dir() / "openmind.db"
 
 # Closed kind vocabulary (ADR-0007). The Main window renderer treats any
 # unknown kind as ``system_event`` so a forward-rolling Cerebral with a

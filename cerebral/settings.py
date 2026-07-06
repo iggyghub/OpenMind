@@ -50,7 +50,9 @@ _TYPES: dict[str, type] = {
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
 
-_SETTINGS_PATH = Path(__file__).parent / "data" / "felix-settings.json"
+from cerebral.paths import data_dir
+
+_SETTINGS_PATH = data_dir() / "felix-settings.json"
 
 
 class SettingsStore:

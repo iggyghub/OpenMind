@@ -28,8 +28,10 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
     "fs_delete",
 })
 
-_DEFAULT_NOTES_DIR = Path(__file__).parent.parent / "cerebral" / "data" / "notes"
-_DEFAULT_DB = Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db"
+from cerebral.paths import data_dir
+
+_DEFAULT_NOTES_DIR = data_dir() / "notes"
+_DEFAULT_DB = data_dir() / "openmind.db"
 
 
 class NotesPlugin:
