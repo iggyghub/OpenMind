@@ -288,6 +288,33 @@ class TestJobsFetchPostings:
         result = await plugin.call_tool("jobs_fetch_postings", {})
         assert result.is_error
 
+    @pytest.mark.asyncio
+    async def test_navigate_seam_set_after_create_is_used(self, monkeypatch):
+        """The live #401 bug: create() runs during plugin discovery, BEFORE
+        _wire_plugin_seams injects the real navigate. Eagerly coalescing
+        `navigate_fn or _default_navigate` in __init__ froze the OpenClaw
+        default into the instance and the wired seam was never consulted.
+        Resolution must happen at CALL time, like every other seam."""
+        import plugins.job_search as jm
+        store = _in_memory_store()
+        store.add_board(_BOARD_URL)
+        plugin = jm.JobSearchPlugin(store=store)  # no navigate_fn at create()
+        calls = []
+
+        async def late_navigate(url):
+            calls.append(url)
+            return RRR_FIXTURE_HTML
+
+        monkeypatch.setattr(jm, "_navigate_fn", None)
+        jm.set_navigate_fn(late_navigate)  # seam wired AFTER create()
+        try:
+            result = await plugin.call_tool("jobs_fetch_postings", {})
+        finally:
+            jm._navigate_fn = None
+        assert calls, "post-create set_navigate_fn was ignored (init-capture trap)"
+        data = json.loads(result.content)
+        assert data["saved"] == 2
+
 
 # ── S2 fixtures ───────────────────────────────────────────────────────────────
 #

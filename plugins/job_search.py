@@ -986,7 +986,12 @@ class JobSearchPlugin:
         read_verify_link_fn: Callable | None = None,
         click_verify_link_fn: Callable | None = None,
     ) -> None:
-        self._navigate = navigate_fn or _default_navigate
+        # Keep the raw injected value; resolution happens at CALL time like
+        # every other seam (self._x or module _x_fn or default). Eagerly
+        # coalescing here froze the OpenClaw default into the instance:
+        # create() runs during plugin discovery, BEFORE _wire_plugin_seams
+        # injects the real headless-browser navigate (#401).
+        self._navigate_fn = navigate_fn
         self._store = store
         self._extract_fn = extract_fn
         self._score_fn = score_fn
@@ -1631,7 +1636,7 @@ class JobSearchPlugin:
         store = self._store or _store
         if store is None:
             return ToolResult(content="Job search store not initialised", is_error=True)
-        navigate = self._navigate
+        navigate = self._navigate_fn or _navigate_fn or _default_navigate
         # S1 #396: iterate enabled boards; RRR_URL is kept as the parser-host reference only.
         boards = [b for b in store.list_boards() if b.get("enabled")]
         if not boards:
