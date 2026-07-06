@@ -497,40 +497,52 @@ class JobSearchStore:
 
     def upsert_dossier(self, profile_id: int, fields: dict) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        self._con.execute("""
-            INSERT INTO applicant_dossier
-                (profile_id, name, email, phone, location, linkedin, github, website,
-                 work_history_json, education_json, skills_json, raw_text, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(profile_id) DO UPDATE SET
-                name               = excluded.name,
-                email              = excluded.email,
-                phone              = excluded.phone,
-                location           = excluded.location,
-                linkedin           = excluded.linkedin,
-                github             = excluded.github,
-                website            = excluded.website,
-                work_history_json  = excluded.work_history_json,
-                education_json     = excluded.education_json,
-                skills_json        = excluded.skills_json,
-                raw_text           = excluded.raw_text,
-                updated_at         = excluded.updated_at
-        """, (
-            profile_id,
-            fields.get("name", ""),
-            fields.get("email", ""),
-            fields.get("phone", ""),
-            fields.get("location", ""),
-            fields.get("linkedin", ""),
-            fields.get("github", ""),
-            fields.get("website", ""),
-            json.dumps(fields.get("work_history", [])),
-            json.dumps(fields.get("education", [])),
-            json.dumps(fields.get("skills", [])),
-            fields.get("raw_text", ""),
-            now,
-        ))
-        self._con.commit()
+
+        # ``fields`` is LLM-extracted JSON: extractors emit explicit nulls
+        # ('"linkedin": null'), so .get(key, "") still returns None and
+        # violates the NOT NULL columns. Coerce falsy to the column default.
+        def _s(key: str) -> str:
+            return fields.get(key) or ""
+
+        def _l(key: str) -> str:
+            return json.dumps(fields.get(key) or [])
+
+        try:
+            self._con.execute("""
+                INSERT INTO applicant_dossier
+                    (profile_id, name, email, phone, location, linkedin, github, website,
+                     work_history_json, education_json, skills_json, raw_text, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_id) DO UPDATE SET
+                    name               = excluded.name,
+                    email              = excluded.email,
+                    phone              = excluded.phone,
+                    location           = excluded.location,
+                    linkedin           = excluded.linkedin,
+                    github             = excluded.github,
+                    website            = excluded.website,
+                    work_history_json  = excluded.work_history_json,
+                    education_json     = excluded.education_json,
+                    skills_json        = excluded.skills_json,
+                    raw_text           = excluded.raw_text,
+                    updated_at         = excluded.updated_at
+            """, (
+                profile_id,
+                _s("name"), _s("email"), _s("phone"), _s("location"),
+                _s("linkedin"), _s("github"), _s("website"),
+                _l("work_history"), _l("education"), _l("skills"),
+                _s("raw_text"),
+                now,
+            ))
+            self._con.commit()
+        except Exception:
+            # A failed write leaves the implicit transaction (and the SQLite
+            # write lock) open on this long-lived connection, wedging every
+            # other writer in the process with "database is locked" — seen
+            # live 2026-07-06 when a NULL field killed the INSERT and
+            # conversation appends failed until restart. Always roll back.
+            self._con.rollback()
+            raise
 
     def get_dossier(self, profile_id: int) -> dict | None:
         row = self._con.execute(
