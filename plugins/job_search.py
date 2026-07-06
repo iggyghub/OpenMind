@@ -447,6 +447,18 @@ class JobSearchStore:
                 ramp_threshold      INTEGER NOT NULL DEFAULT 5
             )
         """)
+        # S1 #396 — User-configurable Job board list (replaces hardcoded RRR_URL in fetch).
+        # Seeds EMPTY — user adds ratracerebellion.com via the Job Search panel.
+        # Mirrored on the tray side as jobBoards state (#390 pairing).
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS job_boards (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                url        TEXT    UNIQUE NOT NULL,
+                label      TEXT    NOT NULL DEFAULT '',
+                enabled    INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT    NOT NULL
+            )
+        """)
         self._con.commit()
 
     def upsert(self, posting: dict) -> None:
@@ -651,6 +663,37 @@ class JobSearchStore:
                 d["filled_fields_json"] = []
             rows.append(d)
         return rows
+
+    # ── S1 #396 — Job board list ───────────────────────────────────────────
+
+    def list_boards(self) -> list[dict]:
+        cur = self._con.execute(
+            "SELECT * FROM job_boards ORDER BY created_at ASC, id ASC"
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    def add_board(self, url: str, label: str = "") -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            self._con.execute(
+                "INSERT INTO job_boards (url, label, created_at) VALUES (?, ?, ?)",
+                (url.strip(), label.strip(), now),
+            )
+            self._con.commit()
+        except Exception:
+            self._con.rollback()  # prevent wedged write lock (#388 precedent)
+            raise
+
+    def remove_board(self, url: str) -> None:
+        self._con.execute("DELETE FROM job_boards WHERE url = ?", (url,))
+        self._con.commit()
+
+    def set_board_enabled(self, url: str, enabled: bool) -> None:
+        self._con.execute(
+            "UPDATE job_boards SET enabled = ? WHERE url = ?",
+            (1 if enabled else 0, url),
+        )
+        self._con.commit()
 
     # ── S5 #338 — Answer bank ──────────────────────────────────────────────
 
@@ -1560,22 +1603,40 @@ class JobSearchPlugin:
         if store is None:
             return ToolResult(content="Job search store not initialised", is_error=True)
         navigate = self._navigate
-        try:
-            html = await navigate(RRR_URL)
-        except Exception as exc:
-            logger.error("[job_search] navigate failed: %s", exc)
-            return ToolResult(content=f"Failed to fetch job board: {exc}", is_error=True)
-        postings = parse_postings(html)
-        # Only upsert entries that have an outbound URL (the dedup key)
-        saved = 0
-        for p in postings:
-            if p.get("url"):
-                store.upsert(p)
-                saved += 1
+        # S1 #396: iterate enabled boards; RRR_URL is kept as the parser-host reference only.
+        boards = [b for b in store.list_boards() if b.get("enabled")]
+        if not boards:
+            return ToolResult(content=json.dumps({
+                "hint": "No job boards configured. Add a board in the Job Search panel.",
+                "fetched": 0,
+                "saved": 0,
+                "postings": store.list_postings(),
+            }))
+        total_fetched = 0
+        total_saved = 0
+        per_board: list[dict] = []
+        for board in boards:
+            board_url = board["url"]
+            try:
+                html = await navigate(board_url)
+            except Exception as exc:
+                logger.error("[job_search] navigate(%s) failed: %s", board_url, exc)
+                per_board.append({"url": board_url, "error": str(exc), "fetched": 0, "saved": 0})
+                continue
+            postings = parse_postings(html)
+            saved = 0
+            for p in postings:
+                if p.get("url"):
+                    store.upsert(p)
+                    saved += 1
+            total_fetched += len(postings)
+            total_saved += saved
+            per_board.append({"url": board_url, "fetched": len(postings), "saved": saved})
         all_postings = store.list_postings()
         return ToolResult(content=json.dumps({
-            "fetched": len(postings),
-            "saved": saved,
+            "fetched": total_fetched,
+            "saved": total_saved,
+            "per_board": per_board,
             "postings": all_postings,
         }))
 

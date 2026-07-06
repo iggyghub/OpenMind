@@ -3225,6 +3225,102 @@
     }
 
     /* S7 #340 -- Auto-submit section */
+    /* S1 #396 — Job boards section */
+    .jobs-boards-section {
+      border-top: 1px solid var(--border);
+      padding: 12px 0 4px;
+    }
+    .jobs-boards-header {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    .jobs-boards-empty {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .jobs-board-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .jobs-board-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+      min-width: 0;
+      cursor: pointer;
+    }
+    .jobs-board-enabled { accent-color: var(--accent); cursor: pointer; }
+    .jobs-board-label {
+      font-size: 13px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .jobs-board-url-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 120px;
+    }
+    .jobs-board-remove {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 0 4px;
+      line-height: 1;
+    }
+    .jobs-board-remove:hover { color: var(--danger, #e05); }
+    .jobs-boards-add {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .jobs-boards-url-input {
+      flex: 2;
+      min-width: 0;
+      font-size: 12px;
+      background: var(--input-bg, var(--surface));
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 4px 8px;
+    }
+    .jobs-boards-label-input {
+      flex: 1;
+      min-width: 0;
+      font-size: 12px;
+      background: var(--input-bg, var(--surface));
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 4px 8px;
+    }
+    .jobs-boards-add-btn {
+      font-size: 12px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 4px 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .jobs-boards-add-btn:hover { opacity: 0.85; }
     .jobs-auto-submit-section {
       border-top: 1px solid var(--border);
       padding: 12px 0 4px;
@@ -4295,6 +4391,22 @@
           </button>
           <span class="jobs-status" id="jobs-status"></span>
         </div>
+        <!-- S1 #396 — Job boards: client-side jobBoards mirrors server-side job_boards table (#390 pairing) -->
+        <div class="jobs-boards-section" id="jobs-boards-section">
+          <div class="jobs-boards-header">Job boards</div>
+          <div id="jobs-boards-list">
+            <div class="jobs-boards-empty" id="jobs-boards-empty">
+              No boards added. Add ratracerebellion.com/job-postings to get started.
+            </div>
+          </div>
+          <div class="jobs-boards-add">
+            <input class="jobs-boards-url-input" id="jobs-boards-url" type="url"
+              placeholder="https://example.com/jobs" />
+            <input class="jobs-boards-label-input" id="jobs-boards-label" type="text"
+              placeholder="Label (optional)" />
+            <button class="jobs-boards-add-btn" id="jobs-boards-add-btn" type="button">Add</button>
+          </div>
+        </div>
         <!-- S2 #335 — Applicant dossier -->
         <div class="jobs-dossier" id="jobs-dossier">
           <div class="jobs-dossier-header">My Resume</div>
@@ -4917,6 +5029,8 @@
           jobShortlist = (event.data && event.data.shortlist) || [];      // S3 #336
           jobApplications = (event.data && event.data.applications) || []; // S4 #337
           jobSettings = (event.data && event.data.job_settings) || null;  // S7 #340
+          jobBoards = (event.data && event.data.job_boards) || [];        // S1 #396
+          renderJobBoards();         // S1 #396
           renderJobSearch();
           renderJobDossier();        // S2 #335
           renderJobShortlist();      // S3 #336
@@ -6154,6 +6268,8 @@
     let jobShortlist = [];   // S3 #336
     let jobApplications = [];  // S4 #337
     let jobSettings = null;    // S7 #340 — auto-submit settings
+    // S1 #396: jobBoards mirrors server-side job_boards table (#390 pairing).
+    let jobBoards = [];
     const jobsListEl        = document.getElementById('jobs-list');
     const jobsEmptyEl       = document.getElementById('jobs-empty');
     const jobsCheckBtn      = document.getElementById('jobs-check-btn');
@@ -6165,6 +6281,60 @@
     const jobsApplicationsEmpty = document.getElementById('jobs-applications-empty'); // S4 #337
     const jobsAutoSubmitToggle  = document.getElementById('jobs-auto-submit-toggle');  // S7 #340
     const jobsRampProgressEl    = document.getElementById('jobs-ramp-progress');       // S7 #340
+    // S1 #396 — Job boards section DOM refs.
+    const jobsBoardsListEl  = document.getElementById('jobs-boards-list');
+    const jobsBoardsEmptyEl = document.getElementById('jobs-boards-empty');
+    const jobsBoardsUrlEl   = document.getElementById('jobs-boards-url');
+    const jobsBoardsLabelEl = document.getElementById('jobs-boards-label');
+    const jobsBoardsAddBtn  = document.getElementById('jobs-boards-add-btn');
+
+    // S1 #396 — render the job boards list from jobBoards state.
+    // jobBoards mirrors the server-side job_boards table (#390 pairing).
+    function renderJobBoards() {
+      if (!jobsBoardsListEl) return;
+      jobsBoardsListEl.querySelectorAll('.jobs-board-row').forEach(function (el) { el.remove(); });
+      if (jobBoards.length === 0) {
+        jobsBoardsEmptyEl.hidden = false;
+        return;
+      }
+      jobsBoardsEmptyEl.hidden = true;
+      jobBoards.forEach(function (board) {
+        var row = document.createElement('div');
+        row.className = 'jobs-board-row';
+        row.dataset.url = board.url;
+        row.innerHTML =
+          '<label class="jobs-board-toggle">' +
+            '<input type="checkbox" class="jobs-board-enabled"' + (board.enabled ? ' checked' : '') + ' />' +
+            '<span class="jobs-board-label">' + escHtml(board.label || board.url) + '</span>' +
+          '</label>' +
+          '<span class="jobs-board-url-hint">' + (board.label ? escHtml(board.url) : '') + '</span>' +
+          '<button class="jobs-board-remove" data-url="' + escHtml(board.url) + '" type="button" title="Remove">x</button>';
+        jobsBoardsListEl.appendChild(row);
+      });
+    }
+
+    // S1 #396 — Add board form submit.
+    jobsBoardsAddBtn.addEventListener('click', function () {
+      var url = (jobsBoardsUrlEl.value || '').trim();
+      if (!url) return;
+      sendEvent({ type: 'add_job_board', data: { url: url, label: (jobsBoardsLabelEl.value || '').trim() } });
+      jobsBoardsUrlEl.value = '';
+      jobsBoardsLabelEl.value = '';
+    });
+
+    // S1 #396 — board list delegation: remove + enable toggle.
+    jobsBoardsListEl.addEventListener('click', function (e) {
+      var removeBtn = e.target.closest('.jobs-board-remove');
+      if (removeBtn) {
+        sendEvent({ type: 'remove_job_board', data: { url: removeBtn.dataset.url } });
+        return;
+      }
+      var toggle = e.target.closest('.jobs-board-enabled');
+      if (toggle) {
+        var row = toggle.closest('.jobs-board-row');
+        if (row) sendEvent({ type: 'set_job_board_enabled', data: { url: row.dataset.url, enabled: toggle.checked } });
+      }
+    });
 
     function renderJobSearch() {
       jobsListEl.querySelectorAll('.jobs-date-group').forEach(function (el) { el.remove(); });

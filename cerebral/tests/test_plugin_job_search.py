@@ -210,11 +210,15 @@ class TestJobSearchStore:
 
 # ── Cycle 4 — tool call (no live network) ────────────────────────────────────
 
+_BOARD_URL = "https://test.board.example.com/jobs"
+
+
 class TestJobsFetchPostings:
     @pytest.mark.asyncio
     async def test_returns_parsed_count(self):
         from plugins.job_search import JobSearchPlugin
         store = _in_memory_store()
+        store.add_board(_BOARD_URL)  # S1 #396: fetch loops boards, not RRR_URL directly
         plugin = JobSearchPlugin(navigate_fn=_make_navigate(RRR_FIXTURE_HTML), store=store)
         result = await plugin.call_tool("jobs_fetch_postings", {})
         assert not result.is_error
@@ -226,6 +230,7 @@ class TestJobsFetchPostings:
     async def test_postings_in_response(self):
         from plugins.job_search import JobSearchPlugin
         store = _in_memory_store()
+        store.add_board(_BOARD_URL)
         plugin = JobSearchPlugin(navigate_fn=_make_navigate(RRR_FIXTURE_HTML), store=store)
         result = await plugin.call_tool("jobs_fetch_postings", {})
         data = json.loads(result.content)
@@ -236,6 +241,7 @@ class TestJobsFetchPostings:
     async def test_skips_entries_without_ats_url(self):
         from plugins.job_search import JobSearchPlugin
         store = _in_memory_store()
+        store.add_board(_BOARD_URL)
         plugin = JobSearchPlugin(navigate_fn=_make_navigate(RRR_FIXTURE_NO_LINKS), store=store)
         result = await plugin.call_tool("jobs_fetch_postings", {})
         data = json.loads(result.content)
@@ -246,6 +252,7 @@ class TestJobsFetchPostings:
     async def test_dedup_on_second_fetch(self):
         from plugins.job_search import JobSearchPlugin
         store = _in_memory_store()
+        store.add_board(_BOARD_URL)
         plugin = JobSearchPlugin(navigate_fn=_make_navigate(RRR_FIXTURE_HTML), store=store)
         await plugin.call_tool("jobs_fetch_postings", {})
         result2 = await plugin.call_tool("jobs_fetch_postings", {})
@@ -256,17 +263,23 @@ class TestJobsFetchPostings:
     async def test_dedup_within_fixture(self):
         from plugins.job_search import JobSearchPlugin
         store = _in_memory_store()
+        store.add_board(_BOARD_URL)
         plugin = JobSearchPlugin(navigate_fn=_make_navigate(RRR_FIXTURE_DUPE), store=store)
         result = await plugin.call_tool("jobs_fetch_postings", {})
         assert store.count() == 1    # two entries, same ATS URL -> 1 row
 
     @pytest.mark.asyncio
-    async def test_navigate_failure_returns_error(self):
+    async def test_navigate_failure_reported_per_board(self):
+        # S1 #396: a failing board is reported in per_board; overall is not is_error.
         from plugins.job_search import JobSearchPlugin
         store = _in_memory_store()
+        store.add_board(_BOARD_URL)
         plugin = JobSearchPlugin(navigate_fn=_make_failing_navigate(), store=store)
         result = await plugin.call_tool("jobs_fetch_postings", {})
-        assert result.is_error
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert "per_board" in data
+        assert "error" in data["per_board"][0]
 
     @pytest.mark.asyncio
     async def test_no_store_returns_error(self):
