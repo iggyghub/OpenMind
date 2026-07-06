@@ -20,7 +20,7 @@ slice, **update this block**: tick the queue entry, set the next unticked
 entry's `#N` + `Model:` as the active slice, and set `Status:` (`ready` while
 slices remain; `done` after S2 lands).
 
-Active slice: **S1 — #396**
+Active slice: **S2 — #397**
 
 Model: sonnet
 Status: ready
@@ -32,12 +32,12 @@ haiku | sonnet | opus | fable. `Status: ready` = run the active slice;
 
 ### Slice queue (work top-down; issue body = detail)
 
-1. [ ] S1 — #396 Job board list: store + IPC + panel UI + multi-board fetch — Model: sonnet
+1. [x] S1 — #396 Job board list: store + IPC + panel UI + multi-board fetch — Model: sonnet
 2. [ ] S2 — #397 Generic LLM posting extractor fallback for non-RRR boards — Model: sonnet
 
 ### Landed PRs
 
-(none yet)
+- PR #399 — S1: user-configurable Job board list (store + IPC + panel UI + multi-board fetch)
 
 ## SAFETY
 
