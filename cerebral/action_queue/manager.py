@@ -27,7 +27,9 @@ from typing import Optional
 
 from cerebral.action_queue.risky_verbs import is_risky
 
-DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
+from cerebral.paths import data_dir
+
+DB_PATH = data_dir() / "openmind.db"
 
 
 @dataclass

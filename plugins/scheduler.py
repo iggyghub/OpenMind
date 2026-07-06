@@ -20,7 +20,9 @@ PLUGIN_NAME = "scheduler"
 # file itself is never unlinked, so fs_delete is not needed.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write"})
 
-_DEFAULT_DB = Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db"
+from cerebral.paths import data_dir
+
+_DEFAULT_DB = data_dir() / "openmind.db"
 
 _VALID_RECURRENCES = {"daily", "weekly", "monthly"}
 

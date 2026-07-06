@@ -33,7 +33,9 @@ except ImportError:
     _KEYRING_AVAILABLE = False
 
 
-_HARNESS_PATH = Path(__file__).parent / "data" / "felix-harness.json"
+from cerebral.paths import data_dir
+
+_HARNESS_PATH = data_dir() / "felix-harness.json"
 _KEYRING_SERVICE = "openmind-harness"
 
 

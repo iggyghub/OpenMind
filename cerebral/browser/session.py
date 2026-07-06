@@ -40,7 +40,9 @@ logger = logging.getLogger(__name__)
 
 # Persistent-context profiles live under cerebral/data/ which is already
 # gitignored — the on-disk session (cookies) must never be committed.
-_DATA_ROOT = Path(__file__).parent.parent / "data" / "browser"
+from cerebral.paths import data_dir
+
+_DATA_ROOT = data_dir() / "browser"
 
 # The dedicated browser-automation provider (distinct from the OAuth
 # Workspace "google" provider) per the 2026-06-25 ADR-0005 amendment.

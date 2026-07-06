@@ -505,7 +505,8 @@ class TasksSQLiteFallback:
         from pathlib import Path
 
         if db_path is None:
-            db_path = str(Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db")
+            from cerebral.paths import data_dir
+            db_path = str(data_dir() / "openmind.db")
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._con = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -637,7 +638,8 @@ class ContactsSQLiteFallback:
         from pathlib import Path
 
         if db_path is None:
-            db_path = str(Path(__file__).parent.parent / "cerebral" / "data" / "openmind.db")
+            from cerebral.paths import data_dir
+            db_path = str(data_dir() / "openmind.db")
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._con = sqlite3.connect(str(db_path), check_same_thread=False)

@@ -82,7 +82,9 @@ def _warn_keyring_missing_once() -> None:
     )
 
 
-DB_PATH = Path(__file__).parent.parent / "data" / "openmind.db"
+from cerebral.paths import data_dir
+
+DB_PATH = data_dir() / "openmind.db"
 
 # The canonical secret fields a Connected account stores in the keyring.
 # delete_credential iterates this set to guarantee no orphaned keyring
