@@ -399,6 +399,39 @@ class TestDossierStore:
         assert store.get_dossier(1)["name"] == "John Doe"
         assert store.get_dossier(2)["name"] == "Jane Smith"
 
+    def test_upsert_dossier_tolerates_explicit_nulls(self):
+        """LLM extractors emit '"linkedin": null' — keys PRESENT with None
+        values, which .get(key, "") does not default. Live failure
+        2026-07-06: NOT NULL constraint on applicant_dossier.linkedin."""
+        store = _in_memory_store()
+        nulled = {
+            "name": "Adam Poder", "email": "a@example.com",
+            "phone": None, "location": None, "linkedin": None,
+            "github": None, "website": None,
+            "work_history": None, "education": None, "skills": None,
+            "raw_text": None,
+        }
+        store.upsert_dossier(_PROFILE_ID, nulled)
+        d = store.get_dossier(_PROFILE_ID)
+        assert d["linkedin"] == ""
+        assert d["work_history_json"] == []
+
+    def test_upsert_dossier_failure_does_not_wedge_connection(self):
+        """A failed write must roll back — the open implicit transaction
+        holds the SQLite write lock and every other connection in the
+        process starts failing with 'database is locked' (live 2026-07-06:
+        conversation turns stopped recording after one bad dossier insert)."""
+        store = _in_memory_store()
+        with pytest.raises(Exception):
+            # profile_id=None violates NOT NULL on a guaranteed column.
+            store.upsert_dossier(None, _FIXTURE_DOSSIER)
+        assert not store._con.in_transaction, (
+            "failed upsert left the transaction (write lock) open"
+        )
+        # And the connection still works afterwards.
+        store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+        assert store.get_dossier(_PROFILE_ID)["name"] == "John Doe"
+
 
 # ── Cycle 6 — jobs_store_resume tool ─────────────────────────────────────────
 
