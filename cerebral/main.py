@@ -166,6 +166,35 @@ async def _extract_dossier(pdf_text: str) -> dict:  # S2 #335
     except Exception:
         return {}
 
+async def _extract_postings(page_text: str) -> list[dict]:  # S2 #397
+    """LLM posting extractor injected as fallback for non-RRR boards.
+
+    Called only when parse_postings returns zero results. Input is already
+    capped by the plugin's _LLM_POSTINGS_INPUT_CAP; no further truncation needed.
+    """
+    import re as _re, json as _json
+    # Strip HTML tags so the LLM receives readable text instead of raw markup.
+    plain = _re.sub(r"<[^>]+>", " ", page_text)
+    plain = _re.sub(r"\s{3,}", "\n", plain).strip()
+    prompt = (
+        "Extract all job postings from the job board page text below.\n"
+        "Return ONLY a valid JSON array. Each element must have these keys:\n"
+        "  title (string), company (string), snapshot (string, first ~200 chars of description),\n"
+        "  posted_date (string YYYY-MM-DD or empty), url (absolute https:// apply/ATS URL).\n"
+        "Include only entries that have a valid https:// apply URL. If none are found return [].\n"
+        "Page text:\n" + plain
+    )
+    raw = await _router.complete(prompt, task_type="quality")
+    m = _re.search(r"\[.*\]", raw, _re.DOTALL)
+    if not m:
+        return []
+    try:
+        items = _json.loads(m.group(0))
+        return [i for i in items if isinstance(i, dict) and str(i.get("url", "")).startswith("http")]
+    except Exception:
+        return []
+
+
 async def _score_posting(posting: dict, dossier: dict) -> float:  # S3 #336
     """LLM fit-scorer injected into job_search plugin. Returns 0.0–10.0."""
     import json as _json
@@ -3898,6 +3927,7 @@ def _wire_plugin_seams() -> None:
         ("job_search", "set_store", _job_search_store),                              # S1 #334
         ("job_search", "set_navigate_fn", _jobs_navigate),                           # S1 #334 / #380
         ("job_search", "set_extract_fn", _extract_dossier),                          # S2 #335
+        ("job_search", "set_extract_postings_fn", _extract_postings),                # S2 #397
         ("job_search", "set_score_fn", _score_posting),                              # S3 #336
         ("job_search", "set_apply_driver_fn", _jobs_apply_driver),                   # S4 #337
         ("job_search", "set_apply_submit_fn", _jobs_apply_submit),                   # S4 #337

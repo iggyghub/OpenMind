@@ -462,8 +462,22 @@ class JobSearchStore:
         self._con.commit()
 
     def upsert(self, posting: dict) -> None:
-        """Insert or update a posting by outbound URL."""
+        """Insert or update a posting by outbound URL.
+
+        Coerces missing / explicit-null fields to column defaults (#388 precedent)
+        so LLM-extracted postings (which may omit optional keys) don't fail the
+        NOT NULL constraints.
+        """
         now = datetime.now(timezone.utc).isoformat()
+        params = {
+            "url":         posting.get("url") or "",
+            "title":       posting.get("title") or "",
+            "company":     posting.get("company") or "",
+            "pay":         posting.get("pay") or "",
+            "snapshot":    posting.get("snapshot") or "",
+            "posted_date": posting.get("posted_date") or "",
+            "now":         now,
+        }
         self._con.execute("""
             INSERT INTO job_postings (url, title, company, pay, snapshot, posted_date, fetched_at)
             VALUES (:url, :title, :company, :pay, :snapshot, :posted_date, :now)
@@ -474,7 +488,7 @@ class JobSearchStore:
                 snapshot    = excluded.snapshot,
                 posted_date = excluded.posted_date,
                 fetched_at  = excluded.fetched_at
-        """, {**posting, "now": now})
+        """, params)
         self._con.commit()
 
     def list_postings(self) -> list[dict]:
@@ -786,6 +800,8 @@ _active_profile_id: int | None = None
 _pending_resume_path: str = ""
 _extract_fn: Callable[[str], Any] | None = None  # sync or async (str) -> dict
 _score_fn: Callable[[dict, dict], Any] | None = None  # sync or async (posting, dossier) -> float
+# S2 #397 — injectable LLM posting extractor (async (page_text: str) -> list[dict])
+_extract_postings_fn: Callable[[str], Any] | None = None
 
 # S4 #337 — injectable apply driver (browser nav + LLM field-mapping + form fill + upload).
 # async (posting_url: str, dossier: dict, resume_path: str) -> dict:
@@ -846,6 +862,12 @@ def set_extract_fn(fn: Callable[[str], Any]) -> None:
     """Inject the LLM extractor (sync or async fn(text) -> dict)."""
     global _extract_fn
     _extract_fn = fn
+
+
+def set_extract_postings_fn(fn: Callable[[str], Any]) -> None:
+    """Inject the LLM posting extractor (async fn(page_text) -> list[dict]). S2 #397."""
+    global _extract_postings_fn
+    _extract_postings_fn = fn
 
 
 def set_score_fn(fn: Callable[[dict, dict], Any]) -> None:
@@ -954,6 +976,8 @@ class JobSearchPlugin:
         apply_submit_fn: Callable | None = None,
         recall_fn: Callable | None = None,
         index_answer_fn: Callable | None = None,
+        # S2 #397 — LLM posting extractor fallback
+        extract_postings_fn: Callable[[str], Any] | None = None,
         # S6 #339 — account-creation + email-verification seams
         gen_password_fn: Callable | None = None,
         create_ats_account_fn: Callable | None = None,
@@ -970,6 +994,7 @@ class JobSearchPlugin:
         self._apply_submit_fn = apply_submit_fn
         self._recall_fn = recall_fn          # S5: Answer bank semantic recall
         self._index_answer_fn = index_answer_fn  # S5: ChromaDB indexer
+        self._extract_postings_fn = extract_postings_fn  # S2 #397
         # S6 #339
         self._gen_password_fn = gen_password_fn
         self._create_ats_account_fn = create_ats_account_fn
@@ -1598,7 +1623,11 @@ class JobSearchPlugin:
         dossier = store.get_dossier(profile_id)
         return ToolResult(content=json.dumps({"status": "stored", "dossier": dossier}))
 
+    # S2 #397 — LLM input cap so a huge page can't blow the context window.
+    _LLM_POSTINGS_INPUT_CAP = 12_000
+
     async def _fetch_postings(self) -> ToolResult:
+        import asyncio
         store = self._store or _store
         if store is None:
             return ToolResult(content="Job search store not initialised", is_error=True)
@@ -1623,15 +1652,33 @@ class JobSearchPlugin:
                 logger.error("[job_search] navigate(%s) failed: %s", board_url, exc)
                 per_board.append({"url": board_url, "error": str(exc), "fetched": 0, "saved": 0})
                 continue
+            # Static parser first; LLM fallback when it yields nothing (S2 #397).
             postings = parse_postings(html)
+            if not postings:
+                extractor = self._extract_postings_fn or _extract_postings_fn
+                if extractor is not None:
+                    try:
+                        truncated = html[:self._LLM_POSTINGS_INPUT_CAP]
+                        result = extractor(truncated)
+                        if asyncio.iscoroutine(result):
+                            result = await result
+                        if isinstance(result, list):
+                            postings = result
+                    except Exception as exc:
+                        logger.warning(
+                            "[job_search] LLM extractor failed for %s: %s", board_url, exc
+                        )
             saved = 0
             for p in postings:
-                if p.get("url"):
+                if p.get("url") and str(p["url"]).startswith("http"):
                     store.upsert(p)
                     saved += 1
             total_fetched += len(postings)
             total_saved += saved
-            per_board.append({"url": board_url, "fetched": len(postings), "saved": saved})
+            board_entry: dict = {"url": board_url, "fetched": len(postings), "saved": saved}
+            if not postings:
+                board_entry["note"] = "0 postings (unrecognised layout)"
+            per_board.append(board_entry)
         all_postings = store.list_postings()
         return ToolResult(content=json.dumps({
             "fetched": total_fetched,
@@ -1650,6 +1697,7 @@ def create(
     apply_submit_fn: "Callable | None" = None,
     recall_fn: "Callable | None" = None,
     index_answer_fn: "Callable | None" = None,
+    extract_postings_fn: "Callable | None" = None,  # S2 #397
     # S6 #339
     gen_password_fn: "Callable | None" = None,
     create_ats_account_fn: "Callable | None" = None,
@@ -1663,6 +1711,7 @@ def create(
         extract_fn=extract_fn, score_fn=score_fn,
         apply_driver_fn=apply_driver_fn, apply_submit_fn=apply_submit_fn,
         recall_fn=recall_fn, index_answer_fn=index_answer_fn,
+        extract_postings_fn=extract_postings_fn,
         gen_password_fn=gen_password_fn,
         create_ats_account_fn=create_ats_account_fn,
         get_jobs_email_fn=get_jobs_email_fn,
