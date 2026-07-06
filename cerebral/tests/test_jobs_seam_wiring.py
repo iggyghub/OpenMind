@@ -20,7 +20,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 _JOBS_SEAMS = (
     "set_store", "set_navigate_fn", "set_extract_fn", "set_score_fn",
     "set_apply_driver_fn", "set_apply_submit_fn", "set_recall_fn",
-    "set_index_answer_fn", "set_get_jobs_email_fn",
+    "set_index_answer_fn", "set_extract_postings_fn",  # S2 #397
+    "set_get_jobs_email_fn",
     "set_create_ats_account_fn", "set_store_ats_password_fn",
     "set_read_verify_link_fn", "set_click_verify_link_fn",
     "set_active_profile_id", "set_pending_resume_path",
@@ -54,6 +55,7 @@ def test_wire_plugin_seams_seeds_profile_on_orchestrator_module(monkeypatch):
     # Spot-check a couple of table-wired seams reached the same module.
     assert mod._calls["set_extract_fn"]
     assert mod._calls["set_navigate_fn"]
+    assert mod._calls["set_extract_postings_fn"]  # S2 #397
 
 
 def test_js_seam_targets_orchestrator_module(monkeypatch):

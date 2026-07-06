@@ -93,6 +93,20 @@ _(slices append their live-verify items here as they land)_
       Application row (same ATS URL) either warns or upserts -- never produces a second
       row (URL dedup invariant).
 
+### S2 (boards campaign) -- #397: Generic LLM posting extractor fallback
+
+- [ ] Add a non-RRR job board in the Job Search panel (e.g. a real work-from-home
+      aggregator whose HTML the static parser cannot match). Trigger "Check for new
+      jobs" and confirm Cerebral logs "LLM extractor called for <board URL>" and
+      at least one posting appears in the panel with a valid https:// ATS URL.
+- [ ] Verify the per-board result in the IPC response includes `fetched` > 0 for the
+      non-RRR board (postings reached `store.upsert` via the LLM path).
+- [ ] Add the RRR board as well. Trigger fetch again and confirm the RRR board uses the
+      static parser (check logs — no "LLM extractor" line for the RRR URL).
+- [ ] Add a board whose HTML the LLM also cannot parse (e.g. a login-gated page).
+      Confirm the fetch completes without error and the per-board entry shows
+      `"note": "0 postings (unrecognised layout)"` in the IPC payload.
+
 ### S6 -- #339: Account-creation + email verification
 
 - [ ] Seed the jobs-email Connected account via the Credentials panel (provider

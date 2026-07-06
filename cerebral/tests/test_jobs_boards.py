@@ -1,7 +1,8 @@
-"""S1 #396 — job_boards table CRUD and _fetch_postings multi-board loop.
+"""S1 #396 / S2 #397 — job_boards table CRUD and _fetch_postings loop.
 
-All tests use in-memory SQLite and stubbed navigate/parse; no live fetches.
+All tests use in-memory SQLite and stubbed navigate/extract; no live fetches.
 """
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
@@ -182,3 +183,146 @@ async def test_fetch_disabled_board_skipped():
     data = json.loads(result.content)
     assert navigated == []  # disabled board not fetched
     assert "hint" in data  # same as zero-boards path
+
+
+# ── S2 #397 — LLM posting extractor fallback ─────────────────────────────────
+
+_EMPTY_HTML = "<html><body><p>No jobs here.</p></body></html>"
+
+_LLM_POSTINGS = [
+    {
+        "title": "Remote Writer",
+        "company": "Acme Corp",
+        "snapshot": "Write stuff remotely.",
+        "posted_date": "2026-07-06",
+        "url": "https://ats.example.com/apply/99",
+    }
+]
+
+
+async def test_rrr_fixture_does_not_trigger_llm_extractor():
+    """RRR HTML parses with the static parser; the LLM seam must NOT be called."""
+    store = _mem_store()
+    store.add_board("https://example.com/jobs")
+    extractor_called: list[str] = []
+
+    async def fake_nav(url):
+        return _FAKE_HTML
+
+    async def fake_extract(text):
+        extractor_called.append(text)
+        return _LLM_POSTINGS
+
+    plugin = JobSearchPlugin(
+        navigate_fn=fake_nav,
+        store=store,
+        extract_postings_fn=fake_extract,
+    )
+    result = await plugin._fetch_postings()
+    assert not result.is_error
+    assert extractor_called == [], "LLM extractor must not be called when static parser succeeds"
+
+
+async def test_llm_extractor_called_when_static_parser_returns_zero():
+    """Non-RRR page yields no static results → LLM fallback fires."""
+    store = _mem_store()
+    store.add_board("https://other-board.com/jobs")
+    extractor_inputs: list[str] = []
+
+    async def fake_extract(text):
+        extractor_inputs.append(text)
+        return _LLM_POSTINGS
+
+    async def fake_nav(url):
+        return _EMPTY_HTML
+
+    plugin = JobSearchPlugin(
+        navigate_fn=fake_nav, store=store, extract_postings_fn=fake_extract
+    )
+    result = await plugin._fetch_postings()
+    assert not result.is_error
+    assert len(extractor_inputs) == 1
+    data = json.loads(result.content)
+    assert data["fetched"] == 1
+    assert data["saved"] == 1
+
+
+async def test_llm_extracted_postings_upsert_with_url_dedup():
+    """Two fetches of the same LLM-extracted posting → only one row in the store."""
+    store = _mem_store()
+    store.add_board("https://other-board.com/jobs")
+
+    async def fake_extract(text):
+        return _LLM_POSTINGS
+
+    async def fake_nav(url):
+        return _EMPTY_HTML
+
+    plugin = JobSearchPlugin(
+        navigate_fn=fake_nav, store=store, extract_postings_fn=fake_extract
+    )
+    await plugin._fetch_postings()
+    await plugin._fetch_postings()
+    assert store.count() == 1
+
+
+async def test_unrecognised_board_reports_note_without_error():
+    """Both parsers return zero → per-board note, no is_error, fetch continues."""
+    store = _mem_store()
+    store.add_board("https://unknown.com/jobs")
+
+    async def fake_nav(url):
+        return _EMPTY_HTML
+
+    plugin = JobSearchPlugin(navigate_fn=fake_nav, store=store)  # no extractor
+    result = await plugin._fetch_postings()
+    assert not result.is_error
+    data = json.loads(result.content)
+    board = data["per_board"][0]
+    assert board["fetched"] == 0
+    assert "note" in board
+    assert "unrecognised layout" in board["note"]
+
+
+async def test_llm_input_truncated_to_cap():
+    """Extractor receives at most _LLM_POSTINGS_INPUT_CAP chars."""
+    store = _mem_store()
+    store.add_board("https://huge-board.com/jobs")
+    big_html = "x" * 100_000
+    captured: list[str] = []
+
+    async def fake_extract(text):
+        captured.append(text)
+        return []
+
+    async def fake_nav(url):
+        return big_html
+
+    plugin = JobSearchPlugin(
+        navigate_fn=fake_nav, store=store, extract_postings_fn=fake_extract
+    )
+    await plugin._fetch_postings()
+    assert captured and len(captured[0]) <= JobSearchPlugin._LLM_POSTINGS_INPUT_CAP
+
+
+async def test_llm_extractor_skips_entries_without_http_url():
+    """The store.upsert guard filters out LLM entries missing valid URLs."""
+    store = _mem_store()
+    store.add_board("https://board.com/jobs")
+    bad_postings = [
+        {"title": "No URL job", "company": "X", "snapshot": "", "posted_date": "", "url": ""},
+        {"title": "Relative URL", "company": "Y", "snapshot": "", "posted_date": "", "url": "/apply/1"},
+    ]
+
+    async def fake_extract(text):
+        return bad_postings
+
+    async def fake_nav(url):
+        return _EMPTY_HTML
+
+    plugin = JobSearchPlugin(
+        navigate_fn=fake_nav, store=store, extract_postings_fn=fake_extract
+    )
+    result = await plugin._fetch_postings()
+    assert not result.is_error
+    assert store.count() == 0
