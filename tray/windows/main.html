@@ -29,7 +29,11 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--bg);
       color: var(--text);
-      height: 100vh;
+      /* The ui_scale appearance setting applies `zoom` on <html>; vh units
+         don't shrink with zoom, so a bare 100vh overflows the window by the
+         scale factor — bottom of every pane unreachable, and the overflowing
+         document pans on stray focus() (#394). Divide it back out. */
+      height: calc(100vh / var(--ui-scale, 1));
       display: flex;
       flex-direction: row;
       overflow: hidden;
@@ -8166,6 +8170,9 @@
     function applyAppearance(prefs) {
       const root = document.documentElement;
       root.style.zoom = prefs.scale || '1';
+      // Mirror the scale into a CSS var so body{height} can divide the
+      // zoom back out of 100vh (#394).
+      root.style.setProperty('--ui-scale', prefs.scale || '1');
       const themeVars = THEMES[prefs.theme] || THEMES.midnight;
       for (const [prop, val] of Object.entries(themeVars)) {
         root.style.setProperty(prop, val);
