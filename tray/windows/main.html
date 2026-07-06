@@ -6496,6 +6496,10 @@
     // _BROWSER_LOGIN_PROVIDERS in cerebral/main.py).
     const CRED_BROWSER_LOGIN_PROVIDERS = [
       { id: 'google_web', label: 'Google (browser)' },
+      // S6 #339 — the dedicated jobs Gmail. Must mirror main.py's
+      // _BROWSER_LOGIN_PROVIDERS: the renderer maps over THIS list (not
+      // the payload keys), so a server-only entry renders nothing.
+      { id: 'jobs_email', label: 'Jobs email (Gmail)' },
     ];
 
     function credBrowserPillClass(status) {
