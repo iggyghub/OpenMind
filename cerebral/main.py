@@ -68,23 +68,13 @@ from cerebral.sandbox import available as _sandbox_available
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
 from cerebral.harness_channels import HarnessChannelStore
-from plugins.job_search import (  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S5 #338 / S6 #339 / S7 #340
+from plugins.job_search import (  # S1 #334 / S2 #335 / S7 #340
+    # NOTE: only module-identity-free imports belong here (a class and a
+    # pure function taking explicit args). Seam *setters* must never be
+    # imported from `plugins.job_search` — that is a second module instance;
+    # the orchestrator dispatches against `openmind_plugin_job_search`.
+    # All seam injection goes through _js_seam / _wire_plugin_seams (#153).
     JobSearchStore as _JobSearchStore,
-    set_active_profile_id as _js_set_profile,
-    set_navigate_fn as _js_set_navigate_fn,
-    set_pending_resume_path as _js_set_resume_path,
-    set_extract_fn as _js_set_extract_fn,
-    set_score_fn as _js_set_score_fn,
-    set_apply_driver_fn as _js_set_apply_driver_fn,
-    set_apply_submit_fn as _js_set_apply_submit_fn,
-    set_recall_fn as _js_set_recall_fn,                        # S5 #338
-    set_index_answer_fn as _js_set_index_answer_fn,            # S5 #338
-    set_gen_password_fn as _js_set_gen_password_fn,            # S6 #339
-    set_create_ats_account_fn as _js_set_create_ats_account_fn,  # S6 #339
-    set_get_jobs_email_fn as _js_set_get_jobs_email_fn,        # S6 #339
-    set_store_ats_password_fn as _js_set_store_ats_password_fn,  # S6 #339
-    set_read_verify_link_fn as _js_set_read_verify_link_fn,    # S6 #339
-    set_click_verify_link_fn as _js_set_click_verify_link_fn,  # S6 #339
     check_auto_submit_gate as _js_check_auto_submit_gate,      # S7 #340
 )
 from cerebral.channel_inbox import ChannelInbox
@@ -134,8 +124,27 @@ _conversation = ConversationStore()
 _attachments  = AttachmentStore()
 _recipe_store    = RecipeStore()
 _job_search_store = _JobSearchStore()  # S1 #334 / S2 #335
-if _active_profile:                      # S2 #335 — seed profile-id seam at startup
-    _js_set_profile(_active_profile.id)
+
+
+def _js_seam(seam: str, *args) -> None:
+    """Invoke a job_search seam on the orchestrator-loaded module (#153).
+
+    `import plugins.job_search` from this file is a DIFFERENT module
+    instance than the `openmind_plugin_job_search` the orchestrator
+    dispatches tool calls against; setting seams there silently does
+    nothing (the live "No active profile" bug). No-op with a warning
+    until plugin discovery has run.
+    """
+    try:
+        module = _orc.get_plugin_module("job_search")
+    except KeyError:
+        logger.warning("[cerebral] job_search plugin not loaded — %s skipped", seam)
+        return
+    fn = getattr(module, seam, None)
+    if fn is None:
+        logger.warning("[cerebral] job_search plugin missing %s seam", seam)
+        return
+    fn(*args)
 
 async def _extract_dossier(pdf_text: str) -> dict:  # S2 #335
     """LLM extractor injected into job_search plugin for Applicant dossier parsing."""
@@ -156,9 +165,6 @@ async def _extract_dossier(pdf_text: str) -> dict:  # S2 #335
         return _json.loads(m.group(0))
     except Exception:
         return {}
-
-_js_set_extract_fn(_extract_dossier)  # S2 #335
-
 
 async def _score_posting(posting: dict, dossier: dict) -> float:  # S3 #336
     """LLM fit-scorer injected into job_search plugin. Returns 0.0–10.0."""
@@ -184,9 +190,6 @@ async def _score_posting(posting: dict, dossier: dict) -> float:  # S3 #336
         return float(str(raw).strip().split()[0])
     except (ValueError, IndexError):
         return 5.0  # fallback mid-score
-
-
-_js_set_score_fn(_score_posting)  # S3 #336
 
 
 async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:  # S4 #337
@@ -276,11 +279,6 @@ async def _jobs_navigate(url: str) -> str:  # S1 #334 / #380
             await browser.close()
 
 
-_js_set_navigate_fn(_jobs_navigate)           # S1 #334 / #380
-_js_set_apply_driver_fn(_jobs_apply_driver)   # S4 #337
-_js_set_apply_submit_fn(_jobs_apply_submit)   # S4 #337
-
-
 # ── S5 #338 — Answer bank prod seams ─────────────────────────────────────────
 
 async def _jobs_recall(profile_id: int, question: str) -> str | None:  # S5 #338
@@ -304,10 +302,6 @@ async def _jobs_index_answer(profile_id: int, question: str, answer: str) -> Non
         await mgr.store(f"{question}: {answer}")
     except Exception as exc:
         logger.warning("[jobs] index_answer failed: %s", exc)
-
-
-_js_set_recall_fn(_jobs_recall)          # S5 #338
-_js_set_index_answer_fn(_jobs_index_answer)  # S5 #338
 
 
 # ── S6 #339 — Account-creation + email-verification prod seams ────────────────
@@ -390,13 +384,6 @@ async def _jobs_click_verify_link(verify_url: str) -> bool:  # S6 #339
     except Exception as exc:
         logger.warning("[jobs] click_verify_link failed: %s", exc)
         return False
-
-
-_js_set_get_jobs_email_fn(_jobs_get_email)               # S6 #339
-_js_set_create_ats_account_fn(_jobs_create_ats_account)  # S6 #339
-_js_set_store_ats_password_fn(_jobs_store_ats_password)  # S6 #339
-_js_set_read_verify_link_fn(_jobs_read_verify_link)      # S6 #339
-_js_set_click_verify_link_fn(_jobs_click_verify_link)    # S6 #339
 
 
 # S20 (#303) -- the current in-flight planner/chain task, if any.
@@ -517,7 +504,10 @@ def _job_apply_auto_gate(tool_name: str, args: object) -> bool:
     """
     if tool_name != "jobs_apply_submit":
         return False
-    import plugins.job_search as _js_mod
+    try:
+        _js_mod = _orc.get_plugin_module("job_search")  # #153: NOT `import plugins.job_search`
+    except KeyError:
+        return False
     pending = _js_mod._pending_application
     profile_id = _js_mod._active_profile_id
     if pending is None or profile_id is None:
@@ -1819,7 +1809,7 @@ async def _handle_attach_files(data: dict) -> None:
             continue
         saved.append(att)
         if att.kind == "pdf":  # S2 #335 — record path so jobs_store_resume can claim it
-            _js_set_resume_path(att.stored_path)
+            _js_seam("set_pending_resume_path", att.stored_path)
     try:
         pending = _attachments.list_pending(_active_profile.id)
     except Exception:
@@ -2099,7 +2089,7 @@ async def _handle_message(msg: dict) -> None:
         )
         _pm.set_active(p.id)
         _active_profile = p
-        _js_set_profile(p.id)  # S2 #335
+        _js_seam("set_active_profile_id", p.id)  # S2 #335
         _orc.set_acl(_build_acl(p))
         logger.info("[cerebral] Profile created: %s (id=%d)", p.name, p.id)
         await _broadcast(_profile_event(p))
@@ -2113,7 +2103,7 @@ async def _handle_message(msg: dict) -> None:
             if p:
                 _pm.set_active(p.id)
                 _active_profile = p
-                _js_set_profile(p.id)  # S2 #335
+                _js_seam("set_active_profile_id", p.id)  # S2 #335
                 # Rebuild the ACL on profile switch — Issue #45 / ADR-0005
                 # mandates that once + session grants clear on switch.
                 _orc.set_acl(_build_acl(p))
@@ -3869,6 +3859,7 @@ def _wire_plugin_seams() -> None:
         ("discord_user",      "set_token_provider", _get_discord_user_token_provider),  # #175
         ("discord_user",      "set_draft_callback", _surface_discord_draft),          # #175
         ("job_search", "set_store", _job_search_store),                              # S1 #334
+        ("job_search", "set_navigate_fn", _jobs_navigate),                           # S1 #334 / #380
         ("job_search", "set_extract_fn", _extract_dossier),                          # S2 #335
         ("job_search", "set_score_fn", _score_posting),                              # S3 #336
         ("job_search", "set_apply_driver_fn", _jobs_apply_driver),                   # S4 #337
@@ -3896,6 +3887,11 @@ def _wire_plugin_seams() -> None:
             )
             continue
         setter(factory)
+    # S2 #335 — seed the jobs profile-id seam once the orchestrator module
+    # exists; the import-time seed this replaces landed on the wrong module
+    # instance and left jobs_store_resume with "No active profile".
+    if _active_profile:
+        _js_seam("set_active_profile_id", _active_profile.id)
     logger.info("[cerebral] Plugin seams wired (%d plugin(s))", len(seams))
 
 
