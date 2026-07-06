@@ -559,6 +559,15 @@ async def test_browser_logins_empty_when_no_profile(cred_rig):
     assert cred_rig.states()[-1]["data"]["browser_logins"] == {}
 
 
+async def test_browser_logins_includes_jobs_email_provider(cred_rig):
+    """S6 #339: the jobs pipeline reads the ``jobs_email`` Connected account
+    for ATS account creation; the Credentials panel must render a row for
+    it (it is seeded there per docs/jobs-live-verify.md)."""
+    await cred_rig.handle({"type": "list_credentials"})
+    e = _last_browser(cred_rig)["jobs_email"]
+    assert e == {"status": "not configured", "email": "", "has_password": False}
+
+
 async def test_browser_logins_payload_never_carries_password(cred_rig):
     cred_rig.store.set_credential(1, "google_web", email="bot@gmail.com",
                                   status="connected")

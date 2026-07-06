@@ -1001,6 +1001,12 @@ _STATIC_TOKEN_PROVIDER_NAMES: frozenset[str] = frozenset(
 # the password value (write-only contract, same as static tokens).
 _BROWSER_LOGIN_PROVIDERS: list[tuple[str, str]] = [
     ("google_web", "Google (browser)"),
+    # S6 #339 / ADR-0009 — the dedicated jobs Gmail Felix controls. The
+    # jobs pipeline reads this row's email (_jobs_get_email) for ATS
+    # account creation and inbox verification; without this entry the
+    # Credentials panel had no way to seed it (docs/jobs-live-verify.md
+    # step S6-1 was impossible).
+    ("jobs_email", "Jobs email (Gmail)"),
 ]
 
 _BROWSER_LOGIN_PROVIDER_NAMES: frozenset[str] = frozenset(
