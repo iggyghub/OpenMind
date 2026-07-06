@@ -20,10 +20,10 @@ slice, **update this block**: tick the queue entry, set the next unticked
 entry's `#N` + `Model:` as the active slice, and set `Status:` (`ready` while
 slices remain; `done` after S2 lands).
 
-Active slice: **S2 — #397**
+Active slice: **S2 — #397** (done)
 
 Model: sonnet
-Status: ready
+Status: done
 
 (`Model:`/`Status:` are read directly by `scripts/run-boards.ps1`. Allowed:
 haiku | sonnet | opus | fable. `Status: ready` = run the active slice;
@@ -33,11 +33,12 @@ haiku | sonnet | opus | fable. `Status: ready` = run the active slice;
 ### Slice queue (work top-down; issue body = detail)
 
 1. [x] S1 — #396 Job board list: store + IPC + panel UI + multi-board fetch — Model: sonnet
-2. [ ] S2 — #397 Generic LLM posting extractor fallback for non-RRR boards — Model: sonnet
+2. [x] S2 — #397 Generic LLM posting extractor fallback for non-RRR boards — Model: sonnet
 
 ### Landed PRs
 
 - PR #399 — S1: user-configurable Job board list (store + IPC + panel UI + multi-board fetch)
+- PR #400 — S2: generic LLM posting extractor fallback for non-RRR boards
 
 ## SAFETY
 
