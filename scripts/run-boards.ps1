@@ -27,7 +27,7 @@
 # terminal, type /login, complete the browser flow.
 
 param(
-    [int]$MaxSlices = 3,
+    [int]$MaxSlices = 8,
     [int]$MaxAttempts = 3,
     [bool]$AutoResume = $true,
     [int]$MaxLimitWaits = 6
