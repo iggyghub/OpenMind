@@ -115,7 +115,7 @@ try {
     $claudeCmd = $claudeCmd.Source
 
     $allowedModels = @("haiku", "sonnet", "opus", "fable")
-    $limitPattern  = "hit your limit|usage limit|rate limit|limit reached|out of usage|resets \d|reset at|resets at|exceeded your|approaching your|Claude usage limit|Not logged in"
+    $limitPattern  = "hit your limit|usage limit|rate limit|limit reached|out of usage|resets \d|reset at|resets at|exceeded your|approaching your|Claude usage limit|Not logged in|Failed to authenticate"
 
     # Skills are independent (each in its own .claude/skills/<name>/ dir), but each PR
     # still lands before the next for a clean master.
@@ -212,8 +212,10 @@ try {
             if (Test-Path $errLog) { $output += [IO.File]::ReadAllText($errLog) }
 
             if ($output -match $limitPattern) {
-                if ($output -match "Not logged in") {
-                    Notify "Skills loop" "The claude CLI is not logged in. Open a terminal, run claude, type /login, then restart the loop."
+                # "Failed to authenticate" = expired/invalid stored OAuth token (401);
+                # retrying is pointless, only /login fixes it.
+                if ($output -match "Not logged in|Failed to authenticate") {
+                    Notify "Skills loop" "The claude CLI is not logged in (or its token expired). Open a terminal, run claude, type /login, then restart the loop."
                     $stopAll = $true
                     break
                 }

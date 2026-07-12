@@ -123,7 +123,7 @@ try {
     # Matches the actual CLI wording, e.g. "You've hit your limit . resets 7:20pm",
     # plus rate-limit and not-logged-in variants. Keep broad: a missed match here
     # turns a benign cap into 3 wasted instant retries + a false "failed" alarm.
-    $limitPattern  = "hit your limit|usage limit|rate limit|limit reached|out of usage|resets \d|reset at|resets at|exceeded your|approaching your|Claude usage limit|Not logged in"
+    $limitPattern  = "hit your limit|usage limit|rate limit|limit reached|out of usage|resets \d|reset at|resets at|exceeded your|approaching your|Claude usage limit|Not logged in|Failed to authenticate"
 
     # Run-and-fix flow: each session boots+smokes Cerebral, fixes ONE bug on the
     # review branch fix/run-campaign (NEVER master), then records the result so the
@@ -250,8 +250,10 @@ try {
 
             if ($output -match $limitPattern) {
                 # Not-logged-in is unrecoverable without a human -> always stop.
-                if ($output -match "Not logged in") {
-                    Notify "Fix loop" "The claude CLI is not logged in. Open a terminal, run claude, type /login, then restart the loop."
+                # "Failed to authenticate" = expired/invalid stored OAuth token (401);
+                # retrying is pointless, only /login fixes it.
+                if ($output -match "Not logged in|Failed to authenticate") {
+                    Notify "Fix loop" "The claude CLI is not logged in (or its token expired). Open a terminal, run claude, type /login, then restart the loop."
                     $stopAll = $true
                     break
                 }
