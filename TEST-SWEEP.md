@@ -9,7 +9,7 @@ record results here -- no code changes, no PRs, no issues.
 
 ## Next slice -- start here
 
-Active: **B2**
+Active: **B3**
 
 Model: sonnet
 Status: ready
@@ -22,7 +22,7 @@ with `scripts/stop-testsweep.ps1`.)
 ### Batch queue (work top-down; each entry's command is its full spec)
 
 1. [x] B1 -- Core loop & dispatch -- Model: sonnet
-2. [ ] B2 -- Memory, insights & passive -- Model: sonnet
+2. [x] B2 -- Memory, insights & passive -- Model: sonnet
 3. [ ] B3 -- Security, consent & permissions -- Model: sonnet
 4. [ ] B4 -- Channels, harness & browser -- Model: sonnet
 5. [ ] B5 -- Jobs pipeline -- Model: sonnet
@@ -88,6 +88,8 @@ cd tray && npx jest --ci
 failing test id with its one-line error. Never truncate the failure list.)
 
 B1 -- PASS (482 passed, 5 skipped, 48.60s)
+
+B2 -- PASS (148 passed, 0 skipped, 91.10s)
 
 ## SAFETY
 
