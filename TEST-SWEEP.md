@@ -9,10 +9,10 @@ record results here -- no code changes, no PRs, no issues.
 
 ## Next slice -- start here
 
-Active: **B8**
+Active: **B8** (complete)
 
 Model: sonnet
-Status: ready
+Status: done
 
 (`Model:`/`Status:` are read directly by `scripts/run-testsweep.ps1`. Allowed
 models: haiku | sonnet | opus | fable. `Status: ready` = run the active batch;
@@ -28,7 +28,7 @@ with `scripts/stop-testsweep.ps1`.)
 5. [x] B5 -- Jobs pipeline -- Model: sonnet
 6. [x] B6 -- Plugins A-G -- Model: sonnet
 7. [x] B7 -- Plugins H-Z + plugin suites -- Model: sonnet
-8. [ ] B8 -- Tray (jest) -- Model: sonnet
+8. [x] B8 -- Tray (jest) -- Model: sonnet
 
 ### Batch commands (run from repo root, bash shell)
 
@@ -100,6 +100,8 @@ B5 -- PASS (235 passed, 0 skipped, 28.55s)
 B6 -- PASS (762 passed, 0 skipped, 7.97s)
 
 B7 -- PASS (1032 passed, 1 skipped, 45.39s)
+
+B8 -- PASS (326 passed, 0 skipped, 4.90s)
 
 ## SAFETY
 
