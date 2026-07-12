@@ -9,7 +9,7 @@ record results here -- no code changes, no PRs, no issues.
 
 ## Next slice -- start here
 
-Active: **B4**
+Active: **B5**
 
 Model: sonnet
 Status: ready
@@ -24,7 +24,7 @@ with `scripts/stop-testsweep.ps1`.)
 1. [x] B1 -- Core loop & dispatch -- Model: sonnet
 2. [x] B2 -- Memory, insights & passive -- Model: sonnet
 3. [x] B3 -- Security, consent & permissions -- Model: sonnet
-4. [ ] B4 -- Channels, harness & browser -- Model: sonnet
+4. [x] B4 -- Channels, harness & browser -- Model: sonnet
 5. [ ] B5 -- Jobs pipeline -- Model: sonnet
 6. [ ] B6 -- Plugins A-G -- Model: sonnet
 7. [ ] B7 -- Plugins H-Z + plugin suites -- Model: sonnet
@@ -92,6 +92,8 @@ B1 -- PASS (482 passed, 5 skipped, 48.60s)
 B2 -- PASS (148 passed, 0 skipped, 91.10s)
 
 B3 -- PASS (695 passed, 0 skipped, 58.13s)
+
+B4 -- PASS (310 passed, 0 skipped, 31.49s)
 
 ## SAFETY
 
