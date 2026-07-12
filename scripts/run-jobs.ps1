@@ -117,7 +117,7 @@ try {
     $claudeCmd = $claudeCmd.Source
 
     $allowedModels = @("haiku", "sonnet", "opus", "fable")
-    $limitPattern  = "hit your limit|usage limit|rate limit|limit reached|out of usage|resets \d|reset at|resets at|exceeded your|approaching your|Claude usage limit|Not logged in"
+    $limitPattern  = "hit your limit|usage limit|rate limit|limit reached|out of usage|resets \d|reset at|resets at|exceeded your|approaching your|Claude usage limit|Not logged in|Failed to authenticate"
 
     # Each slice MUST land on master before the next starts: successive slices
     # build on the same new files (plugins/job_search.py, the SQLite tables, the
@@ -221,8 +221,10 @@ try {
             if (Test-Path $errLog) { $output += [IO.File]::ReadAllText($errLog) }
 
             if ($output -match $limitPattern) {
-                if ($output -match "Not logged in") {
-                    Notify "Jobs loop" "The claude CLI is not logged in. Open a terminal, run claude, type /login, then restart the loop."
+                # "Failed to authenticate" = expired/invalid stored OAuth token (401);
+                # retrying is pointless, only /login fixes it.
+                if ($output -match "Not logged in|Failed to authenticate") {
+                    Notify "Jobs loop" "The claude CLI is not logged in (or its token expired). Open a terminal, run claude, type /login, then restart the loop."
                     $stopAll = $true
                     break
                 }
