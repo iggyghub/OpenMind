@@ -55,7 +55,9 @@ try {
     function Log($msg) {
         $line = "[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $msg
         Write-Host $line
-        Add-Content -LiteralPath $loopLog -Value $line
+        # Best-effort: a reader holding the log (tail -f, an editor) must never
+        # kill the loop with a share-violation on append.
+        try { Add-Content -LiteralPath $loopLog -Value $line -ErrorAction Stop } catch {}
     }
 
     $shell = New-Object -ComObject WScript.Shell
