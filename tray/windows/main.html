@@ -3197,7 +3197,7 @@
       display: flex;
       gap: 8px;
     }
-    .jobs-approve-btn, .jobs-reject-btn {
+    .jobs-approve-btn, .jobs-reject-btn, .jobs-apply-btn {
       font-size: 12px;
       border: none;
       border-radius: 5px;
@@ -3210,6 +3210,15 @@
       color: #0a1a0a;
     }
     .jobs-approve-btn:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    /* S8 #413 — Apply on an approved card kicks off jobs_apply_start. */
+    .jobs-apply-btn {
+      background: var(--accent);
+      color: #fff;
+    }
+    .jobs-apply-btn:disabled {
       opacity: 0.5;
       cursor: default;
     }
@@ -6417,6 +6426,10 @@
           '<div class="jobs-shortlist-card-title">' + escHtml(p.title || 'Untitled') + '</div>' +
           (metaParts.length || scoreLabel ? '<div class="jobs-shortlist-card-meta">' + (metaParts.length ? metaParts.join(' \xb7 ') + (scoreLabel ? '  ' : '') : '') + scoreLabel + '</div>' : '') +
           '<div class="jobs-shortlist-card-actions">' +
+            // S8 #413 — approved cards get Apply; jobs_apply_start bails with a
+            // failed Application row on undrivable ATSes, so no gating here yet
+            // (appliable flag arrives with boards S4 #405).
+            (approved ? '<button class="jobs-apply-btn">Apply</button>' : '') +
             '<button class="jobs-approve-btn"' + (approved ? ' disabled' : '') + ' data-approve="true">' + (approved ? 'Approved' : 'Approve') + '</button>' +
             '<button class="jobs-reject-btn" data-approve="false">Reject</button>' +
           '</div>';
@@ -6502,6 +6515,18 @@
     });
 
     jobsShortlistEl && jobsShortlistEl.addEventListener('click', function (e) {
+      // S8 #413 — Apply on an approved card. Cerebral runs the fill as a
+      // background task and the next jobs_update re-renders this list, so the
+      // busy state here only needs to survive until that broadcast.
+      var applyBtn = e.target.closest('.jobs-apply-btn');
+      if (applyBtn) {
+        var applyCard = applyBtn.closest('.jobs-shortlist-card');
+        if (!applyCard || !applyCard.dataset.url) return;
+        applyBtn.disabled = true;
+        applyBtn.textContent = 'Applying…';
+        sendEvent({ type: 'jobs_apply_start', data: { url: applyCard.dataset.url } });
+        return;
+      }
       var btn = e.target.closest('[data-approve]');
       if (!btn) return;
       var card = btn.closest('.jobs-shortlist-card');
