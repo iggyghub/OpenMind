@@ -13,12 +13,12 @@ and Ashby ATS support.
 
 ## Next slice — start here
 
-Six tracer slices, one PR each, auto-merged to master in order. S4 and S6
-depend on S3's URL resolution; S7/S8 depend on S4's filters/appliable flag;
-work strictly top-down. After landing a slice, **update this block**: tick
-the queue entry, set the next unticked entry's `#N` + `Model:` as the active
-slice, and set `Status:` (`ready` while slices remain; `done` after S8
-lands).
+Tracer slices, one PR each, auto-merged to master in order. S4 and S6
+depend on S3's URL resolution; S7 depends on S4's filters; work strictly
+top-down. After landing a slice, **update this block**: tick the queue
+entry, set the next unticked entry's `#N` + `Model:` as the active slice,
+and set `Status:` (`ready` while slices remain; `done` after S7 lands —
+S8 already landed early by hand).
 
 Active slice: **S3 — #404**
 
@@ -39,12 +39,14 @@ haiku | sonnet | opus | fable. `Status: ready` = run the active slice;
 5. [ ] S5 — #391 Collapsible panel sections (Credentials, Job Search, etc.) — Model: sonnet
 6. [ ] S6 — #406 Ashby ATS support (detect, gate, fixture-tested mapping) — Model: sonnet
 7. [ ] S7 — #412 "Approve all visible" bulk action on the Shortlist — Model: sonnet
-8. [ ] S8 — #413 Apply button on approved Shortlist cards (non-blocking) — Model: sonnet
+8. [x] S8 — #413 Apply button on approved Shortlist cards (non-blocking) — landed early by hand (PR #416; appliable-gating deferred into S4 #405)
 
 ### Landed PRs
 
 - PR #399 — S1: user-configurable Job board list (store + IPC + panel UI + multi-board fetch)
 - PR #400 — S2: generic LLM posting extractor fallback for non-RRR boards
+- PR #416 — S8 (early, by hand): Apply button on approved Shortlist cards
+- PR #415 — (unqueued bugfix) #414 browser-session dual-module trap in the jobs seams
 
 ## SAFETY
 
