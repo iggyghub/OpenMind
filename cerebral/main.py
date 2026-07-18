@@ -348,6 +348,61 @@ async def _run_panel_apply(url: str) -> None:
             await _broadcast(_jobs_update_event())
 
 
+async def _run_panel_apply_all() -> None:
+    """#419 — apply to every approved posting, strictly one at a time.
+
+    Sequential by design: the pipeline has ONE open browser session and ONE
+    pending-application slot. Each ready-to-submit application goes through
+    the ADR-0009 gate — during the supervised ramp that means the
+    irreversible modal fires per application; declining it stops the run and
+    leaves that application pending for manual review.
+    """
+    if _panel_jobs_lock.locked():
+        await _notify_user("Felix", "An application run is already in progress.")
+        return
+    async with _panel_jobs_lock:
+        done = {a.get("url") for a in _job_search_store.list_applications()}
+        targets = [
+            p for p in _job_search_store.list_shortlist()
+            if p.get("status") == "shortlisted" and p.get("url") not in done
+        ]
+        if not targets:
+            await _notify_user("Felix", "No approved postings left to apply to.")
+            return
+        submitted = awaiting = failed = 0
+        stopped = False
+        for p in targets:
+            url = p.get("url", "")
+            try:
+                if not await _ensure_panel_browser_session():
+                    stopped = True
+                    break
+                res = await _orc.call_tool("jobs_apply_start", {"url": url})
+                await _broadcast(_jobs_update_event())
+                if res.is_error:
+                    # failed / awaiting-input row already logged by the plugin.
+                    if "awaiting-input" in str(res.content):
+                        awaiting += 1
+                    else:
+                        failed += 1
+                    continue
+                sub = await _orc.call_tool("jobs_apply_submit", {})
+                await _broadcast(_jobs_update_event())
+                if sub.is_error:
+                    # Modal declined or timed out — the user wants to look.
+                    stopped = True
+                    break
+                submitted += 1
+            except Exception as exc:
+                logger.warning("[cerebral] apply-all failed on %s: %s", url, exc)
+                failed += 1
+        summary = f"{submitted} submitted, {awaiting} need your input, {failed} failed."
+        if stopped:
+            summary += " Run stopped — the pending application is left for your review."
+        await _notify_user("Apply run finished", summary)
+        await _broadcast(_jobs_update_event())
+
+
 async def _run_panel_submit() -> None:
     """Panel Review & Submit as a task (#417): awaiting it inline blocked the
     websocket receive loop while the ADR-0005 modal waited for a confirm that
@@ -3369,6 +3424,15 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "jobs_apply_submit":  # S4 #337 / #417 — submit pending application
         asyncio.create_task(_run_panel_submit())
+
+    elif t == "jobs_approve_all":  # #419 — approve every shortlist entry
+        for p in _job_search_store.list_shortlist():
+            if p.get("status") != "shortlisted":
+                _job_search_store.set_status(p["url"], "shortlisted")
+        await _broadcast(_jobs_update_event())
+
+    elif t == "jobs_apply_all":  # #419 — apply to every approved posting
+        asyncio.create_task(_run_panel_apply_all())
 
     elif t == "jobs_set_auto_submit":  # S7 #340 — toggle auto-submit opt-in (ADR-0009)
         d = msg.get("data", {})

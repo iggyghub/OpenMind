@@ -79,6 +79,98 @@ async def test_apply_single_flight(monkeypatch):
     assert notes and "already in progress" in notes[0][1]
 
 
+class _FakeStore:
+    def __init__(self, shortlist, applications=()):
+        self.shortlist = shortlist
+        self.applications = list(applications)
+        self.status_calls: list[tuple[str, str]] = []
+
+    def list_shortlist(self):
+        return self.shortlist
+
+    def list_applications(self):
+        return self.applications
+
+    def set_status(self, url, status):
+        self.status_calls.append((url, status))
+
+
+async def test_approve_all_approves_only_unapproved(monkeypatch):
+    store = _FakeStore([
+        {"url": "u1", "status": "new"},
+        {"url": "u2", "status": "shortlisted"},
+        {"url": "u3", "status": "new"},
+    ])
+    casts: list[dict] = []
+
+    async def broadcast(evt):
+        casts.append(evt)
+
+    monkeypatch.setattr(main, "_job_search_store", store)
+    monkeypatch.setattr(main, "_broadcast", broadcast)
+    monkeypatch.setattr(main, "_jobs_update_event", lambda: {"type": "jobs_update"})
+
+    await main._handle_message({"type": "jobs_approve_all"})
+
+    assert store.status_calls == [("u1", "shortlisted"), ("u3", "shortlisted")]
+    assert len(casts) == 1
+
+
+async def test_apply_all_sequential_skips_and_submits(monkeypatch):
+    """#419 — applies only to approved postings without an Application row,
+    submits each ready one, counts failures, keeps going."""
+    store = _FakeStore(
+        shortlist=[
+            {"url": "u1", "status": "shortlisted"},   # -> ready -> submitted
+            {"url": "u2", "status": "new"},           # not approved: skipped
+            {"url": "u3", "status": "shortlisted"},   # already applied: skipped
+            {"url": "u4", "status": "shortlisted"},   # -> apply fails, run continues
+        ],
+        applications=[{"url": "u3", "status": "failed"}],
+    )
+    rec = _Recorder({})
+    orig = rec.call_tool
+
+    async def call_tool(name, args):
+        if name == "jobs_apply_start" and args.get("url") == "u4":
+            rec.calls.append((name, args))
+            return ToolResult(content='{"status": "failed"}', is_error=True)
+        return await orig(name, args)
+
+    notes, casts = _wire(monkeypatch, rec, session_open=True)
+    monkeypatch.setattr(main._orc, "call_tool", call_tool)
+    monkeypatch.setattr(main, "_job_search_store", store)
+
+    await main._run_panel_apply_all()
+
+    assert rec.calls == [
+        ("jobs_apply_start", {"url": "u1"}),
+        ("jobs_apply_submit", {}),
+        ("jobs_apply_start", {"url": "u4"}),
+    ]
+    assert notes and "1 submitted" in notes[-1][1] and "1 failed" in notes[-1][1]
+
+
+async def test_apply_all_stops_when_modal_declined(monkeypatch):
+    store = _FakeStore(shortlist=[
+        {"url": "u1", "status": "shortlisted"},
+        {"url": "u2", "status": "shortlisted"},
+    ])
+    rec = _Recorder({
+        "jobs_apply_submit": ToolResult(content="denied", is_error=True),
+    })
+    notes, _ = _wire(monkeypatch, rec, session_open=True)
+    monkeypatch.setattr(main, "_job_search_store", store)
+
+    await main._run_panel_apply_all()
+
+    # Declined modal on u1 stops the run — u2 is never attempted.
+    assert [c for c in rec.calls if c[0] == "jobs_apply_start"] == [
+        ("jobs_apply_start", {"url": "u1"}),
+    ]
+    assert notes and "stopped" in notes[-1][1].lower()
+
+
 async def test_submit_event_does_not_block_receive_loop(monkeypatch):
     """#417 deadlock regression: the dispatcher branch must return while the
     (modal-gated) submit is still in flight."""

@@ -609,6 +609,13 @@ test('Apply click fires jobs_apply_start with the card URL (#413)', () => {
   expect(inlineScript).toMatch(/type: 'jobs_apply_start', data: \{ url: applyCard\.dataset\.url \}/);
 });
 
+test('shortlist header has bulk-action buttons wired to bulk events (#419)', () => {
+  expect(root.querySelector('#jobs-approve-all-btn')).not.toBeNull();
+  expect(root.querySelector('#jobs-apply-all-btn')).not.toBeNull();
+  expect(inlineScript).toMatch(/type: 'jobs_approve_all'/);
+  expect(inlineScript).toMatch(/type: 'jobs_apply_all'/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
