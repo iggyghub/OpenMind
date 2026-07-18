@@ -3160,6 +3160,24 @@
       border-top: 1px solid var(--border);
       padding: 14px 0 6px;
     }
+    /* #419 — bulk actions live right of the Shortlist title. */
+    .jobs-shortlist-header-actions {
+      float: right;
+      display: inline-flex;
+      gap: 8px;
+    }
+    .jobs-bulk-btn {
+      font-size: 11px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 3px 10px;
+      cursor: pointer;
+      font-family: inherit;
+      background: var(--bg);
+      color: var(--text-muted);
+    }
+    .jobs-bulk-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .jobs-bulk-btn:disabled { opacity: 0.5; cursor: default; }
     .jobs-shortlist-header {
       font-size: 11px;
       font-weight: 600;
@@ -4427,7 +4445,12 @@
         </div>
         <!-- S3 #336 — Shortlist -->
         <div class="jobs-shortlist-section" id="jobs-shortlist-section">
-          <div class="jobs-shortlist-header">Shortlist</div>
+          <div class="jobs-shortlist-header">Shortlist
+            <span class="jobs-shortlist-header-actions">
+              <button class="jobs-bulk-btn" id="jobs-approve-all-btn">Approve all</button>
+              <button class="jobs-bulk-btn" id="jobs-apply-all-btn">Apply all approved</button>
+            </span>
+          </div>
           <div id="jobs-shortlist-list">
             <div class="jobs-shortlist-empty" id="jobs-shortlist-empty">
               Fetch new jobs to build your shortlist.
@@ -6407,6 +6430,11 @@
     // S3 #336 — render ranked Shortlist with approve/reject per entry.
     function renderJobShortlist() {
       if (!jobsShortlistEl) return;
+      // #419 — every jobs_update re-render re-arms the bulk buttons.
+      var approveAllBtn = document.getElementById('jobs-approve-all-btn');
+      var applyAllBtn   = document.getElementById('jobs-apply-all-btn');
+      if (approveAllBtn) { approveAllBtn.disabled = false; approveAllBtn.textContent = 'Approve all'; }
+      if (applyAllBtn)   { applyAllBtn.disabled = false;   applyAllBtn.textContent = 'Apply all approved'; }
       jobsShortlistEl.querySelectorAll('.jobs-shortlist-card').forEach(function (el) { el.remove(); });
       if (jobShortlist.length === 0) {
         jobsShortlistEmpty.hidden = false;
@@ -6512,6 +6540,19 @@
       var btn = e.target.closest('.jobs-submit-btn');
       if (!btn) return;
       sendEvent({ type: 'jobs_apply_submit', data: {} });
+    });
+
+    // #419 — bulk actions. Buttons re-arm on the next jobs_update re-render.
+    var jobsApproveAllBtn = document.getElementById('jobs-approve-all-btn');
+    jobsApproveAllBtn && jobsApproveAllBtn.addEventListener('click', function () {
+      this.disabled = true;
+      sendEvent({ type: 'jobs_approve_all', data: {} });
+    });
+    var jobsApplyAllBtn = document.getElementById('jobs-apply-all-btn');
+    jobsApplyAllBtn && jobsApplyAllBtn.addEventListener('click', function () {
+      this.disabled = true;
+      this.textContent = 'Applying…';
+      sendEvent({ type: 'jobs_apply_all', data: {} });
     });
 
     jobsShortlistEl && jobsShortlistEl.addEventListener('click', function (e) {
