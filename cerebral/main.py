@@ -221,12 +221,25 @@ async def _score_posting(posting: dict, dossier: dict) -> float:  # S3 #336
         return 5.0  # fallback mid-score
 
 
+def _get_open_browser_session():  # #414
+    """Open BrowserSession from the ORCHESTRATOR-loaded browser_session module.
+
+    Importing browser_session from plugins/ here is the #153/#385 dual-module
+    trap: a second module instance whose `_plugin_instance` is never set, so
+    `get_open_session()` on it always returns None even mid-session.
+    """
+    try:
+        mod = _orc.get_plugin_module("browser_session")
+    except KeyError:
+        return None
+    return mod.get_open_session()
+
+
 async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:  # S4 #337
     """Prod apply driver: navigates open BrowserSession to ATS URL, LLM-maps fields,
     fills them, uploads resume, returns draft for review. Leaves form open for submit."""
     import json as _json, re as _re
-    from plugins import browser_session as _bsp
-    sess = _bsp.get_open_session()
+    sess = _get_open_browser_session()
     if sess is None:
         raise RuntimeError(
             "No open browser session — call browser_open_session first"
@@ -279,8 +292,7 @@ async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:
 
 async def _jobs_apply_submit() -> None:  # S4 #337
     """Prod submit action: clicks the submit button on the open browser session."""
-    from plugins import browser_session as _bsp
-    sess = _bsp.get_open_session()
+    sess = _get_open_browser_session()
     if sess is None:
         raise RuntimeError(
             "No open browser session — call browser_open_session first"
@@ -347,8 +359,7 @@ async def _jobs_get_email(profile_id: int) -> str | None:  # S6 #339
 async def _jobs_create_ats_account(ats_url: str, email: str, password: str) -> bool:  # S6 #339
     """Prod: drive the browser to the ATS registration page and create an account.
     Requires an open BrowserSession (call browser_open_session first)."""
-    from plugins import browser_session as _bsp
-    sess = _bsp.get_open_session()
+    sess = _get_open_browser_session()
     if sess is None:
         raise RuntimeError("No open browser session — call browser_open_session first")
     import json as _json, re as _re
@@ -388,8 +399,7 @@ async def _jobs_store_ats_password(profile_id: int, ats_provider: str, email: st
 async def _jobs_read_verify_link(profile_id: int) -> str | None:  # S6 #339
     """Read the jobs inbox via the open BrowserSession for a verification link."""
     import re as _re
-    from plugins import browser_session as _bsp
-    sess = _bsp.get_open_session()
+    sess = _get_open_browser_session()
     if sess is None:
         return None
     try:
@@ -403,8 +413,7 @@ async def _jobs_read_verify_link(profile_id: int) -> str | None:  # S6 #339
 
 async def _jobs_click_verify_link(verify_url: str) -> bool:  # S6 #339
     """Navigate to the verification URL to activate the ATS account."""
-    from plugins import browser_session as _bsp
-    sess = _bsp.get_open_session()
+    sess = _get_open_browser_session()
     if sess is None:
         return False
     try:

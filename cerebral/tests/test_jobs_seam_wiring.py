@@ -77,6 +77,33 @@ def test_js_seam_noop_before_discovery(monkeypatch):
     main._js_seam("set_active_profile_id", 4)  # must not raise
 
 
+def test_main_does_not_import_browser_session_module():
+    """Guard (#414): `from plugins import browser_session` in main.py is the
+    same dual-module trap — its `_plugin_instance` is only ever set on the
+    orchestrator-loaded copy, so `get_open_session()` on a fresh import is
+    always None. Resolve via `_get_open_browser_session()` instead."""
+    src = (_ROOT / "cerebral" / "main.py").read_text(encoding="utf-8")
+    assert "from plugins import browser_session" not in src, (
+        "browser_session imported directly in main.py — use "
+        "_get_open_browser_session() (orchestrator module) instead"
+    )
+    assert "import plugins.browser_session" not in src
+
+
+def test_get_open_browser_session_resolves_orchestrator_module(monkeypatch):
+    """#414: the helper must read the orchestrator-loaded module and return
+    None (not raise) before plugin discovery."""
+    sentinel = object()
+    mod = types.SimpleNamespace(get_open_session=lambda: sentinel)
+    monkeypatch.setattr(main._orc, "get_plugin_module", lambda name: mod)
+    assert main._get_open_browser_session() is sentinel
+
+    def missing(name):
+        raise KeyError(name)
+    monkeypatch.setattr(main._orc, "get_plugin_module", missing)
+    assert main._get_open_browser_session() is None
+
+
 def test_main_does_not_import_jobs_seam_setters():
     """Guard: seam setters must never be imported from plugins.job_search —
     only module-identity-free names (the store class, the pure gate fn)."""

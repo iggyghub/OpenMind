@@ -56,8 +56,13 @@ async def test_apply_driver_uses_quality(monkeypatch):
         async def upload_file(self, selector, path):
             pass
 
-    from plugins import browser_session as bsp
-    monkeypatch.setattr(bsp, "get_open_session", lambda: _FakeSession())
+    # #414 regression: the session must resolve via the ORCHESTRATOR-loaded
+    # module, not `plugins.browser_session` (a second instance, always None).
+    import types
+    monkeypatch.setattr(
+        main._orc, "get_plugin_module",
+        lambda name: types.SimpleNamespace(get_open_session=lambda: _FakeSession()),
+    )
 
     draft = await main._jobs_apply_driver("https://ats.example/apply", {}, "cv.pdf")
     assert draft["fields"] == []
@@ -81,8 +86,12 @@ async def test_create_ats_account_uses_quality(monkeypatch):
         async def click(self, selector):
             pass
 
-    from plugins import browser_session as bsp
-    monkeypatch.setattr(bsp, "get_open_session", lambda: _FakeSession())
+    # #414 regression: resolve via the orchestrator-loaded module (see above).
+    import types
+    monkeypatch.setattr(
+        main._orc, "get_plugin_module",
+        lambda name: types.SimpleNamespace(get_open_session=lambda: _FakeSession()),
+    )
 
     ok = await main._jobs_create_ats_account("https://ats.example/register", "a@b.c", "pw")
     assert ok is True
