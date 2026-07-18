@@ -616,6 +616,14 @@ test('shortlist header has bulk-action buttons wired to bulk events (#419)', () 
   expect(inlineScript).toMatch(/type: 'jobs_apply_all'/);
 });
 
+test('apply-all sends the batch limit from the header input, default 100 (#421)', () => {
+  const input = root.querySelector('#jobs-apply-limit');
+  expect(input).not.toBeNull();
+  expect(input.getAttribute('value')).toBe('100');
+  expect(input.getAttribute('min')).toBe('1');
+  expect(inlineScript).toMatch(/type: 'jobs_apply_all', data: \{ limit: limit \}/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

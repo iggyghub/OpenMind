@@ -348,8 +348,12 @@ async def _run_panel_apply(url: str) -> None:
             await _broadcast(_jobs_update_event())
 
 
-async def _run_panel_apply_all() -> None:
-    """#419 — apply to every approved posting, strictly one at a time.
+async def _run_panel_apply_all(limit: int = 100) -> None:
+    """#419 — apply to approved postings, strictly one at a time.
+
+    #421: at most ``limit`` postings per run (panel input, default 100) so a
+    big shortlist can be worked in controlled batches. Postings skipped for
+    an existing Application row don't count toward the batch.
 
     Sequential by design: the pipeline has ONE open browser session and ONE
     pending-application slot. Each ready-to-submit application goes through
@@ -365,7 +369,7 @@ async def _run_panel_apply_all() -> None:
         targets = [
             p for p in _job_search_store.list_shortlist()
             if p.get("status") == "shortlisted" and p.get("url") not in done
-        ]
+        ][:max(1, limit)]
         if not targets:
             await _notify_user("Felix", "No approved postings left to apply to.")
             return
@@ -3431,8 +3435,13 @@ async def _handle_message(msg: dict) -> None:
                 _job_search_store.set_status(p["url"], "shortlisted")
         await _broadcast(_jobs_update_event())
 
-    elif t == "jobs_apply_all":  # #419 — apply to every approved posting
-        asyncio.create_task(_run_panel_apply_all())
+    elif t == "jobs_apply_all":  # #419 / #421 — apply to approved postings (batched)
+        d = msg.get("data", {})
+        try:
+            limit = int(d.get("limit", 100))
+        except (TypeError, ValueError):
+            limit = 100
+        asyncio.create_task(_run_panel_apply_all(limit))
 
     elif t == "jobs_set_auto_submit":  # S7 #340 — toggle auto-submit opt-in (ADR-0009)
         d = msg.get("data", {})
