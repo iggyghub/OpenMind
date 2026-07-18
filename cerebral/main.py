@@ -300,6 +300,67 @@ async def _jobs_apply_submit() -> None:  # S4 #337
     await sess.click('button[type="submit"]')
 
 
+# ── Panel apply lane (S8 #413 / #417) ─────────────────────────────────────────
+# One panel-initiated apply at a time: parallel applies fight over the single
+# open browser session and the single pending-application slot.
+# ponytail: global lock; per-profile lanes if that ever matters.
+_panel_jobs_lock = asyncio.Lock()
+
+
+async def _ensure_panel_browser_session() -> bool:
+    """True when an open BrowserSession exists (opening one when needed).
+
+    #417: a failed open (e.g. attended login expired) must notify the user —
+    swallowing the error ToolResult made Apply look like it did nothing.
+    """
+    if _get_open_browser_session() is not None:
+        return True
+    res = await _orc.call_tool("browser_open_session", {})
+    if res.is_error:
+        await _notify_user(
+            "Felix could not open the browser session",
+            f"{res.content} Then press Apply again.",
+        )
+        return False
+    return True
+
+
+async def _run_panel_apply(url: str) -> None:
+    """Panel Apply (S8 #413): background so the IPC receive loop stays free
+    (#403); surfaces failures instead of dying silently (#417)."""
+    if _panel_jobs_lock.locked():
+        await _notify_user(
+            "Felix", "An application is already in progress — wait for it to finish.",
+        )
+        return
+    async with _panel_jobs_lock:
+        try:
+            if not await _ensure_panel_browser_session():
+                return
+            res = await _orc.call_tool("jobs_apply_start", {"url": url})
+            if res.is_error:
+                # failed / awaiting-input row is already logged by the plugin
+                # and lands in the panel via the broadcast below.
+                logger.warning("[cerebral] jobs_apply_start error: %s", res.content)
+        except Exception as exc:
+            logger.warning("[cerebral] jobs_apply_start failed: %s", exc)
+        finally:
+            await _broadcast(_jobs_update_event())
+
+
+async def _run_panel_submit() -> None:
+    """Panel Review & Submit as a task (#417): awaiting it inline blocked the
+    websocket receive loop while the ADR-0005 modal waited for a confirm that
+    arrives on that same loop — the modal could only ever time out."""
+    try:
+        res = await _orc.call_tool("jobs_apply_submit", {})
+        if res.is_error:
+            logger.warning("[cerebral] jobs_apply_submit error: %s", res.content)
+    except Exception as exc:
+        logger.warning("[cerebral] jobs_apply_submit failed: %s", exc)
+    await _broadcast(_jobs_update_event())
+
+
 async def _jobs_navigate(url: str) -> str:  # S1 #334 / #380
     """Headless Playwright fetch for the public job board.
 
@@ -3302,30 +3363,12 @@ async def _handle_message(msg: dict) -> None:
             logger.warning("[cerebral] jobs_set_approval failed: %s", exc)
         await _broadcast(_jobs_update_event())
 
-    elif t == "jobs_apply_start":  # S4 #337 — fill ATS form + show review
+    elif t == "jobs_apply_start":  # S4 #337 / S8 #413 / #417 — fill ATS form
         d = msg.get("data", {})
+        asyncio.create_task(_run_panel_apply(d.get("url", "")))
 
-        async def _run_apply(url: str) -> None:
-            # S8 #413 — runs as a task so the browser/LLM fill does not block
-            # the IPC lane (#403). The panel Apply button has no conversation
-            # turn to have opened the session, so ensure it here; the driver's
-            # own failure paths log the Application row as failed/awaiting.
-            try:
-                if _get_open_browser_session() is None:
-                    await _orc.call_tool("browser_open_session", {})
-                await _orc.call_tool("jobs_apply_start", {"url": url})
-            except Exception as exc:
-                logger.warning("[cerebral] jobs_apply_start failed: %s", exc)
-            await _broadcast(_jobs_update_event())
-
-        asyncio.create_task(_run_apply(d.get("url", "")))
-
-    elif t == "jobs_apply_submit":  # S4 #337 — submit pending application (irreversible)
-        try:
-            await _orc.call_tool("jobs_apply_submit", {})
-        except Exception as exc:
-            logger.warning("[cerebral] jobs_apply_submit failed: %s", exc)
-        await _broadcast(_jobs_update_event())
+    elif t == "jobs_apply_submit":  # S4 #337 / #417 — submit pending application
+        asyncio.create_task(_run_panel_submit())
 
     elif t == "jobs_set_auto_submit":  # S7 #340 — toggle auto-submit opt-in (ADR-0009)
         d = msg.get("data", {})

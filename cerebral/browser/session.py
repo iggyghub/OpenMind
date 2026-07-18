@@ -48,8 +48,10 @@ _DATA_ROOT = data_dir() / "browser"
 # Workspace "google" provider) per the 2026-06-25 ADR-0005 amendment.
 DEFAULT_PROVIDER = "google_web"
 
-# Default seconds to wait for a human to finish an attended login.
-DEFAULT_MANUAL_LOGIN_TIMEOUT = 180.0
+# Default seconds to wait for a human to finish an attended login. A real
+# Google sign-in with 2FA regularly exceeds 3 minutes (#417 live ramp) —
+# expiring mid-login silently kills the whole calling flow.
+DEFAULT_MANUAL_LOGIN_TIMEOUT = 600.0
 
 
 class LoginState(str, Enum):
