@@ -13,11 +13,12 @@ and Ashby ATS support.
 
 ## Next slice — start here
 
-Five tracer slices, one PR each, auto-merged to master in order. S4 and S6
-depend on S3's URL resolution; S7 depends on S4's filters; work strictly
-top-down. After landing a slice, **update this block**: tick the queue entry,
-set the next unticked entry's `#N` + `Model:` as the active slice, and set
-`Status:` (`ready` while slices remain; `done` after S7 lands).
+Six tracer slices, one PR each, auto-merged to master in order. S4 and S6
+depend on S3's URL resolution; S7/S8 depend on S4's filters/appliable flag;
+work strictly top-down. After landing a slice, **update this block**: tick
+the queue entry, set the next unticked entry's `#N` + `Model:` as the active
+slice, and set `Status:` (`ready` while slices remain; `done` after S8
+lands).
 
 Active slice: **S3 — #404**
 
@@ -38,6 +39,7 @@ haiku | sonnet | opus | fable. `Status: ready` = run the active slice;
 5. [ ] S5 — #391 Collapsible panel sections (Credentials, Job Search, etc.) — Model: sonnet
 6. [ ] S6 — #406 Ashby ATS support (detect, gate, fixture-tested mapping) — Model: sonnet
 7. [ ] S7 — #412 "Approve all visible" bulk action on the Shortlist — Model: sonnet
+8. [ ] S8 — #413 Apply button on approved Shortlist cards (non-blocking) — Model: sonnet
 
 ### Landed PRs
 
