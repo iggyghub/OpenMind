@@ -50,6 +50,10 @@ async def test_apply_driver_uses_quality(monkeypatch):
         async def read_page(self, url):
             return _FakeView()
 
+        async def list_form_fields(self):  # #423
+            return [{"selector": "#first", "label": "First name",
+                     "type": "text", "required": True}]
+
         async def fill_fields(self, pairs):
             pass
 

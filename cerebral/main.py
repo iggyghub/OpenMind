@@ -237,25 +237,33 @@ def _get_open_browser_session():  # #414
 
 async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:  # S4 #337
     """Prod apply driver: navigates open BrowserSession to ATS URL, LLM-maps fields,
-    fills them, uploads resume, returns draft for review. Leaves form open for submit."""
+    fills them, uploads resume, returns draft for review. Leaves form open for submit.
+
+    #423: fields are enumerated from the live DOM and the LLM may only map
+    dossier values onto those selectors — it previously invented selectors
+    from the page's visible text, and the first miss burned a 30s Page.fill
+    timeout and killed the whole apply.
+    """
     import json as _json, re as _re
     sess = _get_open_browser_session()
     if sess is None:
         raise RuntimeError(
             "No open browser session — call browser_open_session first"
         )
-    # Navigate to the ATS URL and read the page
-    view = await sess.read_page(url)
-    # LLM maps the visible form text to dossier values
+    await sess.read_page(url)
+    dom_fields = await sess.list_form_fields()
+    if not dom_fields:
+        return {"fields": [], "submit_selector": 'button[type="submit"]'}
     prompt = (
-        "You are filling a job application form. Given the form page text and the "
-        "applicant dossier, return a JSON array of field objects to fill. Each object "
-        "must have: selector (CSS selector string), label (human-readable field name), "
-        "value (string from dossier, or empty string if unknown), required (boolean), "
-        "is_file_upload (boolean, true only for resume/file inputs).\n"
-        "Include ONLY fields visible in the form. For unknown required fields, set "
-        "value to empty string. Do NOT guess. Reply with ONLY a JSON array.\n"
-        "Form page text (first 4000 chars):\n" + (view.text or "")[:4000] + "\n\n"
+        "You are filling a job application form. Below are the form's ACTUAL "
+        "fields (enumerated from the page) and the applicant dossier. Return a "
+        "JSON array of objects {selector, label, value, required, is_file_upload} "
+        "using ONLY selectors from the field list. value = the matching dossier "
+        "value, or empty string if the dossier does not provide it — do NOT "
+        "guess. is_file_upload=true only for the resume/CV file input. For "
+        "'select' fields the value must be one of the listed options. "
+        "Reply with ONLY a JSON array.\n"
+        "Form fields:\n" + _json.dumps(dom_fields) + "\n\n"
         "Applicant dossier:\n" + _json.dumps({
             "name": dossier.get("name", ""),
             "email": dossier.get("email", ""),
@@ -272,18 +280,50 @@ async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:
         fields = _json.loads(m.group(0)) if m else []
     except Exception:
         fields = []
-    # Fill text fields in the browser (side-effect on open session)
-    text_pairs = [
-        (f["selector"], f["value"])
-        for f in fields
-        if not f.get("is_file_upload") and f.get("value") and f.get("selector")
-    ]
-    if text_pairs:
-        await sess.fill_fields(text_pairs)
-    # Upload resume to file inputs
+    # #423: constrain to enumerated selectors; the DOM's required flag wins.
+    by_sel = {d["selector"]: d for d in dom_fields}
+    kept = []
+    for f in fields:
+        dom = by_sel.get(f.get("selector"))
+        if dom is None:
+            continue  # invented selector — drop it
+        f["required"] = bool(dom.get("required") or f.get("required"))
+        if dom.get("type") == "file":
+            f["is_file_upload"] = True
+        kept.append(f)
+    fields = kept
+    # #423: the resume input comes from the DOM even when the LLM missed it.
     file_inputs = [f for f in fields if f.get("is_file_upload") and f.get("selector")]
+    if not file_inputs:
+        dom_files = [d for d in dom_fields if d.get("type") == "file"]
+        if dom_files:
+            entry = {
+                "selector": dom_files[0]["selector"],
+                "label": dom_files[0].get("label") or "Resume",
+                "value": "", "required": bool(dom_files[0].get("required")),
+                "is_file_upload": True,
+            }
+            fields.append(entry)
+            file_inputs = [entry]
+    # Fill one field at a time: a single bad fill clears just that field
+    # (required -> awaiting-input path) instead of failing the application.
+    for f in fields:
+        if f.get("is_file_upload") or not f.get("value") or not f.get("selector"):
+            continue
+        try:
+            await sess.fill_fields([(f["selector"], f["value"])])
+        except Exception as exc:
+            logger.warning(
+                "[jobs] fill failed for %r (%s): %s",
+                f.get("label"), f.get("selector"), exc,
+            )
+            f["value"] = ""
+            f["is_known"] = False
     if file_inputs and resume_path:
-        await sess.upload_file(file_inputs[0]["selector"], resume_path)
+        try:
+            await sess.upload_file(file_inputs[0]["selector"], resume_path)
+        except Exception as exc:
+            logger.warning("[jobs] resume upload failed: %s", exc)
     return {
         "fields": fields,
         "submit_selector": 'button[type="submit"]',

@@ -133,6 +133,13 @@ class BrowserDriver(Protocol):
         """Type ``value`` into the element matched by ``selector``."""
         ...
 
+    async def list_form_fields(self) -> list[dict]:
+        """Enumerate visible form fields on the current page (#423).
+
+        Each dict: selector (guaranteed to match), label, type, required,
+        and options (selects only)."""
+        ...
+
     async def click(self, selector: str) -> str:
         """Click the element matched by ``selector``; return the resulting URL."""
         ...
@@ -306,6 +313,10 @@ class BrowserSession:
         """Fill each ``(selector, value)`` in order on the current page."""
         for selector, value in fields:
             await self._driver.fill(selector, value)
+
+    async def list_form_fields(self) -> list[dict]:
+        """Enumerate visible form fields on the current page (#423)."""
+        return await self._driver.list_form_fields()
 
     async def click(self, selector: str) -> str:
         """Click ``selector``; return the resulting URL."""
@@ -498,7 +509,68 @@ class PlaywrightDriver:
 
     async def fill(self, selector: str, value: str) -> None:
         assert self._page is not None, "open() must be called first"
-        await self._page.fill(selector, value)
+        # #423: 5s, not Playwright's default 30s — a bad selector should fail
+        # this one field fast, not stall the whole apply.
+        await self._page.fill(selector, value, timeout=5000)
+
+    # #423: real DOM enumeration so the form-filling LLM maps values onto
+    # selectors that actually exist (it previously invented them from the
+    # page's visible text). Elements without a unique #id/[name=] selector
+    # get tagged with data-felix-field to guarantee a match.
+    _LIST_FIELDS_JS = """
+() => {
+  const out = [];
+  let i = 0;
+  for (const el of document.querySelectorAll('input, textarea, select')) {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.type || '').toLowerCase();
+    if (['hidden', 'submit', 'button', 'image', 'reset'].includes(type)) continue;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    let selector = null;
+    if (el.id && document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) {
+      selector = '#' + CSS.escape(el.id);
+    } else if (el.name) {
+      const s = tag + '[name="' + el.name + '"]';
+      try { if (document.querySelectorAll(s).length === 1) selector = s; } catch (e) {}
+    }
+    if (!selector) {
+      el.setAttribute('data-felix-field', String(i));
+      selector = '[data-felix-field="' + i + '"]';
+    }
+    i += 1;
+    let label = '';
+    if (el.id) {
+      const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (l) label = l.innerText;
+    }
+    if (!label) { const l = el.closest('label'); if (l) label = l.innerText; }
+    if (!label) label = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || '';
+    label = (label || '').trim().slice(0, 120);
+    const required = el.required || el.getAttribute('aria-required') === 'true' || /\\*\\s*$/.test(label);
+    const field = {
+      selector: selector,
+      label: label,
+      type: tag === 'select' ? 'select' : (type || tag),
+      required: !!required,
+    };
+    if (tag === 'select') {
+      field.options = Array.from(el.options).slice(0, 25).map(o => (o.label || o.value || '').slice(0, 60));
+    }
+    out.push(field);
+  }
+  return out;
+}
+"""
+
+    async def list_form_fields(self) -> list[dict]:
+        assert self._page is not None, "open() must be called first"
+        try:
+            fields = await self._page.evaluate(self._LIST_FIELDS_JS)
+        except Exception:
+            logger.warning("[browser] list_form_fields failed", exc_info=True)
+            return []
+        return fields if isinstance(fields, list) else []
 
     async def click(self, selector: str) -> str:
         assert self._page is not None, "open() must be called first"
