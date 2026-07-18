@@ -597,6 +597,18 @@ test('inline script has backlog panel render function (F5)', () => {
   expect(inlineScript).toMatch(/backlogPanelCollapsed/);
 });
 
+// ── boards S8 — Apply button on approved shortlist cards (#413) ──────────────
+
+test('shortlist renders Apply only on approved cards (#413)', () => {
+  // Renderer: the Apply button is emitted behind the approved ternary.
+  expect(inlineScript).toMatch(/approved \? '<button class="jobs-apply-btn">Apply<\/button>' : ''/);
+});
+
+test('Apply click fires jobs_apply_start with the card URL (#413)', () => {
+  expect(inlineScript).toMatch(/closest\('\.jobs-apply-btn'\)/);
+  expect(inlineScript).toMatch(/type: 'jobs_apply_start', data: \{ url: applyCard\.dataset\.url \}/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

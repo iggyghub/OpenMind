@@ -3304,11 +3304,21 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "jobs_apply_start":  # S4 #337 — fill ATS form + show review
         d = msg.get("data", {})
-        try:
-            await _orc.call_tool("jobs_apply_start", {"url": d.get("url", "")})
-        except Exception as exc:
-            logger.warning("[cerebral] jobs_apply_start failed: %s", exc)
-        await _broadcast(_jobs_update_event())
+
+        async def _run_apply(url: str) -> None:
+            # S8 #413 — runs as a task so the browser/LLM fill does not block
+            # the IPC lane (#403). The panel Apply button has no conversation
+            # turn to have opened the session, so ensure it here; the driver's
+            # own failure paths log the Application row as failed/awaiting.
+            try:
+                if _get_open_browser_session() is None:
+                    await _orc.call_tool("browser_open_session", {})
+                await _orc.call_tool("jobs_apply_start", {"url": url})
+            except Exception as exc:
+                logger.warning("[cerebral] jobs_apply_start failed: %s", exc)
+            await _broadcast(_jobs_update_event())
+
+        asyncio.create_task(_run_apply(d.get("url", "")))
 
     elif t == "jobs_apply_submit":  # S4 #337 — submit pending application (irreversible)
         try:
