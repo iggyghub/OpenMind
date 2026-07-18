@@ -3178,6 +3178,16 @@
     }
     .jobs-bulk-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
     .jobs-bulk-btn:disabled { opacity: 0.5; cursor: default; }
+    .jobs-bulk-limit {
+      width: 52px;
+      font-size: 11px;
+      font-family: inherit;
+      background: var(--bg);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 3px 6px;
+    }
     .jobs-shortlist-header {
       font-size: 11px;
       font-weight: 600;
@@ -4448,6 +4458,9 @@
           <div class="jobs-shortlist-header">Shortlist
             <span class="jobs-shortlist-header-actions">
               <button class="jobs-bulk-btn" id="jobs-approve-all-btn">Approve all</button>
+              <!-- #421 — batch size for one Apply-all run -->
+              <input type="number" class="jobs-bulk-limit" id="jobs-apply-limit"
+                     value="100" min="1" title="Max postings per apply run" />
               <button class="jobs-bulk-btn" id="jobs-apply-all-btn">Apply all approved</button>
             </span>
           </div>
@@ -6552,7 +6565,11 @@
     jobsApplyAllBtn && jobsApplyAllBtn.addEventListener('click', function () {
       this.disabled = true;
       this.textContent = 'Applying…';
-      sendEvent({ type: 'jobs_apply_all', data: {} });
+      // #421 — batch size; falls back to 100 on junk input.
+      var limitEl = document.getElementById('jobs-apply-limit');
+      var limit = limitEl ? parseInt(limitEl.value, 10) : 100;
+      if (!limit || limit < 1) limit = 100;
+      sendEvent({ type: 'jobs_apply_all', data: { limit: limit } });
     });
 
     jobsShortlistEl && jobsShortlistEl.addEventListener('click', function (e) {

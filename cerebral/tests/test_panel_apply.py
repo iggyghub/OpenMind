@@ -151,6 +151,27 @@ async def test_apply_all_sequential_skips_and_submits(monkeypatch):
     assert notes and "1 submitted" in notes[-1][1] and "1 failed" in notes[-1][1]
 
 
+async def test_apply_all_respects_batch_limit(monkeypatch):
+    """#421 — at most `limit` postings per run; skips don't count."""
+    store = _FakeStore(
+        shortlist=[
+            {"url": "u0", "status": "shortlisted"},   # already applied: skipped
+            {"url": "u1", "status": "shortlisted"},
+            {"url": "u2", "status": "shortlisted"},
+            {"url": "u3", "status": "shortlisted"},
+        ],
+        applications=[{"url": "u0", "status": "failed"}],
+    )
+    rec = _Recorder({})
+    _wire(monkeypatch, rec, session_open=True)
+    monkeypatch.setattr(main, "_job_search_store", store)
+
+    await main._run_panel_apply_all(limit=2)
+
+    starts = [args["url"] for name, args in rec.calls if name == "jobs_apply_start"]
+    assert starts == ["u1", "u2"]  # u0 skipped without consuming the batch, u3 over limit
+
+
 async def test_apply_all_stops_when_modal_declined(monkeypatch):
     store = _FakeStore(shortlist=[
         {"url": "u1", "status": "shortlisted"},
