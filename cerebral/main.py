@@ -526,25 +526,41 @@ async def _jobs_navigate(url: str) -> str:  # S1 #334 / #380
 
 # ── S5 #338 — Answer bank prod seams ─────────────────────────────────────────
 
-async def _jobs_recall(profile_id: int, question: str) -> str | None:  # S5 #338
-    """Prod recall: semantic search of ChromaDB answer bank for closest question."""
+_ANSWER_BANK_PREFIX = "Job application answer — "
+# ponytail: cosine-distance cutoff; tune from live ramp hits/misses. Strict on
+# purpose: a wrong auto-filled answer is worse than an escalation.
+_ANSWER_BANK_MAX_DISTANCE = 0.35
+
+
+async def _jobs_recall(profile_id: int, question: str) -> str | None:  # S5 #338 / #427
+    """Answer-bank recall: nearest stored answer, or None (→ escalate).
+
+    #427: only prefixed answer-bank entries within a strict distance count —
+    a random conversation memory must never be auto-filled into a job form
+    as a Known value (zero-guessed rule).
+    """
     try:
-        from cerebral.memory import MemoryManager
-        mgr = MemoryManager()
-        hits = await mgr.recall(question, n_results=1)
-        if hits:
-            return hits[0].get("answer") or hits[0].get("text")
+        mgr = _get_memory()
+        if mgr is None:
+            return None
+        hits = await mgr.recall(question, n_results=3)
+        for h in hits:
+            if (h.distance <= _ANSWER_BANK_MAX_DISTANCE
+                    and h.fact.startswith(_ANSWER_BANK_PREFIX)):
+                rest = h.fact[len(_ANSWER_BANK_PREFIX):]
+                if ": " in rest:
+                    return rest.split(": ", 1)[1]
     except Exception as exc:
         logger.warning("[jobs] recall failed: %s", exc)
     return None
 
 
-async def _jobs_index_answer(profile_id: int, question: str, answer: str) -> None:  # S5 #338
-    """Prod indexer: upsert (question, answer) into ChromaDB answer bank."""
+async def _jobs_index_answer(profile_id: int, question: str, answer: str) -> None:  # S5 #338 / #427
+    """Index a learned (question, answer) into the answer bank."""
     try:
-        from cerebral.memory import MemoryManager
-        mgr = MemoryManager()
-        await mgr.store(f"{question}: {answer}")
+        mgr = _get_memory()
+        if mgr is not None:
+            await mgr.remember(f"{_ANSWER_BANK_PREFIX}{question}: {answer}")
     except Exception as exc:
         logger.warning("[jobs] index_answer failed: %s", exc)
 
