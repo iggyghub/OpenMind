@@ -10,6 +10,11 @@
 # When run interactively from PowerShell, prints a brief status line and
 # self-closes; no Read-Host -- the user's interaction surface is the tray.
 
+# -Restart: invoked by the tray's "Restart Felix" menu item (#439). The tray
+# has just sent Cerebral the shutdown event and is quitting; instead of
+# refusing to double-launch, wait for port 7766 to free up, then boot.
+param([switch]$Restart)
+
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -98,8 +103,19 @@ function Test-Prerequisites {
 
 Test-Prerequisites
 
-# ---- 1. refuse to double-launch -----------------------------------------------
-if (Test-CerebralPort) {
+# ---- 1. refuse to double-launch (or, on -Restart, wait for the old one) ------
+if ($Restart) {
+    Log "Restart requested -- waiting for the old Cerebral to release :$CEREBRAL_PORT..."
+    $freeDeadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $freeDeadline -and (Test-CerebralPort)) {
+        Start-Sleep -Milliseconds 500
+    }
+    if (Test-CerebralPort) {
+        Log "Port $CEREBRAL_PORT still in use after 30s -- old Cerebral did not shut down. Aborting."
+        exit 1
+    }
+    Log "Port free -- proceeding with relaunch."
+} elseif (Test-CerebralPort) {
     Log "Felix is already running (port $CEREBRAL_PORT is in use) -- skipping launch."
     exit 0
 }
