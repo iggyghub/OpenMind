@@ -429,6 +429,17 @@ async def _run_panel_apply(url: str) -> None:
             await _broadcast(_jobs_update_event())
 
 
+def _jobs_posting_name(url: str) -> str:
+    """'Job title at Company' for notifications (#437) — the URL alone never
+    names the employer (Greenhouse URLs carry a slug at best)."""
+    p = _job_search_store.get_posting_by_url(url) if url else None
+    if not p:
+        return url or "application"
+    title = p.get("title") or "Untitled"
+    company = p.get("company")
+    return f"{title} at {company}" if company else title
+
+
 async def _notify_apply_outcome(res) -> None:
     """#425 — tell the user how an apply ended; the headless browser gives
     them nothing to watch, so the notification IS the feedback."""
@@ -438,24 +449,26 @@ async def _notify_apply_outcome(res) -> None:
     except Exception:
         d = {}
     status = d.get("status", "")
+    name = _jobs_posting_name(d.get("url", ""))
     if status == "skipped":  # #435 — skip rule hit
-        await _notify_user("Application skipped", d.get("reason") or "skip rule")
+        await _notify_user(f"Skipped: {name}", d.get("reason") or "skip rule")
     elif status == "ready_to_submit":
         await _notify_user(
-            "Application ready to submit",
+            f"Ready to submit: {name}",
             "The form is filled. Open the Job Search panel and press "
             "Review & Submit — nothing is sent until you confirm.",
         )
     elif status == "awaiting-input":
         missing = ", ".join(d.get("missing_fields", [])[:5]) or "some fields"
         await _notify_user(
-            "Application needs your input",
-            f"Felix could not fill: {missing}. Answer in the Conversation to continue.",
+            f"Needs your input: {name}",
+            f"Felix could not fill: {missing}. Answer on its card in the "
+            "Job Search panel.",
         )
     elif res.is_error:
         logger.warning("[cerebral] jobs_apply_start error: %s", res.content)
         reason = d.get("reason") or str(res.content)[:140]
-        await _notify_user("Application failed", reason)
+        await _notify_user(f"Application failed: {name}", reason)
 
 
 async def _run_panel_apply_all(limit: int = 100) -> None:
