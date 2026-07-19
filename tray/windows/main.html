@@ -3178,6 +3178,26 @@
     }
     .jobs-bulk-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
     .jobs-bulk-btn:disabled { opacity: 0.5; cursor: default; }
+    /* #431 — needs-info Q&A form on awaiting-input application cards. */
+    .jobs-ni-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .jobs-ni-row {
+      display: flex; flex-direction: column; gap: 2px;
+      font-size: 11px; color: var(--text-muted);
+    }
+    .jobs-ni-input {
+      font-size: 12px; font-family: inherit;
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 5px;
+      padding: 4px 8px;
+    }
+    .jobs-ni-input:focus { border-color: var(--accent); }
+    .jobs-ni-save {
+      align-self: flex-start; margin-top: 4px;
+      font-size: 12px; font-family: inherit; cursor: pointer;
+      background: var(--accent); color: #fff;
+      border: none; border-radius: 5px; padding: 4px 12px;
+    }
+    .jobs-ni-save:disabled { opacity: 0.5; cursor: default; }
     .jobs-bulk-limit {
       width: 52px;
       font-size: 11px;
@@ -6486,8 +6506,45 @@
       'failed': 'Failed',
       'skipped': 'Skipped',
     };
+    // #431 — build the needs-info Q&A form for an awaiting-input application:
+    // every required, empty, non-file field becomes an input (a dropdown when
+    // the field carries options). Answers go to the Answer bank + auto-retry.
+    function renderJobsNeedsInfoForm(a) {
+      var fields = Array.isArray(a.filled_fields_json) ? a.filled_fields_json : [];
+      var missing = fields.filter(function (f) {
+        return f.required && !f.value && !f.is_file_upload;
+      });
+      if (!missing.length) return '';
+      var rows = missing.map(function (f) {
+        var labels = (f.options || []).map(function (o) {
+          return typeof o === 'string' ? o : ((o && o.label) || '');
+        }).filter(Boolean);
+        var input = labels.length
+          ? '<select class="jobs-ni-input" data-label="' + escHtml(f.label || '') + '">' +
+              '<option value=""></option>' +
+              labels.map(function (l) { return '<option>' + escHtml(l) + '</option>'; }).join('') +
+            '</select>'
+          : '<input class="jobs-ni-input" type="text" data-label="' + escHtml(f.label || '') + '" />';
+        return '<label class="jobs-ni-row">' + escHtml(f.label || '?') + input + '</label>';
+      }).join('');
+      return '<div class="jobs-ni-form">' + rows +
+        '<button class="jobs-ni-save" data-url="' + escHtml(a.url || '') + '">Save answers &amp; retry</button></div>';
+    }
+
+    // #431 — don't wipe half-typed answers: skip re-render while the form is
+    // in use. The post-save broadcast re-renders once the inputs are gone.
+    function jobsNeedsInfoFormBusy() {
+      var inputs = jobsApplicationsEl
+        ? jobsApplicationsEl.querySelectorAll('.jobs-ni-input') : [];
+      for (var i = 0; i < inputs.length; i++) {
+        if (inputs[i].value || inputs[i] === document.activeElement) return true;
+      }
+      return false;
+    }
+
     function renderJobApplications() {
       if (!jobsApplicationsEl) return;
+      if (jobsNeedsInfoFormBusy()) return;
       jobsApplicationsEl.querySelectorAll('.jobs-app-date-group').forEach(function (el) { el.remove(); });
       if (jobApplications.length === 0) {
         jobsApplicationsEmpty.hidden = false;
@@ -6520,7 +6577,8 @@
               ? '<div class="jobs-app-card-actions">' +
                   '<button class="jobs-submit-btn" data-url="' + escHtml(a.url || '') + '">Review &amp; Submit</button>' +
                 '</div>'
-              : '');
+              : '') +
+            (a.status === 'awaiting-input' ? renderJobsNeedsInfoForm(a) : '');
           group.appendChild(card);
         });
         jobsApplicationsEl.insertBefore(group, jobsApplicationsEmpty);
@@ -6550,6 +6608,23 @@
     });
 
     jobsApplicationsEl && jobsApplicationsEl.addEventListener('click', function (e) {
+      // #431 — save needs-info answers and retry the apply.
+      var saveBtn = e.target.closest('.jobs-ni-save');
+      if (saveBtn) {
+        var form = saveBtn.closest('.jobs-ni-form');
+        var answers = [];
+        form.querySelectorAll('.jobs-ni-input').forEach(function (inp) {
+          if (inp.value) answers.push({ label: inp.dataset.label, value: inp.value });
+        });
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Retrying…';
+        // Clear inputs so the busy-guard releases and the next broadcast
+        // re-renders the card with the retry's outcome.
+        form.querySelectorAll('.jobs-ni-input').forEach(function (inp) { inp.value = ''; });
+        sendEvent({ type: 'jobs_answer_fields',
+                    data: { url: saveBtn.dataset.url, answers: answers } });
+        return;
+      }
       var btn = e.target.closest('.jobs-submit-btn');
       if (!btn) return;
       sendEvent({ type: 'jobs_apply_submit', data: {} });
