@@ -219,6 +219,36 @@ async def test_apply_all_stops_when_modal_declined(monkeypatch):
     assert notes and "stopped" in notes[-1][1].lower()
 
 
+async def test_answer_fields_indexes_and_retries(monkeypatch):
+    """#431 — needs-info answers land in the Answer bank and the apply
+    re-runs; blank answers are skipped."""
+    import types
+    indexed: list[tuple[int, str, str]] = []
+    applied: list[str] = []
+
+    async def index(pid, q, a):
+        indexed.append((pid, q, a))
+
+    async def run_apply(url):
+        applied.append(url)
+
+    monkeypatch.setattr(main, "_jobs_index_answer", index)
+    monkeypatch.setattr(main, "_run_panel_apply", run_apply)
+    monkeypatch.setattr(main, "_active_profile", types.SimpleNamespace(id=7))
+
+    await main._handle_message({"type": "jobs_answer_fields", "data": {
+        "url": "https://ats/x",
+        "answers": [
+            {"label": "Sponsorship?", "value": "No"},
+            {"label": "Skipped", "value": "  "},
+        ],
+    }})
+    await asyncio.sleep(0)  # let the retry task run
+
+    assert indexed == [(7, "Sponsorship?", "No")]
+    assert applied == ["https://ats/x"]
+
+
 async def test_submit_event_does_not_block_receive_loop(monkeypatch):
     """#417 deadlock regression: the dispatcher branch must return while the
     (modal-gated) submit is still in flight."""

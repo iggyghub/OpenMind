@@ -3559,6 +3559,25 @@ async def _handle_message(msg: dict) -> None:
                 _job_search_store.set_status(p["url"], "shortlisted")
         await _broadcast(_jobs_update_event())
 
+    elif t == "jobs_answer_fields":  # #431 — save needs-info answers, retry the apply
+        d = msg.get("data", {})
+        url = d.get("url", "")
+        answers = [
+            a for a in d.get("answers", [])
+            if isinstance(a, dict) and str(a.get("value") or "").strip()
+        ]
+        if _active_profile:
+            for a in answers:
+                # Answer bank (#427): also auto-fills future applications that
+                # ask a semantically-similar question.
+                await _jobs_index_answer(
+                    _active_profile.id,
+                    str(a.get("label", "")).strip(),
+                    str(a["value"]).strip(),
+                )
+        if url:
+            asyncio.create_task(_run_panel_apply(url))
+
     elif t == "jobs_apply_all":  # #419 / #421 — apply to approved postings (batched)
         d = msg.get("data", {})
         try:

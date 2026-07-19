@@ -616,6 +616,14 @@ test('shortlist header has bulk-action buttons wired to bulk events (#419)', () 
   expect(inlineScript).toMatch(/type: 'jobs_apply_all'/);
 });
 
+test('awaiting-input cards render the needs-info Q&A form (#431)', () => {
+  expect(inlineScript).toMatch(/renderJobsNeedsInfoForm/);
+  expect(inlineScript).toMatch(/f\.required && !f\.value && !f\.is_file_upload/);
+  expect(inlineScript).toMatch(/type: 'jobs_answer_fields'/);
+  // Busy-guard so a broadcast can't wipe half-typed answers.
+  expect(inlineScript).toMatch(/jobsNeedsInfoFormBusy/);
+});
+
 test('apply-all sends the batch limit from the header input, default 100 (#421)', () => {
   const input = root.querySelector('#jobs-apply-limit');
   expect(input).not.toBeNull();
