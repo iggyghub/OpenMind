@@ -900,6 +900,17 @@ def _stub_apply_driver_missing(url, dossier, resume_path):
     return {"fields": _FIXTURE_FIELDS_MISSING, "submit_selector": 'button[type="submit"]'}
 
 
+def _stub_apply_driver_linkedin(url, dossier, resume_path):
+    # #435 — a required LinkedIn field the dossier can't fill.
+    return {
+        "fields": [
+            {"selector": "#name", "label": "Name", "value": "Iggy", "required": True},
+            {"selector": "#li", "label": "LinkedIn Profile*", "value": "", "required": True},
+        ],
+        "submit_selector": 'button[type="submit"]',
+    }
+
+
 def _stub_apply_submit():
     pass
 
@@ -1081,6 +1092,21 @@ class TestApplyStart:
         app = store.get_application(_ATS_URL_1)
         assert app is not None
         assert app["status"] == "awaiting-input"
+
+    @pytest.mark.asyncio
+    async def test_unfillable_linkedin_skips_posting(self):
+        """#435 — user skip rule: required LinkedIn we can't fill abandons
+        the posting (skipped), not awaiting-input."""
+        store = _in_memory_store()
+        _seed_shortlisted(store)
+        plugin = _make_apply_plugin(store, apply_driver_fn=_stub_apply_driver_linkedin)
+        result = await plugin.call_tool("jobs_apply_start", {"url": _ATS_URL_1})
+        assert result.is_error
+        data = json.loads(result.content)
+        assert data["status"] == "skipped"
+        assert "LinkedIn" in data["reason"]
+        app = store.get_application(_ATS_URL_1)
+        assert app["status"] == "skipped"
 
     @pytest.mark.asyncio
     async def test_no_store_returns_error(self):

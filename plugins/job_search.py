@@ -109,6 +109,12 @@ ELIGIBILITY_KEYWORDS: frozenset[str] = frozenset({
     "compensation", "expected compensation",
 })
 
+# #435 — user skip rules: an UNFILLABLE required field whose label matches one
+# of these abandons the posting (status "skipped") instead of parking it as
+# awaiting-input. ponytail: module constant; move to job_search_settings when
+# the user wants to edit rules from the panel.
+SKIP_REQUIRED_PATTERNS: tuple[str, ...] = ("linkedin",)
+
 
 def is_eligibility_question(label: str) -> bool:
     """True if the field label matches an eligibility/knockout keyword (ADR-0009)."""
@@ -1337,6 +1343,30 @@ class JobSearchPlugin:
         # Zero-guessed rule: any required field still without a Known value -> escalate.
         missing = [f for f in fields if f.get("required") and not f.get("value")]
         if missing:
+            # #435 — user skip rule: an unfillable required field matching a
+            # skip pattern abandons this posting instead of parking it. Only
+            # fires when the field could NOT be filled — a dossier that gains
+            # e.g. a LinkedIn URL makes these postings appliable again.
+            skip_hit = next(
+                (f for f in missing
+                 if any(p in (f.get("label") or "").lower()
+                        for p in SKIP_REQUIRED_PATTERNS)),
+                None,
+            )
+            if skip_hit is not None:
+                store.upsert_application(
+                    url=url, posting_url=url, ats_type=ats_type,
+                    status="skipped", fields=fields,
+                )
+                return ToolResult(
+                    content=json.dumps({
+                        "status": "skipped",
+                        "reason": "requires " + (skip_hit.get("label") or "?")
+                                  + " (skip rule)",
+                        "url": url,
+                    }),
+                    is_error=True,
+                )
             store.upsert_application(
                 url=url, posting_url=url, ats_type=ats_type,
                 status="awaiting-input", fields=fields,

@@ -438,7 +438,9 @@ async def _notify_apply_outcome(res) -> None:
     except Exception:
         d = {}
     status = d.get("status", "")
-    if status == "ready_to_submit":
+    if status == "skipped":  # #435 — skip rule hit
+        await _notify_user("Application skipped", d.get("reason") or "skip rule")
+    elif status == "ready_to_submit":
         await _notify_user(
             "Application ready to submit",
             "The form is filled. Open the Job Search panel and press "
@@ -481,7 +483,7 @@ async def _run_panel_apply_all(limit: int = 100) -> None:
         if not targets:
             await _notify_user("Felix", "No approved postings left to apply to.")
             return
-        submitted = awaiting = failed = 0
+        submitted = awaiting = failed = skipped = 0
         stopped = False
         for p in targets:
             url = p.get("url", "")
@@ -492,9 +494,11 @@ async def _run_panel_apply_all(limit: int = 100) -> None:
                 res = await _orc.call_tool("jobs_apply_start", {"url": url})
                 await _broadcast(_jobs_update_event())
                 if res.is_error:
-                    # failed / awaiting-input row already logged by the plugin.
+                    # failed / awaiting-input / skipped row already logged by the plugin.
                     if "awaiting-input" in str(res.content):
                         awaiting += 1
+                    elif '"skipped"' in str(res.content):  # #435 skip rule
+                        skipped += 1
                     else:
                         failed += 1
                     continue
@@ -508,7 +512,10 @@ async def _run_panel_apply_all(limit: int = 100) -> None:
             except Exception as exc:
                 logger.warning("[cerebral] apply-all failed on %s: %s", url, exc)
                 failed += 1
-        summary = f"{submitted} submitted, {awaiting} need your input, {failed} failed."
+        summary = (
+            f"{submitted} submitted, {awaiting} need your input, "
+            f"{skipped} skipped by rule, {failed} failed."
+        )
         if stopped:
             summary += " Run stopped — the pending application is left for your review."
         await _notify_user("Apply run finished", summary)
