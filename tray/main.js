@@ -549,6 +549,7 @@ function buildMenu() {
       { label: 'Cerebral log',  click: () => shell.openPath(CEREBRAL_LOG) },
     ],
   });
+  template.push({ label: 'Restart Felix', click: restartFelix });  // #439
   template.push({ label: 'Quit', click: quit });
 
   return Menu.buildFromTemplate(template);
@@ -583,9 +584,37 @@ function quit() {
   app.quit();
 }
 
+// #439 — one-click full restart: clean quit() teardown (Cerebral gets the
+// shutdown event), then the launcher reboots BOTH processes. -Restart makes
+// the launcher wait for :7766 to free instead of refusing to double-launch.
+function restartFelix() {
+  const { spawn } = require('child_process');
+  const launcher = path.join(__dirname, '..', 'scripts', 'launch-felix.ps1');
+  spawn('powershell.exe',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher, '-Restart'],
+    { detached: true, stdio: 'ignore', windowsHide: true },
+  ).unref();
+  quit();
+}
+
 app.whenReady().then(() => {
   if (app.dock) app.dock.hide();
   app.setName('Felix');
+
+  // #439 — Main window menu bar: File gains Restart/Quit (the window's X
+  // only hides to tray per #188, so these need a discoverable home).
+  // Standard Edit/View roles keep copy/paste and zoom shortcuts alive.
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Restart Felix', click: restartFelix },
+        { label: 'Quit Felix', click: quit },
+      ],
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+  ]));
 
   const icon = nativeImage.createFromPath(ICON_PATH);
   tray = new Tray(icon);
