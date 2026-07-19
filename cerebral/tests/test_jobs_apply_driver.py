@@ -98,6 +98,26 @@ async def test_resume_input_found_from_dom_when_llm_misses_it(monkeypatch):
     assert any(f.get("is_file_upload") for f in draft["fields"])
 
 
+async def test_unmapped_required_dom_fields_are_carried(monkeypatch):
+    """#425 — required DOM fields the LLM omits must reach the field list
+    with empty values, so _apply_start escalates to awaiting-input instead
+    of declaring an unfilled form ready_to_submit (the live Nourish bug)."""
+    session = _Session([
+        {"selector": "#first_name", "label": "First name", "type": "text", "required": True},
+        {"selector": "#nickname", "label": "Nickname", "type": "text", "required": False},
+    ])
+    _wire(monkeypatch, session, [])  # LLM maps nothing
+
+    draft = await main._jobs_apply_driver("https://ats/x", {}, "")
+
+    by_sel = {f["selector"]: f for f in draft["fields"]}
+    assert by_sel["#first_name"]["value"] == ""
+    assert by_sel["#first_name"]["required"] is True
+    assert by_sel["#first_name"]["is_known"] is False
+    assert "#nickname" not in by_sel  # optional unmapped fields stay out
+    assert session.filled == []
+
+
 async def test_empty_dom_enumeration_returns_no_fields(monkeypatch):
     session = _Session([])
     _wire(monkeypatch, session, [

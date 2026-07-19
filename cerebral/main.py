@@ -280,6 +280,10 @@ async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:
         fields = _json.loads(m.group(0)) if m else []
     except Exception:
         fields = []
+    if not fields:
+        # #425: an empty mapping is the prime live-failure mode — keep the
+        # evidence (model output head) so it's diagnosable from the log.
+        logger.warning("[jobs] LLM mapped no fields; raw head: %r", str(raw)[:200])
     # #423: constrain to enumerated selectors; the DOM's required flag wins.
     by_sel = {d["selector"]: d for d in dom_fields}
     kept = []
@@ -291,6 +295,22 @@ async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:
         if dom.get("type") == "file":
             f["is_file_upload"] = True
         kept.append(f)
+    # #425: required DOM fields the LLM omitted must NOT vanish — carry them
+    # with empty values so the missing-required -> awaiting-input escalation
+    # sees them (an unfilled form must never reach ready_to_submit).
+    mapped_sels = {f.get("selector") for f in kept}
+    unmapped_required = 0
+    for d in dom_fields:
+        if d.get("required") and d.get("type") != "file" and d["selector"] not in mapped_sels:
+            kept.append({
+                "selector": d["selector"], "label": d.get("label") or d["selector"],
+                "value": "", "required": True, "is_known": False,
+            })
+            unmapped_required += 1
+    logger.info(
+        "[jobs] field mapping: dom=%d llm=%d mapped=%d unmapped_required=%d",
+        len(dom_fields), len(fields), len(mapped_sels), unmapped_required,
+    )
     fields = kept
     # #423: the resume input comes from the DOM even when the LLM missed it.
     file_inputs = [f for f in fields if f.get("is_file_upload") and f.get("selector")]
@@ -378,14 +398,38 @@ async def _run_panel_apply(url: str) -> None:
             if not await _ensure_panel_browser_session():
                 return
             res = await _orc.call_tool("jobs_apply_start", {"url": url})
-            if res.is_error:
-                # failed / awaiting-input row is already logged by the plugin
-                # and lands in the panel via the broadcast below.
-                logger.warning("[cerebral] jobs_apply_start error: %s", res.content)
+            await _notify_apply_outcome(res)
         except Exception as exc:
             logger.warning("[cerebral] jobs_apply_start failed: %s", exc)
         finally:
             await _broadcast(_jobs_update_event())
+
+
+async def _notify_apply_outcome(res) -> None:
+    """#425 — tell the user how an apply ended; the headless browser gives
+    them nothing to watch, so the notification IS the feedback."""
+    import json as _json
+    try:
+        d = _json.loads(res.content)
+    except Exception:
+        d = {}
+    status = d.get("status", "")
+    if status == "ready_to_submit":
+        await _notify_user(
+            "Application ready to submit",
+            "The form is filled. Open the Job Search panel and press "
+            "Review & Submit — nothing is sent until you confirm.",
+        )
+    elif status == "awaiting-input":
+        missing = ", ".join(d.get("missing_fields", [])[:5]) or "some fields"
+        await _notify_user(
+            "Application needs your input",
+            f"Felix could not fill: {missing}. Answer in the Conversation to continue.",
+        )
+    elif res.is_error:
+        logger.warning("[cerebral] jobs_apply_start error: %s", res.content)
+        reason = d.get("reason") or str(res.content)[:140]
+        await _notify_user("Application failed", reason)
 
 
 async def _run_panel_apply_all(limit: int = 100) -> None:

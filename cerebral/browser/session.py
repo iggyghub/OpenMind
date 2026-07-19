@@ -565,6 +565,14 @@ class PlaywrightDriver:
 
     async def list_form_fields(self) -> list[dict]:
         assert self._page is not None, "open() must be called first"
+        # #425: ATS pages are React apps — inputs may not exist yet at
+        # domcontentloaded. Wait for the first form control to render.
+        try:
+            await self._page.wait_for_selector(
+                "input, textarea, select", state="attached", timeout=10000,
+            )
+        except Exception:
+            pass  # no form on the page — the empty enumeration says so
         try:
             fields = await self._page.evaluate(self._LIST_FIELDS_JS)
         except Exception:

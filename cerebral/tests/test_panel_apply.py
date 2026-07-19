@@ -68,6 +68,33 @@ async def test_apply_runs_when_session_open(monkeypatch):
     assert casts
 
 
+async def test_apply_notifies_ready_to_submit(monkeypatch):
+    """#425 — the headless browser gives the user nothing to watch, so the
+    outcome notification IS the feedback."""
+    rec = _Recorder({
+        "jobs_apply_start": ToolResult(
+            content='{"status": "ready_to_submit", "url": "u"}'),
+    })
+    notes, _ = _wire(monkeypatch, rec, session_open=True)
+
+    await main._run_panel_apply("u")
+
+    assert notes and "ready to submit" in notes[0][0].lower()
+
+
+async def test_apply_notifies_missing_fields(monkeypatch):
+    rec = _Recorder({
+        "jobs_apply_start": ToolResult(
+            content='{"status": "awaiting-input", "missing_fields": ["Work auth"]}',
+            is_error=True),
+    })
+    notes, _ = _wire(monkeypatch, rec, session_open=True)
+
+    await main._run_panel_apply("u")
+
+    assert notes and "Work auth" in notes[0][1]
+
+
 async def test_apply_single_flight(monkeypatch):
     rec = _Recorder({})
     notes, _ = _wire(monkeypatch, rec, session_open=True)
