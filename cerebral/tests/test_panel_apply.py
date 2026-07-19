@@ -76,10 +76,17 @@ async def test_apply_notifies_ready_to_submit(monkeypatch):
             content='{"status": "ready_to_submit", "url": "u"}'),
     })
     notes, _ = _wire(monkeypatch, rec, session_open=True)
+    # #437 — the notification must name the posting.
+    monkeypatch.setattr(
+        main, "_job_search_store",
+        type("S", (), {"get_posting_by_url":
+                       staticmethod(lambda url: {"title": "Support Rep", "company": "Acme"})})(),
+    )
 
     await main._run_panel_apply("u")
 
     assert notes and "ready to submit" in notes[0][0].lower()
+    assert "Support Rep at Acme" in notes[0][0]
 
 
 async def test_apply_notifies_missing_fields(monkeypatch):
