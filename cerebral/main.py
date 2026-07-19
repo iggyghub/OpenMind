@@ -261,8 +261,8 @@ async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:
         "using ONLY selectors from the field list. value = the matching dossier "
         "value, or empty string if the dossier does not provide it — do NOT "
         "guess. is_file_upload=true only for the resume/CV file input. For "
-        "'select' fields the value must be one of the listed options. "
-        "Reply with ONLY a JSON array.\n"
+        "'select', 'radio', and 'checkbox' fields the value must be one of "
+        "the listed option labels. Reply with ONLY a JSON array.\n"
         "Form fields:\n" + _json.dumps(dom_fields) + "\n\n"
         "Applicant dossier:\n" + _json.dumps({
             "name": dossier.get("name", ""),
@@ -292,6 +292,11 @@ async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:
         if dom is None:
             continue  # invented selector — drop it
         f["required"] = bool(dom.get("required") or f.get("required"))
+        # #429: the DOM's type/options ride along — the fill dispatch and the
+        # panel's needs-input form both key off them.
+        f["type"] = dom.get("type", "")
+        if dom.get("options") is not None:
+            f["options"] = dom["options"]
         if dom.get("type") == "file":
             f["is_file_upload"] = True
         kept.append(f)
@@ -302,10 +307,14 @@ async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:
     unmapped_required = 0
     for d in dom_fields:
         if d.get("required") and d.get("type") != "file" and d["selector"] not in mapped_sels:
-            kept.append({
+            entry = {
                 "selector": d["selector"], "label": d.get("label") or d["selector"],
                 "value": "", "required": True, "is_known": False,
-            })
+                "type": d.get("type", ""),
+            }
+            if d.get("options") is not None:
+                entry["options"] = d["options"]
+            kept.append(entry)
             unmapped_required += 1
     logger.info(
         "[jobs] field mapping: dom=%d llm=%d mapped=%d unmapped_required=%d",
@@ -331,7 +340,22 @@ async def _jobs_apply_driver(url: str, dossier: dict, resume_path: str) -> dict:
         if f.get("is_file_upload") or not f.get("value") or not f.get("selector"):
             continue
         try:
-            await sess.fill_fields([(f["selector"], f["value"])])
+            ftype = f.get("type", "")
+            if ftype == "select":
+                await sess.select_option(f["selector"], f["value"])
+            elif ftype in ("radio", "checkbox"):
+                # #429: options carry their own click selectors.
+                want = str(f["value"]).strip().lower()
+                opt = next(
+                    (o for o in (f.get("options") or [])
+                     if isinstance(o, dict) and str(o.get("label", "")).strip().lower() == want),
+                    None,
+                )
+                if opt is None:
+                    raise ValueError(f"no option matching {f['value']!r}")
+                await sess.click(opt["selector"])
+            else:
+                await sess.fill_fields([(f["selector"], f["value"])])
         except Exception as exc:
             logger.warning(
                 "[jobs] fill failed for %r (%s): %s",
