@@ -26,6 +26,8 @@ class _Session:
         self.fail_selectors = set(fail_selectors)
         self.filled: list[tuple[str, str]] = []
         self.uploaded: list[tuple[str, str]] = []
+        self.selected: list[tuple[str, str]] = []
+        self.clicked: list[str] = []
 
     async def read_page(self, url):
         return types.SimpleNamespace(url=url, title="", text="form")
@@ -38,6 +40,13 @@ class _Session:
             if sel in self.fail_selectors:
                 raise RuntimeError(f"Page.fill: Timeout 5000ms exceeded ({sel})")
             self.filled.append((sel, val))
+
+    async def select_option(self, selector, label):
+        self.selected.append((selector, label))
+
+    async def click(self, selector):
+        self.clicked.append(selector)
+        return "https://ats/x"
 
     async def upload_file(self, selector, path):
         self.uploaded.append((selector, path))
@@ -116,6 +125,37 @@ async def test_unmapped_required_dom_fields_are_carried(monkeypatch):
     assert by_sel["#first_name"]["is_known"] is False
     assert "#nickname" not in by_sel  # optional unmapped fields stay out
     assert session.filled == []
+
+
+async def test_select_and_radio_fill_dispatch(monkeypatch):
+    """#429 — selects go through select_option; radio groups click the
+    matching option's own selector; a value with no matching option clears
+    the field instead of failing the apply."""
+    session = _Session([
+        {"selector": "#country", "label": "Country", "type": "select",
+         "required": True, "options": ["United States", "Canada"]},
+        {"selector": '[data-felix-field="7"]', "label": "Years of experience",
+         "type": "radio", "required": True,
+         "options": [{"label": "0-2", "selector": '[data-felix-field="7"]'},
+                     {"label": "2-4", "selector": '[data-felix-field="8"]'}]},
+        {"selector": "#pronoun", "label": "Pronouns", "type": "radio",
+         "required": False,
+         "options": [{"label": "they/them", "selector": "#p1"}]},
+    ])
+    _wire(monkeypatch, session, [
+        {"selector": "#country", "label": "Country", "value": "United States"},
+        {"selector": '[data-felix-field="7"]', "label": "Years of experience", "value": "2-4"},
+        {"selector": "#pronoun", "label": "Pronouns", "value": "ze/zir"},  # no such option
+    ])
+
+    draft = await main._jobs_apply_driver("https://ats/x", {}, "")
+
+    assert session.selected == [("#country", "United States")]
+    assert session.clicked == ['[data-felix-field="8"]']
+    by_sel = {f["selector"]: f for f in draft["fields"]}
+    assert by_sel["#pronoun"]["value"] == ""      # cleared, not fatal
+    assert by_sel["#pronoun"]["is_known"] is False
+    assert by_sel["#country"]["options"] == ["United States", "Canada"]  # carried for the panel
 
 
 async def test_empty_dom_enumeration_returns_no_fields(monkeypatch):

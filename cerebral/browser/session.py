@@ -137,7 +137,13 @@ class BrowserDriver(Protocol):
         """Enumerate visible form fields on the current page (#423).
 
         Each dict: selector (guaranteed to match), label, type, required,
-        and options (selects only)."""
+        and options (selects: strings; radio/checkbox groups: {label,
+        selector} per option, #429)."""
+        ...
+
+    async def select_option(self, selector: str, label: str) -> None:
+        """Choose the option of the ``<select>`` at ``selector`` whose label
+        (or value) matches ``label`` (#429)."""
         ...
 
     async def click(self, selector: str) -> str:
@@ -317,6 +323,10 @@ class BrowserSession:
     async def list_form_fields(self) -> list[dict]:
         """Enumerate visible form fields on the current page (#423)."""
         return await self._driver.list_form_fields()
+
+    async def select_option(self, selector: str, label: str) -> None:
+        """Choose a ``<select>`` option by label/value (#429)."""
+        await self._driver.select_option(selector, label)
 
     async def click(self, selector: str) -> str:
         """Click ``selector``; return the resulting URL."""
@@ -520,13 +530,60 @@ class PlaywrightDriver:
     _LIST_FIELDS_JS = """
 () => {
   const out = [];
+  const groups = {};   // #429: radio/checkbox clusters keyed by name
   let i = 0;
+  const labelFor = (el) => {
+    let label = '';
+    if (el.id) {
+      const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (l) label = l.innerText;
+    }
+    if (!label) { const l = el.closest('label'); if (l) label = l.innerText; }
+    if (!label) label = el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+    return (label || '').trim();
+  };
   for (const el of document.querySelectorAll('input, textarea, select')) {
     const tag = el.tagName.toLowerCase();
     const type = (el.type || '').toLowerCase();
     if (['hidden', 'submit', 'button', 'image', 'reset'].includes(type)) continue;
     const style = window.getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') continue;
+    const isReq = el.required || el.getAttribute('aria-required') === 'true';
+
+    // #429: one question per radio/checkbox GROUP, options carry their own
+    // click selectors; per-button entries were unanswerable noise.
+    if (type === 'radio' || type === 'checkbox') {
+      const gname = el.name || ('anon-' + type + '-' + i);
+      let g = groups[gname];
+      if (!g) {
+        let glabel = '';
+        const fs = el.closest('fieldset');
+        const lg = fs ? fs.querySelector('legend') : null;
+        if (lg) glabel = lg.innerText.trim();
+        if (!glabel) {
+          const grp = el.closest('[role="group"], [role="radiogroup"]');
+          if (grp) {
+            const lb = grp.getAttribute('aria-labelledby');
+            const le = lb ? document.getElementById(lb.split(' ')[0]) : null;
+            glabel = (le ? le.innerText : grp.getAttribute('aria-label') || '').trim();
+          }
+        }
+        if (!glabel) glabel = el.name || type;
+        g = { selector: null, label: glabel.slice(0, 120), type: type,
+              required: false, options: [] };
+        groups[gname] = g;
+        out.push(g);
+      }
+      el.setAttribute('data-felix-field', String(i));
+      const osel = '[data-felix-field="' + i + '"]';
+      i += 1;
+      if (!g.selector) g.selector = osel;
+      g.required = g.required || isReq;
+      const olab = labelFor(el) || el.value || '';
+      g.options.push({ label: olab.slice(0, 60), selector: osel });
+      continue;
+    }
+
     let selector = null;
     if (el.id && document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) {
       selector = '#' + CSS.escape(el.id);
@@ -539,15 +596,9 @@ class PlaywrightDriver:
       selector = '[data-felix-field="' + i + '"]';
     }
     i += 1;
-    let label = '';
-    if (el.id) {
-      const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-      if (l) label = l.innerText;
-    }
-    if (!label) { const l = el.closest('label'); if (l) label = l.innerText; }
-    if (!label) label = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || '';
-    label = (label || '').trim().slice(0, 120);
-    const required = el.required || el.getAttribute('aria-required') === 'true' || /\\*\\s*$/.test(label);
+    let label = labelFor(el) || el.name || '';
+    label = label.slice(0, 120);
+    const required = isReq || /\\*\\s*$/.test(label);
     const field = {
       selector: selector,
       label: label,
@@ -590,6 +641,14 @@ class PlaywrightDriver:
     async def upload_file(self, selector: str, file_path: str) -> None:
         assert self._page is not None, "open() must be called first"
         await self._page.set_input_files(selector, file_path)
+
+    async def select_option(self, selector: str, label: str) -> None:
+        assert self._page is not None, "open() must be called first"
+        try:
+            await self._page.select_option(selector, label=label, timeout=5000)
+        except Exception:
+            # Some ATSes use value attrs that differ from visible labels.
+            await self._page.select_option(selector, value=label, timeout=5000)
 
     async def close(self) -> None:
         if self._context is not None:
