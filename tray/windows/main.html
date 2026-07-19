@@ -3270,6 +3270,17 @@
       opacity: 0.5;
       cursor: default;
     }
+    /* #433 — application cards were unstyled divs; give them a visible card
+       shape and a "Job title — Company" headline. */
+    .jobs-app-card {
+      margin: 6px 0;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .jobs-app-card-title { font-size: 13px; font-weight: 600; }
+    .jobs-app-card-url   { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    .jobs-app-card-meta  { font-size: 11px; color: var(--text-muted); }
     .jobs-reject-btn {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -6563,11 +6574,21 @@
         hdr.className = 'jobs-app-date-header';
         hdr.textContent = day;
         group.appendChild(hdr);
+        // #433 — resolve title/company from the postings list so cards say
+        // which job they are for; Greenhouse URLs don't carry the company.
+        var postingByUrl = {};
+        jobPostings.forEach(function (p) { if (p.url) postingByUrl[p.url] = p; });
         byDate[day].forEach(function (a) {
           var card = document.createElement('div');
           card.className = 'jobs-app-card jobs-app-' + (a.status || 'unknown');
           var statusLabel = _JOB_STATUS_LABEL[a.status] || a.status || '';
+          var posting = postingByUrl[a.posting_url] || postingByUrl[a.url] || null;
+          var titleLine = posting
+            ? escHtml(posting.title || 'Untitled') +
+              (posting.company ? ' — ' + escHtml(posting.company) : '')
+            : escHtml((a.url || '').replace(/^https?:\/\/([^/]*).*$/, '$1'));
           card.innerHTML =
+            '<div class="jobs-app-card-title">' + titleLine + '</div>' +
             '<div class="jobs-app-card-url">' + escHtml((a.url || '').replace(/^https?:\/\//, '').slice(0, 80)) + '</div>' +
             '<div class="jobs-app-card-meta">' +
               '<span class="jobs-app-status">' + escHtml(statusLabel) + '</span>' +
