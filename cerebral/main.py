@@ -3579,6 +3579,9 @@ async def _handle_message(msg: dict) -> None:
                 _job_search_store.set_status(p["url"], "shortlisted")
         await _broadcast(_jobs_update_event())
 
+    elif t == "open_felix":  # #441 — launcher asks the tray to surface the window
+        await _broadcast({"type": "open_felix", "data": {}})
+
     elif t == "jobs_answer_fields":  # #431 — save needs-info answers, retry the apply
         d = msg.get("data", {})
         url = d.get("url", "")

@@ -116,7 +116,10 @@ if ($Restart) {
     }
     Log "Port free -- proceeding with relaunch."
 } elseif (Test-CerebralPort) {
-    Log "Felix is already running (port $CEREBRAL_PORT is in use) -- skipping launch."
+    # #441 -- relaunching while running used to be a silent no-op; the user
+    # cannot tell a hidden window from a dead app. Surface the window instead.
+    Log "Felix is already running -- surfacing the main window."
+    & python (Join-Path $PSScriptRoot "open-felix.py") 2>$null
     exit 0
 }
 

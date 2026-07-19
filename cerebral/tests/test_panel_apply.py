@@ -256,6 +256,21 @@ async def test_answer_fields_indexes_and_retries(monkeypatch):
     assert applied == ["https://ats/x"]
 
 
+async def test_open_felix_broadcasts_to_tray(monkeypatch):
+    """#441 — the launcher's already-running path surfaces the window via a
+    broadcast the tray listens for."""
+    casts: list[dict] = []
+
+    async def broadcast(evt):
+        casts.append(evt)
+
+    monkeypatch.setattr(main, "_broadcast", broadcast)
+
+    await main._handle_message({"type": "open_felix"})
+
+    assert casts == [{"type": "open_felix", "data": {}}]
+
+
 async def test_submit_event_does_not_block_receive_loop(monkeypatch):
     """#417 deadlock regression: the dispatcher branch must return while the
     (modal-gated) submit is still in flight."""

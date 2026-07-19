@@ -167,12 +167,18 @@ function handleCerebralEvent(event) {
       notifManager.handleQueueUpdate((event.data && event.data.items) || []);
       break;
 
+    case 'open_felix':
+      // #441 — the launcher was invoked while Felix is already running:
+      // surface the hidden window instead of looking like a dead click.
+      openMainWindow();
+      break;
+
     case 'user_notification': {
-      // A direct, user-facing OS notification from Cerebral (e.g. a browser
-      // automation flow needs the user to clear a verification wall). Gated by
-      // notifications_enabled like every other OS notification; clicking it
-      // opens the Main window so the user can act.
-      if (!settingsCache.notifications_enabled) break;
+      // A direct, user-facing OS notification from Cerebral (a browser
+      // sign-in wall, an apply outcome). NOT gated by notifications_enabled
+      // (#441): that toggle governs recurring queue reminders; these are
+      // deliberate one-shot messages — dropping them silently blinded the
+      // whole live apply ramp for users with reminders off.
       const d = event.data || {};
       electronNotify(d.title || 'Felix', d.body || '', () => openMainWindow());
       break;
