@@ -616,6 +616,11 @@ test('shortlist header has bulk-action buttons wired to bulk events (#419)', () 
   expect(inlineScript).toMatch(/type: 'jobs_apply_all'/);
 });
 
+test('application cards carry a title line resolved from postings (#433)', () => {
+  expect(inlineScript).toMatch(/jobs-app-card-title/);
+  expect(inlineScript).toMatch(/postingByUrl\[a\.posting_url\] \|\| postingByUrl\[a\.url\]/);
+});
+
 test('awaiting-input cards render the needs-info Q&A form (#431)', () => {
   expect(inlineScript).toMatch(/renderJobsNeedsInfoForm/);
   expect(inlineScript).toMatch(/f\.required && !f\.value && !f\.is_file_upload/);
