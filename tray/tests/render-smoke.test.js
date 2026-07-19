@@ -616,6 +616,10 @@ test('shortlist header has bulk-action buttons wired to bulk events (#419)', () 
   expect(inlineScript).toMatch(/type: 'jobs_apply_all'/);
 });
 
+test('shortlist card titles include the company (#445)', () => {
+  expect(inlineScript).toMatch(/jobs-shortlist-card-title[^]*?p\.company \? ' — ' \+ escHtml\(p\.company\)/);
+});
+
 test('application cards carry a title line resolved from postings (#433)', () => {
   expect(inlineScript).toMatch(/jobs-app-card-title/);
   expect(inlineScript).toMatch(/postingByUrl\[a\.posting_url\] \|\| postingByUrl\[a\.url\]/);

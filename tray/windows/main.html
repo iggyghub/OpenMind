@@ -6489,13 +6489,15 @@
         var card = document.createElement('div');
         card.className = 'jobs-shortlist-card' + (p.status === 'shortlisted' ? ' is-shortlisted' : '');
         card.dataset.url = p.url || '';
+        // #445 — company rides in the bold title; the dim meta line kept
+        // hiding it ("which company is this for?" x3 on the live ramp).
         var metaParts = [];
-        if (p.company) metaParts.push(escHtml(p.company));
-        if (p.pay)     metaParts.push(escHtml(p.pay));
+        if (p.pay) metaParts.push(escHtml(p.pay));
         var scoreLabel = p.fit_score != null ? '<span class="jobs-score-badge">Score: ' + (+p.fit_score).toFixed(1) + '</span>' : '';
         var approved = p.status === 'shortlisted';
         card.innerHTML =
-          '<div class="jobs-shortlist-card-title">' + escHtml(p.title || 'Untitled') + '</div>' +
+          '<div class="jobs-shortlist-card-title">' + escHtml(p.title || 'Untitled') +
+            (p.company ? ' — ' + escHtml(p.company) : '') + '</div>' +
           (metaParts.length || scoreLabel ? '<div class="jobs-shortlist-card-meta">' + (metaParts.length ? metaParts.join(' \xb7 ') + (scoreLabel ? '  ' : '') : '') + scoreLabel + '</div>' : '') +
           '<div class="jobs-shortlist-card-actions">' +
             // S8 #413 — approved cards get Apply; jobs_apply_start bails with a
