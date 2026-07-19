@@ -50,9 +50,10 @@ async def test_apply_driver_uses_quality(monkeypatch):
         async def read_page(self, url):
             return _FakeView()
 
-        async def list_form_fields(self):  # #423
+        async def list_form_fields(self):  # #423 (required=False: the #425
+            # unmapped-required carry is covered in test_jobs_apply_driver)
             return [{"selector": "#first", "label": "First name",
-                     "type": "text", "required": True}]
+                     "type": "text", "required": False}]
 
         async def fill_fields(self, pairs):
             pass
