@@ -473,10 +473,22 @@ class PlaywrightDriver:
 
     async def wait_for_manual_login(self, *, timeout: float) -> bool:
         import asyncio
+        from playwright.async_api import Error as PlaywrightError
 
         assert self._page is not None and self._context is not None, (
             "open() must be called first"
         )
+
+        async def _focus() -> None:
+            # Best-effort: keep the sign-in tab in front so the background probe
+            # never steals focus while the human types credentials / a 2FA code.
+            # If the human already closed the tab this raises TargetClosedError
+            # -- focus is never fatal, so swallow it.
+            try:
+                await self._page.bring_to_front()
+            except PlaywrightError:
+                pass
+
         # Show the human the sign-in form ONCE, then NEVER navigate this page
         # again. Polling is_logged_in() on it would call page.goto(myaccount)
         # every poll, which — while the user is still signing in — bounces to
@@ -484,22 +496,41 @@ class PlaywrightDriver:
         # login impossible. Poll on a SEPARATE probe page instead; the
         # persistent context shares cookies, so the probe sees the login the
         # instant it completes without touching the user's page.
-        await self._page.goto(_LOGIN_URL, wait_until="domcontentloaded")
-        probe = await self._context.new_page()
-        # Keep the sign-in tab in front so the background probe never steals
-        # focus while the human is typing credentials / a 2FA code.
-        await self._page.bring_to_front()
+        try:
+            await self._page.goto(_LOGIN_URL, wait_until="domcontentloaded")
+            probe = await self._context.new_page()
+            await _focus()
+        except PlaywrightError as e:
+            # The window/context was already gone before we could present it.
+            # Report not-completed so ensure_logged_in returns a clean FAILED
+            # instead of crashing the whole apply with a TargetClosedError.
+            logger.info(
+                "[browser] attended sign-in window unavailable: %s", e,
+            )
+            return False
         try:
             deadline = asyncio.get_event_loop().time() + timeout
             while asyncio.get_event_loop().time() < deadline:
-                logged_in = await self._is_logged_in_on(probe)
-                await self._page.bring_to_front()
+                try:
+                    logged_in = await self._is_logged_in_on(probe)
+                except PlaywrightError:
+                    # Probe/context died -- the human closed the browser. We can
+                    # neither verify nor keep prompting; report not-completed.
+                    logger.info(
+                        "[browser] attended sign-in browser closed before "
+                        "completion",
+                    )
+                    return False
                 if logged_in:
                     return True
+                await _focus()
                 await asyncio.sleep(self._poll_interval)
             return False
         finally:
-            await probe.close()
+            try:
+                await probe.close()
+            except Exception:
+                pass
 
     async def goto(self, url: str) -> str:
         assert self._page is not None, "open() must be called first"
