@@ -2,16 +2,18 @@
 Documents MCP plugin -- Documents campaign ADR-0011, issues #452-#457 / #448.
 
 Tools: doc_status (S2), doc_list / doc_store / doc_convert / doc_revert (S3),
-       doc_open (S4)
+       doc_open (S4), doc_edit (S5)
 
 S2 (#453): find_soffice() discovery helper + doc_status tool.
 S3 (#454): DocumentStore (SQLite + file-based library), snapshot versioning,
            doc_list / doc_store / doc_convert / doc_revert tools.
 S4 (#455): doc_open launches Writer; mtime watcher re-ingests on save.
+S5 (#456): doc_edit via headless UNO scripting (find_replace, replace_paragraph).
 
 All soffice discovery is injectable via set_find_soffice_fn for tests.
 All file-conversion is injectable via set_converter_fn for tests.
 All Writer launching is injectable via set_launcher_fn for tests.
+All UNO editing is injectable via set_editor_fn for tests.
 Never invoke a real soffice.exe from within this module at import time or in tests.
 """
 import asyncio
@@ -262,6 +264,45 @@ def set_broadcast_fn(fn) -> None:
     _broadcast_fn = fn
 
 
+# ── S5: Felix editing via headless UNO ───────────────────────────────────────
+
+_UNO_TIMEOUT = 60.0  # seconds
+
+# callable(doc_path: str, edits: list) -> None; async -- runs UNO script.
+# When None, _run_uno_edit_default is used (requires LibreOffice installed).
+_editor_fn = None
+
+
+def set_editor_fn(fn) -> None:
+    global _editor_fn
+    _editor_fn = fn
+
+
+async def _run_uno_edit_default(doc_path: str, edits: list) -> None:
+    """Default editor: discovers LO Python, spawns documents_uno_edit.py subprocess."""
+    finder = _find_soffice_fn if _find_soffice_fn is not None else find_soffice
+    soffice = finder()
+    if not soffice:
+        raise RuntimeError(_INSTALL_MSG)
+    lo_python = Path(soffice).parent / "python.exe"
+    if not lo_python.exists():
+        raise RuntimeError(f"LibreOffice Python not found: {lo_python}")
+    script = Path(__file__).parent / "_documents_uno_edit.py"
+    proc = await asyncio.create_subprocess_exec(
+        str(lo_python), str(script), doc_path, json.dumps(edits),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=_UNO_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise TimeoutError("doc_edit UNO script timed out")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise RuntimeError(f"UNO script failed (rc={proc.returncode}): {stderr}")
+
+
 # ── S4: user editing loop ─────────────────────────────────────────────────────
 
 _WATCH_INTERVAL = 5  # seconds between mtime polls
@@ -406,6 +447,30 @@ class DocumentsPlugin:
                     "required": ["doc_id"],
                 },
             ),
+            Tool(
+                name="doc_edit",
+                description=(
+                    "Edit a library document headlessly via LibreOffice UNO. "
+                    "Snapshots before writing; broadcasts update and fires change hook. "
+                    "doc_id: integer library id. "
+                    "edits: list of ops -- "
+                    "{op:'find_replace', find, replace, match_case?} or "
+                    "{op:'replace_paragraph', match, new_text}."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "doc_id": {"type": "integer"},
+                        "edits": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "minItems": 1,
+                        },
+                    },
+                    "required": ["doc_id", "edits"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -421,6 +486,8 @@ class DocumentsPlugin:
             return await self._doc_revert(args)
         if tool_name == "doc_open":
             return await self._doc_open(args)
+        if tool_name == "doc_edit":
+            return await self._doc_edit(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ── tool implementations ──────────────────────────────────────────────────
@@ -504,6 +571,37 @@ class DocumentsPlugin:
         except Exception as exc:
             return ToolResult(content=f"failed to open document: {exc}", is_error=True)
         return ToolResult(content=json.dumps({"doc": doc, "opened": True}))
+
+    async def _doc_edit(self, args: dict) -> ToolResult:
+        doc_id_raw = args.get("doc_id")
+        edits = args.get("edits")
+        if doc_id_raw is None or not isinstance(edits, list) or not edits:
+            return ToolResult(content="doc_id and edits (non-empty list) are required", is_error=True)
+        if _store is None or _active_profile_id is None:
+            return ToolResult(content="store or profile not wired", is_error=True)
+        doc_id = int(doc_id_raw)
+        doc = _store.get_doc(doc_id)
+        if not doc:
+            return ToolResult(content=f"doc {doc_id} not found", is_error=True)
+        editor = _editor_fn if _editor_fn is not None else _run_uno_edit_default
+        _store._snapshot(doc["path"])
+        try:
+            await editor(doc["path"], edits)
+        except TimeoutError:
+            return ToolResult(content="doc_edit timed out", is_error=True)
+        except Exception as exc:
+            return ToolResult(content=f"doc_edit failed: {exc}", is_error=True)
+        _store.touch_doc(doc_id)
+        if _broadcast_fn:
+            await _broadcast_fn()
+        if _change_hook_fn:
+            try:
+                result = _change_hook_fn(doc_id)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as exc:
+                logger.warning("[documents] change hook error for doc %d: %s", doc_id, exc)
+        return ToolResult(content=json.dumps({"doc": _store.get_doc(doc_id), "edited": True}))
 
     async def _doc_convert(self, args: dict) -> ToolResult:
         doc_id = args.get("doc_id")
