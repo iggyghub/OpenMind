@@ -394,6 +394,50 @@ async def test_manual_login_times_out_without_touching_user_page():
     assert probe.closed is True
 
 
+async def test_manual_login_survives_user_closing_the_signin_tab():
+    # Regression: the human closing the sign-in tab makes bring_to_front raise
+    # TargetClosedError. Focus is best-effort, so the poll must keep running and
+    # resolve to a clean False on timeout -- NOT crash the whole apply.
+    from playwright.async_api import Error as PlaywrightError
+
+    class _ClosedFrontPage(_FakePwPage):
+        async def bring_to_front(self):
+            raise PlaywrightError("Page.bring_to_front: Target page ... closed")
+
+    drv = PlaywrightDriver(poll_interval=0.001, settle_ms=5)
+    user = _ClosedFrontPage()
+    probe = _FakePwPage(login_after=10_000)  # never logs in
+    drv._page = user
+    drv._context = _FakePwContext(probe)
+
+    ok = await drv.wait_for_manual_login(timeout=0.05)
+
+    assert ok is False
+    assert probe.closed is True
+
+
+async def test_manual_login_survives_browser_closing_mid_poll():
+    # Regression: closing the whole browser makes the probe's navigation raise
+    # TargetClosedError. That must resolve to a clean False, not propagate.
+    from playwright.async_api import Error as PlaywrightError
+
+    class _ClosedProbePage(_FakePwPage):
+        async def goto(self, url, wait_until=None):
+            if url == _ACCOUNT_URL:
+                raise PlaywrightError("Page.goto: Target page ... closed")
+            await super().goto(url, wait_until=wait_until)
+
+    drv = PlaywrightDriver(poll_interval=0.001, settle_ms=5)
+    user = _FakePwPage()
+    probe = _ClosedProbePage()
+    drv._page = user
+    drv._context = _FakePwContext(probe)
+
+    ok = await drv.wait_for_manual_login(timeout=5)
+
+    assert ok is False
+
+
 # ── S5: human-verification wall detection ───────────────────────────────────────
 
 def test_is_verification_wall_matches_confirmidentifier_url():
