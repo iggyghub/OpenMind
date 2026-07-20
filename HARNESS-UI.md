@@ -9,13 +9,13 @@ block below. This file is the only memory between sessions.
 
 ## Next slice -- start here
 
-- **Active:** S2 -- #470
+- **Active:** S3 -- #471
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1 -- #469 -- plugins:list + plugins:changed broadcast (backend) (Model: opus)
-- [ ] S2 -- #470 -- disabled_plugins setting + plugins:set_enabled (backend) (Model: sonnet)
+- [x] S2 -- #470 -- disabled_plugins setting + plugins:set_enabled (backend) (Model: sonnet)
 - [ ] S3 -- #471 -- Harness section: filters, card grid, read-only drawer (renderer) (Model: sonnet)
 - [ ] S4 -- #472 -- enable/disable toggle + plugins:test_call + args-form-from-schema (both) (Model: opus)
 - [ ] S5 -- #473 -- route collapse 16->4 + hash redirects + header profile switcher (renderer) (Model: sonnet)
@@ -27,6 +27,7 @@ stops (Status: done) after S5. Do NOT touch the transcript schema unattended.
 ## Landed PRs
 
 - S1 #469 -- PR #475 -- plugins:list + plugins:changed broadcast
+- S2 #470 -- PR #476 -- disabled_plugins setting + plugins:set_enabled
 
 ## SAFETY
 
