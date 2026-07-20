@@ -9,8 +9,8 @@ becomes one library document with derived PDF + dossier.
 
 ## Next slice -- start here
 
-- **Active:** S6 -- #457
-- **Model:** sonnet
+- **Active:** S7 -- #448
+- **Model:** opus
 
 ## Queue
 
@@ -19,7 +19,7 @@ becomes one library document with derived PDF + dossier.
 - [x] S3 -- #454 -- documents.py core: library store, doc_convert, snapshot versioning
 - [x] S4 -- #455 -- user editing loop: doc_open in Writer + re-ingest on save
 - [x] S5 -- #456 -- Felix editing: doc_edit via headless UNO (Model: opus)
-- [ ] S6 -- #457 -- Documents panel in the Main window sidebar
+- [x] S6 -- #457 -- Documents panel in the Main window sidebar
 - [ ] S7 -- #448 -- resume wiring: docx_path, change-hook re-derive, panel resume row (Model: opus)
 
 Per-slice model: sonnet unless the queue entry says otherwise. When ticking a slice,
@@ -32,6 +32,7 @@ set the next entry's model on the `Model:` line above.
 - PR #462 — S3 #454 — documents.py core: library store, doc_convert, snapshot versioning (d91d105)
 - PR #463 — S4 #455 — user editing loop: doc_open in Writer + re-ingest on save (979956c)
 - PR #464 — S5 #456 — Felix editing: doc_edit via headless UNO (f05a608)
+- PR #466 — S6 #457 — Documents panel in the Main window sidebar (3981b95)
 
 ## SAFETY
 
