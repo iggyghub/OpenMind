@@ -9,12 +9,12 @@ block below. This file is the only memory between sessions.
 
 ## Next slice -- start here
 
-- **Active:** S1 -- #469
-- **Model:** opus
+- **Active:** S2 -- #470
+- **Model:** sonnet
 
 ## Queue
 
-- [ ] S1 -- #469 -- plugins:list + plugins:changed broadcast (backend) (Model: opus)
+- [x] S1 -- #469 -- plugins:list + plugins:changed broadcast (backend) (Model: opus)
 - [ ] S2 -- #470 -- disabled_plugins setting + plugins:set_enabled (backend) (Model: sonnet)
 - [ ] S3 -- #471 -- Harness section: filters, card grid, read-only drawer (renderer) (Model: sonnet)
 - [ ] S4 -- #472 -- enable/disable toggle + plugins:test_call + args-form-from-schema (both) (Model: opus)
@@ -25,6 +25,8 @@ DEFERRED -- the spec says build it later and keep it out of phases 1-2. The loop
 stops (Status: done) after S5. Do NOT touch the transcript schema unattended.
 
 ## Landed PRs
+
+- S1 #469 -- PR #475 -- plugins:list + plugins:changed broadcast
 
 ## SAFETY
 
