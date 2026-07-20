@@ -3193,6 +3193,29 @@
       color: var(--text-muted);
       font-style: italic;
     }
+    /* S7 #448 — resume row in the dossier card */
+    .jobs-resume-row {
+      margin-top: 6px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .jobs-resume-label { color: var(--text-muted); }
+    .jobs-resume-filename { color: var(--text-primary, #e0e0e0); }
+    .jobs-resume-open-btn,
+    .jobs-resume-change-btn {
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      border: 1px solid var(--accent, #7c6af7);
+      background: transparent;
+      color: var(--accent, #7c6af7);
+      cursor: pointer;
+    }
+    .jobs-resume-open-btn:hover,
+    .jobs-resume-change-btn:hover { background: var(--accent-muted, rgba(124,106,247,.15)); }
     /* S1 #452 — inline editable dossier fields */
     .jobs-dossier-editable {
       cursor: pointer;
@@ -5181,6 +5204,7 @@
           jobApplications = (event.data && event.data.applications) || []; // S4 #337
           jobSettings = (event.data && event.data.job_settings) || null;  // S7 #340
           jobBoards = (event.data && event.data.job_boards) || [];        // S1 #396
+          jobResume = (event.data && event.data.resume) || null;          // S7 #448
           renderJobBoards();         // S1 #396
           renderJobSearch();
           renderJobDossier();        // S2 #335
@@ -6476,6 +6500,7 @@
     let jobSettings = null;    // S7 #340 — auto-submit settings
     // S1 #396: jobBoards mirrors server-side job_boards table (#390 pairing).
     let jobBoards = [];
+    let jobResume = null;      // S7 #448 — {filename, docx_filename, doc_id}
     const jobsListEl        = document.getElementById('jobs-list');
     const jobsEmptyEl       = document.getElementById('jobs-empty');
     const jobsCheckBtn      = document.getElementById('jobs-check-btn');
@@ -6615,6 +6640,7 @@
 
     // S2 #335 — render Applicant dossier summary in the Job Search panel.
     // S1 #452 — fields are now inline-editable spans.
+    // S7 #448 — resume row: filename + Open-in-Writer + Change buttons.
     function renderJobDossier() {
       if (!jobsDossierEl) return;
       if (!jobDossier || !jobDossier.name) {
@@ -6630,14 +6656,44 @@
       if (d.linkedin) links.push(_dossierSpan('jobs-dossier-meta-item', 'linkedin', d.linkedin));
       if (d.github)   links.push(_dossierSpan('jobs-dossier-meta-item', 'github',   d.github));
       if (d.website)  links.push(_dossierSpan('jobs-dossier-meta-item', 'website',  d.website));
+      // S7 #448 — resume row
+      var resumeFilename = (jobResume && jobResume.filename) || '';
+      var resumeDocId    = (jobResume && jobResume.doc_id != null) ? jobResume.doc_id : null;
+      var resumeRow = '';
+      if (resumeFilename) {
+        var openBtn = resumeDocId != null
+          ? '<button class="jobs-resume-open-btn" data-doc-id="' + resumeDocId + '" type="button">Open in Writer</button>'
+          : '';
+        resumeRow = '<div class="jobs-resume-row">' +
+          '<span class="jobs-resume-label">Resume:</span> ' +
+          '<span class="jobs-resume-filename">' + escHtml(resumeFilename) + '</span>' +
+          openBtn +
+          '<button class="jobs-resume-change-btn" type="button">Change</button>' +
+          '</div>';
+      }
       jobsDossierEl.innerHTML =
         _dossierSpan('jobs-dossier-name', 'name', d.name) +
         (meta.length  ? '<div class="jobs-dossier-meta">'  + meta.join('  \xb7  ')  + '</div>' : '') +
-        (links.length ? '<div class="jobs-dossier-meta">'  + links.join('  \xb7  ') + '</div>' : '');
+        (links.length ? '<div class="jobs-dossier-meta">'  + links.join('  \xb7  ') + '</div>' : '') +
+        resumeRow;
       // Wire click handlers after innerHTML is set (spans are cloned nodes, not live).
       jobsDossierEl.querySelectorAll('.jobs-dossier-editable').forEach(function (span) {
         span.onclick = function () { editDossierField(span, span.dataset.field); };
       });
+      // S7 #448 — Open-in-Writer button
+      var openBtn2 = jobsDossierEl.querySelector('.jobs-resume-open-btn');
+      if (openBtn2) {
+        openBtn2.onclick = function () {
+          sendEvent({ type: 'call_tool', data: { name: 'doc_open', args: { doc_id: parseInt(openBtn2.dataset.docId, 10) } } });
+        };
+      }
+      // S7 #448 — Change resume: guide user through upload flow (file-picker requires preload bridge)
+      var changeBtn = jobsDossierEl.querySelector('.jobs-resume-change-btn');
+      if (changeBtn) {
+        changeBtn.onclick = function () {
+          alert('To change your resume: attach a PDF or DOCX file using the paperclip button in the chat, then tell Felix: "store this as my resume".');
+        };
+      }
     }
 
     // S3 #336 — render ranked Shortlist with approve/reject per entry.

@@ -657,3 +657,62 @@ async def test_list_documents_ipc_broadcasts_documents_update(tmp_path, monkeypa
     evt = broadcasts[0]
     assert evt["type"] == "documents_update"
     assert "docs" in evt["data"]
+
+
+# ── S7 #448: change hook ──────────────────────────────────────────────────────
+
+async def test_change_hook_fn_fired_after_mtime_change(tmp_path, monkeypatch):
+    """set_change_hook_fn is called with the doc_id when a watched doc's mtime advances."""
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"v1")
+    stored = store.store_doc(1, "Resume", str(src))
+    doc_id = stored["id"]
+    doc_path = stored["path"]
+
+    hook_calls = []
+
+    async def fake_hook(did):
+        hook_calls.append(did)
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+    monkeypatch.setattr(doc, "_broadcast_fn", None)
+    monkeypatch.setattr(doc, "_change_hook_fn", fake_hook)
+    monkeypatch.setitem(doc._watched, doc_id, 0.0)
+
+    # Simulate mtime advance by touching the file
+    import time
+    time.sleep(0.01)
+    Path(doc_path).write_bytes(b"v2")
+
+    await doc._check_doc_change(doc_id, doc_path)
+
+    assert hook_calls == [doc_id], "change hook not called with correct doc_id"
+
+
+async def test_change_hook_fn_not_fired_when_mtime_unchanged(tmp_path, monkeypatch):
+    """Change hook must NOT fire when the file has not been modified."""
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"content")
+    stored = store.store_doc(1, "Resume", str(src))
+    doc_id = stored["id"]
+    doc_path = stored["path"]
+
+    hook_calls = []
+
+    async def fake_hook(did):
+        hook_calls.append(did)
+
+    # Set _watched mtime to current mtime so no change is detected
+    current_mtime = Path(doc_path).stat().st_mtime
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+    monkeypatch.setattr(doc, "_broadcast_fn", None)
+    monkeypatch.setattr(doc, "_change_hook_fn", fake_hook)
+    monkeypatch.setitem(doc._watched, doc_id, current_mtime)
+
+    await doc._check_doc_change(doc_id, doc_path)
+
+    assert hook_calls == [], "change hook fired when file was not changed"

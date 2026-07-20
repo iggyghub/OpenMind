@@ -384,6 +384,15 @@ class JobSearchStore:
                 updated_at  TEXT    NOT NULL
             )
         """)
+        # S7 #448 — add docx_path (ground-truth .docx) and doc_id (Document-library link).
+        for col, typedef in (
+            ("docx_path", "TEXT NOT NULL DEFAULT ''"),
+            ("doc_id",    "INTEGER"),
+        ):
+            try:
+                self._con.execute(f"ALTER TABLE resume_artifacts ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         # S2 #335 — Applicant dossier: structured fields extracted from Resume artifact.
         self._con.execute("""
             CREATE TABLE IF NOT EXISTS applicant_dossier (
@@ -508,15 +517,20 @@ class JobSearchStore:
 
     # ── S2 #335 — Resume artifact ──────────────────────────────────────────
 
-    def upsert_resume_artifact(self, profile_id: int, pdf_path: str) -> None:
+    def upsert_resume_artifact(
+        self, profile_id: int, pdf_path: str,
+        docx_path: str = "", doc_id: "int | None" = None,
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self._con.execute("""
-            INSERT INTO resume_artifacts (profile_id, pdf_path, updated_at)
-            VALUES (?, ?, ?)
+            INSERT INTO resume_artifacts (profile_id, pdf_path, docx_path, doc_id, updated_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(profile_id) DO UPDATE SET
                 pdf_path   = excluded.pdf_path,
+                docx_path  = excluded.docx_path,
+                doc_id     = excluded.doc_id,
                 updated_at = excluded.updated_at
-        """, (profile_id, pdf_path, now))
+        """, (profile_id, pdf_path, docx_path, doc_id, now))
         self._con.commit()
 
     def get_resume_artifact(self, profile_id: int) -> dict | None:
@@ -824,7 +838,11 @@ _navigate_fn: Callable[[str], Awaitable[str]] | None = None
 _store: JobSearchStore | None = None
 _active_profile_id: int | None = None
 _pending_resume_path: str = ""
+_pending_resume_docx_path: str = ""   # S7 #448 — set when a .docx attachment is uploaded
 _extract_fn: Callable[[str], Any] | None = None  # sync or async (str) -> dict
+# S7 #448 — injectable library-registration fn so _store_resume can add docx to Document library.
+# callable(profile_id: int, name: str, source_path: str) -> dict (library doc row)
+_register_doc_fn: Callable | None = None
 _score_fn: Callable[[dict, dict], Any] | None = None  # sync or async (posting, dossier) -> float
 # S2 #397 — injectable LLM posting extractor (async (page_text: str) -> list[dict])
 _extract_postings_fn: Callable[[str], Any] | None = None
@@ -882,6 +900,18 @@ def set_pending_resume_path(path: str) -> None:
     """Called by Cerebral when a PDF attachment is uploaded so the tool knows where it was stored."""
     global _pending_resume_path
     _pending_resume_path = path or ""
+
+
+def set_pending_resume_docx_path(path: str) -> None:
+    """Called by Cerebral when a .docx attachment is uploaded (S7 #448)."""
+    global _pending_resume_docx_path
+    _pending_resume_docx_path = path or ""
+
+
+def set_register_doc_fn(fn: Callable) -> None:
+    """Inject library-registration fn so _store_resume can add a docx to the Document library (S7 #448)."""
+    global _register_doc_fn
+    _register_doc_fn = fn
 
 
 def set_extract_fn(fn: Callable[[str], Any]) -> None:
@@ -962,6 +992,36 @@ def set_click_verify_link_fn(fn: Callable) -> None:
     """Inject link-clicker (async fn(verify_url) -> bool). S6 #339."""
     global _click_verify_link_fn
     _click_verify_link_fn = fn
+
+
+# S7 #448 — re-store resume artifact + re-derive dossier without the full attachment flow.
+# Called from cerebral/main.py change hook when the resume library doc is edited.
+async def rederive_resume(profile_id: int, pdf_path: str, pdf_text: str) -> None:
+    import asyncio
+    store = _store
+    if store is None:
+        return
+    existing = store.get_resume_artifact(profile_id) or {}
+    store.upsert_resume_artifact(
+        profile_id, pdf_path,
+        docx_path=existing.get("docx_path", ""),
+        doc_id=existing.get("doc_id"),
+    )
+    extract = _extract_fn
+    if extract is None or not pdf_text.strip():
+        return
+    try:
+        result = extract(pdf_text)
+        if asyncio.iscoroutine(result):
+            fields = await result
+        else:
+            fields = result
+        if not isinstance(fields, dict):
+            return
+        fields["raw_text"] = pdf_text[:10_000]
+        store.upsert_dossier(profile_id, fields)
+    except Exception as exc:
+        logger.error("[job_search] rederive_resume extraction failed: %s", exc)
 
 
 # ── Default navigate fn (calls OpenClaw) ──────────────────────────────────────
@@ -1689,7 +1749,27 @@ class JobSearchPlugin:
                     pdf_text = file_text
             except Exception:
                 pass  # unreadable/missing file -- fall back to the arg
-        if not pdf_text.strip():
+
+        # S7 #448 — if a .docx was uploaded, register it in the Document library.
+        docx_path = ""
+        doc_id: "int | None" = None
+        if _pending_resume_docx_path:
+            register = _register_doc_fn
+            if register is not None:
+                try:
+                    from pathlib import Path as _Path
+                    docx_name = _Path(_pending_resume_docx_path).name
+                    reg_result = register(profile_id, docx_name, _pending_resume_docx_path)
+                    if asyncio.iscoroutine(reg_result):
+                        reg_result = await reg_result
+                    docx_path = reg_result.get("path", "")
+                    doc_id = reg_result.get("id")
+                except Exception as exc:
+                    logger.warning("[job_search] docx library registration failed: %s", exc)
+            else:
+                docx_path = _pending_resume_docx_path
+
+        if not pdf_text.strip() and not _pending_resume_docx_path:
             return ToolResult(
                 content="pdf_text is empty and no uploaded resume PDF was found",
                 is_error=True,
@@ -1697,7 +1777,11 @@ class JobSearchPlugin:
 
         # Record the pending resume path (set by Cerebral when a PDF was uploaded)
         pdf_path = _pending_resume_path
-        store.upsert_resume_artifact(profile_id, pdf_path)
+        store.upsert_resume_artifact(profile_id, pdf_path, docx_path=docx_path, doc_id=doc_id)
+
+        if not pdf_text.strip():
+            # Docx was stored; PDF + dossier will be derived when the change hook fires.
+            return ToolResult(content=json.dumps({"status": "stored", "dossier": None}))
 
         # Extract structured dossier fields
         extract = self._extract_fn or _extract_fn
