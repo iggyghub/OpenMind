@@ -315,3 +315,151 @@ def test_set_broadcast_fn_wires_seam():
     doc.set_broadcast_fn(fn)
     assert doc._broadcast_fn is fn
     doc.set_broadcast_fn(None)
+
+
+# ── S4: _check_doc_change ──────────────────────────────────────────────────────
+
+async def test_check_doc_change_fires_snapshot_broadcast_hook(tmp_path, monkeypatch):
+    """_check_doc_change snapshots, bumps updated_at, broadcasts, fires hook."""
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"original")
+    stored = store.store_doc(1, "Resume", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+
+    broadcast_calls = []
+    async def fake_broadcast():
+        broadcast_calls.append(1)
+    monkeypatch.setattr(doc, "_broadcast_fn", fake_broadcast)
+
+    hook_calls = []
+    async def fake_hook(doc_id):
+        hook_calls.append(doc_id)
+    monkeypatch.setattr(doc, "_change_hook_fn", fake_hook)
+
+    doc_id = stored["id"]
+    # Simulate watcher having a stale mtime.
+    monkeypatch.setattr(doc, "_watched", {doc_id: Path(stored["path"]).stat().st_mtime - 1.0})
+
+    await doc._check_doc_change(doc_id, stored["path"])
+
+    assert broadcast_calls == [1]
+    assert hook_calls == [doc_id]
+    assert doc._watched[doc_id] == pytest.approx(Path(stored["path"]).stat().st_mtime)
+    assert store.list_versions(doc_id) != []
+    updated = store.get_doc(doc_id)
+    assert updated["updated_at"] >= stored["updated_at"]
+
+
+async def test_check_doc_change_noop_on_same_mtime(tmp_path, monkeypatch):
+    """No re-ingest when mtime has not advanced."""
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"content")
+    stored = store.store_doc(1, "Resume", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    broadcast_calls = []
+    async def fake_broadcast():
+        broadcast_calls.append(1)
+    monkeypatch.setattr(doc, "_broadcast_fn", fake_broadcast)
+
+    doc_id = stored["id"]
+    current_mtime = Path(stored["path"]).stat().st_mtime
+    monkeypatch.setattr(doc, "_watched", {doc_id: current_mtime})
+
+    await doc._check_doc_change(doc_id, stored["path"])
+
+    assert broadcast_calls == []
+    assert store.get_doc(doc_id)["updated_at"] == stored["updated_at"]
+
+
+# ── S4: lazy re-ingest on doc_list ────────────────────────────────────────────
+
+async def test_lazy_reingest_on_doc_list(tmp_path, monkeypatch):
+    """doc_list fires re-ingest for watched docs whose mtime advanced."""
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"original")
+    stored = store.store_doc(1, "Resume", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+    monkeypatch.setattr(doc, "_broadcast_fn", None)
+    monkeypatch.setattr(doc, "_change_hook_fn", None)
+
+    doc_id = stored["id"]
+    monkeypatch.setattr(doc, "_watched", {doc_id: Path(stored["path"]).stat().st_mtime - 1.0})
+
+    plugin = doc.create()
+    result = await plugin.call_tool("doc_list", {})
+    assert not result.is_error
+
+    updated = store.get_doc(doc_id)
+    assert updated["updated_at"] >= stored["updated_at"]
+
+
+# ── S4: doc_open tool ─────────────────────────────────────────────────────────
+
+async def test_doc_open_launches_and_watches(tmp_path, monkeypatch):
+    """doc_open calls launcher, creates watcher task, creates v0."""
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"content")
+    stored = store.store_doc(1, "Resume", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+    monkeypatch.setattr(doc, "_broadcast_fn", None)
+    monkeypatch.setattr(doc, "_watched", {})
+    monkeypatch.setattr(doc, "_watcher_tasks", {})
+
+    launched = []
+    async def fake_launcher(path):
+        launched.append(path)
+    monkeypatch.setattr(doc, "_launcher_fn", fake_launcher)
+
+    doc_id = stored["id"]
+    plugin = doc.create()
+    result = await plugin.call_tool("doc_open", {"doc_id": doc_id})
+
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["opened"] is True
+    assert launched == [stored["path"]]
+    assert doc_id in doc._watcher_tasks
+    assert not doc._watcher_tasks[doc_id].done()
+    assert store.list_versions(doc_id) != []
+
+    doc._watcher_tasks[doc_id].cancel()
+
+
+async def test_doc_open_no_launcher_seam_returns_error(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"content")
+    stored = store.store_doc(1, "Resume", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+    monkeypatch.setattr(doc, "_launcher_fn", None)
+
+    result = await doc.create().call_tool("doc_open", {"doc_id": stored["id"]})
+    assert result.is_error
+    assert "launcher seam not wired" in result.content
+
+
+def test_set_launcher_fn_wires_seam():
+    fn = object()
+    doc.set_launcher_fn(fn)
+    assert doc._launcher_fn is fn
+    doc.set_launcher_fn(None)
+
+
+def test_set_change_hook_fn_wires_seam():
+    fn = object()
+    doc.set_change_hook_fn(fn)
+    assert doc._change_hook_fn is fn
+    doc.set_change_hook_fn(None)
