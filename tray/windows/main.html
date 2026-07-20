@@ -3154,6 +3154,24 @@
       color: var(--text-muted);
       font-style: italic;
     }
+    /* S1 #452 — inline editable dossier fields */
+    .jobs-dossier-editable {
+      cursor: pointer;
+      border-bottom: 1px dashed transparent;
+    }
+    .jobs-dossier-editable:hover {
+      border-bottom-color: var(--text-muted);
+    }
+    .jobs-dossier-edit-input {
+      background: var(--bg-input, var(--bg-secondary, #1e1e1e));
+      border: 1px solid var(--accent, #7c6af7);
+      border-radius: 3px;
+      color: inherit;
+      font: inherit;
+      padding: 1px 4px;
+      outline: none;
+      min-width: 120px;
+    }
 
     /* S3 #336 — Shortlist section */
     .jobs-shortlist-section {
@@ -6449,7 +6467,42 @@
       });
     }
 
+    // S1 #452 — inline-edit one dossier field: click span -> input -> blur/enter -> IPC.
+    function editDossierField(span, field) {
+      var oldVal = span.textContent;
+      var input = document.createElement('input');
+      input.type = field === 'email' ? 'email' : 'text';
+      input.value = oldVal;
+      input.className = 'jobs-dossier-edit-input';
+      span.parentNode.replaceChild(input, span);
+      input.focus();
+      input.select();
+      function commit() {
+        var newVal = input.value.trim();
+        var newSpan = document.createElement('span');
+        newSpan.className = span.className;
+        newSpan.title = 'Click to edit';
+        newSpan.textContent = newVal || oldVal;
+        newSpan.onclick = function () { editDossierField(newSpan, field); };
+        input.parentNode.replaceChild(newSpan, input);
+        if (newVal !== oldVal && newVal !== '') {
+          sendEvent({ type: 'jobs_update_dossier_field', data: { field: field, value: newVal } });
+        }
+      }
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter')  { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { input.value = oldVal; input.blur(); }
+      });
+    }
+
+    function _dossierSpan(cssClass, field, text) {
+      return '<span class="' + cssClass + ' jobs-dossier-editable" data-field="' + field +
+        '" title="Click to edit">' + escHtml(text) + '</span>';
+    }
+
     // S2 #335 — render Applicant dossier summary in the Job Search panel.
+    // S1 #452 — fields are now inline-editable spans.
     function renderJobDossier() {
       if (!jobsDossierEl) return;
       if (!jobDossier || !jobDossier.name) {
@@ -6458,17 +6511,21 @@
       }
       var d = jobDossier;
       var meta = [];
-      if (d.email)    meta.push(escHtml(d.email));
-      if (d.phone)    meta.push(escHtml(d.phone));
-      if (d.location) meta.push(escHtml(d.location));
+      if (d.email)    meta.push(_dossierSpan('jobs-dossier-meta-item', 'email',    d.email));
+      if (d.phone)    meta.push(_dossierSpan('jobs-dossier-meta-item', 'phone',    d.phone));
+      if (d.location) meta.push(_dossierSpan('jobs-dossier-meta-item', 'location', d.location));
       var links = [];
-      if (d.linkedin) links.push('<a href="' + escHtml(d.linkedin) + '" target="_blank" rel="noopener">LinkedIn</a>');
-      if (d.github)   links.push('<a href="' + escHtml(d.github)   + '" target="_blank" rel="noopener">GitHub</a>');
-      if (d.website)  links.push('<a href="' + escHtml(d.website)  + '" target="_blank" rel="noopener">Website</a>');
+      if (d.linkedin) links.push(_dossierSpan('jobs-dossier-meta-item', 'linkedin', d.linkedin));
+      if (d.github)   links.push(_dossierSpan('jobs-dossier-meta-item', 'github',   d.github));
+      if (d.website)  links.push(_dossierSpan('jobs-dossier-meta-item', 'website',  d.website));
       jobsDossierEl.innerHTML =
-        '<div class="jobs-dossier-name">' + escHtml(d.name) + '</div>' +
+        _dossierSpan('jobs-dossier-name', 'name', d.name) +
         (meta.length  ? '<div class="jobs-dossier-meta">'  + meta.join('  \xb7  ')  + '</div>' : '') +
         (links.length ? '<div class="jobs-dossier-meta">'  + links.join('  \xb7  ') + '</div>' : '');
+      // Wire click handlers after innerHTML is set (spans are cloned nodes, not live).
+      jobsDossierEl.querySelectorAll('.jobs-dossier-editable').forEach(function (span) {
+        span.onclick = function () { editDossierField(span, span.dataset.field); };
+      });
     }
 
     // S3 #336 — render ranked Shortlist with approve/reject per entry.

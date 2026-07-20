@@ -3619,6 +3619,17 @@ async def _handle_message(msg: dict) -> None:
             logger.warning("[cerebral] jobs_set_auto_submit failed: %s", exc)
         await _broadcast(_jobs_update_event())
 
+    elif t == "jobs_update_dossier_field":  # S1 #452 — inline-edit one dossier field
+        d = msg.get("data", {})
+        try:
+            await _orc.call_tool("jobs_update_dossier_field", {
+                "field": str(d.get("field", "")),
+                "value": str(d.get("value", "")),
+            })
+        except Exception as exc:
+            logger.warning("[cerebral] jobs_update_dossier_field failed: %s", exc)
+        await _broadcast(_jobs_update_event())
+
     elif t == "list_job_boards":  # S1 #396 — tray requests current board list
         await _broadcast(_jobs_update_event())
 
