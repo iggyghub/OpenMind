@@ -1,16 +1,20 @@
 """
 Documents MCP plugin -- Documents campaign ADR-0011, issues #452-#457 / #448.
 
-Tools: doc_status (S2), doc_list / doc_store / doc_convert / doc_revert (S3)
+Tools: doc_status (S2), doc_list / doc_store / doc_convert / doc_revert (S3),
+       doc_open (S4)
 
 S2 (#453): find_soffice() discovery helper + doc_status tool.
 S3 (#454): DocumentStore (SQLite + file-based library), snapshot versioning,
            doc_list / doc_store / doc_convert / doc_revert tools.
+S4 (#455): doc_open launches Writer; mtime watcher re-ingests on save.
 
 All soffice discovery is injectable via set_find_soffice_fn for tests.
 All file-conversion is injectable via set_converter_fn for tests.
+All Writer launching is injectable via set_launcher_fn for tests.
 Never invoke a real soffice.exe from within this module at import time or in tests.
 """
+import asyncio
 import json
 import logging
 import shutil
@@ -153,6 +157,25 @@ class DocumentStore:
         self._con.commit()
         return self.get_doc(cur.lastrowid)
 
+    def _ensure_v0(self, doc_path: "str | Path") -> None:
+        """Create versions/v0_<name> from doc_path if it does not exist yet."""
+        src = Path(doc_path)
+        if not src.exists():
+            return
+        versions_dir = src.parent / "versions"
+        versions_dir.mkdir(exist_ok=True)
+        v0 = versions_dir / f"v0_{src.name}"
+        if not v0.exists():
+            shutil.copy2(src, v0)
+
+    def touch_doc(self, doc_id: int) -> None:
+        """Bump updated_at for a document."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._con.execute(
+            "UPDATE documents SET updated_at = ? WHERE id = ?", (now, doc_id)
+        )
+        self._con.commit()
+
     def _snapshot(self, doc_path: "str | Path") -> None:
         """Snapshot the current file before any overwrite.
 
@@ -239,6 +262,63 @@ def set_broadcast_fn(fn) -> None:
     _broadcast_fn = fn
 
 
+# ── S4: user editing loop ─────────────────────────────────────────────────────
+
+_WATCH_INTERVAL = 5  # seconds between mtime polls
+
+# callable(doc_path: str) -> None; may be async -- opens Writer detached.
+_launcher_fn = None
+# callable(doc_id: int) -> None; may be async -- fired after re-ingest.
+_change_hook_fn = None
+# doc_id -> last known mtime (float). Populated by doc_open.
+_watched: "dict[int, float]" = {}
+# doc_id -> asyncio.Task (watcher loop).
+_watcher_tasks: "dict[int, asyncio.Task]" = {}
+
+
+def set_launcher_fn(fn) -> None:
+    global _launcher_fn
+    _launcher_fn = fn
+
+
+def set_change_hook_fn(fn) -> None:
+    global _change_hook_fn
+    _change_hook_fn = fn
+
+
+async def _check_doc_change(doc_id: int, doc_path: str) -> None:
+    """Re-ingest if file mtime advanced past last known value."""
+    try:
+        new_mtime = Path(doc_path).stat().st_mtime
+    except FileNotFoundError:
+        return
+    if _watched.get(doc_id, 0) >= new_mtime:
+        return
+    _watched[doc_id] = new_mtime
+    if _store:
+        _store._snapshot(doc_path)
+        _store.touch_doc(doc_id)
+    if _broadcast_fn:
+        await _broadcast_fn()
+    if _change_hook_fn:
+        try:
+            result = _change_hook_fn(doc_id)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as exc:
+            logger.warning("[documents] change hook error for doc %d: %s", doc_id, exc)
+
+
+async def _watch_doc(doc_id: int, doc_path: str) -> None:
+    """Poll doc mtime every _WATCH_INTERVAL seconds; re-ingest on change."""
+    try:
+        while True:
+            await asyncio.sleep(_WATCH_INTERVAL)
+            await _check_doc_change(doc_id, doc_path)
+    except asyncio.CancelledError:
+        pass
+
+
 # ── Plugin class ──────────────────────────────────────────────────────────────
 
 
@@ -312,19 +392,35 @@ class DocumentsPlugin:
                     "required": ["doc_id", "version"],
                 },
             ),
+            Tool(
+                name="doc_open",
+                description=(
+                    "Open a library document in LibreOffice Writer for editing. "
+                    "Felix watches for saves and re-ingests automatically. "
+                    "doc_id: integer library id."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"doc_id": {"type": "integer"}},
+                    "required": ["doc_id"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         if tool_name == "doc_status":
             return self._doc_status()
         if tool_name == "doc_list":
-            return self._doc_list()
+            return await self._doc_list()
         if tool_name == "doc_store":
             return await self._doc_store(args)
         if tool_name == "doc_convert":
             return await self._doc_convert(args)
         if tool_name == "doc_revert":
             return await self._doc_revert(args)
+        if tool_name == "doc_open":
+            return await self._doc_open(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ── tool implementations ──────────────────────────────────────────────────
@@ -342,9 +438,18 @@ class DocumentsPlugin:
             "message": _INSTALL_MSG,
         }))
 
-    def _doc_list(self) -> ToolResult:
+    async def _doc_list(self) -> ToolResult:
         if _store is None or _active_profile_id is None:
             return ToolResult(content=json.dumps({"docs": []}))
+        # Lazy re-ingest: catch mtime changes the watcher may have missed.
+        for wdoc_id, last_mtime in list(_watched.items()):
+            wdoc = _store.get_doc(wdoc_id)
+            if wdoc:
+                try:
+                    if Path(wdoc["path"]).stat().st_mtime > last_mtime:
+                        await _check_doc_change(wdoc_id, wdoc["path"])
+                except FileNotFoundError:
+                    pass
         docs = _store.list_docs(_active_profile_id)
         return ToolResult(content=json.dumps({"docs": docs}))
 
@@ -364,6 +469,41 @@ class DocumentsPlugin:
         if _broadcast_fn:
             await _broadcast_fn()
         return ToolResult(content=json.dumps({"doc": doc}))
+
+    async def _doc_open(self, args: dict) -> ToolResult:
+        doc_id_raw = args.get("doc_id")
+        if doc_id_raw is None:
+            return ToolResult(content="doc_id is required", is_error=True)
+        if _store is None or _active_profile_id is None:
+            return ToolResult(content="store or profile not wired", is_error=True)
+        doc_id = int(doc_id_raw)
+        doc = _store.get_doc(doc_id)
+        if not doc:
+            return ToolResult(content=f"doc {doc_id} not found", is_error=True)
+        launcher = _launcher_fn
+        if launcher is None:
+            return ToolResult(content="launcher seam not wired", is_error=True)
+        doc_path = Path(doc["path"])
+        # Preserve original content as v0 before any editing session.
+        _store._ensure_v0(doc_path)
+        try:
+            mtime = doc_path.stat().st_mtime
+        except FileNotFoundError:
+            return ToolResult(content=f"document file not found: {doc_path}", is_error=True)
+        _watched[doc_id] = mtime
+        # Start watcher if not already running.
+        task = _watcher_tasks.get(doc_id)
+        if task is None or task.done():
+            _watcher_tasks[doc_id] = asyncio.create_task(
+                _watch_doc(doc_id, str(doc_path))
+            )
+        try:
+            result = launcher(str(doc_path))
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as exc:
+            return ToolResult(content=f"failed to open document: {exc}", is_error=True)
+        return ToolResult(content=json.dumps({"doc": doc, "opened": True}))
 
     async def _doc_convert(self, args: dict) -> ToolResult:
         doc_id = args.get("doc_id")

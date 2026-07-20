@@ -28,3 +28,15 @@ Run these manually on a Windows machine that has (or can get) LibreOffice.
       file is snapshotted before restore.
 - [ ] Overwrite the same doc 8 times. Verify: `versions/` contains v0 + exactly 5
       most-recent timestamped snapshots (6 total).
+
+## S4 #455 -- user editing loop: doc_open in Writer + re-ingest on save
+
+- [ ] Start Cerebral. Ask Felix: "open my resume" (or `doc_open` with the resume's doc_id).
+      Verify: LibreOffice Writer opens the .docx. Cerebral log shows watcher task started.
+- [ ] Edit the document in Writer, save (Ctrl+S). Within ~5 seconds:
+      Verify: Cerebral log shows mtime change detected, snapshot created, broadcast sent.
+- [ ] Ask Felix: "list my documents". Verify: `updated_at` reflects the edit time.
+- [ ] Check `versions/` inside the doc's library dir. Verify: v0 (original before first
+      Writer session) + timestamped snapshot(s) for each save detected.
+- [ ] Make 6 more saves. Verify: `versions/` contains v0 + exactly 5 most-recent
+      timestamped snapshots (pruned by the existing FIFO rule).

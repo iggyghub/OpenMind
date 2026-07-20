@@ -195,6 +195,28 @@ async def _docs_convert(source_path: str, fmt: str, out_dir: str) -> str:  # S3 
     return str(Path(out_dir) / f"{stem}.{fmt}")
 
 
+async def _docs_launch_writer(doc_path: str) -> None:  # S4 #455
+    """Launch LibreOffice Writer on doc_path, detached from Cerebral.
+
+    Behaviour only checkable with a real LibreOffice install:
+    see docs/documents-live-verify.md.
+    """
+    import subprocess
+    from plugins.documents import find_soffice as _find_soffice
+    soffice = _find_soffice()
+    if soffice is None:
+        raise RuntimeError("LibreOffice not found; run scripts/setup-libreoffice.ps1")
+    # ponytail: DETACHED_PROCESS so Writer survives Cerebral restart on Windows
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    subprocess.Popen(
+        [str(soffice), "--writer", str(doc_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+    )
+
+
 async def _extract_dossier(pdf_text: str) -> dict:  # S2 #335
     """LLM extractor injected into job_search plugin for Applicant dossier parsing."""
     prompt = (
@@ -4304,6 +4326,7 @@ def _wire_plugin_seams() -> None:
         ("documents", "set_store", _document_store),                                 # S3 #454
         ("documents", "set_converter_fn", _docs_convert),                           # S3 #454
         ("documents", "set_broadcast_fn", _docs_broadcast),                         # S3 #454
+        ("documents", "set_launcher_fn", _docs_launch_writer),                      # S4 #455
     ]
     for name, seam, factory in seams:
         try:
