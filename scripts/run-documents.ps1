@@ -97,8 +97,12 @@ try {
     }
 
     function Get-DriverField($name, $default) {
+        # Tolerate markdown on the field line: "## Status: done", "- **Model:** opus".
+        # Anchor after any leading #/-/*/space and allow ** around the colon. Queue
+        # lines ("- [x] ... (Model: opus)") start with "[" after the dash, so the
+        # ^[\s#\-\*]* anchor never reaches their inline "Model:" -- no false match.
         $m = Select-String -LiteralPath $driver `
-            -Pattern ("^{0}:\s*(\S+)" -f $name) | Select-Object -First 1
+            -Pattern ("^[\s#\-\*]*{0}\s*:\s*\**\s*(\S+)" -f $name) | Select-Object -First 1
         if ($null -eq $m) { return $default }
         return $m.Matches[0].Groups[1].Value.ToLower()
     }
