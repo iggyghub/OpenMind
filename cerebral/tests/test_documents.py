@@ -579,3 +579,81 @@ def test_set_editor_fn_wires_seam():
     doc.set_editor_fn(fn)
     assert doc._editor_fn is fn
     doc.set_editor_fn(None)
+
+
+# ── S6: _documents_update_event augmentation (version_count + versions) ───────
+
+def test_documents_update_event_includes_version_count(tmp_path, monkeypatch):
+    """_documents_update_event augments each doc with version_count and versions."""
+    import cerebral.main as main_mod
+
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"content")
+    stored = store.store_doc(1, "Resume", str(src))
+
+    # Create a v0 snapshot
+    store._snapshot(stored["path"])
+
+    class FakeProfile:
+        id = 1
+
+    saved_profile = main_mod._active_profile
+    saved_store = main_mod._document_store
+    try:
+        main_mod._active_profile = FakeProfile()
+        main_mod._document_store = store
+        event = main_mod._documents_update_event()
+    finally:
+        main_mod._active_profile = saved_profile
+        main_mod._document_store = saved_store
+
+    assert event["type"] == "documents_update"
+    docs = event["data"]["docs"]
+    assert len(docs) == 1
+    d = docs[0]
+    assert "version_count" in d
+    assert "versions" in d
+    assert isinstance(d["versions"], list)
+    assert d["version_count"] == len(d["versions"])
+    assert d["version_count"] == 1  # just v0
+
+
+# ── S6: list_documents IPC handler round-trip ─────────────────────────────────
+
+async def test_list_documents_ipc_broadcasts_documents_update(tmp_path, monkeypatch):
+    """'list_documents' IPC message triggers a documents_update broadcast."""
+    import cerebral.main as main_mod
+
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"content")
+    store.store_doc(1, "Resume", str(src))
+
+    class FakeProfile:
+        id = 1
+
+    broadcasts = []
+
+    async def fake_broadcast(event):
+        broadcasts.append(event)
+
+    saved = {
+        "_active_profile": main_mod._active_profile,
+        "_document_store": main_mod._document_store,
+        "_broadcast": main_mod._broadcast,
+    }
+    try:
+        main_mod._active_profile = FakeProfile()
+        main_mod._document_store = store
+        main_mod._broadcast = fake_broadcast
+
+        await main_mod._handle_message({"type": "list_documents"})
+    finally:
+        for k, v in saved.items():
+            setattr(main_mod, k, v)
+
+    assert len(broadcasts) == 1
+    evt = broadcasts[0]
+    assert evt["type"] == "documents_update"
+    assert "docs" in evt["data"]

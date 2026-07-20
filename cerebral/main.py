@@ -163,8 +163,16 @@ def _docs_seam(seam: str, *args) -> None:
     fn(*args)
 
 
-def _documents_update_event() -> dict:  # S3 #454
+def _documents_update_event() -> dict:  # S3 #454, S6 #457
     docs = _document_store.list_docs(_active_profile.id) if _active_profile else []
+    for d in docs:
+        try:
+            vs = _document_store.list_versions(d["id"])
+            d["version_count"] = len(vs)
+            d["versions"] = vs
+        except Exception:
+            d["version_count"] = 0
+            d["versions"] = []
     return {"type": "documents_update", "data": {"docs": docs}}
 
 
@@ -3887,6 +3895,23 @@ async def _handle_message(msg: dict) -> None:
         if _active_turn_task is not None and not _active_turn_task.done():
             _active_turn_task.cancel()
         _tts.stop()
+
+    elif t == "list_documents":  # S6 #457 -- Documents panel activation re-pull
+        await _broadcast(_documents_update_event())
+
+    elif t == "doc_save_to_disk":  # S6 #457 -- copy library doc to user path
+        import shutil as _shutil
+        d = msg.get("data", {})
+        doc_id = d.get("doc_id")
+        dest_path = (d.get("dest_path") or "").strip()
+        if doc_id and dest_path and _active_profile:
+            try:
+                doc = _document_store.get_doc(int(doc_id))
+                if doc:
+                    _shutil.copy2(doc["path"], dest_path)
+                    logger.info("[cerebral] doc_save_to_disk: %s -> %s", doc["path"], dest_path)
+            except Exception as exc:
+                logger.warning("[cerebral] doc_save_to_disk failed: %s", exc)
 
 
 # ── WebSocket handler ─────────────────────────────────────────────────────────

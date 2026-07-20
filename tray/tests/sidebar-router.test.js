@@ -12,15 +12,15 @@ test('VALID_ROUTES is a Set', () => {
   expect(VALID_ROUTES).toBeInstanceOf(Set);
 });
 
-test('VALID_ROUTES has 15 entries', () => {
-  expect(VALID_ROUTES.size).toBe(15);
+test('VALID_ROUTES has 16 entries', () => {
+  expect(VALID_ROUTES.size).toBe(16);
 });
 
 test('VALID_ROUTES contains all expected sidebar tabs', () => {
   const expected = [
     'conversation', 'quick-ask', 'queue', 'insights', 'memory',
     'permissions', 'credentials', 'plugins', 'profiles', 'settings', 'recipes',
-    'models', 'conversations', 'integrations', 'job-search',
+    'models', 'conversations', 'integrations', 'job-search', 'documents',
   ];
   for (const route of expected) {
     expect(VALID_ROUTES.has(route)).toBe(true);

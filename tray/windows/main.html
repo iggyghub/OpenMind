@@ -3049,6 +3049,45 @@
     .pane[data-route="models"]    { background: var(--bg); }
     .pane[data-route="settings"]  { background: var(--bg); }
     .pane[data-route="job-search"] { background: var(--bg); }
+    .pane[data-route="documents"]  { background: var(--bg); }
+
+    /* ── Documents panel (S6 #457) ──────────────────────────────────── */
+    .docs-body { flex: 1; overflow-y: auto; padding: 16px; }
+    .docs-body::-webkit-scrollbar { width: 4px; }
+    .docs-body::-webkit-scrollbar-track { background: transparent; }
+    .docs-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .docs-empty {
+      color: var(--text-muted); font-size: 13px; padding: 24px 0; text-align: center;
+    }
+    .docs-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; margin-bottom: 12px; padding: 12px 14px;
+    }
+    .docs-card-header { margin-bottom: 8px; }
+    .docs-card-name { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+    .docs-card-meta { font-size: 12px; color: var(--text-muted); }
+    .docs-kind {
+      background: var(--border); border-radius: 3px;
+      font-size: 11px; font-weight: 600; padding: 1px 5px;
+      text-transform: uppercase;
+    }
+    .docs-card-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .docs-btn {
+      background: transparent; border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); cursor: pointer;
+      font-size: 12px; padding: 4px 10px;
+    }
+    .docs-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .docs-fmt-sel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 12px; padding: 4px 6px;
+    }
+    .docs-versions-panel { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+    .docs-version-row {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 12px; color: var(--text-muted); padding: 4px 0;
+    }
+    .docs-version-name { font-family: monospace; }
 
     /* ── Job Search panel (Issue #334) ──────────────────────────────── */
     .jobs-body {
@@ -3879,6 +3918,7 @@
       <div class="nav-section">
         <span class="nav-section-title">Work</span>
         <button class="nav-item" data-route="job-search">Job Search</button>
+        <button class="nav-item" data-route="documents">Documents</button>
       </div>
       <div class="nav-section">
         <span class="nav-section-title">System</span>
@@ -4547,6 +4587,18 @@
       </div>
     </section>
 
+    <!-- Documents panel (S6 #457) -->
+    <section class="pane" data-route="documents" hidden>
+      <div class="docs-body">
+        <div id="docs-list">
+          <div class="docs-empty" id="docs-empty">
+            No documents in the library. Ask Felix to store a document, or use
+            "Felix, store this file as a document" to add one.
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="pane" data-route="models" hidden>
       <div class="set-body">
         <div class="set-section">Active model</div>
@@ -4613,6 +4665,11 @@
        session_key for the Integrations Inbox surface. Dual-mode:
        window.ChannelInbox here, module.exports for Node tests. -->
   <script src="../lib/channel-inbox.js"></script>
+
+  <!-- Documents panel helpers (S6 -- #457) -- pure data shapers for the
+       Documents sidebar panel. Dual-mode: window.DocumentsPanel here,
+       module.exports for Node tests. -->
+  <script src="../lib/documents-panel.js"></script>
 
   <script>
     'use strict';
@@ -5134,6 +5191,10 @@
           jobsStatusEl.textContent = jobPostings.length
             ? jobPostings.length + ' posting' + (jobPostings.length === 1 ? '' : 's') + ' stored'
             : 'No postings found';
+          break;
+        case 'documents_update':  // S6 #457
+          documentsData = (event.data && event.data.docs) || [];
+          renderDocuments();
           break;
         case 'recipe_run_result':
           _onRecipeRunResult(event.data || {});
@@ -6353,6 +6414,57 @@
       if (delBtn) {
         const id = parseInt(delBtn.dataset.rcpDelete, 10);
         sendEvent({ type: 'delete_recipe', data: { recipe_id: id } });
+      }
+    });
+
+    // ── Documents panel (S6 #457) ─────────────────────────────────────────────
+    let documentsData = [];
+    const docsListEl  = document.getElementById('docs-list');
+    const docsEmptyEl = document.getElementById('docs-empty');
+    const _docsPanel  = window.DocumentsPanel;
+
+    function renderDocuments() {
+      if (!docsListEl) return;
+      if (!documentsData || documentsData.length === 0) {
+        docsListEl.innerHTML = docsEmptyEl ? docsEmptyEl.outerHTML : '<div class="docs-empty">No documents.</div>';
+        return;
+      }
+      docsListEl.innerHTML = _docsPanel.renderList(documentsData);
+    }
+
+    // Delegate click handler for doc card actions.
+    docsListEl && docsListEl.addEventListener('click', function (e) {
+      var openBtn    = e.target.closest('.docs-open-btn');
+      var exportBtn  = e.target.closest('.docs-export-btn');
+      var saveBtn    = e.target.closest('.docs-save-btn');
+      var verBtn     = e.target.closest('.docs-versions-btn');
+      var revertBtn  = e.target.closest('.docs-revert-btn');
+
+      if (openBtn) {
+        var id = parseInt(openBtn.dataset.docId, 10);
+        sendEvent(_docsPanel.actionFor({ id: id }, 'open'));
+      } else if (exportBtn) {
+        var eId  = parseInt(exportBtn.dataset.docId, 10);
+        var sel  = docsListEl.querySelector('.docs-fmt-sel[data-doc-id="' + eId + '"]');
+        var fmt  = sel ? sel.value : 'pdf';
+        sendEvent(_docsPanel.actionFor({ id: eId }, 'export', { format: fmt }));
+      } else if (saveBtn) {
+        var sId   = parseInt(saveBtn.dataset.docId, 10);
+        // ponytail: prompt() stands in until a preload-bridge save dialog lands
+        var dest  = window.prompt('Save a copy to path:');
+        if (dest && dest.trim()) {
+          sendEvent(_docsPanel.actionFor({ id: sId }, 'save_to_disk', { dest_path: dest.trim() }));
+        }
+      } else if (verBtn) {
+        var vId    = parseInt(verBtn.dataset.docId, 10);
+        var panel  = document.getElementById('docs-versions-' + vId);
+        if (panel) { panel.hidden = !panel.hidden; }
+      } else if (revertBtn) {
+        var rId  = parseInt(revertBtn.dataset.docId, 10);
+        var ver  = revertBtn.dataset.version;
+        if (ver && window.confirm('Revert to version ' + ver + '?')) {
+          sendEvent(_docsPanel.actionFor({ id: rId }, 'revert', { version: ver }));
+        }
       }
     });
 
@@ -8900,6 +9012,9 @@
       } else if (route === 'job-search') {
         // S1 (#334) -- re-pull stored postings on panel activation.
         sendEvent({ type: 'list_job_postings' });
+      } else if (route === 'documents') {
+        // S6 (#457) -- re-pull library docs on panel activation.
+        sendEvent({ type: 'list_documents' });
       }
     }
 
@@ -9150,6 +9265,21 @@
     // Card title is "Title — Company" (#445), so a company query filters it too.
     _registerInPaneFilter('job-search', function (q) {
       _filterRowsByText('#jobs-shortlist-list .jobs-shortlist-card', '.jobs-shortlist-card-title', q);
+    });
+
+    // ── Documents panel search (S6 #457) ─────────────────────────────────────
+    _registerProvider('documents', function (_query) {
+      return (documentsData || []).map(function (d) {
+        return {
+          label:  d.name || 'Untitled',
+          secondary: d.kind || null,
+          route:  'documents',
+          anchor: '',
+        };
+      });
+    });
+    _registerInPaneFilter('documents', function (q) {
+      _filterRowsByText('#docs-list .docs-card', '.docs-card-name', q);
     });
 
     function _currentRoute() {

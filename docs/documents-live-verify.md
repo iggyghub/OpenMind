@@ -55,3 +55,27 @@ Run these manually on a Windows machine that has (or can get) LibreOffice.
       Verify: Cerebral returns is_error=True with "timed out" in the message.
 - [ ] Ask Felix: "open my resume" then (without closing Writer) ask Felix to edit the same doc.
       Verify: both routes converge -- the watcher detects the UNO-written save and re-ingests.
+
+## S6 #457 -- Documents panel in the Main window sidebar
+
+- [ ] Open the Main window. Click "Documents" in the sidebar nav.
+      Verify: the Documents pane opens with the empty-state message when no docs are stored.
+- [ ] Store a document (via Felix: "store this file as a document"). Then re-open the Documents
+      panel. Verify: the doc card appears with correct name, kind badge, updated date, and
+      snapshot count.
+- [ ] Click "Open" on a doc card.
+      Verify: Cerebral dispatches doc_open, LibreOffice Writer opens the file.
+- [ ] Select a format (pdf/docx/txt/rtf) and click "Export" on a doc card.
+      Verify: Cerebral dispatches doc_convert, a new library entry is created; the panel
+      refreshes (documents_update broadcast) showing the exported file as a new row.
+- [ ] Click "Versions (N)" on a card with at least one snapshot.
+      Verify: the versions sub-panel expands showing snapshot filenames and Revert buttons.
+- [ ] Click "Revert" on a snapshot. Confirm the dialog.
+      Verify: Cerebral dispatches doc_revert, the file is restored, panel refreshes.
+- [ ] Click "Save a copy..." on a doc card. Enter a destination path (e.g. C:\Users\<you>\Desktop\copy.docx).
+      Verify: Cerebral copies the library file to that path; the original library entry is unchanged.
+      NOTE: the JS prompt() stand-in for the path input should be replaced by a proper
+      Electron save dialog once a preload bridge (contextBridge + ipcRenderer) is added to
+      the main window -- track this as a follow-up enhancement.
+- [ ] Ask Felix to store two more documents. Verify: the Documents panel shows all three rows,
+      the federated search finds documents by name, and the in-pane filter hides non-matching rows.
