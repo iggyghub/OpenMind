@@ -225,6 +225,46 @@ async def _docs_launch_writer(doc_path: str) -> None:  # S4 #455
     )
 
 
+def _jobs_register_doc(profile_id: int, name: str, source_path: str) -> dict:  # S7 #448
+    """Register a docx in the Document library on behalf of jobs_store_resume."""
+    return _document_store.store_doc(profile_id, name, source_path)
+
+
+async def _docs_resume_change_hook(doc_id: int) -> None:  # S7 #448
+    """When the resume library doc changes, re-convert docx->pdf and re-derive dossier."""
+    if _active_profile is None:
+        return
+    resume = _job_search_store.get_resume_artifact(_active_profile.id)
+    if not resume or resume.get("doc_id") != doc_id:
+        return
+    doc = _document_store.get_doc(doc_id)
+    if not doc:
+        return
+    out_dir = str(Path(doc["path"]).parent)
+    try:
+        pdf_path = await _docs_convert(doc["path"], "pdf", out_dir)
+    except Exception as exc:
+        logger.warning("[cerebral] resume re-derive convert failed: %s", exc)
+        return
+    try:
+        from cerebral.db.attachments import _extract_pdf_text
+        pdf_text = _extract_pdf_text(Path(pdf_path).read_bytes())
+    except Exception as exc:
+        logger.warning("[cerebral] resume re-derive text extraction failed: %s", exc)
+        return
+    try:
+        job_mod = _orc.get_plugin_module("job_search")
+        rederive = getattr(job_mod, "rederive_resume", None)
+        if rederive:
+            result = rederive(_active_profile.id, pdf_path, pdf_text)
+            if asyncio.iscoroutine(result):
+                await result
+    except Exception as exc:
+        logger.warning("[cerebral] resume rederive failed: %s", exc)
+        return
+    await _broadcast(_jobs_update_event())
+
+
 async def _extract_dossier(pdf_text: str) -> dict:  # S2 #335
     """LLM extractor injected into job_search plugin for Applicant dossier parsing."""
     prompt = (
@@ -1007,7 +1047,7 @@ def _recipes_update_event() -> dict:
     }
 
 
-def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 #339 / S7 #340
+def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 #339 / S7 #340 / S7 #448
     postings = _job_search_store.list_postings()
     dossier = _job_search_store.get_dossier(_active_profile.id) if _active_profile else None
     shortlist = _job_search_store.list_shortlist()
@@ -1024,6 +1064,19 @@ def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 
     )
     # S1 #396: job_boards mirrors tray jobBoards state (#390 pairing).
     job_boards = _job_search_store.list_boards()
+    # S7 #448: resume info for the dossier card (filename + doc_id for Open-in-Writer).
+    resume_artifact = (
+        _job_search_store.get_resume_artifact(_active_profile.id) if _active_profile else None
+    )
+    resume_info: dict = {}
+    if resume_artifact:
+        pdf_path = resume_artifact.get("pdf_path") or ""
+        docx_path = resume_artifact.get("docx_path") or ""
+        resume_info = {
+            "filename": Path(pdf_path).name if pdf_path else "",
+            "docx_filename": Path(docx_path).name if docx_path else "",
+            "doc_id": resume_artifact.get("doc_id"),
+        }
     return {
         "type": "jobs_update",
         "data": {
@@ -1034,6 +1087,7 @@ def _jobs_update_event() -> dict:  # S1 #334 / S2 #335 / S3 #336 / S4 #337 / S6 
             "jobs_email_configured": jobs_email_configured,  # S6: link to Credentials panel
             "job_settings": job_settings,  # S7: auto-submit toggle + ramp progress
             "job_boards": job_boards,      # S1 #396: mirrors tray jobBoards
+            "resume": resume_info,         # S7 #448: resume filename + doc_id for dossier card
         },
     }
 
@@ -2200,6 +2254,8 @@ async def _handle_attach_files(data: dict) -> None:
         saved.append(att)
         if att.kind == "pdf":  # S2 #335 — record path so jobs_store_resume can claim it
             _js_seam("set_pending_resume_path", att.stored_path)
+        elif att.kind == "docx":  # S7 #448 — record docx path for jobs_store_resume
+            _js_seam("set_pending_resume_docx_path", att.stored_path)
     try:
         pending = _attachments.list_pending(_active_profile.id)
     except Exception:
@@ -4352,6 +4408,8 @@ def _wire_plugin_seams() -> None:
         ("documents", "set_converter_fn", _docs_convert),                           # S3 #454
         ("documents", "set_broadcast_fn", _docs_broadcast),                         # S3 #454
         ("documents", "set_launcher_fn", _docs_launch_writer),                      # S4 #455
+        ("documents", "set_change_hook_fn", _docs_resume_change_hook),              # S7 #448
+        ("job_search", "set_register_doc_fn", _jobs_register_doc),                  # S7 #448
     ]
     for name, seam, factory in seams:
         try:

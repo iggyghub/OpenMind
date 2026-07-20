@@ -25,6 +25,9 @@ _JOBS_SEAMS = (
     "set_create_ats_account_fn", "set_store_ats_password_fn",
     "set_read_verify_link_fn", "set_click_verify_link_fn",
     "set_active_profile_id", "set_pending_resume_path",
+    "set_register_doc_fn",          # S7 #448
+    "set_change_hook_fn",           # S7 #448 (documents plugin seam)
+    "set_converter_fn", "set_broadcast_fn", "set_launcher_fn",  # documents seams
 )
 
 

@@ -393,6 +393,37 @@ class TestDossierStore:
         artifact = store.get_resume_artifact(_PROFILE_ID)
         assert artifact["pdf_path"] == _RESUME_PATH
 
+    # S7 #448 — migration + docx_path / doc_id fields
+    def test_resume_artifact_has_docx_path_column(self):
+        store = _in_memory_store()
+        store.upsert_resume_artifact(_PROFILE_ID, _RESUME_PATH)
+        artifact = store.get_resume_artifact(_PROFILE_ID)
+        assert "docx_path" in artifact
+        assert artifact["docx_path"] == ""
+
+    def test_resume_artifact_has_doc_id_column(self):
+        store = _in_memory_store()
+        store.upsert_resume_artifact(_PROFILE_ID, _RESUME_PATH)
+        artifact = store.get_resume_artifact(_PROFILE_ID)
+        assert "doc_id" in artifact
+        assert artifact["doc_id"] is None
+
+    def test_upsert_resume_artifact_stores_docx_path_and_doc_id(self):
+        store = _in_memory_store()
+        store.upsert_resume_artifact(_PROFILE_ID, _RESUME_PATH, docx_path="/lib/resume.docx", doc_id=42)
+        artifact = store.get_resume_artifact(_PROFILE_ID)
+        assert artifact["docx_path"] == "/lib/resume.docx"
+        assert artifact["doc_id"] == 42
+
+    def test_upsert_resume_artifact_preserves_docx_path_on_update(self):
+        store = _in_memory_store()
+        store.upsert_resume_artifact(_PROFILE_ID, _RESUME_PATH, docx_path="/lib/resume.docx", doc_id=42)
+        store.upsert_resume_artifact(_PROFILE_ID, "/new/path.pdf", docx_path="/lib/resume.docx", doc_id=42)
+        artifact = store.get_resume_artifact(_PROFILE_ID)
+        assert artifact["pdf_path"] == "/new/path.pdf"
+        assert artifact["docx_path"] == "/lib/resume.docx"
+        assert artifact["doc_id"] == 42
+
     def test_get_dossier_none_initially(self):
         store = _in_memory_store()
         assert store.get_dossier(_PROFILE_ID) is None
@@ -599,6 +630,85 @@ class TestStoreResumeTool:
         d = store.get_dossier(_PROFILE_ID)
         assert d is not None
         assert RESUME_FIXTURE_TEXT[:100] in d["raw_text"]
+
+    @pytest.mark.asyncio
+    async def test_store_resume_with_docx_sets_docx_fields(self, tmp_path):
+        """S7 #448: when a .docx is pending, store captures it into the library and links doc_id."""
+        import plugins.job_search as jm
+        store = _in_memory_store()
+        docx_file = tmp_path / "resume.docx"
+        docx_file.write_bytes(b"fake docx content")
+        jm._active_profile_id = _PROFILE_ID
+        jm._pending_resume_path = ""
+        jm._pending_resume_docx_path = str(docx_file)
+        # Stub _register_doc_fn: returns a fake library doc
+        fake_doc = {"id": 7, "path": "/lib/1/resume.docx"}
+        jm._register_doc_fn = lambda *a, **kw: fake_doc
+        from plugins.job_search import JobSearchPlugin
+        plugin = JobSearchPlugin(store=store, extract_fn=_stub_extract)
+        result = await plugin.call_tool("jobs_store_resume", {"pdf_text": RESUME_FIXTURE_TEXT})
+        # Reset seams
+        jm._pending_resume_docx_path = ""
+        jm._register_doc_fn = None
+        assert not result.is_error
+        artifact = store.get_resume_artifact(_PROFILE_ID)
+        assert artifact["docx_path"] == "/lib/1/resume.docx"
+        assert artifact["doc_id"] == 7
+
+
+# ── S7 #448 — rederive_resume module-level function ──────────────────────────
+
+class TestRederiveResume:
+    @pytest.mark.asyncio
+    async def test_rederive_updates_pdf_path_and_dossier(self):
+        """rederive_resume re-stores artifact + re-extracts dossier."""
+        import plugins.job_search as jm
+        store = _in_memory_store()
+        store.upsert_resume_artifact(_PROFILE_ID, "/old/path.pdf", docx_path="/lib/resume.docx", doc_id=7)
+        store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+        called = []
+        def _extract(text):
+            called.append(text)
+            return {**_FIXTURE_DOSSIER, "email": "rederived@example.com"}
+        jm._store = store
+        jm._extract_fn = _extract
+        from plugins.job_search import rederive_resume
+        await rederive_resume(_PROFILE_ID, "/new/resume.pdf", RESUME_FIXTURE_TEXT)
+        # Reset
+        jm._store = None
+        jm._extract_fn = None
+        artifact = store.get_resume_artifact(_PROFILE_ID)
+        assert artifact["pdf_path"] == "/new/resume.pdf"
+        assert artifact["docx_path"] == "/lib/resume.docx"  # preserved
+        assert artifact["doc_id"] == 7                       # preserved
+        assert called, "extractor was not called"
+        d = store.get_dossier(_PROFILE_ID)
+        assert d["email"] == "rederived@example.com"
+
+    @pytest.mark.asyncio
+    async def test_rederive_no_op_when_store_none(self):
+        """rederive_resume silently exits when store is not wired."""
+        import plugins.job_search as jm
+        jm._store = None
+        from plugins.job_search import rederive_resume
+        await rederive_resume(_PROFILE_ID, "/new/resume.pdf", RESUME_FIXTURE_TEXT)
+        # No exception = pass
+
+    @pytest.mark.asyncio
+    async def test_rederive_preserves_docx_on_pdf_update(self):
+        """Re-derive only updates pdf_path; docx_path and doc_id are kept."""
+        import plugins.job_search as jm
+        store = _in_memory_store()
+        store.upsert_resume_artifact(_PROFILE_ID, "/old.pdf", docx_path="/doc.docx", doc_id=3)
+        jm._store = store
+        jm._extract_fn = None
+        from plugins.job_search import rederive_resume
+        await rederive_resume(_PROFILE_ID, "/new.pdf", "")
+        jm._store = None
+        a = store.get_resume_artifact(_PROFILE_ID)
+        assert a["pdf_path"] == "/new.pdf"
+        assert a["docx_path"] == "/doc.docx"
+        assert a["doc_id"] == 3
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────

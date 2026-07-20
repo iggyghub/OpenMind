@@ -79,3 +79,25 @@ Run these manually on a Windows machine that has (or can get) LibreOffice.
       the main window -- track this as a follow-up enhancement.
 - [ ] Ask Felix to store two more documents. Verify: the Documents panel shows all three rows,
       the federated search finds documents by name, and the in-pane filter hides non-matching rows.
+
+## S7 #448 -- resume wiring: docx_path, change-hook re-derive, panel resume row
+
+- [ ] Upload a .docx resume file via the chat paperclip and tell Felix "store this as my resume".
+      Verify: `jobs_store_resume` stores the docx in the Document library (appears in the Documents
+      panel) and sets `docx_path` + `doc_id` in `resume_artifacts`. The Job Search dossier card
+      shows "Resume: <filename>".
+- [ ] With the resume linked as a library document, ask Felix "open my resume".
+      Verify: LibreOffice Writer opens the .docx. Edit and save in Writer.
+      Within ~5 seconds: Cerebral log shows mtime change detected → docx converted to PDF →
+      dossier re-extracted → `jobs_update` broadcast. The dossier card refreshes automatically.
+- [ ] Ask Felix to edit the resume via `doc_edit` (e.g. update the email).
+      Verify: the change hook fires: PDF is re-converted, dossier fields update, `jobs_update`
+      broadcast reaches the panel. The apply pipeline uploads the new PDF on the next apply run.
+- [ ] Click "Open in Writer" in the dossier card (requires doc_id to be set in the resume artifact).
+      Verify: dispatches `doc_open` IPC, LibreOffice Writer opens the .docx.
+- [ ] Click "Change" in the dossier card.
+      Verify: alert guides the user to upload a new file and tell Felix "store this as my resume".
+      NOTE: a native Electron file-open dialog requires a contextBridge preload bridge in the
+      main window — track this as a follow-up enhancement (currently shows the workflow hint instead).
+- [ ] Upload a new PDF resume (no docx). Verify: `pdf_path` is stored; dossier is extracted;
+      dossier card shows the PDF filename; "Open in Writer" is absent (no doc_id).
