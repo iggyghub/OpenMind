@@ -278,7 +278,11 @@ try {
 
     Log "=== CAMPAIGN_DISPLAY loop ended ==="
 } catch {
-    Write-Host ("FAILED: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    # Log (not just Write-Host) so an overnight crash leaves a cause in the loop
+    # log instead of a silent freeze at the Read-Host prompt.
+    $err = "LOOP CRASHED: {0}`n{1}" -f $_.Exception.Message, $_.ScriptStackTrace
+    Write-Host $err -ForegroundColor Red
+    try { Log $err } catch {}
 } finally {
     Read-Host "Press Enter to close" | Out-Null
 }
