@@ -463,3 +463,119 @@ def test_set_change_hook_fn_wires_seam():
     doc.set_change_hook_fn(fn)
     assert doc._change_hook_fn is fn
     doc.set_change_hook_fn(None)
+
+
+# ── S5: doc_edit ──────────────────────────────────────────────────────────────
+
+async def test_doc_edit_snapshots_broadcast_hook(tmp_path, monkeypatch):
+    """doc_edit: snapshot before edit, broadcast + hook after success."""
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"original")
+    stored = store.store_doc(1, "Resume", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+
+    broadcast_calls = []
+    async def fake_broadcast():
+        broadcast_calls.append(1)
+    monkeypatch.setattr(doc, "_broadcast_fn", fake_broadcast)
+
+    hook_calls = []
+    async def fake_hook(doc_id):
+        hook_calls.append(doc_id)
+    monkeypatch.setattr(doc, "_change_hook_fn", fake_hook)
+
+    snapshot_before_edit = []
+    async def fake_editor(doc_path, edits):
+        # By the time editor runs, v0 snapshot must already exist.
+        snapshot_before_edit.extend(store.list_versions(stored["id"]))
+    monkeypatch.setattr(doc, "_editor_fn", fake_editor)
+
+    edits = [{"op": "find_replace", "find": "old@example.com", "replace": "new@example.com"}]
+    result = await doc.create().call_tool("doc_edit", {"doc_id": stored["id"], "edits": edits})
+
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["edited"] is True
+    assert broadcast_calls == [1]
+    assert hook_calls == [stored["id"]]
+    assert any(v.startswith("v0_") for v in snapshot_before_edit), "v0 must exist before editor runs"
+
+
+async def test_doc_edit_timeout_returns_error(tmp_path, monkeypatch):
+    """doc_edit returns is_error when the editor raises TimeoutError."""
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"x")
+    stored = store.store_doc(1, "Resume", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+    monkeypatch.setattr(doc, "_broadcast_fn", None)
+    monkeypatch.setattr(doc, "_change_hook_fn", None)
+
+    async def timed_out_editor(doc_path, edits):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(doc, "_editor_fn", timed_out_editor)
+
+    result = await doc.create().call_tool(
+        "doc_edit", {"doc_id": stored["id"], "edits": [{"op": "find_replace", "find": "x", "replace": "y"}]}
+    )
+    assert result.is_error
+    assert "timed out" in result.content
+
+
+async def test_doc_edit_editor_failure_returns_error(tmp_path, monkeypatch):
+    """doc_edit returns is_error when the editor raises a generic exception."""
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"x")
+    stored = store.store_doc(1, "Resume", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+    monkeypatch.setattr(doc, "_broadcast_fn", None)
+    monkeypatch.setattr(doc, "_change_hook_fn", None)
+
+    async def failing_editor(doc_path, edits):
+        raise RuntimeError("UNO script failed (rc=1): some stderr")
+    monkeypatch.setattr(doc, "_editor_fn", failing_editor)
+
+    result = await doc.create().call_tool(
+        "doc_edit", {"doc_id": stored["id"], "edits": [{"op": "find_replace", "find": "x", "replace": "y"}]}
+    )
+    assert result.is_error
+    assert "doc_edit failed" in result.content
+
+
+async def test_doc_edit_missing_doc_returns_error(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+
+    result = await doc.create().call_tool(
+        "doc_edit", {"doc_id": 9999, "edits": [{"op": "find_replace", "find": "x", "replace": "y"}]}
+    )
+    assert result.is_error
+    assert "not found" in result.content
+
+
+async def test_doc_edit_missing_args_returns_error(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+
+    result = await doc.create().call_tool("doc_edit", {"doc_id": 1})
+    assert result.is_error
+
+    result2 = await doc.create().call_tool("doc_edit", {"edits": []})
+    assert result2.is_error
+
+
+def test_set_editor_fn_wires_seam():
+    fn = object()
+    doc.set_editor_fn(fn)
+    assert doc._editor_fn is fn
+    doc.set_editor_fn(None)

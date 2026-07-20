@@ -40,3 +40,18 @@ Run these manually on a Windows machine that has (or can get) LibreOffice.
       Writer session) + timestamped snapshot(s) for each save detected.
 - [ ] Make 6 more saves. Verify: `versions/` contains v0 + exactly 5 most-recent
       timestamped snapshots (pruned by the existing FIFO rule).
+
+## S5 #456 -- Felix editing: doc_edit via headless UNO
+
+- [ ] Store a scratch .docx in the library (e.g. a copy of the resume or any Word file).
+      Ask Felix: "change 'old@example.com' to 'new@example.com' in doc <id>".
+      Verify: Cerebral calls `doc_edit` with op=find_replace; the file is updated on disk;
+      `versions/` contains a v0 (or timestamped) snapshot taken before the edit.
+      Inspect the .docx content to confirm the replacement was applied.
+- [ ] Ask Felix: "replace the paragraph starting with 'Summary' with '<new paragraph text>'".
+      Verify: `doc_edit` with op=replace_paragraph; the targeted paragraph's text is replaced
+      while its formatting (bold, font size, etc.) is preserved; snapshot taken before the edit.
+- [ ] Verify timeout surface: temporarily lower the timeout or block the LO process.
+      Verify: Cerebral returns is_error=True with "timed out" in the message.
+- [ ] Ask Felix: "open my resume" then (without closing Writer) ask Felix to edit the same doc.
+      Verify: both routes converge -- the watcher detects the UNO-written save and re-ingests.
