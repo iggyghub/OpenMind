@@ -22,7 +22,7 @@ const ARTIFACT_DIR = path.resolve(__dirname, '../../.claude/tmp/render-smoke');
 const SMOKE_ROUTES = [
   'conversation', 'quick-ask', 'queue', 'insights', 'memory',
   'permissions', 'credentials', 'plugins', 'profiles', 'settings',
-  'models', 'conversations', 'integrations', 'recipes', 'job-search',
+  'models', 'conversations', 'integrations', 'recipes', 'job-search', 'documents',
 ];
 
 let root;
@@ -639,6 +639,38 @@ test('apply-all sends the batch limit from the header input, default 100 (#421)'
   expect(input.getAttribute('value')).toBe('100');
   expect(input.getAttribute('min')).toBe('1');
   expect(inlineScript).toMatch(/type: 'jobs_apply_all', data: \{ limit: limit \}/);
+});
+
+// ── S6 Documents panel (#457) ────────────────────────────────────────────────
+
+test('documents pane has list container and empty state (S6 docs)', () => {
+  const pane = root.querySelector('.pane[data-route="documents"]');
+  expect(pane).not.toBeNull();
+
+  const list  = pane.querySelector('#docs-list');
+  const empty = pane.querySelector('#docs-empty');
+  expect(list).not.toBeNull();
+  expect(empty).not.toBeNull();
+});
+
+test('documents-panel.js script tag is present (S6 docs)', () => {
+  const srcTags = root.querySelectorAll('script[src]');
+  const found = srcTags.some(s => (s.getAttribute('src') || '').includes('documents-panel'));
+  expect(found).toBe(true);
+});
+
+test('inline script handles documents_update event (S6 docs)', () => {
+  expect(inlineScript).toMatch(/['"]documents_update['"]/);
+  expect(inlineScript).toMatch(/renderDocuments/);
+});
+
+test('inline script fires list_documents on panel activation (S6 docs)', () => {
+  expect(inlineScript).toMatch(/['"]list_documents['"]/);
+});
+
+test('inline script uses DocumentsPanel for rendering (S6 docs)', () => {
+  expect(inlineScript).toMatch(/DocumentsPanel/);
+  expect(inlineScript).toMatch(/renderList/);
 });
 
 // ── Script syntax ────────────────────────────────────────────────────────────
