@@ -235,6 +235,11 @@ class MCPOrchestrator:
         # Plugins registered directly via register() (tests, parked builder)
         # have no source file and are absent from this map by design.
         self._plugin_modules: dict[str, ModuleType] = {}
+        # Harness UI S2 #470 — plugins that passed scan + capabilities check
+        # but were NOT registered because the user disabled them. Keyed by
+        # plugin name; each value is the metadata dict used by
+        # _plugins_snapshot_data to render the card with status="disabled".
+        self._disabled_plugins_meta: dict[str, dict] = {}
 
     def set_acl(self, acl: ProfileACL | None) -> None:
         """Swap the active profile's ACL resolver.
@@ -373,6 +378,16 @@ class MCPOrchestrator:
         plugin-list renderer reads this verbatim.
         """
         return list(self._registration_errors)
+
+    @property
+    def disabled_plugins_meta(self) -> dict[str, dict]:
+        """Metadata for plugins that were scanned but not registered (S2 #470).
+
+        Keyed by plugin name. Each value mirrors the plugins:list card shape
+        (status="disabled", enabled=False) so _plugins_snapshot_data can
+        render informative cards without the plugin being active.
+        """
+        return dict(self._disabled_plugins_meta)
 
     def required_capabilities_for(self, plugin_name: str) -> frozenset[str] | None:
         """The REQUIRED_CAPABILITIES set the named plugin declared at load
@@ -659,7 +674,9 @@ class MCPOrchestrator:
     # Auto-discovery
     # ------------------------------------------------------------------
 
-    def discover_plugins(self, plugins_dir: Path) -> None:
+    def discover_plugins(
+        self, plugins_dir: Path, *, disabled: frozenset[str] | None = None
+    ) -> None:
         """Import every *.py in plugins_dir, call create(), register the result.
 
         Conforming layouts (ADR-0005, Issue #46):
@@ -671,28 +688,33 @@ class MCPOrchestrator:
         Subdirs that don't match any of these (e.g. a folder with no server.py)
         are recorded as ``REASON_NOT_INSPECTABLE_PATH`` so the tray can flag
         the layout error rather than silently hiding the plugin.
+
+        ``disabled`` (S2 #470): plugin names in this set are scanned and
+        recorded with full metadata but not registered — their card renders
+        as status="disabled" in the Harness UI.
         """
+        _disabled = disabled or frozenset()
         if not plugins_dir.is_dir():
             logger.warning("[mcp] plugins_dir '%s' does not exist — skipping discovery", plugins_dir)
             return
         for path in sorted(plugins_dir.glob("*.py")):
             if path.name.startswith("_"):
                 continue
-            self._load_plugin_file(path, inspectability=INSPECTED)
+            self._load_plugin_file(path, inspectability=INSPECTED, disabled=_disabled)
         for sub in sorted(p for p in plugins_dir.iterdir() if p.is_dir()):
             if sub.name.startswith("."):
                 continue
             if sub.name == "__pycache__":
                 continue
             if sub.name == "_trusted":
-                self._discover_trusted_subtree(sub)
+                self._discover_trusted_subtree(sub, disabled=_disabled)
                 continue
             if sub.name.startswith("_"):
                 # Other underscored dirs are reserved scaffolding; ignore.
                 continue
             server_py = sub / "server.py"
             if server_py.is_file():
-                self._load_plugin_file(server_py, inspectability=INSPECTED)
+                self._load_plugin_file(server_py, inspectability=INSPECTED, disabled=_disabled)
             else:
                 self._record_registration_error(
                     sub.name,
@@ -704,7 +726,9 @@ class MCPOrchestrator:
                     sub,
                 )
 
-    def _discover_trusted_subtree(self, trusted_dir: Path) -> None:
+    def _discover_trusted_subtree(
+        self, trusted_dir: Path, *, disabled: frozenset[str] = frozenset()
+    ) -> None:
         """Walk ``plugins/_trusted/`` (Issue #46 escape hatch).
 
         Trusted plugins skip the static-pattern scan but still:
@@ -718,7 +742,7 @@ class MCPOrchestrator:
                 continue
             server_py = sub / "server.py"
             if server_py.is_file():
-                self._load_plugin_file(server_py, inspectability=TRUSTED)
+                self._load_plugin_file(server_py, inspectability=TRUSTED, disabled=disabled)
             else:
                 self._record_registration_error(
                     sub.name,
@@ -730,7 +754,13 @@ class MCPOrchestrator:
                     sub,
                 )
 
-    def _load_plugin_file(self, path: Path, *, inspectability: str = INSPECTED) -> None:
+    def _load_plugin_file(
+        self,
+        path: Path,
+        *,
+        inspectability: str = INSPECTED,
+        disabled: frozenset[str] = frozenset(),
+    ) -> None:
         # ADR-0005 / Issue #46 — static-pattern scan runs BEFORE module import
         # so a hostile plugin's import-time side effects never fire on a
         # refused plugin. Trusted plugins skip the scan but still go through
@@ -790,6 +820,28 @@ class MCPOrchestrator:
         err = _validate_required_capabilities(plugin_name, required)
         if err is not None:
             self._record_registration_error(err.plugin_name, err.reason, err.detail, path)
+            return
+
+        # S2 #470 — if the user has disabled this plugin, record its metadata
+        # for the Harness UI card but skip registration so no tools are active.
+        if plugin_name in disabled:
+            tools_summary: list[dict] = []
+            try:
+                plugin_inst = module.create()
+                tools_summary = [
+                    {"name": t.name, "description": t.description, "supersedes": None}
+                    for t in plugin_inst.list_tools()
+                ]
+            except Exception:
+                pass  # partial metadata is fine; tools stays []
+            self._disabled_plugins_meta[plugin_name] = {
+                "name": plugin_name,
+                "path": str(path),
+                "inspectability": inspectability,
+                "capabilities": sorted(required),
+                "tools": tools_summary,
+            }
+            logger.info("[mcp] Plugin '%s' is disabled — scanned but not registered", plugin_name)
             return
 
         try:

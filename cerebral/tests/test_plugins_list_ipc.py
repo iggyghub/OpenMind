@@ -128,6 +128,10 @@ class FakeOrchestrator:
             return None
         return {"tool": tool_name, "from_plugin": h[-2][0]}
 
+    @property
+    def disabled_plugins_meta(self) -> dict:
+        return {}
+
 
 @pytest.fixture
 def rig(monkeypatch):
