@@ -36,6 +36,7 @@ from cerebral.environment.context import EnvironmentContext
 from cerebral.security import (
     CAPABILITY_DESCRIPTION,
     CAPABILITY_LABEL,
+    CAPABILITY_VOCABULARY,
     CallFlags,
     Capability,
     ConsentRequest,
@@ -63,7 +64,7 @@ from cerebral.db.attachments import (
     attachments_payload,
     serialise_for_prompt,
 )
-from cerebral.db.credentials import CredentialStore
+from cerebral.db.credentials import CredentialStore, masked_hint
 from cerebral.sandbox import available as _sandbox_available
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
 from cerebral.db.recipes import RecipeStore
@@ -2468,6 +2469,159 @@ def _plugins_list_event() -> dict:
     }
 
 
+# Per-plugin credential provider map (harness UI, spec section 5.1). Each
+# plugin that reads a secret at call time gets one row; plugins with no
+# credentials return an empty list. Static-token providers carry the env-var
+# name so the resolver can report source="env" when the env fallback wins;
+# OAuth/browser-login providers pass env_var=None (no ramp fallback).
+_PLUGIN_CREDENTIAL_PROVIDERS: dict[str, tuple[str, str | None]] = {
+    # Static-token plugins (plugin name == provider name).
+    "youtube":     ("youtube", "YOUTUBE_API_KEY"),
+    "google_maps": ("google_maps", "GOOGLE_MAPS_API_KEY"),
+    "todoist":     ("todoist", "TODOIST_API_TOKEN"),
+    "notion":      ("notion", "NOTION_API_TOKEN"),
+    "toggl":       ("toggl", "TOGGL_API_TOKEN"),
+    "clockify":    ("clockify", "CLOCKIFY_API_KEY"),
+    # Google OAuth family -- all share the single "google" credential row.
+    "gmail":            ("google", None),
+    "calendar":         ("google", None),
+    "google_docs":      ("google", None),
+    "google_sheets":    ("google", None),
+    "google_tasks":     ("google", None),
+    "google_drive":     ("google", None),
+    "google_contacts":  ("google", None),
+    "meet":             ("google", None),
+    "google_workspace": ("google", None),
+    # Browser web-login providers.
+    "google_web": ("google_web", None),
+    "jobs_email": ("jobs_email", None),
+}
+
+
+def _credentials_meta_for_plugin(plugin_name: str) -> list[dict]:
+    """Metadata (never a value) for the credentials ``plugin_name`` consumes.
+
+    Returns the ``credentials[]`` entries for a plugins:list card (spec
+    5.1): ``{provider, source, hint, env_var}``. Empty list when the plugin
+    uses no credentials or when no profile is active. ``source`` follows
+    the keyring -> env chain; ``env_var`` is populated ONLY when
+    ``source == "env"``; ``hint`` is a masked ``****<last4>`` server-side
+    derivation (None if the store can't produce one safely -- see
+    ``masked_hint``). The secret value never enters the payload."""
+    entry = _PLUGIN_CREDENTIAL_PROVIDERS.get(plugin_name)
+    if entry is None or _active_profile is None:
+        return []
+    provider, env_var = entry
+    store = _get_credential_store()
+    secret_val: str | None = None
+    source = "missing"
+    if env_var is not None:
+        tok, resolved = _static_token_from_store_or_env(provider, env_var)
+        if tok:
+            secret_val = tok
+            source = resolved  # "keyring" or "env"
+    else:
+        # OAuth / browser-login: keyring-only. Any of the canonical secret
+        # fields = configured. First hit wins; env fallback doesn't apply
+        # here so source stays "keyring" or "missing".
+        for field in ("refresh_token", "access_token", "password"):
+            try:
+                v = store.get_secret(_active_profile.id, provider, field)
+            except (ValueError, RuntimeError):
+                continue
+            if v:
+                secret_val = v
+                source = "keyring"
+                break
+    return [{
+        "provider": provider,
+        "source": source,
+        "hint": masked_hint(secret_val),
+        "env_var": env_var if source == "env" else None,
+    }]
+
+
+def _source_layout_for_path(path: str) -> str:
+    """Classify the on-disk layout of a discovered plugin (spec 5.1).
+
+    Returns:
+      - "flat"    for plugins/<name>.py
+      - "subdir"  for plugins/<name>/server.py
+      - "trusted" for plugins/_trusted/<name>/server.py
+      - ""        when no on-disk source is known (direct register(),
+                  e.g. tests / the parked builder)
+    """
+    if not path:
+        return ""
+    p = Path(path)
+    if p.name == "server.py":
+        return "trusted" if p.parent.parent.name == "_trusted" else "subdir"
+    return "flat"
+
+
+def _plugins_snapshot_data() -> dict:
+    """Full snapshot payload for plugins:list / plugins:changed (spec 5.1).
+
+    Metadata only -- no secret value appears anywhere in this payload
+    (SAFETY #2 in HARNESS-UI.md). Iterates the orchestrator's registered
+    plugins in name order for stable rendering, then appends any
+    registration refusals verbatim from ``registration_errors``."""
+    plugins: list[dict] = []
+    for plugin_name in sorted(_orc._plugins):
+        caps = _orc.required_capabilities_for(plugin_name)
+        module = _orc._plugin_modules.get(plugin_name)
+        path = getattr(module, "__file__", "") or ""
+        inspectability = _orc.inspectability_for(plugin_name) or "inspected"
+        plugin = _orc._plugins[plugin_name]
+        tools_summary: list[dict] = []
+        try:
+            declared = plugin.list_tools()
+        except Exception:
+            declared = []
+        for tool in declared:
+            active_owner = _orc._tool_index.get(tool.name)
+            supersedes = (
+                _orc.supersedes_for(tool.name)
+                if active_owner == plugin_name else None
+            )
+            tools_summary.append({
+                "name": tool.name,
+                "description": tool.description,
+                "supersedes": supersedes,
+            })
+        plugins.append({
+            "name": plugin_name,
+            # S1 has no disabled_plugins setting yet (S2 delivers it), so
+            # every registered plugin is "active" for now. `trust` is a
+            # separate axis (inspected/trusted) so a plugin can be both
+            # active AND trusted_unverified -- section 4.2.
+            "status": "active",
+            "trust": inspectability,
+            "source_layout": _source_layout_for_path(path),
+            "path": path,
+            "capabilities": sorted(caps) if caps is not None else [],
+            "enabled": True,
+            "tools": tools_summary,
+            "credentials": _credentials_meta_for_plugin(plugin_name),
+        })
+    return {
+        "plugins": plugins,
+        "errors": _orc.registration_errors,
+        "capability_vocabulary": sorted(CAPABILITY_VOCABULARY),
+    }
+
+
+def _plugins_list_v2_event() -> dict:
+    """Response to a ``plugins:list`` request (spec section 5.1)."""
+    return {"type": "plugins:list", "data": _plugins_snapshot_data()}
+
+
+def _plugins_changed_event() -> dict:
+    """Broadcast on any registration change (startup-complete now; future
+    enable/disable + hot-reload). Same payload as ``plugins:list``."""
+    return {"type": "plugins:changed", "data": _plugins_snapshot_data()}
+
+
 def _plugin_settings_event(plugin_name: str) -> dict:
     """Per-plugin settings snapshot for the Plugins pane (Issue #187).
 
@@ -2662,6 +2816,10 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "list_plugins":
         await _broadcast(_plugins_list_event())
+
+    elif t == "plugins:list":
+        # Harness UI rework, S1 #469 -- spec section 5.1.
+        await _broadcast(_plugins_list_v2_event())
 
     elif t == "get_plugin_settings":
         # Issue #187 — Plugins pane requests per-plugin settings.
@@ -3992,6 +4150,7 @@ async def _greet(websocket) -> None:
         _env_context_event,
         _models_list_event,
         _plugins_list_event,
+        _plugins_changed_event,
         _permissions_state_event,
         _credentials_state_event,
         _settings_state_event,
@@ -4871,6 +5030,12 @@ async def main() -> None:
     logger.info("[cerebral] Starting IPC server on ws://%s:%d", HOST, PORT)
     async with serve(_ws_handler, HOST, PORT):
         logger.info("[cerebral] Listening - waiting for tray connection")
+        # Harness UI rework, S1 #469 -- broadcast the initial plugin
+        # snapshot as `plugins:changed` on startup-complete (spec 5.1
+        # "on any registration change"). No-op when no clients are
+        # connected yet; a client that connects afterwards receives
+        # the same payload through _greet.
+        await _broadcast(_plugins_changed_event())
         heartbeat = asyncio.create_task(_heartbeat_loop(audio_active))
         rss_interval = _rss_poll_interval()
         if rss_interval is not None:

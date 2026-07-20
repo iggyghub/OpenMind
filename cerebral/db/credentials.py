@@ -110,6 +110,28 @@ def _keyring_username(profile_id: int, provider: str, field: str) -> str:
     return f"profile_{profile_id}/{provider}/{field}"
 
 
+# Minimum secret length below which a masked hint would leak too much of the
+# secret. Anything shorter returns ``None`` -- the UI shows "configured"
+# without a hint. Chosen at 8 chars: real OAuth refresh tokens, API tokens,
+# and passwords all comfortably exceed this; test fixtures using shorter
+# placeholders correctly get None so the payload stays hint-less.
+_HINT_MIN_LEN = 8
+
+
+def masked_hint(secret: str | None) -> str | None:
+    """Return ``"****<last4>"`` for a non-trivial secret, else ``None``.
+
+    Consumed by the harness UI's ``plugins:list`` credential metadata
+    (spec section 5.1). The full secret value never leaves the keyring;
+    this helper produces the ONLY server-side derivation the payload
+    carries. Any secret shorter than ``_HINT_MIN_LEN`` returns ``None``
+    so the four revealed chars can't shrink the search space of a
+    short/low-entropy secret."""
+    if not secret or len(secret) < _HINT_MIN_LEN:
+        return None
+    return "****" + secret[-4:]
+
+
 class CredentialStore:
     def __init__(self, db_path: str | Path = DB_PATH, keyring_backend: Any = None) -> None:
         path = str(db_path)
