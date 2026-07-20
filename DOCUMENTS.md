@@ -5,12 +5,12 @@ Design: `docs/adr/0011-docx-ground-truth-editor.md` + CONTEXT.md ("Document libr
 engine, and converter; documents live inside Felix's Document library; the resume
 becomes one library document with derived PDF + dossier.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S7 -- #448
-- **Model:** opus
+- **Active:** (all slices landed)
+- **Model:** —
 
 ## Queue
 
@@ -20,7 +20,7 @@ becomes one library document with derived PDF + dossier.
 - [x] S4 -- #455 -- user editing loop: doc_open in Writer + re-ingest on save
 - [x] S5 -- #456 -- Felix editing: doc_edit via headless UNO (Model: opus)
 - [x] S6 -- #457 -- Documents panel in the Main window sidebar
-- [ ] S7 -- #448 -- resume wiring: docx_path, change-hook re-derive, panel resume row (Model: opus)
+- [x] S7 -- #448 -- resume wiring: docx_path, change-hook re-derive, panel resume row (Model: opus)
 
 Per-slice model: sonnet unless the queue entry says otherwise. When ticking a slice,
 set the next entry's model on the `Model:` line above.
@@ -33,6 +33,7 @@ set the next entry's model on the `Model:` line above.
 - PR #463 — S4 #455 — user editing loop: doc_open in Writer + re-ingest on save (979956c)
 - PR #464 — S5 #456 — Felix editing: doc_edit via headless UNO (f05a608)
 - PR #466 — S6 #457 — Documents panel in the Main window sidebar (3981b95)
+- PR #467 — S7 #448 — resume wiring: docx_path, change-hook re-derive, panel resume row (16e3669)
 
 ## SAFETY
 
