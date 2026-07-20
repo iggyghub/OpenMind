@@ -401,6 +401,21 @@ class MCPOrchestrator:
         """
         return self._plugin_inspectability.get(plugin_name)
 
+    def supersedes_for(self, tool_name: str) -> dict | None:
+        """When the current owner of ``tool_name`` took the tool over from a
+        prior plugin, return ``{"tool": tool_name, "from_plugin": <prior>}``.
+        Otherwise return ``None`` (no takeover history, or unknown tool).
+
+        Used by the harness UI ``plugins:list`` payload (spec section 5.1)
+        to render the "supersedes X from Y" indicator on the takeover
+        plugin's card. Derived from ``_tool_registrations`` -- history[-1]
+        is the active owner, history[-2] is the immediate predecessor."""
+        history = self._tool_registrations.get(tool_name, [])
+        if len(history) < 2:
+            return None
+        prior_plugin, _prior_tool = history[-2]
+        return {"tool": tool_name, "from_plugin": prior_plugin}
+
     def registration_tool_count_for(self, plugin_name: str) -> int:
         """Number of tools the plugin declared at registration time.
 
