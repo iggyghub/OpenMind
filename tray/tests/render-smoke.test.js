@@ -673,6 +673,82 @@ test('inline script uses DocumentsPanel for rendering (S6 docs)', () => {
   expect(inlineScript).toMatch(/renderList/);
 });
 
+// ── Harness S3 (#471) -- filter rail, card grid, drawer, unreachable banner ──
+
+test('harness-panel.js script tag is present (S3 harness)', () => {
+  const srcTags = root.querySelectorAll('script[src]');
+  const found = srcTags.some(s => (s.getAttribute('src') || '').includes('harness-panel'));
+  expect(found).toBe(true);
+});
+
+test('plugins pane has filter rail, card grid, and unreachable banner (S3 harness)', () => {
+  const pane = root.querySelector('.pane[data-route="plugins"]');
+  expect(pane).not.toBeNull();
+
+  // Main layout container.
+  expect(pane.querySelector('#hrns-layout')).not.toBeNull();
+  // Filter rail.
+  expect(pane.querySelector('#hrns-filters')).not.toBeNull();
+  // Card grid.
+  expect(pane.querySelector('#hrns-grid')).not.toBeNull();
+  // Unreachable banner (hidden by default).
+  const banner = pane.querySelector('#hrns-unreachable');
+  expect(banner).not.toBeNull();
+  expect(banner.getAttribute('hidden')).not.toBeNull();
+  // Retry button inside banner.
+  expect(pane.querySelector('#hrns-retry-btn')).not.toBeNull();
+});
+
+test('plugins pane has empty and no-match states (S3 harness)', () => {
+  const pane = root.querySelector('.pane[data-route="plugins"]');
+  expect(pane.querySelector('#hrns-empty')).not.toBeNull();
+  expect(pane.querySelector('#hrns-no-match')).not.toBeNull();
+  expect(pane.querySelector('#hrns-clear-filters')).not.toBeNull();
+});
+
+test('plugins pane has detail drawer with close button (S3 harness)', () => {
+  const pane = root.querySelector('.pane[data-route="plugins"]');
+  const drawer = pane.querySelector('#hrns-drawer');
+  expect(drawer).not.toBeNull();
+  expect(drawer.getAttribute('hidden')).not.toBeNull();
+  expect(pane.querySelector('#hrns-drawer-close')).not.toBeNull();
+  expect(pane.querySelector('#hrns-drawer-body')).not.toBeNull();
+});
+
+test('plugins pane has search input in toolbar (S3 harness)', () => {
+  const pane = root.querySelector('.pane[data-route="plugins"]');
+  const search = pane.querySelector('#hrns-search');
+  expect(search).not.toBeNull();
+  expect(search.getAttribute('type')).toBe('search');
+});
+
+test('inline script handles plugins:list and plugins:changed events (S3 harness)', () => {
+  expect(inlineScript).toMatch(/'plugins:list'/);
+  expect(inlineScript).toMatch(/'plugins:changed'/);
+});
+
+test('inline script calls renderHarness on plugin snapshot (S3 harness)', () => {
+  expect(inlineScript).toMatch(/renderHarness/);
+});
+
+test('inline script sends plugins:list request on pane activation (S3 harness)', () => {
+  // The plugins:list send appears at both WS-open and pane-activation.
+  const count = (inlineScript.match(/'plugins:list'/g) || []).length;
+  expect(count).toBeGreaterThanOrEqual(2);
+});
+
+test('inline script calls updateHarnessUnreachable on WS close (S3 harness)', () => {
+  expect(inlineScript).toMatch(/updateHarnessUnreachable/);
+});
+
+test('legacy plug-main-view is hidden behind double-hidden guard (S3 harness)', () => {
+  const legacyView = root.querySelector('#plug-main-view');
+  expect(legacyView).not.toBeNull();
+  // Must carry the hidden attribute so renderPlugins() can still reference it
+  // without crashing, but never show it in the new harness layout.
+  expect(legacyView.getAttribute('hidden')).not.toBeNull();
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
