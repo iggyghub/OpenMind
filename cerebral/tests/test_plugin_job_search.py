@@ -90,8 +90,9 @@ class TestPluginMeta:
         assert names == {
             "jobs_fetch_postings", "jobs_store_resume", "jobs_score_shortlist",
             "jobs_set_approval", "jobs_apply_start", "jobs_apply_submit",
-            "jobs_answer_field",    # S5
-            "jobs_set_auto_submit", # S7
+            "jobs_answer_field",          # S5
+            "jobs_set_auto_submit",       # S7
+            "jobs_update_dossier_field",  # S1 #452
         }
 
     def test_required_capabilities(self):
@@ -471,6 +472,20 @@ class TestDossierStore:
         # And the connection still works afterwards.
         store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
         assert store.get_dossier(_PROFILE_ID)["name"] == "John Doe"
+
+    def test_patch_dossier_updates_single_field(self):
+        store = _in_memory_store()
+        store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+        store.patch_dossier(_PROFILE_ID, "email", "new@example.com")
+        d = store.get_dossier(_PROFILE_ID)
+        assert d["email"] == "new@example.com"
+        assert d["name"] == "John Doe"  # other fields untouched
+
+    def test_patch_dossier_unknown_field_raises(self):
+        store = _in_memory_store()
+        store.upsert_dossier(_PROFILE_ID, _FIXTURE_DOSSIER)
+        with pytest.raises(ValueError, match="not user-editable"):
+            store.patch_dossier(_PROFILE_ID, "raw_text", "injection attempt")
 
 
 # ── Cycle 6 — jobs_store_resume tool ─────────────────────────────────────────
@@ -1288,8 +1303,9 @@ class TestPluginMetaS4:
             "jobs_fetch_postings", "jobs_store_resume",
             "jobs_score_shortlist", "jobs_set_approval",
             "jobs_apply_start", "jobs_apply_submit",
-            "jobs_answer_field",    # S5
-            "jobs_set_auto_submit", # S7
+            "jobs_answer_field",          # S5
+            "jobs_set_auto_submit",       # S7
+            "jobs_update_dossier_field",  # S1 #452
         }
 
     def test_required_capabilities_includes_data_write(self):
@@ -2101,14 +2117,15 @@ class TestPluginMetaS6:
         assert "secrets_read" in REQUIRED_CAPABILITIES
 
     def test_tool_list_has_expected_tools(self):
-        """S6 adds no new tools; S7 adds jobs_set_auto_submit."""
+        """S6 adds no new tools; S7 adds jobs_set_auto_submit; S1 #452 adds jobs_update_dossier_field."""
         from plugins.job_search import JobSearchPlugin
         names = {t.name for t in JobSearchPlugin().list_tools()}
         assert names == {
             "jobs_fetch_postings", "jobs_store_resume", "jobs_score_shortlist",
             "jobs_set_approval", "jobs_apply_start", "jobs_apply_submit",
             "jobs_answer_field",
-            "jobs_set_auto_submit",  # S7 #340
+            "jobs_set_auto_submit",       # S7 #340
+            "jobs_update_dossier_field",  # S1 #452
         }
 
     def test_create_factory_accepts_s6_seams(self):

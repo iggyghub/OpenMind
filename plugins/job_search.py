@@ -590,6 +590,26 @@ class JobSearchStore:
                 d[key] = []
         return d
 
+    _DOSSIER_EDITABLE = frozenset(
+        {"name", "email", "phone", "location", "linkedin", "github", "website"}
+    )
+
+    def patch_dossier(self, profile_id: int, field: str, value: str) -> None:
+        """S1 #452 — Update one scalar dossier field without touching the rest."""
+        if field not in self._DOSSIER_EDITABLE:
+            raise ValueError(f"Field {field!r} is not user-editable")
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            # field is allowlisted above, so the f-string is safe.
+            self._con.execute(
+                f"UPDATE applicant_dossier SET {field} = ?, updated_at = ? WHERE profile_id = ?",
+                (value or "", now, profile_id),
+            )
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+
     # ── S3 #336 — Shortlist scoring + approval ─────────────────────────────
 
     def set_score(self, url: str, score: float) -> None:
@@ -1160,6 +1180,32 @@ class JobSearchPlugin:
                     "required": ["enabled"],
                 },
             ),
+            Tool(
+                name="jobs_update_dossier_field",
+                description=(
+                    "Update one scalar field in the applicant dossier. "
+                    "Use this to correct name, email, phone, location, linkedin, "
+                    "github, or website without re-uploading the resume. "
+                    "Call when the user says 'change my email to X' or 'update my phone number'."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "field": {
+                            "type": "string",
+                            "enum": ["name", "email", "phone", "location",
+                                     "linkedin", "github", "website"],
+                            "description": "Which dossier field to update.",
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "The new value for the field.",
+                        },
+                    },
+                    "required": ["field", "value"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -1179,6 +1225,10 @@ class JobSearchPlugin:
             return await self._answer_field(args.get("question", ""), args.get("answer", ""))
         if tool_name == "jobs_set_auto_submit":
             return await self._set_auto_submit(bool(args.get("enabled")))
+        if tool_name == "jobs_update_dossier_field":
+            return await self._update_dossier_field(
+                args.get("field", ""), args.get("value", "")
+            )
         return ToolResult(content=f"Unknown tool: {tool_name!r}", is_error=True)
 
     async def _score_shortlist(self) -> ToolResult:
@@ -1521,6 +1571,20 @@ class JobSearchPlugin:
             "reviewed_count": settings["reviewed_count"],
             "ramp_threshold": settings["ramp_threshold"],
         }))
+
+    async def _update_dossier_field(self, field: str, value: str) -> ToolResult:
+        """S1 #452 — patch one scalar dossier field; shared path for user and Felix."""
+        store = self._store or _store
+        if store is None:
+            return ToolResult(content="Job search store not initialised", is_error=True)
+        profile_id = _active_profile_id
+        if profile_id is None:
+            return ToolResult(content="No active profile", is_error=True)
+        try:
+            store.patch_dossier(profile_id, field, value)
+        except ValueError as exc:
+            return ToolResult(content=str(exc), is_error=True)
+        return ToolResult(content=json.dumps({"status": "ok", "field": field, "value": value}))
 
     async def _apply_submit(self) -> ToolResult:
         """S4 #337 / S7 #340 — submit the pending application (irreversible=True, ADR-0009).
