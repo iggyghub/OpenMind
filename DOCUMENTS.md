@@ -9,13 +9,13 @@ becomes one library document with derived PDF + dossier.
 
 ## Next slice -- start here
 
-- **Active:** S2 -- #453
+- **Active:** S3 -- #454
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1 -- #452 -- jobs_update_dossier_field + inline dossier email edit (Tier 1)
-- [ ] S2 -- #453 -- LibreOffice dep: setup-libreoffice.ps1 + find_soffice/doc_status
+- [x] S2 -- #453 -- LibreOffice dep: setup-libreoffice.ps1 + find_soffice/doc_status
 - [ ] S3 -- #454 -- documents.py core: library store, doc_convert, snapshot versioning
 - [ ] S4 -- #455 -- user editing loop: doc_open in Writer + re-ingest on save
 - [ ] S5 -- #456 -- Felix editing: doc_edit via headless UNO (Model: opus)
@@ -28,6 +28,7 @@ set the next entry's model on the `Model:` line above.
 ## Landed PRs
 
 - PR #460 — S1 #452 — jobs_update_dossier_field + inline dossier edit (6500c38)
+- PR #461 — S2 #453 — LibreOffice dep: setup-libreoffice.ps1 + find_soffice/doc_status (b076e83)
 
 ## SAFETY
 
