@@ -51,6 +51,7 @@ class TestSettingsStore:
             "tts_volume",
             "mic_input_device",
             "browser_pause_on_verification",
+            "disabled_plugins",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):

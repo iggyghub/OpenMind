@@ -325,3 +325,196 @@ async def test_discord_allowlist_remove_nonexistent_still_broadcasts(ipc_rig):
     evts = ipc_rig.settings_events()
     assert len(evts) == 1
     assert evts[0]["data"]["plugin_name"] == "discord_user"
+
+
+# ---------------------------------------------------------------------------
+# S2 #470 -- disabled_plugins setting + plugins:set_enabled
+# ---------------------------------------------------------------------------
+
+# Minimal plugin source strings used to create real temp plugin files.
+_ALPHA_SRC = """\
+PLUGIN_NAME = "alpha_p"
+REQUIRED_CAPABILITIES = frozenset()
+from cerebral.mcp.orchestrator import Tool, ToolResult
+class _P:
+    name = "alpha_p"
+    def list_tools(self):
+        return [Tool(name="shared_tool", description="from alpha", plugin="alpha_p")]
+    async def call_tool(self, n, a): return ToolResult(content="ok")
+def create(): return _P()
+"""
+
+# beta supersedes shared_tool from alpha
+_BETA_SRC = """\
+PLUGIN_NAME = "beta_p"
+REQUIRED_CAPABILITIES = frozenset()
+from cerebral.mcp.orchestrator import Tool, ToolResult
+class _P:
+    name = "beta_p"
+    def list_tools(self):
+        return [Tool(name="shared_tool", description="from beta", plugin="beta_p")]
+    async def call_tool(self, n, a): return ToolResult(content="ok2")
+def create(): return _P()
+"""
+
+
+@pytest.fixture
+def s2_rig(tmp_path, monkeypatch):
+    """Fixture for S2 tests using a real MCPOrchestrator + real temp plugin files."""
+    from cerebral.mcp.orchestrator import MCPOrchestrator
+    from cerebral.settings import SettingsStore
+    import cerebral.main as main_mod
+
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    (plugins_dir / "alpha_p.py").write_text(_ALPHA_SRC, encoding="utf-8")
+    (plugins_dir / "beta_p.py").write_text(_BETA_SRC, encoding="utf-8")
+
+    settings_path = tmp_path / "settings.json"
+    st = SettingsStore(path=settings_path)
+    orc = MCPOrchestrator()
+    orc.discover_plugins(plugins_dir, disabled=frozenset())
+
+    sent: list[dict] = []
+
+    async def fake_broadcast(event: dict) -> None:
+        sent.append(event)
+
+    monkeypatch.setattr(main_mod, "_orc", orc)
+    monkeypatch.setattr(main_mod, "_settings", st)
+    monkeypatch.setattr(main_mod, "_broadcast", fake_broadcast)
+    monkeypatch.setattr(main_mod, "_connected", set())
+    monkeypatch.setattr(main_mod, "_active_profile", None)
+
+    class Rig:
+        def __init__(self):
+            self.orc = orc
+            self.st = st
+            self.sent = sent
+            self.plugins_dir = plugins_dir
+
+        async def handle(self, msg: dict) -> None:
+            await main_mod._handle_message(msg)
+
+        def plugins_changed_events(self):
+            return [e for e in sent if e["type"] == "plugins:changed"]
+
+        def error_events(self):
+            return [e for e in sent if e["type"] == "error"]
+
+        def snapshot_plugins(self):
+            evts = [e for e in sent if e["type"] == "plugins:list"]
+            return {p["name"]: p for p in evts[-1]["data"]["plugins"]} if evts else {}
+
+    yield Rig()
+
+
+async def test_disable_removes_tool_from_index(s2_rig):
+    assert "shared_tool" in s2_rig.orc._tool_index
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "beta_p", "enabled": False},
+    })
+    # beta_p was the active owner of shared_tool; unregistering it should
+    # restore alpha_p as the owner (takeover-revert).
+    assert s2_rig.orc._tool_index.get("shared_tool") == "alpha_p"
+    assert "beta_p" not in s2_rig.orc._plugins
+
+
+async def test_disable_takeover_plugin_reverts_to_original_owner(s2_rig):
+    # beta registered after alpha, so beta owns shared_tool.
+    assert s2_rig.orc._tool_index["shared_tool"] == "beta_p"
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "beta_p", "enabled": False},
+    })
+    assert s2_rig.orc._tool_index["shared_tool"] == "alpha_p"
+
+
+async def test_disabled_plugin_appears_in_snapshot_with_metadata(s2_rig):
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "alpha_p", "enabled": False},
+    })
+    snap = s2_rig.snapshot_plugins()
+    assert "alpha_p" in snap
+    assert snap["alpha_p"]["status"] == "disabled"
+    assert snap["alpha_p"]["enabled"] is False
+    # Card must still carry tool metadata
+    tool_names = [t["name"] for t in snap["alpha_p"]["tools"]]
+    assert "shared_tool" in tool_names
+
+
+async def test_enable_reregisters_plugin(s2_rig):
+    # Disable first
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "alpha_p", "enabled": False},
+    })
+    assert "alpha_p" not in s2_rig.orc._plugins
+    # Re-enable
+    s2_rig.sent.clear()
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "alpha_p", "enabled": True},
+    })
+    assert "alpha_p" in s2_rig.orc._plugins
+    snap = s2_rig.snapshot_plugins()
+    assert snap["alpha_p"]["status"] == "active"
+    assert snap["alpha_p"]["enabled"] is True
+
+
+async def test_unknown_plugin_name_returns_error(s2_rig):
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "no_such_plugin", "enabled": False},
+    })
+    errs = s2_rig.error_events()
+    assert len(errs) == 1
+    assert "no_such_plugin" in errs[0]["data"]["message"]
+
+
+async def test_enable_missing_file_moves_to_errors(s2_rig):
+    # Disable alpha_p
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "alpha_p", "enabled": False},
+    })
+    # Delete the plugin file
+    (s2_rig.plugins_dir / "alpha_p.py").unlink()
+    s2_rig.sent.clear()
+    # Attempt to re-enable
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "alpha_p", "enabled": True},
+    })
+    assert "alpha_p" not in s2_rig.orc._plugins
+    error_reasons = [e["reason"] for e in s2_rig.orc.registration_errors]
+    assert "REASON_FILE_MISSING_ON_ENABLE" in error_reasons
+
+
+async def test_set_enabled_updates_disabled_plugins_setting(s2_rig):
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "alpha_p", "enabled": False},
+    })
+    assert "alpha_p" in s2_rig.st.get("disabled_plugins")
+    # Re-enable removes it
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "alpha_p", "enabled": True},
+    })
+    assert "alpha_p" not in s2_rig.st.get("disabled_plugins")
+
+
+async def test_no_secret_in_plugins_list_payload(s2_rig):
+    """SAFETY #2: no secret pattern in any plugins:set_enabled response."""
+    import re
+    import json
+    await s2_rig.handle({
+        "type": "plugins:set_enabled",
+        "data": {"plugin_name": "alpha_p", "enabled": False},
+    })
+    raw = json.dumps(s2_rig.sent)
+    # Secret patterns: long hex/base64 tokens, Bearer tokens, passwords
+    assert not re.search(r'"(password|secret|token|key)":\s*"[^"]{8,}"', raw)

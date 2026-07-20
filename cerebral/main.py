@@ -2564,8 +2564,8 @@ def _plugins_snapshot_data() -> dict:
 
     Metadata only -- no secret value appears anywhere in this payload
     (SAFETY #2 in HARNESS-UI.md). Iterates the orchestrator's registered
-    plugins in name order for stable rendering, then appends any
-    registration refusals verbatim from ``registration_errors``."""
+    plugins in name order for stable rendering, appends disabled-but-scanned
+    plugins (status="disabled"), then appends any registration refusals."""
     plugins: list[dict] = []
     for plugin_name in sorted(_orc._plugins):
         caps = _orc.required_capabilities_for(plugin_name)
@@ -2591,10 +2591,6 @@ def _plugins_snapshot_data() -> dict:
             })
         plugins.append({
             "name": plugin_name,
-            # S1 has no disabled_plugins setting yet (S2 delivers it), so
-            # every registered plugin is "active" for now. `trust` is a
-            # separate axis (inspected/trusted) so a plugin can be both
-            # active AND trusted_unverified -- section 4.2.
             "status": "active",
             "trust": inspectability,
             "source_layout": _source_layout_for_path(path),
@@ -2602,6 +2598,19 @@ def _plugins_snapshot_data() -> dict:
             "capabilities": sorted(caps) if caps is not None else [],
             "enabled": True,
             "tools": tools_summary,
+            "credentials": _credentials_meta_for_plugin(plugin_name),
+        })
+    # S2 #470 — include disabled plugins so their cards render informative.
+    for plugin_name, meta in sorted(_orc.disabled_plugins_meta.items()):
+        plugins.append({
+            "name": plugin_name,
+            "status": "disabled",
+            "trust": meta["inspectability"],
+            "source_layout": _source_layout_for_path(meta["path"]),
+            "path": meta["path"],
+            "capabilities": meta["capabilities"],
+            "enabled": False,
+            "tools": meta["tools"],
             "credentials": _credentials_meta_for_plugin(plugin_name),
         })
     return {
@@ -2665,6 +2674,112 @@ async def _speak(text: str) -> None:
     await _broadcast({"type": "tts_speaking", "data": {"text": text, "voice_id": voice_id}})
     await _tts.speak(text, voice_id, volume=volume)
     await _broadcast({"type": "tts_done", "data": {}})
+
+
+# ── Plugin enable/disable (S2 #470) ──────────────────────────────────────────
+
+async def _handle_plugins_set_enabled(msg: dict) -> None:
+    """Handle ``plugins:set_enabled`` (spec section 5.2).
+
+    Adds/removes the plugin name from the ``disabled_plugins`` setting, then
+    either unregisters (disable) or re-scans and re-registers (enable) the
+    plugin. Broadcasts ``plugins:changed`` and replies with ``plugins:list``.
+    """
+    d = msg.get("data") or {}
+    plugin_name = (d.get("plugin_name") or "").strip()
+    enabled = d.get("enabled")
+
+    if not plugin_name or enabled is None:
+        logger.warning("[cerebral] plugins:set_enabled missing plugin_name or enabled")
+        return
+
+    enabled = bool(enabled)
+    disabled: list[str] = list(_settings.get("disabled_plugins") or [])
+
+    if not enabled:
+        # Disable: add to disabled list, unregister from orchestrator.
+        if plugin_name not in disabled:
+            disabled.append(plugin_name)
+        _settings.set("disabled_plugins", disabled)
+        if plugin_name in _orc._plugins:
+            # Move its metadata into _disabled_plugins_meta before unregistering
+            # so the card keeps rendering with full info.
+            module = _orc._plugin_modules.get(plugin_name)
+            path = getattr(module, "__file__", "") or ""
+            inspectability = _orc.inspectability_for(plugin_name) or "inspected"
+            caps = _orc.required_capabilities_for(plugin_name)
+            plugin_obj = _orc._plugins[plugin_name]
+            try:
+                tools_summary = [
+                    {"name": t.name, "description": t.description, "supersedes": None}
+                    for t in plugin_obj.list_tools()
+                ]
+            except Exception:
+                tools_summary = []
+            _orc._disabled_plugins_meta[plugin_name] = {
+                "name": plugin_name,
+                "path": path,
+                "inspectability": inspectability,
+                "capabilities": sorted(caps) if caps else [],
+                "tools": tools_summary,
+            }
+            _orc.unregister(plugin_name)
+            logger.info("[cerebral] Disabled plugin '%s'", plugin_name)
+        elif plugin_name not in _orc._disabled_plugins_meta:
+            # Unknown plugin name entirely.
+            await _broadcast({
+                "type": "error",
+                "data": {"message": f"Unknown plugin: {plugin_name!r}"},
+            })
+            return
+    else:
+        # Enable: remove from disabled list, re-run single-plugin load path.
+        if plugin_name not in _orc._plugins and plugin_name not in _orc._disabled_plugins_meta:
+            await _broadcast({
+                "type": "error",
+                "data": {"message": f"Unknown plugin: {plugin_name!r}"},
+            })
+            return
+        # Determine the path and inspectability from disabled metadata.
+        meta = _orc._disabled_plugins_meta.get(plugin_name)
+        if meta is None:
+            # Plugin is already active (idempotent enable).
+            logger.info("[cerebral] plugins:set_enabled — '%s' already active", plugin_name)
+        else:
+            path = meta["path"]
+            inspectability = meta["inspectability"]
+            if not Path(path).is_file():
+                # File gone — move to errors with a distinct reason.
+                _orc._disabled_plugins_meta.pop(plugin_name, None)
+                _orc._registration_errors.append({
+                    "plugin_name": plugin_name,
+                    "reason": "REASON_FILE_MISSING_ON_ENABLE",
+                    "detail": f"plugin file no longer exists: {path}",
+                    "path": path,
+                })
+                logger.warning(
+                    "[cerebral] Cannot enable '%s' — file missing: %s", plugin_name, path
+                )
+            else:
+                # Remove the disabled metadata entry before re-loading so
+                # _load_plugin_file doesn't treat it as disabled again.
+                _orc._disabled_plugins_meta.pop(plugin_name, None)
+                _orc._load_plugin_file(
+                    Path(path),
+                    inspectability=inspectability,
+                    disabled=frozenset(),
+                )
+                if plugin_name not in _orc._plugins:
+                    # Re-scan failed — plugin landed in registration_errors.
+                    logger.warning("[cerebral] Re-enable of '%s' failed scan", plugin_name)
+                else:
+                    logger.info("[cerebral] Re-enabled plugin '%s'", plugin_name)
+        disabled = [n for n in disabled if n != plugin_name]
+        _settings.set("disabled_plugins", disabled)
+
+    snapshot = _plugins_snapshot_data()
+    await _broadcast({"type": "plugins:changed", "data": snapshot})
+    await _broadcast({"type": "plugins:list", "data": snapshot})
 
 
 # ── Message dispatcher ────────────────────────────────────────────────────────
@@ -2820,6 +2935,10 @@ async def _handle_message(msg: dict) -> None:
     elif t == "plugins:list":
         # Harness UI rework, S1 #469 -- spec section 5.1.
         await _broadcast(_plugins_list_v2_event())
+
+    elif t == "plugins:set_enabled":
+        # Harness UI rework, S2 #470 -- spec section 5.2.
+        await _handle_plugins_set_enabled(msg)
 
     elif t == "get_plugin_settings":
         # Issue #187 — Plugins pane requests per-plugin settings.
@@ -5004,7 +5123,10 @@ async def main() -> None:
             pipeline is not None, _tts.ready,
         )
 
-    _orc.discover_plugins(_PLUGINS_DIR)
+    _orc.discover_plugins(
+        _PLUGINS_DIR,
+        disabled=frozenset(_settings.get("disabled_plugins") or []),
+    )
     _attach_builder_plugin()
     _wire_plugin_seams()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))

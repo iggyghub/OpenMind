@@ -6,7 +6,8 @@ settings must be read and written via WebSocket to Cerebral.
 
 Keys: notifications_enabled, reminder_interval_minutes, camera_enabled,
       visualiser_visible, mic_mode, tts_muted, tts_volume,
-      mic_input_device, browser_pause_on_verification
+      mic_input_device, browser_pause_on_verification,
+      disabled_plugins
 """
 from __future__ import annotations
 
@@ -31,6 +32,9 @@ _DEFAULTS: dict[str, Any] = {
     # it in a visible window rather than silently failing. Default ON — failing
     # loud beats stalling.
     "browser_pause_on_verification": True,
+    # Harness UI rework S2 #470 — plugin names the user has disabled.
+    # Disabled plugins are scanned + metadata-recorded but not registered.
+    "disabled_plugins": [],
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -46,6 +50,7 @@ _TYPES: dict[str, type] = {
     "tts_volume":                int,
     "mic_input_device":          str,
     "browser_pause_on_verification": bool,
+    "disabled_plugins":          list,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
@@ -93,6 +98,8 @@ class SettingsStore:
             raise ValueError(
                 f"mic_mode must be one of {sorted(_MIC_MODE_VALUES)}, got {value!r}"
             )
+        if key == "disabled_plugins" and not all(isinstance(i, str) for i in value):
+            raise ValueError("disabled_plugins must be a list of str")
         self._data[key] = value
         self._save()
 
