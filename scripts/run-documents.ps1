@@ -31,6 +31,9 @@ $ErrorActionPreference = "Stop"
 
 try {
     $env:CLAUDE_CODE_MAX_OUTPUT_TOKENS = "64000"
+    # Force subscription auth: a User-level ANTHROPIC_API_KEY would make headless
+    # sessions bill API credits, which the limit/auto-resume machinery does not model.
+    Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
 
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
     Set-Location $repoRoot
@@ -108,7 +111,7 @@ try {
     $claudeCmd = $claudeCmd.Source
 
     $allowedModels = @("haiku", "sonnet", "opus", "fable")
-    $limitPattern  = "hit your limit|usage limit|rate limit|limit reached|out of usage|resets \d|reset at|resets at|exceeded your|approaching your|Claude usage limit|Not logged in|Failed to authenticate"
+    $limitPattern  = "hit your limit|usage limit|rate limit|limit reached|out of usage|resets \d|reset at|resets at|exceeded your|approaching your|Claude usage limit|Credit balance is too low|Not logged in|Failed to authenticate"
 
     $rules = "Hard rules, in order: " +
              "(1) Read DOCUMENTS.md (including SAFETY), CONTEXT.md entries 'Document library' and 'Resume artifact', and docs/adr/0011-docx-ground-truth-editor.md first. The active slice is named in the 'Next slice' block as 'Sx -- #N'. Run gh issue view N for its detail. " +
