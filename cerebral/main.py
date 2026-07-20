@@ -77,6 +77,7 @@ from plugins.job_search import (  # S1 #334 / S2 #335 / S7 #340
     JobSearchStore as _JobSearchStore,
     check_auto_submit_gate as _js_check_auto_submit_gate,      # S7 #340
 )
+from plugins.documents import DocumentStore as _DocumentStore  # S3 #454
 from cerebral.channel_inbox import ChannelInbox
 from cerebral.settings import SettingsStore as _SettingsStore
 
@@ -124,6 +125,7 @@ _conversation = ConversationStore()
 _attachments  = AttachmentStore()
 _recipe_store    = RecipeStore()
 _job_search_store = _JobSearchStore()  # S1 #334 / S2 #335
+_document_store = _DocumentStore()    # S3 #454
 
 
 def _js_seam(seam: str, *args) -> None:
@@ -145,6 +147,53 @@ def _js_seam(seam: str, *args) -> None:
         logger.warning("[cerebral] job_search plugin missing %s seam", seam)
         return
     fn(*args)
+
+
+def _docs_seam(seam: str, *args) -> None:
+    """Mirror of _js_seam for the documents plugin (#153 / S3 #454)."""
+    try:
+        module = _orc.get_plugin_module("documents")
+    except KeyError:
+        logger.warning("[cerebral] documents plugin not loaded -- %s skipped", seam)
+        return
+    fn = getattr(module, seam, None)
+    if fn is None:
+        logger.warning("[cerebral] documents plugin missing %s seam", seam)
+        return
+    fn(*args)
+
+
+def _documents_update_event() -> dict:  # S3 #454
+    docs = _document_store.list_docs(_active_profile.id) if _active_profile else []
+    return {"type": "documents_update", "data": {"docs": docs}}
+
+
+async def _docs_broadcast() -> None:  # S3 #454
+    await _broadcast(_documents_update_event())
+
+
+async def _docs_convert(source_path: str, fmt: str, out_dir: str) -> str:  # S3 #454
+    """Real soffice converter wired into the documents plugin as a seam.
+
+    Runs LibreOffice headless conversion and returns the output file path.
+    Behaviour only checkable with a real LibreOffice install:
+    see docs/documents-live-verify.md.
+    """
+    from plugins.documents import find_soffice as _find_soffice
+    soffice = _find_soffice()
+    if soffice is None:
+        raise RuntimeError("LibreOffice not found; run scripts/setup-libreoffice.ps1")
+    proc = await asyncio.create_subprocess_exec(
+        str(soffice), "--headless", "--convert-to", fmt, "--outdir", out_dir, source_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"soffice exited {proc.returncode}: {stderr.decode()[:200]}")
+    stem = Path(source_path).stem
+    return str(Path(out_dir) / f"{stem}.{fmt}")
+
 
 async def _extract_dossier(pdf_text: str) -> dict:  # S2 #335
     """LLM extractor injected into job_search plugin for Applicant dossier parsing."""
@@ -2400,7 +2449,8 @@ async def _handle_message(msg: dict) -> None:
         )
         _pm.set_active(p.id)
         _active_profile = p
-        _js_seam("set_active_profile_id", p.id)  # S2 #335
+        _js_seam("set_active_profile_id", p.id)    # S2 #335
+        _docs_seam("set_active_profile_id", p.id)  # S3 #454
         _orc.set_acl(_build_acl(p))
         logger.info("[cerebral] Profile created: %s (id=%d)", p.name, p.id)
         await _broadcast(_profile_event(p))
@@ -2414,7 +2464,8 @@ async def _handle_message(msg: dict) -> None:
             if p:
                 _pm.set_active(p.id)
                 _active_profile = p
-                _js_seam("set_active_profile_id", p.id)  # S2 #335
+                _js_seam("set_active_profile_id", p.id)    # S2 #335
+                _docs_seam("set_active_profile_id", p.id)  # S3 #454
                 # Rebuild the ACL on profile switch — Issue #45 / ADR-0005
                 # mandates that once + session grants clear on switch.
                 _orc.set_acl(_build_acl(p))
@@ -4250,6 +4301,9 @@ def _wire_plugin_seams() -> None:
         ("job_search", "set_store_ats_password_fn", _jobs_store_ats_password),       # S6 #339
         ("job_search", "set_read_verify_link_fn", _jobs_read_verify_link),           # S6 #339
         ("job_search", "set_click_verify_link_fn", _jobs_click_verify_link),         # S6 #339
+        ("documents", "set_store", _document_store),                                 # S3 #454
+        ("documents", "set_converter_fn", _docs_convert),                           # S3 #454
+        ("documents", "set_broadcast_fn", _docs_broadcast),                         # S3 #454
     ]
     for name, seam, factory in seams:
         try:
@@ -4271,6 +4325,9 @@ def _wire_plugin_seams() -> None:
     # instance and left jobs_store_resume with "No active profile".
     if _active_profile:
         _js_seam("set_active_profile_id", _active_profile.id)
+    # S3 #454 — seed documents profile-id seam.
+    if _active_profile:
+        _docs_seam("set_active_profile_id", _active_profile.id)
     logger.info("[cerebral] Plugin seams wired (%d plugin(s))", len(seams))
 
 

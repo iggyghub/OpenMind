@@ -13,3 +13,18 @@ Run these manually on a Windows machine that has (or can get) LibreOffice.
       Ask Felix: "doc status". Verify: `available: true` and correct `soffice_path`.
 - [ ] Start Cerebral with LibreOffice NOT installed (or SOFFICE_PATH seam unset).
       Ask Felix: "doc status". Verify: `available: false` and the setup-libreoffice.ps1 hint.
+
+## S3 #454 -- document library: store, convert, snapshot versioning
+
+- [ ] Start Cerebral with LibreOffice installed. Ask Felix: "store this file in my document
+      library" (attach a .docx). Verify: `doc_store` returns a doc entry with correct kind/name
+      and the file appears under `cerebral/data/attachments/<profile>/documents/<id>/`.
+- [ ] Ask Felix: "list my documents". Verify: `doc_list` returns the stored doc.
+- [ ] Ask Felix: "convert my resume to PDF". Verify: `doc_convert` calls soffice headless,
+      the .pdf appears next to the source in the library directory, and a new library entry
+      is returned with kind=pdf.
+- [ ] Overwrite the stored doc (ask Felix to store an updated version). Then ask Felix to
+      revert to the original. Verify: `doc_revert` restores the v0 content and the current
+      file is snapshotted before restore.
+- [ ] Overwrite the same doc 8 times. Verify: `versions/` contains v0 + exactly 5
+      most-recent timestamped snapshots (6 total).

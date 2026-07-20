@@ -51,7 +51,9 @@ def test_wire_plugin_seams_seeds_profile_on_orchestrator_module(monkeypatch):
 
     main._wire_plugin_seams()
 
-    assert mod._calls["set_active_profile_id"] == [(7,)]
+    # Both jobs and documents seed set_active_profile_id on the same
+    # orchestrator-loaded module; verify at least one call with the right id.
+    assert (7,) in mod._calls.get("set_active_profile_id", [])
     # Spot-check a couple of table-wired seams reached the same module.
     assert mod._calls["set_extract_fn"]
     assert mod._calls["set_navigate_fn"]
