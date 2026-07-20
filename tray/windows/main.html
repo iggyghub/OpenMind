@@ -9076,6 +9076,25 @@
         .map(function (r) { return { label: r.name, route: 'recipes', anchor: '' }; });
     });
 
+    // ── Job Search provider + in-pane filter (live-ramp bugfix: the jobs pane
+    // was never wired into the shell, so typing a company like "dutchie" found
+    // nothing even though its card sits ~12 rows down the scored shortlist).
+    // The shortlist holds every scored posting; company matches via `secondary`.
+    _registerProvider('job-search', function (_query) {
+      return (jobShortlist || []).map(function (p) {
+        return {
+          label:     p.title || 'Untitled',
+          secondary: p.company || null,
+          route:     'job-search',
+          anchor:    'jobs-shortlist-section',
+        };
+      });
+    });
+    // Card title is "Title — Company" (#445), so a company query filters it too.
+    _registerInPaneFilter('job-search', function (q) {
+      _filterRowsByText('#jobs-shortlist-list .jobs-shortlist-card', '.jobs-shortlist-card-title', q);
+    });
+
     function _currentRoute() {
       return _routeFromHash(location.hash);
     }
