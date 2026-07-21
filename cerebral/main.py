@@ -179,6 +179,8 @@ def _documents_update_event() -> dict:  # S3 #454, S6 #457
 
 async def _docs_broadcast() -> None:  # S3 #454
     await _broadcast(_documents_update_event())
+    # UI2 A3 #483 -- keep the workspace Documents panel spec live.
+    await _broadcast(_plugins_panel_spec_event("documents"))
 
 
 async def _docs_convert(source_path: str, fmt: str, out_dir: str) -> str:  # S3 #454
@@ -2651,6 +2653,50 @@ def _plugin_settings_event(plugin_name: str) -> dict:
     }
 
 
+def _panel_spec_for(plugin_name: str) -> "dict | None":
+    """Fetch a plugin's declarative panel spec (UI2 A3 #483, ADR-0012).
+
+    Calls ``plugin.panel_spec(profile_id)`` when the loaded plugin exposes it;
+    returns None on any exception, missing plugin, or missing method. The
+    plugin returns *data* only -- the renderer owns all drawing (SAFETY #3).
+    """
+    plugin = _orc._plugins.get(plugin_name)
+    if plugin is None:
+        return None
+    fn = getattr(plugin, "panel_spec", None)
+    if not callable(fn):
+        return None
+    try:
+        profile_id = _active_profile.id if _active_profile else None
+        spec = fn(profile_id)
+    except Exception as exc:
+        logger.warning("[cerebral] panel_spec(%s) raised: %s", plugin_name, exc)
+        return None
+    return spec if isinstance(spec, dict) else None
+
+
+def _plugins_panels_event() -> dict:
+    """List panels each loaded plugin declares (UI2 A3 #483)."""
+    panels: list[dict] = []
+    for name in sorted(_orc._plugins):
+        spec = _panel_spec_for(name)
+        if spec is None:
+            continue
+        panels.append({
+            "plugin_name": name,
+            "title":       spec.get("title") or name,
+        })
+    return {"type": "plugins:panels", "data": {"panels": panels}}
+
+
+def _plugins_panel_spec_event(plugin_name: str) -> dict:
+    """Response to a ``plugins:panel_spec`` request (UI2 A3 #483)."""
+    return {
+        "type": "plugins:panel_spec",
+        "data": {"plugin_name": plugin_name, "spec": _panel_spec_for(plugin_name)},
+    }
+
+
 def _settings_state_event() -> dict:
     """Snapshot of all system settings for the Main window Settings pane."""
     return {"type": "settings_updated", "data": _settings.all()}
@@ -3016,6 +3062,17 @@ async def _handle_message(msg: dict) -> None:
     elif t == "plugins:test_call":
         # Harness UI rework, S4 #472 -- spec section 5.3.
         await _handle_plugins_test_call(msg)
+
+    elif t == "plugins:panels":
+        # UI2 A3 #483 -- list plugin-declared panels for the workspace opener.
+        await _broadcast(_plugins_panels_event())
+
+    elif t == "plugins:panel_spec":
+        # UI2 A3 #483 -- fetch one plugin's declarative panel spec.
+        d = msg.get("data") or {}
+        plugin_name = (d.get("plugin_name") or "").strip()
+        if plugin_name:
+            await _broadcast(_plugins_panel_spec_event(plugin_name))
 
     elif t == "get_plugin_settings":
         # Issue #187 — Plugins pane requests per-plugin settings.

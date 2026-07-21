@@ -648,5 +648,40 @@ class DocumentsPlugin:
         return ToolResult(content=json.dumps({"doc": doc}))
 
 
+    # ── UI2 A3 (#483): panel spec ─────────────────────────────────────────
+    def panel_spec(self, profile_id: "int | None") -> "dict | None":
+        """Declarative panel spec (ADR-0012 decision 3).
+
+        Returns metadata only -- no secret values -- as a widget tree from the
+        {list, detail} vocabulary. Renderer owns all drawing; this method
+        never returns HTML or JavaScript.
+        """
+        if _store is None or profile_id is None:
+            docs: list = []
+        else:
+            try:
+                docs = _store.list_docs(profile_id)
+            except Exception:
+                docs = []
+        items = [
+            {
+                "id":       d.get("id"),
+                "title":    d.get("name") or "Untitled",
+                "subtitle": d.get("kind") or "",
+            }
+            for d in docs
+        ]
+        return {
+            "title": "Documents",
+            "widgets": [
+                {"type": "list",   "id": "docs-list",    "items":  items},
+                {"type": "detail", "id": "docs-summary", "fields": [
+                    {"label": "Documents", "value": str(len(items))},
+                    {"label": "Library",   "value": "profile-scoped"},
+                ]},
+            ],
+        }
+
+
 def create() -> DocumentsPlugin:
     return DocumentsPlugin()

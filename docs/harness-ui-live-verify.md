@@ -201,3 +201,36 @@ running.
       width that was set before the reload (width persists in localStorage).
 - [ ] Close all panels -- secondary slot collapses AND the splitter disappears
       (no orphan drag handle). Open a panel again -- splitter reappears.
+
+## UI2 S4 (#483) -- panel spec v1 end-to-end (plugin-declared panels)
+
+- [ ] Open the tray. The "+ Panel" dropdown in the header only has "Documents"
+      listed under the placeholder (the S2/S3 hardcoded "Job Search" demo
+      option is gone -- the registry is now populated at runtime from the
+      `plugins:panels` WS event).
+- [ ] Pick "Documents" from the dropdown. The secondary slot opens with a
+      panel titled "Documents". Two widgets are visible: a list of the docs
+      the active profile has stored (or an "Empty." marker when the library
+      is empty), and a "detail" block below with two label/value rows --
+      Documents=N, Library=profile-scoped.
+- [ ] Store a new document via `doc_store` (or from the Documents sidebar
+      pane). The workspace panel updates live: the new doc appears in the
+      list widget and the "Documents" count in the detail widget increments.
+      No manual refresh needed -- `_docs_broadcast` re-broadcasts the fresh
+      panel spec whenever documents change.
+- [ ] Delete/revert a doc so the library shrinks. The list widget drops the
+      row and the count decreases live.
+- [ ] Open the WS trace (developer tools -> Network -> ws). No `plugins:list`
+      -esque payload carries any secret value in the panel spec -- it is
+      pure metadata (doc names, kinds, counts).
+- [ ] Grep the raw WS trace for `<script`. It does not appear -- plugins
+      never ship markup or code through this channel.
+- [ ] Confirm the workspace panel only shows list/detail widgets rendered
+      by the whitelist. If a plugin ever returns an unknown widget type
+      (e.g. `text`, `table`, `form` -- reserved for A4/A5), the workspace
+      panel simply omits that widget rather than injecting anything.
+- [ ] Close the Documents tab -> reopen. The panel re-fetches its spec via
+      `plugins:panel_spec` and renders correctly.
+- [ ] Reload the window (Ctrl+R). If Documents was open on the last session
+      it reopens (existing workspace persistence) and its spec is fetched
+      fresh from Cerebral before the body is drawn.
