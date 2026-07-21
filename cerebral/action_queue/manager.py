@@ -32,6 +32,13 @@ from cerebral.paths import data_dir
 DB_PATH = data_dir() / "openmind.db"
 
 
+# ADR-0013 decision 1: queue entries carry a proposal kind. S8/S9 will emit
+# other kinds; S7 only introduces the column so no re-migration is needed.
+KIND_CANDIDATE_ACTION = "candidate_action"
+KIND_MEMORY_PROPOSAL = "memory_proposal"
+KIND_RECIPE_PROPOSAL = "recipe_proposal"
+
+
 @dataclass
 class QueueItem:
     id: str
@@ -45,6 +52,7 @@ class QueueItem:
     # 🛑 badge + collapsed-by-default row in the tray. Computed on read so
     # vocabulary changes apply to existing rows without a schema migration.
     risky: bool = False
+    kind: str = KIND_CANDIDATE_ACTION
 
     def to_dict(self) -> dict:
         return {
@@ -56,6 +64,7 @@ class QueueItem:
             "tool_args": self.tool_args,
             "created_at": self.created_at,
             "risky": self.risky,
+            "kind": self.kind,
         }
 
 
@@ -69,7 +78,7 @@ class QueueManager:
         self._init_schema()
 
     def _init_schema(self) -> None:
-        self._con.executescript("""
+        self._con.executescript(f"""
             CREATE TABLE IF NOT EXISTS queue (
                 id          TEXT    PRIMARY KEY,
                 title       TEXT    NOT NULL,
@@ -77,9 +86,21 @@ class QueueManager:
                 status      TEXT    NOT NULL DEFAULT 'pending',
                 tool_name   TEXT,
                 tool_args   TEXT,
-                created_at  TEXT    NOT NULL
+                created_at  TEXT    NOT NULL,
+                kind        TEXT    NOT NULL DEFAULT '{KIND_CANDIDATE_ACTION}'
             );
         """)
+        # Additive, idempotent migration for the live DB (311 dismissed rows,
+        # tool_name NULL): SQLite's ADD COLUMN with a NOT NULL DEFAULT fills
+        # existing rows in place -- no rewrite, no data loss. Re-runs raise
+        # "duplicate column name"; swallow it.
+        try:
+            self._con.execute(
+                f"ALTER TABLE queue ADD COLUMN kind TEXT NOT NULL "
+                f"DEFAULT '{KIND_CANDIDATE_ACTION}'"
+            )
+        except sqlite3.OperationalError:
+            pass
         self._con.commit()
 
     # ── writes ────────────────────────────────────────────────────────────────
@@ -90,14 +111,15 @@ class QueueManager:
         summary: str,
         tool_name: Optional[str] = None,
         tool_args: Optional[dict] = None,
+        kind: str = KIND_CANDIDATE_ACTION,
     ) -> QueueItem:
         item_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
         args_json = json.dumps(tool_args) if tool_args is not None else None
         self._con.execute(
-            "INSERT INTO queue (id, title, summary, status, tool_name, tool_args, created_at)"
-            " VALUES (?, ?, ?, 'pending', ?, ?, ?)",
-            (item_id, title, summary, tool_name, args_json, created_at),
+            "INSERT INTO queue (id, title, summary, status, tool_name, tool_args, created_at, kind)"
+            " VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
+            (item_id, title, summary, tool_name, args_json, created_at, kind),
         )
         self._con.commit()
         return QueueItem(
@@ -109,6 +131,7 @@ class QueueManager:
             tool_args=tool_args,
             created_at=created_at,
             risky=is_risky(title),
+            kind=kind,
         )
 
     def approve_item(self, item_id: str) -> Optional[QueueItem]:
@@ -163,4 +186,5 @@ class QueueManager:
             tool_args=json.loads(raw_args) if raw_args else None,
             created_at=row["created_at"],
             risky=is_risky(title),
+            kind=row["kind"] or KIND_CANDIDATE_ACTION,
         )

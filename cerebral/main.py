@@ -3886,8 +3886,11 @@ async def _handle_message(msg: dict) -> None:
             logger.warning("[cerebral] approve_item: unknown id %s", item_id)
             return
         logger.info("[cerebral] Queue item approved: %s", item.title)
+        # ADR-0013 decision 4: only tool-bearing proposals feed insight
+        # signals. Notification-class entries (tool_name=None) produced noise
+        # like "Felix often handles 'Discord DM from iggyphi' actions".
         eng = _get_insights()
-        if eng:
+        if eng and item.tool_name:
             eng.record_signal("approve", item.title, tool_name=item.tool_name)
             new_insight = eng.maybe_create_insight(item.title, tool_name=item.tool_name)
             if new_insight:
@@ -3986,7 +3989,9 @@ async def _handle_message(msg: dict) -> None:
             logger.warning("[cerebral] dismiss_item: unknown id %s", item_id)
             return
         logger.info("[cerebral] Queue item dismissed: %s", item_id)
-        if item:
+        # ADR-0013 decision 4: gate at the shared dismiss site, not per
+        # caller -- the legacy Discord-notification path routes here too.
+        if item and item.tool_name:
             eng = _get_insights()
             if eng:
                 eng.record_signal("dismiss", item.title, tool_name=item.tool_name)
