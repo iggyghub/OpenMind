@@ -4695,14 +4695,12 @@
           </div>
         </div>
       </div>
-      <!-- S2 (#481) -- workspace panel opener. Compact select as the demo
-           trigger for opening a panel into the secondary slot; A3 (#483)
-           will replace this with the plugin-declared panel registry. -->
+      <!-- UI2 A3 (#483) -- workspace panel opener. Options are populated at
+           runtime from the plugins:panels event; a plugin declares a panel by
+           implementing panel_spec(). -->
       <div class="hdr-ws-opener" id="hdr-ws-opener">
         <select id="ws-opener-select" aria-label="Open workspace panel">
           <option value="">+ Panel</option>
-          <option value="documents">Documents</option>
-          <option value="job-search">Job Search</option>
         </select>
       </div>
       <div class="state-pill" id="state-pill" data-state="passive">Passive</div>
@@ -5475,6 +5473,9 @@
   <!-- Workspace drag splitter (S3 -- #482) -- pointer-drag resize + localStorage.
        Dual-mode: window.SlotSplitter here, module.exports for Node tests. -->
   <script src="../lib/slot-splitter.js"></script>
+  <!-- Panel spec renderer (UI2 A3 -- #483) -- list/detail widgets for plugin
+       panels. Dual-mode: window.PanelSpec here, module.exports for Node tests. -->
+  <script src="../lib/panel-spec.js"></script>
 
   <script>
     'use strict';
@@ -5774,6 +5775,7 @@
         sendEvent({ type: 'list_tools' });
         sendEvent({ type: 'list_plugins' });
         sendEvent({ type: 'plugins:list' });  // S3 #471 harness snapshot
+        sendEvent({ type: 'plugins:panels' }); // UI2 A3 #483 workspace panels
         // Profiles (Issue #204).
         sendEvent({ type: 'list_profiles' });
         // System settings (Issue #209 + S7). Pulls current mic_mode and
@@ -6058,6 +6060,19 @@
         case 'documents_update':  // S6 #457
           documentsData = (event.data && event.data.docs) || [];
           renderDocuments();
+          break;
+        case 'plugins:panels':
+          // UI2 A3 #483 -- registry of plugin-declared workspace panels.
+          if (window._wsOnPluginsPanels) {
+            window._wsOnPluginsPanels((event.data && event.data.panels) || []);
+          }
+          break;
+        case 'plugins:panel_spec':
+          // UI2 A3 #483 -- one plugin's declarative panel spec.
+          if (window._wsOnPluginPanelSpec) {
+            const d = event.data || {};
+            window._wsOnPluginPanelSpec(d.plugin_name, d.spec);
+          }
           break;
         case 'recipe_run_result':
           _onRecipeRunResult(event.data || {});
@@ -10190,14 +10205,17 @@
       }
     });
 
-    // ── S2 -- #481: workspace shell (primary + secondary slot) ───────────
-    // The Conversation permanently occupies .ws-primary (routes still swap
-    // there via the sidebar). .ws-secondary holds zero or more panels with a
-    // tab strip when >1 open; which panels are open, and the active tab,
-    // persist in localStorage via lib/workspace.js.
-    // Panel registry is minimal here on purpose -- A3 (#483) is the real
-    // plugin-declared panel spec; this slice uses two existing routes as
-    // demoable occupants (issue #481 acceptance).
+    // ── S2 -- #481 + UI2 A3 #483: workspace shell + plugin panels ─────────
+    // The Conversation permanently occupies .ws-primary. .ws-secondary holds
+    // zero or more plugin-contributed panels with a tab strip when >1 open;
+    // which panels are open and the active tab persist in localStorage via
+    // lib/workspace.js.
+    //
+    // Panel registry is populated at runtime from the plugins:panels WS event
+    // -- a plugin declares a panel by implementing panel_spec(). The renderer
+    // requests plugins:panel_spec on open/activate, gets JSON back, and hands
+    // it to PanelSpec.renderPanel() which owns all drawing (ADR-0012). No
+    // plugin-authored HTML ever reaches innerHTML.
     const _wsMod         = window.WorkspaceMod;
     const _wsSecondaryEl = document.getElementById('ws-secondary');
     const _wsSplitterEl  = document.getElementById('ws-splitter');
@@ -10205,15 +10223,58 @@
     const _wsBodyEl      = document.getElementById('ws-secondary-body');
     const _wsOpenerSel   = document.getElementById('ws-opener-select');
 
-    const _WS_PANELS = [
-      { id: 'documents', label: 'Documents' },
-      { id: 'job-search', label: 'Job Search' },
-    ];
+    // plugin_name -> {plugin_name, title}. Populated by plugins:panels event.
+    let _wsPanels = [];
+    // plugin_name -> latest spec dict. Populated by plugins:panel_spec event.
+    const _wsSpecCache = Object.create(null);
+    // Tracks the plugin whose spec we most recently requested so a late reply
+    // for a since-closed/switched panel doesn't clobber the current view.
+    let _wsActivePluginRequested = null;
+
     function _wsPanelDef(id) {
-      for (var i = 0; i < _WS_PANELS.length; i++) {
-        if (_WS_PANELS[i].id === id) return _WS_PANELS[i];
+      for (var i = 0; i < _wsPanels.length; i++) {
+        if (_wsPanels[i].plugin_name === id) return _wsPanels[i];
       }
       return null;
+    }
+
+    function _updateWsOpener() {
+      if (!_wsOpenerSel) return;
+      const current = _wsOpenerSel.value;
+      _wsOpenerSel.innerHTML = '';
+      const ph = document.createElement('option');
+      ph.value = '';
+      ph.textContent = '+ Panel';
+      _wsOpenerSel.appendChild(ph);
+      _wsPanels.forEach(function (p) {
+        const opt = document.createElement('option');
+        opt.value = p.plugin_name;
+        opt.textContent = p.title || p.plugin_name;
+        _wsOpenerSel.appendChild(opt);
+      });
+      _wsOpenerSel.value = current || '';
+    }
+
+    function _requestPanelSpec(pluginName) {
+      _wsActivePluginRequested = pluginName;
+      sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: pluginName } });
+    }
+
+    function _renderWsBody(active) {
+      _wsBodyEl.innerHTML = '';
+      if (!active) return;
+      const body = document.createElement('div');
+      body.className = 'ws-panel-body';
+      body.dataset.wsPanelBody = active;
+      const spec = _wsSpecCache[active];
+      if (spec === undefined) {
+        // Spec not yet cached -- render a loading marker until it arrives.
+        body.innerHTML = '<div class="ps-empty">Loading panel...</div>';
+      } else {
+        // PanelSpec owns all drawing; strings are escaped inside it.
+        body.innerHTML = window.PanelSpec.renderPanel(spec);
+      }
+      _wsBodyEl.appendChild(body);
     }
 
     function _renderWorkspace() {
@@ -10238,7 +10299,7 @@
         tab.setAttribute('aria-selected', id === active ? 'true' : 'false');
         const label = document.createElement('span');
         label.className = 'ws-tab-label';
-        label.textContent = p.label;
+        label.textContent = p.title || id;
         tab.appendChild(label);
         const close = document.createElement('span');
         close.className = 'ws-tab-close';
@@ -10246,31 +10307,14 @@
         close.textContent = '×';
         close.title = 'Close panel';
         close.setAttribute('role', 'button');
-        close.setAttribute('aria-label', 'Close ' + p.label + ' panel');
+        close.setAttribute('aria-label', 'Close ' + (p.title || id) + ' panel');
         tab.appendChild(close);
         _wsTabsEl.appendChild(tab);
       });
 
-      _wsBodyEl.innerHTML = '';
-      if (active) {
-        const p    = _wsPanelDef(active);
-        const body = document.createElement('div');
-        body.className = 'ws-panel-body';
-        body.dataset.wsPanelBody = active;
-        const ph = document.createElement('div');
-        ph.className = 'placeholder';
-        const title = document.createElement('div');
-        title.className = 'placeholder-title';
-        title.textContent = p.label;
-        ph.appendChild(title);
-        const sub = document.createElement('div');
-        sub.className = 'placeholder-sub';
-        sub.textContent = 'Demo occupant for the workspace secondary slot. ' +
-          'Real panel content lands with the panel spec in A3 (#483).';
-        ph.appendChild(sub);
-        body.appendChild(ph);
-        _wsBodyEl.appendChild(body);
-      }
+      _renderWsBody(active);
+      // Pull the latest spec for the visible panel; stale cache re-renders now.
+      if (active) _requestPanelSpec(active);
     }
 
     _wsTabsEl.addEventListener('click', function (e) {
@@ -10298,7 +10342,26 @@
       });
     }
 
-    // Restores whichever panels were open on the last reload.
+    // Handlers for the new WS events -- surfaced here so the workspace shell
+    // owns its own registry maintenance.
+    function _onPluginsPanels(panels) {
+      _wsPanels = Array.isArray(panels) ? panels : [];
+      _updateWsOpener();
+      _renderWorkspace();
+    }
+    function _onPluginPanelSpec(pluginName, spec) {
+      if (!pluginName) return;
+      _wsSpecCache[pluginName] = (spec === undefined ? null : spec);
+      // Only re-render if this is the currently active tab.
+      const state = _wsMod.readState();
+      if (state.active === pluginName) _renderWsBody(pluginName);
+    }
+    // Expose for handleEvent switch below.
+    window._wsOnPluginsPanels    = _onPluginsPanels;
+    window._wsOnPluginPanelSpec  = _onPluginPanelSpec;
+
+    // Restores whichever panels were open on the last reload; the panels
+    // registry is populated once the plugins:panels event arrives.
     _renderWorkspace();
 
     // ── S3 -- #482: drag splitter between workspace slots ────────────────

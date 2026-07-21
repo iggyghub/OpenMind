@@ -82,6 +82,11 @@ const DUAL_MODE_LIBS = [
     global: 'SlotSplitter',
     check: (mod) => expect(typeof mod.computeWidth).toBe('function'),
   },
+  {
+    file: 'panel-spec.js',
+    global: 'PanelSpec',
+    check: (mod) => expect(typeof mod.renderPanel).toBe('function'),
+  },
 ];
 
 const SOURCES = DUAL_MODE_LIBS.map((lib) => ({
