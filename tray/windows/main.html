@@ -216,7 +216,8 @@
       min-height: 0;
       overflow: hidden;
     }
-    /* S3 (#482) will replace the fixed width with a drag splitter. */
+    /* S3 (#482): flex-basis is set by slot-splitter.js on init; 480px is the
+       CSS fallback for the brief moment before the script runs. */
     .ws-secondary {
       flex: 0 0 480px;
       display: flex;
@@ -224,10 +225,20 @@
       min-width: 0;
       min-height: 0;
       overflow: hidden;
-      border-left: 1px solid var(--border);
       background: var(--bg);
     }
     .ws-secondary[hidden] { display: none; }
+    /* ── S3 (#482): drag splitter ─────────────────────────────────────── */
+    .ws-splitter {
+      flex: 0 0 5px;
+      cursor: col-resize;
+      background: transparent;
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+      touch-action: none;
+    }
+    .ws-splitter:hover { background: var(--border); }
+    .ws-splitter[hidden] { display: none; }
     .ws-tabs {
       display: flex;
       gap: 2px;
@@ -5403,6 +5414,7 @@
     </section>
 
       </div><!-- /.ws-primary -->
+      <div class="ws-splitter" id="ws-splitter" hidden aria-hidden="true"></div>
       <aside class="ws-secondary" id="ws-secondary" hidden aria-label="Workspace secondary slot">
         <div class="ws-tabs" id="ws-tabs" role="tablist" hidden></div>
         <div class="ws-secondary-body" id="ws-secondary-body"></div>
@@ -5460,6 +5472,9 @@
   <!-- Workspace shell (S2 -- #481) -- primary + secondary slot state layer.
        Dual-mode: window.WorkspaceMod here, module.exports for Node tests. -->
   <script src="../lib/workspace.js"></script>
+  <!-- Workspace drag splitter (S3 -- #482) -- pointer-drag resize + localStorage.
+       Dual-mode: window.SlotSplitter here, module.exports for Node tests. -->
+  <script src="../lib/slot-splitter.js"></script>
 
   <script>
     'use strict';
@@ -10183,8 +10198,9 @@
     // Panel registry is minimal here on purpose -- A3 (#483) is the real
     // plugin-declared panel spec; this slice uses two existing routes as
     // demoable occupants (issue #481 acceptance).
-    const _wsMod        = window.WorkspaceMod;
+    const _wsMod         = window.WorkspaceMod;
     const _wsSecondaryEl = document.getElementById('ws-secondary');
+    const _wsSplitterEl  = document.getElementById('ws-splitter');
     const _wsTabsEl      = document.getElementById('ws-tabs');
     const _wsBodyEl      = document.getElementById('ws-secondary-body');
     const _wsOpenerSel   = document.getElementById('ws-opener-select');
@@ -10208,6 +10224,7 @@
         : (openIds[0] || null);
 
       _wsSecondaryEl.hidden = openIds.length === 0;
+      _wsSplitterEl.hidden  = openIds.length === 0;
       _wsTabsEl.hidden      = openIds.length < 2;
 
       _wsTabsEl.innerHTML = '';
@@ -10283,6 +10300,14 @@
 
     // Restores whichever panels were open on the last reload.
     _renderWorkspace();
+
+    // ── S3 -- #482: drag splitter between workspace slots ────────────────
+    if (window.SlotSplitter && _wsSplitterEl) {
+      window.SlotSplitter.init(
+        _wsSplitterEl, _wsSecondaryEl,
+        document.getElementById('workspace')
+      );
+    }
 
     // ── S4 -- federated search shell (#287) ───────────────────────────────
     // Each pane provides:

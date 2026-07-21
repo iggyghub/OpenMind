@@ -77,6 +77,11 @@ const DUAL_MODE_LIBS = [
     global: 'WorkspaceMod',
     check: (mod) => expect(typeof mod.readState).toBe('function'),
   },
+  {
+    file: 'slot-splitter.js',
+    global: 'SlotSplitter',
+    check: (mod) => expect(typeof mod.computeWidth).toBe('function'),
+  },
 ];
 
 const SOURCES = DUAL_MODE_LIBS.map((lib) => ({
