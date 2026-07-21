@@ -2767,7 +2767,7 @@
        v1 scope: registered-plugin list + registration-error list.
        Discord allowlist editor + per-plugin settings + enable/disable
        are explicitly deferred (no Cerebral API yet). */
-    .pane[data-route="plugins"] { background: var(--bg); }
+    .pane[data-route="plugins"] { background: var(--bg); } /* legacy; harness rule in S5 block */
 
     .plug-body {
       flex: 1;
@@ -3045,12 +3045,7 @@
     /* ── Harness section (S3 #471) ───────────────────────────── */
     /* Filter rail + auto-fit card grid + right-side detail drawer.
        Class prefix `hrns-`. Accent: teal (#4bd4d4), same as existing plug- classes. */
-    .pane[data-route="plugins"] {
-      position: relative;
-      background: var(--bg);
-      display: flex;
-      flex-direction: column;
-    }
+    /* ponytail: harness pane rule moved to S5 block above */
 
     .hrns-unreachable {
       padding: 8px 18px;
@@ -4379,43 +4374,126 @@
     .consent-resolved-label {
       font-size: 12px; color: var(--text-muted); font-style: italic;
     }
+    /* ── S5 #473 -- profile switcher (header dropdown) ───────── */
+    .prof-switcher {
+      position: relative;
+      flex-shrink: 0;
+    }
+    .prof-switcher-btn {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transition: background 0.12s, color 0.12s;
+      white-space: nowrap;
+    }
+    .prof-switcher-btn:hover { color: var(--text); }
+    .prof-switcher-caret { font-size: 9px; }
+    .prof-switcher-dropdown {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      min-width: 160px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      z-index: 900;
+      overflow: hidden;
+    }
+    .prof-switcher-dropdown[hidden] { display: none; }
+    .prof-sw-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 12px;
+      font-size: 12px;
+      gap: 8px;
+    }
+    .prof-sw-row.is-active { color: var(--accent); }
+    .prof-sw-name { flex: 1; }
+    .prof-sw-switch {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 10px;
+      padding: 2px 6px;
+      cursor: pointer;
+    }
+    .prof-sw-switch:hover { color: var(--text); background: var(--bg); }
+    .prof-switcher-manage {
+      border-top: 1px solid var(--border);
+      padding: 6px 12px;
+    }
+    .prof-switcher-manage-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      padding: 0;
+      width: 100%;
+      text-align: left;
+    }
+    .prof-switcher-manage-btn:hover { color: var(--text); }
+
+    /* ── S5 #473 -- library pane sub-navigation ──────────────── */
+    .pane[data-route="library"] { background: var(--bg); display: flex; flex-direction: column; }
+    .lib-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elev);
+      flex-shrink: 0;
+    }
+    .lib-tab {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 9px 14px;
+      cursor: pointer;
+      transition: color 0.12s, border-color 0.12s;
+      white-space: nowrap;
+    }
+    .lib-tab:hover { color: var(--text); }
+    .lib-tab.is-active { color: var(--accent); border-bottom-color: var(--accent); }
+    .lib-sub { display: none; flex: 1; overflow-y: auto; min-height: 0; }
+    .lib-sub.is-active { display: flex; flex-direction: column; }
+
+    /* ── S5 #473 -- harness pane (renamed from plugins) ─────── */
+    .pane[data-route="harness"] {
+      position: relative;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+    }
+
   </style>
 </head>
 <body>
   <aside class="sidebar">
     <div class="brand">Felix</div>
     <nav class="nav" id="nav">
-      <div class="nav-section">
-        <span class="nav-section-title">Chat</span>
-        <button class="nav-item"        data-route="quick-ask">Quick Ask</button>
-        <button class="nav-item active" data-route="conversation">Conversation</button>
-        <button class="nav-item"        data-route="queue">Queue</button>
-        <button class="nav-item"        data-route="conversations">Conversations</button>
-      </div>
-      <div class="nav-section">
-        <span class="nav-section-title">Mind</span>
-        <button class="nav-item" data-route="insights">Insights</button>
-        <button class="nav-item" data-route="memory">Memory</button>
-        <button class="nav-item" data-route="recipes">Recipes</button>
-      </div>
-      <div class="nav-section">
-        <span class="nav-section-title">Tools</span>
-        <button class="nav-item" data-route="plugins">Plugins</button>
-        <button class="nav-item" data-route="integrations">Integrations</button>
-        <button class="nav-item" data-route="credentials">Credentials</button>
-        <button class="nav-item" data-route="permissions">Permissions</button>
-      </div>
-      <div class="nav-section">
-        <span class="nav-section-title">Work</span>
-        <button class="nav-item" data-route="job-search">Job Search</button>
-        <button class="nav-item" data-route="documents">Documents</button>
-      </div>
-      <div class="nav-section">
-        <span class="nav-section-title">System</span>
-        <button class="nav-item" data-route="models">Models</button>
-        <button class="nav-item" data-route="settings">Settings</button>
-        <button class="nav-item" data-route="profiles">Profiles</button>
-      </div>
+      <!-- S5 #473: 4 top-level sections; Profiles moved to header switcher -->
+      <button class="nav-item active" data-route="conversation">Conversation</button>
+      <button class="nav-item" data-route="harness">Harness</button>
+      <button class="nav-item" data-route="library">Library</button>
+      <button class="nav-item" data-route="settings">Settings</button>
     </nav>
   </aside>
 
@@ -4466,6 +4544,22 @@
       <button class="queue-badge" id="queue-badge" type="button" hidden>
         <span id="queue-badge-text">Queue 0</span>
       </button>
+      <!-- S5 #473 -- profile switcher (header dropdown; replaces nav item) -->
+      <div class="prof-switcher" id="prof-switcher">
+        <button class="prof-switcher-btn" id="prof-switcher-btn" type="button"
+                aria-haspopup="listbox" aria-expanded="false">
+          <span id="prof-switcher-name">Profile</span>
+          <span class="prof-switcher-caret">&#x25BE;</span>
+        </button>
+        <div class="prof-switcher-dropdown" id="prof-switcher-dropdown" hidden
+             role="listbox">
+          <div id="prof-switcher-list"></div>
+          <div class="prof-switcher-manage">
+            <button class="prof-switcher-manage-btn" id="prof-switcher-manage"
+                    type="button">Manage profiles</button>
+          </div>
+        </div>
+      </div>
       <div class="state-pill" id="state-pill" data-state="passive">Passive</div>
     </div>
 
@@ -4581,23 +4675,9 @@
       </div>
     </section>
 
-    <section class="pane" data-route="insights" hidden>
-      <div class="ins-list" id="insights-list">
-        <div class="ins-empty" id="insights-empty">
-          <div class="ins-empty-icon">✦</div>
-          <div class="ins-empty-text">No insights yet</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="pane" data-route="memory" hidden>
-      <div class="mem-list" id="memory-list">
-        <div class="mem-empty" id="memory-empty">
-          <div class="mem-empty-icon">✦</div>
-          <div class="mem-empty-text">No memories yet</div>
-        </div>
-      </div>
-    </section>
+    <!-- S5 #473: insights/memory content moved into library pane below -->
+    <section class="pane" data-route="insights" hidden></section>
+    <section class="pane" data-route="memory" hidden></section>
 
     <section class="pane" data-route="permissions" hidden>
       <div class="perm-tabs">
@@ -4704,7 +4784,7 @@
       </div>
     </section>
 
-    <section class="pane" data-route="plugins" hidden>
+    <section class="pane" data-route="harness" hidden>
       <!-- S3 #471: Harness section -- filter rail + card grid + detail drawer -->
 
       <!-- WS-unreachable banner; shown when Cerebral is not connected. -->
@@ -4968,6 +5048,7 @@
             <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
           </label>
         </div>
+
       </div>
     </section>
 
@@ -4993,17 +5074,8 @@
       </div>
     </section>
 
-    <!-- S19 (#302) -- Recipes pane: list / run / delete saved tool-chains -->
-    <section class="pane" data-route="recipes" hidden>
-      <div class="rcp-body">
-        <div class="rcp-list" id="rcp-list">
-          <div class="rcp-empty" id="rcp-empty">
-            <span class="rcp-empty-icon">&#9874;</span>
-            <span class="rcp-empty-text">No saved Recipes yet.</span>
-          </div>
-        </div>
-      </div>
-    </section>
+    <!-- S5 #473: recipes content moved into library pane -->
+    <section class="pane" data-route="recipes" hidden></section>
 
     <section class="pane" data-route="integrations" hidden>
       <div class="int-body" id="int-body">
@@ -5037,123 +5109,155 @@
       </div>
     </section>
 
-    <!-- Job Search panel (Issue #334 — S1) -->
-    <section class="pane" data-route="job-search" hidden>
-      <div class="jobs-body">
-        <div class="jobs-toolbar">
-          <button class="jobs-check-btn" id="jobs-check-btn" type="button">
-            Check for new jobs
-          </button>
-          <span class="jobs-status" id="jobs-status"></span>
-        </div>
-        <!-- S1 #396 — Job boards: client-side jobBoards mirrors server-side job_boards table (#390 pairing) -->
-        <div class="jobs-boards-section" id="jobs-boards-section">
-          <div class="jobs-boards-header">Job boards</div>
-          <div id="jobs-boards-list">
-            <div class="jobs-boards-empty" id="jobs-boards-empty">
-              No boards added. Add ratracerebellion.com/job-postings to get started.
-            </div>
-          </div>
-          <div class="jobs-boards-add">
-            <input class="jobs-boards-url-input" id="jobs-boards-url" type="url"
-              placeholder="https://example.com/jobs" />
-            <input class="jobs-boards-label-input" id="jobs-boards-label" type="text"
-              placeholder="Label (optional)" />
-            <button class="jobs-boards-add-btn" id="jobs-boards-add-btn" type="button">Add</button>
-          </div>
-        </div>
-        <!-- S2 #335 — Applicant dossier -->
-        <div class="jobs-dossier" id="jobs-dossier">
-          <div class="jobs-dossier-header">My Resume</div>
-          <div id="jobs-dossier-body">
-            <div class="jobs-dossier-hint">
-              Upload your resume PDF and tell Felix "store this as my resume" to populate your Applicant dossier.
-            </div>
-          </div>
-        </div>
-        <!-- S3 #336 — Shortlist -->
-        <div class="jobs-shortlist-section" id="jobs-shortlist-section">
-          <div class="jobs-shortlist-header">Shortlist
-            <span class="jobs-shortlist-header-actions">
-              <button class="jobs-bulk-btn" id="jobs-approve-all-btn">Approve all</button>
-              <!-- #421 — batch size for one Apply-all run -->
-              <input type="number" class="jobs-bulk-limit" id="jobs-apply-limit"
-                     value="100" min="1" title="Max postings per apply run" />
-              <button class="jobs-bulk-btn" id="jobs-apply-all-btn">Apply all approved</button>
-            </span>
-          </div>
-          <div id="jobs-shortlist-list">
-            <div class="jobs-shortlist-empty" id="jobs-shortlist-empty">
-              Fetch new jobs to build your shortlist.
-            </div>
-          </div>
-        </div>
-        <!-- S4 #337 — Applications -->
-        <div class="jobs-applications-section" id="jobs-applications-section">
-          <div class="jobs-applications-header">Applications</div>
-          <div id="jobs-applications-list">
-            <div class="jobs-applications-empty" id="jobs-applications-empty">
-              No applications yet. Approve a shortlisted job and ask Felix to apply.
-            </div>
-          </div>
-        </div>
-        <!-- S7 #340 — Auto-submit opt-in (ADR-0009) -->
-        <div class="jobs-auto-submit-section">
-          <div class="jobs-auto-submit-header">Auto-Submit</div>
-          <div class="jobs-auto-submit-row">
-            <input type="checkbox" class="jobs-auto-submit-toggle" id="jobs-auto-submit-toggle" />
-            <label class="jobs-auto-submit-label" for="jobs-auto-submit-toggle">Enable auto-submit</label>
-          </div>
-          <div class="jobs-ramp-progress" id="jobs-ramp-progress">
-            Complete 5 reviewed submissions to enable.
-          </div>
-        </div>
-        <div id="jobs-list">
-          <div class="jobs-empty" id="jobs-empty">
-            No job postings yet. Click "Check for new jobs" to fetch the latest.
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Documents panel (S6 #457) -->
-    <section class="pane" data-route="documents" hidden>
-      <div class="docs-body">
-        <div id="docs-list">
-          <div class="docs-empty" id="docs-empty">
-            No documents in the library. Ask Felix to store a document, or use
-            "Felix, store this file as a document" to add one.
-          </div>
-        </div>
-      </div>
-    </section>
-
+    <!-- S5 #473: job-search/documents content moved to library pane; models pane kept as-is -->
+    <section class="pane" data-route="job-search" hidden></section>
+    <section class="pane" data-route="documents" hidden></section>
     <section class="pane" data-route="models" hidden>
       <div class="set-body">
         <div class="set-section">Active model</div>
         <div class="set-active-header" id="set-active-header">
-          <span id="set-active-name">—</span>
+          <span id="set-active-name">&#8212;</span>
           <span class="set-active-cloud" id="set-active-cloud">local</span>
         </div>
         <div class="set-last-line" id="set-last-line" hidden></div>
         <div class="set-offline" id="set-offline" hidden>
-          Ollama offline — local models unavailable.
+          Ollama offline &#8212; local models unavailable.
         </div>
-
         <div class="set-section">Switch model</div>
         <div id="set-model-list">
-          <div class="prof-empty">No models known yet — try Refresh.</div>
+          <div class="prof-empty">No models known yet &#8212; try Refresh.</div>
         </div>
-
         <div class="set-section">Per-task models</div>
         <div id="set-task-list">
           <!-- Cards rendered by renderSettings() for each task type. -->
         </div>
-
         <div class="set-refresh-row">
           <button class="set-btn" id="set-refresh-btn" type="button">
             Refresh installed models
           </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- S5 #473 -- Library pane: absorbs Memory, Insights, Recipes, Documents, Job Search -->
+    <section class="pane" data-route="library" hidden>
+      <div class="lib-tabs" id="lib-tabs">
+        <button class="lib-tab is-active" data-lib="memory" type="button">Memory</button>
+        <button class="lib-tab" data-lib="insights" type="button">Insights</button>
+        <button class="lib-tab" data-lib="recipes" type="button">Recipes</button>
+        <button class="lib-tab" data-lib="documents" type="button">Documents</button>
+        <button class="lib-tab" data-lib="job-search" type="button">Job Search</button>
+      </div>
+
+      <div class="lib-sub is-active" data-lib="memory">
+        <div class="mem-list" id="memory-list">
+          <div class="mem-empty" id="memory-empty">
+            <div class="mem-empty-icon">&#x2736;</div>
+            <div class="mem-empty-text">No memories yet</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lib-sub" data-lib="insights">
+        <div class="ins-list" id="insights-list">
+          <div class="ins-empty" id="insights-empty">
+            <div class="ins-empty-icon">&#x2736;</div>
+            <div class="ins-empty-text">No insights yet</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lib-sub" data-lib="recipes">
+        <div class="rcp-body">
+          <div class="rcp-list" id="rcp-list">
+            <div class="rcp-empty" id="rcp-empty">
+              <span class="rcp-empty-icon">&#9874;</span>
+              <span class="rcp-empty-text">No saved Recipes yet.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lib-sub" data-lib="documents">
+        <div class="docs-body">
+          <div id="docs-list">
+            <div class="docs-empty" id="docs-empty">
+              No documents in the library. Ask Felix to store a document, or use
+              "Felix, store this file as a document" to add one.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lib-sub" data-lib="job-search">
+        <div class="jobs-body">
+          <div class="jobs-toolbar">
+            <button class="jobs-check-btn" id="jobs-check-btn" type="button">
+              Check for new jobs
+            </button>
+            <span class="jobs-status" id="jobs-status"></span>
+          </div>
+          <div class="jobs-boards-section" id="jobs-boards-section">
+            <div class="jobs-boards-header">Job boards</div>
+            <div id="jobs-boards-list">
+              <div class="jobs-boards-empty" id="jobs-boards-empty">
+                No boards added. Add ratracerebellion.com/job-postings to get started.
+              </div>
+            </div>
+            <div class="jobs-boards-add">
+              <input class="jobs-boards-url-input" id="jobs-boards-url" type="url"
+                placeholder="https://example.com/jobs" />
+              <input class="jobs-boards-label-input" id="jobs-boards-label" type="text"
+                placeholder="Label (optional)" />
+              <button class="jobs-boards-add-btn" id="jobs-boards-add-btn" type="button">Add</button>
+            </div>
+          </div>
+          <div class="jobs-dossier" id="jobs-dossier">
+            <div class="jobs-dossier-header">My Resume</div>
+            <div id="jobs-dossier-body">
+              <div class="jobs-dossier-hint">
+                Upload your resume PDF and tell Felix "store this as my resume" to populate your Applicant dossier.
+              </div>
+            </div>
+          </div>
+          <div class="jobs-shortlist-section" id="jobs-shortlist-section">
+            <div class="jobs-shortlist-header">Shortlist
+              <span class="jobs-shortlist-header-actions">
+                <button class="jobs-bulk-btn" id="jobs-approve-all-btn">Approve all</button>
+                <input type="number" class="jobs-bulk-limit" id="jobs-apply-limit"
+                       value="100" min="1" title="Max postings per apply run" />
+                <button class="jobs-bulk-btn" id="jobs-apply-all-btn">Apply all approved</button>
+              </span>
+            </div>
+            <div id="jobs-shortlist-list">
+              <div class="jobs-shortlist-empty" id="jobs-shortlist-empty">
+                Fetch new jobs to build your shortlist.
+              </div>
+            </div>
+          </div>
+          <div class="jobs-applications-section" id="jobs-applications-section">
+            <div class="jobs-applications-header">Applications</div>
+            <div id="jobs-applications-list">
+              <div class="jobs-applications-empty" id="jobs-applications-empty">
+                No applications yet. Approve a shortlisted job and ask Felix to apply.
+              </div>
+            </div>
+          </div>
+          <div class="jobs-auto-submit-section">
+            <div class="jobs-auto-submit-header">Auto-Submit</div>
+            <div class="jobs-auto-submit-row">
+              <input type="checkbox" class="jobs-auto-submit-toggle" id="jobs-auto-submit-toggle" />
+              <label class="jobs-auto-submit-label" for="jobs-auto-submit-toggle">Enable auto-submit</label>
+            </div>
+            <div class="jobs-ramp-progress" id="jobs-ramp-progress">
+              Complete 5 reviewed submissions to enable.
+            </div>
+          </div>
+          <div id="jobs-list">
+            <div class="jobs-empty" id="jobs-empty">
+              No job postings yet. Click "Check for new jobs" to fetch the latest.
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -5278,6 +5382,12 @@
     const profSubmitBtn    = document.getElementById('prof-submit');
     const profNameInput    = document.getElementById('prof-name');
     const profWakeInput    = document.getElementById('prof-wake-name');
+    // S5 #473 -- header profile switcher refs
+    const profSwBtn        = document.getElementById('prof-switcher-btn');
+    const profSwDrop       = document.getElementById('prof-switcher-dropdown');
+    const profSwName       = document.getElementById('prof-switcher-name');
+    const profSwList       = document.getElementById('prof-switcher-list');
+    const profSwManageBtn  = document.getElementById('prof-switcher-manage');
     const plugListEl         = document.getElementById('plug-list');
     const plugErrorsListEl   = document.getElementById('plug-errors-list');
     const plugErrorsHeader   = document.getElementById('plug-errors-section');
@@ -5569,6 +5679,7 @@
         case 'profiles_list':
           profilesList = (event.data && event.data.profiles) || [];
           renderProfiles();
+          renderProfSwitcher();
           break;
         case 'conversation_turns_data': {
           const d = event.data || {};
@@ -5736,6 +5847,15 @@
               return p.name === harnessOpenPlugin;
             });
             if (fresh) openHarnessDrawer('plugin', fresh);
+          }
+          // S5 #473 -- consume deep-link pending from #harness/<plugin_name>
+          if (harnessDeepLinkPending) {
+            var deepTarget = harnessDeepLinkPending;
+            harnessDeepLinkPending = null;
+            var deepPlugin = (harnessData.plugins || []).find(function (p) {
+              return p.name === deepTarget;
+            });
+            if (deepPlugin) openHarnessDrawer('plugin', deepPlugin);
           }
           break;
         case 'harness_status':
@@ -6792,11 +6912,9 @@
     });
 
     queueBadge.addEventListener('click', () => {
-      if (location.hash.replace(/^#/, '') === 'queue') {
-        activateRoute('queue');
-      } else {
-        location.hash = '#queue';
-      }
+      // S5 #473: queue is no longer a top-level route; #queue redirects to
+      // conversation. The badge count is always visible in the header.
+      location.hash = '#queue';  // routeFromHash redirects to conversation
     });
 
     // ── insights pane (Issue #196) ────────────────────────────────────────
@@ -7924,21 +8042,10 @@
     intSvcBodyEl.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-svc-connect]');
       if (!btn) return;
-      var anchor = btn.getAttribute('data-svc-connect');
-      if (location.hash.replace(/^#/, '') === 'credentials') {
-        if (anchor) {
-          var el = document.getElementById(anchor);
-          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-      } else {
-        location.hash = '#credentials';
-        if (anchor) {
-          setTimeout(function () {
-            var el = document.getElementById(anchor);
-            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }, 80);
-        }
-      }
+      // S5 #473: credentials absorbed into harness; navigate there.
+      location.hash = '#harness';
+      // ponytail: anchor scroll deferred until credentials sub-pane is built
+      // into harness drawer (phase 2 of harness integration)
     });
 
     // ── permissions pane (Issue #202) ────────────────────────────────────
@@ -8161,10 +8268,67 @@
       }).join('');
     }
 
+    // S5 #473 -- header profile switcher: compact dropdown in the title bar.
+    function renderProfSwitcher() {
+      if (!profSwName || !profSwList) return;
+      const active = profilesList.find(function (p) { return p.id === activeProfileId; });
+      profSwName.textContent = (active && (active.name || active.profile_name)) || 'Profile';
+      if (profilesList.length === 0) {
+        profSwList.innerHTML = '<div class="prof-sw-row" style="color:var(--text-muted)">No profiles yet</div>';
+        return;
+      }
+      profSwList.innerHTML = profilesList.map(function (p) {
+        const isActive = p.id === activeProfileId;
+        const name = p.name || p.profile_name || String(p.id);
+        const switchBtn = isActive
+          ? ''
+          : '<button class="prof-sw-switch" data-sw-id="' + escHtml(String(p.id)) + '" type="button">Switch</button>';
+        return '<div class="prof-sw-row' + (isActive ? ' is-active' : '') + '">'
+          + '<span class="prof-sw-name">' + escHtml(name) + '</span>'
+          + switchBtn
+          + '</div>';
+      }).join('');
+    }
+
+    if (profSwBtn && profSwDrop) {
+      profSwBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        const open = !profSwDrop.hidden;
+        profSwDrop.hidden = open;
+        profSwBtn.setAttribute('aria-expanded', String(!open));
+        if (!open) sendEvent({ type: 'list_profiles' });
+      });
+
+      profSwList && profSwList.addEventListener('click', function (e) {
+        const btn = e.target.closest('[data-sw-id]');
+        if (!btn) return;
+        const numId = Number(btn.dataset.swId);
+        sendEvent({
+          type: 'switch_profile',
+          data: { id: Number.isFinite(numId) ? numId : btn.dataset.swId },
+        });
+        profSwDrop.hidden = true;
+        profSwBtn.setAttribute('aria-expanded', 'false');
+      });
+
+      profSwManageBtn && profSwManageBtn.addEventListener('click', function () {
+        profSwDrop.hidden = true;
+        profSwBtn.setAttribute('aria-expanded', 'false');
+        location.hash = '#profiles';
+      });
+
+      document.addEventListener('click', function (e) {
+        if (!profSwDrop.hidden && !profSwBtn.contains(e.target) && !profSwDrop.contains(e.target)) {
+          profSwDrop.hidden = true;
+          profSwBtn.setAttribute('aria-expanded', 'false');
+        }
+      });
+    }
+
     function profExpandWizard() {
       profWizardEl.classList.add('is-open');
       profNewToggleEl.classList.add('is-open');
-      profNewToggleEl.textContent = '× Cancel new profile';
+      profNewToggleEl.textContent = '\xD7 Cancel new profile';
       setTimeout(() => profNameInput.focus(), 50);
     }
 
@@ -8417,6 +8581,9 @@
     // broadcasts can re-render the drawer after enable/disable and keep the
     // toggle label in sync with backend state (no optimistic UI).
     let harnessOpenPlugin = null;
+    // S5 #473 -- pending deep-link plugin name from #harness/<name>; consumed
+    // after the next plugins:list/changed broadcast populates harnessData.
+    let harnessDeepLinkPending = null;
 
     function applyHarnessTestCallResult(data) {
       if (!hrnsDrawerBodyEl) return;
@@ -9748,12 +9915,26 @@
     // (e.g. clicking "Queue" in the tray opens #queue here). Default route
     // is #conversation. Route constants live in tray/lib/sidebar-router.js
     // (same source feeds the Node test suite and this renderer).
-    const { VALID_ROUTES, DEFAULT_ROUTE, routeFromHash: _routeFromHash } = window.SidebarRouterMod;
+    // S5 #473: destructure subFromHash for sub-route context
+    const { VALID_ROUTES, DEFAULT_ROUTE, routeFromHash: _routeFromHash, subFromHash: _subFromHash } = window.SidebarRouterMod;
     const navItems = Array.from(document.querySelectorAll('.nav-item'));
     const panes    = Array.from(document.querySelectorAll('.pane'));
 
     function routeFromHash() {
       return _routeFromHash(location.hash);
+    }
+
+    // S5 #473 -- library sub-tab activation
+    function libActivateSub(sub) {
+      const tabs = document.querySelectorAll('.lib-tab');
+      const subs = document.querySelectorAll('.lib-sub');
+      const target = sub || 'memory';
+      tabs.forEach(function (btn) {
+        btn.classList.toggle('is-active', btn.dataset.lib === target);
+      });
+      subs.forEach(function (el) {
+        el.classList.toggle('is-active', el.dataset.lib === target);
+      });
     }
 
     function activateRoute(route) {
@@ -9765,71 +9946,32 @@
         const match = pane.dataset.route === route;
         pane.hidden = !match;
       });
-      // Focus the composer on Conversation only; non-Conversation panes
-      // shouldn't steal focus from any future panel-local inputs.
+      const sub = _subFromHash(location.hash);
+      // S5 #473: 4 nav sections + profiles (first_run).
       if (route === 'conversation') {
-        // Give the DOM a tick to un-hide before focusing.
         setTimeout(() => input.focus(), 0);
-      } else if (route === 'quick-ask') {
-        // S12 (#295) -- focus the Quick Ask composer on pane activation.
-        setTimeout(function () { qaInputEl.focus(); }, 0);
-      } else if (route === 'queue') {
-        // Re-pull the snapshot on every activation in case we missed a
-        // broadcast (e.g. WS was down when items mutated). Cheap; the
-        // queue_update reply renders idempotently via queueItems set.
-        sendEvent({ type: 'list_queue' });
-      } else if (route === 'insights') {
-        // Same defensive re-pull as Queue (Issue #196). The
-        // insights_update reply renders idempotently via the insightsItems
-        // set, so this is safe to fire on every activation.
-        sendEvent({ type: 'list_insights' });
-      } else if (route === 'memory') {
-        // Same defensive re-pull (Issue #198) — memory_update renders
-        // idempotently via the memoryItems set.
-        sendEvent({ type: 'list_memories' });
-      } else if (route === 'credentials') {
-        // Same defensive re-pull (Issue #200) — credentials_state renders
-        // idempotently from the whole payload.
-        sendEvent({ type: 'list_credentials' });
-      } else if (route === 'permissions') {
-        // Same defensive re-pull (Issue #202) — three broadcasts feed
-        // this pane, refetch all three on activation in case any was
-        // missed (e.g. tools_list, which doesn't auto-broadcast often).
-        if (permStore) permStore.requestRefresh();
-      } else if (route === 'profiles') {
-        sendEvent({ type: 'list_profiles' });
-      } else if (route === 'plugins') {
-        // Issue #206 — defensive re-pull. The Permissions WS-open
-        // handler also pulls list_plugins, so this is just for the
-        // case where the user opens Plugins between connect and the
-        // first activation of any pane that depends on it.
+      } else if (route === 'harness') {
+        // Defensive re-pull for the harness section.
         sendEvent({ type: 'list_plugins' });
-        sendEvent({ type: 'plugins:list' });  // S3 #471 harness snapshot
-        // Issue #187 — if we navigated away while a sub-pane was open,
-        // return to the list view when the tab is re-selected.
+        sendEvent({ type: 'plugins:list' });
+        // S18: #integrations now redirects here; keep inbox data fresh.
+        sendEvent({ type: 'request_channel_inbox' });
         closePluginSettings();
+        // #harness/<plugin_name> deep-link: open drawer after data loads.
+        if (sub) { harnessDeepLinkPending = sub; }
+      } else if (route === 'library') {
+        // Refresh all library sub-sections; activate the sub-tab.
+        sendEvent({ type: 'list_memories' });
+        sendEvent({ type: 'list_insights' });
+        sendEvent({ type: 'list_recipes' });
+        sendEvent({ type: 'list_documents' });
+        sendEvent({ type: 'list_job_postings' });
+        libActivateSub(sub || 'memory');
       } else if (route === 'settings') {
-        // models_list and settings_updated both ride the connect-time
-        // greeting; pulling fresh on activation is a cheap recovery for
-        // any missed broadcast.
         sendEvent({ type: 'refresh_models' });
         sendEvent({ type: 'list_settings' });
-      } else if (route === 'integrations') {
-        // Defensive re-pull on each activation; harness_status renders
-        // idempotently so this is cheap. S18 (#301) -- same posture for
-        // the channel inbox.
-        sendEvent({ type: 'request_harness_status' });
-        sendEvent({ type: 'request_channel_inbox' });
-      } else if (route === 'recipes') {
-        // S19 (#302) -- defensive re-pull on activation; recipes_update
-        // renders idempotently.
-        sendEvent({ type: 'list_recipes' });
-      } else if (route === 'job-search') {
-        // S1 (#334) -- re-pull stored postings on panel activation.
-        sendEvent({ type: 'list_job_postings' });
-      } else if (route === 'documents') {
-        // S6 (#457) -- re-pull library docs on panel activation.
-        sendEvent({ type: 'list_documents' });
+      } else if (route === 'profiles') {
+        sendEvent({ type: 'list_profiles' });
       }
     }
 
@@ -9837,22 +9979,34 @@
       btn.addEventListener('click', () => {
         const route = btn.dataset.route;
         if (!route) return;
-        // Update the hash; the hashchange handler does the activation
-        // so deep-link + click follow the same code path.
         if (location.hash.replace(/^#/, '') === route) {
-          activateRoute(route);  // already there; re-run to ensure pane visible
+          activateRoute(route);
         } else {
           location.hash = '#' + route;
         }
       });
     });
 
-    window.addEventListener('hashchange', () => activateRoute(routeFromHash()));
+    // S5 #473 -- library sub-tab clicks update the hash sub-route.
+    const libTabsEl = document.getElementById('lib-tabs');
+    if (libTabsEl) {
+      libTabsEl.addEventListener('click', function (e) {
+        var btn = e.target.closest('.lib-tab');
+        if (!btn) return;
+        var libSub = btn.dataset.lib;
+        location.hash = '#library/' + libSub;
+      });
+    }
 
-    // S3 -- collapsible section headers (#286)
+    window.addEventListener('hashchange', () => {
+      const route = routeFromHash();
+      activateRoute(route);
+    });
+
+    // S3 -- collapsible section headers (#286). Key changed plugins→harness (S5 #473).
     const _sc = window.SectionCollapse;
     _sc.init(document.getElementById('perm-panel-capabilities'), 'permissions');
-    _sc.init(document.getElementById('plug-main-view'), 'plugins');
+    _sc.init(document.getElementById('plug-main-view'), 'harness');
     _sc.init(document.querySelector('.prof-body'), 'profiles');
     _sc.init(document.querySelector('.set-body'), 'settings');
 

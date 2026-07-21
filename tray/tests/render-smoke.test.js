@@ -17,13 +17,22 @@ const { parse } = require('node-html-parser');
 const HTML_PATH    = path.resolve(__dirname, '../windows/main.html');
 const ARTIFACT_DIR = path.resolve(__dirname, '../../.claude/tmp/render-smoke');
 
-// Routes that must have both a pane and a nav item in the current baseline.
-// Extended in S2 with models/conversations/integrations/recipes.
-const SMOKE_ROUTES = [
+// S5 #473: route collapse 16->4.
+// PANE_ROUTES: all routes that must have a pane element in the DOM (old ones
+//   kept as shells or content-moved; new ones added).
+// NAV_ROUTES: only the 4 top-level nav sections (profiles removed from nav).
+const PANE_ROUTES = [
+  // Original 16 routes (kept as shells or with content)
   'conversation', 'quick-ask', 'queue', 'insights', 'memory',
-  'permissions', 'credentials', 'plugins', 'profiles', 'settings',
+  'permissions', 'credentials', 'profiles', 'settings',
   'models', 'conversations', 'integrations', 'recipes', 'job-search', 'documents',
+  // S5 new routes
+  'harness', 'library',
 ];
+const NAV_ROUTES = ['conversation', 'harness', 'library', 'settings'];
+
+// Legacy alias kept for tests that loop over "routes that need panes".
+const SMOKE_ROUTES = PANE_ROUTES;
 
 let root;
 let inlineScript;
@@ -45,19 +54,79 @@ beforeAll(() => {
 // ── Pane elements ────────────────────────────────────────────────────────────
 
 test('every expected pane element exists', () => {
-  for (const route of SMOKE_ROUTES) {
+  for (const route of PANE_ROUTES) {
     const pane = root.querySelector(`.pane[data-route="${route}"]`);
     expect(pane).not.toBeNull();
   }
 });
 
-// ── Nav items ────────────────────────────────────────────────────────────────
+// ── Nav items (S5: 4 sections only) ──────────────────────────────────────────
 
-test('every expected nav item exists', () => {
-  for (const route of SMOKE_ROUTES) {
+test('nav has exactly 4 top-level sections (S5)', () => {
+  const navItems = root.querySelectorAll('.nav-item');
+  expect(navItems.length).toBe(4);
+});
+
+test('every expected nav item exists (S5: 4 sections)', () => {
+  for (const route of NAV_ROUTES) {
     const nav = root.querySelector(`.nav-item[data-route="${route}"]`);
     expect(nav).not.toBeNull();
   }
+});
+
+test('profiles is NOT a nav item (S5: moved to header switcher)', () => {
+  const profilesNav = root.querySelector('.nav-item[data-route="profiles"]');
+  expect(profilesNav).toBeNull();
+});
+
+// ── S5 -- profile switcher in header ─────────────────────────────────────────
+
+test('header has profile switcher button and dropdown (S5)', () => {
+  const btn      = root.querySelector('#prof-switcher-btn');
+  const dropdown = root.querySelector('#prof-switcher-dropdown');
+  const nameEl   = root.querySelector('#prof-switcher-name');
+  expect(btn).not.toBeNull();
+  expect(dropdown).not.toBeNull();
+  expect(nameEl).not.toBeNull();
+  // Dropdown must be hidden by default.
+  expect(dropdown.getAttribute('hidden')).not.toBeNull();
+  // Must live in the header, not inside any pane.
+  let el = btn.parentNode;
+  let insideHeader = false;
+  while (el) {
+    const cls = el.classNames || '';
+    if (cls.split(/\s+/).includes('header')) insideHeader = true;
+    el = el.parentNode;
+  }
+  expect(insideHeader).toBe(true);
+});
+
+// ── S5 -- library pane ────────────────────────────────────────────────────────
+
+test('library pane exists with sub-tab bar (S5)', () => {
+  const pane = root.querySelector('.pane[data-route="library"]');
+  expect(pane).not.toBeNull();
+  const tabs = pane.querySelector('#lib-tabs');
+  expect(tabs).not.toBeNull();
+  // Five sub-tabs.
+  const tabBtns = pane.querySelectorAll('.lib-tab');
+  expect(tabBtns.length).toBe(5);
+});
+
+test('library pane contains memory, insights, recipes, documents, job-search sub-sections (S5)', () => {
+  const pane = root.querySelector('.pane[data-route="library"]');
+  expect(pane).not.toBeNull();
+  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search']) {
+    const el = pane.querySelector(`.lib-sub[data-lib="${sub}"]`);
+    expect(el).not.toBeNull();
+  }
+});
+
+// ── S5 -- harness pane (renamed from plugins) ─────────────────────────────────
+
+test('harness pane exists (renamed from plugins) (S5)', () => {
+  const pane = root.querySelector('.pane[data-route="harness"]');
+  expect(pane).not.toBeNull();
 });
 
 // ── S3 — section-collapse lib present ────────────────────────────────────────
@@ -292,13 +361,10 @@ test('quick-ask pane has transcript, input, send, and clear elements (S12)', () 
   expect(clear.tagName.toLowerCase()).toBe('button');
 });
 
-test('quick-ask nav item is inside the CHAT section (S12)', () => {
-  const qaNav   = root.querySelector('.nav-item[data-route="quick-ask"]');
-  const convNav = root.querySelector('.nav-item[data-route="conversation"]');
-  expect(qaNav).not.toBeNull();
-  expect(convNav).not.toBeNull();
-  // Both must share the same parent nav-section (CHAT).
-  expect(qaNav.parentNode).toBe(convNav.parentNode);
+test('quick-ask is NOT a nav item (S5: collapsed into conversation route)', () => {
+  // S5 removed quick-ask from the nav (it's now accessed via #quick-ask pane only).
+  const qaNav = root.querySelector('.nav-item[data-route="quick-ask"]');
+  expect(qaNav).toBeNull();
 });
 
 // ── S13 — per-conversation model override ────────────────────────────────────
@@ -465,16 +531,14 @@ test('inbox reply composer is a textarea bound to send_channel_reply (S18)', () 
 // ── S19 — recipes pane ───────────────────────────────────────────────────────
 
 test('recipes pane has list container and empty state (S19)', () => {
-  const pane = root.querySelector('.pane[data-route="recipes"]');
-  expect(pane).not.toBeNull();
+  // S5: recipes content moved into library pane sub-section.
+  const sub = root.querySelector('.lib-sub[data-lib="recipes"]');
+  expect(sub).not.toBeNull();
 
-  // Placeholder must be gone.
-  expect(pane.querySelector('.placeholder')).toBeNull();
-
-  const list = pane.querySelector('#rcp-list');
+  const list = sub.querySelector('#rcp-list');
   expect(list).not.toBeNull();
 
-  const empty = pane.querySelector('#rcp-empty');
+  const empty = sub.querySelector('#rcp-empty');
   expect(empty).not.toBeNull();
 });
 
@@ -644,11 +708,12 @@ test('apply-all sends the batch limit from the header input, default 100 (#421)'
 // ── S6 Documents panel (#457) ────────────────────────────────────────────────
 
 test('documents pane has list container and empty state (S6 docs)', () => {
-  const pane = root.querySelector('.pane[data-route="documents"]');
-  expect(pane).not.toBeNull();
+  // S5: documents content moved into library pane sub-section.
+  const sub = root.querySelector('.lib-sub[data-lib="documents"]');
+  expect(sub).not.toBeNull();
 
-  const list  = pane.querySelector('#docs-list');
-  const empty = pane.querySelector('#docs-empty');
+  const list  = sub.querySelector('#docs-list');
+  const empty = sub.querySelector('#docs-empty');
   expect(list).not.toBeNull();
   expect(empty).not.toBeNull();
 });
@@ -681,8 +746,8 @@ test('harness-panel.js script tag is present (S3 harness)', () => {
   expect(found).toBe(true);
 });
 
-test('plugins pane has filter rail, card grid, and unreachable banner (S3 harness)', () => {
-  const pane = root.querySelector('.pane[data-route="plugins"]');
+test('harness pane has filter rail, card grid, and unreachable banner (S3 harness)', () => {
+  const pane = root.querySelector('.pane[data-route="harness"]');
   expect(pane).not.toBeNull();
 
   // Main layout container.
@@ -699,15 +764,15 @@ test('plugins pane has filter rail, card grid, and unreachable banner (S3 harnes
   expect(pane.querySelector('#hrns-retry-btn')).not.toBeNull();
 });
 
-test('plugins pane has empty and no-match states (S3 harness)', () => {
-  const pane = root.querySelector('.pane[data-route="plugins"]');
+test('harness pane has empty and no-match states (S3 harness)', () => {
+  const pane = root.querySelector('.pane[data-route="harness"]');
   expect(pane.querySelector('#hrns-empty')).not.toBeNull();
   expect(pane.querySelector('#hrns-no-match')).not.toBeNull();
   expect(pane.querySelector('#hrns-clear-filters')).not.toBeNull();
 });
 
-test('plugins pane has detail drawer with close button (S3 harness)', () => {
-  const pane = root.querySelector('.pane[data-route="plugins"]');
+test('harness pane has detail drawer with close button (S3 harness)', () => {
+  const pane = root.querySelector('.pane[data-route="harness"]');
   const drawer = pane.querySelector('#hrns-drawer');
   expect(drawer).not.toBeNull();
   expect(drawer.getAttribute('hidden')).not.toBeNull();
@@ -715,8 +780,8 @@ test('plugins pane has detail drawer with close button (S3 harness)', () => {
   expect(pane.querySelector('#hrns-drawer-body')).not.toBeNull();
 });
 
-test('plugins pane has search input in toolbar (S3 harness)', () => {
-  const pane = root.querySelector('.pane[data-route="plugins"]');
+test('harness pane has search input in toolbar (S3 harness)', () => {
+  const pane = root.querySelector('.pane[data-route="harness"]');
   const search = pane.querySelector('#hrns-search');
   expect(search).not.toBeNull();
   expect(search.getAttribute('type')).toBe('search');
