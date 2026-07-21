@@ -29,7 +29,7 @@ from cerebral.llm.chain_engine import ChainEngine
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
 from cerebral.passive.extractor import FiveW1HExtractor
-from cerebral.action_queue.manager import QueueManager
+from cerebral.action_queue.manager import KIND_MEMORY_PROPOSAL, QueueManager
 from cerebral.insights.engine import InsightsEngine
 from cerebral.tts.engine import TTSEngine
 from cerebral.environment.context import EnvironmentContext
@@ -3952,6 +3952,12 @@ async def _handle_message(msg: dict) -> None:
                     "is_error": result.is_error,
                 },
             })
+        if item.kind == KIND_MEMORY_PROPOSAL:
+            fact = (item.tool_args or {}).get("fact", "")
+            mem = _get_memory()
+            if fact and mem:
+                await mem.remember(fact)
+                await _broadcast(_memory_update_event())
         await _broadcast(_queue_update_event())
 
     elif t == "remember":
@@ -4750,6 +4756,7 @@ def _wire_plugin_seams() -> None:
         # plugin name, seam method, factory
         ("settings_control", "set_apply_callback", _apply_settings_control),  # F4 #327
         ("memory",   "set_memory_factory",  _get_memory),                   # #79
+        ("memory",   "set_queue_factory",   lambda: _queue),                # S8 #487
         ("shell",    "set_workdir_fn",      _get_shell_workdir),            # SBX-3 #354
         ("browser_session", "set_session_factory", _get_browser_session),   # browser harness (ADR-0005 2026-06-25)
         ("browser_session", "set_notifier", _notify_user),                  # verification-wall escalation

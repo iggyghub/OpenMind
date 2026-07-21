@@ -268,3 +268,20 @@ running.
       in a browser or invoke any `window.open(...)` from DevTools -- it is
       denied at the main-process `setWindowOpenHandler` guard. Only the
       whitelisted `detached-panel.html` may be opened.
+
+## S8 #487 -- memory proposals: prompt guidance + user confirms
+
+**Fact quality (does Felix remember the right things?)**
+
+- [ ] Tell Felix a durable fact: "I prefer dark mode". Verify a memory
+      proposal appears in the queue (title starts "Remember: "). Do NOT
+      see it silently written to the Memory pane without confirmation.
+- [ ] Approve the proposal. Open the Library Memory tab -- the fact
+      appears there immediately (no page reload needed).
+- [ ] Tell Felix another fact: "My wife's name is Aria". A second proposal
+      appears. Dismiss it. Open the Library Memory tab -- "Aria" does NOT
+      appear in memory.
+- [ ] Ask Felix "what time is it?" (a non-durable request). No memory
+      proposal is raised; Felix uses the time tool or replies in text.
+- [ ] Tell Felix "I like jazz". Approve the proposal. Ask Felix "what music
+      do I like?" -- it should recall "jazz" from memory in its answer.
