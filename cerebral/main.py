@@ -2676,6 +2676,79 @@ async def _speak(text: str) -> None:
     await _broadcast({"type": "tts_done", "data": {}})
 
 
+# ── Shared tray-IPC direct-call path (call_tool + plugins:test_call) ─────────
+
+async def _dispatch_tray_call_tool(tool_name: str, tool_args: dict) -> ToolResult:
+    """Shared body for tray-IPC direct tool calls (issues #238, #472).
+
+    Applies the ACL/consent gate ladder, dispatches through
+    ``_orc.call_tool`` (never-raise), broadcasts ``tool_result``, and records
+    the KIND_TOOL_CALL/KIND_TOOL_RESULT turn pair. Both the ``call_tool``
+    handler and the harness ``plugins:test_call`` handler go through here so
+    the permissions layer and transcript recording apply identically -- no
+    parallel entry point (spec section 5.3).
+    """
+    await _record_turn(KIND_TOOL_CALL, {"name": tool_name, "args": tool_args})
+    plugin_name = _orc.plugin_for_tool(tool_name)
+    caps = (
+        _orc.required_capabilities_for(plugin_name)
+        if plugin_name is not None
+        else None
+    )
+    if caps:
+        decision = await _orc.check_capabilities(tool_name, caps, CallFlags())
+    else:
+        decision = Decision.SILENT
+    if decision is Decision.SILENT:
+        result = await _orc.call_tool(tool_name, tool_args)
+    else:
+        logger.info(
+            "[cerebral] Tray-IPC call_tool denied: %s (decision=%s)",
+            tool_name, decision.value,
+        )
+        result = ToolResult(
+            content=(
+                f"Denied: '{tool_name}' was refused by the "
+                f"capability gate (decision: {decision.value})"
+            ),
+            is_error=True,
+        )
+    await _broadcast({
+        "type": "tool_result",
+        "data": {"name": tool_name, "content": result.content, "is_error": result.is_error},
+    })
+    await _record_turn(KIND_TOOL_RESULT, {"name": tool_name, "is_error": result.is_error})
+    return result
+
+
+async def _handle_plugins_test_call(msg: dict) -> None:
+    """Handle ``plugins:test_call`` (spec section 5.3).
+
+    Thin wrapper over the shared tray-IPC ``call_tool`` path so the
+    permissions layer and ``_record_turn`` recording apply automatically.
+    Response mirrors ``ToolResult`` as ``{is_error, content_preview}`` with
+    the first 500 chars only -- large tool outputs never balloon the WS
+    frame, and the same 500-char ceiling anticipates the phase-3 transcript
+    ``content_preview`` schema change.
+    """
+    d = msg.get("data") or {}
+    tool_name = (d.get("tool_name") or "").strip()
+    tool_args = d.get("args") or {}
+    if not tool_name:
+        logger.warning("[cerebral] plugins:test_call missing tool_name")
+        return
+    result = await _dispatch_tray_call_tool(tool_name, tool_args)
+    preview = (result.content or "")[:500]
+    await _broadcast({
+        "type": "plugins:test_call",
+        "data": {
+            "tool_name": tool_name,
+            "is_error": result.is_error,
+            "content_preview": preview,
+        },
+    })
+
+
 # ── Plugin enable/disable (S2 #470) ──────────────────────────────────────────
 
 async def _handle_plugins_set_enabled(msg: dict) -> None:
@@ -2939,6 +3012,10 @@ async def _handle_message(msg: dict) -> None:
     elif t == "plugins:set_enabled":
         # Harness UI rework, S2 #470 -- spec section 5.2.
         await _handle_plugins_set_enabled(msg)
+
+    elif t == "plugins:test_call":
+        # Harness UI rework, S4 #472 -- spec section 5.3.
+        await _handle_plugins_test_call(msg)
 
     elif t == "get_plugin_settings":
         # Issue #187 — Plugins pane requests per-plugin settings.
@@ -3456,47 +3533,12 @@ async def _handle_message(msg: dict) -> None:
             fut.set_result(choice)
 
     elif t == "call_tool":
+        # Issue #238 — direct tool call from the tray. Routes through the
+        # shared ACL/consent gate ladder in ``_dispatch_tray_call_tool`` so
+        # the permissions layer + transcript recording apply identically to
+        # the harness ``plugins:test_call`` path (S4 #472).
         d = msg.get("data", {})
-        tool_name = d.get("name", "")
-        tool_args = d.get("args", {})
-        await _record_turn(KIND_TOOL_CALL, {"name": tool_name, "args": tool_args})
-        # Issue #238 — route tray-IPC calls through the ACL/consent gate
-        # ladder before dispatching. Mirrors the approve_item path but
-        # without passive=True: this is a direct user action, not a queued
-        # ambient candidate. check_capabilities handles irreversible modal
-        # routing and ask-class consent identically to the queue path.
-        plugin_name = _orc.plugin_for_tool(tool_name)
-        caps = (
-            _orc.required_capabilities_for(plugin_name)
-            if plugin_name is not None
-            else None
-        )
-        if caps:
-            decision = await _orc.check_capabilities(
-                tool_name, caps, CallFlags(),
-            )
-        else:
-            decision = Decision.SILENT
-
-        if decision is Decision.SILENT:
-            result = await _orc.call_tool(tool_name, tool_args)
-        else:
-            logger.info(
-                "[cerebral] Tray-IPC call_tool denied: %s (decision=%s)",
-                tool_name, decision.value,
-            )
-            result = ToolResult(
-                content=(
-                    f"Denied: '{tool_name}' was refused by the "
-                    f"capability gate (decision: {decision.value})"
-                ),
-                is_error=True,
-            )
-        await _broadcast({
-            "type": "tool_result",
-            "data": {"name": tool_name, "content": result.content, "is_error": result.is_error},
-        })
-        await _record_turn(KIND_TOOL_RESULT, {"name": tool_name, "is_error": result.is_error})
+        await _dispatch_tray_call_tool(d.get("name", ""), d.get("args", {}))
 
     elif t == "user_text_command":
         # Issue #185 / ADR-0007 -- typed input from the Main window. Same

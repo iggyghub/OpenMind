@@ -3338,6 +3338,78 @@
       cursor: not-allowed;
       opacity: 0.5;
     }
+    /* S4 (#472) -- live toggle + per-tool Test call form. */
+    .hrns-toggle {
+      margin-left: auto;
+      background: none;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font-family: inherit;
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .hrns-toggle:hover { background: rgba(75, 212, 212, 0.1); }
+    .hrns-toggle[disabled] { opacity: 0.5; cursor: wait; }
+    .hrns-test-call {
+      margin-top: 6px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: rgba(255,255,255,0.02);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .hrns-test-form { display: flex; flex-direction: column; gap: 4px; }
+    .hrns-test-field {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--text-dim);
+    }
+    .hrns-test-lbl {
+      min-width: 90px;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+    }
+    .hrns-test-req { color: #e05555; margin-left: 2px; }
+    .hrns-test-desc { color: var(--text-muted); font-size: 10px; margin-left: 4px; }
+    .hrns-test-input,
+    .hrns-test-json {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      font-size: 11px;
+      padding: 3px 6px;
+      flex: 1;
+      min-width: 0;
+    }
+    .hrns-test-json { width: 100%; resize: vertical; }
+    .hrns-test-btn {
+      align-self: flex-start;
+      background: none;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font-family: inherit;
+      font-size: 10px;
+      padding: 3px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .hrns-test-btn:hover { background: rgba(75, 212, 212, 0.1); }
+    .hrns-test-result {
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      font-size: 10px;
+      color: var(--text-dim);
+      background: var(--bg);
+      padding: 6px 8px;
+      border-radius: 3px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .hrns-test-result.hrns-test-error { color: #ff9090; }
+    .hrns-test-empty { font-size: 11px; color: var(--text-muted); font-style: italic; }
 
     .hrns-drawer-section {
       padding: 12px 16px 6px;
@@ -5297,6 +5369,10 @@
     let harnessData = { plugins: [], errors: [], capability_vocabulary: [] };
     let harnessActiveFilters = { capabilities: [], statuses: [] };
 
+    // Cache of the current tools_list broadcast so the Harness drawer can
+    // render args forms from each tool's JSON Schema (S4 #472, spec 5.3).
+    let toolsList = [];
+
     // Per-plugin settings sub-pane state (Issue #187). Populated by
     // plugin_settings broadcasts; null when no sub-pane is open.
     let pluginSettingsData = null;
@@ -5628,7 +5704,12 @@
           if (permStore) permStore.applyState(event.data || {});
           break;
         case 'tools_list':
-          if (permStore) permStore.applyToolsList((event.data && event.data.tools) || []);
+          toolsList = (event.data && event.data.tools) || [];
+          if (permStore) permStore.applyToolsList(toolsList);
+          break;
+        case 'plugins:test_call':
+          // S4 #472 -- render the truncated preview back into the drawer.
+          applyHarnessTestCallResult(event.data || {});
           break;
         case 'plugins_list':
           // Two consumers (Issue #206): the PermissionsStore feeds the
@@ -5647,6 +5728,15 @@
           harnessData = event.data || { plugins: [], errors: [], capability_vocabulary: [] };
           renderHarness();
           updateHarnessUnreachable();
+          // S4 #472 -- if the drawer is open on a plugin whose state just
+          // changed (enable/disable response), re-render it from the fresh
+          // snapshot so the toggle label matches backend truth.
+          if (harnessOpenPlugin) {
+            var fresh = (harnessData.plugins || []).find(function (p) {
+              return p.name === harnessOpenPlugin;
+            });
+            if (fresh) openHarnessDrawer('plugin', fresh);
+          }
           break;
         case 'harness_status':
           integrationsData = event.data || null;
@@ -8323,14 +8413,56 @@
       if (hrnsEmptyEl) hrnsEmptyEl.hidden = true;  // banner takes precedence
     }
 
+    // S4 (#472) -- name of the plugin whose drawer is open, so plugins:changed
+    // broadcasts can re-render the drawer after enable/disable and keep the
+    // toggle label in sync with backend state (no optimistic UI).
+    let harnessOpenPlugin = null;
+
+    function applyHarnessTestCallResult(data) {
+      if (!hrnsDrawerBodyEl) return;
+      var toolName = data && data.tool_name;
+      if (!toolName) return;
+      var esc = toolName.replace(/"/g, '\\"');
+      var resultEl = hrnsDrawerBodyEl.querySelector(
+        '[data-test-result="' + esc + '"]'
+      );
+      if (!resultEl) return;
+      resultEl.hidden = false;
+      resultEl.textContent = data.content_preview || '';
+      resultEl.classList.toggle('hrns-test-error', !!data.is_error);
+    }
+
     function openHarnessDrawer(kind, item) {
       var hp = typeof HarnessPanel !== 'undefined' ? HarnessPanel : null;
       if (!hp || !hrnsDrawerBodyEl) return;
+      // Enrich each tool with the current schema from tools_for_llm (kept in
+      // toolsList) so schemaToFormHtml can render fields; the harness
+      // snapshot itself carries only name/description/supersedes.
+      var enriched = item;
+      if (kind !== 'error' && item && Array.isArray(item.tools)) {
+        var schemaByName = Object.create(null);
+        (toolsList || []).forEach(function (t) {
+          if (t && t.name) schemaByName[t.name] = t.input_schema || null;
+        });
+        var irrByName = Object.create(null);
+        (toolsList || []).forEach(function (t) {
+          if (t && t.name) irrByName[t.name] = !!t.irreversible;
+        });
+        enriched = Object.assign({}, item, {
+          tools: item.tools.map(function (t) {
+            return Object.assign({}, t, {
+              schema:        schemaByName[t.name] || null,
+              irreversible:  !!irrByName[t.name],
+            });
+          }),
+        });
+      }
       hrnsDrawerBodyEl.innerHTML = kind === 'error'
-        ? hp.makeErrorDrawer(item)
-        : hp.makeDrawer(item);
+        ? hp.makeErrorDrawer(enriched)
+        : hp.makeDrawer(enriched);
+      harnessOpenPlugin = (kind === 'error' || !item) ? null : item.name;
       hrnsDrawerEl.hidden = false;
-      // Capability links inside the drawer activate the corresponding filter.
+      // Capability links -> activate filter.
       hrnsDrawerBodyEl.querySelectorAll('.hrns-cap-link[data-filter-cap]').forEach(function (btn) {
         btn.addEventListener('click', function () {
           var cap = btn.dataset.filterCap;
@@ -8338,7 +8470,58 @@
             harnessActiveFilters.capabilities.push(cap);
           }
           hrnsDrawerEl.hidden = true;
+          harnessOpenPlugin = null;
           renderHarness();
+        });
+      });
+      // Enable/disable toggle -> plugins:set_enabled; the plugins:changed
+      // broadcast that follows re-renders the drawer (no optimistic UI).
+      hrnsDrawerBodyEl.querySelectorAll('[data-toggle-plugin]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var pluginName    = btn.dataset.togglePlugin;
+          var targetEnabled = btn.dataset.targetEnabled === 'true';
+          btn.disabled    = true;
+          btn.textContent = targetEnabled ? 'Enabling…' : 'Disabling…';
+          sendEvent({
+            type: 'plugins:set_enabled',
+            data: { plugin_name: pluginName, enabled: targetEnabled },
+          });
+        });
+      });
+      // Test-call button -> plugins:test_call. Args come from the schema-
+      // driven form (or the raw JSON textarea fallback). The response is
+      // routed back here via case 'plugins:test_call' below.
+      hrnsDrawerBodyEl.querySelectorAll('[data-test-fire]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var toolName = btn.dataset.testFire;
+          var formRoot = hrnsDrawerBodyEl.querySelector(
+            '[data-test-tool="' + toolName.replace(/"/g, '\\"') + '"]'
+          );
+          var args = hp.readSchemaForm(formRoot);
+          var resultEl = hrnsDrawerBodyEl.querySelector(
+            '[data-test-result="' + toolName.replace(/"/g, '\\"') + '"]'
+          );
+          if (args && args.__error) {
+            if (resultEl) {
+              resultEl.hidden = false;
+              resultEl.textContent = args.__error;
+              resultEl.classList.add('hrns-test-error');
+            }
+            return;
+          }
+          if (resultEl) {
+            resultEl.hidden = false;
+            resultEl.textContent = 'Running…';
+            resultEl.classList.remove('hrns-test-error');
+          }
+          sendEvent({
+            type: 'plugins:test_call',
+            data: {
+              tool_name: toolName,
+              args:      args,
+              thread:    'harness-test',
+            },
+          });
         });
       });
     }
@@ -8410,6 +8593,7 @@
         document.getElementById('hrns-drawer-close') &&
           document.getElementById('hrns-drawer-close').addEventListener('click', function () {
             hrnsDrawerEl.hidden = true;
+            harnessOpenPlugin = null;
           });
       }
       var clearBtn = document.getElementById('hrns-clear-filters');

@@ -67,3 +67,42 @@ running.
       Unset the keyring, set `TODOIST_API_TOKEN`, refetch: `source` flips
       to `"env"` and `env_var:"TODOIST_API_TOKEN"`; hint still masked.
 - [ ] Grep the raw WS trace for the full token value; MUST NOT appear.
+
+## S4 (#472) -- enable/disable toggle + plugins:test_call + args-form-from-schema
+
+- [ ] Open the tray, navigate to the Harness section, click any card.
+      The drawer header now shows a live `Disable` (or `Enable` for a
+      disabled plugin) button in place of the S3 placeholder -- accent
+      colour, not greyed out.
+- [ ] Click `Disable` on an active plugin: the button briefly reads
+      `Disabling...`, then the drawer re-renders with a `disabled` status
+      dot, the toggle flips to `Enable`, and the card in the grid drops
+      to reduced opacity. No visible page flash / optimistic state --
+      the drawer waits for the `plugins:changed` broadcast to update.
+- [ ] Click `Enable` on that same plugin: it re-registers, the status
+      goes back to `active`, and the card returns to full opacity.
+- [ ] Disable `google_workspace`, then hover the `gmail` card: the drawer
+      lists `gmail_send` without a `supersedes` indicator (takeover reverted).
+- [ ] In the drawer, each tool row now carries a `Test call` button plus
+      an args form. Tools with a well-formed JSON Schema (e.g. `read_notes`
+      with `{path: string}`) render individual labelled inputs; tools with
+      no schema, arrays, or nested objects render a single JSON textarea
+      pre-filled with `{}`.
+- [ ] Required schema fields are marked with a red `*` next to the label.
+- [ ] Click `Test call` on a read-only tool with valid args: the result
+      area under the button appears, first as `Running...`, then with the
+      truncated preview string. `is_error: false` styles it in the default
+      colour. Repeat with an invalid arg (e.g. missing required): the
+      response comes back with error styling (red) and a short error
+      message from the tool.
+- [ ] Click `Test call` on an irreversible tool (e.g. `gmail_send`): the
+      existing irreversible-modal window appears exactly as it does for a
+      voice-triggered `gmail_send`. Cancelling it produces an
+      `is_error: true` response in the drawer; accepting it dispatches.
+      No new confirm surface was built for this slice.
+- [ ] Type malformed JSON into a fallback textarea and click `Test call`:
+      the result area shows `Invalid JSON: ...` without hitting Cerebral.
+- [ ] Grep the raw WS trace across an entire test-call session (form
+      submit + response + irreversible modal ping-pong) for any long
+      credential-looking string: MUST NOT appear. Only `content_preview`
+      strings from the tool itself are present.

@@ -123,40 +123,155 @@
     '</div>';
   }
 
-  /* Build the drawer body HTML for a plugin (read-only; toggle is S4). */
+  /* Field-type check for schemaToFormHtml. Only these primitive scalar
+   * types get a native input; anything else (nested object, array, oneOf,
+   * $ref, missing type) falls through to the raw-JSON textarea. */
+  function _isSimpleField(prop) {
+    if (!prop || typeof prop !== 'object') return false;
+    var t = prop.type;
+    return t === 'string' || t === 'number' || t === 'integer' || t === 'boolean';
+  }
+
+  /* Build args-form HTML from a tool's JSON Schema (spec 5.3).
+   * Object schemas with only primitive fields render as labelled inputs;
+   * anything else falls back to a single JSON textarea. Both shapes are
+   * readable by ``readSchemaForm``. */
+  function schemaToFormHtml(schema, toolName) {
+    var tname = escHtml(toolName || '');
+    if (!schema || typeof schema !== 'object' ||
+        schema.type !== 'object' ||
+        !schema.properties || typeof schema.properties !== 'object') {
+      return '<textarea class="hrns-test-json" ' +
+        'data-tool="' + tname + '" data-mode="json" ' +
+        'placeholder="Args as JSON (e.g. {})" rows="3">{}</textarea>';
+    }
+    var required = Array.isArray(schema.required) ? schema.required : [];
+    var reqSet = Object.create(null);
+    required.forEach(function (k) { reqSet[k] = true; });
+    var fieldsHtml = '';
+    var keys = Object.keys(schema.properties);
+    if (keys.length === 0) {
+      return '<div class="hrns-test-empty">No arguments.</div>';
+    }
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var prop = schema.properties[k];
+      if (!_isSimpleField(prop)) {
+        return '<textarea class="hrns-test-json" ' +
+          'data-tool="' + tname + '" data-mode="json" ' +
+          'placeholder="Args as JSON" rows="3">{}</textarea>';
+      }
+      var reqMark = reqSet[k]
+        ? '<span class="hrns-test-req" title="required">*</span>' : '';
+      var desc = prop.description
+        ? '<span class="hrns-test-desc">' + escHtml(prop.description) + '</span>' : '';
+      var input;
+      if (prop.type === 'boolean') {
+        input = '<input class="hrns-test-input" type="checkbox" ' +
+          'data-arg="' + escHtml(k) + '" data-type="boolean">';
+      } else {
+        var inputType = (prop.type === 'number' || prop.type === 'integer')
+          ? 'number' : 'text';
+        input = '<input class="hrns-test-input" type="' + inputType + '" ' +
+          'data-arg="' + escHtml(k) + '" data-type="' + escHtml(prop.type) + '">';
+      }
+      fieldsHtml += '<label class="hrns-test-field">' +
+        '<span class="hrns-test-lbl">' + escHtml(k) + reqMark + '</span>' +
+        input + desc +
+      '</label>';
+    }
+    return '<div class="hrns-test-form" data-tool="' + tname + '" data-mode="fields">' +
+      fieldsHtml + '</div>';
+  }
+
+  /* Read filled args back from a form root element. Returns an object of
+   * {arg_name: value}. In "json" mode, parses the textarea; on parse
+   * failure returns { __error: message }. Empty strings for optional fields
+   * are omitted so tools don't see spurious empty values. */
+  function readSchemaForm(rootEl) {
+    if (!rootEl) return {};
+    var jsonEl = rootEl.querySelector
+      ? rootEl.querySelector('[data-mode="json"]')
+      : null;
+    if (jsonEl) {
+      var raw = (jsonEl.value || '').trim();
+      if (raw === '') return {};
+      try { return JSON.parse(raw); }
+      catch (e) { return { __error: 'Invalid JSON: ' + e.message }; }
+    }
+    var out = {};
+    var inputs = rootEl.querySelectorAll
+      ? rootEl.querySelectorAll('[data-arg]') : [];
+    for (var i = 0; i < inputs.length; i++) {
+      var el = inputs[i];
+      var name = el.dataset ? el.dataset.arg : el.getAttribute('data-arg');
+      var type = el.dataset ? el.dataset.type : el.getAttribute('data-type');
+      if (type === 'boolean') {
+        out[name] = !!el.checked;
+      } else if (type === 'number' || type === 'integer') {
+        var v = el.value;
+        if (v === '' || v == null) continue;
+        var n = Number(v);
+        if (!isNaN(n)) out[name] = type === 'integer' ? Math.trunc(n) : n;
+      } else {
+        if (el.value === '' || el.value == null) continue;
+        out[name] = el.value;
+      }
+    }
+    return out;
+  }
+
+  /* Build the drawer body HTML for a plugin.
+   * S4 (#472) -- live toggle in the header, "Test call" button + args form
+   * per tool (schema-driven; JSON textarea fallback). */
   function makeDrawer(plugin) {
     if (!plugin) return '';
-    var name   = escHtml(plugin.name || '');
-    var status = plugin.status || 'active';
+    var name    = escHtml(plugin.name || '');
+    var status  = plugin.status || 'active';
+    var enabled = plugin.enabled !== false;
 
     var trustedBadge = plugin.trust === 'trusted'
       ? '<span class="hrns-badge hrns-badge-trusted">trusted, unverified</span>'
       : '';
 
-    // 1. Header.
+    // 1. Header -- toggle sends plugins:set_enabled; response re-renders.
+    var toggleLbl = enabled ? 'Disable' : 'Enable';
     var header = '<div class="hrns-drawer-hdr">' +
       '<span class="hrns-dot hrns-dot-' + escHtml(status) + '"></span>' +
       '<span class="hrns-drawer-name">' + name + '</span>' +
       trustedBadge +
       '<span class="hrns-status-label">' + escHtml(status) + '</span>' +
-      '<button class="hrns-toggle-placeholder" disabled type="button" ' +
-        'title="Enable / disable -- coming in S4">Toggle</button>' +
+      '<button class="hrns-toggle" type="button" ' +
+        'data-toggle-plugin="' + name + '" ' +
+        'data-target-enabled="' + (enabled ? 'false' : 'true') + '">' +
+        toggleLbl +
+      '</button>' +
     '</div>';
 
-    // 2. Tools.
+    // 2. Tools -- each with a Test call form (S4 #472, spec 5.3).
     var tools = Array.isArray(plugin.tools) ? plugin.tools : [];
     var toolsBody = tools.length === 0
       ? '<div class="hrns-drawer-empty">No tools registered.</div>'
       : tools.map(function (t) {
+          var toolName = t.name || '';
           var sup = t.supersedes
             ? '<span class="hrns-supersedes">supersedes <code>' +
                 escHtml(t.supersedes.tool) + '</code> from <code>' +
                 escHtml(t.supersedes.from_plugin) + '</code></span>'
             : '';
-          return '<div class="hrns-tool-row">' +
-            '<span class="hrns-tool-name">' + escHtml(t.name || '') + '</span>' +
+          var schema = t.schema || t.input_schema || null;
+          var formHtml = schemaToFormHtml(schema, toolName);
+          var irr = t.irreversible ? ' data-irreversible="true"' : '';
+          return '<div class="hrns-tool-row" data-tool-row="' + escHtml(toolName) + '">' +
+            '<span class="hrns-tool-name">' + escHtml(toolName) + '</span>' +
             '<span class="hrns-tool-desc">' + escHtml(t.description || '') + '</span>' +
             sup +
+            '<div class="hrns-test-call" data-test-tool="' + escHtml(toolName) + '"' + irr + '>' +
+              formHtml +
+              '<button class="hrns-test-btn" type="button" ' +
+                'data-test-fire="' + escHtml(toolName) + '"' + irr + '>Test call</button>' +
+              '<div class="hrns-test-result" data-test-result="' + escHtml(toolName) + '" hidden></div>' +
+            '</div>' +
           '</div>';
         }).join('');
 
@@ -219,12 +334,12 @@
     if (!err) return '';
     var name = escHtml(err.plugin_name || 'unknown');
 
+    // Error cards represent a registration refusal -- the plugin isn't
+    // loaded, so there is nothing to enable/disable from here.
     var header = '<div class="hrns-drawer-hdr">' +
       '<span class="hrns-dot hrns-dot-error"></span>' +
       '<span class="hrns-drawer-name">' + name + '</span>' +
       '<span class="hrns-status-label">error</span>' +
-      '<button class="hrns-toggle-placeholder" disabled type="button" ' +
-        'title="Enable / disable -- coming in S4">Toggle</button>' +
     '</div>';
 
     var errSection = '<div class="hrns-drawer-section">' +
@@ -330,16 +445,18 @@
   }
 
   return {
-    STATUS_FILTERS:  STATUS_FILTERS,
-    CAP_ICONS:       CAP_ICONS,
-    escHtml:         escHtml,
-    capabilityIcon:  capabilityIcon,
-    makeCard:        makeCard,
-    makeErrorCard:   makeErrorCard,
-    makeDrawer:      makeDrawer,
-    makeErrorDrawer: makeErrorDrawer,
-    filterRailHtml:  filterRailHtml,
-    applyFilters:    applyFilters,
-    renderGrid:      renderGrid,
+    STATUS_FILTERS:   STATUS_FILTERS,
+    CAP_ICONS:        CAP_ICONS,
+    escHtml:          escHtml,
+    capabilityIcon:   capabilityIcon,
+    makeCard:         makeCard,
+    makeErrorCard:    makeErrorCard,
+    makeDrawer:       makeDrawer,
+    makeErrorDrawer:  makeErrorDrawer,
+    filterRailHtml:   filterRailHtml,
+    applyFilters:     applyFilters,
+    renderGrid:       renderGrid,
+    schemaToFormHtml: schemaToFormHtml,
+    readSchemaForm:   readSchemaForm,
   };
 }));
