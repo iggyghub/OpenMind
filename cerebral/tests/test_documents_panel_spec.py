@@ -12,7 +12,7 @@ import plugins.documents as doc
 from plugins.documents import DocumentStore
 
 
-VALID_WIDGETS = frozenset({"list", "detail"})
+VALID_WIDGETS = frozenset({"list", "detail", "text"})
 
 
 def _store_at(tmp_path) -> DocumentStore:
@@ -84,6 +84,57 @@ def test_panel_spec_no_profile_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(doc, "_store", _store_at(tmp_path))
     spec = doc.create().panel_spec(None)
     assert spec["widgets"][0]["items"] == []
+
+
+def test_panel_spec_text_widget_for_txt_file(tmp_path, monkeypatch):
+    """Text widget appears for a .txt doc; value matches the file content."""
+    store = _store_at(tmp_path)
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+
+    src = tmp_path / "notes.txt"
+    src.write_bytes(b"hello from notes")
+    store.store_doc(1, "Notes", str(src))
+
+    spec = doc.create().panel_spec(1)
+    text_widgets = [w for w in spec["widgets"] if w["type"] == "text"]
+    assert len(text_widgets) == 1
+    tw = text_widgets[0]
+    assert tw["value"] == "hello from notes"
+    assert tw["tool"] == "doc_write"
+    assert tw["tool_args"]["doc_id"] is not None
+    assert tw.get("label") == "Notes"
+
+
+def test_panel_spec_no_text_widget_for_docx(tmp_path, monkeypatch):
+    """.docx docs must NOT produce a text widget (ADR-0011 / ADR-0012)."""
+    store = _store_at(tmp_path)
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"docx bytes")
+    store.store_doc(1, "My Resume", str(src))
+
+    spec = doc.create().panel_spec(1)
+    text_widgets = [w for w in spec["widgets"] if w["type"] == "text"]
+    assert text_widgets == [], "docx must not offer a text widget"
+
+
+def test_panel_spec_text_widget_value_updates_after_write(tmp_path, monkeypatch):
+    """panel_spec re-reads the file; after doc_write the new content appears."""
+    store = _store_at(tmp_path)
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+    monkeypatch.setattr(doc, "_broadcast_fn", None)
+
+    src = tmp_path / "notes.txt"
+    src.write_bytes(b"original")
+    stored = store.store_doc(1, "Notes", str(src))
+
+    spec_before = doc.create().panel_spec(1)
+    tw_before = next(w for w in spec_before["widgets"] if w["type"] == "text")
+    assert tw_before["value"] == "original"
 
 
 def test_panel_spec_carries_no_html_or_scripts(tmp_path, monkeypatch):
