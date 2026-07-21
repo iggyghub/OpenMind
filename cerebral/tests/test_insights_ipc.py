@@ -126,15 +126,67 @@ async def test_dismiss_unknown_item_no_broadcast(insights_rig):
 
 
 async def test_approve_path_broadcasts_on_new_insight(insights_rig):
+    # Post-S7: only tool-bearing proposals feed signals, so seed and
+    # dispatch with a tool_name.
     for _ in range(2):
-        insights_rig.eng.record_signal("approve", "Send digest", tool_name=None)
-    item = insights_rig.queue.add_item("Send digest", "summary", tool_name=None)
+        insights_rig.eng.record_signal("approve", "Send digest", tool_name="send_digest")
+    item = insights_rig.queue.add_item("Send digest", "summary", tool_name="send_digest")
 
     await insights_rig.handle({"type": "approve_item", "data": {"item_id": item.id}})
 
     updates = insights_rig.insights_updates()
     assert len(updates) == 1
-    assert [i["example"] for i in updates[0]["data"]["insights"]] == ["Send digest"]
+    assert [i["example"] for i in updates[0]["data"]["insights"]] == ["send_digest"]
+
+
+# ── S7 / #486: tool_name gates the signal source ──────────────────────────────
+
+
+async def test_approve_notification_class_records_no_signal(insights_rig):
+    """tool_name=None -> notification-class; no signal, no insight risk."""
+    item = insights_rig.queue.add_item(
+        "Discord DM from iggyphi", "summary", tool_name=None,
+    )
+    await insights_rig.handle({"type": "approve_item", "data": {"item_id": item.id}})
+    signals = insights_rig.eng._con.execute(
+        "SELECT COUNT(*) FROM insight_signals"
+    ).fetchone()[0]
+    assert signals == 0
+    assert insights_rig.insights_updates() == []
+
+
+async def test_dismiss_notification_class_records_no_signal(insights_rig):
+    item = insights_rig.queue.add_item(
+        "Discord DM from iggyphi", "summary", tool_name=None,
+    )
+    await insights_rig.handle({"type": "dismiss_item", "data": {"item_id": item.id}})
+    signals = insights_rig.eng._con.execute(
+        "SELECT COUNT(*) FROM insight_signals"
+    ).fetchone()[0]
+    assert signals == 0
+    assert insights_rig.insights_updates() == []
+
+
+async def test_approve_tool_bearing_records_signal(insights_rig):
+    item = insights_rig.queue.add_item(
+        "Set alarm", "summary", tool_name="set_alarm",
+    )
+    await insights_rig.handle({"type": "approve_item", "data": {"item_id": item.id}})
+    signals = insights_rig.eng._con.execute(
+        "SELECT action, tool_name FROM insight_signals"
+    ).fetchall()
+    assert [(s["action"], s["tool_name"]) for s in signals] == [("approve", "set_alarm")]
+
+
+async def test_dismiss_tool_bearing_records_signal(insights_rig):
+    item = insights_rig.queue.add_item(
+        "Set alarm", "summary", tool_name="set_alarm",
+    )
+    await insights_rig.handle({"type": "dismiss_item", "data": {"item_id": item.id}})
+    signals = insights_rig.eng._con.execute(
+        "SELECT action, tool_name FROM insight_signals"
+    ).fetchall()
+    assert [(s["action"], s["tool_name"]) for s in signals] == [("dismiss", "set_alarm")]
 
 
 # ── delete_insight ────────────────────────────────────────────────────────────

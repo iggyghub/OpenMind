@@ -255,3 +255,68 @@ def test_risky_recomputed_on_read_for_existing_rows(tmp_path):
     # Verify the get_pending read also computes it.
     pending = mgr.get_pending()
     assert pending[0].risky is True
+
+
+# ── Slice 9: kind column (ADR-0013 decision 1) ───────────────────────────────
+
+
+def test_add_item_defaults_kind_to_candidate_action():
+    mgr = _mgr()
+    item = mgr.add_item("A", "a")
+    assert item.kind == "candidate_action"
+
+
+def test_add_item_accepts_kind():
+    mgr = _mgr()
+    item = mgr.add_item("Remember this", "durable fact", kind="memory_proposal")
+    assert item.kind == "memory_proposal"
+
+
+def test_to_dict_includes_kind():
+    mgr = _mgr()
+    item = mgr.add_item("A", "a", kind="recipe_proposal")
+    assert item.to_dict()["kind"] == "recipe_proposal"
+
+
+def test_kind_persists_across_manager_instances(tmp_path):
+    db = tmp_path / "test.db"
+    mgr1 = QueueManager(str(db))
+    mgr1.add_item("A", "a", kind="memory_proposal")
+    mgr2 = QueueManager(str(db))
+    kinds = [p.kind for p in mgr2.get_pending()]
+    assert kinds == ["memory_proposal"]
+
+
+def test_migration_adds_kind_to_preexisting_row(tmp_path):
+    """Live DB has 311 dismissed rows written before the kind column existed.
+    The additive ALTER must fill them with the default without data loss."""
+    import sqlite3
+    db = tmp_path / "test.db"
+    # Simulate the pre-S7 schema and insert a row.
+    pre = sqlite3.connect(str(db))
+    pre.executescript("""
+        CREATE TABLE queue (
+            id          TEXT    PRIMARY KEY,
+            title       TEXT    NOT NULL,
+            summary     TEXT    NOT NULL DEFAULT '',
+            status      TEXT    NOT NULL DEFAULT 'pending',
+            tool_name   TEXT,
+            tool_args   TEXT,
+            created_at  TEXT    NOT NULL
+        );
+        INSERT INTO queue (id, title, summary, status, tool_name, tool_args, created_at)
+        VALUES ('legacy-1', 'Discord DM from iggyphi', 's', 'dismissed', NULL, NULL, '2026-01-01T00:00:00+00:00');
+    """)
+    pre.commit()
+    pre.close()
+
+    # Boot the manager -- migration runs.
+    mgr = QueueManager(str(db))
+    row = mgr._con.execute("SELECT title, kind FROM queue WHERE id='legacy-1'").fetchone()
+    assert row["title"] == "Discord DM from iggyphi"
+    assert row["kind"] == "candidate_action"
+
+    # Idempotency: a second boot must not raise.
+    mgr2 = QueueManager(str(db))
+    row2 = mgr2._con.execute("SELECT kind FROM queue WHERE id='legacy-1'").fetchone()
+    assert row2["kind"] == "candidate_action"
