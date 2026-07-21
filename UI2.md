@@ -13,7 +13,7 @@ slice as its issue specifies, opens a per-issue PR, merges it, then rewrites the
 
 ## Next slice -- start here
 
-- **Active:** S6 -- #485
+- **Active:** S7 -- #486
 - **Model:** opus
 
 ## Queue
@@ -26,7 +26,7 @@ Order below already satisfies every dependency -- do not reorder.
 - [x] S3 -- #482 -- A2b: drag splitter between the slots, width persisted (Model: sonnet)
 - [x] S4 -- #483 -- A3: panel spec v1 end-to-end, plugin declares a panel (Model: opus)
 - [x] S5 -- #484 -- A4: text widget, edit plain/Markdown and save back (Model: sonnet)
-- [ ] S6 -- #485 -- A5: detach a panel into its own window (Model: opus)
+- [x] S6 -- #485 -- A5: detach a panel into its own window (Model: opus)
 - [ ] S7 -- #486 -- B1: queue gains a kind; insight signals only for tool-bearing proposals (Model: opus)
 - [ ] S8 -- #487 -- B2: memory proposals, prompt guidance + user confirms (Model: sonnet)
 - [ ] S9 -- #488 -- B3: recipe proposals, offer to save a chain after it repeats (Model: sonnet)
@@ -41,6 +41,7 @@ slice, set the next entry's model on the `Model:` line above.
 - S3 #482 -- PR #492 -- drag splitter between workspace slots, width persisted
 - S4 #483 -- PR #493 -- panel spec v1 end-to-end, Documents declares a list/detail panel
 - S5 #484 -- PR #494 -- text widget, edit plain/Markdown and save back
+- S6 #485 -- PR #495 -- detach panel to own window, WS bridge extracted to tray/lib
 
 ## SAFETY
 
