@@ -199,6 +199,100 @@
     .sec-hdr.sec-collapsed .sec-chevron::before { content: '\25B8'; /* right-pointing */ }
     [data-sec-hidden] { display: none !important; }
 
+    /* ── workspace shell (S2 -- #481, ADR-0012 primary + secondary) ───── */
+    .workspace {
+      flex: 1;
+      display: flex;
+      flex-direction: row;
+      min-height: 0;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .ws-primary {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+    /* S3 (#482) will replace the fixed width with a drag splitter. */
+    .ws-secondary {
+      flex: 0 0 480px;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      border-left: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .ws-secondary[hidden] { display: none; }
+    .ws-tabs {
+      display: flex;
+      gap: 2px;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elev);
+      flex-shrink: 0;
+      overflow-x: auto;
+    }
+    .ws-tabs[hidden] { display: none; }
+    .ws-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      color: var(--text-dim);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .ws-tab:hover { background: var(--bg); color: var(--text); }
+    .ws-tab.is-active {
+      background: var(--bg);
+      color: var(--text);
+      border-color: var(--border);
+    }
+    .ws-tab-close {
+      color: var(--text-muted);
+      padding: 0 4px;
+      border-radius: 2px;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .ws-tab-close:hover { color: var(--text); background: var(--border); }
+    .ws-secondary-body {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+    }
+    .ws-panel-body {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: auto;
+    }
+    .hdr-ws-opener select {
+      background: var(--bg);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 3px 6px;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .hdr-ws-opener select:hover { color: var(--text); }
+
     /* ── header ─────────────────────────────────────────────── */
     .header {
       padding: 14px 20px;
@@ -4590,8 +4684,24 @@
           </div>
         </div>
       </div>
+      <!-- S2 (#481) -- workspace panel opener. Compact select as the demo
+           trigger for opening a panel into the secondary slot; A3 (#483)
+           will replace this with the plugin-declared panel registry. -->
+      <div class="hdr-ws-opener" id="hdr-ws-opener">
+        <select id="ws-opener-select" aria-label="Open workspace panel">
+          <option value="">+ Panel</option>
+          <option value="documents">Documents</option>
+          <option value="job-search">Job Search</option>
+        </select>
+      </div>
       <div class="state-pill" id="state-pill" data-state="passive">Passive</div>
     </div>
+
+    <!-- S2 (#481) -- workspace shell: primary slot permanently holds the
+         Conversation; secondary slot beside it holds panels with a tab strip
+         when >1 open. Splitter (fixed 480px here) lands in S3 (#482). -->
+    <div class="workspace" id="workspace">
+      <div class="ws-primary" id="ws-primary">
 
     <section class="pane" data-route="conversation">
       <!-- S9 (#292) -- active-thread title + New conversation button. Title
@@ -5291,6 +5401,13 @@
         </div>
       </div>
     </section>
+
+      </div><!-- /.ws-primary -->
+      <aside class="ws-secondary" id="ws-secondary" hidden aria-label="Workspace secondary slot">
+        <div class="ws-tabs" id="ws-tabs" role="tablist" hidden></div>
+        <div class="ws-secondary-body" id="ws-secondary-body"></div>
+      </aside>
+    </div><!-- /.workspace -->
   </main>
 
   <!-- Sidebar router (Issue #186) — route constants and hash parser.
@@ -5339,6 +5456,10 @@
   <script src="../lib/documents-panel.js"></script>
   <!-- Harness panel helpers (S3 #471) -- filters, card grid, detail drawer. -->
   <script src="../lib/harness-panel.js"></script>
+
+  <!-- Workspace shell (S2 -- #481) -- primary + secondary slot state layer.
+       Dual-mode: window.WorkspaceMod here, module.exports for Node tests. -->
+  <script src="../lib/workspace.js"></script>
 
   <script>
     'use strict';
@@ -10053,6 +10174,115 @@
         window.SidebarCollapse.toggle(_sidebarEl);
       }
     });
+
+    // ── S2 -- #481: workspace shell (primary + secondary slot) ───────────
+    // The Conversation permanently occupies .ws-primary (routes still swap
+    // there via the sidebar). .ws-secondary holds zero or more panels with a
+    // tab strip when >1 open; which panels are open, and the active tab,
+    // persist in localStorage via lib/workspace.js.
+    // Panel registry is minimal here on purpose -- A3 (#483) is the real
+    // plugin-declared panel spec; this slice uses two existing routes as
+    // demoable occupants (issue #481 acceptance).
+    const _wsMod        = window.WorkspaceMod;
+    const _wsSecondaryEl = document.getElementById('ws-secondary');
+    const _wsTabsEl      = document.getElementById('ws-tabs');
+    const _wsBodyEl      = document.getElementById('ws-secondary-body');
+    const _wsOpenerSel   = document.getElementById('ws-opener-select');
+
+    const _WS_PANELS = [
+      { id: 'documents', label: 'Documents' },
+      { id: 'job-search', label: 'Job Search' },
+    ];
+    function _wsPanelDef(id) {
+      for (var i = 0; i < _WS_PANELS.length; i++) {
+        if (_WS_PANELS[i].id === id) return _WS_PANELS[i];
+      }
+      return null;
+    }
+
+    function _renderWorkspace() {
+      const state  = _wsMod.readState();
+      const openIds = state.open.filter(function (id) { return !!_wsPanelDef(id); });
+      const active = openIds.indexOf(state.active) !== -1
+        ? state.active
+        : (openIds[0] || null);
+
+      _wsSecondaryEl.hidden = openIds.length === 0;
+      _wsTabsEl.hidden      = openIds.length < 2;
+
+      _wsTabsEl.innerHTML = '';
+      openIds.forEach(function (id) {
+        const p   = _wsPanelDef(id);
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = 'ws-tab' + (id === active ? ' is-active' : '');
+        tab.dataset.wsTab = id;
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-selected', id === active ? 'true' : 'false');
+        const label = document.createElement('span');
+        label.className = 'ws-tab-label';
+        label.textContent = p.label;
+        tab.appendChild(label);
+        const close = document.createElement('span');
+        close.className = 'ws-tab-close';
+        close.dataset.wsClose = id;
+        close.textContent = '×';
+        close.title = 'Close panel';
+        close.setAttribute('role', 'button');
+        close.setAttribute('aria-label', 'Close ' + p.label + ' panel');
+        tab.appendChild(close);
+        _wsTabsEl.appendChild(tab);
+      });
+
+      _wsBodyEl.innerHTML = '';
+      if (active) {
+        const p    = _wsPanelDef(active);
+        const body = document.createElement('div');
+        body.className = 'ws-panel-body';
+        body.dataset.wsPanelBody = active;
+        const ph = document.createElement('div');
+        ph.className = 'placeholder';
+        const title = document.createElement('div');
+        title.className = 'placeholder-title';
+        title.textContent = p.label;
+        ph.appendChild(title);
+        const sub = document.createElement('div');
+        sub.className = 'placeholder-sub';
+        sub.textContent = 'Demo occupant for the workspace secondary slot. ' +
+          'Real panel content lands with the panel spec in A3 (#483).';
+        ph.appendChild(sub);
+        body.appendChild(ph);
+        _wsBodyEl.appendChild(body);
+      }
+    }
+
+    _wsTabsEl.addEventListener('click', function (e) {
+      const closeEl = e.target.closest('[data-ws-close]');
+      if (closeEl) {
+        e.stopPropagation();
+        _wsMod.close(closeEl.dataset.wsClose);
+        _renderWorkspace();
+        return;
+      }
+      const tab = e.target.closest('[data-ws-tab]');
+      if (tab) {
+        _wsMod.activate(tab.dataset.wsTab);
+        _renderWorkspace();
+      }
+    });
+
+    if (_wsOpenerSel) {
+      _wsOpenerSel.addEventListener('change', function () {
+        const id = _wsOpenerSel.value;
+        if (!id) return;
+        _wsMod.open(id);
+        _wsOpenerSel.value = '';
+        _renderWorkspace();
+      });
+    }
+
+    // Restores whichever panels were open on the last reload.
+    _renderWorkspace();
 
     // ── S4 -- federated search shell (#287) ───────────────────────────────
     // Each pane provides:

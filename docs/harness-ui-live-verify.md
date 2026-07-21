@@ -149,3 +149,39 @@ running.
       Press Ctrl+B again to collapse it back.
 - [ ] Reload the window (Ctrl+R or close/reopen). The sidebar restores to
       whichever state (collapsed or expanded) it was in before the reload.
+
+## S2 (#481) -- workspace shell (primary + secondary slot)
+
+- [ ] Open the tray, land on Conversation. Header shows a compact "+ Panel"
+      dropdown near the state pill; the right side of the window shows the
+      Conversation full-width (no secondary slot visible).
+- [ ] Type a message in the composer; scroll the transcript up a few turns.
+      Note the scroll position and the composer draft text.
+- [ ] Pick "Documents" from the "+ Panel" dropdown. The window splits: the
+      Conversation stays in the left slot at the same width it takes when
+      docked with a companion (its scroll position and draft text are still
+      exactly where you left them -- the transcript is not remounted); a
+      new "Documents" panel appears on the right (fixed 480 px, the drag
+      splitter lands in S3). No tab strip yet -- only one panel is open.
+- [ ] Pick "Job Search" from the dropdown. The tab strip appears at the top
+      of the secondary slot with two tabs: "Documents" and "Job Search";
+      "Job Search" is the active tab. Click "Documents" -- it becomes the
+      active tab and the panel body swaps.
+- [ ] Click the × on the "Documents" tab. Documents closes; "Job Search"
+      is the only remaining tab; the tab strip disappears (only 1 panel
+      open) but the "Job Search" panel content is still visible in the
+      secondary slot.
+- [ ] Click the × on "Job Search". The secondary slot collapses entirely
+      and the Conversation returns to full width. The Conversation scroll
+      position and draft text are still preserved from step 2.
+- [ ] Re-open Documents + Job Search, activate Documents, then reload the
+      window (Ctrl+R). Both panels re-open in the same order and Documents
+      is still the active tab.
+- [ ] With both panels open, click Harness in the sidebar. The primary slot
+      swaps to the Harness route as before, and the secondary slot still
+      shows the active panel beside it (workspace layout is orthogonal to
+      the sidebar route -- ADR-0012 decision 6). Click Conversation to
+      return; secondary is unchanged.
+- [ ] Collapse the sidebar with Ctrl+B while both panels are open. The
+      layout still holds: icon-rail sidebar | Conversation | tab strip +
+      panel, nothing overlaps.

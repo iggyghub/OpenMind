@@ -72,6 +72,11 @@ const DUAL_MODE_LIBS = [
     global: 'SidebarCollapse',
     check: (mod) => expect(typeof mod.toggle).toBe('function'),
   },
+  {
+    file: 'workspace.js',
+    global: 'WorkspaceMod',
+    check: (mod) => expect(typeof mod.readState).toBe('function'),
+  },
 ];
 
 const SOURCES = DUAL_MODE_LIBS.map((lib) => ({
