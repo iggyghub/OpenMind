@@ -42,6 +42,7 @@ import json
 import logging
 from typing import Callable, Optional
 
+from cerebral.action_queue.manager import KIND_MEMORY_PROPOSAL, QueueManager
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.memory.manager import MemoryManager
 
@@ -68,11 +69,12 @@ _DEFAULT_N_RESULTS = 5
 _MAX_N_RESULTS = 20
 
 MemoryFactory = Callable[[], Optional[MemoryManager]]
+QueueFactory = Callable[[], Optional[QueueManager]]
 
-# Module-level factory set by cerebral/main.py post-orchestrator-boot via
-# set_memory_factory(). Tests bypass this by passing a factory directly to
-# MemoryPlugin's constructor.
+# Module-level factories set by cerebral/main.py post-orchestrator-boot.
+# Tests bypass by passing directly to MemoryPlugin's constructor.
 _memory_factory: Optional[MemoryFactory] = None
+_queue_factory: Optional[QueueFactory] = None
 
 
 def set_memory_factory(fn: MemoryFactory) -> None:
@@ -88,17 +90,47 @@ def set_memory_factory(fn: MemoryFactory) -> None:
     _memory_factory = fn
 
 
+def set_queue_factory(fn: QueueFactory) -> None:
+    global _queue_factory
+    _queue_factory = fn
+
+
 class MemoryPlugin:
     name = PLUGIN_NAME
 
-    def __init__(self, memory_factory: Optional[MemoryFactory] = None) -> None:
-        # Constructor-injected factory wins over the module-level setter.
-        # Tests pass directly; production leaves this None and main.py wires
-        # the module-level _memory_factory at startup.
+    def __init__(
+        self,
+        memory_factory: Optional[MemoryFactory] = None,
+        queue_factory: Optional[QueueFactory] = None,
+    ) -> None:
+        # Constructor-injected factories win over module-level setters.
+        # Tests pass directly; production wires via main.py at startup.
         self._factory = memory_factory
+        self._queue_factory = queue_factory
 
     def list_tools(self) -> list[Tool]:
         return [
+            Tool(
+                name="propose_memory",
+                description=(
+                    "Propose storing a durable fact about the user in long-term "
+                    "memory. The user must confirm before the fact is saved. Use "
+                    "this when the user states a preference, relationship, important "
+                    "date, or ongoing context about themselves. Never call "
+                    "memory_remember directly -- always propose first."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "fact": {
+                            "type": "string",
+                            "description": "The fact to propose remembering. One coherent statement.",
+                        },
+                    },
+                    "required": ["fact"],
+                },
+            ),
             Tool(
                 name="memory_remember",
                 description=(
@@ -167,6 +199,8 @@ class MemoryPlugin:
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
+        if tool_name == "propose_memory":
+            return self._propose(args)
         if tool_name == "memory_remember":
             return await self._remember(args)
         if tool_name == "memory_recall":
@@ -178,6 +212,31 @@ class MemoryPlugin:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _resolve_queue(self) -> tuple[Optional[QueueManager], Optional[str]]:
+        factory = self._queue_factory or _queue_factory
+        if factory is None:
+            return None, "Queue not available -- factory not wired"
+        queue = factory()
+        if queue is None:
+            return None, "Queue not available"
+        return queue, None
+
+    def _propose(self, args: dict) -> ToolResult:
+        fact = args.get("fact", "")
+        if not isinstance(fact, str) or not fact.strip():
+            return ToolResult(content=_BLANK_FACT_MSG, is_error=True)
+        fact = fact.strip()
+        queue, err = self._resolve_queue()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+        queue.add_item(
+            f"Remember: {fact}",
+            fact,
+            kind=KIND_MEMORY_PROPOSAL,
+            tool_args={"fact": fact},
+        )
+        return ToolResult(content="Memory proposal added -- waiting for your confirmation")
 
     def _resolve_memory(self) -> tuple[Optional[MemoryManager], Optional[str]]:
         """Return ``(manager, error_string)``. Exactly one is non-None.

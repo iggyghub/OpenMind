@@ -278,7 +278,7 @@ async def test_no_factory_wired_returns_canonical_error(tool_name, args):
 class TestListTools:
     def test_three_tools_registered(self, plugin):
         names = [t.name for t in plugin.list_tools()]
-        assert names == ["memory_remember", "memory_recall", "memory_forget"]
+        assert names == ["propose_memory", "memory_remember", "memory_recall", "memory_forget"]
 
     def test_tools_belong_to_plugin(self, plugin):
         for tool in plugin.list_tools():
