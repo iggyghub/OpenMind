@@ -106,3 +106,27 @@ running.
       submit + response + irreversible modal ping-pong) for any long
       credential-looking string: MUST NOT appear. Only `content_preview`
       strings from the tool itself are present.
+
+## S5 (#473) -- route collapse 16->4 + hash redirects + header profile switcher
+
+- [ ] Open the tray. The sidebar nav shows exactly 4 buttons: Conversation,
+      Harness, Library, Settings. No Profiles button, no sub-section labels.
+- [ ] The header shows a profile switcher button (displaying the active
+      profile name) to the left of the state pill. Clicking it opens a
+      dropdown listing all profiles with Switch buttons; clicking "Manage
+      profiles" navigates to the Profiles pane.
+- [ ] Switching profiles via the dropdown updates the active profile and
+      closes the dropdown; the button label updates to the new profile name.
+- [ ] Navigate to Library. The tab bar shows: Memory | Insights | Recipes |
+      Documents | Job Search. Clicking each tab shows the corresponding
+      content and updates the URL hash to `#library/<sub>`.
+- [ ] Navigate to Harness. The existing plugin card grid and drawer appear.
+      Old `#plugins`, `#integrations`, `#credentials`, `#permissions` hashes
+      all redirect to `#harness` (test by typing them in the URL bar).
+- [ ] Old hashes redirect correctly: `#memory` → Library (memory sub-tab),
+      `#models` → Settings, `#quick-ask` → Conversation.
+- [ ] Navigate to `#harness/my_plugin_name` (replace with a real plugin name):
+      the Harness pane opens and the drawer for that plugin auto-opens once
+      the plugin list loads.
+- [ ] The Profiles pane is still reachable via `#profiles` (for the first_run
+      wizard flow) even though it has no nav button.

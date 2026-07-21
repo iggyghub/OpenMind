@@ -5,7 +5,7 @@ Each session reads this file + the spec, implements the ONE active slice as its
 issue specifies, opens a per-issue PR, merges it, then rewrites the "Next slice"
 block below. This file is the only memory between sessions.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
@@ -18,7 +18,7 @@ block below. This file is the only memory between sessions.
 - [x] S2 -- #470 -- disabled_plugins setting + plugins:set_enabled (backend) (Model: sonnet)
 - [x] S3 -- #471 -- Harness section: filters, card grid, read-only drawer (renderer) (Model: sonnet)
 - [x] S4 -- #472 -- enable/disable toggle + plugins:test_call + args-form-from-schema (both) (Model: opus)
-- [ ] S5 -- #473 -- route collapse 16->4 + hash redirects + header profile switcher (renderer) (Model: sonnet)
+- [x] S5 -- #473 -- route collapse 16->4 + hash redirects + header profile switcher (renderer) (Model: sonnet)
 
 Phase 3 (activity feed + the `content_preview` transcript schema change) is
 DEFERRED -- the spec says build it later and keep it out of phases 1-2. The loop
@@ -30,6 +30,7 @@ stops (Status: done) after S5. Do NOT touch the transcript schema unattended.
 - S2 #470 -- PR #476 -- disabled_plugins setting + plugins:set_enabled
 - S3 #471 -- PR #477 -- Harness section: filters, card grid, read-only drawer
 - S4 #472 -- PR #478 -- enable/disable toggle + plugins:test_call + args-form-from-schema
+- S5 #473 -- PR #479 -- route collapse 16->4 + hash redirects + header profile switcher
 
 ## SAFETY
 
