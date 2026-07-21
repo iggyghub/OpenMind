@@ -622,32 +622,29 @@ function quit() {
 // #439 — one-click full restart: clean quit() teardown (Cerebral gets the
 // shutdown event), then the launcher reboots BOTH processes. -Restart makes
 // the launcher wait for :7766 to free instead of refusing to double-launch.
-// #443 — the first live restart shut down but never relaunched: the spawn
-// died silently. Absolute powershell path, error breadcrumbs into
-// launcher.log, and quit deferred so teardown can't race the spawn.
+// #443/#502 — spawn() cannot do this from a process that is about to exit.
+// Measured on Win10 (3/3 runs each): a `detached` powershell child never runs
+// at all — CreateProcess succeeds, it exits 0 silently without touching the
+// script — and a non-detached one runs but is killed the moment Electron
+// exits. app.relaunch hands the launch to Electron's relauncher, which waits
+// for this process to be gone before starting it: the one order the
+// launcher's -Restart port-wait actually wants.
 function restartFelix() {
-  const fs = require('fs');
-  const logLine = (msg) => {
-    try { fs.appendFileSync(LAUNCHER_LOG, `[tray] ${msg}\n`); } catch (_) {}
-  };
+  const launcher = path.join(__dirname, '..', 'scripts', 'launch-felix.ps1');
+  const psExe = path.join(
+    process.env.SystemRoot || 'C:\\Windows',
+    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+  );
+  app.relaunch({
+    execPath: psExe,
+    args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher, '-Restart'],
+  });
+  // Breadcrumb: if the launcher never logs "=== launcher started ===" after
+  // this line, the relaunch is what broke (that gap is how #502 was found).
   try {
-    const { spawn } = require('child_process');
-    const launcher = path.join(__dirname, '..', 'scripts', 'launch-felix.ps1');
-    const psExe = path.join(
-      process.env.SystemRoot || 'C:\\Windows',
-      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
-    );
-    const child = spawn(psExe,
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher, '-Restart'],
-      { detached: true, stdio: 'ignore', windowsHide: true },
-    );
-    child.on('error', (err) => logLine(`restart spawn error: ${err}`));
-    child.unref();
-    logLine(`restart: spawned launcher (pid ${child.pid})`);
-  } catch (e) {
-    logLine(`restart spawn threw: ${e}`);
-  }
-  setTimeout(quit, 500);
+    require('fs').appendFileSync(LAUNCHER_LOG, '[tray] restart: relaunching\n');
+  } catch (_) {}
+  quit();
 }
 
 app.whenReady().then(() => {
