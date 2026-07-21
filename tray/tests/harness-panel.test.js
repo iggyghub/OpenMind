@@ -182,10 +182,23 @@ describe('makeDrawer', () => {
     expect(HP.makeDrawer(makePlugin({ status: 'active' }))).toContain('active');
   });
 
-  test('disabled toggle placeholder present', () => {
-    const html = HP.makeDrawer(makePlugin());
-    expect(html).toContain('hrns-toggle-placeholder');
-    expect(html).toContain('disabled');
+  test('live enable/disable toggle present (S4 #472)', () => {
+    // S3 shipped a disabled placeholder; S4 replaced it with a live toggle
+    // wired to plugins:set_enabled.
+    const html = HP.makeDrawer(makePlugin({ name: 'google_workspace', enabled: true }));
+    expect(html).toContain('hrns-toggle');
+    expect(html).toContain('data-toggle-plugin="google_workspace"');
+    // Enabled plugin's toggle targets enabled=false (i.e. Disable).
+    expect(html).toContain('data-target-enabled="false"');
+    expect(html).toContain('Disable');
+  });
+
+  test('toggle label + target flip when plugin already disabled', () => {
+    const html = HP.makeDrawer(makePlugin({
+      name: 'notes', status: 'disabled', enabled: false,
+    }));
+    expect(html).toContain('data-target-enabled="true"');
+    expect(html).toContain('Enable');
   });
 
   test('tools section contains tool name and description', () => {
@@ -276,10 +289,12 @@ describe('makeErrorDrawer', () => {
     expect(HP.makeErrorDrawer(makeError())).toContain('hrns-dot-error');
   });
 
-  test('toggle placeholder is disabled', () => {
+  test('no toggle rendered for error card (plugin not loaded)', () => {
+    // S4 (#472) removed the S3 placeholder from error drawers -- a plugin
+    // that failed to register has no orchestrator handle to enable/disable.
     const html = HP.makeErrorDrawer(makeError());
-    expect(html).toContain('hrns-toggle-placeholder');
-    expect(html).toContain('disabled');
+    expect(html).not.toContain('data-toggle-plugin');
+    expect(html).not.toContain('hrns-toggle-placeholder');
   });
 });
 
@@ -441,4 +456,185 @@ test('STATUS_FILTERS keys are active/error/trusted_unverified/disabled', () => {
   expect(keys).toContain('error');
   expect(keys).toContain('trusted_unverified');
   expect(keys).toContain('disabled');
+});
+
+// ── S4 (#472): schemaToFormHtml + readSchemaForm + test-call block ──────────
+
+describe('schemaToFormHtml (S4)', () => {
+  test('object schema with string field renders labelled text input', () => {
+    var schema = { type: 'object', properties: { to: { type: 'string' } } };
+    var html = HP.schemaToFormHtml(schema, 'gmail_send');
+    expect(html).toContain('hrns-test-form');
+    expect(html).toContain('data-arg="to"');
+    expect(html).toContain('data-type="string"');
+    expect(html).toContain('type="text"');
+  });
+
+  test('number and integer fields render as type=number', () => {
+    var schema = { type: 'object', properties: {
+      count: { type: 'integer' }, ratio: { type: 'number' },
+    } };
+    var html = HP.schemaToFormHtml(schema, 't');
+    expect(html).toContain('data-arg="count"');
+    expect(html).toContain('data-arg="ratio"');
+    expect((html.match(/\stype="number"/g) || []).length).toBe(2);
+    expect(html).toContain('data-type="integer"');
+    expect(html).toContain('data-type="number"');
+  });
+
+  test('boolean fields render as checkbox', () => {
+    var schema = { type: 'object', properties: { silent: { type: 'boolean' } } };
+    var html = HP.schemaToFormHtml(schema, 't');
+    expect(html).toContain('type="checkbox"');
+    expect(html).toContain('data-type="boolean"');
+  });
+
+  test('required fields marked with * indicator', () => {
+    var schema = {
+      type: 'object',
+      properties: { to: { type: 'string' } },
+      required: ['to'],
+    };
+    var html = HP.schemaToFormHtml(schema, 't');
+    expect(html).toContain('hrns-test-req');
+  });
+
+  test('no properties -> empty label, no textarea, no fields', () => {
+    var schema = { type: 'object', properties: {} };
+    var html = HP.schemaToFormHtml(schema, 't');
+    expect(html).toContain('hrns-test-empty');
+    expect(html).not.toContain('hrns-test-json');
+  });
+
+  test('nested object schema falls back to JSON textarea', () => {
+    var schema = { type: 'object', properties: {
+      opts: { type: 'object' },  // nested object -> not simple
+    } };
+    var html = HP.schemaToFormHtml(schema, 't');
+    expect(html).toContain('hrns-test-json');
+    expect(html).toContain('data-mode="json"');
+  });
+
+  test('missing schema falls back to JSON textarea', () => {
+    expect(HP.schemaToFormHtml(null, 't')).toContain('hrns-test-json');
+    expect(HP.schemaToFormHtml(undefined, 't')).toContain('hrns-test-json');
+    expect(HP.schemaToFormHtml({}, 't')).toContain('hrns-test-json');
+  });
+
+  test('array-typed field falls back to JSON textarea', () => {
+    var schema = { type: 'object', properties: {
+      tags: { type: 'array' },
+    } };
+    expect(HP.schemaToFormHtml(schema, 't')).toContain('hrns-test-json');
+  });
+});
+
+// readSchemaForm needs DOM-shaped inputs. Roll a tiny fake element so we
+// don't drag jsdom in when node's testEnvironment works everywhere else.
+function fakeInput(attrs, value) {
+  return {
+    dataset: {
+      arg:  attrs['data-arg'],
+      type: attrs['data-type'],
+      mode: attrs['data-mode'],
+    },
+    value:   value,
+    checked: !!attrs.checked,
+    getAttribute: function (k) { return attrs[k]; },
+  };
+}
+
+function fakeRoot(fields, jsonEl) {
+  return {
+    querySelector: function (sel) {
+      if (sel.indexOf('data-mode="json"') >= 0) return jsonEl || null;
+      return null;
+    },
+    querySelectorAll: function () { return fields; },
+  };
+}
+
+describe('readSchemaForm (S4)', () => {
+  test('reads string and integer fields into args object', () => {
+    var fields = [
+      fakeInput({ 'data-arg': 'to',    'data-type': 'string'  }, 'a@b.com'),
+      fakeInput({ 'data-arg': 'count', 'data-type': 'integer' }, '5'),
+    ];
+    var out = HP.readSchemaForm(fakeRoot(fields, null));
+    expect(out).toEqual({ to: 'a@b.com', count: 5 });
+  });
+
+  test('boolean checkbox translates to bool', () => {
+    var checked   = fakeInput({ 'data-arg': 'x', 'data-type': 'boolean', checked: true  }, '');
+    var unchecked = fakeInput({ 'data-arg': 'y', 'data-type': 'boolean', checked: false }, '');
+    var out = HP.readSchemaForm(fakeRoot([checked, unchecked], null));
+    expect(out).toEqual({ x: true, y: false });
+  });
+
+  test('empty optional field is omitted', () => {
+    var fields = [fakeInput({ 'data-arg': 'to', 'data-type': 'string' }, '')];
+    var out = HP.readSchemaForm(fakeRoot(fields, null));
+    expect(out).toEqual({});
+  });
+
+  test('JSON textarea parses valid JSON', () => {
+    var jsonEl = { value: '{"a": 1, "b": "two"}' };
+    var out = HP.readSchemaForm(fakeRoot([], jsonEl));
+    expect(out).toEqual({ a: 1, b: 'two' });
+  });
+
+  test('empty JSON textarea returns empty object', () => {
+    var jsonEl = { value: '' };
+    expect(HP.readSchemaForm(fakeRoot([], jsonEl))).toEqual({});
+  });
+
+  test('malformed JSON returns error object, not exception', () => {
+    var jsonEl = { value: '{not valid' };
+    var out = HP.readSchemaForm(fakeRoot([], jsonEl));
+    expect(out.__error).toMatch(/Invalid JSON/);
+  });
+});
+
+describe('makeDrawer test-call section (S4)', () => {
+  test('each tool gets a Test call button + args-form container', () => {
+    var plugin = makePlugin({
+      tools: [
+        { name: 'gmail_send', description: 'Send email', supersedes: null,
+          schema: { type: 'object', properties: { to: { type: 'string' } } } },
+      ],
+    });
+    var html = HP.makeDrawer(plugin);
+    expect(html).toContain('data-test-fire="gmail_send"');
+    expect(html).toContain('data-test-tool="gmail_send"');
+    expect(html).toContain('data-arg="to"');
+    expect(html).toContain('Test call');
+  });
+
+  test('tool without schema falls back to JSON textarea', () => {
+    var plugin = makePlugin({
+      tools: [
+        { name: 'no_schema_tool', description: 'x', supersedes: null, schema: null },
+      ],
+    });
+    var html = HP.makeDrawer(plugin);
+    expect(html).toContain('data-test-tool="no_schema_tool"');
+    expect(html).toContain('hrns-test-json');
+  });
+
+  test('irreversible tool carries the flag on the test-call block', () => {
+    var plugin = makePlugin({
+      tools: [
+        { name: 'gmail_send', description: 'Send', supersedes: null,
+          irreversible: true, schema: null },
+      ],
+    });
+    var html = HP.makeDrawer(plugin);
+    expect(html).toContain('data-irreversible="true"');
+  });
+
+  test('result container present but hidden until response arrives', () => {
+    var html = HP.makeDrawer(makePlugin());
+    expect(html).toContain('data-test-result="gmail_send"');
+    expect(html).toContain('hidden');
+  });
 });
