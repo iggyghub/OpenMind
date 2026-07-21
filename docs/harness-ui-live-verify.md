@@ -185,3 +185,19 @@ running.
 - [ ] Collapse the sidebar with Ctrl+B while both panels are open. The
       layout still holds: icon-rail sidebar | Conversation | tab strip +
       panel, nothing overlaps.
+
+## UI2 S3 (#482) -- drag splitter between workspace slots
+
+- [ ] Open a panel (e.g. "Documents") from the "+ Panel" dropdown. A 5px
+      drag handle appears between the Conversation and the secondary slot.
+- [ ] Hover over the splitter: it highlights (border fill visible).
+- [ ] Drag the splitter left: the secondary slot widens live; primary shrinks
+      to fill remaining space. Release -- the new width persists.
+- [ ] Drag the splitter to the far right: the secondary slot stops at its
+      minimum width (~180px) and the primary still has usable space.
+- [ ] Drag the splitter to the far left: the secondary stops before the
+      primary is squeezed below ~200px minimum.
+- [ ] Reload the window (Ctrl+R). The secondary slot reopens at the same
+      width that was set before the reload (width persists in localStorage).
+- [ ] Close all panels -- secondary slot collapses AND the splitter disappears
+      (no orphan drag handle). Open a panel again -- splitter reappears.
