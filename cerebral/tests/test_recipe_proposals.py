@@ -32,12 +32,28 @@ CHAIN_STEPS = [
 
 @pytest.fixture(autouse=True)
 def reset_tracking():
-    """Reset in-memory repeat counters before each test."""
+    """Reset in-memory repeat counters before each test, and restore the main
+    module globals the tests below patch by hand.
+
+    The restore is the important half: several tests assign a *sync* stub to
+    main._broadcast and used to "restore" it to `lambda e: None` rather than to
+    the real coroutine function. That leaked out of this file and made every
+    later test that awaits _broadcast fail with "object NoneType can't be used
+    in 'await' expression" (it broke test_user_notification.py). Snapshotting
+    here fixes it once for the whole file instead of per test.
+    """
+    saved = {
+        "_broadcast": main_mod._broadcast,
+        "_queue": main_mod._queue,
+        "_recipe_store": main_mod._recipe_store,
+    }
     main_mod._chain_run_counts.clear()
     main_mod._proposed_chains.clear()
     yield
     main_mod._chain_run_counts.clear()
     main_mod._proposed_chains.clear()
+    for key, value in saved.items():
+        setattr(main_mod, key, value)
 
 
 @pytest.fixture
