@@ -9,11 +9,11 @@ Each session reads this file + the active slice's issue, implements that ONE
 slice as its issue specifies, opens a per-issue PR, merges it, then rewrites the
 "Next slice" block below. This file is the only memory between sessions.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S9 -- #488
+- **Active:** (all slices landed)
 - **Model:** sonnet
 
 ## Queue
@@ -29,7 +29,7 @@ Order below already satisfies every dependency -- do not reorder.
 - [x] S6 -- #485 -- A5: detach a panel into its own window (Model: opus)
 - [x] S7 -- #486 -- B1: queue gains a kind; insight signals only for tool-bearing proposals (Model: opus)
 - [x] S8 -- #487 -- B2: memory proposals, prompt guidance + user confirms (Model: sonnet)
-- [ ] S9 -- #488 -- B3: recipe proposals, offer to save a chain after it repeats (Model: sonnet)
+- [x] S9 -- #488 -- B3: recipe proposals, offer to save a chain after it repeats (Model: sonnet)
 
 Per-slice model: sonnet unless the queue entry says otherwise. When ticking a
 slice, set the next entry's model on the `Model:` line above.
@@ -44,6 +44,7 @@ slice, set the next entry's model on the `Model:` line above.
 - S6 #485 -- PR #495 -- detach panel to own window, WS bridge extracted to tray/lib
 - S7 #486 -- PR #496 -- queue gains a kind; insight signals only for tool-bearing proposals
 - S8 #487 -- PR #497 -- memory proposals, prompt guidance + user confirms
+- S9 #488 -- PR #498 -- recipe proposals, offer to save a chain after it repeats
 
 ## SAFETY
 
