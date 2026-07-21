@@ -269,7 +269,8 @@
       color: var(--text);
       border-color: var(--border);
     }
-    .ws-tab-close {
+    .ws-tab-close,
+    .ws-tab-detach {
       color: var(--text-muted);
       padding: 0 4px;
       border-radius: 2px;
@@ -277,7 +278,8 @@
       font-size: 13px;
       line-height: 1;
     }
-    .ws-tab-close:hover { color: var(--text); background: var(--border); }
+    .ws-tab-close:hover,
+    .ws-tab-detach:hover { color: var(--text); background: var(--border); }
     .ws-secondary-body {
       flex: 1;
       min-height: 0;
@@ -5476,6 +5478,9 @@
   <!-- Panel spec renderer (UI2 A3 -- #483) -- list/detail widgets for plugin
        panels. Dual-mode: window.PanelSpec here, module.exports for Node tests. -->
   <script src="../lib/panel-spec.js"></script>
+  <!-- WebSocket bridge (UI2 A5 -- #485) -- shared with detached-panel.html.
+       Dual-mode: window.WsBridge here, module.exports for Node tests. -->
+  <script src="../lib/ws-bridge.js"></script>
 
   <script>
     'use strict';
@@ -5704,7 +5709,6 @@
 
     let activeProfileVoice = 'af_heart';
 
-    let ws = null;
     let activeProfileId = null;
     let renderedTurnIds = new Set();
     // S9 (#292) -- active conversation thread + threads snapshot.
@@ -5751,66 +5755,65 @@
     let wsConnected = false;
 
     // ── connection ─────────────────────────────────────────────────────────
+    // UI2 A5 (#485) -- WS lifecycle lives in tray/lib/ws-bridge.js now so
+    // detached-panel.html can construct its own bridge. This module keeps
+    // ownership of the snapshot fan-out on open and the health-pill teardown
+    // on close.
+    let wsBridge = null;
+
     function connect() {
-      ws = new WebSocket(CEREBRAL_URL);
-      ws.addEventListener('open', () => {
-        wsConnected = true;
-        refreshHealth();
-        // Pull the current queue snapshot so the header badge is accurate
-        // before the user navigates to the Queue pane. Cerebral also
-        // broadcasts queue_update on every mutation, so this is the only
-        // explicit fetch we need.
-        sendEvent({ type: 'list_queue' });
-        // Same snapshot-on-open for Insights (Issue #196). Cerebral
-        // broadcasts insights_update on every mutation; this just primes
-        // the list before the user navigates to the Insights pane.
-        sendEvent({ type: 'list_insights' });
-        // Same snapshot-on-open for Memory (Issue #198).
-        sendEvent({ type: 'list_memories' });
-        // Same snapshot-on-open for Credentials (Issue #200).
-        sendEvent({ type: 'list_credentials' });
-        // Permissions (Issue #202) — three broadcasts feed the pane, so
-        // pull all three on WS open. The store applies them idempotently.
-        sendEvent({ type: 'list_permissions' });
-        sendEvent({ type: 'list_tools' });
-        sendEvent({ type: 'list_plugins' });
-        sendEvent({ type: 'plugins:list' });  // S3 #471 harness snapshot
-        sendEvent({ type: 'plugins:panels' }); // UI2 A3 #483 workspace panels
-        // Profiles (Issue #204).
-        sendEvent({ type: 'list_profiles' });
-        // System settings (Issue #209 + S7). Pulls current mic_mode and
-        // other persisted settings so header controls are in sync on load.
-        sendEvent({ type: 'list_settings' });
-        // S8 -- voices catalogue for the voice picker.
-        sendEvent({ type: 'list_voices' });
-        // S9 (#292) -- prime the conversation threads list + active id so
-        // the title strip on the Conversation pane is correct on first
-        // paint. The turns snapshot (list_conversation_turns) is sent by
-        // Cerebral as part of the connect-time greeting.
-        sendEvent({ type: 'list_conversation_threads' });
-      });
-      ws.addEventListener('close', () => {
-        wsConnected = false;
-        latestHb = null;
-        lastHeartbeatAt = 0;
-        refreshHealth();
-        updateHarnessUnreachable();  // S3 #471
-        setTimeout(connect, RECONNECT_DELAY_MS);
-      });
-      ws.addEventListener('error', () => {
-        // close handler runs after error; nothing to do here
-      });
-      ws.addEventListener('message', (e) => {
-        let event;
-        try { event = JSON.parse(e.data); } catch { return; }
-        handleEvent(event);
+      wsBridge = window.WsBridge.create({
+        url: CEREBRAL_URL,
+        reconnectDelayMs: RECONNECT_DELAY_MS,
+        onOpen: () => {
+          wsConnected = true;
+          refreshHealth();
+          // Pull the current queue snapshot so the header badge is accurate
+          // before the user navigates to the Queue pane. Cerebral also
+          // broadcasts queue_update on every mutation, so this is the only
+          // explicit fetch we need.
+          sendEvent({ type: 'list_queue' });
+          // Same snapshot-on-open for Insights (Issue #196). Cerebral
+          // broadcasts insights_update on every mutation; this just primes
+          // the list before the user navigates to the Insights pane.
+          sendEvent({ type: 'list_insights' });
+          // Same snapshot-on-open for Memory (Issue #198).
+          sendEvent({ type: 'list_memories' });
+          // Same snapshot-on-open for Credentials (Issue #200).
+          sendEvent({ type: 'list_credentials' });
+          // Permissions (Issue #202) — three broadcasts feed the pane, so
+          // pull all three on WS open. The store applies them idempotently.
+          sendEvent({ type: 'list_permissions' });
+          sendEvent({ type: 'list_tools' });
+          sendEvent({ type: 'list_plugins' });
+          sendEvent({ type: 'plugins:list' });  // S3 #471 harness snapshot
+          sendEvent({ type: 'plugins:panels' }); // UI2 A3 #483 workspace panels
+          // Profiles (Issue #204).
+          sendEvent({ type: 'list_profiles' });
+          // System settings (Issue #209 + S7). Pulls current mic_mode and
+          // other persisted settings so header controls are in sync on load.
+          sendEvent({ type: 'list_settings' });
+          // S8 -- voices catalogue for the voice picker.
+          sendEvent({ type: 'list_voices' });
+          // S9 (#292) -- prime the conversation threads list + active id so
+          // the title strip on the Conversation pane is correct on first
+          // paint. The turns snapshot (list_conversation_turns) is sent by
+          // Cerebral as part of the connect-time greeting.
+          sendEvent({ type: 'list_conversation_threads' });
+        },
+        onClose: () => {
+          wsConnected = false;
+          latestHb = null;
+          lastHeartbeatAt = 0;
+          refreshHealth();
+          updateHarnessUnreachable();  // S3 #471
+        },
+        onMessage: handleEvent,
       });
     }
 
     function sendEvent(event) {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-      ws.send(JSON.stringify(event));
-      return true;
+      return !!(wsBridge && wsBridge.send(event));
     }
 
     // ── event handling ─────────────────────────────────────────────────────
@@ -10301,6 +10304,16 @@
         label.className = 'ws-tab-label';
         label.textContent = p.title || id;
         tab.appendChild(label);
+        // UI2 A5 (#485) -- detach button pops the panel into its own window
+        // and drops it from the workspace secondary slot (see _detachPanel).
+        const detach = document.createElement('span');
+        detach.className = 'ws-tab-detach';
+        detach.dataset.wsDetach = id;
+        detach.textContent = '⧉'; // ⧉ two overlapping squares == pop out
+        detach.title = 'Detach panel to new window';
+        detach.setAttribute('role', 'button');
+        detach.setAttribute('aria-label', 'Detach ' + (p.title || id) + ' panel');
+        tab.appendChild(detach);
         const close = document.createElement('span');
         close.className = 'ws-tab-close';
         close.dataset.wsClose = id;
@@ -10317,7 +10330,32 @@
       if (active) _requestPanelSpec(active);
     }
 
+    // UI2 A5 (#485) -- pop a panel into its own OS window. Uses window.open()
+    // so main.js's setWindowOpenHandler owns the new BrowserWindow's posture
+    // (nodeIntegration:false / contextIsolation:true per ADR-0007). Detach
+    // drops the tab from the workspace secondary slot; closing the detached
+    // window drops it entirely -- not persisted across a reload (deliberate;
+    // documented in docs/harness-ui-live-verify.md).
+    function _detachPanel(id) {
+      const panel = _wsPanelDef(id);
+      if (!panel) return;
+      const url = 'detached-panel.html'
+        + '?panel=' + encodeURIComponent(id)
+        + '&title=' + encodeURIComponent(panel.title || id);
+      // Named target keeps a re-detach of the same panel from spawning a
+      // duplicate window when the OS routes it through the existing one.
+      window.open(url, 'felix-panel-' + id, 'width=720,height=560');
+      _wsMod.close(id);
+      _renderWorkspace();
+    }
+
     _wsTabsEl.addEventListener('click', function (e) {
+      const detachEl = e.target.closest('[data-ws-detach]');
+      if (detachEl) {
+        e.stopPropagation();
+        _detachPanel(detachEl.dataset.wsDetach);
+        return;
+      }
       const closeEl = e.target.closest('[data-ws-close]');
       if (closeEl) {
         e.stopPropagation();

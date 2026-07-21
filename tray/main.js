@@ -327,6 +327,35 @@ function openMainWindow(hash) {
   mainWindow.loadFile(path.join(__dirname, 'windows', 'main.html'),
     hashStr ? { hash: hashStr } : undefined);
 
+  // UI2 A5 (#485) -- detached panels open via window.open('detached-panel.html')
+  // from the renderer. Whitelist that one file, deny everything else, and
+  // force the same webPreferences posture as the Main window (ADR-0007).
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    let ok = false;
+    try {
+      const parsed = new URL(url);
+      ok = parsed.protocol === 'file:'
+        && parsed.pathname.replace(/\\/g, '/').endsWith('/tray/windows/detached-panel.html');
+    } catch (_) { ok = false; }
+    if (!ok) return { action: 'deny' };
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        width:           720,
+        height:          560,
+        minWidth:        320,
+        minHeight:       240,
+        title:           'Felix — Panel',
+        icon:            ICO_PATH,
+        backgroundColor: '#12101e',
+        webPreferences: {
+          nodeIntegration:  false,
+          contextIsolation: true,
+        },
+      },
+    };
+  });
+
   // Issue #188 — close button hides to tray; quit is tray-only.
   mainWindow.on('close', (event) => {
     if (!isQuitting) {

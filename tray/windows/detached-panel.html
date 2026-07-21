@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Felix — Panel</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:         #12101e;
+      --bg-elev:    #1a1730;
+      --border:     #2a2640;
+      --text:       #e2e0f0;
+      --text-dim:   #a8a4c8;
+      --text-muted: #6b6790;
+      --accent:     #7c5cfc;
+    }
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden;
+    }
+    body { display: flex; flex-direction: column; }
+    .dp-header {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elev);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .dp-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .dp-status {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .dp-body {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 12px 16px;
+    }
+    /* Minimal styling for panel-spec output; matches the aesthetic of the
+       docked slot in main.html without duplicating its entire stylesheet. */
+    .ps-panel { display: flex; flex-direction: column; gap: 10px; }
+    .ps-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+    .ps-empty { color: var(--text-muted); font-style: italic; font-size: 12px; }
+    .ps-list  { list-style: none; padding: 0; margin: 0; }
+    .ps-list-item {
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .ps-list-title { font-size: 13px; color: var(--text); }
+    .ps-list-sub   { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+    .ps-detail { display: flex; flex-direction: column; gap: 4px; }
+    .ps-detail-row {
+      display: flex; gap: 8px; font-size: 12px;
+    }
+    .ps-detail-label { color: var(--text-dim); min-width: 120px; }
+    .ps-detail-value { color: var(--text); }
+    .ps-text {
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .ps-text-label { font-size: 12px; color: var(--text-dim); }
+    .ps-text-area {
+      background: var(--bg-elev);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 8px;
+      font: 12px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 240px;
+      resize: vertical;
+    }
+    .ps-text-toolbar {
+      display: flex; align-items: center; gap: 8px; justify-content: flex-end;
+    }
+    .ps-text-status { font-size: 11px; color: var(--text-muted); flex: 1; }
+    .ps-text-save {
+      background: var(--accent); color: var(--text);
+      border: none; border-radius: 3px; padding: 4px 12px;
+      cursor: pointer; font-size: 12px;
+    }
+    .ps-text-save:disabled { opacity: 0.6; cursor: default; }
+  </style>
+</head>
+<body>
+  <div class="dp-header">
+    <div class="dp-title" id="dp-title">Panel</div>
+    <div class="dp-status" id="dp-status">Connecting…</div>
+  </div>
+  <div class="dp-body" id="dp-body">
+    <div class="ps-empty">Loading panel…</div>
+  </div>
+
+  <!-- Same dual-mode libs as main.html; each is IIFE-wrapped so nothing leaks. -->
+  <script src="../lib/panel-spec.js"></script>
+  <script src="../lib/text-widget.js"></script>
+  <script src="../lib/ws-bridge.js"></script>
+
+  <script>
+    'use strict';
+
+    // UI2 A5 (#485) -- detached panel window. Reads the plugin panel id from
+    // the URL query string, opens its own WS bridge to Cerebral, requests the
+    // panel spec, and re-renders on plugins:panel_spec broadcasts. Text-widget
+    // save clicks route back through the same bridge (call_tool envelope).
+    //
+    // Same posture as the Main window: nodeIntegration:false, contextIsolation:
+    // true (enforced by tray/main.js setWindowOpenHandler override).
+
+    const CEREBRAL_URL       = 'ws://localhost:7766';
+    const RECONNECT_DELAY_MS = 2000;
+
+    const params    = new URLSearchParams(location.search);
+    const pluginId  = params.get('panel') || '';
+    const titleHint = params.get('title') || pluginId;
+
+    const dpTitle  = document.getElementById('dp-title');
+    const dpStatus = document.getElementById('dp-status');
+    const dpBody   = document.getElementById('dp-body');
+
+    dpTitle.textContent  = titleHint;
+    document.title       = 'Felix — ' + titleHint;
+
+    if (!pluginId) {
+      dpBody.innerHTML = '<div class="ps-empty">No panel id in URL.</div>';
+    }
+
+    let bridge = null;
+
+    function sendEvent(evt) {
+      return !!(bridge && bridge.send(evt));
+    }
+
+    function _renderSpec(spec) {
+      dpBody.innerHTML = window.PanelSpec.renderPanel(spec);
+      // Wire text-widget Save buttons if the spec includes any.
+      window.TextWidget.initTextWidgets(dpBody, sendEvent);
+    }
+
+    bridge = window.WsBridge.create({
+      url: CEREBRAL_URL,
+      reconnectDelayMs: RECONNECT_DELAY_MS,
+      onOpen: () => {
+        dpStatus.textContent = 'Connected';
+        if (pluginId) {
+          sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: pluginId } });
+        }
+      },
+      onClose: () => { dpStatus.textContent = 'Reconnecting…'; },
+      onMessage: (event) => {
+        if (event.type !== 'plugins:panel_spec') return;
+        const d = event.data || {};
+        if (d.plugin_name !== pluginId) return;
+        _renderSpec(d.spec);
+      },
+    });
+
+    // Close the bridge on window unload so no reconnect timer outlives the
+    // destroyed renderer (AC: no orphaned WS connection).
+    window.addEventListener('beforeunload', () => {
+      if (bridge) bridge.close();
+    });
+  </script>
+</body>
+</html>
