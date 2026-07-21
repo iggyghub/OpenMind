@@ -24,7 +24,16 @@
 
 **Rolling buffer** — the last ~60 seconds of ambient audio held in RAM. Never written to disk. Discarded continuously. Used only when Vosk triggers a full transcription pass.
 
-**The queue** — the list of candidate actions Felix has identified but not yet executed. Visible in the tray pulldown. Grows silently in passive mode. Acted on only when the user wakes Felix or approves via notification.
+**The queue** — the list of **proposals** Felix has raised and the user has not yet decided on. The single "Felix proposes, the user decides" channel: one approve/dismiss surface, one **insight signal** source, one count badge. Lives in the Main window's Conversation route. Acted on only when the user wakes Felix or approves via notification. _Avoid_: defining it as "candidate actions" only — actions are one **proposal kind** among several; avoid "the tray pulldown" (the queue moved into the Main window).
+
+**Proposal** — one queue entry: something Felix suggests and the user approves or dismisses. Three kinds:
+- **Candidate action** — a tool call Felix would execute (the original 5W1H-sourced kind).
+- **Memory proposal** — a durable fact Felix wants to store; approving writes it to long-term memory.
+- **Recipe proposal** — an offer to save a repeated **chain** as a **Recipe**, raised after the same chain runs N times. Keeps "user-approved" true in the **Recipe** definition.
+
+Approving or dismissing a proposal is the moment Felix learns; every decision is a potential **insight signal**.
+
+**Insight signal** — one approve/dismiss decision on a proposal that carries a `tool_name`, i.e. a real action. Notification-class entries (no `tool_name`) are explicitly **not** signals — they would fill the **Insights view** with noise about who messaged the user rather than a model of the user. `PATTERN_THRESHOLD` repeats of the same pattern key mint an **Insight**.
 
 **The harness** — OpenClaw. The master command and communication gateway. All external messaging channels (WhatsApp, Telegram, Slack, Discord, Teams, etc.) flow through it. Also serves as the remote access point for Felix before native mobile clients exist. Felix talks to one thing; OpenClaw talks to the services.
 
@@ -60,9 +69,24 @@ If no tool exists, the growth loop begins.
 
 **Plugins panel** — the Main window sidebar item that lists every registered plugin with: name / status (loaded / error / disabled) / declared capabilities / tool count. Click a row → plugin-detail view: per-tool list (read-only) and per-plugin settings (where applicable — e.g. the **Discord allowlist editor** for `discord_user.py` lives here). The Plugins panel hosts plugin-specific configuration; the **Permissions panel** keeps its ADR-0005 two-tab shape (Capabilities / Tools) for class+tool ACL only. _Avoid_: putting per-plugin settings inside Permissions, or putting class-level ACL inside Plugins.
 
-**Main window** — the primary Felix UI surface. A chat/interaction canvas where the user converses with Felix by voice (the fast lane — wake + speak) or by typing (the slow-but-silent lane). The transcript renders both lanes interleaved. Layout: a persistent left **sidebar nav** lists the inspection/control surfaces (Queue, Insights, Memory, Permissions, Credentials, Plugins, Settings, Profiles); the right pane defaults to the **Conversation** and swaps to the selected panel when a nav item is clicked. The Queue earns a count badge in the chat header (the only time-sensitive surface) so the user sees pending items without leaving the conversation. Distinct from the **Visualiser** (ambient overlay) and from the **tray** (always-on launcher + quick-actions). Lifecycle: the Main window does **not** autostart with Cerebral — the user opens it on demand from the tray. Closing the window **hides** it; it does not quit Felix. Quit is reachable only from the tray. _Avoid_: calling it "the chat window" — it is the chat *and* the control surface.
+**Main window** — the primary Felix UI surface. A chat/interaction canvas where the user converses with Felix by voice (the fast lane — wake + speak) or by typing (the slow-but-silent lane). The transcript renders both lanes interleaved. Layout: a collapsible left **sidebar nav** of four sections — **Conversation**, **Harness**, **Library**, **Settings** (#473 collapsed the original 16 routes; profile switching moved to a header control). Everything else is a sub-view reached inside one of the four. The right side is the **workspace**. The Queue earns a count badge in the chat header (the only time-sensitive surface) so the user sees pending items without leaving the conversation. Distinct from the **Visualiser** (ambient overlay) and from the **tray** (always-on launcher + quick-actions). Lifecycle: the Main window does **not** autostart with Cerebral — the user opens it on demand from the tray. Closing the window **hides** it; it does not quit Felix. Quit is reachable only from the tray. _Avoid_: calling it "the chat window" — it is the chat *and* the control surface.
+
+**Workspace** — the Main window's right-hand area: a **primary slot** that permanently holds the **Conversation**, and a **secondary slot** beside it holding zero or more **panels** (tab strip when several are open), separated by a drag **splitter**. Closing the secondary slot returns the Conversation to full width. A panel can be **detached** into its own OS window. Layout state (sidebar collapsed, splitter position, open panels) is machine-global and persisted in renderer `localStorage` — layout is ergonomics, not identity, so it is neither a **System setting** nor **Profile**-scoped. _Avoid_: calling it a dockable workspace in the free-form sense — there is no arbitrary split tree, only primary + secondary.
+
+**Panel** — a dockable view that opens in the workspace's secondary slot, contributed by a **plugin**. Distinct from the four sidebar sections, which are navigation, not panels.
+
+**Panel spec** — the JSON a plugin returns to describe its **panel**: a declarative tree of widgets drawn from a fixed vocabulary (list, table, form, detail, text). A plugin never ships HTML or JavaScript into the Main window renderer — the renderer owns the drawing, the plugin owns the data (ADR-0012). This is what keeps an LLM-generated plugin from executing code beside the Credentials UI. Extends the schema-driven form rendering already proven in `schemaToFormHtml`. _Avoid_: "plugin UI code" — plugins contribute *data*, never code, to the renderer.
+
+**Text widget** — the one editable widget in the **panel spec** vocabulary, backed by a plain `<textarea>`. Covers plain-text and Markdown content (notes, dossier fields, `.md` documents). `.docx` editing is **not** in scope for it and keeps ADR-0011's LibreOffice Writer path — no browser widget reproduces Word's layout engine. _Avoid_: treating it as a code editor; there is deliberately no syntax highlighting, because CodeMirror would require introducing a bundler.
 
 **Tray (post-Main-window)** — the always-on launcher and escape hatch. After the Main window ships, the tray menu collapses from its previous fragmented-control role (~14 items) to four jobs: a status line ("Felix — Running" / "ACTIVE — listening"), `Open Felix` (focus or open Main window), `Switch profile` submenu (fast multi-profile action that doesn't justify drilling into Profiles), and `Quit`. All other controls (model picker, notifications, camera, reminder interval, visualiser toggle, Queue/Insights/Memory/Permissions/Credentials/Plugins/Profiles open-window items) move into the Main window's sidebar. Single source of truth per setting; no tray⇄Main sync.
+
+### Flagged ambiguities
+
+- **"notes" vs Memory** — resolved: these are unrelated. **Memory** is the profile-scoped ChromaDB long-term tier surfaced in the Library's Memory tab. The `notes` SQLite table belongs to the `notes` plugin and indexes Markdown files in `cerebral/data/notes/`. An empty `notes` table says nothing about Memory. _Avoid_: reading `notes` as "the Memory table".
+- **"editor"** — resolved: two different things. Editing plain text or Markdown happens in a **text widget** inside a **panel**. Editing a `.docx` happens in LibreOffice Writer as its own program (ADR-0011). Neither is "the Felix editor".
+- **"dockable"** — resolved: the **workspace** is primary + secondary + detach, not a free-form split tree. Asking for "docking" does not imply arbitrary panel arrangement.
+- **Nav prominence vs dockability** — resolved: orthogonal. The four-section sidebar governs *discovery* (#473 deliberately reduced it); the **workspace** governs *composition*. Making a view dockable does not restore it to the nav.
 
 ### Deployment topology (post-Main-window)
 

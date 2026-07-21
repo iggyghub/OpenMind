@@ -1,7 +1,14 @@
 # 11. Documents capability: .docx ground truth, LibreOffice as editor+engine, Felix-internal Document library
 
 Date: 2026-07-19
-Status: accepted (grill session, issues #452 / #448)
+Status: accepted (grill session, issues #452 / #448); narrowed by ADR-0012
+
+> **Narrowed by [ADR-0012](./0012-workspace-and-plugin-contributed-panels.md)
+> (2026-07-20).** The "no Felix-built editing UI" consequence below holds for
+> `.docx` only. Plain-text and Markdown content is editable in a `<textarea>`
+> text widget inside a panel. The reasoning here is unchanged and still governs
+> `.docx`: no browser widget reproduces Word's layout engine, so `.docx` editing
+> continues to open LibreOffice Writer. CodeMirror and TipTap remain rejected.
 
 ## Context
 
