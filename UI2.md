@@ -13,7 +13,7 @@ slice as its issue specifies, opens a per-issue PR, merges it, then rewrites the
 
 ## Next slice -- start here
 
-- **Active:** S8 -- #487
+- **Active:** S9 -- #488
 - **Model:** sonnet
 
 ## Queue
@@ -28,7 +28,7 @@ Order below already satisfies every dependency -- do not reorder.
 - [x] S5 -- #484 -- A4: text widget, edit plain/Markdown and save back (Model: sonnet)
 - [x] S6 -- #485 -- A5: detach a panel into its own window (Model: opus)
 - [x] S7 -- #486 -- B1: queue gains a kind; insight signals only for tool-bearing proposals (Model: opus)
-- [ ] S8 -- #487 -- B2: memory proposals, prompt guidance + user confirms (Model: sonnet)
+- [x] S8 -- #487 -- B2: memory proposals, prompt guidance + user confirms (Model: sonnet)
 - [ ] S9 -- #488 -- B3: recipe proposals, offer to save a chain after it repeats (Model: sonnet)
 
 Per-slice model: sonnet unless the queue entry says otherwise. When ticking a
@@ -43,6 +43,7 @@ slice, set the next entry's model on the `Model:` line above.
 - S5 #484 -- PR #494 -- text widget, edit plain/Markdown and save back
 - S6 #485 -- PR #495 -- detach panel to own window, WS bridge extracted to tray/lib
 - S7 #486 -- PR #496 -- queue gains a kind; insight signals only for tool-bearing proposals
+- S8 #487 -- PR #497 -- memory proposals, prompt guidance + user confirms
 
 ## SAFETY
 
