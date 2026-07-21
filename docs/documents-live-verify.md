@@ -80,6 +80,26 @@ Run these manually on a Windows machine that has (or can get) LibreOffice.
 - [ ] Ask Felix to store two more documents. Verify: the Documents panel shows all three rows,
       the federated search finds documents by name, and the in-pane filter hides non-matching rows.
 
+## UI2 A4 #484 -- text widget: edit plain text / Markdown in a panel and save back
+
+- [ ] Start Cerebral and open the Felix Main window. Store a plain-text or Markdown file
+      via Felix: "store this file as a document" (e.g. a .txt or .md file).
+      Open the Documents panel in the workspace. Verify: a textarea appears below the list
+      and detail widgets, labelled with the document name, and pre-filled with the file's
+      current content.
+- [ ] Edit the text in the textarea. Verify: "Unsaved changes" status text appears while
+      there are unsaved edits.
+- [ ] Click "Save". Verify: the status shows "Saving..."; the panel re-renders from the
+      plugin's new state (the new content appears in the textarea, the saved indicator clears).
+      Check the file on disk -- it should contain the new content.
+- [ ] Open the same file in a text editor alongside Felix. Edit and save in Felix, then
+      open the file externally. Verify: the content matches what was typed in the textarea.
+- [ ] Store a .docx document and open the Documents panel. Verify: no textarea appears for
+      the .docx entry -- .docx documents must not offer the text widget.
+- [ ] With a .md file open in the text widget, enter Markdown with special characters
+      (e.g. `# Title\n<b>not HTML</b>`). Save, then reload the panel. Verify: the content
+      round-trips correctly (no HTML escaping artifacts in the textarea value).
+
 ## S7 #448 -- resume wiring: docx_path, change-hook re-derive, panel resume row
 
 - [ ] Upload a .docx resume file via the chat paperclip and tell Felix "store this as my resume".

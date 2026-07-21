@@ -716,3 +716,103 @@ async def test_change_hook_fn_not_fired_when_mtime_unchanged(tmp_path, monkeypat
     await doc._check_doc_change(doc_id, doc_path)
 
     assert hook_calls == [], "change hook fired when file was not changed"
+
+
+# ── UI2 A4 (#484): doc_write tool ────────────────────────────────────────────
+
+async def test_doc_write_saves_text_content(tmp_path, monkeypatch):
+    """doc_write overwrites a txt file with the provided content."""
+    store = _store(tmp_path)
+    src = tmp_path / "notes.txt"
+    src.write_bytes(b"original")
+    stored = store.store_doc(1, "Notes", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+    monkeypatch.setattr(doc, "_broadcast_fn", None)
+
+    result = await doc.create().call_tool(
+        "doc_write", {"doc_id": stored["id"], "content": "updated content"}
+    )
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["written"] is True
+    assert Path(stored["path"]).read_text(encoding="utf-8") == "updated content"
+
+
+async def test_doc_write_snapshots_before_write(tmp_path, monkeypatch):
+    """doc_write creates a v0 snapshot before overwriting the file."""
+    store = _store(tmp_path)
+    src = tmp_path / "notes.txt"
+    src.write_bytes(b"original")
+    stored = store.store_doc(1, "Notes", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+    monkeypatch.setattr(doc, "_broadcast_fn", None)
+
+    await doc.create().call_tool(
+        "doc_write", {"doc_id": stored["id"], "content": "new"}
+    )
+    versions = store.list_versions(stored["id"])
+    assert any(v.startswith("v0_") for v in versions)
+
+
+async def test_doc_write_broadcasts(tmp_path, monkeypatch):
+    """doc_write calls _broadcast_fn after a successful write."""
+    store = _store(tmp_path)
+    src = tmp_path / "readme.md"
+    src.write_bytes(b"# Title")
+    stored = store.store_doc(1, "Readme", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+
+    broadcast_calls = []
+    async def fake_broadcast():
+        broadcast_calls.append(1)
+    monkeypatch.setattr(doc, "_broadcast_fn", fake_broadcast)
+
+    await doc.create().call_tool(
+        "doc_write", {"doc_id": stored["id"], "content": "# Updated"}
+    )
+    assert broadcast_calls == [1]
+
+
+async def test_doc_write_rejects_docx(tmp_path, monkeypatch):
+    """doc_write returns is_error for .docx -- must use doc_edit instead."""
+    store = _store(tmp_path)
+    src = tmp_path / "resume.docx"
+    src.write_bytes(b"docx")
+    stored = store.store_doc(1, "Resume", str(src))
+
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+
+    result = await doc.create().call_tool(
+        "doc_write", {"doc_id": stored["id"], "content": "should fail"}
+    )
+    assert result.is_error
+    assert "doc_write only supports" in result.content
+
+
+async def test_doc_write_missing_args_returns_error(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+
+    result = await doc.create().call_tool("doc_write", {"doc_id": 1})
+    assert result.is_error
+
+    result2 = await doc.create().call_tool("doc_write", {"content": "x"})
+    assert result2.is_error
+
+
+async def test_doc_write_missing_doc_returns_error(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(doc, "_store", store)
+    monkeypatch.setattr(doc, "_active_profile_id", 1)
+
+    result = await doc.create().call_tool("doc_write", {"doc_id": 9999, "content": "x"})
+    assert result.is_error
+    assert "not found" in result.content

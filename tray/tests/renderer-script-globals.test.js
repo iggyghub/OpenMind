@@ -87,6 +87,11 @@ const DUAL_MODE_LIBS = [
     global: 'PanelSpec',
     check: (mod) => expect(typeof mod.renderPanel).toBe('function'),
   },
+  {
+    file: 'text-widget.js',
+    global: 'TextWidget',
+    check: (mod) => expect(typeof mod.buildSaveMessage).toBe('function'),
+  },
 ];
 
 const SOURCES = DUAL_MODE_LIBS.map((lib) => ({

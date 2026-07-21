@@ -61,9 +61,36 @@
     return '<div class="ps-detail">' + rows + '</div>';
   }
 
+  // UI2 A4 (#484): text widget -- editable <textarea> that saves back via a plugin tool.
+  // value is HTML-escaped so a file containing <tags> is inert when inserted via innerHTML.
+  // The save handler (text-widget.js) reads textarea.value which un-escapes automatically.
+  function _renderText(w) {
+    var id       = escHtml(w.id || '');
+    var tool     = escHtml(w.tool || '');
+    var toolArgs = escHtml(JSON.stringify(w.tool_args != null ? w.tool_args : {}));
+    var value    = escHtml(String(w.value == null ? '' : w.value));
+    var label    = w.label
+      ? '<div class="ps-text-label">' + escHtml(w.label) + '</div>'
+      : '';
+    return (
+      '<div class="ps-text"' +
+        ' data-widget-id="' + id + '"' +
+        ' data-tool="'      + tool + '"' +
+        ' data-tool-args="' + toolArgs + '">' +
+        label +
+        '<textarea class="ps-text-area">' + value + '</textarea>' +
+        '<div class="ps-text-toolbar">' +
+          '<span class="ps-text-status"></span>' +
+          '<button class="ps-text-save">Save</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
   var WIDGETS = {
     list:   _renderList,
     detail: _renderDetail,
+    text:   _renderText,
   };
 
   // Renders one widget. Unknown or malformed types return '' -- inert.

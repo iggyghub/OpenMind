@@ -83,9 +83,8 @@ describe('renderWidget security', () => {
   test('unknown widget type returns empty string (inert)', () => {
     expect(PanelSpec.renderWidget({ type: 'script', code: 'alert(1)' })).toBe('');
     expect(PanelSpec.renderWidget({ type: 'iframe', src: 'x' })).toBe('');
-    expect(PanelSpec.renderWidget({ type: 'form' })).toBe('');   // A4/A5+ vocab, not yet
+    expect(PanelSpec.renderWidget({ type: 'form' })).toBe('');
     expect(PanelSpec.renderWidget({ type: 'table' })).toBe('');
-    expect(PanelSpec.renderWidget({ type: 'text' })).toBe('');
   });
 
   test('malformed widget returns empty string', () => {
@@ -141,6 +140,64 @@ describe('renderWidget security', () => {
   });
 });
 
+// ── renderWidget: text ───────────────────────────────────────────────────────
+
+describe('renderWidget text', () => {
+  test('renders a textarea with the widget value', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'text', id: 'doc-text-1', value: 'hello world',
+      tool: 'doc_write', tool_args: { doc_id: 1 },
+    });
+    expect(html).toContain('ps-text');
+    expect(html).toContain('ps-text-area');
+    expect(html).toContain('hello world');
+    expect(html).toContain('ps-text-save');
+    expect(html).toContain('ps-text-status');
+  });
+
+  test('renders label when provided', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'text', id: 'x', label: 'notes.txt', value: '',
+      tool: 'doc_write', tool_args: {},
+    });
+    expect(html).toContain('ps-text-label');
+    expect(html).toContain('notes.txt');
+  });
+
+  test('omits label element when label is absent', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'text', id: 'x', value: '', tool: 'doc_write', tool_args: {},
+    });
+    expect(html).not.toContain('ps-text-label');
+  });
+
+  test('embeds tool and tool_args in data attributes', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'text', id: 'doc-text-2', value: '',
+      tool: 'doc_write', tool_args: { doc_id: 2 },
+    });
+    expect(html).toContain('data-tool="doc_write"');
+    expect(html).toContain('data-tool-args=');
+    expect(html).toContain('doc_id');
+  });
+
+  test('HTML-bearing value is escaped, not executed', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'text', id: 'x', value: '<script>alert(1)</script>',
+      tool: 'doc_write', tool_args: {},
+    });
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  test('null value renders empty textarea', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'text', id: 'x', value: null, tool: 'doc_write', tool_args: {},
+    });
+    expect(html).toContain('<textarea class="ps-text-area"></textarea>');
+  });
+});
+
 // ── renderPanel ──────────────────────────────────────────────────────────────
 
 describe('renderPanel', () => {
@@ -192,6 +249,6 @@ describe('renderPanel', () => {
   });
 
   test('WIDGET_TYPES reports the whitelist', () => {
-    expect(PanelSpec.WIDGET_TYPES.sort()).toEqual(['detail', 'list']);
+    expect(PanelSpec.WIDGET_TYPES.sort()).toEqual(['detail', 'list', 'text']);
   });
 });

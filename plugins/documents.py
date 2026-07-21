@@ -2,13 +2,14 @@
 Documents MCP plugin -- Documents campaign ADR-0011, issues #452-#457 / #448.
 
 Tools: doc_status (S2), doc_list / doc_store / doc_convert / doc_revert (S3),
-       doc_open (S4), doc_edit (S5)
+       doc_open (S4), doc_edit (S5), doc_write (UI2 A4 #484)
 
 S2 (#453): find_soffice() discovery helper + doc_status tool.
 S3 (#454): DocumentStore (SQLite + file-based library), snapshot versioning,
            doc_list / doc_store / doc_convert / doc_revert tools.
 S4 (#455): doc_open launches Writer; mtime watcher re-ingests on save.
 S5 (#456): doc_edit via headless UNO scripting (find_replace, replace_paragraph).
+UI2 A4 (#484): doc_write -- save plain text / Markdown content from the text widget.
 
 All soffice discovery is injectable via set_find_soffice_fn for tests.
 All file-conversion is injectable via set_converter_fn for tests.
@@ -34,6 +35,9 @@ PLUGIN_NAME = "documents"
 # ADR-0005: doc_status is pure local introspection (fs_read).
 # S3 adds doc_store/doc_convert/doc_revert which write files (fs_write).
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write", "fs_delete"})
+
+# UI2 A4 (#484): only these kinds support the text widget / doc_write tool.
+_TEXT_KINDS: frozenset[str] = frozenset({"txt", "md"})
 
 _SOFFICE_DEFAULT_DIRS: tuple[Path, ...] = (
     Path("C:/Program Files/LibreOffice/program"),
@@ -471,6 +475,24 @@ class DocumentsPlugin:
                     "required": ["doc_id", "edits"],
                 },
             ),
+            Tool(
+                name="doc_write",
+                description=(
+                    "Save plain-text or Markdown content to a library document. "
+                    "Only supports txt and md files; .docx files must use doc_edit. "
+                    "Snapshots the current file before overwriting. "
+                    "doc_id: integer library id; content: full file content as a string."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "doc_id":   {"type": "integer"},
+                        "content":  {"type": "string"},
+                    },
+                    "required": ["doc_id", "content"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -488,6 +510,8 @@ class DocumentsPlugin:
             return await self._doc_open(args)
         if tool_name == "doc_edit":
             return await self._doc_edit(args)
+        if tool_name == "doc_write":
+            return await self._doc_write(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ── tool implementations ──────────────────────────────────────────────────
@@ -648,6 +672,35 @@ class DocumentsPlugin:
         return ToolResult(content=json.dumps({"doc": doc}))
 
 
+    async def _doc_write(self, args: dict) -> ToolResult:
+        doc_id_raw = args.get("doc_id")
+        content    = args.get("content")
+        if doc_id_raw is None or content is None:
+            return ToolResult(content="doc_id and content are required", is_error=True)
+        if _store is None or _active_profile_id is None:
+            return ToolResult(content="store or profile not wired", is_error=True)
+        doc_id = int(doc_id_raw)
+        doc = _store.get_doc(doc_id)
+        if not doc:
+            return ToolResult(content=f"doc {doc_id} not found", is_error=True)
+        kind = (doc.get("kind") or "").lower()
+        if kind not in _TEXT_KINDS:
+            return ToolResult(
+                content=f"doc_write only supports {sorted(_TEXT_KINDS)!r} files; "
+                        f"doc {doc_id} is '{kind}'",
+                is_error=True,
+            )
+        doc_path = Path(doc["path"])
+        _store._snapshot(doc_path)
+        try:
+            doc_path.write_text(str(content), encoding="utf-8")
+        except Exception as exc:
+            return ToolResult(content=f"doc_write failed: {exc}", is_error=True)
+        _store.touch_doc(doc_id)
+        if _broadcast_fn:
+            await _broadcast_fn()
+        return ToolResult(content=json.dumps({"doc": _store.get_doc(doc_id), "written": True}))
+
     # ── UI2 A3 (#483): panel spec ─────────────────────────────────────────
     def panel_spec(self, profile_id: "int | None") -> "dict | None":
         """Declarative panel spec (ADR-0012 decision 3).
@@ -671,16 +724,33 @@ class DocumentsPlugin:
             }
             for d in docs
         ]
-        return {
-            "title": "Documents",
-            "widgets": [
-                {"type": "list",   "id": "docs-list",    "items":  items},
-                {"type": "detail", "id": "docs-summary", "fields": [
-                    {"label": "Documents", "value": str(len(items))},
-                    {"label": "Library",   "value": "profile-scoped"},
-                ]},
-            ],
-        }
+        widgets: list = [
+            {"type": "list",   "id": "docs-list",    "items":  items},
+            {"type": "detail", "id": "docs-summary", "fields": [
+                {"label": "Documents", "value": str(len(items))},
+                {"label": "Library",   "value": "profile-scoped"},
+            ]},
+        ]
+        # UI2 A4 (#484): text widget for the most-recently-created text doc.
+        # list_docs is ORDER BY created_at DESC, so docs[0] is the newest.
+        for d in docs:
+            kind = (d.get("kind") or "").lower()
+            if kind in _TEXT_KINDS:
+                path_str = d.get("path") or ""
+                try:
+                    content = Path(path_str).read_text(encoding="utf-8") if path_str else ""
+                except Exception:
+                    content = ""
+                widgets.append({
+                    "type":      "text",
+                    "id":        f"doc-text-{d['id']}",
+                    "label":     d.get("name") or "Untitled",
+                    "value":     content,
+                    "tool":      "doc_write",
+                    "tool_args": {"doc_id": d["id"]},
+                })
+                break  # ponytail: first text doc only; add selection state when needed
+        return {"title": "Documents", "widgets": widgets}
 
 
 def create() -> DocumentsPlugin:
