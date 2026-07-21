@@ -29,7 +29,7 @@ from cerebral.llm.chain_engine import ChainEngine
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
 from cerebral.passive.extractor import FiveW1HExtractor
-from cerebral.action_queue.manager import KIND_MEMORY_PROPOSAL, QueueManager
+from cerebral.action_queue.manager import KIND_MEMORY_PROPOSAL, KIND_RECIPE_PROPOSAL, QueueManager
 from cerebral.insights.engine import InsightsEngine
 from cerebral.tts.engine import TTSEngine
 from cerebral.environment.context import EnvironmentContext
@@ -67,7 +67,7 @@ from cerebral.db.attachments import (
 from cerebral.db.credentials import CredentialStore, masked_hint
 from cerebral.sandbox import available as _sandbox_available
 from cerebral.db.google_oauth import GoogleOAuthError, GoogleOAuthFlow
-from cerebral.db.recipes import RecipeStore
+from cerebral.db.recipes import RecipeStore, _steps_fingerprint
 from cerebral.harness_channels import HarnessChannelStore
 from plugins.job_search import (  # S1 #334 / S2 #335 / S7 #340
     # NOTE: only module-identity-free imports belong here (a class and a
@@ -127,6 +127,12 @@ _attachments  = AttachmentStore()
 _recipe_store    = RecipeStore()
 _job_search_store = _JobSearchStore()  # S1 #334 / S2 #335
 _document_store = _DocumentStore()    # S3 #454
+
+# ADR-0013 decision 3: track chain repeat counts to raise recipe proposals.
+# In-memory only -- counts reset on restart (acceptable; N more runs re-proposes).
+RECIPE_REPEAT_THRESHOLD: int = 3
+_chain_run_counts: dict[str, int] = {}
+_proposed_chains: set[str] = set()
 
 
 def _js_seam(seam: str, *args) -> None:
@@ -3958,6 +3964,15 @@ async def _handle_message(msg: dict) -> None:
             if fact and mem:
                 await mem.remember(fact)
                 await _broadcast(_memory_update_event())
+        if item.kind == KIND_RECIPE_PROPOSAL:
+            steps = (item.tool_args or {}).get("steps", [])
+            name = (item.tool_args or {}).get("name", "Saved Recipe")
+            if steps and _active_profile is not None:
+                try:
+                    _recipe_store.save(_active_profile.id, name, steps)
+                    await _broadcast(_recipes_update_event())
+                except ValueError as exc:
+                    logger.warning("[cerebral] recipe proposal save failed: %s", exc)
         await _broadcast(_queue_update_event())
 
     elif t == "remember":
@@ -4005,6 +4020,10 @@ async def _handle_message(msg: dict) -> None:
                 if new_insight:
                     logger.info("[cerebral] New insight: %s", new_insight.description)
                     await _broadcast(_insights_update_event())
+        if item and item.kind == KIND_RECIPE_PROPOSAL:
+            fp = (item.tool_args or {}).get("fingerprint", "")
+            if fp:
+                _proposed_chains.add(fp)
         await _broadcast(_queue_update_event())
 
     elif t == "list_insights":
@@ -4557,6 +4576,28 @@ async def _process_command(
             "steps": step_summary,
             "step_count": len(step_summary),
         })
+        # ADR-0013 decision 3: raise a recipe proposal after N repeats (once).
+        fp = _steps_fingerprint(step_summary)
+        if fp not in _proposed_chains:
+            _chain_run_counts[fp] = _chain_run_counts.get(fp, 0) + 1
+            if _chain_run_counts[fp] >= RECIPE_REPEAT_THRESHOLD:
+                _proposed_chains.add(fp)
+                tool_names = ", ".join(s["tool_name"] for s in step_summary)
+                suggested_name = f"Chain: {tool_names}"
+                _queue.add_item(
+                    title=f"Save '{suggested_name}' as a Recipe?",
+                    summary=(
+                        f"This {len(step_summary)}-step chain has run "
+                        f"{_chain_run_counts[fp]} times."
+                    ),
+                    kind=KIND_RECIPE_PROPOSAL,
+                    tool_args={
+                        "fingerprint": fp,
+                        "steps": step_summary,
+                        "name": suggested_name,
+                    },
+                )
+                await _broadcast(_queue_update_event())
 
     chain = ChainEngine(
         planner=planner,
