@@ -48,6 +48,8 @@
       display: flex;
       flex-direction: column;
       overflow-y: auto;
+      overflow-x: hidden;
+      transition: width 0.15s ease;
     }
 
     .sidebar::-webkit-scrollbar { width: 4px; }
@@ -62,7 +64,31 @@
       letter-spacing: 0.06em;
       text-transform: uppercase;
       border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
     }
+
+    /* ── S1 #480 sidebar collapse ───────────────────────────────────────── */
+    .brand-text { flex: 1; white-space: nowrap; overflow: hidden; }
+    .sidebar-collapse-toggle {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 2px 4px;
+      line-height: 1;
+      flex-shrink: 0;
+      font-size: 10px;
+    }
+    .sidebar-collapse-toggle::before { content: '\25C4'; /* ◄ collapse */ }
+    .sidebar.is-collapsed .sidebar-collapse-toggle::before { content: '\25BA'; /* ► expand */ }
+    .sidebar-collapse-toggle:hover { color: var(--text); }
+    .sidebar.is-collapsed { width: 48px; }
+    .sidebar.is-collapsed .brand-text { display: none; }
+    .nav-icon { flex-shrink: 0; font-size: 14px; }
+    .nav-label { white-space: nowrap; overflow: hidden; }
+    .sidebar.is-collapsed .nav-label { display: none; }
+    .sidebar.is-collapsed .nav-item { justify-content: center; padding-left: 4px; padding-right: 4px; }
 
     .nav {
       display: flex;
@@ -4486,14 +4512,18 @@
   </style>
 </head>
 <body>
-  <aside class="sidebar">
-    <div class="brand">Felix</div>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="brand-text">Felix</span>
+      <button class="sidebar-collapse-toggle" title="Toggle sidebar (Ctrl+B)" aria-label="Toggle sidebar"></button>
+    </div>
     <nav class="nav" id="nav">
       <!-- S5 #473: 4 top-level sections; Profiles moved to header switcher -->
-      <button class="nav-item active" data-route="conversation">Conversation</button>
-      <button class="nav-item" data-route="harness">Harness</button>
-      <button class="nav-item" data-route="library">Library</button>
-      <button class="nav-item" data-route="settings">Settings</button>
+      <!-- S1 #480: icons added so rail remains usable when collapsed -->
+      <button class="nav-item active" data-route="conversation"><span class="nav-icon" aria-hidden="true">&#x2726;</span><span class="nav-label">Conversation</span></button>
+      <button class="nav-item" data-route="harness"><span class="nav-icon" aria-hidden="true">&#x2699;</span><span class="nav-label">Harness</span></button>
+      <button class="nav-item" data-route="library"><span class="nav-icon" aria-hidden="true">&#x2630;</span><span class="nav-label">Library</span></button>
+      <button class="nav-item" data-route="settings"><span class="nav-icon" aria-hidden="true">&#x25C6;</span><span class="nav-label">Settings</span></button>
     </nav>
   </aside>
 
@@ -5267,6 +5297,10 @@
        Same source feeds the Node test suite via require() and this renderer
        via window.SidebarRouterMod. -->
   <script src="../lib/sidebar-router.js"></script>
+
+  <!-- Sidebar collapse (S1 -- #480) -- icon-rail collapse with Ctrl+B + localStorage.
+       Dual-mode: window.SidebarCollapse here, module.exports for jest. -->
+  <script src="../lib/sidebar-collapse.js"></script>
 
   <!-- Permissions store (Issue #202) — same source feeds the Node test
        suite via require() and this renderer via window.PermissionsStoreMod.
@@ -10009,6 +10043,16 @@
     _sc.init(document.getElementById('plug-main-view'), 'harness');
     _sc.init(document.querySelector('.prof-body'), 'profiles');
     _sc.init(document.querySelector('.set-body'), 'settings');
+
+    // S1 -- #480: sidebar collapse + Ctrl+B hotkey
+    const _sidebarEl = document.getElementById('sidebar');
+    window.SidebarCollapse.init(_sidebarEl);
+    document.addEventListener('keydown', function (e) {
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key === 'b') {
+        e.preventDefault();
+        window.SidebarCollapse.toggle(_sidebarEl);
+      }
+    });
 
     // ── S4 -- federated search shell (#287) ───────────────────────────────
     // Each pane provides:
