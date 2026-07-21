@@ -130,3 +130,22 @@ running.
       the plugin list loads.
 - [ ] The Profiles pane is still reachable via `#profiles` (for the first_run
       wizard flow) even though it has no nav button.
+
+## S1 (#480) -- sidebar collapse to icon rail
+
+- [ ] Open the tray. The sidebar shows "Felix" brand text plus a small ◄
+      toggle button in the top-right of the brand bar. Four nav items show
+      an icon (✦ Conversation, ⚙ Harness, ☰ Library, ◆ Settings) and their
+      text label, exactly as before.
+- [ ] Click the ◄ toggle button. The sidebar animates to a narrow 48 px
+      icon rail; the brand text "Felix" disappears; the nav labels hide;
+      only the four icons remain visible, each still clickable. The toggle
+      button now shows ►.
+- [ ] While collapsed, click each rail icon in turn. Each navigates to the
+      correct route (Conversation, Harness, Library, Settings) exactly as
+      the full sidebar does. The active icon receives the accent highlight.
+- [ ] Press Ctrl+B while the sidebar is collapsed. The sidebar re-expands
+      with the animation, labels reappear, and the toggle reverts to ◄.
+      Press Ctrl+B again to collapse it back.
+- [ ] Reload the window (Ctrl+R or close/reopen). The sidebar restores to
+      whichever state (collapsed or expanded) it was in before the reload.

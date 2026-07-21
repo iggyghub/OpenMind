@@ -67,6 +67,11 @@ const DUAL_MODE_LIBS = [
     global: 'SearchRegistry',
     check: (mod) => expect(typeof mod.search).toBe('function'),
   },
+  {
+    file: 'sidebar-collapse.js',
+    global: 'SidebarCollapse',
+    check: (mod) => expect(typeof mod.toggle).toBe('function'),
+  },
 ];
 
 const SOURCES = DUAL_MODE_LIBS.map((lib) => ({
