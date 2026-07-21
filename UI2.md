@@ -13,15 +13,15 @@ slice as its issue specifies, opens a per-issue PR, merges it, then rewrites the
 
 ## Next slice -- start here
 
-- **Active:** S1 -- #480
-- **Model:** sonnet
+- **Active:** S2 -- #481
+- **Model:** opus
 
 ## Queue
 
 Track A is the workspace (ADR-0012); track B is the proposal queue (ADR-0013).
 Order below already satisfies every dependency -- do not reorder.
 
-- [ ] S1 -- #480 -- A1: sidebar collapses to an icon rail, hotkey + persisted (Model: sonnet)
+- [x] S1 -- #480 -- A1: sidebar collapses to an icon rail, hotkey + persisted (Model: sonnet)
 - [ ] S2 -- #481 -- A2a: workspace shell, primary + secondary slot with tab strip (Model: opus)
 - [ ] S3 -- #482 -- A2b: drag splitter between the slots, width persisted (Model: sonnet)
 - [ ] S4 -- #483 -- A3: panel spec v1 end-to-end, plugin declares a panel (Model: opus)
@@ -35,6 +35,8 @@ Per-slice model: sonnet unless the queue entry says otherwise. When ticking a
 slice, set the next entry's model on the `Model:` line above.
 
 ## Landed PRs
+
+- S1 #480 -- PR #490 -- sidebar collapse to icon rail, Ctrl+B + persisted
 
 ## SAFETY
 
