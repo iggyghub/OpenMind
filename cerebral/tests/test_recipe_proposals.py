@@ -16,15 +16,11 @@ from cerebral.action_queue.manager import KIND_RECIPE_PROPOSAL, QueueManager
 from cerebral.db.recipes import RecipeStore, _steps_fingerprint
 
 
+# Shape of the step summary _on_chain_done builds from the chain engine's
+# completed steps and hands to _maybe_propose_recipe.
 STEPS = [
     {"tool_name": "search_web", "args": {"query": "news"}},
     {"tool_name": "send_slack",  "args": {"channel": "#general", "text": "done"}},
-]
-# chain_engine passes dicts with "name"/"args"/"result"/"is_error"; _on_chain_done
-# converts "name" -> "tool_name" before fingerprinting.
-CHAIN_STEPS = [
-    {"name": s["tool_name"], "args": s["args"], "result": "ok", "is_error": False}
-    for s in STEPS
 ]
 
 
@@ -116,110 +112,51 @@ def ipc_rig(queue, recipe_store):
             setattr(main_mod, key, value)
 
 
-# helper: simulate _on_chain_done N times via the ipc_rig's queue/store
-async def run_chain_done(n: int, queue: QueueManager, recipe_store: RecipeStore) -> None:
-    """Drive _on_chain_done directly, bypassing ChainEngine."""
+@pytest.fixture
+def wired(queue, recipe_store):
+    """Point main.py's globals at in-memory fixtures so the production
+    _maybe_propose_recipe can run. The autouse fixture restores them."""
     sent: list[dict] = []
 
-    saved_queue = main_mod._queue
-    saved_store = main_mod._recipe_store
-    saved_broadcast = main_mod._broadcast
+    async def fake_broadcast(event):
+        sent.append(event)
 
     main_mod._queue = queue
     main_mod._recipe_store = recipe_store
-    main_mod._broadcast = lambda e: (sent.append(e), None)[1]  # sync stub
-
-    try:
-        for _ in range(n):
-            # _on_chain_done is a closure inside _process_command; call the
-            # module-level logic it delegates to via a minimal async wrapper.
-            await _simulate_on_chain_done(CHAIN_STEPS)
-    finally:
-        main_mod._queue = saved_queue
-        main_mod._recipe_store = saved_store
-        main_mod._broadcast = saved_broadcast
-
-
-async def _simulate_on_chain_done(completed_steps: list[dict]) -> None:
-    """Replicate the relevant logic from _on_chain_done without a full IPC stack."""
-    from cerebral.action_queue.manager import KIND_RECIPE_PROPOSAL
-
-    step_summary = [{"tool_name": s["name"], "args": s["args"]} for s in completed_steps]
-    fp = _steps_fingerprint(step_summary)
-    if fp not in main_mod._proposed_chains:
-        main_mod._chain_run_counts[fp] = main_mod._chain_run_counts.get(fp, 0) + 1
-        if main_mod._chain_run_counts[fp] >= main_mod.RECIPE_REPEAT_THRESHOLD:
-            main_mod._proposed_chains.add(fp)
-            tool_names = ", ".join(s["tool_name"] for s in step_summary)
-            suggested_name = f"Chain: {tool_names}"
-            main_mod._queue.add_item(
-                title=f"Save '{suggested_name}' as a Recipe?",
-                summary=(
-                    f"This {len(step_summary)}-step chain has run "
-                    f"{main_mod._chain_run_counts[fp]} times."
-                ),
-                kind=KIND_RECIPE_PROPOSAL,
-                tool_args={
-                    "fingerprint": fp,
-                    "steps": step_summary,
-                    "name": suggested_name,
-                },
-            )
+    main_mod._broadcast = fake_broadcast
+    return sent
 
 
 # ── 1. N-1 runs produce no proposal ──────────────────────────────────────────
 
-async def test_n_minus_one_runs_no_proposal(queue, recipe_store):
-    n = main_mod.RECIPE_REPEAT_THRESHOLD
-    for _ in range(n - 1):
-        await _simulate_on_chain_done(CHAIN_STEPS)
+async def test_n_minus_one_runs_no_proposal(queue, wired):
+    for _ in range(main_mod.RECIPE_REPEAT_THRESHOLD - 1):
+        await main_mod._maybe_propose_recipe(STEPS)
     assert queue.get_pending() == []
 
 
 # ── 2. Nth run produces exactly one proposal ──────────────────────────────────
 
-async def test_nth_run_raises_proposal(queue, recipe_store):
-    n = main_mod.RECIPE_REPEAT_THRESHOLD
-    main_mod._queue = queue
-    main_mod._recipe_store = recipe_store
+async def test_nth_run_raises_proposal(queue, wired):
+    for _ in range(main_mod.RECIPE_REPEAT_THRESHOLD):
+        await main_mod._maybe_propose_recipe(STEPS)
 
-    sent: list[dict] = []
-    main_mod._broadcast = lambda e: (sent.append(e), None)[1]
-
-    try:
-        for _ in range(n):
-            await _simulate_on_chain_done(CHAIN_STEPS)
-
-        pending = queue.get_pending()
-        assert len(pending) == 1
-        item = pending[0]
-        assert item.kind == KIND_RECIPE_PROPOSAL
-        assert "Recipe" in item.title
-        assert item.tool_args is not None
-        assert "steps" in item.tool_args
-        assert "fingerprint" in item.tool_args
-    finally:
-        main_mod._broadcast = lambda e: None
-        main_mod._queue = QueueManager(":memory:")
-        main_mod._recipe_store = RecipeStore.__new__(RecipeStore)
+    pending = queue.get_pending()
+    assert len(pending) == 1
+    item = pending[0]
+    assert item.kind == KIND_RECIPE_PROPOSAL
+    assert "Recipe" in item.title
+    assert item.tool_args is not None
+    assert item.tool_args["steps"] == STEPS
+    assert item.tool_args["fingerprint"] == _steps_fingerprint(STEPS)
 
 
 # ── 3. Extra runs beyond N do NOT re-propose ─────────────────────────────────
 
-async def test_no_re_proposal_after_nth(queue, recipe_store):
-    n = main_mod.RECIPE_REPEAT_THRESHOLD
-    main_mod._queue = queue
-    main_mod._recipe_store = recipe_store
-    main_mod._broadcast = lambda e: None
-
-    try:
-        for _ in range(n + 5):
-            await _simulate_on_chain_done(CHAIN_STEPS)
-        assert len(queue.get_pending()) == 1
-    finally:
-        main_mod._broadcast = lambda e: None
-        main_mod._queue = QueueManager(":memory:")
-        main_mod._recipe_store = RecipeStore.__new__(RecipeStore)
+async def test_no_re_proposal_after_nth(queue, wired):
+    for _ in range(main_mod.RECIPE_REPEAT_THRESHOLD + 5):
+        await main_mod._maybe_propose_recipe(STEPS)
+    assert len(queue.get_pending()) == 1
 
 
 # ── 4. Approving saves the Recipe ─────────────────────────────────────────────

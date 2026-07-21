@@ -2099,6 +2099,33 @@ def _queue_update_event() -> dict:
     }
 
 
+async def _maybe_propose_recipe(step_summary: list[dict]) -> None:
+    """ADR-0013 decision 3: raise a recipe proposal after N repeats (once)."""
+    fp = _steps_fingerprint(step_summary)
+    if fp in _proposed_chains:
+        return
+    _chain_run_counts[fp] = _chain_run_counts.get(fp, 0) + 1
+    if _chain_run_counts[fp] < RECIPE_REPEAT_THRESHOLD:
+        return
+    _proposed_chains.add(fp)
+    tool_names = ", ".join(s["tool_name"] for s in step_summary)
+    suggested_name = f"Chain: {tool_names}"
+    _queue.add_item(
+        title=f"Save '{suggested_name}' as a Recipe?",
+        summary=(
+            f"This {len(step_summary)}-step chain has run "
+            f"{_chain_run_counts[fp]} times."
+        ),
+        kind=KIND_RECIPE_PROPOSAL,
+        tool_args={
+            "fingerprint": fp,
+            "steps": step_summary,
+            "name": suggested_name,
+        },
+    )
+    await _broadcast(_queue_update_event())
+
+
 def _insights_update_event() -> dict:
     eng = _get_insights()
     insights = eng.list_insights() if eng else []
@@ -4576,28 +4603,7 @@ async def _process_command(
             "steps": step_summary,
             "step_count": len(step_summary),
         })
-        # ADR-0013 decision 3: raise a recipe proposal after N repeats (once).
-        fp = _steps_fingerprint(step_summary)
-        if fp not in _proposed_chains:
-            _chain_run_counts[fp] = _chain_run_counts.get(fp, 0) + 1
-            if _chain_run_counts[fp] >= RECIPE_REPEAT_THRESHOLD:
-                _proposed_chains.add(fp)
-                tool_names = ", ".join(s["tool_name"] for s in step_summary)
-                suggested_name = f"Chain: {tool_names}"
-                _queue.add_item(
-                    title=f"Save '{suggested_name}' as a Recipe?",
-                    summary=(
-                        f"This {len(step_summary)}-step chain has run "
-                        f"{_chain_run_counts[fp]} times."
-                    ),
-                    kind=KIND_RECIPE_PROPOSAL,
-                    tool_args={
-                        "fingerprint": fp,
-                        "steps": step_summary,
-                        "name": suggested_name,
-                    },
-                )
-                await _broadcast(_queue_update_event())
+        await _maybe_propose_recipe(step_summary)
 
     chain = ChainEngine(
         planner=planner,
