@@ -234,3 +234,37 @@ running.
 - [ ] Reload the window (Ctrl+R). If Documents was open on the last session
       it reopens (existing workspace persistence) and its spec is fetched
       fresh from Cerebral before the body is drawn.
+
+## UI2 S6 (#485) -- detach a panel into its own window
+
+- [ ] Open the Documents panel in the secondary slot. Each tab now shows
+      three affordances after the label: the detach glyph (⧉), the close
+      glyph (×), and the tab itself (click-to-activate).
+- [ ] Click ⧉ on the Documents tab. The tab disappears from the secondary
+      slot AND a new OS window opens showing a header ("Documents") and the
+      same list/detail widgets. The window has an independent title bar,
+      resizes freely, and is not always-on-top.
+- [ ] Store a new document (from the Documents sidebar pane or another
+      profile session). The detached window's list widget updates live --
+      it has its own WS bridge and receives `plugins:panel_spec` broadcasts
+      directly from Cerebral.
+- [ ] Open the detached window's DevTools (Ctrl+Shift+I). Confirm
+      `process` is undefined and `require` is undefined -- proving the
+      posture is `nodeIntegration:false` / `contextIsolation:true` like
+      the Main window (SAFETY #2, ADR-0007).
+- [ ] Close the detached window. The panel does NOT reappear in the docked
+      slot; it is deliberately dropped (open it again from the "+ Panel"
+      opener). No WS reconnect chatter continues after the window closes
+      (check the Cerebral log for a reasonable disconnect).
+- [ ] Detach again, then close the Main window (X hides to tray per #188).
+      The detached window stays open and its WS keeps working -- it is a
+      standalone renderer.
+- [ ] Reload the Main window (Ctrl+R) while a detached panel is open. The
+      detached window is unaffected. On a fresh Main-window reload with no
+      detached windows open, no detached panel auto-restores -- this is
+      the deliberate "not persisted" branch of the AC (a plain re-open
+      via the "+ Panel" dropdown suffices).
+- [ ] Right-click inside the detached window's body and try to open its URL
+      in a browser or invoke any `window.open(...)` from DevTools -- it is
+      denied at the main-process `setWindowOpenHandler` guard. Only the
+      whitelisted `detached-panel.html` may be opened.

@@ -92,6 +92,11 @@ const DUAL_MODE_LIBS = [
     global: 'TextWidget',
     check: (mod) => expect(typeof mod.buildSaveMessage).toBe('function'),
   },
+  {
+    file: 'ws-bridge.js',
+    global: 'WsBridge',
+    check: (mod) => expect(typeof mod.create).toBe('function'),
+  },
 ];
 
 const SOURCES = DUAL_MODE_LIBS.map((lib) => ({
