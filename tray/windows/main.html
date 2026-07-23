@@ -294,6 +294,9 @@
       flex-direction: column;
       overflow: auto;
     }
+    /* Built-in library sections borrowed into the secondary slot must stay
+       visible regardless of the library pane's .is-active toggling. */
+    .ws-panel-body > .lib-sub { display: flex; flex-direction: column; }
     .hdr-ws-opener select {
       background: var(--bg);
       color: var(--text-dim);
@@ -10114,9 +10117,15 @@
 
     // S5 #473 -- library sub-tab activation
     function libActivateSub(sub) {
+      const target = sub || 'memory';
+      // If the target section is currently borrowed by the workspace slot,
+      // reclaim it first so the library tab never shows an empty pane.
+      if (window._wsReclaimBuiltin
+          && document.querySelector('.ws-secondary-body .lib-sub[data-lib="' + target + '"]')) {
+        window._wsReclaimBuiltin(target);
+      }
       const tabs = document.querySelectorAll('.lib-tab');
       const subs = document.querySelectorAll('.lib-sub');
-      const target = sub || 'memory';
       tabs.forEach(function (btn) {
         btn.classList.toggle('is-active', btn.dataset.lib === target);
       });
@@ -10226,6 +10235,25 @@
     const _wsBodyEl      = document.getElementById('ws-secondary-body');
     const _wsOpenerSel   = document.getElementById('ws-opener-select');
 
+    // Built-in library sections that can be moved into the secondary slot.
+    // Their live .lib-sub DOM node is reparented (borrowed) into the slot and
+    // returned to the library pane on close -- existing event wiring survives
+    // because the listeners live on the elements themselves. No panel spec,
+    // so they cannot detach to a separate window (that renderer draws from
+    // plugin specs only).
+    const _WS_BUILTINS = [
+      { id: 'builtin:memory',     lib: 'memory',     title: 'Memory',     refresh: 'list_memories' },
+      { id: 'builtin:insights',   lib: 'insights',   title: 'Insights',   refresh: 'list_insights' },
+      { id: 'builtin:recipes',    lib: 'recipes',    title: 'Recipes',    refresh: 'list_recipes' },
+      { id: 'builtin:job-search', lib: 'job-search', title: 'Job Search', refresh: 'list_job_postings' },
+    ];
+    function _wsBuiltinDef(id) {
+      for (var i = 0; i < _WS_BUILTINS.length; i++) {
+        if (_WS_BUILTINS[i].id === id) return _WS_BUILTINS[i];
+      }
+      return null;
+    }
+
     // plugin_name -> {plugin_name, title}. Populated by plugins:panels event.
     let _wsPanels = [];
     // plugin_name -> latest spec dict. Populated by plugins:panel_spec event.
@@ -10235,6 +10263,8 @@
     let _wsActivePluginRequested = null;
 
     function _wsPanelDef(id) {
+      const b = _wsBuiltinDef(id);
+      if (b) return { plugin_name: b.id, title: b.title };
       for (var i = 0; i < _wsPanels.length; i++) {
         if (_wsPanels[i].plugin_name === id) return _wsPanels[i];
       }
@@ -10249,6 +10279,12 @@
       ph.value = '';
       ph.textContent = '+ Panel';
       _wsOpenerSel.appendChild(ph);
+      _WS_BUILTINS.forEach(function (b) {
+        const opt = document.createElement('option');
+        opt.value = b.id;
+        opt.textContent = b.title;
+        _wsOpenerSel.appendChild(opt);
+      });
       _wsPanels.forEach(function (p) {
         const opt = document.createElement('option');
         opt.value = p.plugin_name;
@@ -10263,19 +10299,51 @@
       sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: pluginName } });
     }
 
+    // Returns every borrowed .lib-sub in the slot body to its home
+    // placeholder in the library pane. MUST run before the body is cleared --
+    // innerHTML = '' would destroy the live section node for good.
+    function _wsReturnBorrowed() {
+      _wsBodyEl.querySelectorAll('.lib-sub').forEach(function (el) {
+        const ph = document.querySelector('[data-ws-home="' + el.dataset.lib + '"]');
+        if (ph) ph.replaceWith(el);
+      });
+    }
+
     function _renderWsBody(active) {
+      _wsReturnBorrowed();
       _wsBodyEl.innerHTML = '';
       if (!active) return;
       const body = document.createElement('div');
       body.className = 'ws-panel-body';
       body.dataset.wsPanelBody = active;
-      const spec = _wsSpecCache[active];
-      if (spec === undefined) {
-        // Spec not yet cached -- render a loading marker until it arrives.
-        body.innerHTML = '<div class="ps-empty">Loading panel...</div>';
+      const builtin = _wsBuiltinDef(active);
+      if (builtin) {
+        // Borrow the live library section: leave a placeholder at its home
+        // spot so it can be returned in document order later.
+        const sub = document.querySelector('.pane[data-route="library"] .lib-sub[data-lib="' + builtin.lib + '"]');
+        if (sub) {
+          const ph = document.createElement('div');
+          ph.hidden = true;
+          ph.dataset.wsHome = builtin.lib;
+          const wasActive = sub.classList.contains('is-active');
+          sub.replaceWith(ph);
+          body.appendChild(sub);
+          // Don't leave the library pane showing nothing: if the borrowed
+          // section was its active tab, activate the first one still home.
+          if (wasActive) {
+            const next = document.querySelector('.pane[data-route="library"] .lib-sub');
+            if (next) libActivateSub(next.dataset.lib);
+          }
+        }
       } else {
-        // PanelSpec owns all drawing; strings are escaped inside it.
-        body.innerHTML = window.PanelSpec.renderPanel(spec);
+        const spec = _wsSpecCache[active];
+        if (spec === undefined) {
+          // Spec not yet cached -- render a loading marker until it arrives.
+          body.innerHTML = '<div class="ps-empty">Loading panel...</div>';
+        } else {
+          // PanelSpec owns all drawing; strings are escaped inside it.
+          body.innerHTML = window.PanelSpec.renderPanel(spec);
+        }
       }
       _wsBodyEl.appendChild(body);
     }
@@ -10306,14 +10374,18 @@
         tab.appendChild(label);
         // UI2 A5 (#485) -- detach button pops the panel into its own window
         // and drops it from the workspace secondary slot (see _detachPanel).
-        const detach = document.createElement('span');
-        detach.className = 'ws-tab-detach';
-        detach.dataset.wsDetach = id;
-        detach.textContent = '⧉'; // ⧉ two overlapping squares == pop out
-        detach.title = 'Detach panel to new window';
-        detach.setAttribute('role', 'button');
-        detach.setAttribute('aria-label', 'Detach ' + (p.title || id) + ' panel');
-        tab.appendChild(detach);
+        // Built-in sections have no panel spec for the detached renderer to
+        // draw from, so they get no detach control.
+        if (!_wsBuiltinDef(id)) {
+          const detach = document.createElement('span');
+          detach.className = 'ws-tab-detach';
+          detach.dataset.wsDetach = id;
+          detach.textContent = '⧉'; // ⧉ two overlapping squares == pop out
+          detach.title = 'Detach panel to new window';
+          detach.setAttribute('role', 'button');
+          detach.setAttribute('aria-label', 'Detach ' + (p.title || id) + ' panel');
+          tab.appendChild(detach);
+        }
         const close = document.createElement('span');
         close.className = 'ws-tab-close';
         close.dataset.wsClose = id;
@@ -10326,8 +10398,12 @@
       });
 
       _renderWsBody(active);
-      // Pull the latest spec for the visible panel; stale cache re-renders now.
-      if (active) _requestPanelSpec(active);
+      // Pull fresh data for the visible panel; stale cache re-renders now.
+      if (active) {
+        const b = _wsBuiltinDef(active);
+        if (b) sendEvent({ type: b.refresh });
+        else _requestPanelSpec(active);
+      }
     }
 
     // UI2 A5 (#485) -- pop a panel into its own OS window. Uses window.open()
@@ -10337,6 +10413,7 @@
     // window drops it entirely -- not persisted across a reload (deliberate;
     // documented in docs/harness-ui-live-verify.md).
     function _detachPanel(id) {
+      if (_wsBuiltinDef(id)) return; // no spec to render detached
       const panel = _wsPanelDef(id);
       if (!panel) return;
       const url = 'detached-panel.html'
@@ -10398,8 +10475,18 @@
     window._wsOnPluginsPanels    = _onPluginsPanels;
     window._wsOnPluginPanelSpec  = _onPluginPanelSpec;
 
+    // Reclaims a borrowed built-in section when its library tab is clicked:
+    // closes the workspace panel, which returns the node home. Exposed on
+    // window because libActivateSub is defined before this wiring block.
+    window._wsReclaimBuiltin = function (lib) {
+      _wsMod.close('builtin:' + lib);
+      _renderWorkspace();
+    };
+
     // Restores whichever panels were open on the last reload; the panels
-    // registry is populated once the plugins:panels event arrives.
+    // registry is populated once the plugins:panels event arrives. Built-in
+    // sections are always available, so the opener is seeded immediately.
+    _updateWsOpener();
     _renderWorkspace();
 
     // ── S3 -- #482: drag splitter between workspace slots ────────────────
