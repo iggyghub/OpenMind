@@ -619,37 +619,55 @@ function quit() {
   app.quit();
 }
 
-// #439 — one-click full restart: clean quit() teardown (Cerebral gets the
-// shutdown event), then the launcher reboots BOTH processes. -Restart makes
-// the launcher wait for :7766 to free instead of refusing to double-launch.
-// #443/#502 — spawn() cannot do this from a process that is about to exit.
-// Measured on Win10 (3/3 runs each): a `detached` powershell child never runs
-// at all — CreateProcess succeeds, it exits 0 silently without touching the
-// script — and a non-detached one runs but is killed the moment Electron
-// exits. app.relaunch hands the launch to Electron's relauncher, which waits
-// for this process to be gone before starting it: the one order the
-// launcher's -Restart port-wait actually wants.
+// #439/#443 — one-click full restart. A detached child spawned from a
+// QUITTING Electron parent dies silently on this box (bit us twice: #443 and
+// again 2026-07-23, launcher never even logged), so the dying process no
+// longer spawns anything. Instead: app.relaunch() — Chromium re-execs the
+// tray AFTER this process exits, which is the platform primitive for exactly
+// this — and the freshly booted (stable, long-lived) instance sees
+// --felix-restart in argv and spawns the launcher to reboot Cerebral only.
+function trayLog(msg) {
+  const fs = require('fs');
+  try { fs.appendFileSync(LAUNCHER_LOG, `[tray] ${msg}\n`); } catch (_) {}
+}
+
 function restartFelix() {
-  const launcher = path.join(__dirname, '..', 'scripts', 'launch-felix.ps1');
-  const psExe = path.join(
-    process.env.SystemRoot || 'C:\\Windows',
-    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
-  );
-  app.relaunch({
-    execPath: psExe,
-    args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher, '-Restart'],
-  });
-  // Breadcrumb: if the launcher never logs "=== launcher started ===" after
-  // this line, the relaunch is what broke (that gap is how #502 was found).
+  trayLog('restart: relaunching tray via app.relaunch()');
+  app.relaunch({ args: process.argv.slice(1).concat(['--felix-restart']) });
+  quit(); // sends Cerebral the shutdown event, then app.quit()
+}
+
+// Runs in the relaunched instance: reboot Cerebral. -Restart makes the
+// launcher wait for :7766 to free (old Cerebral tearing down); -CerebralOnly
+// keeps it from starting a second tray — this instance IS the tray.
+function respawnCerebral() {
   try {
-    require('fs').appendFileSync(LAUNCHER_LOG, '[tray] restart: relaunching\n');
-  } catch (_) {}
-  quit();
+    const { spawn } = require('child_process');
+    const launcher = path.join(__dirname, '..', 'scripts', 'launch-felix.ps1');
+    const psExe = path.join(
+      process.env.SystemRoot || 'C:\\Windows',
+      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+    );
+    const child = spawn(psExe,
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher,
+       '-Restart', '-CerebralOnly'],
+      { detached: true, stdio: 'ignore', windowsHide: true },
+    );
+    child.on('error', (err) => trayLog(`cerebral respawn error: ${err}`));
+    child.unref();
+    trayLog(`restart: relaunched tray up, spawned launcher for Cerebral (pid ${child.pid})`);
+  } catch (e) {
+    trayLog(`cerebral respawn threw: ${e}`);
+  }
 }
 
 app.whenReady().then(() => {
   if (app.dock) app.dock.hide();
   app.setName('Felix');
+
+  // Second half of "Restart Felix" (#443 rework): this instance was
+  // relaunched by restartFelix(); Cerebral is down — bring it back.
+  if (process.argv.includes('--felix-restart')) respawnCerebral();
 
   // #439 — Main window menu bar: File gains Restart/Quit (the window's X
   // only hides to tray per #188, so these need a discoverable home).
