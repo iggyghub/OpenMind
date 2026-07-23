@@ -814,6 +814,44 @@ test('legacy plug-main-view is hidden behind double-hidden guard (S3 harness)', 
   expect(legacyView.getAttribute('hidden')).not.toBeNull();
 });
 
+// ── Movable built-in panels (workspace secondary slot) ──────────────────────
+
+test('inline script registers built-in library sections as workspace panels', () => {
+  expect(inlineScript).toMatch(/_WS_BUILTINS/);
+  for (const id of ['builtin:memory', 'builtin:insights', 'builtin:recipes', 'builtin:job-search']) {
+    expect(inlineScript).toContain(`'${id}'`);
+  }
+});
+
+test('borrowed sections are returned home before the slot body is cleared', () => {
+  // _wsReturnBorrowed() must run before innerHTML = '' or the live section
+  // node is destroyed. Assert the call ordering inside _renderWsBody.
+  const m = inlineScript.match(/function _renderWsBody[^]*?_wsBodyEl\.innerHTML = ''/);
+  expect(m).not.toBeNull();
+  expect(m[0]).toMatch(/_wsReturnBorrowed\(\)/);
+  // Placeholder marker for returning the node in document order.
+  expect(inlineScript).toMatch(/data-ws-home|wsHome/);
+});
+
+test('built-in panels get no detach control and cannot detach', () => {
+  // Tab loop: detach span is gated behind the builtin check.
+  expect(inlineScript).toMatch(/if \(!_wsBuiltinDef\(id\)\)/);
+  // _detachPanel guards builtins.
+  expect(inlineScript).toMatch(/function _detachPanel[^]*?_wsBuiltinDef\(id\)[^]*?return/);
+});
+
+test('borrowed lib-sub stays visible via CSS override in the slot body', () => {
+  const html = fs.readFileSync(HTML_PATH, 'utf8');
+  expect(html).toMatch(/\.ws-panel-body > \.lib-sub\s*\{[^}]*display:\s*flex/);
+});
+
+test('library tab click reclaims a borrowed section (no empty pane)', () => {
+  expect(inlineScript).toMatch(/_wsReclaimBuiltin/);
+  const m = inlineScript.match(/function libActivateSub[^]*?\n    \}/);
+  expect(m).not.toBeNull();
+  expect(m[0]).toMatch(/_wsReclaimBuiltin/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
