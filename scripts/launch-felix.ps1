@@ -13,7 +13,9 @@
 # -Restart: invoked by the tray's "Restart Felix" menu item (#439). The tray
 # has just sent Cerebral the shutdown event and is quitting; instead of
 # refusing to double-launch, wait for port 7766 to free up, then boot.
-param([switch]$Restart)
+# -CerebralOnly: the relaunched tray passes this alongside -Restart -- it is
+# already the running tray, so the launcher must boot Cerebral and nothing else.
+param([switch]$Restart, [switch]$CerebralOnly)
 
 $ErrorActionPreference = "Stop"
 
@@ -161,6 +163,12 @@ if (-not $ready) {
     exit 1
 }
 Log "Cerebral is listening on :$CEREBRAL_PORT."
+
+if ($CerebralOnly) {
+    Log "CerebralOnly: tray already running -- skipping tray launch."
+    Log "=== launcher done ==="
+    exit 0
+}
 
 # ---- 4. start the tray (Electron) --------------------------------------------
 # Call electron.exe directly. No npm.cmd, no electron.cmd, no PowerShell
