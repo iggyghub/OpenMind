@@ -148,7 +148,10 @@
       overflow: hidden;
       position: relative; /* S14 (#297) -- anchors the drag-drop overlay */
     }
-    .pane[hidden] { display: none; }
+    /* !important: later same-specificity per-pane rules (e.g.
+       .pane[data-route="library"] { display:flex }) must never beat the
+       hidden attribute -- that's how every pane rendered stacked at once. */
+    .pane[hidden] { display: none !important; }
 
     /* ── placeholder pane ──────────────────────────────────── */
     .placeholder {

@@ -852,6 +852,16 @@ test('library tab click reclaims a borrowed section (no empty pane)', () => {
   expect(m[0]).toMatch(/_wsReclaimBuiltin/);
 });
 
+// ── Pane hidden must beat per-pane display rules ─────────────────────────────
+
+test('.pane[hidden] uses !important so later same-specificity display rules cannot unhide panes', () => {
+  // .pane[data-route="library"] / [data-route="harness"] set display:flex in
+  // rules AFTER .pane[hidden] with equal specificity -- without !important,
+  // source order wins and those panes render stacked under the active one.
+  const html = fs.readFileSync(HTML_PATH, 'utf8');
+  expect(html).toMatch(/\.pane\[hidden\]\s*\{\s*display:\s*none\s*!important/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
