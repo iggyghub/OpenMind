@@ -1,6 +1,6 @@
 """
 Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3) + #337 (S4) + #338 (S5)
-                         + #339 (S6) + #340 (S7).
+                         + #339 (S6) + #340 (S7) + #509 (B2).
 
 Tools: jobs_fetch_postings, jobs_store_resume, jobs_score_shortlist,
        jobs_set_approval, jobs_apply_start, jobs_apply_submit, jobs_answer_field,
@@ -46,6 +46,11 @@ S7 (Gated auto-submit — ADR-0009 exception): Supervised ramp + opt-in auto-sub
     knockout questions (work auth, sponsorship, relocation, start date, salary) always
     escalate on first encounter. Settings in SQLite job_search_settings table.
 
+B2 (#509): Greenhouse/Lever public postings-API providers. Slug extracted from
+    board URL at add_board time (stored in config JSON). JSON fetches use an
+    injectable set_board_api_fetch_fn seam (stdlib urllib in prod). Registered in
+    BOARD_PROVIDERS["greenhouse"] and BOARD_PROVIDERS["lever"]. No browser needed.
+
 All network I/O is injected via navigate_fn.
 All DB I/O is injectable via a JobSearchStore seam.
 LLM extraction is injectable via set_extract_fn.
@@ -57,6 +62,7 @@ Answer bank ChromaDB indexing is injectable via set_index_answer_fn.
 S6 account/email seams: set_gen_password_fn, set_create_ats_account_fn,
     set_get_jobs_email_fn, set_store_ats_password_fn, set_read_verify_link_fn,
     set_click_verify_link_fn.
+B2 board-API seam: set_board_api_fetch_fn.
 """
 import json
 import logging
@@ -361,12 +367,48 @@ def parse_postings(html: str) -> list[dict]:
     return p.results()
 
 
+# ── B2 #509 — slug extraction ─────────────────────────────────────────────────
+
+def _extract_board_slug(url: str, provider: str) -> str:
+    """Return the company slug from a Greenhouse or Lever board URL."""
+    if provider not in ("greenhouse", "lever"):
+        return ""
+    try:
+        from urllib.parse import urlparse
+        segs = [s for s in urlparse(url).path.split("/") if s]
+        return segs[0] if segs else ""
+    except Exception:
+        return ""
+
+
+# ── B2 #509 — injectable HTTP seam for board JSON API fetches ─────────────────
+# Production default: stdlib urllib in a thread (no browser, no OpenClaw needed).
+# Tests inject a fake via set_board_api_fetch_fn to avoid any live network.
+
+_board_api_fetch_fn: "Callable[[str], Awaitable[str]] | None" = None
+
+
+async def _default_api_fetch(url: str) -> str:
+    import urllib.request as _ur
+    import asyncio as _aio
+
+    def _fetch() -> str:
+        with _ur.urlopen(url, timeout=15) as r:  # noqa: S310
+            return r.read().decode()
+
+    return await _aio.to_thread(_fetch)
+
+
+def set_board_api_fetch_fn(fn: "Callable[[str], Awaitable[str]]") -> None:
+    """Inject the board-API HTTP fetcher (async fn(url) -> str). B2 #509."""
+    global _board_api_fetch_fn
+    _board_api_fetch_fn = fn
+
+
 # ── Board provider registry (B1 #508) ─────────────────────────────────────────
 #
 # BOARD_PROVIDERS maps provider name -> async fetch coroutine.
 # Signature: async (board, navigate_fn, extract_fn, llm_cap) -> list[dict]
-# B2 will add 'greenhouse' and 'lever' entries here.
-# ponytail: dict dispatch; extend with BOARD_PROVIDERS["greenhouse"] = fn in B2.
 
 async def _scrape_board(
     board: dict,
@@ -390,8 +432,68 @@ async def _scrape_board(
     return postings
 
 
+async def _fetch_greenhouse(
+    board: dict,
+    navigate_fn: "Callable[[str], Awaitable[str]]",
+    extract_fn: "Callable | None",
+    llm_cap: int,
+) -> list[dict]:
+    """B2 #509 — fetch postings from the Greenhouse public jobs API."""
+    config = json.loads(board.get("config") or "{}")
+    slug = config.get("slug") or ""
+    if not slug:
+        return []
+    fetch = _board_api_fetch_fn or _default_api_fetch
+    api_url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
+    raw = await fetch(api_url)
+    data = json.loads(raw)
+    jobs = data.get("jobs", [])[:50]
+    company = data.get("company_name") or slug
+    postings = []
+    for j in jobs:
+        postings.append({
+            "title": j.get("title") or "",
+            "company": company,
+            "pay": "",
+            "snapshot": _plain(j.get("content") or "")[:400],
+            "posted_date": "",
+            "url": j.get("absolute_url") or "",
+        })
+    return postings
+
+
+async def _fetch_lever(
+    board: dict,
+    navigate_fn: "Callable[[str], Awaitable[str]]",
+    extract_fn: "Callable | None",
+    llm_cap: int,
+) -> list[dict]:
+    """B2 #509 — fetch postings from the Lever public postings API."""
+    config = json.loads(board.get("config") or "{}")
+    slug = config.get("slug") or ""
+    if not slug:
+        return []
+    fetch = _board_api_fetch_fn or _default_api_fetch
+    api_url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
+    raw = await fetch(api_url)
+    data = json.loads(raw)
+    postings = []
+    for j in data[:50]:
+        postings.append({
+            "title": j.get("text") or "",
+            "company": slug,
+            "pay": "",
+            "snapshot": (j.get("descriptionPlain") or "")[:400],
+            "posted_date": "",
+            "url": j.get("hostedUrl") or "",
+        })
+    return postings
+
+
 BOARD_PROVIDERS: dict[str, "Callable"] = {
     "scrape": _scrape_board,
+    "greenhouse": _fetch_greenhouse,  # B2 #509
+    "lever": _fetch_lever,            # B2 #509
 }
 
 
@@ -794,11 +896,14 @@ class JobSearchStore:
         now = datetime.now(timezone.utc).isoformat()
         clean_url = url.strip()
         provider = detect_board_provider(clean_url)
+        # B2 #509: extract slug for GH/Lever boards and store in config JSON.
+        slug = _extract_board_slug(clean_url, provider)
+        config = json.dumps({"slug": slug}) if slug else "{}"
         try:
             self._con.execute(
                 "INSERT INTO job_boards (url, label, enabled, created_at, provider, config)"
                 " VALUES (?, ?, 1, ?, ?, ?)",
-                (clean_url, label.strip(), now, provider, "{}"),
+                (clean_url, label.strip(), now, provider, config),
             )
             self._con.commit()
         except Exception:

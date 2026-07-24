@@ -1,6 +1,7 @@
-"""S1 #396 / S2 #397 / B1 #508 — job_boards table CRUD, _fetch_postings loop, board-provider seam.
+"""S1 #396 / S2 #397 / B1 #508 / B2 #509 — job_boards CRUD, _fetch_postings loop,
+board-provider seam, Greenhouse/Lever API providers.
 
-All tests use in-memory SQLite and stubbed navigate/extract; no live fetches.
+All tests use in-memory SQLite and stubbed fetch fns; no live network.
 """
 import asyncio
 import json
@@ -9,7 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from plugins.job_search import JobSearchStore, JobSearchPlugin, detect_board_provider, BOARD_PROVIDERS
+from plugins.job_search import (
+    JobSearchStore, JobSearchPlugin,
+    detect_board_provider, BOARD_PROVIDERS,
+    set_board_api_fetch_fn, _extract_board_slug,
+)
 
 
 class _MemStore(JobSearchStore):
@@ -358,7 +363,7 @@ def test_add_board_stores_detected_provider():
     s.add_board("https://boards.greenhouse.io/acme", "Acme")
     b = s.list_boards()[0]
     assert b["provider"] == "greenhouse"
-    assert b["config"] == "{}"
+    assert json.loads(b["config"]) == {"slug": "acme"}  # B2: slug extracted at add time
 
 
 def test_add_board_scrape_provider_for_generic_url():
@@ -441,3 +446,226 @@ def test_board_providers_registry_has_scrape():
     assert "scrape" in BOARD_PROVIDERS
     import asyncio
     assert asyncio.iscoroutinefunction(BOARD_PROVIDERS["scrape"])
+
+
+# ── B2 #509 — slug extraction ────────────────────────────────────────────────
+
+def test_extract_slug_greenhouse():
+    assert _extract_board_slug("https://boards.greenhouse.io/acme", "greenhouse") == "acme"
+    assert _extract_board_slug("https://job-boards.greenhouse.io/acme/jobs/123", "greenhouse") == "acme"
+
+
+def test_extract_slug_lever():
+    assert _extract_board_slug("https://jobs.lever.co/acme", "lever") == "acme"
+    assert _extract_board_slug("https://jobs.lever.co/acme/123?ref=x", "lever") == "acme"
+
+
+def test_extract_slug_non_api_provider_returns_empty():
+    assert _extract_board_slug("https://ratracerebellion.com/job-postings", "scrape") == ""
+
+
+def test_add_board_stores_slug_in_config_greenhouse():
+    s = _mem_store()
+    s.add_board("https://boards.greenhouse.io/widgetco")
+    b = s.list_boards()[0]
+    assert json.loads(b["config"]) == {"slug": "widgetco"}
+
+
+def test_add_board_stores_slug_in_config_lever():
+    s = _mem_store()
+    s.add_board("https://jobs.lever.co/widgetco")
+    b = s.list_boards()[0]
+    assert json.loads(b["config"]) == {"slug": "widgetco"}
+
+
+def test_add_board_no_slug_for_scrape():
+    s = _mem_store()
+    s.add_board("https://ratracerebellion.com/job-postings")
+    b = s.list_boards()[0]
+    assert b["config"] == "{}"
+
+
+# ── B2 #509 — Greenhouse provider ────────────────────────────────────────────
+
+_GH_FIXTURE = json.dumps({
+    "company_name": "Acme Inc",
+    "jobs": [
+        {
+            "title": "Remote Engineer",
+            "absolute_url": "https://boards.greenhouse.io/acme/jobs/1",
+            "location": {"name": "Remote"},
+            "content": "<p>Build cool stuff.</p>",
+        },
+        {
+            "title": "Remote Designer",
+            "absolute_url": "https://boards.greenhouse.io/acme/jobs/2",
+            "location": {"name": "Remote"},
+            "content": "<p>Design cool stuff.</p>",
+        },
+    ],
+})
+
+
+async def test_greenhouse_provider_maps_postings():
+    store = _mem_store()
+    store.add_board("https://boards.greenhouse.io/acme", "Acme")
+    fetched_urls: list[str] = []
+
+    async def fake_api(url):
+        fetched_urls.append(url)
+        return _GH_FIXTURE
+
+    set_board_api_fetch_fn(fake_api)
+    try:
+        plugin = JobSearchPlugin(store=store)
+        result = await plugin._fetch_postings()
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["fetched"] == 2
+        assert data["saved"] == 2
+        postings = store.list_postings()
+        assert len(postings) == 2
+        titles = {p["title"] for p in postings}
+        assert "Remote Engineer" in titles
+        assert postings[0]["company"] == "Acme Inc"
+        assert postings[0]["url"].startswith("https://boards.greenhouse.io/acme/jobs/")
+        assert "boards-api.greenhouse.io" in fetched_urls[0]
+    finally:
+        set_board_api_fetch_fn(None)
+
+
+async def test_greenhouse_dedup_on_refetch():
+    store = _mem_store()
+    store.add_board("https://boards.greenhouse.io/acme")
+
+    async def fake_api(url):
+        return _GH_FIXTURE
+
+    set_board_api_fetch_fn(fake_api)
+    try:
+        plugin = JobSearchPlugin(store=store)
+        await plugin._fetch_postings()
+        await plugin._fetch_postings()
+        assert store.count() == 2  # same 2 jobs, not 4
+    finally:
+        set_board_api_fetch_fn(None)
+
+
+async def test_greenhouse_cap_at_50():
+    store = _mem_store()
+    store.add_board("https://boards.greenhouse.io/bigco")
+    big = json.dumps({"jobs": [
+        {"title": f"Job {i}", "absolute_url": f"https://boards.greenhouse.io/bigco/jobs/{i}",
+         "content": ""} for i in range(80)
+    ]})
+
+    async def fake_api(url):
+        return big
+
+    set_board_api_fetch_fn(fake_api)
+    try:
+        plugin = JobSearchPlugin(store=store)
+        result = await plugin._fetch_postings()
+        data = json.loads(result.content)
+        assert data["fetched"] == 50
+    finally:
+        set_board_api_fetch_fn(None)
+
+
+# ── B2 #509 — Lever provider ─────────────────────────────────────────────────
+
+_LEVER_FIXTURE = json.dumps([
+    {
+        "text": "Senior QA Engineer",
+        "hostedUrl": "https://jobs.lever.co/widgetco/abc123",
+        "categories": {"location": "Remote"},
+        "descriptionPlain": "Test all the things.",
+    },
+    {
+        "text": "Product Manager",
+        "hostedUrl": "https://jobs.lever.co/widgetco/def456",
+        "categories": {"location": "Remote"},
+        "descriptionPlain": "Own the roadmap.",
+    },
+])
+
+
+async def test_lever_provider_maps_postings():
+    store = _mem_store()
+    store.add_board("https://jobs.lever.co/widgetco", "WidgetCo")
+    fetched_urls: list[str] = []
+
+    async def fake_api(url):
+        fetched_urls.append(url)
+        return _LEVER_FIXTURE
+
+    set_board_api_fetch_fn(fake_api)
+    try:
+        plugin = JobSearchPlugin(store=store)
+        result = await plugin._fetch_postings()
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["fetched"] == 2
+        assert data["saved"] == 2
+        postings = store.list_postings()
+        titles = {p["title"] for p in postings}
+        assert "Senior QA Engineer" in titles
+        assert postings[0]["url"].startswith("https://jobs.lever.co/widgetco/")
+        assert "api.lever.co" in fetched_urls[0]
+    finally:
+        set_board_api_fetch_fn(None)
+
+
+async def test_lever_cap_at_50():
+    store = _mem_store()
+    store.add_board("https://jobs.lever.co/bigco")
+    big = json.dumps([
+        {"text": f"Job {i}", "hostedUrl": f"https://jobs.lever.co/bigco/{i}",
+         "descriptionPlain": ""} for i in range(75)
+    ])
+
+    async def fake_api(url):
+        return big
+
+    set_board_api_fetch_fn(fake_api)
+    try:
+        plugin = JobSearchPlugin(store=store)
+        result = await plugin._fetch_postings()
+        data = json.loads(result.content)
+        assert data["fetched"] == 50
+    finally:
+        set_board_api_fetch_fn(None)
+
+
+# ── B2 #509 — API error continues other boards ───────────────────────────────
+
+async def test_api_error_continues_other_boards():
+    store = _mem_store()
+    store.add_board("https://boards.greenhouse.io/badco")
+    store.add_board("https://example.com/jobs")  # scrape board as the good board
+
+    async def fake_api(url):
+        raise RuntimeError("HTTP 500")
+
+    async def fake_nav(url):
+        return _FAKE_HTML
+
+    set_board_api_fetch_fn(fake_api)
+    try:
+        plugin = JobSearchPlugin(navigate_fn=fake_nav, store=store)
+        result = await plugin._fetch_postings()
+        assert not result.is_error
+        data = json.loads(result.content)
+        bad = next(b for b in data["per_board"] if "badco" in b["url"])
+        good = next(b for b in data["per_board"] if "example" in b["url"])
+        assert "error" in bad
+        assert good["fetched"] > 0
+    finally:
+        set_board_api_fetch_fn(None)
+
+
+def test_board_providers_registry_has_greenhouse_and_lever():
+    assert "greenhouse" in BOARD_PROVIDERS
+    assert "lever" in BOARD_PROVIDERS
+    assert asyncio.iscoroutinefunction(BOARD_PROVIDERS["greenhouse"])
+    assert asyncio.iscoroutinefunction(BOARD_PROVIDERS["lever"])
