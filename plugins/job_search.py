@@ -1,6 +1,6 @@
 """
 Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3) + #337 (S4) + #338 (S5)
-                         + #339 (S6) + #340 (S7) + #509 (B2).
+                         + #339 (S6) + #340 (S7) + #509 (B2) + #510 (B3).
 
 Tools: jobs_fetch_postings, jobs_store_resume, jobs_score_shortlist,
        jobs_set_approval, jobs_apply_start, jobs_apply_submit, jobs_answer_field,
@@ -50,6 +50,14 @@ B2 (#509): Greenhouse/Lever public postings-API providers. Slug extracted from
     board URL at add_board time (stored in config JSON). JSON fetches use an
     injectable set_board_api_fetch_fn seam (stdlib urllib in prod). Registered in
     BOARD_PROVIDERS["greenhouse"] and BOARD_PROVIDERS["lever"]. No browser needed.
+
+B3 (#510): Duplicate-application guard. canonicalize_posting_url() strips tracking
+    params (utm_*, gh_src, source, ref, lever-origin, lever-source*) and the URL
+    fragment before every upsert and apply-time lookup. Postings may carry url_direct
+    (the ATS apply URL) which wins over url. At apply time, check_duplicate_application()
+    checks same company + SequenceMatcher title ratio >= 0.8 against existing
+    applications; hit adds duplicate_warning to the pending app and forces the
+    ADR-0005 modal (gate FAILURE even when all other S7 conditions pass).
 
 All network I/O is injected via navigate_fn.
 All DB I/O is injectable via a JobSearchStore seam.
@@ -146,6 +154,9 @@ def check_auto_submit_gate(
         return False, "opted-out"
     if settings["reviewed_count"] < settings["ramp_threshold"]:
         return False, f"pre-ramp ({settings['reviewed_count']}/{settings['ramp_threshold']})"
+    # B3 #510: suspected duplicate always routes through modal (ADR-0009 anti-spam)
+    if pending_app.get("duplicate_warning"):
+        return False, "duplicate-warning"
     fields = pending_app.get("fields", [])
     # Eligibility check first — ADR-0009: always escalate on first encounter
     for f in fields:
@@ -193,6 +204,61 @@ def detect_board_provider(url: str) -> str:
     if host == "jobs.lever.co":
         return "lever"
     return "scrape"
+
+
+# ── B3 #510 — URL canonicalization ────────────────────────────────────────────
+
+_STRIP_PARAMS: frozenset[str] = frozenset({"gh_src", "source", "ref", "lever-origin"})
+
+
+def canonicalize_posting_url(url: str) -> str:
+    """Strip tracking params, fragment, trailing slash; lowercase scheme/host. B3 #510."""
+    try:
+        from urllib.parse import urlparse, urlunparse, urlencode, parse_qsl
+        p = urlparse(url)
+        qs = [
+            (k, v) for k, v in parse_qsl(p.query)
+            if k not in _STRIP_PARAMS
+            and not k.startswith("utm_")
+            and not k.startswith("lever-source")
+        ]
+        path = p.path.rstrip("/") or "/"
+        return urlunparse((
+            p.scheme.lower(), p.netloc.lower(), path,
+            p.params, urlencode(qs), "",  # drop fragment
+        ))
+    except Exception:
+        return url
+
+
+# ── B3 #510 — duplicate-application guard ─────────────────────────────────────
+
+def _normalize_title(title: str) -> str:
+    return re.sub(r"[^a-z0-9 ]", "", title.lower()).strip()
+
+
+def check_duplicate_application(
+    store: "JobSearchStore", company: str, title: str
+) -> "dict | None":
+    """Return {title, date} of an existing application if same company + title ratio >= 0.8."""
+    from difflib import SequenceMatcher
+    norm_co = company.lower().strip()
+    norm_title = _normalize_title(title)
+    for app in store.list_applications():
+        posting = store.get_posting_by_url(app["posting_url"])
+        if posting is None:
+            continue
+        if posting.get("company", "").lower().strip() != norm_co:
+            continue
+        ratio = SequenceMatcher(
+            None, norm_title, _normalize_title(posting.get("title", ""))
+        ).ratio()
+        if ratio >= 0.8:
+            return {
+                "title": posting.get("title", ""),
+                "date": (app.get("submitted_at") or app.get("created_at", ""))[:10],
+            }
+    return None
 
 
 # ── HTML parser ───────────────────────────────────────────────────────────────
@@ -1498,6 +1564,7 @@ class JobSearchPlugin:
         """S4 #337 — open ATS, fill form, upload resume, stop for review."""
         global _pending_application
         import asyncio
+        url = canonicalize_posting_url(url)  # B3 #510
         store = self._store or _store
         if store is None:
             return ToolResult(content="Job search store not initialised", is_error=True)
@@ -1523,6 +1590,14 @@ class JobSearchPlugin:
 
         resume = store.get_resume_artifact(profile_id)
         resume_path = (resume or {}).get("pdf_path", "")
+
+        # B3 #510 — duplicate-application guard (does not block; warns + forces modal)
+        dup = check_duplicate_application(
+            store, posting.get("company", ""), posting.get("title", "")
+        )
+        dup_warning = (
+            f"possible duplicate of '{dup['title']}' applied {dup['date']}" if dup else None
+        )
 
         # Detect ATS type from URL; bail immediately if unsupported
         ats_type = detect_ats_type(url)
@@ -1675,18 +1750,17 @@ class JobSearchPlugin:
             "fields": fields,
             "submit_selector": draft.get("submit_selector", 'button[type="submit"]'),
             "has_new_eligibility": has_new_eligibility,  # S7: gate condition 4
+            "duplicate_warning": dup_warning,             # B3: forces modal on dup
         }
         store.upsert_application(
             url=url, posting_url=url, ats_type=ats_type,
             status="shortlisted", fields=fields,
         )
 
-        return ToolResult(content=json.dumps({
-            "status": "ready_to_submit",
-            "url": url,
-            "ats_type": ats_type,
-            "fields": fields,
-        }))
+        payload: dict = {"status": "ready_to_submit", "url": url, "ats_type": ats_type, "fields": fields}
+        if dup_warning:
+            payload["duplicate_warning"] = dup_warning
+        return ToolResult(content=json.dumps(payload))
 
     async def _answer_field(self, question: str, answer: str) -> ToolResult:
         """S5 #338 — capture user answer, store in Answer bank, index in ChromaDB."""
@@ -2018,7 +2092,12 @@ class JobSearchPlugin:
                 continue
             saved = 0
             for p in postings:
-                if p.get("url") and str(p["url"]).startswith("http"):
+                # B3 #510: url_direct wins over url (ATS apply URL from API boards)
+                if p.get("url_direct"):
+                    p["url"] = p["url_direct"]
+                raw = p.get("url")
+                if raw and str(raw).startswith("http"):
+                    p["url"] = canonicalize_posting_url(raw)  # B3 #510
                     store.upsert(p)
                     saved += 1
             total_fetched += len(postings)
