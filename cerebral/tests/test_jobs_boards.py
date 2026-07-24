@@ -1,4 +1,4 @@
-"""S1 #396 / S2 #397 — job_boards table CRUD and _fetch_postings loop.
+"""S1 #396 / S2 #397 / B1 #508 — job_boards table CRUD, _fetch_postings loop, board-provider seam.
 
 All tests use in-memory SQLite and stubbed navigate/extract; no live fetches.
 """
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from plugins.job_search import JobSearchStore, JobSearchPlugin
+from plugins.job_search import JobSearchStore, JobSearchPlugin, detect_board_provider, BOARD_PROVIDERS
 
 
 class _MemStore(JobSearchStore):
@@ -326,3 +326,118 @@ async def test_llm_extractor_skips_entries_without_http_url():
     result = await plugin._fetch_postings()
     assert not result.is_error
     assert store.count() == 0
+
+
+# ── B1 #508 — detect_board_provider + provider seam ─────────────────────────
+
+
+def test_detect_board_provider_greenhouse():
+    assert detect_board_provider("https://boards.greenhouse.io/acme") == "greenhouse"
+    assert detect_board_provider("https://job-boards.greenhouse.io/acme/jobs/123") == "greenhouse"
+
+
+def test_detect_board_provider_lever():
+    assert detect_board_provider("https://jobs.lever.co/acme") == "lever"
+    assert detect_board_provider("https://jobs.lever.co/acme/123?ref=x") == "lever"
+
+
+def test_detect_board_provider_scrape_fallback():
+    assert detect_board_provider("https://ratracerebellion.com/job-postings") == "scrape"
+    assert detect_board_provider("https://example.com/careers") == "scrape"
+    assert detect_board_provider("not-a-url") == "scrape"
+
+
+def test_detect_board_provider_greenhouse_subdomain_only():
+    # Only the canonical Greenhouse board host — not arbitrary greenhouse.io subdomains.
+    assert detect_board_provider("https://greenhouse.io") == "scrape"
+    assert detect_board_provider("https://api.greenhouse.io/jobs") == "scrape"
+
+
+def test_add_board_stores_detected_provider():
+    s = _mem_store()
+    s.add_board("https://boards.greenhouse.io/acme", "Acme")
+    b = s.list_boards()[0]
+    assert b["provider"] == "greenhouse"
+    assert b["config"] == "{}"
+
+
+def test_add_board_scrape_provider_for_generic_url():
+    s = _mem_store()
+    s.add_board("https://ratracerebellion.com/job-postings")
+    assert s.list_boards()[0]["provider"] == "scrape"
+
+
+def test_migration_adds_columns_to_existing_schema():
+    """Opening a store built without provider/config columns adds them; existing rows get defaults."""
+    import sqlite3
+    con = sqlite3.connect(":memory:", check_same_thread=False)
+    con.row_factory = sqlite3.Row
+    # Simulate old schema (no provider, no config columns).
+    con.execute("""
+        CREATE TABLE job_boards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT UNIQUE NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+    """)
+    con.execute("INSERT INTO job_boards (url, label, enabled, created_at) VALUES (?, '', 1, ?)",
+                ("https://ratracerebellion.com/job-postings", "2026-01-01T00:00:00+00:00"))
+    con.commit()
+
+    # Now wire the store onto that existing connection so _init runs migrations.
+    store = JobSearchStore.__new__(JobSearchStore)
+    store._con = con
+    store._init()
+
+    boards = [dict(row) for row in con.execute("SELECT * FROM job_boards")]
+    assert len(boards) == 1
+    assert boards[0]["provider"] == "scrape"
+    assert boards[0]["config"] == "{}"
+
+
+async def test_scrape_board_dispatches_as_before():
+    """A board with provider='scrape' fetches via navigate + static parser, same as pre-B1."""
+    store = _mem_store()
+    store.add_board("https://example.com/jobs", "Example")
+    navigated: list[str] = []
+
+    async def fake_nav(url):
+        navigated.append(url)
+        return _FAKE_HTML
+
+    plugin = _make_plugin(store, fake_nav)
+    result = await plugin._fetch_postings()
+    assert not result.is_error
+    assert navigated == ["https://example.com/jobs"]
+    data = json.loads(result.content)
+    assert data["fetched"] > 0
+
+
+async def test_unknown_provider_falls_back_to_scrape_and_logs(caplog):
+    """A board with an unregistered provider falls back to scrape and logs a warning."""
+    import logging
+    store = _mem_store()
+    store.add_board("https://example.com/jobs")
+    # Manually set the provider to something B1 doesn't handle yet.
+    store._con.execute("UPDATE job_boards SET provider = 'jobspy' WHERE url = ?",
+                       ("https://example.com/jobs",))
+    store._con.commit()
+
+    async def fake_nav(url):
+        return _FAKE_HTML
+
+    plugin = _make_plugin(store, fake_nav)
+    with caplog.at_level(logging.WARNING, logger="plugins.job_search"):
+        result = await plugin._fetch_postings()
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["fetched"] > 0
+    assert any("unknown board provider" in r.message for r in caplog.records)
+
+
+def test_board_providers_registry_has_scrape():
+    assert "scrape" in BOARD_PROVIDERS
+    import asyncio
+    assert asyncio.iscoroutinefunction(BOARD_PROVIDERS["scrape"])

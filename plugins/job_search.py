@@ -168,6 +168,27 @@ def detect_ats_type(url: str) -> str:
     return "unknown"
 
 
+# ── Board provider detection (B1 #508) ────────────────────────────────────────
+
+def detect_board_provider(url: str) -> str:
+    """Classify a job-board URL into a fetch-strategy provider.
+
+    Returns 'greenhouse', 'lever', or 'scrape' (default/fallback).
+    B4 will extend with 'jobspy' for linkedin/indeed/glassdoor — seam is the
+    BOARD_PROVIDERS registry in JobSearchPlugin.
+    """
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return "scrape"
+    if host in ("boards.greenhouse.io", "job-boards.greenhouse.io"):
+        return "greenhouse"
+    if host == "jobs.lever.co":
+        return "lever"
+    return "scrape"
+
+
 # ── HTML parser ───────────────────────────────────────────────────────────────
 
 class _RRRParser(HTMLParser):
@@ -340,6 +361,40 @@ def parse_postings(html: str) -> list[dict]:
     return p.results()
 
 
+# ── Board provider registry (B1 #508) ─────────────────────────────────────────
+#
+# BOARD_PROVIDERS maps provider name -> async fetch coroutine.
+# Signature: async (board, navigate_fn, extract_fn, llm_cap) -> list[dict]
+# B2 will add 'greenhouse' and 'lever' entries here.
+# ponytail: dict dispatch; extend with BOARD_PROVIDERS["greenhouse"] = fn in B2.
+
+async def _scrape_board(
+    board: dict,
+    navigate_fn: "Callable[[str], Awaitable[str]]",
+    extract_fn: "Callable | None",
+    llm_cap: int,
+) -> list[dict]:
+    """Existing navigate + static-parse + LLM-fallback path, moved verbatim."""
+    import asyncio as _asyncio
+    html = await navigate_fn(board["url"])
+    postings = parse_postings(html)
+    if not postings and extract_fn is not None:
+        try:
+            result = extract_fn(html[:llm_cap])
+            if _asyncio.iscoroutine(result):
+                result = await result
+            if isinstance(result, list):
+                postings = result
+        except Exception as exc:
+            logger.warning("[job_search] LLM extractor failed for %s: %s", board["url"], exc)
+    return postings
+
+
+BOARD_PROVIDERS: dict[str, "Callable"] = {
+    "scrape": _scrape_board,
+}
+
+
 # ── SQLite store ──────────────────────────────────────────────────────────────
 
 class JobSearchStore:
@@ -474,6 +529,15 @@ class JobSearchStore:
                 created_at TEXT    NOT NULL
             )
         """)
+        # B1 #508 — add provider + config to job_boards (migration for existing rows).
+        for col, typedef in (
+            ("provider", "TEXT NOT NULL DEFAULT 'scrape'"),
+            ("config",   "TEXT NOT NULL DEFAULT '{}'"),
+        ):
+            try:
+                self._con.execute(f"ALTER TABLE job_boards ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         self._con.commit()
 
     def upsert(self, posting: dict) -> None:
@@ -728,10 +792,13 @@ class JobSearchStore:
 
     def add_board(self, url: str, label: str = "") -> None:
         now = datetime.now(timezone.utc).isoformat()
+        clean_url = url.strip()
+        provider = detect_board_provider(clean_url)
         try:
             self._con.execute(
-                "INSERT INTO job_boards (url, label, created_at) VALUES (?, ?, ?)",
-                (url.strip(), label.strip(), now),
+                "INSERT INTO job_boards (url, label, enabled, created_at, provider, config)"
+                " VALUES (?, ?, 1, ?, ?, ?)",
+                (clean_url, label.strip(), now, provider, "{}"),
             )
             self._con.commit()
         except Exception:
@@ -1810,11 +1877,11 @@ class JobSearchPlugin:
     _LLM_POSTINGS_INPUT_CAP = 12_000
 
     async def _fetch_postings(self) -> ToolResult:
-        import asyncio
         store = self._store or _store
         if store is None:
             return ToolResult(content="Job search store not initialised", is_error=True)
         navigate = self._navigate_fn or _navigate_fn or _default_navigate
+        extractor = self._extract_postings_fn or _extract_postings_fn
         # S1 #396: iterate enabled boards; RRR_URL is kept as the parser-host reference only.
         boards = [b for b in store.list_boards() if b.get("enabled")]
         if not boards:
@@ -1829,28 +1896,21 @@ class JobSearchPlugin:
         per_board: list[dict] = []
         for board in boards:
             board_url = board["url"]
+            # B1 #508: dispatch on board provider; unknown providers fall back to scrape.
+            provider = board.get("provider") or "scrape"
+            fetch_fn = BOARD_PROVIDERS.get(provider)
+            if fetch_fn is None:
+                logger.warning(
+                    "[job_search] unknown board provider %r for %s, falling back to scrape",
+                    provider, board_url,
+                )
+                fetch_fn = BOARD_PROVIDERS["scrape"]
             try:
-                html = await navigate(board_url)
+                postings = await fetch_fn(board, navigate, extractor, self._LLM_POSTINGS_INPUT_CAP)
             except Exception as exc:
-                logger.error("[job_search] navigate(%s) failed: %s", board_url, exc)
+                logger.error("[job_search] fetch(%s) failed: %s", board_url, exc)
                 per_board.append({"url": board_url, "error": str(exc), "fetched": 0, "saved": 0})
                 continue
-            # Static parser first; LLM fallback when it yields nothing (S2 #397).
-            postings = parse_postings(html)
-            if not postings:
-                extractor = self._extract_postings_fn or _extract_postings_fn
-                if extractor is not None:
-                    try:
-                        truncated = html[:self._LLM_POSTINGS_INPUT_CAP]
-                        result = extractor(truncated)
-                        if asyncio.iscoroutine(result):
-                            result = await result
-                        if isinstance(result, list):
-                            postings = result
-                    except Exception as exc:
-                        logger.warning(
-                            "[job_search] LLM extractor failed for %s: %s", board_url, exc
-                        )
             saved = 0
             for p in postings:
                 if p.get("url") and str(p["url"]).startswith("http"):

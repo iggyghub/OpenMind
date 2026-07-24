@@ -4022,6 +4022,16 @@
       text-overflow: ellipsis;
       max-width: 120px;
     }
+    .jobs-board-provider {
+      flex-shrink: 0;
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: var(--bg-elev);
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
     .jobs-board-remove {
       flex-shrink: 0;
       background: none;
@@ -7394,12 +7404,14 @@
         var row = document.createElement('div');
         row.className = 'jobs-board-row';
         row.dataset.url = board.url;
+        var provider = board.provider || 'scrape';
         row.innerHTML =
           '<label class="jobs-board-toggle">' +
             '<input type="checkbox" class="jobs-board-enabled"' + (board.enabled ? ' checked' : '') + ' />' +
             '<span class="jobs-board-label">' + escHtml(board.label || board.url) + '</span>' +
           '</label>' +
           '<span class="jobs-board-url-hint">' + (board.label ? escHtml(board.url) : '') + '</span>' +
+          '<span class="jobs-board-provider">' + escHtml(provider) + '</span>' +
           '<button class="jobs-board-remove" data-url="' + escHtml(board.url) + '" type="button" title="Remove">x</button>';
         jobsBoardsListEl.appendChild(row);
       });
