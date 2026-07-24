@@ -19,7 +19,7 @@ slice, **update this block**: tick the queue entry, set the next unticked
 entry's `#N` + `Model:` as the active slice here, and set `Status:` (`ready`
 while unticked queue entries remain; `done` when the queue is complete).
 
-Active slice: **B1 — #508**
+Active slice: **B2 — #509**
 
 Model: sonnet
 Status: ready
@@ -31,7 +31,7 @@ human; `done` = stop. Stop gracefully any time with `scripts/stop-jobs.ps1`.)
 
 ### Slice queue (work top-down; spec = CONTEXT.md + ADR-0009; issue body = detail)
 
-1. [ ] B1 — #508 Generalized board input + provider seam — Model: sonnet
+1. [x] B1 — #508 Generalized board input + provider seam — Model: sonnet
 2. [ ] B2 — #509 Greenhouse/Lever postings-API providers — Model: sonnet
 3. [ ] B3 — #510 Duplicate-application guard — Model: sonnet
 4. [ ] B4 — #511 JobSpy big-board search provider (logged-out only) — Model: sonnet
@@ -49,6 +49,7 @@ human; `done` = stop. Stop gracefully any time with `scripts/stop-jobs.ps1`.)
 
 ### Landed PRs
 
+- B1 #508 — PR #512 (feat(jobs): B1 -- generalized board input + provider seam)
 - S1 #334 — PR #342 (feat(jobs): S1 — Job board -> Job postings in a Job Search panel)
 - S2 #335 — PR #343 (feat(jobs): S2 — Resume ingestion -> Applicant dossier)
 - S3 #336 — PR #344 (feat(jobs): S3 — Shortlist: fit-score Job postings + user approval)
