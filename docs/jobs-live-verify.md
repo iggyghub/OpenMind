@@ -129,3 +129,17 @@ _(slices append their live-verify items here as they land)_
 - [ ] Run `jobs_apply_start` a second time on the same URL: confirm `_ensure_ats_login`
       detects the existing `verified` account and skips account-creation entirely.
 - [ ] Confirm that a Lever login-gated posting follows the same flow end-to-end.
+
+## B2 #509 — Greenhouse/Lever postings-API providers
+
+- [ ] Paste a real Greenhouse company board URL (e.g. `https://boards.greenhouse.io/<slug>`) in
+      the Job Search panel "Add board" field. Confirm the board appears with provider=greenhouse
+      and config={"slug": "<slug>"} in the panel (or via SQLite).
+- [ ] Click "Check for new jobs" with the Greenhouse board enabled. Confirm postings appear in
+      the panel with working apply URLs (absolute_url values from the Greenhouse API). Confirm
+      no browser window opens (pure HTTP GET, no OpenClaw navigate).
+- [ ] Paste a real Lever company board URL (e.g. `https://jobs.lever.co/<slug>`) and repeat:
+      fetch, confirm postings appear with hostedUrl apply URLs.
+- [ ] Verify that re-fetching the same Greenhouse/Lever board does not duplicate postings
+      (URL-dedup: same count on second fetch as on first).
+- [ ] Paste a Greenhouse board with 50+ live postings; confirm at most 50 are stored per fetch.
