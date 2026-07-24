@@ -9,19 +9,20 @@ slice's detail.
 
 ## Next slice — start here
 
-**Job-application pipeline epic.** 7 core tracer slices (+1 optional), one PR
-each, auto-merged to master in order — successive slices build on the same new
-files (`plugins/job_search.py`, the SQLite tables, the Job Search panel,
-`cerebral/main.py` wiring), so they MUST land sequentially. Work strictly
-top-down; the order already satisfies every `Blocked by`. After landing a slice,
-**update this block**: tick the queue entry, set the next unticked entry's
-`#N` + `Model:` as the active slice here, and set `Status:` (`ready` while slices
-remain; `done` after S7 lands — S8 is optional and left for a human to trigger).
+**Job boards v2 campaign** (grilled 2026-07-24). Generalized board sourcing:
+paste any job-site URL, Felix classifies it (Greenhouse/Lever JSON APIs, JobSpy
+big-board search, generic scrape fallback) — plus a duplicate-application
+guard. 4 slices, one PR each, auto-merged to master strictly top-down —
+successive slices build on the same files (`plugins/job_search.py`, its SQLite
+tables, the Job Search panel), so they MUST land sequentially. After landing a
+slice, **update this block**: tick the queue entry, set the next unticked
+entry's `#N` + `Model:` as the active slice here, and set `Status:` (`ready`
+while unticked queue entries remain; `done` when the queue is complete).
 
-Active slice: **S8 — #341**
+Active slice: **B1 — #508**
 
-Model: haiku
-Status: done
+Model: sonnet
+Status: ready
 
 (`Model:`/`Status:` are read directly by `scripts/run-jobs.ps1`. Allowed:
 haiku | sonnet | opus | fable — prefer haiku/sonnet, this is meant to run on an
@@ -29,6 +30,13 @@ efficient model. `Status: ready` = run the active slice; `blocked` = needs a
 human; `done` = stop. Stop gracefully any time with `scripts/stop-jobs.ps1`.)
 
 ### Slice queue (work top-down; spec = CONTEXT.md + ADR-0009; issue body = detail)
+
+1. [ ] B1 — #508 Generalized board input + provider seam — Model: sonnet
+2. [ ] B2 — #509 Greenhouse/Lever postings-API providers — Model: sonnet
+3. [ ] B3 — #510 Duplicate-application guard — Model: sonnet
+4. [ ] B4 — #511 JobSpy big-board search provider (logged-out only) — Model: sonnet
+
+### Previous campaign — Job-application pipeline epic (landed)
 
 1. [x] S1 — #334 Job board -> Job postings in a Job Search panel — Model: sonnet
 2. [x] S2 — #335 Resume ingestion -> Applicant dossier — Model: sonnet
