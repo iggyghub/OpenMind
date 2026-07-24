@@ -143,3 +143,17 @@ _(slices append their live-verify items here as they land)_
 - [ ] Verify that re-fetching the same Greenhouse/Lever board does not duplicate postings
       (URL-dedup: same count on second fetch as on first).
 - [ ] Paste a Greenhouse board with 50+ live postings; confirm at most 50 are stored per fetch.
+
+## B4 #511 — JobSpy big-board search provider
+
+- [ ] Upload a resume and confirm `target_titles` is populated in the dossier (show in Job Search panel "Search titles" row) after asking Felix to store the resume.
+- [ ] If `target_titles` is empty, click the "Search titles" span in the dossier card, type comma-separated titles (e.g. "Software Engineer, Backend Developer"), and confirm the Job Search panel reflects the new values.
+- [ ] Paste `linkedin.com` as a board in the Job Search panel. Confirm the board is stored with `provider=jobspy` and `config={"site":"linkedin"}` (check SQLite or the panel).
+- [ ] With at least one `target_title` set, click "Check for new jobs". Confirm:
+  - Postings from LinkedIn appear in the panel with external ATS apply URLs (not LinkedIn Easy Apply links).
+  - Easy Apply-only postings (those without a direct external URL) do NOT appear.
+  - At most 50 postings are stored per board per fetch.
+  - No browser window opens (logged-out scrape, no OpenClaw navigate).
+- [ ] Repeat with `indeed.com` and `glassdoor.com` boards.
+- [ ] Clear `target_titles` (set to empty) and re-fetch: confirm a per-board error hint appears ("no target titles") and no crash occurs.
+- [ ] Verify re-fetching the same board does not duplicate postings (B3 URL dedup still holds).
