@@ -1,6 +1,6 @@
 """
 Job Search MCP plugin — Issues #334 (S1) + #335 (S2) + #336 (S3) + #337 (S4) + #338 (S5)
-                         + #339 (S6) + #340 (S7) + #509 (B2) + #510 (B3).
+                         + #339 (S6) + #340 (S7) + #509 (B2) + #510 (B3) + #511 (B4).
 
 Tools: jobs_fetch_postings, jobs_store_resume, jobs_score_shortlist,
        jobs_set_approval, jobs_apply_start, jobs_apply_submit, jobs_answer_field,
@@ -58,6 +58,14 @@ B3 (#510): Duplicate-application guard. canonicalize_posting_url() strips tracki
     checks same company + SequenceMatcher title ratio >= 0.8 against existing
     applications; hit adds duplicate_warning to the pending app and forces the
     ADR-0005 modal (gate FAILURE even when all other S7 conditions pass).
+
+B4 (#511): JobSpy big-board search provider. linkedin/indeed/glassdoor board URLs
+    -> provider "jobspy", config {"site": "linkedin"|"indeed"|"glassdoor"}. Fetches
+    via injectable set_jobspy_fetch_fn seam (production: jobspy.scrape_jobs in a thread,
+    lazy import). One call per target_title from applicant_dossier.target_titles
+    (new column, migration). Cap: 50 postings per board per fetch total. Logged-out
+    only. Easy Apply-only rows (no job_url_direct) are skipped. Missing target_titles
+    -> per_board error hint, no crash. Amendment in ADR-0009.
 
 All network I/O is injected via navigate_fn.
 All DB I/O is injectable via a JobSearchStore seam.
@@ -190,9 +198,8 @@ def detect_ats_type(url: str) -> str:
 def detect_board_provider(url: str) -> str:
     """Classify a job-board URL into a fetch-strategy provider.
 
-    Returns 'greenhouse', 'lever', or 'scrape' (default/fallback).
-    B4 will extend with 'jobspy' for linkedin/indeed/glassdoor — seam is the
-    BOARD_PROVIDERS registry in JobSearchPlugin.
+    Returns 'greenhouse', 'lever', 'jobspy', or 'scrape' (default/fallback).
+    B4 #511: linkedin/indeed/glassdoor -> 'jobspy'.
     """
     try:
         from urllib.parse import urlparse
@@ -203,6 +210,8 @@ def detect_board_provider(url: str) -> str:
         return "greenhouse"
     if host == "jobs.lever.co":
         return "lever"
+    if any(d in host for d in ("linkedin.com", "indeed.com", "glassdoor.com")):
+        return "jobspy"
     return "scrape"
 
 
@@ -471,6 +480,54 @@ def set_board_api_fetch_fn(fn: "Callable[[str], Awaitable[str]]") -> None:
     _board_api_fetch_fn = fn
 
 
+# ── B4 #511 — injectable JobSpy seam ─────────────────────────────────────────
+# Production default: calls jobspy.scrape_jobs in asyncio.to_thread (lazy import).
+# Tests inject a fake via set_jobspy_fetch_fn; no real network, no jobspy install needed.
+
+_jobspy_fetch_fn: "Callable | None" = None
+
+
+def set_jobspy_fetch_fn(fn: "Callable") -> None:
+    """Inject JobSpy scraper fn (async fn(site, term, cap) -> list[dict]). B4 #511."""
+    global _jobspy_fetch_fn
+    _jobspy_fetch_fn = fn
+
+
+async def _default_jobspy_fetch(site: str, term: str, cap: int) -> list[dict]:
+    """Production default: calls jobspy.scrape_jobs in a thread. B4 #511."""
+    import asyncio as _aio
+
+    def _run():
+        import jobspy  # ponytail: lazy — tests must not require jobspy installed
+        df = jobspy.scrape_jobs(
+            site_name=[site],
+            search_term=term,
+            is_remote=True,
+            results_wanted=cap,
+        )
+        if df is None or df.empty:
+            return []
+        return [row.to_dict() for _, row in df.iterrows()]
+
+    return await _aio.to_thread(_run)
+
+
+def _extract_jobspy_site(url: str) -> str:
+    """Return the jobspy site_name from a big-board URL. B4 #511."""
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc.lower()
+        if "linkedin.com" in host:
+            return "linkedin"
+        if "indeed.com" in host:
+            return "indeed"
+        if "glassdoor.com" in host:
+            return "glassdoor"
+    except Exception:
+        pass
+    return ""
+
+
 # ── Board provider registry (B1 #508) ─────────────────────────────────────────
 #
 # BOARD_PROVIDERS maps provider name -> async fetch coroutine.
@@ -556,10 +613,85 @@ async def _fetch_lever(
     return postings
 
 
+async def _fetch_jobspy(
+    board: dict,
+    navigate_fn: "Callable[[str], Awaitable[str]]",
+    extract_fn: "Callable | None",
+    llm_cap: int,
+) -> list[dict]:
+    """B4 #511 — fetch postings from LinkedIn/Indeed/Glassdoor via python-jobspy.
+
+    Logged-out only; no cookies/credentials ever passed. Easy Apply-only rows
+    (no job_url_direct) are skipped. Cap: 50 postings per board per fetch total.
+    Missing target_titles raises ValueError so _fetch_postings logs a per_board hint.
+    """
+    import asyncio as _aio
+
+    config = json.loads(board.get("config") or "{}")
+    site = config.get("site") or ""
+    if not site:
+        return []
+
+    # Resolve target_titles from the active profile's dossier (module globals).
+    target_titles: list[str] = []
+    if _active_profile_id is not None and _store is not None:
+        dossier = _store.get_dossier(_active_profile_id)
+        if dossier:
+            target_titles = dossier.get("target_titles") or []
+
+    if not target_titles:
+        raise ValueError(
+            "no target titles — edit them in the panel or re-ingest the resume"
+        )
+
+    fetch = _jobspy_fetch_fn or _default_jobspy_fetch
+    CAP = 50
+    per_title = max(1, CAP // len(target_titles))
+
+    all_rows: list[dict] = []
+    last_exc: Exception | None = None
+    for title in target_titles:
+        if len(all_rows) >= CAP:
+            break
+        try:
+            rows = fetch(site, title, per_title)
+            if _aio.iscoroutine(rows):
+                rows = await rows
+            all_rows.extend(rows)
+            last_exc = None  # at least one title succeeded
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("[job_search] jobspy fetch failed for %r/%r: %s", site, title, exc)
+
+    # If every title call failed, propagate so _fetch_postings records a board-level error.
+    if last_exc is not None and not all_rows:
+        raise last_exc
+
+    postings = []
+    for row in all_rows[:CAP]:
+        url_direct = str(row.get("job_url_direct") or "").strip()
+        # Easy Apply-only: no external apply URL -> skip (ADR-0009 / B4 posture)
+        if not url_direct or not url_direct.startswith("http"):
+            continue
+        url_board = str(row.get("job_url") or "").strip()
+        postings.append({
+            "title":     str(row.get("title") or ""),
+            "company":   str(row.get("company") or ""),
+            "pay":       "",
+            "snapshot":  str(row.get("description") or "")[:400],
+            "posted_date": "",
+            "url":       url_board or url_direct,  # listing URL for display; direct wins at upsert
+            "url_direct": url_direct,               # B3 seam: wins over url at upsert time
+        })
+
+    return postings
+
+
 BOARD_PROVIDERS: dict[str, "Callable"] = {
     "scrape": _scrape_board,
     "greenhouse": _fetch_greenhouse,  # B2 #509
     "lever": _fetch_lever,            # B2 #509
+    "jobspy": _fetch_jobspy,          # B4 #511
 }
 
 
@@ -706,6 +838,14 @@ class JobSearchStore:
                 self._con.execute(f"ALTER TABLE job_boards ADD COLUMN {col} {typedef}")
             except sqlite3.OperationalError:
                 pass  # column already exists
+        # B4 #511 — add target_titles_json to applicant_dossier (migration for existing rows).
+        try:
+            self._con.execute(
+                "ALTER TABLE applicant_dossier ADD COLUMN"
+                " target_titles_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
         self._con.commit()
 
     def upsert(self, posting: dict) -> None:
@@ -789,8 +929,9 @@ class JobSearchStore:
             self._con.execute("""
                 INSERT INTO applicant_dossier
                     (profile_id, name, email, phone, location, linkedin, github, website,
-                     work_history_json, education_json, skills_json, raw_text, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     work_history_json, education_json, skills_json, raw_text,
+                     target_titles_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(profile_id) DO UPDATE SET
                     name               = excluded.name,
                     email              = excluded.email,
@@ -803,6 +944,7 @@ class JobSearchStore:
                     education_json     = excluded.education_json,
                     skills_json        = excluded.skills_json,
                     raw_text           = excluded.raw_text,
+                    target_titles_json = excluded.target_titles_json,
                     updated_at         = excluded.updated_at
             """, (
                 profile_id,
@@ -810,6 +952,7 @@ class JobSearchStore:
                 _s("linkedin"), _s("github"), _s("website"),
                 _l("work_history"), _l("education"), _l("skills"),
                 _s("raw_text"),
+                _l("target_titles"),  # B4 #511
                 now,
             ))
             self._con.commit()
@@ -829,27 +972,46 @@ class JobSearchStore:
         if not row:
             return None
         d = dict(row)
-        for key in ("work_history_json", "education_json", "skills_json"):
+        for key in ("work_history_json", "education_json", "skills_json", "target_titles_json"):
             try:
                 d[key] = json.loads(d[key])
             except (json.JSONDecodeError, TypeError):
                 d[key] = []
+        # B4 #511: expose target_titles as a list (parsed from target_titles_json)
+        d["target_titles"] = d.get("target_titles_json") or []
         return d
 
     _DOSSIER_EDITABLE = frozenset(
-        {"name", "email", "phone", "location", "linkedin", "github", "website"}
+        {"name", "email", "phone", "location", "linkedin", "github", "website",
+         "target_titles"}  # B4 #511: list field, stored as target_titles_json
     )
 
     def patch_dossier(self, profile_id: int, field: str, value: str) -> None:
-        """S1 #452 — Update one scalar dossier field without touching the rest."""
+        """S1 #452 — Update one scalar dossier field without touching the rest.
+        B4 #511: target_titles is a special list field stored as target_titles_json.
+        Accepts either a JSON array string or comma-separated titles.
+        """
         if field not in self._DOSSIER_EDITABLE:
             raise ValueError(f"Field {field!r} is not user-editable")
         now = datetime.now(timezone.utc).isoformat()
+        # B4 #511: target_titles -> target_titles_json column (JSON array)
+        if field == "target_titles":
+            raw = value or ""
+            try:
+                parsed = json.loads(raw)
+                if not isinstance(parsed, list):
+                    parsed = [str(parsed)] if parsed else []
+            except (json.JSONDecodeError, ValueError):
+                # Comma-separated fallback: "Software Engineer, Backend Developer"
+                parsed = [t.strip() for t in raw.split(",") if t.strip()]
+            col, db_val = "target_titles_json", json.dumps(parsed)
+        else:
+            col, db_val = field, value or ""
         try:
-            # field is allowlisted above, so the f-string is safe.
+            # col is allowlisted above, so the f-string is safe.
             self._con.execute(
-                f"UPDATE applicant_dossier SET {field} = ?, updated_at = ? WHERE profile_id = ?",
-                (value or "", now, profile_id),
+                f"UPDATE applicant_dossier SET {col} = ?, updated_at = ? WHERE profile_id = ?",
+                (db_val, now, profile_id),
             )
             self._con.commit()
         except Exception:
@@ -963,8 +1125,13 @@ class JobSearchStore:
         clean_url = url.strip()
         provider = detect_board_provider(clean_url)
         # B2 #509: extract slug for GH/Lever boards and store in config JSON.
-        slug = _extract_board_slug(clean_url, provider)
-        config = json.dumps({"slug": slug}) if slug else "{}"
+        # B4 #511: store site name for jobspy boards.
+        if provider == "jobspy":
+            site = _extract_jobspy_site(clean_url)
+            config = json.dumps({"site": site}) if site else "{}"
+        else:
+            slug = _extract_board_slug(clean_url, provider)
+            config = json.dumps({"slug": slug}) if slug else "{}"
         try:
             self._con.execute(
                 "INSERT INTO job_boards (url, label, enabled, created_at, provider, config)"
@@ -1493,8 +1660,10 @@ class JobSearchPlugin:
                         "field": {
                             "type": "string",
                             "enum": ["name", "email", "phone", "location",
-                                     "linkedin", "github", "website"],
-                            "description": "Which dossier field to update.",
+                                     "linkedin", "github", "website", "target_titles"],
+                            "description": "Which dossier field to update. "
+                                "target_titles accepts a JSON array or comma-separated list "
+                                "of 2-4 job titles used for big-board searches (B4 #511).",
                         },
                         "value": {
                             "type": "string",

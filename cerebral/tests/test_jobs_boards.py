@@ -1,5 +1,5 @@
-"""S1 #396 / S2 #397 / B1 #508 / B2 #509 — job_boards CRUD, _fetch_postings loop,
-board-provider seam, Greenhouse/Lever API providers.
+"""S1 #396 / S2 #397 / B1 #508 / B2 #509 / B4 #511 — job_boards CRUD, _fetch_postings loop,
+board-provider seam, Greenhouse/Lever API providers, JobSpy big-board provider.
 
 All tests use in-memory SQLite and stubbed fetch fns; no live network.
 """
@@ -10,10 +10,13 @@ from pathlib import Path
 
 import pytest
 
+import plugins.job_search as _jmod
 from plugins.job_search import (
     JobSearchStore, JobSearchPlugin,
     detect_board_provider, BOARD_PROVIDERS,
     set_board_api_fetch_fn, _extract_board_slug,
+    set_jobspy_fetch_fn,
+    set_active_profile_id, set_store,
 )
 
 
@@ -426,7 +429,7 @@ async def test_unknown_provider_falls_back_to_scrape_and_logs(caplog):
     store = _mem_store()
     store.add_board("https://example.com/jobs")
     # Manually set the provider to something B1 doesn't handle yet.
-    store._con.execute("UPDATE job_boards SET provider = 'jobspy' WHERE url = ?",
+    store._con.execute("UPDATE job_boards SET provider = 'future_provider' WHERE url = ?",
                        ("https://example.com/jobs",))
     store._con.commit()
 
@@ -669,3 +672,251 @@ def test_board_providers_registry_has_greenhouse_and_lever():
     assert "lever" in BOARD_PROVIDERS
     assert asyncio.iscoroutinefunction(BOARD_PROVIDERS["greenhouse"])
     assert asyncio.iscoroutinefunction(BOARD_PROVIDERS["lever"])
+
+
+# ── B4 #511 — JobSpy big-board provider ──────────────────────────────────────
+
+# Fake jobspy rows that look like a real DataFrame row turned into a dict.
+_FAKE_JOBSPY_ROWS = [
+    {
+        "title": "Remote Software Engineer",
+        "company": "Acme",
+        "job_url": "https://www.linkedin.com/jobs/view/123",
+        "job_url_direct": "https://boards.greenhouse.io/acme/jobs/123",
+        "description": "Build cool stuff.",
+    },
+    {
+        "title": "Backend Developer",
+        "company": "Beta Corp",
+        "job_url": "https://www.linkedin.com/jobs/view/456",
+        "job_url_direct": "https://lever.co/betacorp/job/456",
+        "description": "Python microservices.",
+    },
+    # Easy Apply-only — no job_url_direct; should be skipped
+    {
+        "title": "Product Manager",
+        "company": "Gamma",
+        "job_url": "https://www.linkedin.com/jobs/view/789",
+        "job_url_direct": "",
+        "description": "Lead products.",
+    },
+]
+
+
+def test_detect_board_provider_jobspy_domains():
+    assert detect_board_provider("https://www.linkedin.com/jobs") == "jobspy"
+    assert detect_board_provider("https://linkedin.com") == "jobspy"
+    assert detect_board_provider("https://www.indeed.com/jobs?q=engineer") == "jobspy"
+    assert detect_board_provider("https://www.glassdoor.com/Job/jobs.htm") == "jobspy"
+
+
+def test_add_board_jobspy_stores_site_config():
+    s = _mem_store()
+    s.add_board("https://www.linkedin.com/jobs", "LinkedIn")
+    b = s.list_boards()[0]
+    assert b["provider"] == "jobspy"
+    cfg = json.loads(b["config"])
+    assert cfg["site"] == "linkedin"
+
+    s2 = _mem_store()
+    s2.add_board("https://www.indeed.com")
+    assert json.loads(s2.list_boards()[0]["config"])["site"] == "indeed"
+
+    s3 = _mem_store()
+    s3.add_board("https://www.glassdoor.com/jobs")
+    assert json.loads(s3.list_boards()[0]["config"])["site"] == "glassdoor"
+
+
+def test_board_providers_registry_has_jobspy():
+    assert "jobspy" in BOARD_PROVIDERS
+    assert asyncio.iscoroutinefunction(BOARD_PROVIDERS["jobspy"])
+
+
+async def test_jobspy_fetch_maps_rows_and_skips_easy_apply():
+    """url_direct preferred; Easy Apply-only rows (no direct URL) skipped; cap enforced."""
+    store = _mem_store()
+    store.add_board("https://www.linkedin.com/jobs", "LinkedIn")
+    store.upsert_dossier(1, {"name": "Jane", "target_titles": ["Software Engineer"]})
+
+    calls: list[tuple] = []
+
+    async def fake_jobspy(site, term, cap):
+        calls.append((site, term, cap))
+        return _FAKE_JOBSPY_ROWS
+
+    set_jobspy_fetch_fn(fake_jobspy)
+    old_pid = _jmod._active_profile_id
+    old_store = _jmod._store
+    set_active_profile_id(1)
+    set_store(store)
+    try:
+        plugin = JobSearchPlugin(store=store)
+        result = await plugin._fetch_postings()
+        assert not result.is_error, result.content
+        data = json.loads(result.content)
+        # 3 rows in fixture; 1 Easy Apply-only skipped -> 2 postings saved
+        assert data["saved"] == 2
+        assert data["fetched"] == 2
+        # jobspy was called with linkedin, our title, and a cap
+        assert calls[0][0] == "linkedin"
+        assert calls[0][1] == "Software Engineer"
+        # url_direct wins: first posting should have greenhouse URL as stored url
+        posted_urls = [p["url"] for p in store.list_postings()]
+        assert any("greenhouse.io" in u for u in posted_urls)
+    finally:
+        set_jobspy_fetch_fn(None)
+        set_active_profile_id(old_pid)
+        set_store(old_store)
+
+
+async def test_jobspy_missing_target_titles_returns_per_board_hint():
+    """No target_titles in dossier -> per_board error entry with hint, no crash."""
+    store = _mem_store()
+    store.add_board("https://www.linkedin.com/jobs", "LinkedIn")
+    # Dossier exists but no target_titles
+    store.upsert_dossier(1, {"name": "Jane", "target_titles": []})
+
+    set_jobspy_fetch_fn(None)  # ensure no leak from other tests
+    old_pid = _jmod._active_profile_id
+    old_store = _jmod._store
+    set_active_profile_id(1)
+    set_store(store)
+    try:
+        plugin = JobSearchPlugin(store=store)
+        result = await plugin._fetch_postings()
+        assert not result.is_error  # overall result is not an error
+        data = json.loads(result.content)
+        board_entry = data["per_board"][0]
+        assert "error" in board_entry
+        assert "target titles" in board_entry["error"]
+    finally:
+        set_active_profile_id(old_pid)
+        set_store(old_store)
+
+
+async def test_jobspy_cap_enforced():
+    """At most 50 postings per board per fetch total (across all titles)."""
+    store = _mem_store()
+    store.add_board("https://www.linkedin.com/jobs", "LinkedIn")
+    store.upsert_dossier(1, {"name": "Jane", "target_titles": ["Engineer", "Developer"]})
+
+    # Each call returns 40 rows -> combined 80, but cap is 50
+    big_rows = [
+        {"title": f"Job {i}", "company": "Co",
+         "job_url": f"https://linkedin.com/jobs/{i}",
+         "job_url_direct": f"https://ats.example.com/job/{i}",
+         "description": ""}
+        for i in range(40)
+    ]
+
+    async def fake_jobspy(site, term, cap):
+        return big_rows[:cap]
+
+    set_jobspy_fetch_fn(fake_jobspy)
+    old_pid = _jmod._active_profile_id
+    old_store = _jmod._store
+    set_active_profile_id(1)
+    set_store(store)
+    try:
+        plugin = JobSearchPlugin(store=store)
+        result = await plugin._fetch_postings()
+        data = json.loads(result.content)
+        assert data["saved"] <= 50
+    finally:
+        set_jobspy_fetch_fn(None)
+        set_active_profile_id(old_pid)
+        set_store(old_store)
+
+
+async def test_jobspy_error_continues_other_boards():
+    """A failing jobspy board never breaks other boards' fetch."""
+    store = _mem_store()
+    store.add_board("https://www.linkedin.com/jobs", "LinkedIn")
+    store.add_board("https://example.com/jobs")  # scrape board (good)
+    store.upsert_dossier(1, {"name": "Jane", "target_titles": ["Engineer"]})
+
+    async def bad_jobspy(site, term, cap):
+        raise RuntimeError("rate limited")
+
+    async def fake_nav(url):
+        return _FAKE_HTML
+
+    set_jobspy_fetch_fn(bad_jobspy)
+    old_pid = _jmod._active_profile_id
+    old_store = _jmod._store
+    set_active_profile_id(1)
+    set_store(store)
+    try:
+        plugin = JobSearchPlugin(navigate_fn=fake_nav, store=store)
+        result = await plugin._fetch_postings()
+        assert not result.is_error
+        data = json.loads(result.content)
+        linkedin_entry = next(b for b in data["per_board"] if "linkedin" in b["url"])
+        scrape_entry = next(b for b in data["per_board"] if "example" in b["url"])
+        assert "error" in linkedin_entry
+        assert scrape_entry["fetched"] > 0
+    finally:
+        set_jobspy_fetch_fn(None)
+        set_active_profile_id(old_pid)
+        set_store(old_store)
+
+
+# ── B4 #511 — target_titles dossier column ───────────────────────────────────
+
+def test_dossier_stores_and_retrieves_target_titles():
+    store = _mem_store()
+    store.upsert_dossier(1, {"name": "Jane", "target_titles": ["Software Engineer", "Backend Dev"]})
+    d = store.get_dossier(1)
+    assert d["target_titles"] == ["Software Engineer", "Backend Dev"]
+
+
+def test_dossier_target_titles_defaults_to_empty():
+    store = _mem_store()
+    store.upsert_dossier(1, {"name": "Jane"})
+    d = store.get_dossier(1)
+    assert d["target_titles"] == []
+
+
+def test_patch_dossier_target_titles_json_array():
+    store = _mem_store()
+    store.upsert_dossier(1, {"name": "Jane"})
+    store.patch_dossier(1, "target_titles", '["Software Engineer", "ML Engineer"]')
+    d = store.get_dossier(1)
+    assert d["target_titles"] == ["Software Engineer", "ML Engineer"]
+
+
+def test_patch_dossier_target_titles_comma_separated():
+    store = _mem_store()
+    store.upsert_dossier(1, {"name": "Jane"})
+    store.patch_dossier(1, "target_titles", "Software Engineer, Backend Developer")
+    d = store.get_dossier(1)
+    assert d["target_titles"] == ["Software Engineer", "Backend Developer"]
+
+
+def test_patch_dossier_rejects_unknown_field():
+    store = _mem_store()
+    store.upsert_dossier(1, {"name": "Jane"})
+    with pytest.raises(ValueError, match="not user-editable"):
+        store.patch_dossier(1, "raw_text", "injected")
+
+
+async def test_update_dossier_field_tool_target_titles():
+    """jobs_update_dossier_field tool accepts target_titles as JSON array."""
+    store = _mem_store()
+    store.upsert_dossier(1, {"name": "Jane"})
+
+    old_pid = _jmod._active_profile_id
+    old_store = _jmod._store
+    set_active_profile_id(1)
+    set_store(store)
+    try:
+        plugin = JobSearchPlugin(store=store)
+        result = await plugin._update_dossier_field(
+            "target_titles", '["Data Engineer", "Analytics Engineer"]'
+        )
+        assert not result.is_error
+        d = store.get_dossier(1)
+        assert d["target_titles"] == ["Data Engineer", "Analytics Engineer"]
+    finally:
+        set_active_profile_id(old_pid)
+        set_store(old_store)

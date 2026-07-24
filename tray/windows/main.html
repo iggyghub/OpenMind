@@ -7544,10 +7544,19 @@
           '<button class="jobs-resume-change-btn" type="button">Change</button>' +
           '</div>';
       }
+      // B4 #511 — target_titles: displayed comma-separated, editable as a span.
+      var titles = Array.isArray(d.target_titles) ? d.target_titles : [];
+      var titlesText = titles.join(', ') || '';
+      var titlesRow = '<div class="jobs-dossier-meta">' +
+        '<span class="jobs-dossier-label">Search titles:</span> ' +
+        _dossierSpan('jobs-dossier-meta-item', 'target_titles',
+                     titlesText || '(none — click to add)') +
+        '</div>';
       jobsDossierEl.innerHTML =
         _dossierSpan('jobs-dossier-name', 'name', d.name) +
         (meta.length  ? '<div class="jobs-dossier-meta">'  + meta.join('  \xb7  ')  + '</div>' : '') +
         (links.length ? '<div class="jobs-dossier-meta">'  + links.join('  \xb7  ') + '</div>' : '') +
+        titlesRow +
         resumeRow;
       // Wire click handlers after innerHTML is set (spans are cloned nodes, not live).
       jobsDossierEl.querySelectorAll('.jobs-dossier-editable').forEach(function (span) {
