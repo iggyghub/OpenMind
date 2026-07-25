@@ -40,3 +40,5 @@ Setup / verify / diagnostic scripts under `scripts/*.ps1` are run by the end use
 2. **Pause on exit.** Double-click invocation spawns a transient `powershell.exe -File ...` console that closes the instant the script returns, hiding all output. Wrap the body in `try { ... } catch { ... } finally { Read-Host "Press Enter to close" \| Out-Null }`. The `finally` runs even when `exit` is called inside `try`. Print explicit `SUCCESS` / `FAILED` markers in colour at the end so the user sees a clear outcome.
 
 Doesn't apply to scripts meant only for CI / chaining — those need a clean exit code with no prompt. If a script serves both audiences, use a `-NoPause` switch.
+
+3. **Never spawn powershell.exe from Node/Electron with `detached: true`.** On this box, PowerShell 5.1 started under `DETACHED_PROCESS` exits 0 **without executing the `-File` script** — no error, no output, pid returned (bit us in #519: "Restart Felix" silently never rebooted Cerebral). Use `{ stdio: 'ignore', windowsHide: true }` instead; verified to work from both Node and Electron.
