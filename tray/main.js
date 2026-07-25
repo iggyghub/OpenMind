@@ -651,7 +651,10 @@ function respawnCerebral() {
     const child = spawn(psExe,
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher,
        '-Restart', '-CerebralOnly'],
-      { detached: true, stdio: 'ignore', windowsHide: true },
+      // No detached: PS 5.1 under DETACHED_PROCESS exits 0 without running
+      // the -File script on this box (#519). The parent is the long-lived
+      // relaunched tray, so nothing needs detaching anyway.
+      { stdio: 'ignore', windowsHide: true },
     );
     child.on('error', (err) => trayLog(`cerebral respawn error: ${err}`));
     child.unref();
