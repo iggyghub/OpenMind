@@ -47,6 +47,16 @@ function Test-CerebralPort {
         -ErrorAction SilentlyContinue)
 }
 
+# #521 -- "port listening" is not "Felix running": the tray can die while
+# Cerebral keeps heartbeating (and vice versa). Match electron.exe main
+# processes launched from THIS repo's tray dir.
+function Test-TrayRunning {
+    $trayPattern = "*" + (Join-Path $repoRoot "tray") + "*"
+    [bool](Get-CimInstance Win32_Process -Filter "Name='electron.exe'" `
+        -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like $trayPattern })
+}
+
 # ---- 0. precheck: prerequisites + first-run install state ---------------------
 #
 # Catches the common "I cloned the repo and double-clicked Felix" failure
@@ -118,17 +128,25 @@ if ($Restart) {
     }
     Log "Port free -- proceeding with relaunch."
 } elseif (Test-CerebralPort) {
-    # #441 -- relaunching while running used to be a silent no-op; the user
-    # cannot tell a hidden window from a dead app. Surface the window instead.
-    Log "Felix is already running -- surfacing the main window."
-    & python (Join-Path $PSScriptRoot "open-felix.py") 2>$null
-    exit 0
+    if (Test-TrayRunning) {
+        # #441 -- relaunching while running used to be a silent no-op; the user
+        # cannot tell a hidden window from a dead app. Surface the window instead.
+        Log "Felix is already running -- surfacing the main window."
+        & python (Join-Path $PSScriptRoot "open-felix.py") 2>$null
+        exit 0
+    }
+    # #521 -- Cerebral alive, tray dead: boot the tray only.
+    Log "Cerebral is running but the tray is not -- starting the tray only."
+    $SkipCerebral = $true
 }
 
 # ---- 2. start Cerebral --------------------------------------------------------
 # Hidden window + redirected output: no stray console on double-click. Cerebral
 # stdout/stderr land in cerebral.log / cerebral.err.log (reachable from the
 # tray "Show Logs" menu) instead of a visible window.
+# #521: sections 2+3 are skipped entirely when Cerebral is already up and only
+# the tray needs booting. Body deliberately not re-indented (minimal diff).
+if (-not $SkipCerebral) {
 Log "Starting Cerebral (Python backend)..."
 $cerebralLog = Join-Path $repoRoot "cerebral.log"
 $cerebral = Start-Process `
@@ -166,6 +184,15 @@ Log "Cerebral is listening on :$CEREBRAL_PORT."
 
 if ($CerebralOnly) {
     Log "CerebralOnly: tray already running -- skipping tray launch."
+    Log "=== launcher done ==="
+    exit 0
+}
+} # end if (-not $SkipCerebral) -- #521
+
+# #521 -- dedupe guard: a manual launch while the tray survives (e.g. Cerebral
+# died alone) must not boot a second tray.
+if (Test-TrayRunning) {
+    Log "Tray is already running -- skipping tray launch."
     Log "=== launcher done ==="
     exit 0
 }
