@@ -280,7 +280,9 @@ async def _extract_dossier(pdf_text: str) -> dict:  # S2 #335
         "Extract the applicant's details from the resume text below.\n"
         "Return ONLY valid JSON with keys: name, email, phone, location, linkedin, "
         "github, website, work_history (list of {title, company, years}), "
-        "education (list of {degree, school, year}), skills (list of strings).\n"
+        "education (list of {degree, school, year}), skills (list of strings), "
+        "target_titles (list of 2-4 job titles this applicant should search for, "
+        "inferred from their most recent roles and skills).\n"
         "Resume:\n" + pdf_text[:8000]
     )
     raw = await _router.complete(prompt, task_type="quality")  # #349
