@@ -920,3 +920,25 @@ async def test_update_dossier_field_tool_target_titles():
     finally:
         set_active_profile_id(old_pid)
         set_store(old_store)
+
+
+# ── #517 — clear_postings ─────────────────────────────────────────────────────
+
+def test_clear_postings_deletes_unapplied_keeps_applied():
+    s = _mem_store()
+    applied = "https://boards.greenhouse.io/acme/jobs/1"
+    s.upsert({"title": "Eng", "company": "Acme", "pay": "", "snapshot": "",
+              "posted_date": "", "url": applied})
+    s.upsert({"title": "Dev", "company": "Bar", "pay": "", "snapshot": "",
+              "posted_date": "", "url": "https://jobs.lever.co/bar/2"})
+    s.upsert_application(url=applied, posting_url=applied, ats_type="greenhouse",
+                         status="submitted", fields=[])
+    deleted = s.clear_postings()
+    assert deleted == 1
+    remaining = s.list_postings()
+    assert [p["url"] for p in remaining] == [applied]
+
+
+def test_clear_postings_empty_store_is_noop():
+    s = _mem_store()
+    assert s.clear_postings() == 0

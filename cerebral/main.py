@@ -4124,6 +4124,11 @@ async def _handle_message(msg: dict) -> None:
                 _job_search_store.set_status(p["url"], "shortlisted")
         await _broadcast(_jobs_update_event())
 
+    elif t == "jobs_clear_postings":  # #517 — panel "Clear postings" button
+        n = _job_search_store.clear_postings()
+        logger.info("[cerebral] cleared %d job postings", n)
+        await _broadcast(_jobs_update_event())
+
     elif t == "open_felix":  # #441 — launcher asks the tray to surface the window
         await _broadcast({"type": "open_felix", "data": {}})
 

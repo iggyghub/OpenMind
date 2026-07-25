@@ -878,6 +878,19 @@ class JobSearchStore:
         """, params)
         self._con.commit()
 
+    def clear_postings(self) -> int:
+        """#517 — delete postings with no application row.
+
+        Applied postings are kept: the B3 duplicate guard (#510) matches past
+        applications against their posting's company/title.
+        """
+        cur = self._con.execute(
+            "DELETE FROM job_postings"
+            " WHERE url NOT IN (SELECT posting_url FROM applications)"
+        )
+        self._con.commit()
+        return cur.rowcount
+
     def list_postings(self) -> list[dict]:
         cur = self._con.execute(
             "SELECT * FROM job_postings ORDER BY fetched_at DESC, id DESC"
