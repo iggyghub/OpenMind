@@ -5362,6 +5362,9 @@
             <button class="jobs-check-btn" id="jobs-check-btn" type="button">
               Check for new jobs
             </button>
+            <button class="jobs-check-btn" id="jobs-clear-btn" type="button">
+              Clear postings
+            </button>
             <span class="jobs-status" id="jobs-status"></span>
           </div>
           <div class="jobs-boards-section" id="jobs-boards-section">
@@ -7803,6 +7806,13 @@
       jobsCheckBtn.disabled = true;
       jobsStatusEl.textContent = 'Checking...';
       sendEvent({ type: 'jobs_fetch_postings' });
+    });
+
+    // #517 — clear fetched postings (applied ones survive, see clear_postings)
+    document.getElementById('jobs-clear-btn').addEventListener('click', function () {
+      if (!window.confirm('Clear all fetched job postings? Applied ones are kept.')) return;
+      jobsStatusEl.textContent = 'Clearing...';
+      sendEvent({ type: 'jobs_clear_postings' });
     });
 
     // ── memory pane (Issue #198) ──────────────────────────────────────────
