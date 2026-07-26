@@ -112,6 +112,10 @@ if _active_profile and _active_profile.active_model:
             _active_profile.active_model,
             _router.active_model,
         )
+# Cloud kill-switch: restore before seeding so no cloud model gets picked.
+if _active_profile and getattr(_active_profile, "local_only", False):
+    _router.set_local_only(True)
+    logger.info("[cerebral] Local-only restored — cloud models disabled")
 # Issue #349 — default "quality" mapping (local qwen3:8b, else cloud Sonnet).
 # User-overridable via the set_task_model IPC / Settings → Models.
 _quality_default = _router.seed_quality_default()
@@ -2347,6 +2351,7 @@ def _models_list_event() -> dict:
             "last": _router.last_model,
             "active_is_cloud": _router.active_is_cloud,
             "task_models": _router.task_models(),
+            "local_only": _router.local_only,
         },
     }
 
@@ -3052,6 +3057,15 @@ async def _handle_message(msg: dict) -> None:
             await _broadcast(_models_list_event())
         except ValueError as exc:
             logger.warning("[cerebral] set_task_model failed: %s", exc)
+
+    elif t == "set_local_only":
+        enabled = bool(msg.get("data", {}).get("enabled"))
+        _router.set_local_only(enabled)
+        if _active_profile:
+            _pm.update_local_only(_active_profile.id, enabled)
+            _active_profile = _pm.get(_active_profile.id)
+        logger.info("[cerebral] Local-only %s", "enabled" if enabled else "disabled")
+        await _broadcast(_models_list_event())
 
     elif t == "list_tools":
         await _broadcast({"type": "tools_list", "data": {"tools": _orc.tools_for_llm}})
@@ -5120,6 +5134,7 @@ async def _heartbeat_loop(audio_active: bool) -> None:
                 "model": _router.active_model,
                 "last_model": _router.last_model,
                 "active_is_cloud": _router.active_is_cloud,
+                "local_only": _router.local_only,
                 "queue_pending": len(_queue.get_pending()),
                 "env": _env.get_context().get("city") or "unknown",
                 "bridge": _openclaw_subscriber_running(),

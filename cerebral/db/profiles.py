@@ -38,6 +38,9 @@ class Profile:
     # confirmation modal that flips it to True and persists. Once unlocked,
     # the capability obeys whatever the user sets the class policy to.
     shell_exec_unlocked: bool = False
+    # Cloud kill-switch (privacy): when True the router hides/refuses all cloud
+    # models so nothing can route to Claude. Restored at startup.
+    local_only: bool = False
     id: int | None = None
 
     def to_dict(self) -> dict:
@@ -66,6 +69,7 @@ class ProfileManager:
                 active_model             TEXT    NOT NULL DEFAULT '',
                 acl_defaults_snapshot    TEXT    NOT NULL DEFAULT '{}',
                 shell_exec_unlocked      INTEGER NOT NULL DEFAULT 0 CHECK (shell_exec_unlocked IN (0, 1)),
+                local_only               INTEGER NOT NULL DEFAULT 0 CHECK (local_only IN (0, 1)),
                 created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_used_at             DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -129,6 +133,7 @@ class ProfileManager:
             ("active_model", "TEXT", "''"),
             ("acl_defaults_snapshot", "TEXT", "'{}'"),
             ("shell_exec_unlocked", "INTEGER", "0"),
+            ("local_only", "INTEGER", "0"),
         ]:
             try:
                 self._con.execute(
@@ -210,6 +215,13 @@ class ProfileManager:
         """Persist the user's last-chosen ModelRouter model id (issue #37)."""
         self._con.execute(
             "UPDATE profiles SET active_model=? WHERE id=?", (model_id, profile_id)
+        )
+        self._con.commit()
+
+    def update_local_only(self, profile_id: int, enabled: bool) -> None:
+        """Persist the cloud kill-switch so it survives restart."""
+        self._con.execute(
+            "UPDATE profiles SET local_only=? WHERE id=?", (1 if enabled else 0, profile_id)
         )
         self._con.commit()
 
@@ -516,4 +528,5 @@ def _row_to_profile(row: sqlite3.Row) -> Profile:
         active_model=row["active_model"] if "active_model" in keys else "",
         acl_defaults_snapshot=snapshot,
         shell_exec_unlocked=bool(row["shell_exec_unlocked"]) if "shell_exec_unlocked" in keys else False,
+        local_only=bool(row["local_only"]) if "local_only" in keys else False,
     )

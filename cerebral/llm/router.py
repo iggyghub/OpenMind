@@ -114,10 +114,15 @@ class ModelRouter:
         self._active_model = default_model
         self._last_model: str | None = None
         self._task_models: dict[str, str] = {}
+        self._local_only = False
 
     @property
     def active_model(self) -> str:
         return self._active_model
+
+    @property
+    def local_only(self) -> bool:
+        return self._local_only
 
     @property
     def last_model(self) -> str | None:
@@ -128,6 +133,8 @@ class ModelRouter:
         return bool(self._models.get(self._active_model, {}).get("is_cloud", False))
 
     def list_models(self) -> list[dict]:
+        # Local-only hides cloud entries entirely, so every model-picker surface
+        # (Settings switch-list, per-task cards, tray submenu) shows local only.
         return [
             {
                 "id": mid,
@@ -137,11 +144,14 @@ class ModelRouter:
                 "is_last": mid == self._last_model,
             }
             for mid, info in self._models.items()
+            if not (self._local_only and info.get("is_cloud"))
         ]
 
     def switch_model(self, model_id: str) -> None:
         if model_id not in self._backends:
             raise ValueError(f"unknown model '{model_id}'; known: {list(self._backends)}")
+        if self._local_only and self._models.get(model_id, {}).get("is_cloud"):
+            raise ValueError(f"cloud model '{model_id}' refused: local-only mode is on")
         self._active_model = model_id
         logger.info("[router] active model → %s", model_id)
 
@@ -153,6 +163,8 @@ class ModelRouter:
             return
         if model_id not in self._backends:
             raise ValueError(f"unknown model '{model_id}'; known: {list(self._backends)}")
+        if self._local_only and self._models.get(model_id, {}).get("is_cloud"):
+            raise ValueError(f"cloud model '{model_id}' refused: local-only mode is on")
         self._task_models[task_type] = model_id
         logger.info("[router] task '%s' → %s", task_type, model_id)
 
@@ -170,9 +182,38 @@ class ModelRouter:
         """
         for mid in QUALITY_PREFERRED:
             if mid in self._backends:
+                if self._local_only and self._models.get(mid, {}).get("is_cloud"):
+                    continue  # local-only: never seed a cloud quality model
                 self.set_task_model(QUALITY_TASK, mid)
                 return mid
         return None
+
+    def _first_local(self) -> str | None:
+        for mid in self._backends:
+            if mid.startswith("ollama/"):
+                return mid
+        return None
+
+    def set_local_only(self, enabled: bool) -> None:
+        """Cloud kill-switch (privacy). When on, cloud backends are hidden from
+        list_models(), refused by switch_model/set_task_model, and the active +
+        per-task models are moved to local so nothing can route to Claude.
+        """
+        self._local_only = bool(enabled)
+        if not self._local_only:
+            return
+        if self.active_is_cloud:
+            local = self._first_local()
+            if local:
+                self._active_model = local
+                logger.info("[router] local-only: active model moved to %s", local)
+            # ponytail: no local installed -> active stays cloud (degenerate,
+            # nothing can route). The Ollama-offline banner already flags this;
+            # add a real fallback model only if that combo actually bites someone.
+        for task_type, mid in list(self._task_models.items()):
+            if self._models.get(mid, {}).get("is_cloud"):
+                del self._task_models[task_type]
+                logger.info("[router] local-only: cleared cloud mapping for task '%s'", task_type)
 
     def refresh_local_backends(
         self,

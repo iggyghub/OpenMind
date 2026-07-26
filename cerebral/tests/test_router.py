@@ -656,3 +656,60 @@ def test_real_backends_fall_back_to_claw_without_key(monkeypatch):
     monkeypatch.setattr(r.OllamaBackend, "list_installed_models", staticmethod(lambda: []))
     backends = r._real_backends()
     assert all(isinstance(b, r.ClawBackend) for b in backends.values())
+
+
+# ---------------------------------------------------------------------------
+# Local-only cloud kill-switch
+# ---------------------------------------------------------------------------
+
+def _mixed_router():
+    ollama = AsyncMock(); cloud = AsyncMock()
+    return ModelRouter(
+        backends={"ollama/qwen3:8b": ollama, "claude/haiku": cloud},
+        models={
+            "ollama/qwen3:8b": {"label": "qwen3:8b", "is_cloud": False},
+            "claude/haiku": {"label": "Claude Haiku", "is_cloud": True},
+        },
+        default_model="claude/haiku",
+    )
+
+
+def test_local_only_moves_cloud_active_to_local():
+    r = _mixed_router()
+    assert r.active_is_cloud is True
+    r.set_local_only(True)
+    assert r.local_only is True
+    assert r.active_model == "ollama/qwen3:8b"
+    assert r.active_is_cloud is False
+
+
+def test_local_only_hides_cloud_from_list_models():
+    r = _mixed_router()
+    r.set_local_only(True)
+    ids = {m["id"] for m in r.list_models()}
+    assert ids == {"ollama/qwen3:8b"}
+
+
+def test_local_only_refuses_switch_to_cloud():
+    r = _mixed_router()
+    r.set_local_only(True)
+    with pytest.raises(ValueError, match="local-only"):
+        r.switch_model("claude/haiku")
+
+
+def test_local_only_clears_cloud_task_mapping():
+    r = _mixed_router()
+    r.set_task_model("quality", "claude/haiku")
+    r.set_local_only(True)
+    assert "quality" not in r.task_models()
+
+
+def test_disabling_local_only_restores_cloud_visibility():
+    r = _mixed_router()
+    r.set_local_only(True)
+    r.set_local_only(False)
+    assert r.local_only is False
+    ids = {m["id"] for m in r.list_models()}
+    assert "claude/haiku" in ids
+    r.switch_model("claude/haiku")  # allowed again
+    assert r.active_model == "claude/haiku"
