@@ -593,6 +593,21 @@
     .health-dot[data-health="ok"]    { background: #4bd49a; box-shadow: 0 0 6px #4bd49a88; }
     .health-dot[data-health="stale"] { background: #d4b04b; box-shadow: 0 0 6px #d4b04b88; }
     .health-dot[data-health="down"]  { background: #c44b4b; box-shadow: 0 0 6px #c44b4b88; }
+    /* Connecting: red-to-green conic swirl while the WS bridge (re)connects,
+       e.g. the ~30s Cerebral boot after a restart. */
+    .health-dot[data-health="connecting"] {
+      background: conic-gradient(from 0deg, #c44b4b, #d4b04b, #4bd49a, #d4b04b, #c44b4b);
+      box-shadow: 0 0 6px #d4b04b99;
+      animation: health-swirl 1.1s linear infinite;
+    }
+    @keyframes health-swirl { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .health-dot[data-health="connecting"] {
+        animation: none;
+        background: #d4b04b;
+        box-shadow: 0 0 6px #d4b04b88;
+      }
+    }
 
     .health-panel {
       position: absolute;
@@ -3647,7 +3662,6 @@
     /* Issues #208 (Models) + #209 (System settings). Class prefix `set-*`;
        accent coral (#ff8c69) — eighth distinct pane colour.
        S5 moved model controls to models pane; settings keeps notifications/system. */
-    .pane[data-route="models"]    { background: var(--bg); }
     .pane[data-route="settings"]  { background: var(--bg); }
     .pane[data-route="job-search"] { background: var(--bg); }
     .pane[data-route="documents"]  { background: var(--bg); }
@@ -5088,6 +5102,39 @@
 
     <section class="pane" data-route="settings" hidden>
       <div class="set-body">
+        <div class="set-section">Active model</div>
+        <div class="set-active-header" id="set-active-header">
+          <span id="set-active-name">&#8212;</span>
+          <span class="set-active-cloud" id="set-active-cloud">local</span>
+        </div>
+        <div class="set-last-line" id="set-last-line" hidden></div>
+        <div class="set-offline" id="set-offline" hidden>
+          Ollama offline &#8212; local models unavailable.
+        </div>
+        <div class="set-toggle-row">
+          <div>
+            <div class="set-toggle-label">Local only</div>
+            <div class="set-toggle-sub">Disable all cloud models &#8212; nothing routes to Claude</div>
+          </div>
+          <label class="set-toggle">
+            <input type="checkbox" id="set-local-only-toggle">
+            <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
+          </label>
+        </div>
+        <div class="set-section">Switch model</div>
+        <div id="set-model-list">
+          <div class="prof-empty">No models known yet &#8212; try Refresh.</div>
+        </div>
+        <div class="set-section">Per-task models</div>
+        <div id="set-task-list">
+          <!-- Cards rendered by renderSettings() for each task type. -->
+        </div>
+        <div class="set-refresh-row">
+          <button class="set-btn" id="set-refresh-btn" type="button">
+            Refresh installed models
+          </button>
+        </div>
+
         <div class="set-section">Appearance</div>
         <div class="set-toggle-row">
           <div>
@@ -5279,32 +5326,8 @@
     <!-- S5 #473: job-search/documents content moved to library pane; models pane kept as-is -->
     <section class="pane" data-route="job-search" hidden></section>
     <section class="pane" data-route="documents" hidden></section>
-    <section class="pane" data-route="models" hidden>
-      <div class="set-body">
-        <div class="set-section">Active model</div>
-        <div class="set-active-header" id="set-active-header">
-          <span id="set-active-name">&#8212;</span>
-          <span class="set-active-cloud" id="set-active-cloud">local</span>
-        </div>
-        <div class="set-last-line" id="set-last-line" hidden></div>
-        <div class="set-offline" id="set-offline" hidden>
-          Ollama offline &#8212; local models unavailable.
-        </div>
-        <div class="set-section">Switch model</div>
-        <div id="set-model-list">
-          <div class="prof-empty">No models known yet &#8212; try Refresh.</div>
-        </div>
-        <div class="set-section">Per-task models</div>
-        <div id="set-task-list">
-          <!-- Cards rendered by renderSettings() for each task type. -->
-        </div>
-        <div class="set-refresh-row">
-          <button class="set-btn" id="set-refresh-btn" type="button">
-            Refresh installed models
-          </button>
-        </div>
-      </div>
-    </section>
+    <!-- Model settings now live in the Settings pane (top of set-body).
+         #models hash still redirects there (sidebar-router HASH_REDIRECTS). -->
 
     <!-- S5 #473 -- Library pane: absorbs Memory, Insights, Recipes, Documents, Job Search -->
     <section class="pane" data-route="library" hidden>
@@ -5617,6 +5640,7 @@
     const setModelListEl   = document.getElementById('set-model-list');
     const setTaskListEl    = document.getElementById('set-task-list');
     const setRefreshBtn    = document.getElementById('set-refresh-btn');
+    const setLocalOnlyEl   = document.getElementById('set-local-only-toggle');
 
     // Pending action queue (Issue #194 — migrated from queue.html). Held
     // at the document level (not inside the pane) so the header badge can
@@ -5697,6 +5721,7 @@
       last:            null,
       active_is_cloud: false,
       task_models:     {},
+      local_only:      false,
     };
     // 'tool' = planner tool-selection; 'quality' = correctness-critical jobs
     // reasoning (field-mapping, fit-scoring, dossier extraction) — #349.
@@ -6124,6 +6149,7 @@
             last:            d.last            || null,
             active_is_cloud: !!d.active_is_cloud,
             task_models:     d.task_models     || {},
+            local_only:      !!d.local_only,
           };
           renderSettings();
           renderThreadModelSelect();  // S13 -- refresh override select with current model list
@@ -6154,7 +6180,7 @@
 
     // ── health dot + panel ────────────────────────────────────────────────
     function classifyHealth() {
-      if (!wsConnected) return 'down';
+      if (!wsConnected) return 'connecting';  // WS bridge is (re)connecting — swirl
       if (!lastHeartbeatAt) return 'stale';   // connected but no heartbeat yet
       const age = Date.now() - lastHeartbeatAt;
       if (age <= HEARTBEAT_OK_MS)    return 'ok';
@@ -6183,13 +6209,14 @@
       const health = classifyHealth();
       healthDot.dataset.health = health;
       healthDot.title =
-        health === 'ok'    ? 'Cerebral is healthy — click for details' :
-        health === 'stale' ? 'Cerebral heartbeat is stale — click for details' :
-                             'Cerebral is disconnected — click for details';
+        health === 'ok'         ? 'Cerebral is healthy — click for details' :
+        health === 'stale'      ? 'Cerebral heartbeat is stale — click for details' :
+        health === 'connecting' ? 'Connecting to Cerebral… — click for details' :
+                                  'Cerebral is disconnected — click for details';
 
       // Always keep the panel content fresh so a click pops the live view.
-      setHealthRow('hb-conn',  wsConnected ? 'connected' : 'disconnected',
-                                wsConnected ? 'good' : 'bad');
+      setHealthRow('hb-conn',  wsConnected ? 'connected' : 'connecting…',
+                                wsConnected ? 'good' : 'warn');
       setHealthRow('hb-age',   formatAge(),
                                 health === 'ok' ? 'good' : health === 'stale' ? 'warn' : 'bad');
       if (latestHb) {
@@ -9499,6 +9526,9 @@
     function renderSettings() {
       const { models, active, last, active_is_cloud, task_models } = modelsState;
 
+      // Cloud kill-switch reflects router state.
+      setLocalOnlyEl.checked = !!modelsState.local_only;
+
       // Active model header.
       setActiveNameEl.textContent = active || '—';
       setActiveCloudEl.textContent = active_is_cloud ? '☁ cloud' : '◉ local';
@@ -9586,6 +9616,10 @@
         type: 'set_task_model',
         data: { task_type: taskType, model_id: modelId },
       });
+    });
+
+    setLocalOnlyEl.addEventListener('change', () => {
+      sendEvent({ type: 'set_local_only', data: { enabled: setLocalOnlyEl.checked } });
     });
 
     setRefreshBtn.addEventListener('click', () => {

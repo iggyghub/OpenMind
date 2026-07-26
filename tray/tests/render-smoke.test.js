@@ -25,7 +25,9 @@ const PANE_ROUTES = [
   // Original 16 routes (kept as shells or with content)
   'conversation', 'quick-ask', 'queue', 'insights', 'memory',
   'permissions', 'credentials', 'profiles', 'settings',
-  'models', 'conversations', 'integrations', 'recipes', 'job-search', 'documents',
+  // 'models' pane removed: model settings folded into the Settings pane so the
+  // 4-section nav can reach them (the #models hash still redirects to settings).
+  'conversations', 'integrations', 'recipes', 'job-search', 'documents',
   // S5 new routes
   'harness', 'library',
 ];
@@ -177,15 +179,20 @@ test('search bar is inside the static header so it persists across panes (S4)', 
   expect(insidePane).toBe(false);
 });
 
-// ── S5 — models pane has model controls; settings pane does not ──────────────
+// ── Model settings live in the Settings pane (reachable from the 4-section nav) ──
 
-test('models pane contains model control elements (S5)', () => {
-  const pane = root.querySelector('.pane[data-route="models"]');
+test('settings pane contains model control elements', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
   expect(pane).not.toBeNull();
   expect(pane.querySelector('#set-active-header')).not.toBeNull();
   expect(pane.querySelector('#set-model-list')).not.toBeNull();
   expect(pane.querySelector('#set-task-list')).not.toBeNull();
   expect(pane.querySelector('#set-refresh-btn')).not.toBeNull();
+  expect(pane.querySelector('#set-local-only-toggle')).not.toBeNull();
+});
+
+test('standalone models pane no longer exists', () => {
+  expect(root.querySelector('.pane[data-route="models"]')).toBeNull();
 });
 
 test('models pane task cards include tool + quality task types (#349)', () => {
@@ -195,11 +202,12 @@ test('models pane task cards include tool + quality task types (#349)', () => {
   expect(m[1]).toContain("'quality'");
 });
 
-test('settings pane no longer contains model control elements (S5)', () => {
+test('settings pane also keeps its appearance/voice controls alongside models', () => {
   const pane = root.querySelector('.pane[data-route="settings"]');
   expect(pane).not.toBeNull();
-  expect(pane.querySelector('#set-model-list')).toBeNull();
-  expect(pane.querySelector('#set-refresh-btn')).toBeNull();
+  // Model controls and app settings coexist in one Settings pane now.
+  expect(pane.querySelector('#set-model-list')).not.toBeNull();
+  expect(pane.querySelector('#set-scale-select')).not.toBeNull();
 });
 
 // ── S6 — appearance controls in settings pane ────────────────────────────────
