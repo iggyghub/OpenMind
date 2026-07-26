@@ -195,6 +195,22 @@ test('standalone models pane no longer exists', () => {
   expect(root.querySelector('.pane[data-route="models"]')).toBeNull();
 });
 
+test('settings pane has General + AI-models sub-tabs', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  const tabs = pane.querySelectorAll('.set-tab');
+  expect(tabs.length).toBe(2);
+  const subs = Array.from(tabs).map((t) => t.getAttribute('data-set-sub'));
+  expect(subs).toContain('general');
+  expect(subs).toContain('models');
+  // Model controls live in the models sub-pane; appearance in the general one.
+  expect(pane.querySelector('.set-subpane[data-set-sub="models"] #set-model-list')).not.toBeNull();
+  expect(pane.querySelector('.set-subpane[data-set-sub="general"] #set-scale-select')).not.toBeNull();
+});
+
+test('switch-model list offers a None (default local) option', () => {
+  expect(inlineScript).toContain('__none__');
+});
+
 test('models pane task cards include tool + quality task types (#349)', () => {
   const m = inlineScript.match(/SET_TASK_TYPES\s*=\s*\[([^\]]*)\]/);
   expect(m).not.toBeNull();

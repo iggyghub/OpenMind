@@ -167,6 +167,11 @@ test('subFromHash returns null for old redirect without sub', () => {
   expect(subFromHash('#memory')).toBeNull();
 });
 
+test('#models redirects to the settings pane, models sub-tab', () => {
+  expect(routeFromHash('#models')).toBe('settings');
+  expect(subFromHash('#models')).toBe('models');
+});
+
 test('subFromHash returns null for empty/unknown', () => {
   expect(subFromHash('')).toBeNull();
   expect(subFromHash(undefined)).toBeNull();
