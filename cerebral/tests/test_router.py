@@ -796,3 +796,142 @@ def test_build_custom_backend_maps_kinds():
 def test_build_custom_backend_rejects_unknown_kind():
     with pytest.raises(ValueError, match="unknown custom model kind"):
         build_custom_backend("bogus", "http://h", "m")
+
+
+# ---------------------------------------------------------------------------
+# Issue #523 -- OpenAI-compatible custom servers (Bearer + /v1 strip + 4xx)
+# ---------------------------------------------------------------------------
+
+class _FakeHttpxResponse:
+    def __init__(self, status_code=200, json_body=None, url="http://x"):
+        import httpx
+        self.status_code = status_code
+        self._json = json_body or {}
+        self.request = httpx.Request("POST", url)
+
+    def json(self):
+        return self._json
+
+    def raise_for_status(self):
+        import httpx
+        if 400 <= self.status_code < 600:
+            raise httpx.HTTPStatusError(
+                f"{self.status_code}", request=self.request, response=self
+            )
+
+
+def _install_fake_post(monkeypatch, response, captured):
+    import httpx
+
+    async def fake_post(self, url, json=None, headers=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers or {}
+        return response
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+
+async def test_claw_backend_sends_bearer_when_api_key_set(monkeypatch):
+    from cerebral.llm.router import ClawBackend
+
+    resp = _FakeHttpxResponse(
+        200, {"choices": [{"message": {"content": "hi"}}]}
+    )
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    backend = ClawBackend(url="http://srv", model="gpt", api_key="sk-dummy")
+    assert await backend.complete("hello", "chat") == "hi"
+    assert captured["headers"].get("Authorization") == "Bearer sk-dummy"
+
+
+async def test_claw_backend_omits_auth_header_when_no_key(monkeypatch):
+    from cerebral.llm.router import ClawBackend
+
+    resp = _FakeHttpxResponse(
+        200, {"choices": [{"message": {"content": "hi"}}]}
+    )
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    backend = ClawBackend(url="http://localhost:3000")
+    await backend.complete("hello", "chat")
+    assert "Authorization" not in captured["headers"]
+
+
+async def test_claw_backend_tool_call_sends_bearer(monkeypatch):
+    from cerebral.llm.router import ClawBackend
+
+    resp = _FakeHttpxResponse(
+        200, {"choices": [{"message": {"content": "ok"}}]}
+    )
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    backend = ClawBackend(url="http://srv", model="gpt", api_key="sk-dummy")
+    await backend.complete_with_tools("hi", [])
+    assert captured["headers"].get("Authorization") == "Bearer sk-dummy"
+
+
+def test_claw_backend_strips_trailing_v1():
+    from cerebral.llm.router import ClawBackend
+
+    assert ClawBackend(url="http://srv/v1").url == "http://srv"
+    assert ClawBackend(url="http://srv/v1/").url == "http://srv"
+    assert ClawBackend(url="http://srv/").url == "http://srv"
+    assert ClawBackend(url="http://srv").url == "http://srv"
+
+
+async def test_claw_backend_normalized_url_hits_v1_once(monkeypatch):
+    from cerebral.llm.router import ClawBackend
+
+    resp = _FakeHttpxResponse(
+        200, {"choices": [{"message": {"content": "ok"}}]}
+    )
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    backend = ClawBackend(url="http://srv/v1", model="gpt", api_key="k")
+    await backend.complete("hi", "chat")
+    assert captured["url"] == "http://srv/v1/chat/completions"
+
+
+async def test_claw_backend_4xx_raises_connection_error_with_status(monkeypatch):
+    from cerebral.llm.router import ClawBackend
+
+    resp = _FakeHttpxResponse(401, {}, url="http://srv/v1/chat/completions")
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    backend = ClawBackend(url="http://srv", model="gpt", api_key="bad")
+    with pytest.raises(ConnectionError, match="401"):
+        await backend.complete("hi", "chat")
+
+
+async def test_router_wraps_claw_4xx_as_model_unavailable(monkeypatch):
+    """4xx from a custom OpenAI-compatible backend must not escape as httpx."""
+    from cerebral.llm.router import ClawBackend
+
+    resp = _FakeHttpxResponse(404, {}, url="http://srv/v1/chat/completions")
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    backend = ClawBackend(url="http://srv", model="gpt", api_key="k")
+    router = ModelRouter(
+        backends={"custom/box": backend},
+        models={"custom/box": {"label": "Box", "is_cloud": True}},
+    )
+    with pytest.raises(ModelUnavailableError, match="404"):
+        await router.complete("hi")
+
+
+def test_build_custom_backend_openai_threads_api_key():
+    from cerebral.llm.router import build_custom_backend
+
+    backend, is_cloud = build_custom_backend(
+        "openai", "http://srv/v1", "gpt", api_key="sk-dummy"
+    )
+    assert is_cloud is True
+    assert backend.api_key == "sk-dummy"
+    assert backend.url == "http://srv"  # /v1 stripped
