@@ -5,24 +5,25 @@ Ollama) server once, discover/auto-track its model, use it in the tray and
 (S4) via the harness. Builds on the custom-model registry (custom_models.py,
 add_custom_model IPC, router.add_backend).
 
-## Status: ready
+## Status: blocked -- S4 needs human security review (ADR-0005 threat gating -- LLM adding a model server is a data-exfiltration amplifier)
 
 ## Next slice -- start here
 
-- **Active:** S3 -- #525
+- **Active:** S4 -- #526
 - **Model:** opus
 
 ## Queue
 
 - [x] S1 -- #523 -- OpenAI-compatible custom model works: Bearer auth + /v1 strip + 4xx caught (Model: opus)
 - [x] S2 -- #524 -- model discovery: list_openai_models + discover_models IPC + Fetch datalist (Model: sonnet)
-- [ ] S3 -- #525 -- dynamic server-first model: auto-resolve + cache, one picker entry (Model: opus)
+- [x] S3 -- #525 -- dynamic server-first model: auto-resolve + cache, one picker entry (Model: opus)
 - [ ] S4 -- #526 -- harness MCP tool model_server_* [HITL -- DO NOT IMPLEMENT, STOP] (Model: opus)
 
 ## Landed PRs
 
 - #528 -- S1 -- OpenAI-compatible custom servers: Bearer auth + /v1 strip + 4xx caught
 - #529 -- S2 -- model discovery: list_openai_models + discover_models IPC + Fetch datalist
+- #530 -- S3 -- dynamic server-first custom model: auto-resolve + cache, one picker entry
 
 ## SAFETY
 
