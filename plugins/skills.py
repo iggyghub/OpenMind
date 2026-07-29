@@ -197,6 +197,18 @@ class SkillsPlugin:
         self._settings = settings
         # fetch_fn(repo, ref) -> tarball bytes. Default hits GitHub; tests inject.
         self._fetch = fetch_fn or _default_fetch
+        # S5 #542 -- optional async no-arg callback; cerebral.main wires it to
+        # re-broadcast the Skills panel_spec after a mutation (mirrors the
+        # documents plugin's set_broadcast_fn, S3 #454).
+        self._broadcast_fn = None
+
+    def set_broadcast_fn(self, fn) -> None:
+        """Inject the broadcast callback from cerebral.main (S5 #542)."""
+        self._broadcast_fn = fn
+
+    async def _maybe_broadcast(self) -> None:
+        if self._broadcast_fn is not None:
+            await self._broadcast_fn()
 
     # ------------------------------------------------------------------
     # Enable-state (S2 #538) -- opt-in enabled_skills in felix-settings.json
@@ -356,14 +368,29 @@ class SkillsPlugin:
             return self._skill_use(args)
         if tool_name == "skill_catalog":
             return self._skill_catalog()
+        # S5 #542 -- the Skills panel re-fetches panel_spec after a mutation
+        # so the enable toggle / uninstall / install reflect fresh state
+        # without an optimistic UI (mirrors the Plugins panel S4 #472).
         if tool_name == "skill_enable":
-            return self._skill_enable(args)
+            result = self._skill_enable(args)
+            if not result.is_error:
+                await self._maybe_broadcast()
+            return result
         if tool_name == "skill_disable":
-            return self._skill_disable(args)
+            result = self._skill_disable(args)
+            if not result.is_error:
+                await self._maybe_broadcast()
+            return result
         if tool_name == "skill_uninstall":
-            return self._skill_uninstall(args)
+            result = self._skill_uninstall(args)
+            if not result.is_error:
+                await self._maybe_broadcast()
+            return result
         if tool_name == "skill_install":
-            return self._skill_install(args)
+            result = self._skill_install(args)
+            if not result.is_error:
+                await self._maybe_broadcast()
+            return result
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -587,6 +614,86 @@ class SkillsPlugin:
                 }
             )
         )
+
+    # ------------------------------------------------------------------
+    # Panel spec (S5 #542, ADR-0012 decision 3 / ADR-0014 decision 8) --
+    # declarative widget tree for the Skills panel. Returns data only; the
+    # renderer (tray/lib/panel-spec.js) owns all drawing (SAFETY #3).
+    # ------------------------------------------------------------------
+
+    def _provenance_str(self, skill: Skill) -> str:
+        """Human-readable provenance: 'seed', or 'owner/repo@sha' when known."""
+        if skill.source != "installed":
+            return "seed"
+        sidecar = skill.path / ".provenance.json"
+        if not sidecar.is_file():
+            return "installed"
+        try:
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "installed"
+        repo = str(meta.get("repo") or "")
+        sha = str(meta.get("sha") or "")
+        if repo and sha:
+            return f"{repo}@{sha[:7]}"
+        return repo or "installed"
+
+    def panel_spec(self, profile_id: "int | None") -> "dict | None":
+        """Declarative panel spec for the Skills panel (Harness nav, sibling
+        to Plugins). Widgets: an install action, then per skill a detail
+        block (name/source/provenance/tools/enabled/instructions) plus an
+        enable-or-disable action and, for installed (non-seed) skills, an
+        uninstall action.
+        """
+        enabled = self._enabled_names()
+        skills = sorted(self._discover().values(), key=lambda s: s.name)
+
+        widgets: list = [
+            {"type": "detail", "id": "skills-summary", "fields": [
+                {"label": "Skills", "value": f"{len(skills)} installed, {len(enabled)} enabled"},
+            ]},
+            {
+                "type": "action",
+                "id": "skills-install",
+                "label": "Install",
+                "tool": "skill_install",
+                "tool_args": {},
+                "input_arg": "repo",
+                "input_placeholder": "owner/repo",
+            },
+        ]
+
+        for s in skills:
+            is_enabled = s.name in enabled
+            # skill_use refuses a disabled skill's body (ADR-0014 -- content
+            # only releases into context once reviewed and enabled); the
+            # panel shows that refusal message verbatim as the instructions
+            # field rather than special-casing it.
+            body = self._skill_use({"name": s.name}).content
+            widgets.append({"type": "detail", "id": f"skill-{s.name}", "fields": [
+                {"label": "Name", "value": s.name},
+                {"label": "Source", "value": self._provenance_str(s)},
+                {"label": "Tools", "value": ", ".join(s.tools) or "none"},
+                {"label": "Enabled", "value": "yes" if is_enabled else "no"},
+                {"label": "Instructions", "value": body},
+            ]})
+            widgets.append({
+                "type": "action",
+                "id": f"skill-{s.name}-toggle",
+                "label": "Disable" if is_enabled else "Enable",
+                "tool": "skill_disable" if is_enabled else "skill_enable",
+                "tool_args": {"name": s.name},
+            })
+            if s.source == "installed":
+                widgets.append({
+                    "type": "action",
+                    "id": f"skill-{s.name}-uninstall",
+                    "label": "Uninstall",
+                    "tool": "skill_uninstall",
+                    "tool_args": {"name": s.name},
+                })
+
+        return {"title": "Skills", "widgets": widgets}
 
 
 def create(seed_dir: Path | None = None, installed_dir: Path | None = None) -> SkillsPlugin:

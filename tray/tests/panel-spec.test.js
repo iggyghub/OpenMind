@@ -198,6 +198,58 @@ describe('renderWidget text', () => {
   });
 });
 
+// ── renderWidget: action (S5 #542) ────────────────────────────────────────────
+
+describe('renderWidget action', () => {
+  test('renders a button with no input when input_arg is absent', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'action', id: 'skill-x-uninstall', label: 'Uninstall',
+      tool: 'skill_uninstall', tool_args: { name: 'x' },
+    });
+    expect(html).toContain('ps-action');
+    expect(html).toContain('ps-action-btn');
+    expect(html).toContain('Uninstall');
+    expect(html).not.toContain('ps-action-input');
+    expect(html).toContain('data-tool="skill_uninstall"');
+    expect(html).toContain('name');
+  });
+
+  test('renders an input when input_arg is present', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'action', id: 'skills-install', label: 'Install',
+      tool: 'skill_install', tool_args: {},
+      input_arg: 'repo', input_placeholder: 'owner/repo',
+    });
+    expect(html).toContain('ps-action-input');
+    expect(html).toContain('data-input-arg="repo"');
+    expect(html).toContain('placeholder="owner/repo"');
+  });
+
+  test('defaults label to "Run" when absent', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'action', id: 'x', tool: 'skill_enable', tool_args: {},
+    });
+    expect(html).toContain('>Run<');
+  });
+
+  test('missing tool_args renders an empty object', () => {
+    const html = PanelSpec.renderWidget({ type: 'action', id: 'x', tool: 'skill_enable' });
+    expect(html).toContain('data-tool-args="{}"');
+  });
+
+  test('HTML-bearing label and placeholder are escaped, not executed', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'action', id: 'x', tool: 'skill_enable',
+      label: '<script>alert(1)</script>',
+      input_arg: 'repo', input_placeholder: '<img src=x onerror=alert(1)>',
+    });
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('&lt;img');
+  });
+});
+
 // ── renderPanel ──────────────────────────────────────────────────────────────
 
 describe('renderPanel', () => {
@@ -249,6 +301,6 @@ describe('renderPanel', () => {
   });
 
   test('WIDGET_TYPES reports the whitelist', () => {
-    expect(PanelSpec.WIDGET_TYPES.sort()).toEqual(['detail', 'list', 'text']);
+    expect(PanelSpec.WIDGET_TYPES.sort()).toEqual(['action', 'detail', 'list', 'text']);
   });
 });
