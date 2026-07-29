@@ -23,8 +23,35 @@ _SYSTEM_PROMPT = (
     "When the user states something durable about themselves -- a preference, "
     "relationship, important date, or ongoing context -- use the propose_memory "
     "tool to suggest storing it. Never call memory_remember directly; always "
-    "propose first so the user can confirm."
+    "propose first so the user can confirm. "
+    "Installed skills are reusable procedures -- call skill_list to see what is "
+    "available, and skill_use(name) to load one whenever a task matches a "
+    "skill's description or the user names it directly."
 )
+
+# ADR-0014 decision 7 -- explicit skill invocation bypasses the LLM entirely:
+# "/name" (typed or spoken) and the NL phrasing "use the X skill" both map
+# straight to a skill_use ToolCall. Unknown/disabled names are not validated
+# here -- skill_use already fails soft with a clear error (plugins/skills.py),
+# so forwarding unconditionally is enough: no crash, no guessing.
+_SLASH_SKILL_RE = re.compile(r"^/([\w-]+)\s*$")
+_NL_SKILL_RE = re.compile(r"\buse (?:the )?(['\"]?)([\w-]+)\1 skill\b", re.IGNORECASE)
+
+
+def resolve_skill_invocation(transcript: str) -> ToolCall | None:
+    """Map an explicit skill invocation to a ``skill_use`` ToolCall, or None.
+
+    None means "not an explicit invocation" -- the normal planner flow (LLM
+    tool-calling, guided by the system prompt) decides instead.
+    """
+    text = transcript.strip()
+    m = _SLASH_SKILL_RE.match(text)
+    if m:
+        return ToolCall(name="skill_use", args={"name": m.group(1)})
+    m = _NL_SKILL_RE.search(text)
+    if m:
+        return ToolCall(name="skill_use", args={"name": m.group(2)})
+    return None
 
 _TYPE_MAP: dict[str, type | tuple] = {
     "string": str,
@@ -118,6 +145,16 @@ class Planner:
         so the model can pick the next action or return a final summary.
         Each entry: {"name": str, "args": dict, "result": str, "is_error": bool}.
         """
+        # ADR-0014 -- explicit "/name" or "use the X skill" invocation skips
+        # the LLM entirely. Only on the first step of a chain: once a chain
+        # is already underway (prior_steps/error set), the transcript is the
+        # original request replayed for a retry/continue decision, not a
+        # fresh explicit invocation.
+        if not prior_steps and not error:
+            skill_call = resolve_skill_invocation(transcript)
+            if skill_call is not None:
+                return skill_call
+
         parts = [_SYSTEM_PROMPT, f"\nUser: {transcript}"]
 
         if prior_steps:
