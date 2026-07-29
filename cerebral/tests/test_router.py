@@ -1227,3 +1227,216 @@ def test_dynamic_backend_local_only_hides_openai_keeps_ollama():
     # And each dynamic server is exactly one picker entry.
     labels = [m for m in r.list_models() if m["id"] == "custom/box"]
     assert len(labels) == 1
+
+
+# ---------------------------------------------------------------------------
+# P1 #531 -- model priority list + ordered-fallback routing
+# ---------------------------------------------------------------------------
+
+def _priority_router():
+    a = AsyncMock(); a.complete = AsyncMock(return_value="from a")
+    b = AsyncMock(); b.complete = AsyncMock(return_value="from b")
+    c = AsyncMock(); c.complete = AsyncMock(return_value="from c")
+    r = ModelRouter(
+        backends={"ollama/a": a, "ollama/b": b, "claude/haiku": c},
+        models={
+            "ollama/a": {"label": "A", "is_cloud": False},
+            "ollama/b": {"label": "B", "is_cloud": False},
+            "claude/haiku": {"label": "Haiku", "is_cloud": True},
+        },
+        default_model="ollama/a",
+    )
+    return r, a, b, c
+
+
+def test_active_model_derived_from_priority_top_enabled():
+    r, _, _, _ = _priority_router()
+    assert r.active_model == "ollama/a"
+    r.set_priority(["ollama/b", "ollama/a", "claude/haiku"])
+    assert r.active_model == "ollama/b"
+
+
+def test_active_model_skips_disabled_and_returns_next_enabled():
+    r, _, _, _ = _priority_router()
+    r.set_model_enabled("ollama/a", False)
+    assert r.active_model == "ollama/b"
+
+
+def test_switch_model_moves_id_to_top_of_priority():
+    r, _, _, _ = _priority_router()
+    r.switch_model("claude/haiku")
+    assert r.active_model == "claude/haiku"
+    assert r.priority()[0] == "claude/haiku"
+
+
+def test_switch_model_reenables_a_disabled_model():
+    r, _, _, _ = _priority_router()
+    r.set_model_enabled("ollama/b", False)
+    r.switch_model("ollama/b")
+    assert r.enabled_map()["ollama/b"] is True
+    assert r.active_model == "ollama/b"
+
+
+def test_list_models_returns_priority_order_with_enabled_and_position():
+    r, _, _, _ = _priority_router()
+    r.set_priority(["claude/haiku", "ollama/b", "ollama/a"])
+    r.set_model_enabled("ollama/b", False)
+    models = r.list_models()
+    assert [m["id"] for m in models] == ["claude/haiku", "ollama/b", "ollama/a"]
+    assert [m["position"] for m in models] == [0, 1, 2]
+    assert models[1]["enabled"] is False
+    assert models[0]["enabled"] is True and models[2]["enabled"] is True
+
+
+def test_set_priority_drops_unknown_ids_and_appends_missing():
+    r, _, _, _ = _priority_router()
+    r.set_priority(["bogus/x", "claude/haiku"])
+    # Unknown 'bogus/x' dropped, missing 'ollama/a' + 'ollama/b' appended
+    order = r.priority()
+    assert order[0] == "claude/haiku"
+    assert set(order) == {"claude/haiku", "ollama/a", "ollama/b"}
+
+
+def test_set_model_enabled_unknown_raises():
+    r, _, _, _ = _priority_router()
+    with pytest.raises(ValueError, match="unknown model"):
+        r.set_model_enabled("gpt-5/magic", True)
+
+
+def test_fallback_disabled_default_and_toggle_persists():
+    r, _, _, _ = _priority_router()
+    assert r.fallback_enabled is False
+    r.set_fallback(True)
+    assert r.fallback_enabled is True
+    r.set_fallback(False)
+    assert r.fallback_enabled is False
+
+
+async def test_complete_fallback_off_uses_top_only_and_raises():
+    """Fallback OFF: top model failing raises, no cloud fall-through."""
+    r, a, b, c = _priority_router()
+    a.complete.side_effect = ConnectionError("gone")
+    with pytest.raises(ModelUnavailableError, match="ollama/a"):
+        await r.complete("hi")
+    b.complete.assert_not_called()
+    c.complete.assert_not_called()
+
+
+async def test_complete_fallback_on_walks_chain_returns_first_success():
+    r, a, b, c = _priority_router()
+    r.set_fallback(True)
+    a.complete.side_effect = ConnectionError("a-down")
+    assert await r.complete("hi") == "from b"
+    b.complete.assert_called_once()
+    c.complete.assert_not_called()  # never needed
+
+
+async def test_complete_fallback_on_skips_disabled_models():
+    r, a, b, c = _priority_router()
+    r.set_fallback(True)
+    r.set_model_enabled("ollama/b", False)
+    a.complete.side_effect = ConnectionError("a-down")
+    assert await r.complete("hi") == "from c"  # jumped over disabled b
+    b.complete.assert_not_called()
+
+
+async def test_complete_fallback_on_local_only_excludes_cloud_from_chain():
+    r, a, b, c = _priority_router()
+    r.set_fallback(True)
+    r.set_local_only(True)
+    a.complete.side_effect = ConnectionError("a-down")
+    b.complete.side_effect = ConnectionError("b-down")
+    # cloud is hidden — chain exhausts to raise, cloud never called
+    with pytest.raises(ModelUnavailableError):
+        await r.complete("hi")
+    c.complete.assert_not_called()
+
+
+async def test_complete_fallback_on_raises_only_when_all_fail():
+    r, a, b, c = _priority_router()
+    r.set_fallback(True)
+    a.complete.side_effect = ConnectionError("a-down")
+    b.complete.side_effect = ConnectionError("b-down")
+    c.complete.side_effect = ConnectionError("c-down")
+    with pytest.raises(ModelUnavailableError, match="all enabled models unavailable"):
+        await r.complete("hi")
+
+
+async def test_complete_fallback_on_task_override_still_layers():
+    """Per-task pin starts the chain at that model."""
+    r, a, b, c = _priority_router()
+    r.set_fallback(True)
+    r.set_task_model("quality", "ollama/b")
+    b.complete.side_effect = ConnectionError("b-down")
+    # b fails → walk chain starting from b, then remaining in priority order
+    assert await r.complete("hi", task_type="quality") == "from a"
+
+
+def test_add_backend_appended_to_priority_end_and_enabled():
+    r, _, _, _ = _priority_router()
+    remote = AsyncMock()
+    r.add_backend("custom/box", remote, "Box", is_cloud=False)
+    assert r.priority()[-1] == "custom/box"
+    assert r.enabled_map()["custom/box"] is True
+
+
+def test_remove_backend_drops_from_priority_and_enabled():
+    r, _, _, _ = _priority_router()
+    r.remove_backend("ollama/b")
+    assert "ollama/b" not in r.priority()
+    assert "ollama/b" not in r.enabled_map()
+
+
+def test_models_list_event_shape_via_list_models():
+    """AC: list_models() rows carry the new `enabled` + `position` fields."""
+    r, _, _, _ = _priority_router()
+    m = r.list_models()[0]
+    assert "enabled" in m and "position" in m
+
+
+# Persistence round-trip ------------------------------------------------------
+
+def test_priority_store_save_load_round_trip(tmp_path):
+    from cerebral.db.model_priority import ModelPriorityStore
+    from cerebral.db.profiles import ProfileManager
+
+    db = tmp_path / "persist.db"
+    pm = ProfileManager(db_path=db)
+    p = pm.create(name="U")
+    store = ModelPriorityStore(db_path=db)
+    store.save(p.id, ["claude/haiku", "ollama/a"], {"claude/haiku": False, "ollama/a": True})
+    rows = store.load(p.id)
+    assert [r["model_id"] for r in rows] == ["claude/haiku", "ollama/a"]
+    assert rows[0]["enabled"] is False
+    assert rows[1]["enabled"] is True
+    assert [r["position"] for r in rows] == [0, 1]
+
+
+def test_priority_store_save_replaces_prior_snapshot(tmp_path):
+    from cerebral.db.model_priority import ModelPriorityStore
+    from cerebral.db.profiles import ProfileManager
+
+    db = tmp_path / "persist.db"
+    pm = ProfileManager(db_path=db)
+    p = pm.create(name="U")
+    store = ModelPriorityStore(db_path=db)
+    store.save(p.id, ["m1", "m2"], {"m1": True, "m2": True})
+    store.save(p.id, ["m2"], {"m2": False})
+    rows = store.load(p.id)
+    assert len(rows) == 1
+    assert rows[0]["model_id"] == "m2"
+    assert rows[0]["enabled"] is False
+
+
+def test_profile_fallback_enabled_round_trips(tmp_path):
+    from cerebral.db.profiles import ProfileManager
+
+    db = tmp_path / "persist.db"
+    pm = ProfileManager(db_path=db)
+    p = pm.create(name="U")
+    assert p.fallback_enabled is False
+    pm.update_fallback_enabled(p.id, True)
+    assert pm.get(p.id).fallback_enabled is True
+    # And a fresh manager on the same DB sees the same value
+    pm2 = ProfileManager(db_path=db)
+    assert pm2.get(p.id).fallback_enabled is True

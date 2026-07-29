@@ -37,6 +37,7 @@ from cerebral.llm.router import (
     list_openai_models,
 )
 from cerebral.db.custom_models import CustomModelStore
+from cerebral.db.model_priority import ModelPriorityStore
 from cerebral.llm.planner import Planner, shortlist_tools, validate_tool_args
 from cerebral.llm.chain_engine import ChainEngine
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
@@ -180,6 +181,32 @@ _restore_custom_models()
 if _active_profile and getattr(_active_profile, "local_only", False):
     _router.set_local_only(True)
     logger.info("[cerebral] Local-only restored — cloud models disabled")
+
+# Model priority + enabled + master fallback (P1 #531). Restore after all
+# backends are registered so the persisted ordering can reference custom rows.
+_priority_store = ModelPriorityStore()
+
+
+def _persist_priority() -> None:
+    """Save the router's current priority + enabled snapshot for the active profile."""
+    if _active_profile:
+        _priority_store.save(
+            _active_profile.id, _router.priority(), _router.enabled_map(),
+        )
+
+
+if _active_profile:
+    saved_priority = _priority_store.load(_active_profile.id)
+    if saved_priority:
+        _router.set_priority([row["model_id"] for row in saved_priority])
+        for row in saved_priority:
+            try:
+                _router.set_model_enabled(row["model_id"], row["enabled"])
+            except ValueError:
+                pass  # persisted model no longer available; skip
+    if getattr(_active_profile, "fallback_enabled", False):
+        _router.set_fallback(True)
+        logger.info("[cerebral] Master model fallback restored (chain routing on)")
 # Issue #349 — default "quality" mapping (local qwen3:8b, else cloud Sonnet).
 # User-overridable via the set_task_model IPC / Settings → Models.
 _quality_default = _router.seed_quality_default()
@@ -2434,6 +2461,7 @@ def _models_list_event() -> dict:
             "active_is_cloud": _router.active_is_cloud,
             "task_models": _router.task_models(),
             "local_only": _router.local_only,
+            "fallback_enabled": _router.fallback_enabled,
         },
     }
 
@@ -3102,10 +3130,11 @@ async def _handle_message(msg: dict) -> None:
             try:
                 _router.switch_model(model_id)
                 logger.info("[cerebral] Model router switched to %s", model_id)
-                # Persist the choice so it survives restart (issue #37).
+                # Persist the choice so it survives restart (issue #37 + P1 #531).
                 if _active_profile:
                     _pm.update_active_model(_active_profile.id, model_id)
                     _active_profile = _pm.get(_active_profile.id)
+                _persist_priority()
                 await _broadcast({
                     "type": "model_switched",
                     "data": {"model_id": model_id, "is_cloud": _router.active_is_cloud},
@@ -3125,6 +3154,44 @@ async def _handle_message(msg: dict) -> None:
         # Cloud entries stay untouched. Issue #37.
         new_ids = _router.refresh_local_backends()
         logger.info("[cerebral] Refreshed installed Ollama models: %s", new_ids)
+        _persist_priority()
+        await _broadcast(_models_list_event())
+
+    elif t == "set_model_priority":
+        order = msg.get("data", {}).get("order")
+        if isinstance(order, list):
+            try:
+                _router.set_priority([str(m) for m in order])
+                _persist_priority()
+                logger.info("[cerebral] Model priority updated: %s", _router.priority())
+                await _broadcast(_models_list_event())
+            except ValueError as exc:
+                logger.warning("[cerebral] set_model_priority failed: %s", exc)
+
+    elif t == "set_model_enabled":
+        d = msg.get("data", {})
+        mid = d.get("model_id")
+        enabled = bool(d.get("enabled"))
+        if mid:
+            try:
+                _router.set_model_enabled(mid, enabled)
+                _persist_priority()
+                logger.info(
+                    "[cerebral] Model %s %s", mid, "enabled" if enabled else "disabled",
+                )
+                await _broadcast(_models_list_event())
+            except ValueError as exc:
+                logger.warning("[cerebral] set_model_enabled failed: %s", exc)
+
+    elif t == "set_model_fallback":
+        enabled = bool(msg.get("data", {}).get("enabled"))
+        _router.set_fallback(enabled)
+        if _active_profile:
+            _pm.update_fallback_enabled(_active_profile.id, enabled)
+            _active_profile = _pm.get(_active_profile.id)
+        logger.info(
+            "[cerebral] Master model fallback %s", "enabled" if enabled else "disabled",
+        )
         await _broadcast(_models_list_event())
 
     elif t == "set_task_model":
@@ -3236,6 +3303,7 @@ async def _handle_message(msg: dict) -> None:
                 "[cerebral] Custom model added: %s (%s%s)",
                 mid, kind, ", dynamic" if dynamic else "",
             )
+            _persist_priority()
             await _broadcast(_models_list_event())
 
     elif t == "remove_custom_model":
@@ -3249,6 +3317,7 @@ async def _handle_message(msg: dict) -> None:
             _get_credential_store().delete_credential(_active_profile.id, secret_ref)
             _custom_models.remove(_active_profile.id, mid)
             logger.info("[cerebral] Custom model removed: %s", mid)
+            _persist_priority()
             await _broadcast(_models_list_event())
 
     elif t == "discover_models":
