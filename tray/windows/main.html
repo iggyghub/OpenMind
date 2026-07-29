@@ -4272,7 +4272,10 @@
     .set-priority-row[draggable="true"] { cursor: grab; }
     .set-priority-row[draggable="true"]:hover { background: rgba(255, 255, 255, 0.02); }
     .set-priority-row.is-locked { opacity: 0.45; cursor: default; }
-    .set-priority-row.is-drag-over { background: rgba(255, 140, 105, 0.08); }
+    .set-priority-row.is-dragging { opacity: 0.4; }
+    /* Drop indicator: a highlighted line on the edge where the row will land. */
+    .set-priority-row.is-drop-before { box-shadow: inset 0 2px 0 0 var(--accent, #ff8c69); }
+    .set-priority-row.is-drop-after  { box-shadow: inset 0 -2px 0 0 var(--accent, #ff8c69); }
     .set-priority-drag { color: var(--text-muted); font-size: 14px; user-select: none; flex-shrink: 0; }
     .set-priority-label { flex: 1; font-size: 13px; color: var(--text); font-family: 'Consolas', 'Cascadia Code', monospace; }
     .set-priority-badge {
@@ -9789,40 +9792,62 @@
 
     let _priorityDragId = null;
 
+    function _clearPriorityDropMarks() {
+      setModelPriorityListEl.querySelectorAll('.is-drop-before,.is-drop-after')
+        .forEach((el) => el.classList.remove('is-drop-before', 'is-drop-after'));
+    }
+
+    // Which edge of `row` the cursor is nearest -> true = drop AFTER row.
+    function _dropAfter(row, clientY) {
+      const rect = row.getBoundingClientRect();
+      return (clientY - rect.top) > rect.height / 2;
+    }
+
     setModelPriorityListEl.addEventListener('dragstart', (e) => {
-      const row = e.target.closest('[data-priority-id]');
+      const row = e.target.closest('.set-priority-row');
       if (!row || row.getAttribute('draggable') === 'false') return;
       _priorityDragId = row.dataset.priorityId;
       row.classList.add('is-dragging');
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
     });
 
     setModelPriorityListEl.addEventListener('dragend', () => {
-      setModelPriorityListEl.querySelectorAll('.is-dragging,.is-drag-over')
-        .forEach((el) => el.classList.remove('is-dragging', 'is-drag-over'));
+      _priorityDragId = null;
+      setModelPriorityListEl.querySelectorAll('.is-dragging')
+        .forEach((el) => el.classList.remove('is-dragging'));
+      _clearPriorityDropMarks();
     });
 
     setModelPriorityListEl.addEventListener('dragover', (e) => {
+      if (!_priorityDragId) return;
       e.preventDefault();
-      const row = e.target.closest('[data-priority-id]');
-      if (!row) return;
-      setModelPriorityListEl.querySelectorAll('.is-drag-over')
-        .forEach((el) => el.classList.remove('is-drag-over'));
-      row.classList.add('is-drag-over');
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      const row = e.target.closest('.set-priority-row');
+      _clearPriorityDropMarks();
+      if (!row || row.dataset.priorityId === _priorityDragId) return;
+      row.classList.add(_dropAfter(row, e.clientY) ? 'is-drop-after' : 'is-drop-before');
     });
 
     setModelPriorityListEl.addEventListener('drop', (e) => {
       e.preventDefault();
-      const target = e.target.closest('[data-priority-id]');
-      if (!target || !_priorityDragId || target.dataset.priorityId === _priorityDragId) return;
-      const rows  = Array.from(setModelPriorityListEl.querySelectorAll('[data-priority-id]'));
-      const order = rows.map((r) => r.dataset.priorityId);
-      const fromIdx = order.indexOf(_priorityDragId);
-      const toIdx   = order.indexOf(target.dataset.priorityId);
-      if (fromIdx < 0 || toIdx < 0) return;
-      order.splice(fromIdx, 1);
-      order.splice(toIdx, 0, _priorityDragId);
-      sendEvent({ type: 'set_model_priority', data: { order } });
+      const dragId = _priorityDragId;
+      const row = e.target.closest('.set-priority-row');
+      _clearPriorityDropMarks();
       _priorityDragId = null;
+      if (!row || !dragId) return;
+      const targetId = row.dataset.priorityId;
+      if (targetId === dragId) return;
+      // Rebuild the order with the dragged id removed FIRST, then insert it
+      // relative to the target -- computing the index before removal is the
+      // off-by-one that made downward drops land one slot short.
+      const order = Array.from(setModelPriorityListEl.querySelectorAll('.set-priority-row'))
+        .map((r) => r.dataset.priorityId)
+        .filter((id) => id !== dragId);
+      let idx = order.indexOf(targetId);
+      if (idx < 0) return;
+      if (_dropAfter(row, e.clientY)) idx += 1;
+      order.splice(idx, 0, dragId);
+      sendEvent({ type: 'set_model_priority', data: { order } });
     });
 
     if (setModelFallbackEl) {
