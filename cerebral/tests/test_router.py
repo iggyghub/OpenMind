@@ -1010,3 +1010,220 @@ def test_list_openai_models_returns_empty_on_missing_data_key():
 
     fake_fetch = lambda url, headers: {}  # malformed -- no "data" key
     assert list_openai_models("http://srv", fetch_fn=fake_fetch) == []
+
+
+# ---------------------------------------------------------------------------
+# Issue #525 -- DynamicModelBackend (server-first model resolution)
+# ---------------------------------------------------------------------------
+
+def test_dynamic_backend_rejects_anthropic_kind():
+    from cerebral.llm.router import DynamicModelBackend
+
+    with pytest.raises(ValueError, match="dynamic model requires kind"):
+        DynamicModelBackend("anthropic", url="")
+
+
+def test_dynamic_backend_construction_hits_no_network():
+    """Startup restore must stay offline-safe -- construction never fetches."""
+    from cerebral.llm.router import DynamicModelBackend
+
+    calls = []
+    def bad_openai(url, key):
+        calls.append(("openai", url))
+        raise ConnectionError("no network")
+    def bad_ollama(url):
+        calls.append(("ollama", url))
+        raise ConnectionError("no network")
+
+    DynamicModelBackend(
+        "openai", "http://srv", cached_model="", api_key="k",
+        openai_list_fn=bad_openai, ollama_list_fn=bad_ollama,
+    )
+    DynamicModelBackend(
+        "ollama", "http://srv", cached_model="",
+        openai_list_fn=bad_openai, ollama_list_fn=bad_ollama,
+    )
+    assert calls == []
+
+
+async def test_dynamic_backend_resolves_openai_and_delegates(monkeypatch):
+    """First complete resolves via /v1/models, delegates with the picked id."""
+    from cerebral.llm.router import DynamicModelBackend
+
+    resp = _FakeHttpxResponse(200, {"choices": [{"message": {"content": "hi"}}]})
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    b = DynamicModelBackend(
+        "openai", "http://srv", api_key="k",
+        openai_list_fn=lambda u, k: ["gpt-a", "gpt-b"],
+    )
+    assert await b.complete("q") == "hi"
+    assert b.model == "gpt-a"
+    assert captured["json"]["model"] == "gpt-a"
+
+
+async def test_dynamic_backend_caches_after_first_resolve(monkeypatch):
+    """Second call reuses the cached model -- no second list call."""
+    from cerebral.llm.router import DynamicModelBackend
+
+    resp = _FakeHttpxResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    list_calls = []
+    def list_fn(u, k):
+        list_calls.append(u)
+        return ["m1"]
+
+    b = DynamicModelBackend("openai", "http://srv", openai_list_fn=list_fn)
+    await b.complete("a")
+    await b.complete("b")
+    assert list_calls == ["http://srv"]  # only one resolve
+
+
+async def test_dynamic_backend_reresolves_on_404_then_retries(monkeypatch):
+    """Server swapped its model -> re-resolve once, retry succeeds."""
+    from cerebral.llm.router import DynamicModelBackend
+    import httpx
+
+    ok_resp = _FakeHttpxResponse(
+        200, {"choices": [{"message": {"content": "final"}}]}
+    )
+    stale_resp = _FakeHttpxResponse(
+        404, {}, url="http://srv/v1/chat/completions"
+    )
+    responses = [stale_resp, ok_resp]  # first call 404, then 200
+    captured_models = []
+
+    async def fake_post(self, url, json=None, headers=None):
+        captured_models.append(json["model"])
+        return responses.pop(0)
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    list_calls = 0
+    def list_fn(u, k):
+        nonlocal list_calls
+        list_calls += 1
+        return ["stale" if list_calls == 1 else "fresh"]
+
+    b = DynamicModelBackend("openai", "http://srv", openai_list_fn=list_fn)
+    assert await b.complete("q") == "final"
+    assert captured_models == ["stale", "fresh"]
+    assert list_calls == 2  # first resolve + one re-resolve
+    assert b.model == "fresh"
+
+
+async def test_dynamic_backend_raises_when_reresolve_also_404s(monkeypatch):
+    """Re-resolve happens once; a second 404 escapes as ConnectionError."""
+    from cerebral.llm.router import DynamicModelBackend
+    import httpx
+
+    async def always_404(self, url, json=None, headers=None):
+        return _FakeHttpxResponse(404, {}, url=url)
+    monkeypatch.setattr(httpx.AsyncClient, "post", always_404)
+
+    b = DynamicModelBackend(
+        "openai", "http://srv",
+        openai_list_fn=lambda u, k: ["only-model"],
+    )
+    with pytest.raises(ConnectionError, match="404"):
+        await b.complete("q")
+
+
+async def test_dynamic_backend_raises_when_server_lists_no_models():
+    from cerebral.llm.router import DynamicModelBackend
+
+    b = DynamicModelBackend("openai", "http://srv", openai_list_fn=lambda u, k: [])
+    with pytest.raises(ConnectionError, match="no models available"):
+        await b.complete("q")
+
+
+async def test_dynamic_backend_router_wraps_no_models_as_unavailable():
+    """The router surfaces the resolve failure as ModelUnavailableError."""
+    from cerebral.llm.router import DynamicModelBackend
+
+    b = DynamicModelBackend("openai", "http://srv", openai_list_fn=lambda u, k: [])
+    r = ModelRouter(
+        backends={"custom/x": b},
+        models={"custom/x": {"label": "X", "is_cloud": True}},
+    )
+    with pytest.raises(ModelUnavailableError, match="no models available"):
+        await r.complete("q")
+
+
+async def test_dynamic_backend_calls_on_resolved_callback(monkeypatch):
+    from cerebral.llm.router import DynamicModelBackend
+
+    resp = _FakeHttpxResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+    _install_fake_post(monkeypatch, resp, {})
+
+    resolved = []
+    b = DynamicModelBackend(
+        "openai", "http://srv",
+        openai_list_fn=lambda u, k: ["gpt-a"],
+        on_resolved=resolved.append,
+    )
+    await b.complete("q")
+    assert resolved == ["gpt-a"]
+
+
+async def test_dynamic_backend_uses_cached_model_without_resolving(monkeypatch):
+    """Restored dynamic row with a cached model skips resolve on first call."""
+    from cerebral.llm.router import DynamicModelBackend
+
+    resp = _FakeHttpxResponse(200, {"choices": [{"message": {"content": "hi"}}]})
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    def bad_list(u, k):
+        raise AssertionError("should not resolve when cache is populated")
+
+    b = DynamicModelBackend(
+        "openai", "http://srv", cached_model="cached-model",
+        openai_list_fn=bad_list,
+    )
+    assert await b.complete("q") == "hi"
+    assert captured["json"]["model"] == "cached-model"
+
+
+async def test_dynamic_backend_ollama_resolves_via_tags(monkeypatch):
+    """Ollama kind resolves via /api/tags path (list_installed_models seam)."""
+    from cerebral.llm.router import DynamicModelBackend
+    import httpx
+
+    ok_resp = _FakeHttpxResponse(200, {"response": "hi"})
+    captured = {}
+    async def fake_post(self, url, json=None, headers=None):
+        captured["json"] = json
+        captured["url"] = url
+        return ok_resp
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    b = DynamicModelBackend(
+        "ollama", "http://box:11434",
+        ollama_list_fn=lambda u: ["qwen3:8b", "llama:3"],
+    )
+    assert await b.complete("q") == "hi"
+    assert b.model == "qwen3:8b"
+    assert captured["json"]["model"] == "qwen3:8b"
+    assert captured["url"] == "http://box:11434/api/generate"
+
+
+def test_dynamic_backend_local_only_hides_openai_keeps_ollama():
+    """Single picker entry; is_cloud follows kind for the kill-switch."""
+    from cerebral.llm.router import DynamicModelBackend, dynamic_is_cloud
+
+    b_ol = DynamicModelBackend("ollama", "http://box", openai_list_fn=lambda *a: [])
+    b_oa = DynamicModelBackend("openai", "http://srv", openai_list_fn=lambda *a: [])
+    local, _ = _two_backends()
+    r = ModelRouter(backends={"ollama/gemma": local})
+    r.add_backend("custom/box", b_ol, "Homelab", is_cloud=dynamic_is_cloud("ollama"))
+    r.add_backend("custom/bonsai", b_oa, "Bonsai", is_cloud=dynamic_is_cloud("openai"))
+    r.set_local_only(True)
+    ids = {m["id"] for m in r.list_models()}
+    assert "custom/box" in ids
+    assert "custom/bonsai" not in ids
+    # And each dynamic server is exactly one picker entry.
+    labels = [m for m in r.list_models() if m["id"] == "custom/box"]
+    assert len(labels) == 1

@@ -74,6 +74,37 @@ def test_table_never_stores_the_api_key():
     assert row["secret_ref"] == "custom_model/x"
 
 
+# ── S3 (#525) -- dynamic (server-first) flag ────────────────────────────────
+
+def test_dynamic_flag_roundtrips_with_blank_model():
+    """model="" + dynamic=1 persists and round-trips (auto-resolve marker)."""
+    s = _store()
+    s.add(1, id="custom/bonsai", kind="openai", url="http://s",
+          model="", label="bonsai", is_cloud=True, dynamic=True)
+    rows = s.list(1)
+    assert len(rows) == 1
+    assert rows[0]["dynamic"] is True
+    assert rows[0]["model"] == ""
+
+
+def test_dynamic_defaults_false():
+    s = _store()
+    s.add(1, id="custom/x", kind="ollama", url="http://h", model="m",
+          label="X", is_cloud=False)
+    assert s.list(1)[0]["dynamic"] is False
+
+
+def test_dynamic_upsert_updates_cached_model():
+    """`model` doubles as the last-resolved cache; upsert refreshes it."""
+    s = _store()
+    s.add(1, id="custom/x", kind="openai", url="http://s", model="",
+          label="X", is_cloud=True, dynamic=True)
+    s.add(1, id="custom/x", kind="openai", url="http://s", model="gpt-a",
+          label="X", is_cloud=True, dynamic=True)
+    assert s.list(1)[0]["model"] == "gpt-a"
+    assert s.list(1)[0]["dynamic"] is True
+
+
 def test_api_key_lives_in_keyring_and_deletes_cleanly():
     kr = FakeKeyring()
     cs = CredentialStore(db_path=":memory:", keyring_backend=kr)

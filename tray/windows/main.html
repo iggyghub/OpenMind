@@ -5190,7 +5190,7 @@
                    placeholder="Server URL (http://host:port)">
             <datalist id="set-model-suggestions"></datalist>
             <input class="set-add-input" id="set-add-model-name" type="text"
-                   placeholder="Model name" list="set-model-suggestions">
+                   placeholder="Model name (leave blank: auto)" list="set-model-suggestions">
             <button class="set-btn" id="set-fetch-models-btn" type="button">Fetch</button>
             <input class="set-add-input" id="set-add-key" type="password"
                    placeholder="API key (optional)" autocomplete="off">
@@ -9779,7 +9779,12 @@
     setAddBtn.addEventListener('click', () => {
       const kind = setAddKindEl.value;
       const model = setAddModelEl.value.trim();
-      if (!model) { showAddError('Model name is required.'); return; }
+      // S3 (#525): blank model + a listable kind => dynamic (server-first).
+      // Anthropic can't be dynamic (no /v1/models we can rely on).
+      if (kind === 'anthropic' && !model) {
+        showAddError('Model name is required for Anthropic.');
+        return;
+      }
       setAddErrorEl.hidden = true;
       setAddBtn.disabled = true;
       setAddBtn.textContent = 'Adding…';
@@ -9789,7 +9794,7 @@
           kind,
           url: setAddUrlEl.value.trim(),
           model,
-          label: model,
+          label: model,  // backend fills from URL host when blank (dynamic)
           api_key: setAddKeyEl.value,  // write-only: cleared right after send
         },
       });

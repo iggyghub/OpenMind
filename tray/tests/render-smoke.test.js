@@ -956,6 +956,23 @@ test('inline script wires discover_models IPC and handles models_discovered (S2 
   expect(inlineScript).toMatch(/suggestions\.length === 1/);
 });
 
+// ── S3 model-servers -- dynamic (server-first) Add form ──────────────────────
+
+test('Add-model form accepts a blank model for ollama/openai (S3 model-servers)', () => {
+  // The Add click handler must NOT block a blank model unless kind=anthropic.
+  // Anthropic still requires a model (no /v1/models to resolve from).
+  expect(inlineScript).toMatch(/kind === ['"]anthropic['"]/);
+  expect(inlineScript).toMatch(/Model name is required for Anthropic/);
+  // The pre-S3 unconditional "Model name is required." block must be gone.
+  expect(inlineScript).not.toMatch(/showAddError\(['"]Model name is required\.['"]\)/);
+});
+
+test('model input placeholder hints that blank means auto (S3 model-servers)', () => {
+  const modelInput = root.querySelector('#set-add-model-name');
+  expect(modelInput).not.toBeNull();
+  expect(modelInput.getAttribute('placeholder') || '').toMatch(/auto/i);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
