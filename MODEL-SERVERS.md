@@ -6,12 +6,11 @@ S4 (harness remote-add MCP tool) was SUPERSEDED -- the bridge is chat-only and a
 local irreversible modal can't be accepted remotely (see #526). Direction moved
 to a per-model on/off + drag-drop fallback-ordering panel (P1 router, P2 tray).
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** P2 -- #532
-- **Model:** sonnet
+- **Active:** (all slices landed)
 
 ## Queue
 
@@ -20,7 +19,7 @@ to a per-model on/off + drag-drop fallback-ordering panel (P1 router, P2 tray).
 - [x] S3 -- #525 -- dynamic server-first model: auto-resolve + cache, one picker entry (Model: opus)
 - [~] S4 -- #526 -- harness MCP tool [SUPERSEDED -- closed, not planned]
 - [x] P1 -- #531 -- model priority list + ordered-fallback routing (router + persistence + IPC) (Model: opus)
-- [ ] P2 -- #532 -- drag-drop Model priority tray panel (replaces Switch model) (Model: sonnet)
+- [x] P2 -- #532 -- drag-drop Model priority tray panel (replaces Switch model) (Model: sonnet)
 
 ## Landed PRs
 
@@ -28,6 +27,7 @@ to a per-model on/off + drag-drop fallback-ordering panel (P1 router, P2 tray).
 - #529 -- S2 -- model discovery: list_openai_models + discover_models IPC + Fetch datalist
 - #530 -- S3 -- dynamic server-first custom model: auto-resolve + cache, one picker entry
 - #533 -- P1 -- model priority list + ordered-fallback routing (router + persistence + IPC)
+- #534 -- P2 -- drag-drop Model priority tray panel (replaces Switch model)
 
 ## SAFETY
 
