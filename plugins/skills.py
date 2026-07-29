@@ -308,6 +308,17 @@ class SkillsPlugin:
                 schema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="skill_preview",
+                description=(
+                    "Preview a skill's full instruction text + metadata WITHOUT "
+                    "enabling it. Use to review an installed-but-disabled skill before "
+                    "deciding to enable it. Unlike skill_use, this works on disabled "
+                    "skills (it is a read for review, not a load into the planner)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema=_name_schema,
+            ),
+            Tool(
                 name="skill_enable",
                 description="Enable a skill by name so the planner can use it.",
                 plugin=PLUGIN_NAME,
@@ -368,6 +379,8 @@ class SkillsPlugin:
             return self._skill_use(args)
         if tool_name == "skill_catalog":
             return self._skill_catalog()
+        if tool_name == "skill_preview":
+            return self._skill_preview(args)
         # S5 #542 -- the Skills panel re-fetches panel_spec after a mutation
         # so the enable toggle / uninstall / install reflect fresh state
         # without an optimistic UI (mirrors the Plugins panel S4 #472).
@@ -615,6 +628,39 @@ class SkillsPlugin:
             )
         )
 
+    def _skill_preview(self, args: dict) -> ToolResult:
+        """Read a skill's full text for REVIEW, ignoring enabled state.
+
+        The review-before-enable read (ADR-0014 decision 6): installed skills
+        arrive disabled, and the user must be able to inspect the plain text
+        before enabling. skill_use deliberately refuses a disabled skill (it is
+        the planner-facing load); this is the management/UI counterpart.
+        """
+        name = str(args.get("name", "")).strip()
+        if not name:
+            return ToolResult(content="name is required", is_error=True)
+        skill = self._discover().get(name)
+        if skill is None:
+            return ToolResult(content=f"No skill named {name!r}", is_error=True)
+        md = skill.path / _SKILL_FILE
+        try:
+            _meta, body = _split_frontmatter(md.read_text(encoding="utf-8"))
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            return ToolResult(content=f"Could not read skill {name!r}: {exc}", is_error=True)
+        return ToolResult(
+            content=json.dumps(
+                {
+                    "name": skill.name,
+                    "kind": skill.kind,
+                    "tools": list(skill.tools),
+                    "source": skill.source,
+                    "enabled": skill.name in self._enabled_names(),
+                    "instructions": body,
+                    "resources": self._resource_manifest(skill),
+                }
+            )
+        )
+
     # ------------------------------------------------------------------
     # Panel spec (S5 #542, ADR-0012 decision 3 / ADR-0014 decision 8) --
     # declarative widget tree for the Skills panel. Returns data only; the
@@ -665,11 +711,16 @@ class SkillsPlugin:
 
         for s in skills:
             is_enabled = s.name in enabled
-            # skill_use refuses a disabled skill's body (ADR-0014 -- content
-            # only releases into context once reviewed and enabled); the
-            # panel shows that refusal message verbatim as the instructions
-            # field rather than special-casing it.
-            body = self._skill_use({"name": s.name}).content
+            # Use the ungated review read so the user can inspect a disabled
+            # skill's text before enabling it (ADR-0014 review-before-enable).
+            # skill_use stays planner-facing (enabled-only); skill_preview is
+            # the management/review counterpart.
+            preview = self._skill_preview({"name": s.name})
+            body = (
+                json.loads(preview.content)["instructions"]
+                if not preview.is_error
+                else preview.content
+            )
             widgets.append({"type": "detail", "id": f"skill-{s.name}", "fields": [
                 {"label": "Name", "value": s.name},
                 {"label": "Source", "value": self._provenance_str(s)},
