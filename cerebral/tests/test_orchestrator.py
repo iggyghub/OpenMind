@@ -1458,6 +1458,7 @@ _IRREVERSIBLE_PLUGINS: frozenset[str] = frozenset({
     "google_docs.py",    # docs_create + docs_append (#224)
     "google_sheets.py",  # sheets_write_range + sheets_append_row + sheets_create (#225)
     "job_search.py",     # jobs_apply_submit (ADR-0009; sole exception to ADR-0005 irreversible-modal rule)
+    "skills.py",         # skill_uninstall removes an installed skill's directory (S2 #538)
 })
 
 

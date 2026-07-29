@@ -5089,6 +5089,7 @@ def _wire_plugin_seams() -> None:
     seams: list[tuple[str, str, object]] = [
         # plugin name, seam method, factory
         ("settings_control", "set_apply_callback", _apply_settings_control),  # F4 #327
+        ("skills", "set_settings_store", _settings),  # S2 #538 (ADR-0014)
         ("memory",   "set_memory_factory",  _get_memory),                   # #79
         ("memory",   "set_queue_factory",   lambda: _queue),                # S8 #487
         ("shell",    "set_workdir_fn",      _get_shell_workdir),            # SBX-3 #354

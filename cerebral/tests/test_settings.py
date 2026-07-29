@@ -52,6 +52,7 @@ class TestSettingsStore:
             "mic_input_device",
             "browser_pause_on_verification",
             "disabled_plugins",
+            "enabled_skills",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):
@@ -197,6 +198,32 @@ class TestSettingsStore:
         store = SettingsStore(tmp_path / "s.json")
         with pytest.raises(ValueError, match="expects str"):
             store.set("mic_input_device", 42)
+
+    def test_enabled_skills_default_empty_list(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("enabled_skills") == []
+
+    def test_enabled_skills_set_and_get_roundtrip(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("enabled_skills", ["alpha", "beta"])
+        assert store.get("enabled_skills") == ["alpha", "beta"]
+
+    def test_enabled_skills_persists_to_disk(self, tmp_path):
+        p = tmp_path / "s.json"
+        s1 = SettingsStore(p)
+        s1.set("enabled_skills", ["alpha"])
+        s2 = SettingsStore(p)
+        assert s2.get("enabled_skills") == ["alpha"]
+
+    def test_enabled_skills_wrong_type_raises(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        with pytest.raises(ValueError, match="expects list"):
+            store.set("enabled_skills", "alpha")
+
+    def test_enabled_skills_rejects_non_str_items(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        with pytest.raises(ValueError, match="enabled_skills must be a list of str"):
+            store.set("enabled_skills", ["alpha", 42])
 
 
 # ── WS IPC tests ──────────────────────────────────────────────────────────────
