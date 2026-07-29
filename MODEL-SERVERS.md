@@ -1,15 +1,16 @@
 # MODEL-SERVERS.md -- Model servers campaign driver
 
-Server-first custom model servers: connect an OpenAI-compatible (or remote
-Ollama) server once, discover/auto-track its model, use it in the tray and
-(S4) via the harness. Builds on the custom-model registry (custom_models.py,
-add_custom_model IPC, router.add_backend).
+Server-first custom model servers + a model priority panel. S1-S3 (connect an
+OpenAI-compatible / remote-Ollama server, discover/auto-track its model) landed.
+S4 (harness remote-add MCP tool) was SUPERSEDED -- the bridge is chat-only and a
+local irreversible modal can't be accepted remotely (see #526). Direction moved
+to a per-model on/off + drag-drop fallback-ordering panel (P1 router, P2 tray).
 
-## Status: blocked -- S4 needs human security review (ADR-0005 threat gating -- LLM adding a model server is a data-exfiltration amplifier)
+## Status: ready
 
 ## Next slice -- start here
 
-- **Active:** S4 -- #526
+- **Active:** P1 -- #531
 - **Model:** opus
 
 ## Queue
@@ -17,7 +18,9 @@ add_custom_model IPC, router.add_backend).
 - [x] S1 -- #523 -- OpenAI-compatible custom model works: Bearer auth + /v1 strip + 4xx caught (Model: opus)
 - [x] S2 -- #524 -- model discovery: list_openai_models + discover_models IPC + Fetch datalist (Model: sonnet)
 - [x] S3 -- #525 -- dynamic server-first model: auto-resolve + cache, one picker entry (Model: opus)
-- [ ] S4 -- #526 -- harness MCP tool model_server_* [HITL -- DO NOT IMPLEMENT, STOP] (Model: opus)
+- [~] S4 -- #526 -- harness MCP tool [SUPERSEDED -- closed, not planned]
+- [ ] P1 -- #531 -- model priority list + ordered-fallback routing (router + persistence + IPC) (Model: opus)
+- [ ] P2 -- #532 -- drag-drop Model priority tray panel (replaces Switch model) (Model: sonnet)
 
 ## Landed PRs
 
@@ -36,16 +39,14 @@ Highest priority -- these override the "finish the slice" drive:
    `AnthropicBackend(client=...)` seams. No network in `cerebral/tests`.
 2. **No real secrets.** Never hardcode, commit, print, or persist a real API
    key. Tests use dummy keys only. The api_key stays in the keyring via
-   `CredentialStore` (provider `custom_model/<slug>`, field `api_token`) --
-   never in the `custom_models` table or logs.
-3. **Behaviour only checkable against a real remote server** (e.g. a live
-   `/v1/models` round-trip against bonsai) -> APPEND an item to
+   `CredentialStore` (provider `custom_model/<slug>`, field `api_token`).
+3. **Preserve no-silent-fallback (P1).** With the master fallback toggle OFF,
+   routing MUST keep today's behavior: use only the top enabled model and raise
+   `ModelUnavailableError` when it is down -- never silently fall through to
+   cloud. The ordered fallback chain only runs when the master toggle is ON.
+4. **Behaviour only checkable live** (a real `/v1/models` round-trip against
+   bonsai, or the actual drag-drop feel of the P2 panel) -> APPEND an item to
    `docs/model-servers-live-verify.md`; do NOT perform it in the loop.
-4. **S4 (#526) is HITL.** When S4 becomes Active, do NOT implement it. Set
-   `Status: blocked` with reason "S4 needs human security review (ADR-0005
-   threat gating -- LLM adding a model server is a data-exfiltration
-   amplifier)", commit MODEL-SERVERS.md to master, and stop WITHOUT opening a
-   PR. The loop halts here for a human.
 5. **ASCII-only PowerShell** script bodies (CLAUDE.md gotcha 1). No orphan
    `python -m cerebral.main` process left behind (gotcha 3 applies to any
    detached spawn).
