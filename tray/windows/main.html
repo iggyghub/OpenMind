@@ -5213,18 +5213,20 @@
               <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
             </label>
           </div>
-          <div class="set-section">Add model</div>
+          <div class="set-section">Add model server</div>
           <div class="set-add-model" id="set-add-model-form">
+            <input class="set-add-input" id="set-add-name" type="text"
+                   placeholder="Name (e.g. bonsai)">
             <select class="set-interval-select" id="set-add-kind">
-              <option value="ollama">Ollama server</option>
-              <option value="openai">OpenAI-compatible</option>
-              <option value="anthropic">Anthropic</option>
+              <option value="openai">Custom server (OpenAI API)</option>
+              <option value="ollama">Ollama (local server)</option>
+              <option value="anthropic">Anthropic (Claude)</option>
             </select>
             <input class="set-add-input" id="set-add-url" type="url"
                    placeholder="Server URL (http://host:port)">
             <datalist id="set-model-suggestions"></datalist>
             <input class="set-add-input" id="set-add-model-name" type="text"
-                   placeholder="Model name (leave blank: auto)" list="set-model-suggestions">
+                   placeholder="Model name (blank = auto-detect)" list="set-model-suggestions">
             <button class="set-btn" id="set-fetch-models-btn" type="button">Fetch</button>
             <input class="set-add-input" id="set-add-key" type="password"
                    placeholder="API key (optional)" autocomplete="off">
@@ -5763,6 +5765,7 @@
     const setTaskListEl    = document.getElementById('set-task-list');
     const setRefreshBtn    = document.getElementById('set-refresh-btn');
     const setLocalOnlyEl   = document.getElementById('set-local-only-toggle');
+    const setAddNameEl       = document.getElementById('set-add-name');
     const setAddKindEl       = document.getElementById('set-add-kind');
     const setAddUrlEl        = document.getElementById('set-add-url');
     const setAddModelEl      = document.getElementById('set-add-model-name');
@@ -6290,6 +6293,7 @@
             setAddBtn.disabled = false;
             setAddBtn.textContent = 'Add';
             setAddErrorEl.hidden = true;
+            setAddNameEl.value = '';
             setAddUrlEl.value = '';
             setAddModelEl.value = '';
           }
@@ -9861,6 +9865,7 @@
     setAddBtn.addEventListener('click', () => {
       const kind = setAddKindEl.value;
       const model = setAddModelEl.value.trim();
+      const name = setAddNameEl.value.trim();
       // S3 (#525): blank model + a listable kind => dynamic (server-first).
       // Anthropic can't be dynamic (no /v1/models we can rely on).
       if (kind === 'anthropic' && !model) {
@@ -9876,7 +9881,9 @@
           kind,
           url: setAddUrlEl.value.trim(),
           model,
-          label: model,  // backend fills from URL host when blank (dynamic)
+          // Reference name for the connection; backend falls back
+          // model -> URL host when this is blank.
+          label: name || model,
           api_key: setAddKeyEl.value,  // write-only: cleared right after send
         },
       });
