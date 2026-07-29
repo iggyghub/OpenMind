@@ -42,7 +42,7 @@
     'integrations':  'harness',
     'credentials':   'harness',
     'permissions':   'harness',
-    'models':        'settings',
+    'models':        'settings/models',
   };
 
   // Accepts a hash string such as "#queue", "queue", "#harness/my_plugin"

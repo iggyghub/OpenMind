@@ -114,10 +114,15 @@ class ModelRouter:
         self._active_model = default_model
         self._last_model: str | None = None
         self._task_models: dict[str, str] = {}
+        self._local_only = False
 
     @property
     def active_model(self) -> str:
         return self._active_model
+
+    @property
+    def local_only(self) -> bool:
+        return self._local_only
 
     @property
     def last_model(self) -> str | None:
@@ -128,6 +133,8 @@ class ModelRouter:
         return bool(self._models.get(self._active_model, {}).get("is_cloud", False))
 
     def list_models(self) -> list[dict]:
+        # Local-only hides cloud entries entirely, so every model-picker surface
+        # (Settings switch-list, per-task cards, tray submenu) shows local only.
         return [
             {
                 "id": mid,
@@ -135,13 +142,40 @@ class ModelRouter:
                 "is_cloud": bool(info.get("is_cloud", False)),
                 "is_active": mid == self._active_model,
                 "is_last": mid == self._last_model,
+                "is_custom": mid.startswith("custom/"),
             }
             for mid, info in self._models.items()
+            if not (self._local_only and info.get("is_cloud"))
         ]
+
+    def add_backend(self, model_id: str, backend: Backend, label: str, is_cloud: bool) -> None:
+        """Register a user-added remote backend (custom/<slug>).
+
+        Same registry the discovered/cloud backends live in, so it flows
+        through list_models / switch_model / complete for free. Does not
+        change the active model."""
+        self._backends[model_id] = backend
+        self._models[model_id] = {"label": label, "is_cloud": bool(is_cloud)}
+        logger.info("[router] custom backend added → %s (cloud=%s)", model_id, is_cloud)
+
+    def remove_backend(self, model_id: str) -> None:
+        """Unregister a backend. If it was active or task-pinned, fall back to
+        a local model (or the first remaining backend) — never silently to cloud
+        beyond what was already active."""
+        self._backends.pop(model_id, None)
+        self._models.pop(model_id, None)
+        for task_type, mid in list(self._task_models.items()):
+            if mid == model_id:
+                del self._task_models[task_type]
+        if self._active_model == model_id:
+            self._active_model = self._first_local() or next(iter(self._backends), model_id)
+            logger.info("[router] active model fell back to %s after remove", self._active_model)
 
     def switch_model(self, model_id: str) -> None:
         if model_id not in self._backends:
             raise ValueError(f"unknown model '{model_id}'; known: {list(self._backends)}")
+        if self._local_only and self._models.get(model_id, {}).get("is_cloud"):
+            raise ValueError(f"cloud model '{model_id}' refused: local-only mode is on")
         self._active_model = model_id
         logger.info("[router] active model → %s", model_id)
 
@@ -153,6 +187,8 @@ class ModelRouter:
             return
         if model_id not in self._backends:
             raise ValueError(f"unknown model '{model_id}'; known: {list(self._backends)}")
+        if self._local_only and self._models.get(model_id, {}).get("is_cloud"):
+            raise ValueError(f"cloud model '{model_id}' refused: local-only mode is on")
         self._task_models[task_type] = model_id
         logger.info("[router] task '%s' → %s", task_type, model_id)
 
@@ -170,9 +206,38 @@ class ModelRouter:
         """
         for mid in QUALITY_PREFERRED:
             if mid in self._backends:
+                if self._local_only and self._models.get(mid, {}).get("is_cloud"):
+                    continue  # local-only: never seed a cloud quality model
                 self.set_task_model(QUALITY_TASK, mid)
                 return mid
         return None
+
+    def _first_local(self) -> str | None:
+        for mid in self._backends:
+            if mid.startswith("ollama/"):
+                return mid
+        return None
+
+    def set_local_only(self, enabled: bool) -> None:
+        """Cloud kill-switch (privacy). When on, cloud backends are hidden from
+        list_models(), refused by switch_model/set_task_model, and the active +
+        per-task models are moved to local so nothing can route to Claude.
+        """
+        self._local_only = bool(enabled)
+        if not self._local_only:
+            return
+        if self.active_is_cloud:
+            local = self._first_local()
+            if local:
+                self._active_model = local
+                logger.info("[router] local-only: active model moved to %s", local)
+            # ponytail: no local installed -> active stays cloud (degenerate,
+            # nothing can route). The Ollama-offline banner already flags this;
+            # add a real fallback model only if that combo actually bites someone.
+        for task_type, mid in list(self._task_models.items()):
+            if self._models.get(mid, {}).get("is_cloud"):
+                del self._task_models[task_type]
+                logger.info("[router] local-only: cleared cloud mapping for task '%s'", task_type)
 
     def refresh_local_backends(
         self,
@@ -269,6 +334,26 @@ def _pick_default(backends: dict[str, Backend]) -> str:
         if mid.startswith("ollama/"):
             return mid
     return next(iter(backends))
+
+
+# Custom (user-added remote) model kinds → backend class + is_cloud. A remote
+# Ollama is still "local-ish" inference the user runs, so local-only keeps it
+# (is_cloud=False); OpenAI-compatible + Anthropic route off-box → is_cloud=True,
+# hidden under the local-only kill-switch.
+CUSTOM_KINDS = ("ollama", "openai", "anthropic")
+
+
+def build_custom_backend(
+    kind: str, url: str, model: str, api_key: str | None = None
+) -> tuple[Backend, bool]:
+    """Build a (backend, is_cloud) pair for a user-added remote model."""
+    if kind == "ollama":
+        return OllamaBackend(url=url, model=model), False
+    if kind == "openai":
+        return ClawBackend(url=url, model=model), True
+    if kind == "anthropic":
+        return AnthropicBackend(model=model, api_key=api_key), True
+    raise ValueError(f"unknown custom model kind {kind!r}; known: {CUSTOM_KINDS}")
 
 
 def _real_backends() -> dict[str, Backend]:

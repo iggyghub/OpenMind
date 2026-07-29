@@ -25,7 +25,9 @@ const PANE_ROUTES = [
   // Original 16 routes (kept as shells or with content)
   'conversation', 'quick-ask', 'queue', 'insights', 'memory',
   'permissions', 'credentials', 'profiles', 'settings',
-  'models', 'conversations', 'integrations', 'recipes', 'job-search', 'documents',
+  // 'models' pane removed: model settings folded into the Settings pane so the
+  // 4-section nav can reach them (the #models hash still redirects to settings).
+  'conversations', 'integrations', 'recipes', 'job-search', 'documents',
   // S5 new routes
   'harness', 'library',
 ];
@@ -177,15 +179,36 @@ test('search bar is inside the static header so it persists across panes (S4)', 
   expect(insidePane).toBe(false);
 });
 
-// ── S5 — models pane has model controls; settings pane does not ──────────────
+// ── Model settings live in the Settings pane (reachable from the 4-section nav) ──
 
-test('models pane contains model control elements (S5)', () => {
-  const pane = root.querySelector('.pane[data-route="models"]');
+test('settings pane contains model control elements', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
   expect(pane).not.toBeNull();
   expect(pane.querySelector('#set-active-header')).not.toBeNull();
   expect(pane.querySelector('#set-model-list')).not.toBeNull();
   expect(pane.querySelector('#set-task-list')).not.toBeNull();
   expect(pane.querySelector('#set-refresh-btn')).not.toBeNull();
+  expect(pane.querySelector('#set-local-only-toggle')).not.toBeNull();
+});
+
+test('standalone models pane no longer exists', () => {
+  expect(root.querySelector('.pane[data-route="models"]')).toBeNull();
+});
+
+test('settings pane has General + AI-models sub-tabs', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  const tabs = pane.querySelectorAll('.set-tab');
+  expect(tabs.length).toBe(2);
+  const subs = Array.from(tabs).map((t) => t.getAttribute('data-set-sub'));
+  expect(subs).toContain('general');
+  expect(subs).toContain('models');
+  // Model controls live in the models sub-pane; appearance in the general one.
+  expect(pane.querySelector('.set-subpane[data-set-sub="models"] #set-model-list')).not.toBeNull();
+  expect(pane.querySelector('.set-subpane[data-set-sub="general"] #set-scale-select')).not.toBeNull();
+});
+
+test('switch-model list offers a None (default local) option', () => {
+  expect(inlineScript).toContain('__none__');
 });
 
 test('models pane task cards include tool + quality task types (#349)', () => {
@@ -195,11 +218,12 @@ test('models pane task cards include tool + quality task types (#349)', () => {
   expect(m[1]).toContain("'quality'");
 });
 
-test('settings pane no longer contains model control elements (S5)', () => {
+test('settings pane also keeps its appearance/voice controls alongside models', () => {
   const pane = root.querySelector('.pane[data-route="settings"]');
   expect(pane).not.toBeNull();
-  expect(pane.querySelector('#set-model-list')).toBeNull();
-  expect(pane.querySelector('#set-refresh-btn')).toBeNull();
+  // Model controls and app settings coexist in one Settings pane now.
+  expect(pane.querySelector('#set-model-list')).not.toBeNull();
+  expect(pane.querySelector('#set-scale-select')).not.toBeNull();
 });
 
 // ── S6 — appearance controls in settings pane ────────────────────────────────
@@ -860,6 +884,44 @@ test('.pane[hidden] uses !important so later same-specificity display rules cann
   // source order wins and those panes render stacked under the active one.
   const html = fs.readFileSync(HTML_PATH, 'utf8');
   expect(html).toMatch(/\.pane\[hidden\]\s*\{\s*display:\s*none\s*!important/);
+});
+
+// ── Custom / remote model server (Add-model form) ────────────────────────────
+
+test('settings models sub-pane has an Add-model form (custom remote models)', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  const form = pane.querySelector('#set-add-model-form');
+  expect(form).not.toBeNull();
+
+  // Kind select with the three supported backends.
+  const kind = form.querySelector('#set-add-kind');
+  expect(kind).not.toBeNull();
+  const kinds = Array.from(kind.querySelectorAll('option')).map((o) => o.getAttribute('value'));
+  expect(kinds).toEqual(['ollama', 'openai', 'anthropic']);
+
+  // URL, model, key inputs + Add button.
+  expect(form.querySelector('#set-add-url')).not.toBeNull();
+  expect(form.querySelector('#set-add-model-name')).not.toBeNull();
+  expect(form.querySelector('#set-add-btn')).not.toBeNull();
+
+  // The API key input must be type=password so it never renders on screen.
+  const key = form.querySelector('#set-add-key');
+  expect(key).not.toBeNull();
+  expect(key.getAttribute('type')).toBe('password');
+});
+
+test('inline script wires add_custom_model and remove_custom_model IPC verbs', () => {
+  expect(inlineScript).toMatch(/['"]add_custom_model['"]/);
+  expect(inlineScript).toMatch(/['"]remove_custom_model['"]/);
+  // Error event the backend returns on a failed ping is surfaced in the form.
+  expect(inlineScript).toMatch(/['"]custom_model_error['"]/);
+});
+
+test('custom switch-list rows get a remove control; api key is write-only', () => {
+  expect(inlineScript).toMatch(/data-remove-model/);
+  expect(inlineScript).toMatch(/m\.is_custom/);
+  // Key field cleared immediately after the send (never held in the DOM).
+  expect(inlineScript).toMatch(/setAddKeyEl\.value\s*=\s*''/);
 });
 
 // ── Script syntax ────────────────────────────────────────────────────────────
