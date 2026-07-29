@@ -26,11 +26,14 @@ from cerebral.audio.pipeline import AudioPipeline, DEFAULT_SIGNAL_WORDS
 from cerebral.db.profiles import Profile, ProfileManager
 from cerebral.llm.router import (
     CUSTOM_KINDS,
+    DYNAMIC_CUSTOM_KINDS,
+    DynamicModelBackend,
     ModelRouter,
     ModelUnavailableError,
     OllamaBackend,
     ToolCall,
     build_custom_backend,
+    dynamic_is_cloud,
     list_openai_models,
 )
 from cerebral.db.custom_models import CustomModelStore
@@ -127,6 +130,22 @@ if _active_profile and _active_profile.active_model:
 _custom_models = CustomModelStore()
 
 
+def _make_dynamic_persist_cb(profile_id: int, row: dict):
+    """Persistence callback for DynamicModelBackend re-resolves.
+
+    Upserts the cached model in the registry so the next Cerebral start
+    can hit the fast path without any network. Dynamic-only.
+    """
+    def _cb(new_model: str) -> None:
+        _custom_models.add(
+            profile_id, id=row["id"], kind=row["kind"], url=row["url"],
+            model=new_model, label=row["label"],
+            is_cloud=dynamic_is_cloud(row["kind"]),
+            secret_ref=row["secret_ref"], dynamic=True,
+        )
+    return _cb
+
+
 def _restore_custom_models() -> None:
     if not _active_profile:
         return
@@ -137,9 +156,18 @@ def _restore_custom_models() -> None:
             if row["secret_ref"] else None
         )
         try:
-            backend, is_cloud = build_custom_backend(
-                row["kind"], row["url"], row["model"], api_key
-            )
+            if row.get("dynamic"):
+                # Lazy: no network at startup even when the cached model is empty.
+                backend = DynamicModelBackend(
+                    row["kind"], row["url"],
+                    cached_model=row["model"], api_key=api_key,
+                    on_resolved=_make_dynamic_persist_cb(_active_profile.id, row),
+                )
+                is_cloud = dynamic_is_cloud(row["kind"])
+            else:
+                backend, is_cloud = build_custom_backend(
+                    row["kind"], row["url"], row["model"], api_key
+                )
         except ValueError as exc:
             logger.warning("[cerebral] skipping custom model %s: %s", row["id"], exc)
             continue
@@ -3126,28 +3154,46 @@ async def _handle_message(msg: dict) -> None:
         kind = (d.get("kind") or "").strip()
         url = (d.get("url") or "").strip()
         model = (d.get("model") or "").strip()
-        label = (d.get("label") or "").strip() or model
+        label_in = (d.get("label") or "").strip()
         api_key = (d.get("api_key") or "").strip()
+        # Server-first (S3 #525): blank model + a kind that can list models
+        # -> dynamic. The model is auto-resolved from the server on first use.
+        dynamic = (not model) and (kind in DYNAMIC_CUSTOM_KINDS)
+        # Label fallback: user text -> pinned model -> URL host -> "model".
+        from urllib.parse import urlparse
+        label = (
+            label_in or model
+            or (urlparse(url).hostname if url else "") or "model"
+        )
 
         async def _err(reason: str) -> None:
             await _broadcast({"type": "custom_model_error", "data": {"error": reason}})
 
         if kind not in CUSTOM_KINDS:
             await _err(f"unknown kind '{kind}'")
-        elif not model:
-            await _err("model name is required")
+        elif kind == "anthropic" and not model:
+            await _err("model name is required for Anthropic")
         elif kind != "anthropic" and not re.match(r"^https?://", url):
             await _err("URL must start with http:// or https://")
         elif not _active_profile:
             await _err("no active profile")
         else:
             try:
-                backend, is_cloud = build_custom_backend(kind, url, model, api_key or None)
+                if dynamic:
+                    backend = DynamicModelBackend(
+                        kind, url, cached_model="", api_key=api_key or None,
+                    )
+                    is_cloud = dynamic_is_cloud(kind)
+                else:
+                    backend, is_cloud = build_custom_backend(
+                        kind, url, model, api_key or None
+                    )
             except ValueError as exc:
                 await _err(str(exc))
                 return
             # Validate reachability BEFORE persisting so a broken config never
             # lands in the registry (never a silent cloud fallback either).
+            # For dynamic, ping also resolves the first cached model.
             ping_err = await _ping_custom_model(backend)
             if ping_err:
                 await _err(f"endpoint unreachable: {ping_err}")
@@ -3171,11 +3217,25 @@ async def _handle_message(msg: dict) -> None:
                     await _err(f"could not store API key: {exc}")
                     return
             _router.add_backend(mid, backend, label, is_cloud)
+            stored_model = backend.model if dynamic else model
+            row_for_cb = {
+                "id": mid, "kind": kind, "url": url, "label": label,
+                "secret_ref": secret_ref,
+            }
+            if dynamic:
+                # Wire persistence for future re-resolves (server swaps its model).
+                backend.on_resolved = _make_dynamic_persist_cb(
+                    _active_profile.id, row_for_cb
+                )
             _custom_models.add(
-                _active_profile.id, id=mid, kind=kind, url=url, model=model,
+                _active_profile.id, id=mid, kind=kind, url=url, model=stored_model,
                 label=label, is_cloud=is_cloud, secret_ref=secret_ref,
+                dynamic=dynamic,
             )
-            logger.info("[cerebral] Custom model added: %s (%s)", mid, kind)
+            logger.info(
+                "[cerebral] Custom model added: %s (%s%s)",
+                mid, kind, ", dynamic" if dynamic else "",
+            )
             await _broadcast(_models_list_event())
 
     elif t == "remove_custom_model":

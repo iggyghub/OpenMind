@@ -356,6 +356,100 @@ def build_custom_backend(
     raise ValueError(f"unknown custom model kind {kind!r}; known: {CUSTOM_KINDS}")
 
 
+# Dynamic (server-first) custom kinds: kinds whose model can be auto-resolved
+# from the server. Anthropic has no model-listing endpoint we can rely on, so
+# it's pinned-only.
+DYNAMIC_CUSTOM_KINDS = ("ollama", "openai")
+
+
+def dynamic_is_cloud(kind: str) -> bool:
+    """is_cloud for a dynamic custom kind — mirrors build_custom_backend."""
+    return kind == "openai"
+
+
+class DynamicModelBackend:
+    """Server-first custom backend: model auto-resolved from the server (S3 #525).
+
+    Lazy: no network at construction, so `_restore_custom_models` stays
+    offline-safe. On complete/complete_with_tools, if no model is cached,
+    resolves from `/v1/models` (openai) or `/api/tags` (ollama), picks the
+    first entry, caches it, then delegates. On a not-found (HTTP 404) from
+    the delegate, re-resolves once and retries -- catches "server swapped
+    its underlying model" without user action. Any further failure raises
+    ConnectionError so the router surfaces ModelUnavailableError.
+    """
+
+    def __init__(
+        self,
+        kind: str,
+        url: str,
+        cached_model: str = "",
+        api_key: str | None = None,
+        on_resolved: Callable[[str], None] | None = None,
+        # Test seams -- inject to avoid live HTTP.
+        openai_list_fn: Callable[[str, str | None], list[str]] | None = None,
+        ollama_list_fn: Callable[[str], list[str]] | None = None,
+    ):
+        if kind not in DYNAMIC_CUSTOM_KINDS:
+            raise ValueError(
+                f"dynamic model requires kind in {DYNAMIC_CUSTOM_KINDS}; got {kind!r}"
+            )
+        self.kind = kind
+        self.url = url
+        self.api_key = api_key
+        self._model = cached_model or ""
+        self.on_resolved = on_resolved
+        self._openai_list = openai_list_fn or (
+            lambda u, k: list_openai_models(u, api_key=k)
+        )
+        self._ollama_list = ollama_list_fn or (
+            lambda u: OllamaBackend.list_installed_models(url=u)
+        )
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def _resolve(self) -> str:
+        names = (
+            self._openai_list(self.url, self.api_key)
+            if self.kind == "openai"
+            else self._ollama_list(self.url)
+        )
+        if not names:
+            raise ConnectionError(
+                f"no models available at {self.url} (dynamic {self.kind})"
+            )
+        self._model = names[0]
+        if self.on_resolved:
+            self.on_resolved(self._model)
+        return self._model
+
+    def _inner(self) -> Backend:
+        return build_custom_backend(self.kind, self.url, self._model, self.api_key)[0]
+
+    async def _call(self, method: str, *args):
+        if not self._model:
+            self._resolve()
+        try:
+            return await getattr(self._inner(), method)(*args)
+        except ConnectionError as exc:
+            if "HTTP 404" not in str(exc):
+                raise
+            # Server swapped the model out from under us — re-resolve once, retry.
+            self._model = ""
+            self._resolve()
+            return await getattr(self._inner(), method)(*args)
+
+    async def complete(self, prompt: str, task_type: str = "chat") -> str:
+        return await self._call("complete", prompt, task_type)
+
+    async def complete_with_tools(
+        self, prompt: str, tools: list[dict]
+    ) -> ToolCall | str:
+        return await self._call("complete_with_tools", prompt, tools)
+
+
 def _real_backends() -> dict[str, Backend]:
     """Build backends from whatever Ollama has installed + the fixed cloud entries.
 

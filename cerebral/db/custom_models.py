@@ -9,10 +9,12 @@ field="api_token"); this table only records the secret_ref pointer.
   id         "custom/<slug>" — the ModelRouter backend id
   kind       ollama | openai | anthropic (see router.CUSTOM_KINDS)
   url        remote host (empty for anthropic)
-  model      model name passed to the backend
+  model      model name passed to the backend (empty '' for dynamic until first resolve)
   label      display label in the picker
   is_cloud   1 when hidden under the local-only kill-switch
   secret_ref keyring provider namespace for the api_key, or '' when none
+  dynamic    1 = server-first: model auto-resolved from the server; `model`
+             then doubles as the last-resolved cache for display + fast path
 """
 
 from __future__ import annotations
@@ -42,28 +44,39 @@ class CustomModelStore:
                 label      TEXT    NOT NULL DEFAULT '',
                 is_cloud   INTEGER NOT NULL DEFAULT 0 CHECK (is_cloud IN (0, 1)),
                 secret_ref TEXT    NOT NULL DEFAULT '',
+                dynamic    INTEGER NOT NULL DEFAULT 0 CHECK (dynamic IN (0, 1)),
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (profile_id, id),
                 FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
             );
         """)
+        # ponytail: S1 (#528) shipped without `dynamic`; a dev box with the
+        # older table needs the column added. Skips cleanly on fresh tables.
+        try:
+            self._con.execute(
+                "ALTER TABLE custom_models ADD COLUMN dynamic INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass
         self._con.commit()
 
     def add(
         self, profile_id: int, *, id: str, kind: str, url: str, model: str,
-        label: str, is_cloud: bool, secret_ref: str = "",
+        label: str, is_cloud: bool, secret_ref: str = "", dynamic: bool = False,
     ) -> None:
         """Upsert a custom model row for (profile, id)."""
         self._con.execute(
             """INSERT INTO custom_models
-                   (profile_id, id, kind, url, model, label, is_cloud, secret_ref)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   (profile_id, id, kind, url, model, label, is_cloud, secret_ref, dynamic)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(profile_id, id)
                DO UPDATE SET kind=excluded.kind, url=excluded.url,
                              model=excluded.model, label=excluded.label,
                              is_cloud=excluded.is_cloud,
-                             secret_ref=excluded.secret_ref""",
-            (profile_id, id, kind, url, model, label, 1 if is_cloud else 0, secret_ref),
+                             secret_ref=excluded.secret_ref,
+                             dynamic=excluded.dynamic""",
+            (profile_id, id, kind, url, model, label,
+             1 if is_cloud else 0, secret_ref, 1 if dynamic else 0),
         )
         self._con.commit()
 
@@ -77,13 +90,13 @@ class CustomModelStore:
 
     def list(self, profile_id: int) -> list[dict]:
         rows = self._con.execute(
-            """SELECT id, kind, url, model, label, is_cloud, secret_ref
+            """SELECT id, kind, url, model, label, is_cloud, secret_ref, dynamic
                  FROM custom_models WHERE profile_id=? ORDER BY created_at""",
             (profile_id,),
         ).fetchall()
         return [
             {"id": r["id"], "kind": r["kind"], "url": r["url"], "model": r["model"],
              "label": r["label"], "is_cloud": bool(r["is_cloud"]),
-             "secret_ref": r["secret_ref"]}
+             "secret_ref": r["secret_ref"], "dynamic": bool(r["dynamic"])}
             for r in rows
         ]
