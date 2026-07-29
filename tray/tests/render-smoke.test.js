@@ -998,6 +998,9 @@ test('inline script wires set_model_priority, set_model_enabled, set_model_fallb
   expect(inlineScript).toMatch(/dragstart/);
   expect(inlineScript).toMatch(/dragover/);
   expect(inlineScript).toMatch(/drop/);
+  // Drop indicator line on the target edge (up/down drag fix).
+  expect(inlineScript).toMatch(/is-drop-before/);
+  expect(inlineScript).toMatch(/is-drop-after/);
 });
 
 test('old switch_model single-select removed; per-task cards unchanged (P2 model-servers)', () => {
