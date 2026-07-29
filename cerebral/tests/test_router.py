@@ -713,3 +713,86 @@ def test_disabling_local_only_restores_cloud_visibility():
     assert "claude/haiku" in ids
     r.switch_model("claude/haiku")  # allowed again
     assert r.active_model == "claude/haiku"
+
+
+# ---------------------------------------------------------------------------
+# Custom (user-added remote) backends — add_backend / remove_backend
+# ---------------------------------------------------------------------------
+
+from cerebral.llm.router import (  # noqa: E402
+    AnthropicBackend,
+    ClawBackend,
+    OllamaBackend,
+    build_custom_backend,
+)
+
+
+def _two_backends():
+    a = AsyncMock(); a.complete.return_value = "local"
+    b = AsyncMock(); b.complete.return_value = "remote"
+    return a, b
+
+
+def test_add_backend_registers_and_lists():
+    local, remote = _two_backends()
+    r = ModelRouter(backends={"ollama/gemma4": local})
+    r.add_backend("custom/box", remote, "My Box", is_cloud=False)
+    ids = {m["id"] for m in r.list_models()}
+    assert "custom/box" in ids
+    entry = next(m for m in r.list_models() if m["id"] == "custom/box")
+    assert entry["label"] == "My Box"
+    assert entry["is_custom"] is True
+    assert entry["is_cloud"] is False
+
+
+async def test_added_backend_is_switchable_and_routes():
+    local, remote = _two_backends()
+    r = ModelRouter(backends={"ollama/gemma4": local})
+    r.add_backend("custom/box", remote, "My Box", is_cloud=False)
+    r.switch_model("custom/box")
+    assert await r.complete("hi") == "remote"
+
+
+def test_remove_backend_falls_back_to_local_when_active():
+    local, remote = _two_backends()
+    r = ModelRouter(backends={"ollama/gemma4": local})
+    r.add_backend("custom/box", remote, "My Box", is_cloud=True)
+    r.switch_model("custom/box")
+    r.remove_backend("custom/box")
+    assert r.active_model == "ollama/gemma4"
+    assert "custom/box" not in {m["id"] for m in r.list_models()}
+
+
+def test_remove_backend_clears_task_mapping():
+    local, remote = _two_backends()
+    r = ModelRouter(backends={"ollama/gemma4": local})
+    r.add_backend("custom/box", remote, "My Box", is_cloud=False)
+    r.set_task_model("quality", "custom/box")
+    r.remove_backend("custom/box")
+    assert "quality" not in r.task_models()
+
+
+def test_local_only_keeps_remote_ollama_but_hides_cloud_custom():
+    local, ol_remote = _two_backends()
+    _, cloud_remote = _two_backends()
+    r = ModelRouter(backends={"ollama/gemma4": local})
+    r.add_backend("custom/homelab", ol_remote, "Homelab Ollama", is_cloud=False)
+    r.add_backend("custom/openai", cloud_remote, "Cloud", is_cloud=True)
+    r.set_local_only(True)
+    ids = {m["id"] for m in r.list_models()}
+    assert "custom/homelab" in ids       # remote ollama survives local-only
+    assert "custom/openai" not in ids     # cloud custom is hidden
+
+
+def test_build_custom_backend_maps_kinds():
+    ob, cloud = build_custom_backend("ollama", "http://h:11434", "qwen")
+    assert isinstance(ob, OllamaBackend) and cloud is False
+    cb, cloud = build_custom_backend("openai", "http://h:8000", "gpt")
+    assert isinstance(cb, ClawBackend) and cloud is True
+    ab, cloud = build_custom_backend("anthropic", "", "claude-x", api_key="k")
+    assert isinstance(ab, AnthropicBackend) and cloud is True
+
+
+def test_build_custom_backend_rejects_unknown_kind():
+    with pytest.raises(ValueError, match="unknown custom model kind"):
+        build_custom_backend("bogus", "http://h", "m")

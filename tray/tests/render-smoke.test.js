@@ -886,6 +886,44 @@ test('.pane[hidden] uses !important so later same-specificity display rules cann
   expect(html).toMatch(/\.pane\[hidden\]\s*\{\s*display:\s*none\s*!important/);
 });
 
+// ── Custom / remote model server (Add-model form) ────────────────────────────
+
+test('settings models sub-pane has an Add-model form (custom remote models)', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  const form = pane.querySelector('#set-add-model-form');
+  expect(form).not.toBeNull();
+
+  // Kind select with the three supported backends.
+  const kind = form.querySelector('#set-add-kind');
+  expect(kind).not.toBeNull();
+  const kinds = Array.from(kind.querySelectorAll('option')).map((o) => o.getAttribute('value'));
+  expect(kinds).toEqual(['ollama', 'openai', 'anthropic']);
+
+  // URL, model, key inputs + Add button.
+  expect(form.querySelector('#set-add-url')).not.toBeNull();
+  expect(form.querySelector('#set-add-model-name')).not.toBeNull();
+  expect(form.querySelector('#set-add-btn')).not.toBeNull();
+
+  // The API key input must be type=password so it never renders on screen.
+  const key = form.querySelector('#set-add-key');
+  expect(key).not.toBeNull();
+  expect(key.getAttribute('type')).toBe('password');
+});
+
+test('inline script wires add_custom_model and remove_custom_model IPC verbs', () => {
+  expect(inlineScript).toMatch(/['"]add_custom_model['"]/);
+  expect(inlineScript).toMatch(/['"]remove_custom_model['"]/);
+  // Error event the backend returns on a failed ping is surfaced in the form.
+  expect(inlineScript).toMatch(/['"]custom_model_error['"]/);
+});
+
+test('custom switch-list rows get a remove control; api key is write-only', () => {
+  expect(inlineScript).toMatch(/data-remove-model/);
+  expect(inlineScript).toMatch(/m\.is_custom/);
+  // Key field cleared immediately after the send (never held in the DOM).
+  expect(inlineScript).toMatch(/setAddKeyEl\.value\s*=\s*''/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

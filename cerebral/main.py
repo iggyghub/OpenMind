@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from typing import Any
 
@@ -23,7 +24,14 @@ from pathlib import Path
 
 from cerebral.audio.pipeline import AudioPipeline, DEFAULT_SIGNAL_WORDS
 from cerebral.db.profiles import Profile, ProfileManager
-from cerebral.llm.router import ModelRouter, ModelUnavailableError, ToolCall
+from cerebral.llm.router import (
+    CUSTOM_KINDS,
+    ModelRouter,
+    ModelUnavailableError,
+    ToolCall,
+    build_custom_backend,
+)
+from cerebral.db.custom_models import CustomModelStore
 from cerebral.llm.planner import Planner, shortlist_tools, validate_tool_args
 from cerebral.llm.chain_engine import ChainEngine
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
@@ -112,6 +120,32 @@ if _active_profile and _active_profile.active_model:
             _active_profile.active_model,
             _router.active_model,
         )
+# Re-register user-added remote models (custom/<slug>) before local_only +
+# quality-seeding so they participate in both. Secrets come from the keyring.
+_custom_models = CustomModelStore()
+
+
+def _restore_custom_models() -> None:
+    if not _active_profile:
+        return
+    cred = CredentialStore()  # _get_credential_store() is defined later in the module
+    for row in _custom_models.list(_active_profile.id):
+        api_key = (
+            cred.get_secret(_active_profile.id, row["secret_ref"], "api_token")
+            if row["secret_ref"] else None
+        )
+        try:
+            backend, is_cloud = build_custom_backend(
+                row["kind"], row["url"], row["model"], api_key
+            )
+        except ValueError as exc:
+            logger.warning("[cerebral] skipping custom model %s: %s", row["id"], exc)
+            continue
+        _router.add_backend(row["id"], backend, row["label"], is_cloud)
+        logger.info("[cerebral] Restored custom model %s", row["id"])
+
+
+_restore_custom_models()
 # Cloud kill-switch: restore before seeding so no cloud model gets picked.
 if _active_profile and getattr(_active_profile, "local_only", False):
     _router.set_local_only(True)
@@ -2342,6 +2376,24 @@ def _projects_list_event() -> dict:
     }
 
 
+def _slugify(text: str) -> str:
+    """Lowercase kebab slug for a custom-model id; falls back to 'model'."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return slug or "model"
+
+
+async def _ping_custom_model(backend) -> str | None:
+    """Health-check a custom backend by asking it to complete. Returns an
+    error string on failure, or None when reachable. Any exception means
+    'invalid' — this is a one-time probe, not a hot path.
+    ponytail: reuses the backend's own complete() rather than per-kind pings."""
+    try:
+        await backend.complete("ping", "chat")
+        return None
+    except Exception as exc:  # noqa: BLE001 — a probe: any failure = unreachable
+        return str(exc) or exc.__class__.__name__
+
+
 def _models_list_event() -> dict:
     return {
         "type": "models_list",
@@ -3066,6 +3118,76 @@ async def _handle_message(msg: dict) -> None:
             _active_profile = _pm.get(_active_profile.id)
         logger.info("[cerebral] Local-only %s", "enabled" if enabled else "disabled")
         await _broadcast(_models_list_event())
+
+    elif t == "add_custom_model":
+        d = msg.get("data", {})
+        kind = (d.get("kind") or "").strip()
+        url = (d.get("url") or "").strip()
+        model = (d.get("model") or "").strip()
+        label = (d.get("label") or "").strip() or model
+        api_key = (d.get("api_key") or "").strip()
+
+        async def _err(reason: str) -> None:
+            await _broadcast({"type": "custom_model_error", "data": {"error": reason}})
+
+        if kind not in CUSTOM_KINDS:
+            await _err(f"unknown kind '{kind}'")
+        elif not model:
+            await _err("model name is required")
+        elif kind != "anthropic" and not re.match(r"^https?://", url):
+            await _err("URL must start with http:// or https://")
+        elif not _active_profile:
+            await _err("no active profile")
+        else:
+            try:
+                backend, is_cloud = build_custom_backend(kind, url, model, api_key or None)
+            except ValueError as exc:
+                await _err(str(exc))
+                return
+            # Validate reachability BEFORE persisting so a broken config never
+            # lands in the registry (never a silent cloud fallback either).
+            ping_err = await _ping_custom_model(backend)
+            if ping_err:
+                await _err(f"endpoint unreachable: {ping_err}")
+                return
+            # Unique custom/<slug> id.
+            base = "custom/" + _slugify(label)
+            mid = base
+            n = 2
+            existing = {m["id"] for m in _router.list_models()}
+            while mid in existing:
+                mid = f"{base}-{n}"
+                n += 1
+            secret_ref = ""
+            if api_key:
+                secret_ref = f"custom_model/{mid.split('/', 1)[1]}"
+                try:
+                    _get_credential_store().set_secret(
+                        _active_profile.id, secret_ref, "api_token", api_key
+                    )
+                except (RuntimeError, ValueError) as exc:
+                    await _err(f"could not store API key: {exc}")
+                    return
+            _router.add_backend(mid, backend, label, is_cloud)
+            _custom_models.add(
+                _active_profile.id, id=mid, kind=kind, url=url, model=model,
+                label=label, is_cloud=is_cloud, secret_ref=secret_ref,
+            )
+            logger.info("[cerebral] Custom model added: %s (%s)", mid, kind)
+            await _broadcast(_models_list_event())
+
+    elif t == "remove_custom_model":
+        mid = msg.get("data", {}).get("id")
+        if mid and mid.startswith("custom/") and _active_profile:
+            _router.remove_backend(mid)
+            secret_ref = f"custom_model/{mid.split('/', 1)[1]}"
+            # delete_credential sweeps every keyring field for the ref (no-op on
+            # the empty connected-account metadata row); keeps the store's
+            # delete-completeness invariant.
+            _get_credential_store().delete_credential(_active_profile.id, secret_ref)
+            _custom_models.remove(_active_profile.id, mid)
+            logger.info("[cerebral] Custom model removed: %s", mid)
+            await _broadcast(_models_list_event())
 
     elif t == "list_tools":
         await _broadcast({"type": "tools_list", "data": {"tools": _orc.tools_for_llm}})
