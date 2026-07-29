@@ -1,7 +1,7 @@
 """
 Files plugin — MCP server for Felix.
 
-Tools: create_file, read_file, move_file, delete_file, search_files.
+Tools: create_file, read_file, edit_file, move_file, delete_file, search_files.
 """
 import fnmatch
 import json
@@ -11,8 +11,9 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "files"
 
-# ADR-0005 / Issue #44 — read_file / search_files read; create_file writes;
-# move_file removes the source and writes the destination; delete_file deletes.
+# ADR-0005 / Issue #44 — read_file / search_files read; create_file and
+# edit_file write; move_file removes the source and writes the destination;
+# delete_file deletes.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
     "fs_read",
     "fs_write",
@@ -48,6 +49,25 @@ class FilesPlugin:
                         "path": {"type": "string"},
                     },
                     "required": ["path"],
+                },
+            ),
+            Tool(
+                name="edit_file",
+                description=(
+                    "Replace an exact substring in a file in place. Fails if "
+                    "old_string is not found, or occurs more than once and "
+                    "replace_all is not set."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "old_string": {"type": "string"},
+                        "new_string": {"type": "string"},
+                        "replace_all": {"type": "boolean", "description": "Replace every occurrence (default False)"},
+                    },
+                    "required": ["path", "old_string", "new_string"],
                 },
             ),
             Tool(
@@ -95,6 +115,8 @@ class FilesPlugin:
             return self._create_file(args)
         if tool_name == "read_file":
             return self._read_file(args)
+        if tool_name == "edit_file":
+            return self._edit_file(args)
         if tool_name == "move_file":
             return self._move_file(args)
         if tool_name == "delete_file":
@@ -117,6 +139,28 @@ class FilesPlugin:
         path = Path(args["path"])
         try:
             return ToolResult(content=path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            return ToolResult(content=str(exc), is_error=True)
+
+    def _edit_file(self, args: dict) -> ToolResult:
+        path = Path(args["path"])
+        old_string = args["old_string"]
+        new_string = args["new_string"]
+        replace_all = args.get("replace_all", False)
+        try:
+            text = path.read_text(encoding="utf-8")
+            count = text.count(old_string)
+            if count == 0:
+                return ToolResult(content=f"old_string not found in {path}", is_error=True)
+            if count > 1 and not replace_all:
+                return ToolResult(
+                    content=f"old_string is not unique in {path} ({count} occurrences); pass replace_all to replace them all",
+                    is_error=True,
+                )
+            replacements = count if replace_all else 1
+            new_text = text.replace(old_string, new_string, replacements)
+            path.write_text(new_text, encoding="utf-8")
+            return ToolResult(content=json.dumps({"path": str(path), "replacements": replacements}))
         except OSError as exc:
             return ToolResult(content=str(exc), is_error=True)
 

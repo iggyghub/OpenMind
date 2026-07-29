@@ -29,7 +29,13 @@ Lifecycle tools: `skill_enable`, `skill_disable`, `skill_uninstall`, plus
 
 Install-from-GitHub lands in #541.
 """
-from __future__ import annotations
+# NOTE: deliberately NO `from __future__ import annotations`. This module is
+# loaded by the orchestrator via spec_from_file_location, which does NOT place
+# it in sys.modules (a deliberate #153 choice). Under stringized annotations,
+# dataclasses' ClassVar check resolves field types by looking the module up in
+# sys.modules -- which fails here (module absent) and refuses the plugin at
+# load. Real annotation objects avoid that lookup. See test_orchestrator.py
+# ::test_every_real_plugin_declares_valid_required_capabilities.
 
 import json
 import logging
