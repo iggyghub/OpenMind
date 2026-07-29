@@ -9,19 +9,20 @@ add_custom_model IPC, router.add_backend).
 
 ## Next slice -- start here
 
-- **Active:** S2 -- #524
-- **Model:** sonnet
+- **Active:** S3 -- #525
+- **Model:** opus
 
 ## Queue
 
 - [x] S1 -- #523 -- OpenAI-compatible custom model works: Bearer auth + /v1 strip + 4xx caught (Model: opus)
-- [ ] S2 -- #524 -- model discovery: list_openai_models + discover_models IPC + Fetch datalist (Model: sonnet)
+- [x] S2 -- #524 -- model discovery: list_openai_models + discover_models IPC + Fetch datalist (Model: sonnet)
 - [ ] S3 -- #525 -- dynamic server-first model: auto-resolve + cache, one picker entry (Model: opus)
 - [ ] S4 -- #526 -- harness MCP tool model_server_* [HITL -- DO NOT IMPLEMENT, STOP] (Model: opus)
 
 ## Landed PRs
 
 - #528 -- S1 -- OpenAI-compatible custom servers: Bearer auth + /v1 strip + 4xx caught
+- #529 -- S2 -- model discovery: list_openai_models + discover_models IPC + Fetch datalist
 
 ## SAFETY
 
