@@ -51,3 +51,21 @@ the check.
 - [ ] Same drill with Ollama kind (blank model + Ollama server URL); the
       dynamic entry stays visible under **local-only** (openai-dynamic is
       hidden as expected).
+
+## P2 -- #532 -- drag-drop Model priority panel
+
+- [ ] Settings -> AI models: the "Model priority" section shows every known
+      model as a draggable row. Each row has a drag handle (vertical dots),
+      a kind badge (local / cloud / custom), and an on/off toggle checkbox.
+- [ ] Drag a row to a new position -- the list reorders and the tray sends
+      `set_model_priority` with the new order. A subsequent `models_list`
+      broadcast reflects the updated order. Fallback routing (if enabled)
+      now respects the drag order end-to-end on the next completion.
+- [ ] Toggle a per-row checkbox off (disable a model) -- `set_model_enabled`
+      is sent, the model is skipped by the router, and the checkbox stays
+      unchecked after the next `models_list` broadcast.
+- [ ] Toggle the master "Fallback chain" switch in the section header --
+      `set_model_fallback` is sent; when on, a failing primary routes to the
+      next enabled model; when off, failure raises `ModelUnavailableError`.
+- [ ] With `local_only` ON, cloud rows are visually dimmed and locked (not
+      draggable, toggle disabled). Switching `local_only` OFF restores them.

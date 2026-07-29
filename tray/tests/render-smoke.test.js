@@ -185,7 +185,8 @@ test('settings pane contains model control elements', () => {
   const pane = root.querySelector('.pane[data-route="settings"]');
   expect(pane).not.toBeNull();
   expect(pane.querySelector('#set-active-header')).not.toBeNull();
-  expect(pane.querySelector('#set-model-list')).not.toBeNull();
+  expect(pane.querySelector('#set-model-priority-list')).not.toBeNull();
+  expect(pane.querySelector('#set-model-fallback-toggle')).not.toBeNull();
   expect(pane.querySelector('#set-task-list')).not.toBeNull();
   expect(pane.querySelector('#set-refresh-btn')).not.toBeNull();
   expect(pane.querySelector('#set-local-only-toggle')).not.toBeNull();
@@ -203,12 +204,15 @@ test('settings pane has General + AI-models sub-tabs', () => {
   expect(subs).toContain('general');
   expect(subs).toContain('models');
   // Model controls live in the models sub-pane; appearance in the general one.
-  expect(pane.querySelector('.set-subpane[data-set-sub="models"] #set-model-list')).not.toBeNull();
+  expect(pane.querySelector('.set-subpane[data-set-sub="models"] #set-model-priority-list')).not.toBeNull();
   expect(pane.querySelector('.set-subpane[data-set-sub="general"] #set-scale-select')).not.toBeNull();
 });
 
-test('switch-model list offers a None (default local) option', () => {
-  expect(inlineScript).toContain('__none__');
+test('model priority panel replaces switch-model list (P2 #532)', () => {
+  // Old single-select switch gone; priority panel present.
+  expect(inlineScript).not.toContain('__none__');
+  expect(inlineScript).toMatch(/set-model-priority-list/);
+  expect(inlineScript).toMatch(/set-model-fallback-toggle/);
 });
 
 test('models pane task cards include tool + quality task types (#349)', () => {
@@ -222,7 +226,7 @@ test('settings pane also keeps its appearance/voice controls alongside models', 
   const pane = root.querySelector('.pane[data-route="settings"]');
   expect(pane).not.toBeNull();
   // Model controls and app settings coexist in one Settings pane now.
-  expect(pane.querySelector('#set-model-list')).not.toBeNull();
+  expect(pane.querySelector('#set-model-priority-list')).not.toBeNull();
   expect(pane.querySelector('#set-scale-select')).not.toBeNull();
 });
 
@@ -971,6 +975,33 @@ test('model input placeholder hints that blank means auto (S3 model-servers)', (
   const modelInput = root.querySelector('#set-add-model-name');
   expect(modelInput).not.toBeNull();
   expect(modelInput.getAttribute('placeholder') || '').toMatch(/auto/i);
+});
+
+// ── P2 model-servers -- drag-drop Model priority panel ───────────────────────
+
+test('priority panel elements exist in models sub-pane (P2 model-servers)', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  const sub  = pane.querySelector('.set-subpane[data-set-sub="models"]');
+  expect(sub.querySelector('#set-model-priority-list')).not.toBeNull();
+  expect(sub.querySelector('#set-model-fallback-toggle')).not.toBeNull();
+});
+
+test('inline script wires set_model_priority, set_model_enabled, set_model_fallback (P2 model-servers)', () => {
+  expect(inlineScript).toMatch(/['"]set_model_priority['"]/);
+  expect(inlineScript).toMatch(/['"]set_model_enabled['"]/);
+  expect(inlineScript).toMatch(/['"]set_model_fallback['"]/);
+  // Drag verbs: dragstart, dragover, drop.
+  expect(inlineScript).toMatch(/dragstart/);
+  expect(inlineScript).toMatch(/dragover/);
+  expect(inlineScript).toMatch(/drop/);
+});
+
+test('old switch_model single-select removed; per-task cards unchanged (P2 model-servers)', () => {
+  // switch_model send is gone.
+  expect(inlineScript).not.toMatch(/type:\s*['"]switch_model['"]/);
+  // Per-task cards still present.
+  expect(inlineScript).toMatch(/set-task-list/);
+  expect(inlineScript).toMatch(/set_task_model/);
 });
 
 // ── Script syntax ────────────────────────────────────────────────────────────
