@@ -4254,6 +4254,40 @@
     }
     .set-row-remove:hover { background: rgba(255, 90, 90, 0.15); color: #ff7a7a; }
 
+    /* P2 #532 -- Model priority panel */
+    .set-section-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .set-priority-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 18px;
+      border-bottom: 1px solid #1e1c30;
+      transition: background 0.1s;
+    }
+    .set-priority-row:last-child { border-bottom: none; }
+    .set-priority-row[draggable="true"] { cursor: grab; }
+    .set-priority-row[draggable="true"]:hover { background: rgba(255, 255, 255, 0.02); }
+    .set-priority-row.is-locked { opacity: 0.45; cursor: default; }
+    .set-priority-row.is-drag-over { background: rgba(255, 140, 105, 0.08); }
+    .set-priority-drag { color: var(--text-muted); font-size: 14px; user-select: none; flex-shrink: 0; }
+    .set-priority-label { flex: 1; font-size: 13px; color: var(--text); font-family: 'Consolas', 'Cascadia Code', monospace; }
+    .set-priority-badge {
+      font-size: 9px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 1px 6px;
+      border-radius: 6px;
+      flex-shrink: 0;
+      background: var(--bg-elev);
+      color: var(--text-muted);
+    }
+    .set-priority-badge.is-cloud { background: rgba(255, 140, 105, 0.14); color: #ff8c69; }
+    .set-priority-badge.is-custom { background: rgba(100, 180, 255, 0.14); color: #7ac4ff; }
+
     .set-add-model {
       display: flex;
       flex-wrap: wrap;
@@ -5197,8 +5231,14 @@
             <button class="set-btn" id="set-add-btn" type="button">Add</button>
             <div class="set-add-error" id="set-add-error" hidden></div>
           </div>
-          <div class="set-section">Switch model</div>
-          <div id="set-model-list">
+          <div class="set-section set-section-row">
+            <span>Model priority</span>
+            <label class="set-toggle" title="Ordered fallback chain: try next model on failure">
+              <input type="checkbox" id="set-model-fallback-toggle">
+              <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
+            </label>
+          </div>
+          <div id="set-model-priority-list">
             <div class="prof-empty">No models known yet &#8212; try Refresh.</div>
           </div>
           <div class="set-section">Per-task models</div>
@@ -5718,7 +5758,8 @@
     const setActiveCloudEl = document.getElementById('set-active-cloud');
     const setLastLineEl    = document.getElementById('set-last-line');
     const setOfflineEl     = document.getElementById('set-offline');
-    const setModelListEl   = document.getElementById('set-model-list');
+    const setModelPriorityListEl = document.getElementById('set-model-priority-list');
+    const setModelFallbackEl     = document.getElementById('set-model-fallback-toggle');
     const setTaskListEl    = document.getElementById('set-task-list');
     const setRefreshBtn    = document.getElementById('set-refresh-btn');
     const setLocalOnlyEl   = document.getElementById('set-local-only-toggle');
@@ -5805,12 +5846,13 @@
     // sync without any cross-talk. Task types match the tray's default
     // (chat + extraction).
     let modelsState = {
-      models:          [],
-      active:          null,
-      last:            null,
-      active_is_cloud: false,
-      task_models:     {},
-      local_only:      false,
+      models:           [],
+      active:           null,
+      last:             null,
+      active_is_cloud:  false,
+      task_models:      {},
+      local_only:       false,
+      fallback_enabled: false,
     };
     // 'tool' = planner tool-selection; 'quality' = correctness-critical jobs
     // reasoning (field-mapping, fit-scoring, dossier extraction) — #349.
@@ -6233,12 +6275,13 @@
           // surfaces stay in sync.
           const d = event.data || {};
           modelsState = {
-            models:          d.models          || [],
-            active:          d.active          || null,
-            last:            d.last            || null,
-            active_is_cloud: !!d.active_is_cloud,
-            task_models:     d.task_models     || {},
-            local_only:      !!d.local_only,
+            models:           d.models          || [],
+            active:           d.active          || null,
+            last:             d.last            || null,
+            active_is_cloud:  !!d.active_is_cloud,
+            task_models:      d.task_models     || {},
+            local_only:       !!d.local_only,
+            fallback_enabled: !!d.fallback_enabled,
           };
           renderSettings();
           renderThreadModelSelect();  // S13 -- refresh override select with current model list
@@ -9662,29 +9705,31 @@
       const hasLocal = models.some((m) => !m.is_cloud);
       setOfflineEl.hidden = hasLocal || models.length === 0;
 
-      // Switch-model list.
+      // Model priority panel (P2 #532).
+      if (setModelFallbackEl) setModelFallbackEl.checked = !!modelsState.fallback_enabled;
       if (models.length === 0) {
-        setModelListEl.innerHTML =
+        setModelPriorityListEl.innerHTML =
           '<div class="prof-empty">No models known yet — try Refresh.</div>';
       } else {
-        // "None" reverts to the default local model (first installed local),
-        // i.e. no forced override. Active when the current model IS that default.
-        const defaultLocal = (models.find((m) => !m.is_cloud) || {}).id || '';
-        const noneRow = `
-          <div class="set-row ${active === defaultLocal ? 'is-active' : ''}"
-               data-set-switch="__none__">
-            <span class="set-radio"></span>
-            <span class="set-row-name">None &mdash; use default local model</span>
-          </div>`;
-        setModelListEl.innerHTML = noneRow + models.map((m) => `
-          <div class="set-row ${m.is_active ? 'is-active' : ''}"
-               data-set-switch="${escHtml(m.id)}">
-            <span class="set-radio"></span>
-            <span class="set-row-name">${escHtml(setFormatModelLabel(m))}</span>
-            ${m.is_custom ? `<button class="set-row-remove" type="button"
-               data-remove-model="${escHtml(m.id)}" title="Remove">&times;</button>` : ''}
-          </div>
-        `).join('');
+        setModelPriorityListEl.innerHTML = models.map((m) => {
+          const kind   = m.is_cloud ? 'cloud' : (m.is_custom ? 'custom' : 'local');
+          const locked = !!(modelsState.local_only && m.is_cloud);
+          return `
+            <div class="set-priority-row${locked ? ' is-locked' : ''}"
+                 draggable="${locked ? 'false' : 'true'}"
+                 data-priority-id="${escHtml(m.id)}">
+              <span class="set-priority-drag" aria-hidden="true">&#8942;</span>
+              <span class="set-priority-label">${escHtml(m.label || m.id)}</span>
+              <span class="set-priority-badge is-${kind}">${kind}</span>
+              <input type="checkbox" class="set-priority-toggle"
+                     data-priority-id="${escHtml(m.id)}"
+                     ${m.enabled && !locked ? 'checked' : ''}
+                     ${locked ? 'disabled' : ''}
+                     title="${locked ? 'Locked: local-only mode' : (m.enabled ? 'Disable' : 'Enable')}">
+              ${m.is_custom ? `<button class="set-row-remove" type="button"
+                 data-remove-model="${escHtml(m.id)}" title="Remove">&times;</button>` : ''}
+            </div>`;
+        }).join('');
       }
 
       // Per-task cards.
@@ -9724,26 +9769,63 @@
       }).join('');
     }
 
-    setModelListEl.addEventListener('click', (e) => {
+    // P2 #532 -- Model priority panel: remove custom, per-row enabled toggle, drag-drop reorder.
+    setModelPriorityListEl.addEventListener('click', (e) => {
       const rm = e.target.closest('[data-remove-model]');
       if (rm) {
         sendEvent({ type: 'remove_custom_model', data: { id: rm.dataset.removeModel } });
-        return;
       }
-      const row = e.target.closest('[data-set-switch]');
-      if (!row) return;
-      const id = row.dataset.setSwitch;
-      if (id === '__none__') {
-        // Revert to the default local model (first installed local).
-        const def = (modelsState.models.find((m) => !m.is_cloud) || {}).id;
-        if (def && def !== modelsState.active) {
-          sendEvent({ type: 'switch_model', data: { model_id: def } });
-        }
-        return;
-      }
-      if (!id || id === modelsState.active) return;
-      sendEvent({ type: 'switch_model', data: { model_id: id } });
     });
+
+    setModelPriorityListEl.addEventListener('change', (e) => {
+      const cb = e.target.closest('.set-priority-toggle[data-priority-id]');
+      if (!cb) return;
+      sendEvent({ type: 'set_model_enabled', data: { model_id: cb.dataset.priorityId, enabled: cb.checked } });
+    });
+
+    let _priorityDragId = null;
+
+    setModelPriorityListEl.addEventListener('dragstart', (e) => {
+      const row = e.target.closest('[data-priority-id]');
+      if (!row || row.getAttribute('draggable') === 'false') return;
+      _priorityDragId = row.dataset.priorityId;
+      row.classList.add('is-dragging');
+    });
+
+    setModelPriorityListEl.addEventListener('dragend', () => {
+      setModelPriorityListEl.querySelectorAll('.is-dragging,.is-drag-over')
+        .forEach((el) => el.classList.remove('is-dragging', 'is-drag-over'));
+    });
+
+    setModelPriorityListEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      const row = e.target.closest('[data-priority-id]');
+      if (!row) return;
+      setModelPriorityListEl.querySelectorAll('.is-drag-over')
+        .forEach((el) => el.classList.remove('is-drag-over'));
+      row.classList.add('is-drag-over');
+    });
+
+    setModelPriorityListEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const target = e.target.closest('[data-priority-id]');
+      if (!target || !_priorityDragId || target.dataset.priorityId === _priorityDragId) return;
+      const rows  = Array.from(setModelPriorityListEl.querySelectorAll('[data-priority-id]'));
+      const order = rows.map((r) => r.dataset.priorityId);
+      const fromIdx = order.indexOf(_priorityDragId);
+      const toIdx   = order.indexOf(target.dataset.priorityId);
+      if (fromIdx < 0 || toIdx < 0) return;
+      order.splice(fromIdx, 1);
+      order.splice(toIdx, 0, _priorityDragId);
+      sendEvent({ type: 'set_model_priority', data: { order } });
+      _priorityDragId = null;
+    });
+
+    if (setModelFallbackEl) {
+      setModelFallbackEl.addEventListener('change', () => {
+        sendEvent({ type: 'set_model_fallback', data: { enabled: setModelFallbackEl.checked } });
+      });
+    }
 
     setTaskListEl.addEventListener('click', (e) => {
       const row = e.target.closest('[data-set-task]');
@@ -10896,7 +10978,7 @@
     _registerProvider('models', function (_query) {
       return [
         { label: 'Active model',    route: 'models', anchor: 'set-active-header' },
-        { label: 'Switch model',    route: 'models', anchor: 'set-model-list' },
+        { label: 'Model priority',  route: 'models', anchor: 'set-model-priority-list' },
         { label: 'Per-task models', route: 'models', anchor: 'set-task-list' },
         { label: 'Refresh models',  route: 'models', anchor: 'set-refresh-btn' },
       ];
