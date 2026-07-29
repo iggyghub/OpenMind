@@ -901,9 +901,11 @@ test('settings models sub-pane has an Add-model form (custom remote models)', ()
   const kind = form.querySelector('#set-add-kind');
   expect(kind).not.toBeNull();
   const kinds = Array.from(kind.querySelectorAll('option')).map((o) => o.getAttribute('value'));
-  expect(kinds).toEqual(['ollama', 'openai', 'anthropic']);
+  // openai leads (the common third-party-server case) so it's the default.
+  expect(kinds).toEqual(['openai', 'ollama', 'anthropic']);
 
-  // URL, model, key inputs + Add button.
+  // Name (connection label), URL, model, key inputs + Add button.
+  expect(form.querySelector('#set-add-name')).not.toBeNull();
   expect(form.querySelector('#set-add-url')).not.toBeNull();
   expect(form.querySelector('#set-add-model-name')).not.toBeNull();
   expect(form.querySelector('#set-add-btn')).not.toBeNull();
@@ -919,6 +921,8 @@ test('inline script wires add_custom_model and remove_custom_model IPC verbs', (
   expect(inlineScript).toMatch(/['"]remove_custom_model['"]/);
   // Error event the backend returns on a failed ping is surfaced in the form.
   expect(inlineScript).toMatch(/['"]custom_model_error['"]/);
+  // The Name field feeds the connection label (falls back to model, then host).
+  expect(inlineScript).toMatch(/label:\s*name\s*\|\|\s*model/);
 });
 
 test('custom switch-list rows get a remove control; api key is write-only', () => {
