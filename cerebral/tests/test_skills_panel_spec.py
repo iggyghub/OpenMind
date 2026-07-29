@@ -154,15 +154,18 @@ def test_panel_spec_seed_skill_source_is_seed(tmp_path):
     assert fields["Source"] == "seed"
 
 
-def test_panel_spec_disabled_skill_instructions_show_the_gate_message(tmp_path):
-    """skill_use refuses a disabled skill's body (ADR-0014); the panel shows
-    that refusal message verbatim rather than crashing or hiding the field."""
-    _write_skill(tmp_path / "seed", "grill-me")
+def test_panel_spec_disabled_skill_instructions_show_body_for_review(tmp_path):
+    """A disabled skill's real body is shown so the user can review it before
+    enabling (ADR-0014 review-before-enable); the panel uses the ungated
+    skill_preview read, not the planner-facing skill_use gate."""
+    _write_skill(tmp_path / "seed", "grill-me", body="Ask five hard questions.")
     plugin = _plugin(tmp_path)  # not enabled
     spec = plugin.panel_spec(1)
     detail = next(w for w in spec["widgets"] if w["type"] == "detail" and w["id"] == "skill-grill-me")
     fields = {f["label"]: f["value"] for f in detail["fields"]}
-    assert "disabled" in fields["Instructions"]
+    assert fields["Enabled"] == "no"
+    assert "Ask five hard questions." in fields["Instructions"]
+    assert "disabled" not in fields["Instructions"]
 
 
 def test_panel_spec_enabled_skill_instructions_show_body(tmp_path):

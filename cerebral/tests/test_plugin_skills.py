@@ -355,3 +355,23 @@ async def test_skill_install_subpath(tmp_path):
     result = await plugin.call_tool("skill_install", {"repo": "owner/r", "subpath": "pkg"})
     assert not result.is_error, result.content
     assert (tmp_path / "installed" / "alpha" / "SKILL.md").is_file()
+
+
+# ---------------------------------------------------------------------------
+# skill_preview (S5 follow-up) -- ungated review read
+# ---------------------------------------------------------------------------
+
+async def test_skill_preview_returns_disabled_skill_body(tmp_path):
+    _write_skill(tmp_path / "seed", "grill-me", body="Ask five hard questions.")
+    plugin = _plugin(tmp_path)  # not enabled
+    result = await plugin.call_tool("skill_preview", {"name": "grill-me"})
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["enabled"] is False
+    assert "Ask five hard questions." in data["instructions"]
+
+
+async def test_skill_preview_unknown_errors(tmp_path):
+    plugin = _plugin(tmp_path)
+    result = await plugin.call_tool("skill_preview", {"name": "nope"})
+    assert result.is_error and "nope" in result.content
