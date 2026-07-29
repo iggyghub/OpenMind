@@ -111,14 +111,34 @@ class ModelRouter:
             models.setdefault(mid, {"label": mid, "is_cloud": False})
         self._backends = backends
         self._models = models
-        self._active_model = default_model
         self._last_model: str | None = None
         self._task_models: dict[str, str] = {}
         self._local_only = False
+        # Priority list + enabled-set + master fallback toggle (P1 #531).
+        # active_model is derived: first enabled + routable model in priority
+        # order. switch_model moves an id to the top.
+        self._priority: list[str] = (
+            [default_model] + [mid for mid in backends if mid != default_model]
+        )
+        self._enabled: dict[str, bool] = {mid: True for mid in backends}
+        self._fallback_enabled: bool = False
 
     @property
     def active_model(self) -> str:
-        return self._active_model
+        for mid in self._priority:
+            if mid not in self._backends:
+                continue
+            if not self._enabled.get(mid, True):
+                continue
+            if self._local_only and self._models.get(mid, {}).get("is_cloud"):
+                continue
+            return mid
+        # Degenerate: nothing routable. Fall back to the top of the priority
+        # list (even if disabled/hidden) or the first backend id.
+        for mid in self._priority:
+            if mid in self._backends:
+                return mid
+        return next(iter(self._backends), "")
 
     @property
     def local_only(self) -> bool:
@@ -130,53 +150,107 @@ class ModelRouter:
 
     @property
     def active_is_cloud(self) -> bool:
-        return bool(self._models.get(self._active_model, {}).get("is_cloud", False))
+        return bool(self._models.get(self.active_model, {}).get("is_cloud", False))
+
+    @property
+    def fallback_enabled(self) -> bool:
+        return self._fallback_enabled
+
+    def priority(self) -> list[str]:
+        return list(self._priority)
+
+    def enabled_map(self) -> dict[str, bool]:
+        return {mid: bool(self._enabled.get(mid, True)) for mid in self._priority}
 
     def list_models(self) -> list[dict]:
         # Local-only hides cloud entries entirely, so every model-picker surface
         # (Settings switch-list, per-task cards, tray submenu) shows local only.
-        return [
-            {
+        top = self.active_model
+        out: list[dict] = []
+        position = 0
+        for mid in self._priority:
+            if mid not in self._backends:
+                continue
+            info = self._models.get(mid, {})
+            if self._local_only and info.get("is_cloud"):
+                continue
+            out.append({
                 "id": mid,
                 "label": info.get("label", mid),
                 "is_cloud": bool(info.get("is_cloud", False)),
-                "is_active": mid == self._active_model,
+                "is_active": mid == top,
                 "is_last": mid == self._last_model,
                 "is_custom": mid.startswith("custom/"),
-            }
-            for mid, info in self._models.items()
-            if not (self._local_only and info.get("is_cloud"))
-        ]
+                "enabled": bool(self._enabled.get(mid, True)),
+                "position": position,
+            })
+            position += 1
+        return out
+
+    def set_priority(self, order: list[str]) -> None:
+        """Replace the priority ordering. Unknown ids are dropped, known-but-missing
+        backends are appended at the end so the router keeps a full row."""
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for mid in order:
+            if mid in self._backends and mid not in seen:
+                cleaned.append(mid)
+                seen.add(mid)
+        for mid in self._backends:
+            if mid not in seen:
+                cleaned.append(mid)
+        self._priority = cleaned
+        logger.info("[router] priority set: %s", cleaned)
+
+    def set_model_enabled(self, model_id: str, enabled: bool) -> None:
+        if model_id not in self._backends:
+            raise ValueError(
+                f"unknown model '{model_id}'; known: {list(self._backends)}"
+            )
+        self._enabled[model_id] = bool(enabled)
+        logger.info(
+            "[router] model %s %s", model_id, "enabled" if enabled else "disabled"
+        )
+
+    def set_fallback(self, enabled: bool) -> None:
+        self._fallback_enabled = bool(enabled)
+        logger.info(
+            "[router] master fallback %s", "enabled" if enabled else "disabled"
+        )
 
     def add_backend(self, model_id: str, backend: Backend, label: str, is_cloud: bool) -> None:
         """Register a user-added remote backend (custom/<slug>).
 
         Same registry the discovered/cloud backends live in, so it flows
-        through list_models / switch_model / complete for free. Does not
-        change the active model."""
+        through list_models / switch_model / complete for free. Appended at
+        the bottom of the priority list, enabled by default."""
         self._backends[model_id] = backend
         self._models[model_id] = {"label": label, "is_cloud": bool(is_cloud)}
+        if model_id not in self._priority:
+            self._priority.append(model_id)
+        self._enabled.setdefault(model_id, True)
         logger.info("[router] custom backend added → %s (cloud=%s)", model_id, is_cloud)
 
     def remove_backend(self, model_id: str) -> None:
-        """Unregister a backend. If it was active or task-pinned, fall back to
-        a local model (or the first remaining backend) — never silently to cloud
-        beyond what was already active."""
+        """Unregister a backend. Drops from priority + enabled + task pins.
+        active_model derives from what's left."""
         self._backends.pop(model_id, None)
         self._models.pop(model_id, None)
+        self._enabled.pop(model_id, None)
+        self._priority = [m for m in self._priority if m != model_id]
         for task_type, mid in list(self._task_models.items()):
             if mid == model_id:
                 del self._task_models[task_type]
-        if self._active_model == model_id:
-            self._active_model = self._first_local() or next(iter(self._backends), model_id)
-            logger.info("[router] active model fell back to %s after remove", self._active_model)
 
     def switch_model(self, model_id: str) -> None:
         if model_id not in self._backends:
             raise ValueError(f"unknown model '{model_id}'; known: {list(self._backends)}")
         if self._local_only and self._models.get(model_id, {}).get("is_cloud"):
             raise ValueError(f"cloud model '{model_id}' refused: local-only mode is on")
-        self._active_model = model_id
+        # switch_model moves the id to the top of priority and re-enables it,
+        # so the derived active_model follows.
+        self._priority = [model_id] + [m for m in self._priority if m != model_id]
+        self._enabled[model_id] = True
         logger.info("[router] active model → %s", model_id)
 
     def set_task_model(self, task_type: str, model_id: str | None) -> None:
@@ -194,7 +268,7 @@ class ModelRouter:
 
     def get_task_model(self, task_type: str) -> str:
         """Resolve which model id will handle a given task type."""
-        return self._task_models.get(task_type, self._active_model)
+        return self._task_models.get(task_type, self.active_model)
 
     def task_models(self) -> dict[str, str]:
         return dict(self._task_models)
@@ -212,28 +286,14 @@ class ModelRouter:
                 return mid
         return None
 
-    def _first_local(self) -> str | None:
-        for mid in self._backends:
-            if mid.startswith("ollama/"):
-                return mid
-        return None
-
     def set_local_only(self, enabled: bool) -> None:
         """Cloud kill-switch (privacy). When on, cloud backends are hidden from
-        list_models(), refused by switch_model/set_task_model, and the active +
-        per-task models are moved to local so nothing can route to Claude.
-        """
+        list_models(), refused by switch_model/set_task_model, and excluded
+        from routing so nothing can route to Claude. active_model is derived
+        and skips cloud automatically."""
         self._local_only = bool(enabled)
         if not self._local_only:
             return
-        if self.active_is_cloud:
-            local = self._first_local()
-            if local:
-                self._active_model = local
-                logger.info("[router] local-only: active model moved to %s", local)
-            # ponytail: no local installed -> active stays cloud (degenerate,
-            # nothing can route). The Ollama-offline banner already flags this;
-            # add a real fallback model only if that combo actually bites someone.
         for task_type, mid in list(self._task_models.items()):
             if self._models.get(mid, {}).get("is_cloud"):
                 del self._task_models[task_type]
@@ -246,26 +306,28 @@ class ModelRouter:
     ) -> list[str]:
         """Re-query Ollama and update local (`ollama/*`) backends in place.
 
-        Cloud backends are preserved. If the active model was uninstalled,
-        falls back to another available backend. Returns the list of
-        currently-installed `ollama/*` model ids.
+        Cloud + custom backends are preserved. Newly-discovered locals are
+        appended at the end of priority (enabled by default). active_model
+        derives from what remains. Returns the list of currently-installed
+        `ollama/*` model ids.
         """
         for mid in list(self._backends):
             if mid.startswith("ollama/"):
                 del self._backends[mid]
                 self._models.pop(mid, None)
+                self._enabled.pop(mid, None)
+        self._priority = [m for m in self._priority if not m.startswith("ollama/")]
 
         new_ids: list[str] = []
         for name in OllamaBackend.list_installed_models(url=url, tags_fetch_fn=tags_fetch_fn):
             mid = f"ollama/{name}"
             self._backends[mid] = OllamaBackend(url=url, model=name)
             self._models[mid] = {"label": name, "is_cloud": False}
+            self._enabled.setdefault(mid, True)
             new_ids.append(mid)
-
-        if self._active_model not in self._backends:
-            # Prefer a freshly-discovered local model; otherwise first remaining backend.
-            self._active_model = new_ids[0] if new_ids else next(iter(self._backends), self._active_model)
-            logger.info("[router] active model fell back to %s after refresh", self._active_model)
+        # Newly-discovered locals go to the end of priority so a user's
+        # existing ordering (from set_priority / switch_model) survives.
+        self._priority = self._priority + new_ids
 
         # Drop any per-task mappings that point to uninstalled models.
         for task_type, mid in list(self._task_models.items()):
@@ -274,29 +336,66 @@ class ModelRouter:
 
         return new_ids
 
+    def _routable_chain(self) -> list[str]:
+        """Enabled + non-hidden + present-in-backends models, in priority order."""
+        out: list[str] = []
+        for mid in self._priority:
+            if mid not in self._backends:
+                continue
+            if not self._enabled.get(mid, True):
+                continue
+            if self._local_only and self._models.get(mid, {}).get("is_cloud"):
+                continue
+            out.append(mid)
+        return out
+
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
-        model_id = self._task_models.get(task_type, self._active_model)
+        top = self.active_model
+        model_id = self._task_models.get(task_type, top)
         # Graceful fallback (issue #349): a per-task model that is missing or
         # unreachable falls back to the active model with a log. The active
-        # model itself failing still raises — never a silent cloud fallback.
+        # model itself failing still raises — never a silent cloud fallback
+        # unless the master fallback toggle is on.
         if model_id not in self._backends:
             logger.warning(
                 "[router] task '%s' model '%s' not available — using active %s",
-                task_type, model_id, self._active_model,
+                task_type, model_id, top,
             )
-            model_id = self._active_model
+            model_id = top
+
+        if self._fallback_enabled:
+            chain = self._routable_chain()
+            attempts = [model_id] + [m for m in chain if m != model_id]
+            attempts = [m for m in attempts if m in self._backends]
+            last_exc: Exception | None = None
+            for mid in attempts:
+                try:
+                    response = await self._backends[mid].complete(prompt, task_type)
+                except (OSError, ConnectionError) as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "[router] fallback: '%s' unavailable (%s) — trying next", mid, exc,
+                    )
+                    continue
+                self._last_model = mid
+                logger.info("[router] %s handled request", mid)
+                return response
+            raise ModelUnavailableError(
+                f"all enabled models unavailable: {last_exc}"
+            ) from last_exc
+
         try:
             response = await self._backends[model_id].complete(prompt, task_type)
         except (OSError, ConnectionError) as exc:
-            if model_id == self._active_model:
+            if model_id == top:
                 raise ModelUnavailableError(
                     f"model '{model_id}' unavailable: {exc}"
                 ) from exc
             logger.warning(
                 "[router] task '%s' model '%s' unavailable (%s) — falling back to active %s",
-                task_type, model_id, exc, self._active_model,
+                task_type, model_id, exc, top,
             )
-            model_id = self._active_model
+            model_id = top
             try:
                 response = await self._backends[model_id].complete(prompt, task_type)
             except (OSError, ConnectionError) as exc2:
@@ -311,7 +410,7 @@ class ModelRouter:
         self, prompt: str, tools: list[dict]
     ) -> ToolCall | str:
         """Route a tool-selection request to the active backend (Issue #274)."""
-        model_id = self._task_models.get("tool", self._active_model)
+        model_id = self._task_models.get("tool", self.active_model)
         backend = self._backends[model_id]
         try:
             result = await backend.complete_with_tools(prompt, tools)

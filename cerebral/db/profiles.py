@@ -41,6 +41,10 @@ class Profile:
     # Cloud kill-switch (privacy): when True the router hides/refuses all cloud
     # models so nothing can route to Claude. Restored at startup.
     local_only: bool = False
+    # Master fallback toggle for the model priority chain (P1 #531). When True
+    # the router walks the ordered list on failure; when False it uses only the
+    # top enabled model and raises ModelUnavailableError if it's down.
+    fallback_enabled: bool = False
     id: int | None = None
 
     def to_dict(self) -> dict:
@@ -70,6 +74,7 @@ class ProfileManager:
                 acl_defaults_snapshot    TEXT    NOT NULL DEFAULT '{}',
                 shell_exec_unlocked      INTEGER NOT NULL DEFAULT 0 CHECK (shell_exec_unlocked IN (0, 1)),
                 local_only               INTEGER NOT NULL DEFAULT 0 CHECK (local_only IN (0, 1)),
+                fallback_enabled         INTEGER NOT NULL DEFAULT 0 CHECK (fallback_enabled IN (0, 1)),
                 created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_used_at             DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -134,6 +139,7 @@ class ProfileManager:
             ("acl_defaults_snapshot", "TEXT", "'{}'"),
             ("shell_exec_unlocked", "INTEGER", "0"),
             ("local_only", "INTEGER", "0"),
+            ("fallback_enabled", "INTEGER", "0"),
         ]:
             try:
                 self._con.execute(
@@ -222,6 +228,14 @@ class ProfileManager:
         """Persist the cloud kill-switch so it survives restart."""
         self._con.execute(
             "UPDATE profiles SET local_only=? WHERE id=?", (1 if enabled else 0, profile_id)
+        )
+        self._con.commit()
+
+    def update_fallback_enabled(self, profile_id: int, enabled: bool) -> None:
+        """Persist the master model-priority fallback toggle (P1 #531)."""
+        self._con.execute(
+            "UPDATE profiles SET fallback_enabled=? WHERE id=?",
+            (1 if enabled else 0, profile_id),
         )
         self._con.commit()
 
@@ -529,4 +543,5 @@ def _row_to_profile(row: sqlite3.Row) -> Profile:
         acl_defaults_snapshot=snapshot,
         shell_exec_unlocked=bool(row["shell_exec_unlocked"]) if "shell_exec_unlocked" in keys else False,
         local_only=bool(row["local_only"]) if "local_only" in keys else False,
+        fallback_enabled=bool(row["fallback_enabled"]) if "fallback_enabled" in keys else False,
     )
