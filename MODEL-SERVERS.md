@@ -10,8 +10,8 @@ to a per-model on/off + drag-drop fallback-ordering panel (P1 router, P2 tray).
 
 ## Next slice -- start here
 
-- **Active:** P1 -- #531
-- **Model:** opus
+- **Active:** P2 -- #532
+- **Model:** sonnet
 
 ## Queue
 
@@ -19,7 +19,7 @@ to a per-model on/off + drag-drop fallback-ordering panel (P1 router, P2 tray).
 - [x] S2 -- #524 -- model discovery: list_openai_models + discover_models IPC + Fetch datalist (Model: sonnet)
 - [x] S3 -- #525 -- dynamic server-first model: auto-resolve + cache, one picker entry (Model: opus)
 - [~] S4 -- #526 -- harness MCP tool [SUPERSEDED -- closed, not planned]
-- [ ] P1 -- #531 -- model priority list + ordered-fallback routing (router + persistence + IPC) (Model: opus)
+- [x] P1 -- #531 -- model priority list + ordered-fallback routing (router + persistence + IPC) (Model: opus)
 - [ ] P2 -- #532 -- drag-drop Model priority tray panel (replaces Switch model) (Model: sonnet)
 
 ## Landed PRs
@@ -27,6 +27,7 @@ to a per-model on/off + drag-drop fallback-ordering panel (P1 router, P2 tray).
 - #528 -- S1 -- OpenAI-compatible custom servers: Bearer auth + /v1 strip + 4xx caught
 - #529 -- S2 -- model discovery: list_openai_models + discover_models IPC + Fetch datalist
 - #530 -- S3 -- dynamic server-first custom model: auto-resolve + cache, one picker entry
+- #533 -- P1 -- model priority list + ordered-fallback routing (router + persistence + IPC)
 
 ## SAFETY
 
