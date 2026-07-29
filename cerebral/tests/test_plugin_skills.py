@@ -256,3 +256,102 @@ async def test_skill_uninstall_unknown_name_errors(tmp_path):
     plugin = _plugin(tmp_path)
     result = await plugin.call_tool("skill_uninstall", {"name": "nope"})
     assert result.is_error
+
+
+# ---------------------------------------------------------------------------
+# skill_install (S3 #541) -- hermetic, injected fetch_fn (no network)
+# ---------------------------------------------------------------------------
+import io
+import tarfile
+
+
+def _skill_md(name, description="Installed skill.", body="Body."):
+    return f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"
+
+
+def _tarball(top, skills):
+    """Build a gzip tarball laid out as <top>/<dirname>/SKILL.md, like GitHub's."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for dirname, md in skills.items():
+            data = md.encode("utf-8")
+            info = tarfile.TarInfo(f"{top}/{dirname}/SKILL.md")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _install_plugin(tmp_path, tarball):
+    settings = SettingsStore(path=tmp_path / "felix-settings.json")
+    return SkillsPlugin(
+        seed_dir=tmp_path / "seed",
+        installed_dir=tmp_path / "installed",
+        settings=settings,
+        fetch_fn=lambda repo, ref: tarball,
+    )
+
+
+async def test_skill_install_writes_dir_and_provenance(tmp_path):
+    plugin = _install_plugin(tmp_path, _tarball("myrepo-main", {"alpha": _skill_md("alpha")}))
+    result = await plugin.call_tool("skill_install", {"repo": "owner/myrepo"})
+    assert not result.is_error, result.content
+    assert json.loads(result.content) == {
+        "name": "alpha", "installed": True, "enabled": False, "source": "owner/myrepo",
+    }
+    inst = tmp_path / "installed" / "alpha"
+    assert (inst / "SKILL.md").is_file()
+    prov = json.loads((inst / ".provenance.json").read_text(encoding="utf-8"))
+    assert prov["repo"] == "owner/myrepo"
+    assert prov["sha"] == "main"
+    assert prov["installed_at"]
+
+
+async def test_skill_install_lands_disabled(tmp_path):
+    plugin = _install_plugin(tmp_path, _tarball("myrepo-main", {"alpha": _skill_md("alpha")}))
+    await plugin.call_tool("skill_install", {"repo": "owner/myrepo"})
+    use = await plugin.call_tool("skill_use", {"name": "alpha"})
+    assert use.is_error and "disabled" in use.content
+    cat = json.loads((await plugin.call_tool("skill_catalog", {})).content)["skills"]
+    alpha = next(s for s in cat if s["name"] == "alpha")
+    assert alpha["enabled"] is False and alpha["source"] == "installed"
+    assert json.loads((await plugin.call_tool("skill_list", {})).content)["skills"] == []
+
+
+async def test_skill_install_multi_returns_picklist(tmp_path):
+    tb = _tarball("r-main", {"alpha": _skill_md("alpha"), "beta": _skill_md("beta")})
+    plugin = _install_plugin(tmp_path, tb)
+    data = json.loads((await plugin.call_tool("skill_install", {"repo": "owner/r"})).content)
+    assert data["multiple"] is True
+    assert data["skills"] == ["alpha", "beta"]
+    assert not (tmp_path / "installed" / "alpha").exists()
+
+
+async def test_skill_install_pick_one(tmp_path):
+    tb = _tarball("r-main", {"alpha": _skill_md("alpha"), "beta": _skill_md("beta")})
+    plugin = _install_plugin(tmp_path, tb)
+    result = await plugin.call_tool("skill_install", {"repo": "owner/r", "name": "beta"})
+    assert not result.is_error, result.content
+    assert (tmp_path / "installed" / "beta" / "SKILL.md").is_file()
+    assert not (tmp_path / "installed" / "alpha").exists()
+
+
+async def test_skill_install_refuses_overwrite(tmp_path):
+    tb = _tarball("r-main", {"alpha": _skill_md("alpha")})
+    plugin = _install_plugin(tmp_path, tb)
+    await plugin.call_tool("skill_install", {"repo": "owner/r"})
+    again = await plugin.call_tool("skill_install", {"repo": "owner/r"})
+    assert again.is_error and "already installed" in again.content
+
+
+async def test_skill_install_bad_repo_errors(tmp_path):
+    plugin = _install_plugin(tmp_path, b"")
+    result = await plugin.call_tool("skill_install", {"repo": "not-a-repo"})
+    assert result.is_error and "owner/repo" in result.content
+
+
+async def test_skill_install_subpath(tmp_path):
+    tb = _tarball("r-main", {"pkg/alpha": _skill_md("alpha")})
+    plugin = _install_plugin(tmp_path, tb)
+    result = await plugin.call_tool("skill_install", {"repo": "owner/r", "subpath": "pkg"})
+    assert not result.is_error, result.content
+    assert (tmp_path / "installed" / "alpha" / "SKILL.md").is_file()

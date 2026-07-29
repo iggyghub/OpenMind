@@ -27,7 +27,9 @@ the planner (`skill_list` / `skill_use`) only if its name is in the opt-in
 Lifecycle tools: `skill_enable`, `skill_disable`, `skill_uninstall`, plus
 `skill_catalog` (management view of every discovered skill + its enabled flag).
 
-Install-from-GitHub lands in #541.
+Install-from-GitHub (S3 #541): `skill_install(repo[, subpath, ref, name])` fetches
+a public GitHub repo tarball into the installed root (disabled on arrival) and
+records provenance (repo + sha) in a `.provenance.json` sidecar.
 """
 # NOTE: deliberately NO `from __future__ import annotations`. This module is
 # loaded by the orchestrator via spec_from_file_location, which does NOT place
@@ -37,12 +39,18 @@ Install-from-GitHub lands in #541.
 # load. Real annotation objects avoid that lookup. See test_orchestrator.py
 # ::test_every_real_plugin_declares_valid_required_capabilities.
 
+import io
 import json
 import logging
+import re
 import shutil
+import tarfile
+import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 import yaml
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
@@ -55,8 +63,35 @@ PLUGIN_NAME = "skills"
 # ADR-0005 / Issue #44 -- skill_list / skill_use / skill_catalog read SKILL.md
 # files (fs_read); skill_enable / skill_disable write enabled_skills into
 # felix-settings.json (fs_write); skill_uninstall removes an installed skill's
-# directory (fs_delete). skill_install (fs_write) arrives in #541.
-REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write", "fs_delete"})
+# directory (fs_delete); skill_install (#541) fetches a public GitHub tarball
+# (network_egress_cloud) and writes it under the installed root (fs_write).
+# No new capability class -- the ADR-0005 vocabulary is closed and a skill adds
+# no capability of its own (ADR-0014).
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset(
+    {"fs_read", "fs_write", "fs_delete", "network_egress_cloud"}
+)
+
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _default_fetch(repo: str, ref: str | None) -> bytes:
+    """Download a public GitHub repo tarball. Injected out in tests.
+
+    Uses the GitHub tarball endpoint, which redirects to the (default-branch or
+    ref) codeload tar.gz. Public repos need no auth.
+    """
+    owner, name = repo.split("/", 1)
+    url = f"https://api.github.com/repos/{owner}/{name}/tarball"
+    if ref:
+        url = f"{url}/{ref}"
+    resp = httpx.get(
+        url,
+        follow_redirects=True,
+        timeout=30.0,
+        headers={"Accept": "application/vnd.github+json"},
+    )
+    resp.raise_for_status()
+    return resp.content
 
 # Settings-store seam (Issue #153 pattern): cerebral.main wires the singleton
 # SettingsStore in via _wire_plugin_seams so the plugin reads/writes the SAME
@@ -153,12 +188,15 @@ class SkillsPlugin:
         seed_dir: Path | None = None,
         installed_dir: Path | None = None,
         settings=None,
+        fetch_fn=None,
     ) -> None:
         self._seed_dir = Path(seed_dir) if seed_dir else _REPO_ROOT / "skills"
         self._installed_dir = (
             Path(installed_dir) if installed_dir else data_dir() / "skills"
         )
         self._settings = settings
+        # fetch_fn(repo, ref) -> tarball bytes. Default hits GitHub; tests inject.
+        self._fetch = fetch_fn or _default_fetch
 
     # ------------------------------------------------------------------
     # Enable-state (S2 #538) -- opt-in enabled_skills in felix-settings.json
@@ -210,7 +248,8 @@ class SkillsPlugin:
         """Relative paths of a skill's bundled files (everything but SKILL.md)."""
         manifest: list[str] = []
         for f in sorted(skill.path.rglob("*")):
-            if f.is_file() and f.name != _SKILL_FILE:
+            # Skip SKILL.md itself and dotfiles (e.g. the .provenance.json sidecar).
+            if f.is_file() and f.name != _SKILL_FILE and not f.name.startswith("."):
                 manifest.append(f.relative_to(skill.path).as_posix())
         return manifest
 
@@ -278,6 +317,35 @@ class SkillsPlugin:
                 schema=_name_schema,
                 irreversible=True,
             ),
+            Tool(
+                name="skill_install",
+                description=(
+                    "Install a skill from a PUBLIC GitHub repo (owner/repo). If the "
+                    "repo holds several skills, call returns the list to choose from; "
+                    "pass 'name' to install one. The skill lands DISABLED -- review it, "
+                    "then skill_enable it."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string", "description": "GitHub 'owner/repo'."},
+                        "subpath": {
+                            "type": "string",
+                            "description": "Optional folder within the repo to look in.",
+                        },
+                        "ref": {
+                            "type": "string",
+                            "description": "Optional branch/tag/commit (default branch if omitted).",
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Which skill to install when the repo has several.",
+                        },
+                    },
+                    "required": ["repo"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -294,6 +362,8 @@ class SkillsPlugin:
             return self._skill_disable(args)
         if tool_name == "skill_uninstall":
             return self._skill_uninstall(args)
+        if tool_name == "skill_install":
+            return self._skill_install(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -371,6 +441,122 @@ class SkillsPlugin:
             enabled.discard(name)
             self._set_enabled(enabled)
         return ToolResult(content=json.dumps({"name": name, "uninstalled": True}))
+
+    # ------------------------------------------------------------------
+    # skill_install (S3 #541) -- fetch a skill from a public GitHub repo
+    # ------------------------------------------------------------------
+
+    def _skill_install(self, args: dict) -> ToolResult:
+        repo = str(args.get("repo", "")).strip()
+        subpath = str(args.get("subpath") or "").strip().strip("/")
+        ref = args.get("ref")
+        ref = str(ref).strip() if ref else None
+        pick = str(args.get("name") or "").strip()
+
+        if not _REPO_RE.match(repo):
+            return ToolResult(
+                content=f"repo must be 'owner/repo', got {repo!r}", is_error=True
+            )
+
+        try:
+            tarball = self._fetch(repo, ref)
+        except Exception as exc:
+            return ToolResult(content=f"Fetch failed for {repo!r}: {exc}", is_error=True)
+
+        with tempfile.TemporaryDirectory(prefix="skill_install_") as td:
+            tmp = Path(td)
+            try:
+                with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tf:
+                    names = tf.getnames()
+                    # filter="data" (3.12+) blocks path traversal / device files.
+                    tf.extractall(tmp, filter="data")
+            except (tarfile.TarError, OSError, ValueError) as exc:
+                return ToolResult(content=f"Bad archive for {repo!r}: {exc}", is_error=True)
+
+            tops = {n.split("/", 1)[0] for n in names if n}
+            if len(tops) != 1:
+                return ToolResult(
+                    content=f"Unexpected archive layout for {repo!r}", is_error=True
+                )
+            top = next(iter(tops))
+            base = tmp / top
+            if subpath:
+                base = base / subpath
+            if not base.is_dir():
+                return ToolResult(
+                    content=f"Path {subpath!r} not found in {repo!r}", is_error=True
+                )
+
+            # GitHub tarball top dir is "<reponame>-<ref-or-sha>".
+            reponame = repo.split("/", 1)[1]
+            sha = top[len(reponame) + 1:] if top.startswith(reponame + "-") else top
+
+            # A skill is any dir with a SKILL.md; base itself may be one skill.
+            candidates: dict[str, Path] = {}
+            if (base / _SKILL_FILE).is_file():
+                sk = _load_skill_dir(base, "installed")
+                if sk is not None:
+                    candidates[sk.name] = base
+            for sub in sorted(p for p in base.iterdir() if p.is_dir()):
+                sk = _load_skill_dir(sub, "installed")
+                if sk is not None:
+                    candidates[sk.name] = sub
+
+            if not candidates:
+                return ToolResult(
+                    content=f"No SKILL.md found in {repo!r}"
+                    + (f"/{subpath}" if subpath else ""),
+                    is_error=True,
+                )
+            if len(candidates) > 1 and not pick:
+                return ToolResult(
+                    content=json.dumps(
+                        {
+                            "multiple": True,
+                            "skills": sorted(candidates),
+                            "message": (
+                                "Multiple skills found -- call skill_install again "
+                                "with name=<one of these>."
+                            ),
+                        }
+                    )
+                )
+            if pick:
+                if pick not in candidates:
+                    return ToolResult(
+                        content=f"{pick!r} not among {sorted(candidates)}", is_error=True
+                    )
+                chosen = pick
+            else:
+                chosen = next(iter(candidates))
+
+            target = self._installed_dir / chosen
+            if target.exists():
+                return ToolResult(
+                    content=f"Skill {chosen!r} is already installed -- uninstall first.",
+                    is_error=True,
+                )
+            self._installed_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(candidates[chosen], target)
+            (target / ".provenance.json").write_text(
+                json.dumps(
+                    {
+                        "repo": repo,
+                        "ref": ref,
+                        "sha": sha,
+                        "installed_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+        # Lands disabled: enabled_skills is deliberately untouched (ADR-0014).
+        return ToolResult(
+            content=json.dumps(
+                {"name": chosen, "installed": True, "enabled": False, "source": repo}
+            )
+        )
 
     def _skill_use(self, args: dict) -> ToolResult:
         name = str(args.get("name", "")).strip()
