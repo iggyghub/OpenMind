@@ -350,7 +350,7 @@ def build_custom_backend(
     if kind == "ollama":
         return OllamaBackend(url=url, model=model), False
     if kind == "openai":
-        return ClawBackend(url=url, model=model), True
+        return ClawBackend(url=url, model=model, api_key=api_key), True
     if kind == "anthropic":
         return AnthropicBackend(model=model, api_key=api_key), True
     raise ValueError(f"unknown custom model kind {kind!r}; known: {CUSTOM_KINDS}")
@@ -481,16 +481,36 @@ def _http_tags_fetch(url: str) -> dict:
     return resp.json()
 
 
+def _normalize_openai_base(url: str) -> str:
+    """Strip a trailing '/v1' and slashes so f'{url}/v1/chat/completions' works
+    whether the user pastes the bare host or the full '.../v1' endpoint."""
+    trimmed = (url or "").rstrip("/")
+    if trimmed.endswith("/v1"):
+        trimmed = trimmed[:-3].rstrip("/")
+    return trimmed
+
+
 class ClawBackend:
-    """Routes cloud LLM calls through OpenClaw's inference layer."""
+    """Routes cloud LLM calls through OpenClaw's inference layer.
+
+    Also handles user-added OpenAI-compatible servers (issue #523): pass an
+    ``api_key`` and it sends ``Authorization: Bearer <key>``; a trailing
+    ``/v1`` in the URL is stripped once so pasting the natural ``.../v1``
+    endpoint works as well as the bare host.
+    """
 
     def __init__(
         self,
         url: str = "http://localhost:3000",
         model: str = "claude-haiku-4-5-20251001",
+        api_key: str | None = None,
     ):
-        self.url = url
+        self.url = _normalize_openai_base(url)
         self.model = model
+        self.api_key = api_key
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         import httpx
@@ -500,10 +520,18 @@ class ClawBackend:
         }
         async with httpx.AsyncClient(timeout=60) as client:
             try:
-                resp = await client.post(f"{self.url}/v1/chat/completions", json=payload)
+                resp = await client.post(
+                    f"{self.url}/v1/chat/completions",
+                    json=payload,
+                    headers=self._headers(),
+                )
                 resp.raise_for_status()
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 raise ConnectionError(str(exc)) from exc
+            except httpx.HTTPStatusError as exc:
+                raise ConnectionError(
+                    f"HTTP {exc.response.status_code} from {exc.request.url}"
+                ) from exc
         return resp.json()["choices"][0]["message"]["content"]
 
     async def complete_with_tools(
@@ -535,10 +563,18 @@ class ClawBackend:
         }
         async with httpx.AsyncClient(timeout=60) as client:
             try:
-                resp = await client.post(f"{self.url}/v1/chat/completions", json=payload)
+                resp = await client.post(
+                    f"{self.url}/v1/chat/completions",
+                    json=payload,
+                    headers=self._headers(),
+                )
                 resp.raise_for_status()
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 raise ConnectionError(str(exc)) from exc
+            except httpx.HTTPStatusError as exc:
+                raise ConnectionError(
+                    f"HTTP {exc.response.status_code} from {exc.request.url}"
+                ) from exc
 
         message = resp.json()["choices"][0]["message"]
         tool_calls = message.get("tool_calls") or []
