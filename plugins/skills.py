@@ -21,14 +21,19 @@ Each skill is a directory containing a `SKILL.md` whose YAML front-matter carrie
 `name`, `description`, `kind` (default `procedure`), and `tools` (list). Malformed
 or incomplete front-matter is skipped with a logged warning, never a crash.
 
-Enable-state (disabled-by-default, `enabled_skills`), install-from-GitHub, and the
-lifecycle tools land in later slices (#538 / #541). This slice surfaces every
-discovered skill.
+Enable-state (S2 #538): skills are **disabled by default**. A skill is visible to
+the planner (`skill_list` / `skill_use`) only if its name is in the opt-in
+`enabled_skills` list in `felix-settings.json` (the inverse of `disabled_plugins`).
+Lifecycle tools: `skill_enable`, `skill_disable`, `skill_uninstall`, plus
+`skill_catalog` (management view of every discovered skill + its enabled flag).
+
+Install-from-GitHub lands in #541.
 """
 from __future__ import annotations
 
 import json
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,10 +46,23 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "skills"
 
-# ADR-0005 / Issue #44 -- skill_list / skill_use only read SKILL.md files and
-# their bundled resources (fs_read). Write-class capabilities (fs_write for
-# install, fs_delete for uninstall) arrive with the lifecycle + install slices.
-REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read"})
+# ADR-0005 / Issue #44 -- skill_list / skill_use / skill_catalog read SKILL.md
+# files (fs_read); skill_enable / skill_disable write enabled_skills into
+# felix-settings.json (fs_write); skill_uninstall removes an installed skill's
+# directory (fs_delete). skill_install (fs_write) arrives in #541.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write", "fs_delete"})
+
+# Settings-store seam (Issue #153 pattern): cerebral.main wires the singleton
+# SettingsStore in via _wire_plugin_seams so the plugin reads/writes the SAME
+# enabled_skills the rest of Cerebral sees. Until wired (tests, bare process),
+# the plugin falls back to a default-path SettingsStore.
+_settings_store = None
+
+
+def set_settings_store(store) -> None:
+    """Inject the SettingsStore singleton from cerebral.main."""
+    global _settings_store
+    _settings_store = store
 
 # <repo>/plugins/skills.py -> parent is plugins/, parent.parent is the repo root.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -124,11 +142,39 @@ def _load_skill_dir(dir_path: Path, source: str) -> Skill | None:
 class SkillsPlugin:
     name = PLUGIN_NAME
 
-    def __init__(self, seed_dir: Path | None = None, installed_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        seed_dir: Path | None = None,
+        installed_dir: Path | None = None,
+        settings=None,
+    ) -> None:
         self._seed_dir = Path(seed_dir) if seed_dir else _REPO_ROOT / "skills"
         self._installed_dir = (
             Path(installed_dir) if installed_dir else data_dir() / "skills"
         )
+        self._settings = settings
+
+    # ------------------------------------------------------------------
+    # Enable-state (S2 #538) -- opt-in enabled_skills in felix-settings.json
+    # ------------------------------------------------------------------
+
+    def _settings_obj(self):
+        if self._settings is not None:
+            return self._settings
+        if _settings_store is not None:
+            return _settings_store
+        # Fallback: a default-path store. Self-coherent for a bare process;
+        # production wires the singleton via set_settings_store.
+        from cerebral.settings import SettingsStore
+
+        self._settings = SettingsStore()
+        return self._settings
+
+    def _enabled_names(self) -> set[str]:
+        return set(self._settings_obj().get("enabled_skills") or [])
+
+    def _set_enabled(self, names: set[str]) -> None:
+        self._settings_obj().set("enabled_skills", sorted(names))
 
     # ------------------------------------------------------------------
     # Discovery
@@ -167,13 +213,18 @@ class SkillsPlugin:
     # ------------------------------------------------------------------
 
     def list_tools(self) -> list[Tool]:
+        _name_schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "The skill's name."}},
+            "required": ["name"],
+        }
         return [
             Tool(
                 name="skill_list",
                 description=(
-                    "List installed skills (procedures Felix can follow), each with "
-                    "its name and description. Call this to see what skills are "
-                    "available before using one."
+                    "List ENABLED skills (procedures Felix can follow), each with its "
+                    "name and description. Call this to see what skills are available "
+                    "before using one. Disabled skills are not shown here."
                 ),
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
@@ -181,27 +232,62 @@ class SkillsPlugin:
             Tool(
                 name="skill_use",
                 description=(
-                    "Load a skill by name: returns its full instruction text (and a "
-                    "manifest of any bundled resource files) so you can follow the "
-                    "procedure. Use when a task matches a skill from skill_list, or "
+                    "Load an enabled skill by name: returns its full instruction text "
+                    "(and a manifest of any bundled resource files) so you can follow "
+                    "the procedure. Use when a task matches a skill from skill_list, or "
                     "when the user asks for a named skill."
                 ),
                 plugin=PLUGIN_NAME,
-                schema={
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "The skill's name."},
-                    },
-                    "required": ["name"],
-                },
+                schema=_name_schema,
+            ),
+            Tool(
+                name="skill_catalog",
+                description=(
+                    "Management view: list EVERY discovered skill (enabled or not) "
+                    "with its enabled flag and source. Use to see what can be enabled "
+                    "or uninstalled."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="skill_enable",
+                description="Enable a skill by name so the planner can use it.",
+                plugin=PLUGIN_NAME,
+                schema=_name_schema,
+            ),
+            Tool(
+                name="skill_disable",
+                description="Disable a skill by name (keeps it installed, hides it from the planner).",
+                plugin=PLUGIN_NAME,
+                schema=_name_schema,
+            ),
+            Tool(
+                name="skill_uninstall",
+                description=(
+                    "Remove an installed skill's files and drop it from enabled_skills. "
+                    "Seed skills that ship with Felix cannot be uninstalled -- disable them instead."
+                ),
+                plugin=PLUGIN_NAME,
+                schema=_name_schema,
+                irreversible=True,
             ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
+        args = args or {}
         if tool_name == "skill_list":
             return self._skill_list()
         if tool_name == "skill_use":
-            return self._skill_use(args or {})
+            return self._skill_use(args)
+        if tool_name == "skill_catalog":
+            return self._skill_catalog()
+        if tool_name == "skill_enable":
+            return self._skill_enable(args)
+        if tool_name == "skill_disable":
+            return self._skill_disable(args)
+        if tool_name == "skill_uninstall":
+            return self._skill_uninstall(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -209,7 +295,7 @@ class SkillsPlugin:
     # ------------------------------------------------------------------
 
     def _skill_list(self) -> ToolResult:
-        skills = self._discover()
+        enabled = self._enabled_names()
         payload = [
             {
                 "name": s.name,
@@ -218,9 +304,67 @@ class SkillsPlugin:
                 "tools": list(s.tools),
                 "source": s.source,
             }
-            for s in sorted(skills.values(), key=lambda s: s.name)
+            for s in sorted(self._discover().values(), key=lambda s: s.name)
+            if s.name in enabled
         ]
         return ToolResult(content=json.dumps({"skills": payload}))
+
+    def _skill_catalog(self) -> ToolResult:
+        enabled = self._enabled_names()
+        payload = [
+            {
+                "name": s.name,
+                "description": s.description,
+                "kind": s.kind,
+                "tools": list(s.tools),
+                "source": s.source,
+                "enabled": s.name in enabled,
+            }
+            for s in sorted(self._discover().values(), key=lambda s: s.name)
+        ]
+        return ToolResult(content=json.dumps({"skills": payload}))
+
+    def _skill_enable(self, args: dict) -> ToolResult:
+        name = str(args.get("name", "")).strip()
+        if not name:
+            return ToolResult(content="name is required", is_error=True)
+        if name not in self._discover():
+            return ToolResult(content=f"No skill named {name!r}", is_error=True)
+        enabled = self._enabled_names()
+        enabled.add(name)
+        self._set_enabled(enabled)
+        return ToolResult(content=json.dumps({"name": name, "enabled": True}))
+
+    def _skill_disable(self, args: dict) -> ToolResult:
+        name = str(args.get("name", "")).strip()
+        if not name:
+            return ToolResult(content="name is required", is_error=True)
+        enabled = self._enabled_names()
+        enabled.discard(name)
+        self._set_enabled(enabled)
+        return ToolResult(content=json.dumps({"name": name, "enabled": False}))
+
+    def _skill_uninstall(self, args: dict) -> ToolResult:
+        name = str(args.get("name", "")).strip()
+        if not name:
+            return ToolResult(content="name is required", is_error=True)
+        skill = self._discover().get(name)
+        if skill is None:
+            return ToolResult(content=f"No skill named {name!r}", is_error=True)
+        if skill.source == "seed":
+            return ToolResult(
+                content=(
+                    f"Skill {name!r} is a built-in seed skill and cannot be "
+                    "uninstalled -- disable it instead."
+                ),
+                is_error=True,
+            )
+        shutil.rmtree(skill.path)
+        enabled = self._enabled_names()
+        if name in enabled:
+            enabled.discard(name)
+            self._set_enabled(enabled)
+        return ToolResult(content=json.dumps({"name": name, "uninstalled": True}))
 
     def _skill_use(self, args: dict) -> ToolResult:
         name = str(args.get("name", "")).strip()
@@ -229,6 +373,11 @@ class SkillsPlugin:
         skill = self._discover().get(name)
         if skill is None:
             return ToolResult(content=f"No skill named {name!r}", is_error=True)
+        if skill.name not in self._enabled_names():
+            return ToolResult(
+                content=f"Skill {name!r} is installed but disabled -- enable it first.",
+                is_error=True,
+            )
         md = skill.path / _SKILL_FILE
         try:
             _meta, body = _split_frontmatter(md.read_text(encoding="utf-8"))

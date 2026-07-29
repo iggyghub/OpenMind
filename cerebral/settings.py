@@ -7,7 +7,7 @@ settings must be read and written via WebSocket to Cerebral.
 Keys: notifications_enabled, reminder_interval_minutes, camera_enabled,
       visualiser_visible, mic_mode, tts_muted, tts_volume,
       mic_input_device, browser_pause_on_verification,
-      disabled_plugins
+      disabled_plugins, enabled_skills
 """
 from __future__ import annotations
 
@@ -35,6 +35,10 @@ _DEFAULTS: dict[str, Any] = {
     # Harness UI rework S2 #470 — plugin names the user has disabled.
     # Disabled plugins are scanned + metadata-recorded but not registered.
     "disabled_plugins": [],
+    # Skills subsystem S2 #538 (ADR-0014) — skill names the user has enabled.
+    # The INVERSE of disabled_plugins: skills are disabled-by-default, so this
+    # is an opt-in list. Only enabled skills are visible to the planner.
+    "enabled_skills": [],
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -51,6 +55,7 @@ _TYPES: dict[str, type] = {
     "mic_input_device":          str,
     "browser_pause_on_verification": bool,
     "disabled_plugins":          list,
+    "enabled_skills":            list,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
@@ -100,6 +105,8 @@ class SettingsStore:
             )
         if key == "disabled_plugins" and not all(isinstance(i, str) for i in value):
             raise ValueError("disabled_plugins must be a list of str")
+        if key == "enabled_skills" and not all(isinstance(i, str) for i in value):
+            raise ValueError("enabled_skills must be a list of str")
         self._data[key] = value
         self._save()
 
