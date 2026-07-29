@@ -4735,6 +4735,62 @@
       flex-direction: column;
     }
 
+    /* ── S5 #542 -- Skills sub-tab, sibling to Plugins (ADR-0014 dec. 8) ──
+       Mirrors .lib-tabs / .lib-sub (S5 #473) and .perm-tab (Permissions). */
+    .hrns-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elev);
+      flex-shrink: 0;
+    }
+    .hrns-tab {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 9px 14px;
+      cursor: pointer;
+      transition: color 0.12s, border-color 0.12s;
+      white-space: nowrap;
+    }
+    .hrns-tab:hover { color: var(--text); }
+    .hrns-tab.is-active { color: var(--accent); border-bottom-color: var(--accent); }
+    .hrns-sub { display: none; flex: 1; overflow-y: auto; min-height: 0; }
+    .hrns-sub.is-active { display: flex; flex-direction: column; }
+
+    /* Panel-spec action widget (S5 #542, ADR-0012) -- install field / toggle
+       / uninstall button. Shared shape with .ps-text (text-widget.js). */
+    .ps-action {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+    }
+    .ps-action-input {
+      flex: 1;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      padding: 5px 8px;
+      font-size: 12px;
+    }
+    .ps-action-btn {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      padding: 5px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .ps-action-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .ps-action-status { font-size: 11px; color: var(--text-muted); }
+
   </style>
 </head>
 <body>
@@ -5055,6 +5111,14 @@
     </section>
 
     <section class="pane" data-route="harness" hidden>
+      <!-- S5 #542: Skills sub-tab, sibling to Plugins (ADR-0014 decision 8).
+           Mirrors the .lib-tabs / .lib-sub pattern (S5 #473). -->
+      <div class="hrns-tabs" id="hrns-tabs">
+        <button class="hrns-tab is-active" data-hrns-sub="plugins" type="button">Plugins</button>
+        <button class="hrns-tab" data-hrns-sub="skills" type="button">Skills</button>
+      </div>
+
+      <div class="hrns-sub is-active" data-hrns-sub="plugins">
       <!-- S3 #471: Harness section -- filter rail + card grid + detail drawer -->
 
       <!-- WS-unreachable banner; shown when Cerebral is not connected. -->
@@ -5114,6 +5178,16 @@
           <span class="plug-settings-title" id="plug-settings-title">Settings</span>
         </div>
         <div class="plug-settings-body" id="plug-settings-body"></div>
+      </div>
+      </div>
+
+      <!-- S5 #542: Skills sub-view -- rendered entirely from the skills
+           plugin's declarative panel_spec (list/detail/action widgets); no
+           plugin-authored HTML/JS reaches this pane (ADR-0012 decision 3). -->
+      <div class="hrns-sub" data-hrns-sub="skills">
+        <div class="hrns-skills-body" id="hrns-skills-body">
+          <div class="ps-empty">Loading...</div>
+        </div>
       </div>
     </section>
 
@@ -5646,6 +5720,10 @@
   <!-- Panel spec renderer (UI2 A3 -- #483) -- list/detail widgets for plugin
        panels. Dual-mode: window.PanelSpec here, module.exports for Node tests. -->
   <script src="../lib/panel-spec.js"></script>
+  <!-- Action-widget handler (S5 #542) -- install field / enable-disable
+       toggle / uninstall button for the Skills panel's action widgets.
+       Dual-mode: window.ActionWidget here, module.exports for Node tests. -->
+  <script src="../lib/action-widget.js"></script>
   <!-- WebSocket bridge (UI2 A5 -- #485) -- shared with detached-panel.html.
        Dual-mode: window.WsBridge here, module.exports for Node tests. -->
   <script src="../lib/ws-bridge.js"></script>
@@ -5749,6 +5827,10 @@
     const hrnsDrawerEl      = document.getElementById('hrns-drawer');
     const hrnsDrawerBodyEl  = document.getElementById('hrns-drawer-body');
     const hrnsUnreachEl     = document.getElementById('hrns-unreachable');
+    // S5 #542 -- Skills sub-tab DOM refs
+    const hrnsTabsEl        = document.getElementById('hrns-tabs');
+    const hrnsSkillsBodyEl  = document.getElementById('hrns-skills-body');
+    let harnessActiveSub    = 'plugins';
     const intDaemonDotEl   = document.getElementById('int-daemon-dot');
     const intDaemonTextEl  = document.getElementById('int-daemon-text');
     const intDaemonStartBtn   = document.getElementById('int-daemon-start');
@@ -6256,6 +6338,11 @@
           if (window._wsOnPluginPanelSpec) {
             const d = event.data || {};
             window._wsOnPluginPanelSpec(d.plugin_name, d.spec);
+          }
+          // S5 #542 -- the Skills sub-tab under Harness renders from the
+          // same event, independent of the Workspace secondary-slot cache.
+          if (event.data && event.data.plugin_name === 'skills') {
+            renderSkillsPanel(event.data.spec);
           }
           break;
         case 'recipe_run_result':
@@ -9196,6 +9283,43 @@
       }
     }());
 
+    // ── Skills sub-tab (S5 #542, sibling to Plugins under Harness) ─────────
+    // Rendered entirely from the skills plugin's declarative panel_spec
+    // (list/detail/action widgets) via PanelSpec.renderPanel -- no
+    // plugin-authored HTML/JS reaches this pane (ADR-0012 decision 3).
+    // Mirrors libActivateSub / settingsActivateSub (S5 #473).
+    function harnessActivateSub(sub) {
+      harnessActiveSub = (sub === 'skills') ? 'skills' : 'plugins';
+      document.querySelectorAll('.hrns-tab').forEach(function (btn) {
+        btn.classList.toggle('is-active', btn.dataset.hrnsSub === harnessActiveSub);
+      });
+      document.querySelectorAll('.hrns-sub').forEach(function (el) {
+        el.classList.toggle('is-active', el.dataset.hrnsSub === harnessActiveSub);
+      });
+      if (harnessActiveSub === 'skills') {
+        sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: 'skills' } });
+      }
+    }
+
+    if (hrnsTabsEl) {
+      hrnsTabsEl.addEventListener('click', function (e) {
+        var btn = e.target.closest('.hrns-tab');
+        if (!btn) return;
+        harnessActivateSub(btn.dataset.hrnsSub);
+      });
+    }
+
+    // Renders the Skills panel_spec (or a load-error / loading placeholder)
+    // into #hrns-skills-body and wires up its action widgets (install field,
+    // enable/disable toggle, uninstall).
+    function renderSkillsPanel(spec) {
+      if (!hrnsSkillsBodyEl || typeof window.PanelSpec === 'undefined') return;
+      hrnsSkillsBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
+      if (window.ActionWidget) {
+        window.ActionWidget.initActionWidgets(hrnsSkillsBodyEl, sendEvent);
+      }
+    }
+
     // ── plugins pane (Issues #206, #187) ────────────────────────────────────
     // Consumes plugins_list (status + tool_count added in #187) and
     // plugin_settings (new in #187 for the Discord allowlist sub-pane).
@@ -10535,6 +10659,10 @@
         closePluginSettings();
         // #harness/<plugin_name> deep-link: open drawer after data loads.
         if (sub) { harnessDeepLinkPending = sub; }
+        // S5 #542 -- keep the Skills sub-tab fresh if it's the active one.
+        if (harnessActiveSub === 'skills') {
+          sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: 'skills' } });
+        }
       } else if (route === 'library') {
         // Refresh all library sub-sections; activate the sub-tab.
         sendEvent({ type: 'list_memories' });

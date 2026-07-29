@@ -87,10 +87,40 @@
     );
   }
 
+  // S5 #542 (Skills panel, ADR-0014 decision 8): action widget -- a button
+  // that calls a plugin tool with fixed tool_args, optionally plus one
+  // user-typed value (input_arg names which arg the input's value fills).
+  // No input_arg -> a plain confirm-style button (uninstall, enable/disable).
+  // Handler lives in action-widget.js, same shape as the text widget's Save.
+  function _renderAction(w) {
+    var id       = escHtml(w.id || '');
+    var tool     = escHtml(w.tool || '');
+    var toolArgs = escHtml(JSON.stringify(w.tool_args != null ? w.tool_args : {}));
+    var label    = escHtml(w.label || 'Run');
+    var inputArg = w.input_arg ? escHtml(w.input_arg) : '';
+    var input    = inputArg
+      ? '<input class="ps-action-input" type="text" placeholder="' +
+          escHtml(w.input_placeholder || '') + '">'
+      : '';
+    return (
+      '<div class="ps-action"' +
+        ' data-widget-id="' + id + '"' +
+        ' data-tool="'      + tool + '"' +
+        ' data-tool-args="' + toolArgs + '"' +
+        (inputArg ? ' data-input-arg="' + inputArg + '"' : '') +
+        '>' +
+        input +
+        '<button class="ps-action-btn" type="button">' + label + '</button>' +
+        '<span class="ps-action-status"></span>' +
+      '</div>'
+    );
+  }
+
   var WIDGETS = {
     list:   _renderList,
     detail: _renderDetail,
     text:   _renderText,
+    action: _renderAction,
   };
 
   // Renders one widget. Unknown or malformed types return '' -- inert.

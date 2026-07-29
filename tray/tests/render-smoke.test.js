@@ -842,6 +842,53 @@ test('legacy plug-main-view is hidden behind double-hidden guard (S3 harness)', 
   expect(legacyView.getAttribute('hidden')).not.toBeNull();
 });
 
+// ── Skills panel S5 (#542) -- sibling to Plugins under Harness ───────────────
+
+test('action-widget.js script tag is present (S5 skills)', () => {
+  const srcTags = root.querySelectorAll('script[src]');
+  const found = srcTags.some(s => (s.getAttribute('src') || '').includes('action-widget'));
+  expect(found).toBe(true);
+});
+
+test('harness pane has a Plugins/Skills tab strip (S5 skills)', () => {
+  const pane = root.querySelector('.pane[data-route="harness"]');
+  expect(pane).not.toBeNull();
+
+  const tabs = pane.querySelectorAll('.hrns-tab');
+  const subs = [...tabs].map(t => t.getAttribute('data-hrns-sub'));
+  expect(subs).toEqual(['plugins', 'skills']);
+
+  // Plugins is the default-active sub-view.
+  const pluginsTab = pane.querySelector('.hrns-tab[data-hrns-sub="plugins"]');
+  expect(pluginsTab.classList.contains('is-active')).toBe(true);
+});
+
+test('harness pane has plugins and skills sub-views (S5 skills)', () => {
+  const pane = root.querySelector('.pane[data-route="harness"]');
+  const pluginsSub = pane.querySelector('.hrns-sub[data-hrns-sub="plugins"]');
+  const skillsSub  = pane.querySelector('.hrns-sub[data-hrns-sub="skills"]');
+  expect(pluginsSub).not.toBeNull();
+  expect(skillsSub).not.toBeNull();
+  expect(pluginsSub.classList.contains('is-active')).toBe(true);
+  expect(skillsSub.classList.contains('is-active')).toBe(false);
+
+  // Existing Plugins-panel elements still live inside their sub-view.
+  expect(pluginsSub.querySelector('#hrns-grid')).not.toBeNull();
+  // Skills content is rendered from panel_spec into this container.
+  expect(skillsSub.querySelector('#hrns-skills-body')).not.toBeNull();
+});
+
+test('inline script requests plugins:panel_spec for skills on tab activation (S5 skills)', () => {
+  expect(inlineScript).toMatch(/harnessActivateSub/);
+  expect(inlineScript).toMatch(/plugin_name:\s*'skills'/);
+});
+
+test('inline script renders the skills panel via PanelSpec.renderPanel (S5 skills)', () => {
+  expect(inlineScript).toMatch(/renderSkillsPanel/);
+  expect(inlineScript).toMatch(/window\.PanelSpec\.renderPanel/);
+  expect(inlineScript).toMatch(/ActionWidget\.initActionWidgets/);
+});
+
 // ── Movable built-in panels (workspace secondary slot) ──────────────────────
 
 test('inline script registers built-in library sections as workspace panels', () => {

@@ -99,6 +99,7 @@
   <!-- Same dual-mode libs as main.html; each is IIFE-wrapped so nothing leaks. -->
   <script src="../lib/panel-spec.js"></script>
   <script src="../lib/text-widget.js"></script>
+  <script src="../lib/action-widget.js"></script>
   <script src="../lib/ws-bridge.js"></script>
 
   <script>
@@ -140,6 +141,8 @@
       dpBody.innerHTML = window.PanelSpec.renderPanel(spec);
       // Wire text-widget Save buttons if the spec includes any.
       window.TextWidget.initTextWidgets(dpBody, sendEvent);
+      // Wire action-widget buttons (S5 #542 -- Skills panel install/toggle/uninstall).
+      window.ActionWidget.initActionWidgets(dpBody, sendEvent);
     }
 
     bridge = window.WsBridge.create({

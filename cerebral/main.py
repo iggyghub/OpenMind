@@ -284,6 +284,11 @@ async def _docs_broadcast() -> None:  # S3 #454
     await _broadcast(_plugins_panel_spec_event("documents"))
 
 
+async def _skills_broadcast() -> None:  # S5 #542
+    """Keep the Skills panel spec live after enable/disable/install/uninstall."""
+    await _broadcast(_plugins_panel_spec_event("skills"))
+
+
 async def _docs_convert(source_path: str, fmt: str, out_dir: str) -> str:  # S3 #454
     """Real soffice converter wired into the documents plugin as a seam.
 
@@ -5090,6 +5095,7 @@ def _wire_plugin_seams() -> None:
         # plugin name, seam method, factory
         ("settings_control", "set_apply_callback", _apply_settings_control),  # F4 #327
         ("skills", "set_settings_store", _settings),  # S2 #538 (ADR-0014)
+        ("skills", "set_broadcast_fn", _skills_broadcast),  # S5 #542
         ("memory",   "set_memory_factory",  _get_memory),                   # #79
         ("memory",   "set_queue_factory",   lambda: _queue),                # S8 #487
         ("shell",    "set_workdir_fn",      _get_shell_workdir),            # SBX-3 #354
