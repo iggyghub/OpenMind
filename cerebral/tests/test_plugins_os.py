@@ -465,13 +465,13 @@ class TestFilesPlugin:
         assert json.loads(result.content) == []
 
     # -----------------------------------------------------------------------
-    # list_tools exposes all five tools
+    # list_tools exposes all six tools
     # -----------------------------------------------------------------------
     def test_list_tools_exposes_all_five(self):
         from plugins.files import create
         plugin = create()
         names = {t.name for t in plugin.list_tools()}
-        assert names == {"create_file", "read_file", "move_file", "delete_file", "search_files"}
+        assert names == {"create_file", "read_file", "edit_file", "move_file", "delete_file", "search_files"}
 
     def test_create_returns_plugin_instance(self):
         from plugins.files import create
