@@ -481,6 +481,39 @@ def _http_tags_fetch(url: str) -> dict:
     return resp.json()
 
 
+def _http_models_fetch(url: str, headers: dict) -> dict:
+    """Default OpenAI /v1/models fetcher — synchronous httpx GET."""
+    import httpx
+    try:
+        resp = httpx.get(url, headers=headers, timeout=5.0)
+        resp.raise_for_status()
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError) as exc:
+        raise ConnectionError(str(exc)) from exc
+    return resp.json()
+
+
+def list_openai_models(
+    url: str,
+    api_key: str | None = None,
+    fetch_fn: Callable[[str, dict], dict] | None = None,
+) -> list[str]:
+    """GET {normalized_base}/v1/models; return model ids. [] when unreachable.
+
+    fetch_fn(url, headers) -> dict for tests; defaults to a blocking httpx GET.
+    Reuses _normalize_openai_base so a trailing /v1 in the URL is handled once.
+    """
+    if fetch_fn is None:
+        fetch_fn = _http_models_fetch
+    base = _normalize_openai_base(url)
+    headers: dict[str, str] = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        payload = fetch_fn(f"{base}/v1/models", headers)
+    except (OSError, ConnectionError) as exc:
+        logger.warning("[router] model list unreachable (%s)", exc)
+        return []
+    return [m["id"] for m in (payload.get("data") or [])]
+
+
 def _normalize_openai_base(url: str) -> str:
     """Strip a trailing '/v1' and slashes so f'{url}/v1/chat/completions' works
     whether the user pastes the bare host or the full '.../v1' endpoint."""

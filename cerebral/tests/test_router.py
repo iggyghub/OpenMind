@@ -935,3 +935,78 @@ def test_build_custom_backend_openai_threads_api_key():
     assert is_cloud is True
     assert backend.api_key == "sk-dummy"
     assert backend.url == "http://srv"  # /v1 stripped
+
+
+# ---------------------------------------------------------------------------
+# Issue #524 -- model discovery (list_openai_models)
+# ---------------------------------------------------------------------------
+
+def test_list_openai_models_returns_ids_from_data():
+    from cerebral.llm.router import list_openai_models
+
+    fake_fetch = lambda url, headers: {
+        "data": [{"id": "gpt-4"}, {"id": "gpt-3.5-turbo"}]
+    }
+    ids = list_openai_models("http://srv/v1", api_key="sk-dummy", fetch_fn=fake_fetch)
+    assert ids == ["gpt-4", "gpt-3.5-turbo"]
+
+
+def test_list_openai_models_sends_bearer_header():
+    from cerebral.llm.router import list_openai_models
+
+    captured = {}
+
+    def fake_fetch(url, headers):
+        captured["url"] = url
+        captured["headers"] = headers
+        return {"data": []}
+
+    list_openai_models("http://srv", api_key="sk-dummy", fetch_fn=fake_fetch)
+    assert captured["headers"].get("Authorization") == "Bearer sk-dummy"
+    assert captured["url"] == "http://srv/v1/models"
+
+
+def test_list_openai_models_omits_auth_when_no_key():
+    from cerebral.llm.router import list_openai_models
+
+    captured = {}
+
+    def fake_fetch(url, headers):
+        captured["headers"] = headers
+        return {"data": []}
+
+    list_openai_models("http://srv", fetch_fn=fake_fetch)
+    assert "Authorization" not in captured["headers"]
+
+
+def test_list_openai_models_strips_trailing_v1():
+    from cerebral.llm.router import list_openai_models
+
+    captured = {}
+
+    def fake_fetch(url, headers):
+        captured["url"] = url
+        return {"data": []}
+
+    list_openai_models("http://srv/v1", fetch_fn=fake_fetch)
+    assert captured["url"] == "http://srv/v1/models"
+
+
+def test_list_openai_models_returns_empty_on_unreachable(caplog):
+    from cerebral.llm.router import list_openai_models
+
+    def offline_fetch(url, headers):
+        raise ConnectionError("unreachable")
+
+    with caplog.at_level(_logging.WARNING, logger="cerebral.llm.router"):
+        result = list_openai_models("http://srv", fetch_fn=offline_fetch)
+
+    assert result == []
+    assert "unreachable" in caplog.text
+
+
+def test_list_openai_models_returns_empty_on_missing_data_key():
+    from cerebral.llm.router import list_openai_models
+
+    fake_fetch = lambda url, headers: {}  # malformed -- no "data" key
+    assert list_openai_models("http://srv", fetch_fn=fake_fetch) == []

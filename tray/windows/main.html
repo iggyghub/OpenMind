@@ -5188,8 +5188,10 @@
             </select>
             <input class="set-add-input" id="set-add-url" type="url"
                    placeholder="Server URL (http://host:port)">
+            <datalist id="set-model-suggestions"></datalist>
             <input class="set-add-input" id="set-add-model-name" type="text"
-                   placeholder="Model name">
+                   placeholder="Model name" list="set-model-suggestions">
+            <button class="set-btn" id="set-fetch-models-btn" type="button">Fetch</button>
             <input class="set-add-input" id="set-add-key" type="password"
                    placeholder="API key (optional)" autocomplete="off">
             <button class="set-btn" id="set-add-btn" type="button">Add</button>
@@ -5720,12 +5722,14 @@
     const setTaskListEl    = document.getElementById('set-task-list');
     const setRefreshBtn    = document.getElementById('set-refresh-btn');
     const setLocalOnlyEl   = document.getElementById('set-local-only-toggle');
-    const setAddKindEl     = document.getElementById('set-add-kind');
-    const setAddUrlEl      = document.getElementById('set-add-url');
-    const setAddModelEl    = document.getElementById('set-add-model-name');
-    const setAddKeyEl      = document.getElementById('set-add-key');
-    const setAddBtn        = document.getElementById('set-add-btn');
-    const setAddErrorEl    = document.getElementById('set-add-error');
+    const setAddKindEl       = document.getElementById('set-add-kind');
+    const setAddUrlEl        = document.getElementById('set-add-url');
+    const setAddModelEl      = document.getElementById('set-add-model-name');
+    const setModelSuggestions = document.getElementById('set-model-suggestions');
+    const setFetchModelsBtn  = document.getElementById('set-fetch-models-btn');
+    const setAddKeyEl        = document.getElementById('set-add-key');
+    const setAddBtn          = document.getElementById('set-add-btn');
+    const setAddErrorEl      = document.getElementById('set-add-error');
 
     // Pending action queue (Issue #194 — migrated from queue.html). Held
     // at the document level (not inside the pane) so the header badge can
@@ -6251,6 +6255,22 @@
         case 'custom_model_error':
           showAddError((event.data && event.data.error) || 'Could not add model.');
           break;
+        case 'models_discovered': {
+          const suggestions = (event.data && event.data.models) || [];
+          if (setModelSuggestions) {
+            setModelSuggestions.innerHTML = suggestions
+              .map(function(id) { return '<option value="' + id + '">'; })
+              .join('');
+          }
+          if (suggestions.length === 1 && setAddModelEl) {
+            setAddModelEl.value = suggestions[0];
+          }
+          if (setFetchModelsBtn) {
+            setFetchModelsBtn.disabled = false;
+            setFetchModelsBtn.textContent = 'Fetch';
+          }
+          break;
+        }
         case 'settings_updated':
           // Issue #209 — Settings v2. System settings owned by Cerebral.
           systemSettingsData = event.data || {};
@@ -9740,6 +9760,20 @@
 
     setLocalOnlyEl.addEventListener('change', () => {
       sendEvent({ type: 'set_local_only', data: { enabled: setLocalOnlyEl.checked } });
+    });
+
+    setFetchModelsBtn.addEventListener('click', () => {
+      setFetchModelsBtn.disabled = true;
+      setFetchModelsBtn.textContent = 'Fetching…';
+      const api_key = setAddKeyEl.value;
+      sendEvent({
+        type: 'discover_models',
+        data: {
+          kind: setAddKindEl.value,
+          url: setAddUrlEl.value.trim(),
+          api_key,
+        },
+      });
     });
 
     setAddBtn.addEventListener('click', () => {

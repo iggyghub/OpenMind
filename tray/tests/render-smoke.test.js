@@ -924,6 +924,38 @@ test('custom switch-list rows get a remove control; api key is write-only', () =
   expect(inlineScript).toMatch(/setAddKeyEl\.value\s*=\s*''/);
 });
 
+// ── S2 model-servers -- model discovery (Fetch button + datalist) ─────────────
+
+test('Add-model form has a Fetch button and datalist for model suggestions (S2 model-servers)', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  const form = pane.querySelector('#set-add-model-form');
+  expect(form).not.toBeNull();
+
+  // Fetch button.
+  const fetchBtn = form.querySelector('#set-fetch-models-btn');
+  expect(fetchBtn).not.toBeNull();
+  expect(fetchBtn.tagName.toLowerCase()).toBe('button');
+
+  // datalist bound to the model-name input.
+  const datalist = form.querySelector('#set-model-suggestions');
+  expect(datalist).not.toBeNull();
+  expect(datalist.tagName.toLowerCase()).toBe('datalist');
+
+  // model-name input must reference the datalist.
+  const modelInput = form.querySelector('#set-add-model-name');
+  expect(modelInput).not.toBeNull();
+  expect(modelInput.getAttribute('list')).toBe('set-model-suggestions');
+});
+
+test('inline script wires discover_models IPC and handles models_discovered (S2 model-servers)', () => {
+  expect(inlineScript).toMatch(/['"]discover_models['"]/);
+  expect(inlineScript).toMatch(/['"]models_discovered['"]/);
+  // Datalist populated from event data.
+  expect(inlineScript).toMatch(/set-model-suggestions/);
+  // Auto-fill when exactly one result.
+  expect(inlineScript).toMatch(/suggestions\.length === 1/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

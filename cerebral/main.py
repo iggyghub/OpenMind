@@ -28,8 +28,10 @@ from cerebral.llm.router import (
     CUSTOM_KINDS,
     ModelRouter,
     ModelUnavailableError,
+    OllamaBackend,
     ToolCall,
     build_custom_backend,
+    list_openai_models,
 )
 from cerebral.db.custom_models import CustomModelStore
 from cerebral.llm.planner import Planner, shortlist_tools, validate_tool_args
@@ -3188,6 +3190,25 @@ async def _handle_message(msg: dict) -> None:
             _custom_models.remove(_active_profile.id, mid)
             logger.info("[cerebral] Custom model removed: %s", mid)
             await _broadcast(_models_list_event())
+
+    elif t == "discover_models":
+        d = msg.get("data", {})
+        kind = (d.get("kind") or "").strip()
+        url = (d.get("url") or "").strip()
+        api_key = (d.get("api_key") or "").strip() or None
+        if kind == "anthropic":
+            models: list[str] = []
+        elif kind == "ollama":
+            models = await asyncio.to_thread(
+                lambda: OllamaBackend.list_installed_models(url=url)
+            )
+        elif kind == "openai":
+            models = await asyncio.to_thread(
+                lambda: list_openai_models(url, api_key)
+            )
+        else:
+            models = []
+        await _broadcast({"type": "models_discovered", "data": {"kind": kind, "models": models}})
 
     elif t == "list_tools":
         await _broadcast({"type": "tools_list", "data": {"tools": _orc.tools_for_llm}})

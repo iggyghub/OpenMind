@@ -15,3 +15,18 @@ the check.
       `/v1/chat/completions` on the wire.
 - [ ] Adding with a deliberately-wrong key surfaces a `ModelUnavailableError`
       with the HTTP status (401), not a raw `httpx` traceback in the tray log.
+
+## S2 -- #524 -- model discovery (list_openai_models + discover_models IPC + Fetch datalist)
+
+- [ ] Settings -> AI models: with an OpenAI-compatible server URL and API key
+      entered, click **Fetch** -- the model-name input populates a native
+      datalist showing the server's model IDs (`/v1/models` response). Typing
+      in the field still works freely (not locked to the suggestions).
+- [ ] With an Ollama server URL entered, click **Fetch** -- the datalist shows
+      the installed model names from `/api/tags`.
+- [ ] When the server returns exactly one model, the model-name input is
+      auto-filled with that model's id.
+- [ ] With `kind=anthropic` selected, **Fetch** returns an empty datalist
+      immediately (no network call to Anthropic).
+- [ ] With an unreachable server URL, **Fetch** completes without an error in
+      the UI (empty datalist, user can still type the model name manually).
