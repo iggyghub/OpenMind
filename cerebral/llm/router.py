@@ -26,8 +26,7 @@ from typing import Callable, Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 # Local inference on a CPU-bound box can take 80s+ for a real (large) prompt,
-# so the default Ollama timeout is generous and env-overridable. Cloud
-# (ClawBackend) stays at 60s because cloud inference is fast. See issue #271.
+# so the default Ollama timeout is generous and env-overridable. See issue #271.
 _DEFAULT_OLLAMA_TIMEOUT_S = 180.0
 
 
@@ -50,6 +49,37 @@ def _ollama_timeout_s() -> float:
             raw, _DEFAULT_OLLAMA_TIMEOUT_S,
         )
         return _DEFAULT_OLLAMA_TIMEOUT_S
+    return value
+
+
+# A custom OpenAI-compatible endpoint (ClawBackend, kind="openai") may serve a
+# slow/thinking model that reasons for minutes on a large prompt -- self_dev
+# edits timed out at the old hardcoded 60s (empty httpx.TimeoutException ->
+# "model unavailable"). Env-overridable with a generous default. OpenClaw's own
+# cloud path is fast, but a user's custom server (e.g. a Hermes/Qwen agent) is
+# not guaranteed to be.
+_DEFAULT_CLAW_TIMEOUT_S = 300.0
+
+
+def _claw_timeout_s() -> float:
+    """ClawBackend / custom-endpoint HTTP timeout in seconds (override via CLAW_TIMEOUT_S)."""
+    raw = os.environ.get("CLAW_TIMEOUT_S")
+    if raw is None:
+        return _DEFAULT_CLAW_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "[router] CLAW_TIMEOUT_S=%r is not a number; using default %ss",
+            raw, _DEFAULT_CLAW_TIMEOUT_S,
+        )
+        return _DEFAULT_CLAW_TIMEOUT_S
+    if value <= 0:
+        logger.warning(
+            "[router] CLAW_TIMEOUT_S=%r must be > 0; using default %ss",
+            raw, _DEFAULT_CLAW_TIMEOUT_S,
+        )
+        return _DEFAULT_CLAW_TIMEOUT_S
     return value
 
 
@@ -748,7 +778,7 @@ class ClawBackend:
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
         }
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=_claw_timeout_s()) as client:
             try:
                 resp = await client.post(
                     f"{self.url}/v1/chat/completions",
@@ -791,7 +821,7 @@ class ClawBackend:
             "messages": [{"role": "user", "content": prompt}],
             "tools": oai_tools,
         }
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=_claw_timeout_s()) as client:
             try:
                 resp = await client.post(
                     f"{self.url}/v1/chat/completions",

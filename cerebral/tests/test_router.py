@@ -553,6 +553,58 @@ async def test_ollama_complete_uses_configured_timeout(monkeypatch):
     assert captured["timeout"] == 240.0
 
 
+def test_claw_timeout_defaults_to_300(monkeypatch):
+    from cerebral.llm import router
+    monkeypatch.delenv("CLAW_TIMEOUT_S", raising=False)
+    assert router._claw_timeout_s() == 300.0
+
+
+def test_claw_timeout_reads_env_override(monkeypatch):
+    from cerebral.llm import router
+    monkeypatch.setenv("CLAW_TIMEOUT_S", "600")
+    assert router._claw_timeout_s() == 600.0
+
+
+def test_claw_timeout_ignores_bad_values(monkeypatch):
+    from cerebral.llm import router
+    monkeypatch.setenv("CLAW_TIMEOUT_S", "nope")
+    assert router._claw_timeout_s() == 300.0
+    monkeypatch.setenv("CLAW_TIMEOUT_S", "0")
+    assert router._claw_timeout_s() == 300.0
+
+
+async def test_claw_complete_uses_configured_timeout(monkeypatch):
+    """ClawBackend.complete builds its client with the resolved CLAW timeout,
+    not the old hardcoded 60s -- so a slow custom endpoint isn't cut off."""
+    from cerebral.llm.router import ClawBackend
+    import httpx
+
+    monkeypatch.setenv("CLAW_TIMEOUT_S", "450")
+    captured = {}
+
+    real_init = httpx.AsyncClient.__init__
+
+    def spy_init(self, *args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return real_init(self, *args, **kwargs)
+
+    async def fake_post(self, url, json=None, headers=None):
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}]},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", spy_init)
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    backend = ClawBackend(url="https://example.test/v1", model="hermes-agent", api_key="k")
+    result = await backend.complete("hi", "chat")
+
+    assert result == "ok"
+    assert captured["timeout"] == 450.0
+
+
 # ── AnthropicBackend — direct Anthropic API (issue #378) ─────────────────────
 
 class _FakeBlock:
