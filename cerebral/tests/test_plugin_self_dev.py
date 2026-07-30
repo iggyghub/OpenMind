@@ -260,3 +260,56 @@ async def test_custom_run_id(tmp_path):
     data = json.loads(result.content)
     assert data["run_id"] == "my-custom-run"
     assert "my-custom-run" in data["clone_dir"]
+
+
+# ---------------------------------------------------------------------------
+# Default I/O seams -- every other test injects these, so they are only ever
+# exercised live. Regression for the two bugs the first live dry-run surfaced:
+# a fresh clone has no committer identity, and `git push` without -u makes
+# `gh pr create` refuse. These patch subprocess.run to assert the real commands.
+# ---------------------------------------------------------------------------
+
+def _capture_subprocess(monkeypatch, stdout=""):
+    calls: list[list[str]] = []
+
+    class _R:
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(cmd, *a, **k):
+        calls.append(list(cmd))
+        return _R()
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+def test_default_clone_sets_committer_identity(monkeypatch, tmp_path):
+    from plugins import self_dev
+
+    calls = _capture_subprocess(monkeypatch, stdout="somevalue")
+    self_dev._default_clone_fn("https://example.test/repo.git", tmp_path / "clone")
+
+    assert any(c[:2] == ["git", "clone"] for c in calls), "must clone"
+    assert any("config" in c and "user.name" in c for c in calls), \
+        "fresh clone must be given a user.name"
+    assert any("config" in c and "user.email" in c for c in calls), \
+        "fresh clone must be given a user.email"
+
+
+def test_default_pr_pushes_with_upstream(monkeypatch, tmp_path):
+    from plugins import self_dev
+
+    calls = _capture_subprocess(monkeypatch, stdout="https://github.com/x/y/pull/1")
+    url = self_dev._default_pr_fn(tmp_path, "selfdev/x", "desc", True, "output")
+
+    push = next(c for c in calls if c[:2] == ["git", "push"])
+    assert "-u" in push, f"push must set upstream so gh pr create works: {push}"
+    gh = next(c for c in calls if c[:3] == ["gh", "pr", "create"])
+    assert "--head" in gh and "selfdev/x" in gh, \
+        f"gh pr create must name the head branch explicitly: {gh}"
+    assert url == "https://github.com/x/y/pull/1"
