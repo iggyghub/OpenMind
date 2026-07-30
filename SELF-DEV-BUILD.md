@@ -4,12 +4,14 @@ Felix modifies its own core through clone -> test -> PR -> restart. Driver for
 `scripts/run-self-dev.ps1`. Each slice runs in a fresh headless Claude Code
 session; this file + the issue are the only memory between them.
 
-Status: ready
+Status: blocked
+SD-3 PR #560 awaiting human review
+
 Model: sonnet
 
 ## Next slice -- start here
 
-SD-3 -- #556  boot self-check + SHA rollback + state snapshot
+SD-4 -- #557  blast-radius auto-merge gate: safe zones vs guardrails
 Model: sonnet
 Type: HITL
 
@@ -17,7 +19,7 @@ Type: HITL
 
 - [x] SD-1 -- #554  self_dev plugin: clone -> branch -> edit -> test -> PR (AFK, auto-merge on green)
 - [x] SD-2 -- #555  restart-to-load handoff for merged self-dev PRs (AFK, auto-merge on green)
-- [ ] SD-3 -- #556  boot self-check + SHA rollback + state snapshot (HITL -- open PR, stop for human review)
+- [x] SD-3 -- #556  boot self-check + SHA rollback + state snapshot (HITL -- PR #560 open, awaiting human review)
 - [ ] SD-4 -- #557  blast-radius auto-merge gate: safe zones vs guardrails (HITL -- open PR, stop for human review)
 
 ## Landed PRs
