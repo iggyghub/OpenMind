@@ -5,7 +5,13 @@
 // broken brain can't rescue itself. All I/O is injected for hermetic tests.
 
 const BACKUP_KEEP      = 5;
-const CHECK_TIMEOUT_MS = 30_000;
+// Cerebral cold-starts in 30-45s (Kokoro warmup + ChromaDB + 50+ plugin
+// discovery), sometimes more after a reboot -- the same reason launch-felix.ps1
+// waits 120s for :7766. A 30s health-check window fell inside the cold start,
+// so a HEALTHY self-dev boot timed out and triggered a destructive
+// `git reset --hard` rollback. Match the launcher's 120s so only a genuinely
+// wedged brain rolls back.
+const CHECK_TIMEOUT_MS = 120_000;
 const STATE_FILE       = 'self_dev_state.json';
 const SNAPSHOT_FILES   = ['openmind.db', 'felix-settings.json'];
 
