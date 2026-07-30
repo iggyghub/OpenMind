@@ -1,18 +1,22 @@
 """
-Self-dev plugin -- ADR-0015 S1 (Issue #554).
+Self-dev plugin -- ADR-0015 S1/S2 (Issues #554/#555).
 
 Felix's self-dev loop: clone the repo, branch, have the model make a scoped
 edit, run the test suite inside the ADR-0010 sandbox, and open a PR. The run
 stops at "PR opened" -- nothing is merged or loaded (that is slices #2/#3/#4).
 
-Injected seams (clone_fn / edit_fn / test_fn / pr_fn) make the whole flow
-hermetic in tests -- no real git / gh / network / Cerebral.
+S2 adds self_dev_load: after a self-dev PR is merged to master, pull the live
+repo (git pull --ff-only) and broadcast restart_felix to the tray so the
+merged change goes live. No-op if already up-to-date.
+
+Injected seams (clone_fn / edit_fn / test_fn / pr_fn / pull_fn / restart_fn)
+make the whole flow hermetic in tests -- no real git / gh / network / Cerebral.
 """
 import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.paths import data_dir
@@ -38,6 +42,8 @@ CloneFn = Callable[[str, Path], None]         # (repo_url, dest) -> None
 EditFn = Callable[[Path, str], dict]           # (clone_dir, description) -> {branch, committed, ...}
 TestFn = Callable[[Path], "tuple[bool, str]"]  # (clone_dir) -> (passed, output)
 PrFn = Callable[[Path, str, str, bool, str], str]  # (clone_dir, branch, desc, ok, out) -> pr_url
+PullFn = Callable[[Path], "tuple[bool, str]"]  # (live_root) -> (updated, output)
+RestartFn = Callable[[], "Awaitable[None]"]    # async -- broadcasts restart_felix to tray
 
 
 def _default_clone_fn(repo_url: str, dest: Path) -> None:
@@ -99,6 +105,28 @@ def _default_pr_fn(
     return result.stdout.strip()
 
 
+def _default_pull_fn(repo_root: Path) -> "tuple[bool, str]":
+    """git pull --ff-only master in the live repo root."""
+    import subprocess
+    result = subprocess.run(
+        ["git", "pull", "origin", "master", "--ff-only"],
+        capture_output=True, text=True, cwd=str(repo_root),
+    )
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        raise RuntimeError(f"git pull failed:\n{output}")
+    updated = "already up to date" not in output.lower()
+    return updated, output
+
+
+async def _default_restart_fn() -> None:
+    """Broadcast restart_felix to the tray -- main.py must wire this."""
+    raise NotImplementedError(
+        "SelfDevPlugin requires a restart_fn -- "
+        "main.py must wire the broadcast in via SelfDevPlugin(restart_fn=...)."
+    )
+
+
 class SelfDevPlugin:
     name = PLUGIN_NAME
 
@@ -110,16 +138,22 @@ class SelfDevPlugin:
         edit_fn: EditFn | None = None,
         test_fn: TestFn | None = None,
         pr_fn: PrFn | None = None,
+        pull_fn: PullFn | None = None,
+        restart_fn: RestartFn | None = None,
         repo_url: str | None = None,
         sandbox_root: Path | None = None,
+        live_root: Path | None = None,
     ) -> None:
         self._sandbox = sandbox
         self._clone = clone_fn or _default_clone_fn
         self._edit = edit_fn or _default_edit_fn
         self._test = test_fn or _default_test_fn
         self._pr = pr_fn or _default_pr_fn
+        self._pull = pull_fn or _default_pull_fn
+        self._restart = restart_fn or _default_restart_fn
         self._repo_url = repo_url or str(_REPO_ROOT)
         self._sandbox_root = sandbox_root or (data_dir() / "sandbox" / "self_dev")
+        self._live_root = live_root or _REPO_ROOT
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -152,12 +186,33 @@ class SelfDevPlugin:
                     },
                     "required": ["change_description"],
                 },
-            )
+            ),
+            Tool(
+                name="self_dev_load",
+                description=(
+                    "After a self-dev PR is merged to master: pull the live repo "
+                    "(git pull --ff-only) and trigger a tray relaunch so the merged "
+                    "change goes live. No-ops silently if already up-to-date. "
+                    "Requires restart_fn wired by main.py (fail-closed without it)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "pr_url": {
+                            "type": "string",
+                            "description": "Optional: URL of the merged PR (for the result log).",
+                        },
+                    },
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         if tool_name == "self_dev":
             return await self._run(args)
+        if tool_name == "self_dev_load":
+            return await self._load(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     async def _run(self, args: dict) -> ToolResult:
@@ -233,6 +288,36 @@ class SelfDevPlugin:
                 "pr_url": pr_url,
             })
         )
+
+    async def _load(self, args: dict) -> ToolResult:
+        pr_url = (args or {}).get("pr_url", "").strip() or None
+
+        try:
+            updated, output = self._pull(self._live_root)
+        except Exception as exc:
+            return ToolResult(content=f"git pull failed: {exc}", is_error=True)
+
+        if not updated:
+            return ToolResult(content=json.dumps({
+                "status": "no_op",
+                "message": "Already up to date -- no restart needed.",
+                "output": output,
+                "pr_url": pr_url,
+            }))
+
+        try:
+            await self._restart()
+        except NotImplementedError as exc:
+            return ToolResult(content=str(exc), is_error=True)
+        except Exception as exc:
+            return ToolResult(content=f"Restart trigger failed: {exc}", is_error=True)
+
+        return ToolResult(content=json.dumps({
+            "status": "restarting",
+            "message": "Pulled new commits -- relaunch triggered.",
+            "output": output,
+            "pr_url": pr_url,
+        }))
 
 
 def create(sandbox=None, **kwargs) -> SelfDevPlugin:

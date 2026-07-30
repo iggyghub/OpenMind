@@ -263,6 +263,11 @@ function handleCerebralEvent(event) {
       // Routed straight to the Main window renderer via the shared WS
       // since Issue #200; main.js no longer mirrors or forwards it.
       break;
+
+    case 'restart_felix':
+      // SD-2 (#555): self_dev_load broadcasts this after pulling a merged PR.
+      restartFelix();
+      break;
   }
 }
 

@@ -73,9 +73,10 @@ def test_required_capabilities_include_shell_exec():
 def test_list_tools(tmp_path):
     plugin = _make(tmp_path)
     tools = plugin.list_tools()
-    assert len(tools) == 1
-    t = tools[0]
-    assert t.name == "self_dev"
+    names = [t.name for t in tools]
+    assert "self_dev" in names
+    assert "self_dev_load" in names
+    t = next(t for t in tools if t.name == "self_dev")
     assert t.plugin == PLUGIN_NAME
     assert "change_description" in t.schema["properties"]
 
