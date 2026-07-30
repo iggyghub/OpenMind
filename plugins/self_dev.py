@@ -1,22 +1,27 @@
 """
-Self-dev plugin -- ADR-0015 S1/S2 (Issues #554/#555).
+Self-dev plugin -- ADR-0015 S1/S2/S4 (Issues #554/#555/#557).
 
 Felix's self-dev loop: clone the repo, branch, have the model make a scoped
-edit, run the test suite inside the ADR-0010 sandbox, and open a PR. The run
-stops at "PR opened" -- nothing is merged or loaded (that is slices #2/#3/#4).
+edit, run the test suite inside the ADR-0010 sandbox, and open a PR.
 
 S2 adds self_dev_load: after a self-dev PR is merged to master, pull the live
 repo (git pull --ff-only) and broadcast restart_felix to the tray so the
 merged change goes live. No-op if already up-to-date.
 
-Injected seams (clone_fn / edit_fn / test_fn / pr_fn / pull_fn / restart_fn)
-make the whole flow hermetic in tests -- no real git / gh / network / Cerebral.
+S4 adds the blast-radius gate (ADR-0015 decision 5): after opening the PR,
+inspect the diff. Safe-zone + green tests -> auto-merge + self_dev_load.
+Any guardrail file in the diff -> escalate to human review regardless of tests.
+GUARDRAIL_PATHS is the single definition of what counts as a guardrail.
+
+Injected seams (clone_fn / edit_fn / test_fn / pr_fn / diff_fn / merge_fn /
+pull_fn / restart_fn) make the whole flow hermetic in tests -- no real git /
+gh / network / Cerebral.
 """
 import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.paths import data_dir
@@ -34,6 +39,39 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset(
     {"shell_exec", "fs_write", "network_egress_cloud"}
 )
 
+# ADR-0015 decision 5 -- ONE authoritative list of guardrail paths.
+# Any PR diff touching these paths always escalates to human review,
+# regardless of test colour. Felix may propose changes but never self-approve.
+#
+# Entries ending with '/' are prefix matches (whole subtree).
+# All other entries are exact path matches (relative to repo root, forward slashes).
+GUARDRAIL_PATHS: frozenset[str] = frozenset({
+    "cerebral/security/",       # ADR-0005 capability gate (prefix)
+    "cerebral/sandbox/",        # ADR-0010 shell sandbox (prefix)
+    "cerebral/db/credentials.py",   # credential / keyring store
+    "cerebral/main.py",         # core Cerebral brain entry point
+    "plugins/self_dev.py",      # the self-dev loop itself
+    "tray/lib/boot-check.js",   # SD-3 launcher rollback + boot self-check
+})
+
+
+def is_guardrail_diff(changed_files: Iterable[str]) -> "tuple[bool, str]":
+    """Return (True, reason) if any file in the diff touches a guardrail path.
+
+    Pure function -- no side effects. Used by SelfDevPlugin._run to decide
+    whether to auto-merge or escalate to human review (ADR-0015 decision 5).
+    """
+    for f in changed_files:
+        path = f.replace("\\", "/").lstrip("/")
+        for g in GUARDRAIL_PATHS:
+            if g.endswith("/"):
+                if path.startswith(g) or path == g.rstrip("/"):
+                    return True, f"{path!r} is in guardrail area {g!r}"
+            elif path == g:
+                return True, f"{path!r} is a guardrail file"
+    return False, ""
+
+
 # Repo root: plugins/self_dev.py -> parent = plugins/, parent.parent = repo root.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -42,6 +80,8 @@ CloneFn = Callable[[str, Path], None]         # (repo_url, dest) -> None
 EditFn = Callable[[Path, str], dict]           # (clone_dir, description) -> {branch, committed, ...}
 TestFn = Callable[[Path], "tuple[bool, str]"]  # (clone_dir) -> (passed, output)
 PrFn = Callable[[Path, str, str, bool, str], str]  # (clone_dir, branch, desc, ok, out) -> pr_url
+DiffFn = Callable[[str], "list[str]"]          # (pr_url) -> changed_files
+MergeFn = Callable[[str], None]                # (pr_url) -> None (squash-merges the PR)
 PullFn = Callable[[Path], "tuple[bool, str]"]  # (live_root) -> (updated, output)
 RestartFn = Callable[[], "Awaitable[None]"]    # async -- broadcasts restart_felix to tray
 
@@ -105,6 +145,29 @@ def _default_pr_fn(
     return result.stdout.strip()
 
 
+def _default_diff_fn(pr_url: str) -> "list[str]":
+    """List changed files in a PR via gh CLI."""
+    import subprocess
+    result = subprocess.run(
+        ["gh", "pr", "view", pr_url, "--json", "files", "--jq", ".files[].path"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"gh pr view files failed:\n{result.stderr.strip()}")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _default_merge_fn(pr_url: str) -> None:
+    """Squash-merge a PR and delete its branch via gh CLI."""
+    import subprocess
+    result = subprocess.run(
+        ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"gh pr merge failed:\n{result.stderr.strip()}")
+
+
 def _default_pull_fn(repo_root: Path) -> "tuple[bool, str]":
     """git pull --ff-only master in the live repo root."""
     import subprocess
@@ -138,6 +201,8 @@ class SelfDevPlugin:
         edit_fn: EditFn | None = None,
         test_fn: TestFn | None = None,
         pr_fn: PrFn | None = None,
+        diff_fn: DiffFn | None = None,
+        merge_fn: MergeFn | None = None,
         pull_fn: PullFn | None = None,
         restart_fn: RestartFn | None = None,
         repo_url: str | None = None,
@@ -149,6 +214,8 @@ class SelfDevPlugin:
         self._edit = edit_fn or _default_edit_fn
         self._test = test_fn or _default_test_fn
         self._pr = pr_fn or _default_pr_fn
+        self._diff = diff_fn or _default_diff_fn
+        self._merge = merge_fn or _default_merge_fn
         self._pull = pull_fn or _default_pull_fn
         self._restart = restart_fn or _default_restart_fn
         self._repo_url = repo_url or str(_REPO_ROOT)
@@ -272,12 +339,54 @@ class SelfDevPlugin:
         except Exception as exc:
             test_output = f"Test runner error: {exc}"
 
-        # 4. Open PR (regardless of test colour; mergeability is SD-4's job).
+        # 4. Open PR (regardless of test colour; mergeability is decided below).
         try:
             pr_url = self._pr(clone_dir, branch, description, test_passed, test_output)
         except Exception as exc:
             return ToolResult(content=f"PR creation failed: {exc}", is_error=True)
 
+        # 5. Blast-radius gate (SD-4 / ADR-0015 decision 5).
+        #    Fail-safe: if we can't inspect the diff, treat as guardrail.
+        guardrail_hit = False
+        escalation_reason = ""
+        try:
+            changed_files = self._diff(pr_url)
+            guardrail_hit, escalation_reason = is_guardrail_diff(changed_files)
+        except Exception as exc:
+            guardrail_hit = True
+            escalation_reason = f"diff check failed (fail-safe escalation): {exc}"
+
+        if guardrail_hit or not test_passed:
+            reason = escalation_reason or ("tests did not pass" if not test_passed else "")
+            return ToolResult(
+                content=json.dumps({
+                    "run_id": run_id,
+                    "clone_dir": str(clone_dir),
+                    "branch": branch,
+                    "test_passed": test_passed,
+                    "test_summary": test_output[:500],
+                    "pr_url": pr_url,
+                    "merge_decision": "escalate",
+                    "escalation_reason": reason,
+                })
+            )
+
+        # 6. Safe zone + green tests: auto-merge.
+        try:
+            self._merge(pr_url)
+        except Exception as exc:
+            return ToolResult(
+                content=f"Auto-merge failed (PR stays open for manual review): {exc}",
+                is_error=True,
+            )
+
+        # 7. Trigger load (git pull + restart) -- S3 boot self-check runs on restart.
+        load_result = await self._load({"pr_url": pr_url})
+        load_data = (
+            json.loads(load_result.content)
+            if not load_result.is_error
+            else {"error": load_result.content}
+        )
         return ToolResult(
             content=json.dumps({
                 "run_id": run_id,
@@ -286,6 +395,8 @@ class SelfDevPlugin:
                 "test_passed": test_passed,
                 "test_summary": test_output[:500],
                 "pr_url": pr_url,
+                "merge_decision": "auto_merge",
+                "load": load_data,
             })
         )
 
