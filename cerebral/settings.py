@@ -114,6 +114,10 @@ class SettingsStore:
         """Return a snapshot of all settings."""
         return {k: self._data.get(k, v) for k, v in _DEFAULTS.items()}
 
+    def is_default(self, key: str) -> bool:
+        """Return True when the current value equals its shipped default."""
+        return self.get(key) == _DEFAULTS.get(key)
+
     # ── private ────────────────────────────────────────────────────────────────
 
     def _load(self) -> dict[str, Any]:
