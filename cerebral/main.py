@@ -3039,6 +3039,13 @@ async def _handle_message(msg: dict) -> None:
         logger.info("[cerebral] Shutdown requested by tray")
         _shutdown.set()
 
+    elif t == "health_check":
+        # SD-3 (#556) -- boot self-check: confirms imports OK + ADR-0005 gate
+        # present. Cerebral running at all proves imports succeeded; we confirm
+        # the gate explicitly. The tray rolls back on False or timeout.
+        gate_present = bool(CAPABILITY_VOCABULARY)
+        await _broadcast({"type": "health_ok", "data": {"gate_present": gate_present}})
+
     elif t == "create_profile":
         d = msg.get("data", {})
         p = _pm.create(
@@ -4787,6 +4794,43 @@ async def _on_wake(transcript: str) -> None:
     _active_turn_task = asyncio.create_task(_process_command(transcript, speak=True, thread_model_override=_wake_thread_model))
 
 
+def _conversation_context(profile_id: int, *, max_turns: int = 8) -> str:
+    """Recent user/Felix turns from the active thread, formatted as a
+    "Conversation so far" preamble so the planner can reference the ongoing
+    chat window -- the main voice/text path was previously stateless (only the
+    bridge/channel path in ``_bridge_process`` folded history), so Felix
+    couldn't answer "what did I just ask you?".
+
+    The current user turn is always recorded before ``_process_command`` runs
+    (``_on_wake`` / ``user_text_command``), so the trailing user turn is
+    dropped to avoid duplicating the live request. Tool-call/result and
+    system-event turns are skipped: the in-chain ``prior_steps`` already carry
+    active tool context, and they're noise for conversational recall.
+    ponytail: last-N plain-text window; add summarisation only if transcripts
+    outgrow the model's context window.
+    """
+    thread_id = _resolve_active_thread_id(profile_id)
+    if thread_id is None:
+        return ""
+    turns = _conversation.list_recent_for_thread(thread_id, limit=max_turns * 3 + 1)
+    convo = [
+        t for t in turns
+        if t.kind in (KIND_USER_VOICE, KIND_USER_TEXT, KIND_FELIX_SPEECH)
+    ]
+    # Drop the just-recorded current user turn (the last conversational turn).
+    if convo and convo[-1].kind in (KIND_USER_VOICE, KIND_USER_TEXT):
+        convo = convo[:-1]
+    lines = []
+    for t in convo[-max_turns:]:
+        who = "Felix" if t.kind == KIND_FELIX_SPEECH else "User"
+        text = (t.content.get("text") or "").strip()
+        if text:
+            lines.append(f"{who}: {text}")
+    if not lines:
+        return ""
+    return "Conversation so far:\n" + "\n".join(lines) + "\n\n"
+
+
 async def _process_command(
     transcript: str,
     *,
@@ -4906,7 +4950,8 @@ async def _process_command(
 
     try:
         preamble = await _memory_preamble(transcript)
-        enriched = preamble + transcript if preamble else transcript
+        history = _conversation_context(profile_id) if profile_id is not None else ""
+        enriched = history + preamble + transcript
         response = await chain.run(enriched, tools, on_chain_done=_on_chain_done)
 
     except asyncio.CancelledError:

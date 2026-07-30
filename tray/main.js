@@ -17,12 +17,20 @@ const VIS_POS_PATH    = path.join(__dirname, '..', 'cerebral', 'data', 'visualis
 const LAUNCHER_LOG    = path.join(__dirname, '..', 'launcher.log');
 const CEREBRAL_LOG    = path.join(__dirname, '..', 'cerebral.log');
 const RECONNECT_DELAY_MS = 3000;
+// SD-3 (#556) -- boot self-check state
+const DATA_DIR = path.join(__dirname, '..', 'cerebral', 'data');
 
 let tray = null;
 let ws = null;
 let isConnected = false;
 let isQuitting  = false;
 let reconnectTimer = null;
+// SD-3 (#556) -- set true when --felix-self-dev-boot is in argv; cleared once
+// health_check is sent on the first Cerebral connection after that boot.
+let _selfDevBootPending  = false;
+// Resolve/reject for the pending health-check Promise (wired into runSelfCheck).
+let _healthCheckResolve = null;
+let _healthCheckTimer   = null;
 let felixState  = 'idle';      // 'idle' | 'active'
 let activeProfile = null;
 let allProfiles   = [];
@@ -73,6 +81,11 @@ function connectToCerebral() {
     isConnected = true;
     console.log('[tray] Connected to Cerebral');
     refreshMenu();
+    // SD-3 (#556): first connection after a self-dev boot -- run the self-check.
+    if (_selfDevBootPending) {
+      _selfDevBootPending = false;
+      ws.send(JSON.stringify({ type: 'health_check' }));
+    }
   });
 
   ws.on('message', (data) => {
@@ -264,9 +277,21 @@ function handleCerebralEvent(event) {
       // since Issue #200; main.js no longer mirrors or forwards it.
       break;
 
+    case 'health_ok': {
+      // SD-3 (#556): response to our health_check probe after a self-dev boot.
+      if (_healthCheckTimer) { clearTimeout(_healthCheckTimer); _healthCheckTimer = null; }
+      if (_healthCheckResolve) {
+        const d = event.data || {};
+        _healthCheckResolve({ ok: true, gate_present: !!d.gate_present });
+        _healthCheckResolve = null;
+      }
+      break;
+    }
+
     case 'restart_felix':
       // SD-2 (#555): self_dev_load broadcasts this after pulling a merged PR.
-      restartFelix();
+      // SD-3 (#556): pin SHA + snapshot state before relaunching.
+      restartFelixSelfDev();
       break;
   }
 }
@@ -642,6 +667,81 @@ function restartFelix() {
   quit(); // sends Cerebral the shutdown event, then app.quit()
 }
 
+// SD-3 (#556): self-dev restart -- pin the current master SHA + snapshot
+// openmind.db + felix-settings.json before handing off to the new code.
+// On the relaunched boot, runSelfDevCheck() verifies the new code is healthy
+// before promoting; on failure it auto-reverts and relaunches again.
+function restartFelixSelfDev() {
+  const fs               = require('fs');
+  const { execFileSync } = require('child_process');
+  const gitExe           = 'git';
+  const repoRoot         = path.join(__dirname, '..');
+  const bootCheck        = require('./lib/boot-check');
+
+  try {
+    bootCheck.pinAndSnapshot({
+      dataDir:        DATA_DIR,
+      gitRevParseFn:  () => execFileSync(gitExe, ['rev-parse', 'HEAD'],
+        { cwd: repoRoot, encoding: 'utf8' }).trim(),
+      copyFileFn:     (src, dest) => fs.copyFileSync(src, dest),
+      mkdirFn:        (dir) => fs.mkdirSync(dir, { recursive: true }),
+      readDirFn:      (dir) => { try { return fs.readdirSync(dir); } catch (_) { return []; } },
+      removeDirFn:    (dir) => fs.rmSync(dir, { recursive: true, force: true }),
+      writeFileFn:    (p, d) => fs.writeFileSync(p, d, 'utf8'),
+    });
+    trayLog('SD-3: pinned SHA + snapshotted state before self-dev restart');
+  } catch (e) {
+    trayLog(`SD-3: pin/snapshot failed (continuing restart): ${e}`);
+  }
+
+  trayLog('restart: self-dev relaunch via app.relaunch()');
+  app.relaunch({ args: process.argv.slice(1).concat(['--felix-restart', '--felix-self-dev-boot']) });
+  quit();
+}
+
+// SD-3 (#556): called on boot when --felix-self-dev-boot is in argv.
+// Wires runSelfCheck to the pending WS health_check flow.
+function runSelfDevCheck() {
+  const fs               = require('fs');
+  const { execFileSync } = require('child_process');
+  const gitExe           = 'git';
+  const repoRoot         = path.join(__dirname, '..');
+  const { runSelfCheck, CHECK_TIMEOUT_MS } = require('./lib/boot-check');
+
+  runSelfCheck({
+    dataDir:     DATA_DIR,
+    readFileFn:  (p) => { try { return fs.readFileSync(p, 'utf8'); } catch (_) { return null; } },
+    writeFileFn: (p, d) => fs.writeFileSync(p, d, 'utf8'),
+    copyFileFn:  (src, dest) => fs.copyFileSync(src, dest),
+    gitResetFn:  (sha) => execFileSync(gitExe, ['reset', '--hard', sha],
+      { cwd: repoRoot, stdio: 'ignore' }),
+    notifyFn: (msg) => {
+      trayLog(`SD-3: ${msg}`);
+      electronNotify('Felix — boot check', msg);
+    },
+    relauncher: () => {
+      // Relaunch without --felix-self-dev-boot so the old code boots normally
+      const args = process.argv.slice(1)
+        .filter(a => a !== '--felix-self-dev-boot')
+        .concat(['--felix-restart']);
+      app.relaunch({ args });
+      quit();
+    },
+    checkFn: () => new Promise((resolve, reject) => {
+      _healthCheckResolve = resolve;
+      _healthCheckTimer   = setTimeout(() => {
+        _healthCheckResolve = null;
+        _healthCheckTimer   = null;
+        reject(new Error(`health_check timeout after ${CHECK_TIMEOUT_MS}ms`));
+      }, CHECK_TIMEOUT_MS);
+    }),
+  }).then(res => {
+    trayLog(`SD-3: self-check result: ${(res && res.result) || 'no-op'}`);
+  }).catch(e => {
+    trayLog(`SD-3: self-check error: ${e}`);
+  });
+}
+
 // Runs in the relaunched instance: reboot Cerebral. -Restart makes the
 // launcher wait for :7766 to free (old Cerebral tearing down); -CerebralOnly
 // keeps it from starting a second tray — this instance IS the tray.
@@ -676,6 +776,8 @@ app.whenReady().then(() => {
   // Second half of "Restart Felix" (#443 rework): this instance was
   // relaunched by restartFelix(); Cerebral is down — bring it back.
   if (process.argv.includes('--felix-restart')) respawnCerebral();
+  // SD-3 (#556): self-dev boot -- arm the health-check before connectToCerebral().
+  if (process.argv.includes('--felix-self-dev-boot')) _selfDevBootPending = true;
 
   // #439 — Main window menu bar: File gains Restart/Quit (the window's X
   // only hides to tray per #188, so these need a discoverable home).
@@ -699,6 +801,9 @@ app.whenReady().then(() => {
 
   refreshMenu();
   connectToCerebral();
+  // SD-3 (#556): set up the self-check Promise after connectToCerebral so
+  // the timeout starts only when we're actually trying to reach Cerebral.
+  if (process.argv.includes('--felix-self-dev-boot')) runSelfDevCheck();
   console.log('[tray] Felix tray started');
 
   // Issue #185 follow-on: fire an OS notification on startup. The Felix
