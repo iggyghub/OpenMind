@@ -9,20 +9,21 @@ Model: sonnet
 
 ## Next slice -- start here
 
-SD-2 -- #555  restart-to-load handoff for merged self-dev PRs
+SD-3 -- #556  boot self-check + SHA rollback + state snapshot
 Model: sonnet
-Type: AFK
+Type: HITL
 
 ## Queue
 
 - [x] SD-1 -- #554  self_dev plugin: clone -> branch -> edit -> test -> PR (AFK, auto-merge on green)
-- [ ] SD-2 -- #555  restart-to-load handoff for merged self-dev PRs (AFK, auto-merge on green)
-- [ ] SD-3 -- #556  boot self-check + SHA rollback + state snapshot (HITL -- open PR, stop for human review) [blocked by SD-2]
-- [ ] SD-4 -- #557  blast-radius auto-merge gate: safe zones vs guardrails (HITL -- open PR, stop for human review) [blocked by SD-1]
+- [x] SD-2 -- #555  restart-to-load handoff for merged self-dev PRs (AFK, auto-merge on green)
+- [ ] SD-3 -- #556  boot self-check + SHA rollback + state snapshot (HITL -- open PR, stop for human review)
+- [ ] SD-4 -- #557  blast-radius auto-merge gate: safe zones vs guardrails (HITL -- open PR, stop for human review)
 
 ## Landed PRs
 
 - PR #558: SD-1 -- self_dev plugin (clone -> branch -> edit -> test -> PR)
+- PR #559: SD-2 -- restart-to-load handoff for merged self-dev PRs
 
 ## Notes
 
