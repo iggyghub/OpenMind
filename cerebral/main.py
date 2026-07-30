@@ -2183,6 +2183,15 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
         root = clone_dir / base
         if root.is_dir():
             candidates += [p.relative_to(clone_dir).as_posix() for p in root.rglob("*.py")]
+    # Tray UI sources (JS) so self_dev can reach the Electron front-end. Skip
+    # node_modules (thousands of vendored files would blow the planner prompt)
+    # and the ~11k-line windows/main.html monolith (too large to round-trip in
+    # one edit prompt -- the modular tray/lib/*.js is the editable surface). Any
+    # tray/ edit ESCALATES to human review (GUARDRAIL_PATHS): the sandbox test
+    # gate runs pytest only, so it cannot validate JS -- a human must.
+    tray_lib = clone_dir / "tray" / "lib"
+    if tray_lib.is_dir():
+        candidates += [p.relative_to(clone_dir).as_posix() for p in tray_lib.rglob("*.js")]
     candidates.sort()
 
     plan_prompt = (

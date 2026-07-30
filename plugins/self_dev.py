@@ -53,7 +53,10 @@ GUARDRAIL_PATHS: frozenset[str] = frozenset({
     "cerebral/db/credentials.py",   # credential / keyring store
     "cerebral/main.py",         # core Cerebral brain entry point
     "plugins/self_dev.py",      # the self-dev loop itself
-    "tray/lib/boot-check.js",   # SD-3 launcher rollback + boot self-check
+    "tray/",                    # all Electron/tray UI (prefix) -- the sandbox
+                                # test gate runs pytest only and cannot validate
+                                # JS, so every tray edit escalates to human
+                                # review (incl. tray/lib/boot-check.js, SD-3).
 })
 
 
