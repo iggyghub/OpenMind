@@ -441,3 +441,5 @@ def create(sandbox=None, **kwargs) -> SelfDevPlugin:
         except Exception:
             pass
     return SelfDevPlugin(sandbox=sandbox, **kwargs)
+
+# self-dev live test 2026-07-29 21:56:51 -- safe to delete
