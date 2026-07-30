@@ -72,7 +72,10 @@ def test_guardrail_paths_cover_required_entries():
     assert "cerebral/sandbox/" in joined
     assert "cerebral/main.py" in joined
     assert "plugins/self_dev.py" in joined
-    assert "tray/lib/boot-check.js" in joined
+    # All tray/ escalates (prefix) -- covers the SD-3 boot-check.js and every
+    # other JS the pytest gate can't validate.
+    assert "tray/" in joined
+    assert is_guardrail_diff(["tray/lib/boot-check.js"])[0]
 
 
 # ---------------------------------------------------------------------------
@@ -100,9 +103,12 @@ def test_safe_zone_docs_dir():
     assert not ok
 
 
-def test_safe_zone_tray_non_bootcheck():
-    ok, _ = is_guardrail_diff(["tray/lib/visualiser-state.js"])
-    assert not ok
+def test_guardrail_tray_prefix_escalates_all_js():
+    # self_dev can now edit tray/*.js, but the pytest gate can't validate JS,
+    # so every tray edit escalates to human review (whole-subtree prefix).
+    hit, reason = is_guardrail_diff(["tray/lib/panel-spec.js"])
+    assert hit
+    assert "tray/" in reason
 
 
 def test_guardrail_security_prefix():
