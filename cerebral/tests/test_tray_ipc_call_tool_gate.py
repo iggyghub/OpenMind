@@ -335,3 +335,114 @@ async def test_call_tool_ask_class_refused_at_consent_returns_error(tmp_path):
     assert len(result_events) == 1
     assert result_events[0]["data"]["is_error"] is True
     assert "deny" in result_events[0]["data"]["content"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Per-tool capability scoping — the Skills-toggle bug regression
+# ---------------------------------------------------------------------------
+#
+# A plugin declares the UNION of its tools' capabilities (skills =
+# fs_read/fs_write/fs_delete/network). Before per-tool scoping, the tray gate
+# checked that whole union for EVERY tool, so ``skill_enable`` (a settings
+# write) inherited ``fs_delete`` and fired a "delete files" consent that
+# blocked enabling a skill. Per-tool ``required_capabilities`` narrows the
+# check to what each tool actually uses.
+
+
+def _make_capscope_plugin() -> MagicMock:
+    """Plugin declaring an fs_delete-inclusive union, with a write-only tool
+    (per-tool fs_read+fs_write) and a delete tool (per-tool +fs_delete)."""
+    plugin = MagicMock()
+    plugin.name = "capscope"
+    plugin.list_tools.return_value = [
+        Tool(
+            name="cap_write", description="write-only", plugin="capscope", schema={},
+            required_capabilities=frozenset({"fs_read", "fs_write"}),
+        ),
+        Tool(
+            name="cap_delete", description="deletes", plugin="capscope", schema={},
+            required_capabilities=frozenset({"fs_read", "fs_write", "fs_delete"}),
+        ),
+    ]
+    plugin.call_tool = AsyncMock(return_value=ToolResult(content="ok"))
+    return plugin
+
+
+async def test_per_tool_caps_write_tool_skips_plugin_fs_delete_consent(tmp_path):
+    """A write-only tool is gated on its own {fs_read,fs_write} — NOT the
+    plugin's fs_delete — so with fs_write granted it dispatches silently and
+    never prompts the fs_delete consent (the Skills-toggle bug)."""
+    import cerebral.main as main_mod
+
+    pm = ProfileManager(db_path=tmp_path / "perm.db")
+    profile = pm.create(name="Tester", wake_name="felix", voice_id="af_heart")
+    pm.set_active(profile.id)
+
+    acl = ProfileACL(
+        profile_id=profile.id,
+        profile_manager=pm,
+        defaults_snapshot=profile.acl_defaults_snapshot,
+    )
+    acl.set_persistent_class(Capability.FS_WRITE, Decision.SILENT)  # user allowed writes
+    consent = _RecordingConsent(Decision.SILENT)
+
+    orc = MCPOrchestrator(acl=acl, consent=consent)
+    plugin = _make_capscope_plugin()
+    # Plugin-wide union still includes fs_delete (like skills does for uninstall).
+    orc.register(plugin, required_capabilities=frozenset(
+        {"fs_read", "fs_write", "fs_delete"}))
+
+    sent, saved = _patch_main(main_mod, orc, tmp_path, active_profile=profile)
+    try:
+        await main_mod._handle_message({
+            "type": "call_tool",
+            "data": {"name": "cap_write", "args": {}},
+        })
+    finally:
+        for k, v in saved.items():
+            setattr(main_mod, k, v)
+
+    # No consent prompt at all — fs_delete was never consulted for this tool.
+    assert consent.received == [], (
+        "write-only tool must not inherit the plugin's fs_delete consent"
+    )
+    plugin.call_tool.assert_called_once()
+    result_events = [e for e in sent if e["type"] == "tool_result"]
+    assert len(result_events) == 1 and result_events[0]["data"]["is_error"] is False
+
+
+async def test_per_tool_caps_delete_tool_still_prompts_fs_delete(tmp_path):
+    """Scoping is real, not a blanket bypass: a tool that DOES declare
+    fs_delete still routes fs_delete through the consent surface."""
+    import cerebral.main as main_mod
+
+    pm = ProfileManager(db_path=tmp_path / "perm.db")
+    profile = pm.create(name="Tester", wake_name="felix", voice_id="af_heart")
+    pm.set_active(profile.id)
+
+    acl = ProfileACL(
+        profile_id=profile.id,
+        profile_manager=pm,
+        defaults_snapshot=profile.acl_defaults_snapshot,
+    )
+    acl.set_persistent_class(Capability.FS_WRITE, Decision.SILENT)
+    consent = _RecordingConsent(Decision.SILENT)  # accept the fs_delete prompt
+
+    orc = MCPOrchestrator(acl=acl, consent=consent)
+    plugin = _make_capscope_plugin()
+    orc.register(plugin, required_capabilities=frozenset(
+        {"fs_read", "fs_write", "fs_delete"}))
+
+    sent, saved = _patch_main(main_mod, orc, tmp_path, active_profile=profile)
+    try:
+        await main_mod._handle_message({
+            "type": "call_tool",
+            "data": {"name": "cap_delete", "args": {}},
+        })
+    finally:
+        for k, v in saved.items():
+            setattr(main_mod, k, v)
+
+    assert len(consent.received) == 1
+    assert consent.received[0]["capability"] is Capability.FS_DELETE
+    plugin.call_tool.assert_called_once()

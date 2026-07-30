@@ -285,6 +285,7 @@ class SkillsPlugin:
                 ),
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
+                required_capabilities=frozenset({"fs_read"}),
             ),
             Tool(
                 name="skill_use",
@@ -296,6 +297,7 @@ class SkillsPlugin:
                 ),
                 plugin=PLUGIN_NAME,
                 schema=_name_schema,
+                required_capabilities=frozenset({"fs_read"}),
             ),
             Tool(
                 name="skill_catalog",
@@ -306,6 +308,7 @@ class SkillsPlugin:
                 ),
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
+                required_capabilities=frozenset({"fs_read"}),
             ),
             Tool(
                 name="skill_preview",
@@ -317,18 +320,21 @@ class SkillsPlugin:
                 ),
                 plugin=PLUGIN_NAME,
                 schema=_name_schema,
+                required_capabilities=frozenset({"fs_read"}),
             ),
             Tool(
                 name="skill_enable",
                 description="Enable a skill by name so the planner can use it.",
                 plugin=PLUGIN_NAME,
                 schema=_name_schema,
+                required_capabilities=frozenset({"fs_read", "fs_write"}),
             ),
             Tool(
                 name="skill_disable",
                 description="Disable a skill by name (keeps it installed, hides it from the planner).",
                 plugin=PLUGIN_NAME,
                 schema=_name_schema,
+                required_capabilities=frozenset({"fs_read", "fs_write"}),
             ),
             Tool(
                 name="skill_uninstall",
@@ -339,6 +345,7 @@ class SkillsPlugin:
                 plugin=PLUGIN_NAME,
                 schema=_name_schema,
                 irreversible=True,
+                required_capabilities=frozenset({"fs_read", "fs_write", "fs_delete"}),
             ),
             Tool(
                 name="skill_install",
@@ -368,6 +375,9 @@ class SkillsPlugin:
                     },
                     "required": ["repo"],
                 },
+                required_capabilities=frozenset(
+                    {"fs_read", "fs_write", "network_egress_cloud"}
+                ),
             ),
         ]
 

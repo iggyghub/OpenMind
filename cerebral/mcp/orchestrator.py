@@ -105,6 +105,12 @@ class Tool:
     # ModalSurface even when a Session/Persistent grant would otherwise
     # cover the class. The 16-class capability vocabulary is unchanged.
     irreversible: bool = False
+    # Per-tool capability scoping. When set, this tool is gated on exactly
+    # these capabilities instead of its plugin's whole REQUIRED_CAPABILITIES
+    # union — so a write-only tool (e.g. skill_enable) isn't forced through the
+    # fs_delete/network consent its plugin declares for other tools. None = fall
+    # back to the plugin-level set (unchanged behaviour for tools that opt out).
+    required_capabilities: frozenset[str] | None = None
 
 
 @dataclass
@@ -515,6 +521,16 @@ class MCPOrchestrator:
         # approve; we must not dispatch it.
         if tool_name not in self._tool_index:
             return Decision.DENY
+
+        # Per-tool capability scoping: a tool that declares its own
+        # required_capabilities is gated on exactly those, not its plugin's
+        # whole REQUIRED_CAPABILITIES union. Fixes skill_enable (a settings
+        # write) inheriting fs_delete from skill_uninstall and firing a
+        # "delete files" consent that blocked the Skills toggle. Falls back to
+        # the passed-in plugin set when the tool opts out (required is None).
+        tool = self._tool_lookup.get(tool_name)
+        if tool is not None and tool.required_capabilities is not None:
+            capabilities = tool.required_capabilities
 
         # Issue #139 — OR per-tool declaration into the effective flags
         # before any gate/ACL/modal routing reads them. Symmetric with
