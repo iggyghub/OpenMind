@@ -66,8 +66,15 @@
         var enableTool  = el.getAttribute('data-enable-tool') || '';
         var disableTool = el.getAttribute('data-disable-tool') || '';
         input.addEventListener('change', function () {
+          var label = el.querySelector('.ps-toggle-label');
           var tool = input.checked ? enableTool : disableTool;
-          if (status) { status.textContent = '…'; }
+          if (label) {
+            label.textContent = input.checked ? 'Enabled' : 'Disabled';
+          }
+          if (status) {
+            status.textContent = '';
+            status.classList.add('ps-toggle-status--loading');
+          }
           input.disabled = true;
           sendFn(buildActionMessage(tool, toolArgs, '', ''));
         });
