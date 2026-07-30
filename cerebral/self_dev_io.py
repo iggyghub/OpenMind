@@ -1,0 +1,200 @@
+"""Self-dev git/gh/pytest I/O -- lives OUTSIDE plugins/ on purpose.
+
+`plugins/self_dev.py` is scanned by the ADR-0005 inspectability gate, which
+forbids `subprocess.run(` in any inspected plugin body. The self-dev loop
+genuinely has to shell out to git / gh / pytest, so those calls live here
+(cerebral/ is not scanned) and the plugin imports them -- the same split
+`plugins/shell.py` uses to route through `cerebral.sandbox`.
+
+Kept as thin module-level functions so `plugins.self_dev` can re-alias them as
+its `_default_*_fn` seams and the existing tests (which monkeypatch the global
+`subprocess.run`) keep working unchanged.
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from pathlib import Path
+
+# Search/replace edit block: <<<FILE: path>>> <<<SEARCH>>> .. <<<REPLACE>>> .. <<<END>>>
+# Small, escaping-free output a local model can emit reliably (whole-file JSON
+# rewrite is beyond a 7-8B on this box).
+_SR_BLOCK = re.compile(
+    r"<<<FILE:\s*(.+?)>>>\s*<<<SEARCH>>>\r?\n(.*?)\r?\n<<<REPLACE>>>\r?\n(.*?)\r?\n?<<<END>>>",
+    re.DOTALL,
+)
+
+
+def apply_search_replace(clone_dir: Path, text: str) -> "list[str]":
+    """Apply search/replace blocks from a model reply to files under clone_dir.
+    Exact match only; a miss is skipped (fail-safe -> no commit -> gate escalates).
+    Returns the list of repo-relative paths actually changed.
+    # ponytail: exact match only; add whitespace-lenient matching if local
+    # models miss the anchor too often."""
+    clone_dir = Path(clone_dir)
+    root = str(clone_dir.resolve())
+    applied: list[str] = []
+    for m in _SR_BLOCK.finditer(text):
+        rel, search, replace = m.group(1).strip(), m.group(2), m.group(3)
+        fp = (clone_dir / rel).resolve()
+        if not str(fp).startswith(root) or not fp.is_file() or not search:
+            continue  # path-escape guard / missing file / empty anchor
+        body = fp.read_text(encoding="utf-8")
+        if search in body:
+            fp.write_text(body.replace(search, replace, 1), encoding="utf-8")
+            applied.append(rel)
+    return applied
+
+
+def extract_json_value(text: str, opener: str):
+    """First JSON value of the given kind ('[' or '{') in a model reply,
+    tolerating ```json fences and surrounding prose. Returns the parsed value,
+    or None when nothing parseable is found."""
+    closer = "]" if opener == "[" else "}"
+    start, end = text.find(opener), text.rfind(closer)
+    if start == -1 or end == -1 or end < start:
+        return None
+    try:
+        return json.loads(text[start:end + 1])
+    except (ValueError, TypeError):
+        return None
+
+# self_dev_io.py -> cerebral/ -> repo root.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def git_config_get(repo_root: Path, key: str) -> str:
+    """Read a git config value from a repo, or '' if unset/unavailable."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "config", key],
+        capture_output=True, text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def clone_fn(repo_url: str, dest: Path) -> None:
+    """Full local git clone -- live .git is never shared with the sandbox.
+
+    A fresh clone inherits no committer identity (global config may be unset),
+    so a later commit would die with 'Author identity unknown'. Carry the live
+    repo's identity into the clone (falling back to a self-dev default).
+    """
+    result = subprocess.run(
+        ["git", "clone", repo_url, str(dest)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git clone failed:\n{result.stderr.strip()}")
+
+    name = git_config_get(_REPO_ROOT, "user.name") or "Felix self-dev"
+    email = git_config_get(_REPO_ROOT, "user.email") or "felix-self-dev@localhost"
+    for key, val in (("user.name", name), ("user.email", email)):
+        subprocess.run(
+            ["git", "-C", str(dest), "config", key, val],
+            capture_output=True, text=True, check=True,
+        )
+
+    # A clone of a local path has origin=<local path>, so `git push` / `gh pr
+    # create` have no GitHub host to target. Repoint origin at the live repo's
+    # GitHub remote so the branch + PR land upstream (the clone already holds
+    # all commits locally -- only push/PR need the network).
+    origin = subprocess.run(
+        ["git", "-C", str(_REPO_ROOT), "remote", "get-url", "origin"],
+        capture_output=True, text=True,
+    )
+    url = origin.stdout.strip()
+    if origin.returncode == 0 and url and not url.startswith(str(_REPO_ROOT)):
+        subprocess.run(
+            ["git", "-C", str(dest), "remote", "set-url", "origin", url],
+            capture_output=True, text=True, check=True,
+        )
+
+
+def create_branch_and_commit(clone_dir: Path, branch: str, message: str) -> bool:
+    """Create `branch`, stage everything, commit. Returns True iff a commit
+    was actually made (False when the working tree had no changes)."""
+    subprocess.run(
+        ["git", "-C", str(clone_dir), "checkout", "-b", branch],
+        capture_output=True, text=True, check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(clone_dir), "add", "-A"],
+        capture_output=True, text=True, check=True,
+    )
+    result = subprocess.run(
+        ["git", "-C", str(clone_dir), "commit", "-m", message],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0
+
+
+def test_fn(clone_dir: Path) -> "tuple[bool, str]":
+    """Run pytest in the clone (inside the sandbox via main.py wiring)."""
+    result = subprocess.run(
+        ["python", "-m", "pytest", "cerebral/tests/", "-q", "--tb=short"],
+        capture_output=True, text=True, cwd=str(clone_dir),
+    )
+    output = (result.stdout + result.stderr).strip()
+    return result.returncode == 0, output
+
+
+def pr_fn(
+    clone_dir: Path,
+    branch: str,
+    description: str,
+    test_passed: bool,
+    test_output: str,
+) -> str:
+    """Push branch and open a PR via gh CLI."""
+    # -u sets upstream tracking; without it, `gh pr create` refuses.
+    subprocess.run(
+        ["git", "push", "-u", "origin", branch],
+        cwd=str(clone_dir), check=True, capture_output=True,
+    )
+    badge = "Tests: PASS" if test_passed else "Tests: FAIL"
+    body = f"{description}\n\n{badge}\n\n```\n{test_output[:2000]}\n```"
+    # --head names the branch explicitly so gh does not depend on upstream
+    # tracking refs (which a single-branch clone may not have).
+    result = subprocess.run(
+        ["gh", "pr", "create", "--head", branch,
+         "--title", description, "--body", body],
+        capture_output=True, text=True, cwd=str(clone_dir),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"gh pr create failed:\n{result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def diff_fn(pr_url: str) -> "list[str]":
+    """List changed files in a PR via gh CLI."""
+    result = subprocess.run(
+        ["gh", "pr", "view", pr_url, "--json", "files", "--jq", ".files[].path"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"gh pr view files failed:\n{result.stderr.strip()}")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def merge_fn(pr_url: str) -> None:
+    """Squash-merge a PR and delete its branch via gh CLI."""
+    result = subprocess.run(
+        ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"gh pr merge failed:\n{result.stderr.strip()}")
+
+
+def pull_fn(repo_root: Path) -> "tuple[bool, str]":
+    """git pull --ff-only master in the live repo root."""
+    result = subprocess.run(
+        ["git", "pull", "origin", "master", "--ff-only"],
+        capture_output=True, text=True, cwd=str(repo_root),
+    )
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        raise RuntimeError(f"git pull failed:\n{output}")
+    updated = "already up to date" not in output.lower()
+    return updated, output

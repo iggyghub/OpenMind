@@ -2157,6 +2157,85 @@ async def _broadcast(event: dict) -> None:
     await asyncio.gather(*(ws.send(payload) for ws in _connected), return_exceptions=True)
 
 
+# ── Self-dev loop seams (ADR-0015) ───────────────────────────────────────────
+# The edit step is genuinely model-driven: Felix lists the repo, asks the
+# active model (task_type='self_dev') which files to touch, then for their full
+# new contents, writes them, and commits on a fresh branch inside the clone.
+# A bad edit just fails the sandboxed test step, so the blast-radius gate
+# escalates instead of merging -- the edit is allowed to be imperfect.
+# ponytail: whole-file rewrite (not diffs) -- simplest to apply reliably; move
+# to a patch format if edits ever span files too large to round-trip.
+_SELF_DEV_MAX_FILES = 8
+
+
+async def _self_dev_edit(clone_dir, description: str) -> dict:
+    """self_dev edit_fn: model-driven scoped edit + commit inside the clone.
+    Returns {branch, committed, written}."""
+    import uuid
+    from pathlib import Path as _P
+    from cerebral import self_dev_io as _sdio
+
+    clone_dir = _P(clone_dir)
+
+    # 1. Candidate source files (paths only -- cheap planner context).
+    candidates: list[str] = []
+    for base in ("cerebral", "plugins"):
+        root = clone_dir / base
+        if root.is_dir():
+            candidates += [p.relative_to(clone_dir).as_posix() for p in root.rglob("*.py")]
+    candidates.sort()
+
+    plan_prompt = (
+        "You are editing the OpenMind repository to accomplish a task.\n"
+        f"TASK: {description}\n\n"
+        "Below is the list of source files. Reply with ONLY a JSON array of the "
+        f"repo-relative paths you must read and edit (at most {_SELF_DEV_MAX_FILES}). "
+        "Include existing test files you need to update.\n\nFILES:\n"
+        + "\n".join(candidates)
+    )
+    plan_raw = await _router.complete(plan_prompt, task_type="self_dev")
+    wanted = [w for w in (_sdio.extract_json_value(plan_raw, "[") or []) if isinstance(w, str)]
+    wanted = wanted[:_SELF_DEV_MAX_FILES]
+
+    # 2. Show current contents, ask for small search/replace edits. Whole-file
+    #    JSON rewrite is beyond a local 7-8B (truncation + escaping); tiny
+    #    anchor-based blocks are not.
+    blocks: list[str] = []
+    for rel in wanted:
+        fp = clone_dir / rel
+        if fp.is_file():
+            blocks.append(f"=== FILE: {rel} ===\n{fp.read_text(encoding='utf-8')}")
+        else:
+            blocks.append(f"=== FILE: {rel} (new file -- does not exist yet) ===")
+    edit_prompt = (
+        "You are editing the OpenMind repository. Make this change:\n"
+        f"TASK: {description}\n\n"
+        "For each edit, output a block EXACTLY in this format:\n"
+        "<<<FILE: relative/path.py>>>\n<<<SEARCH>>>\n"
+        "<a short block of EXACT existing lines from the file to locate the edit>\n"
+        "<<<REPLACE>>>\n<those same lines plus your additions>\n<<<END>>>\n\n"
+        "Rules: SEARCH must be copied verbatim from the file (exact indentation, "
+        "5-15 lines). To ADD code, SEARCH an anchor and REPLACE it with itself "
+        "plus the new code. Output ONLY these blocks, nothing else.\n\n"
+        "CURRENT FILES:\n" + "\n\n".join(blocks)
+    )
+    edit_raw = await _router.complete(edit_prompt, task_type="self_dev")
+
+    # 3. Apply the edits (confined to the clone) and commit on a new branch.
+    written = _sdio.apply_search_replace(clone_dir, edit_raw)
+
+    branch = f"selfdev/{uuid.uuid4().hex[:8]}"
+    committed = bool(written) and _sdio.create_branch_and_commit(
+        clone_dir, branch, f"self-dev: {description[:72]}"
+    )
+    return {"branch": branch, "committed": committed, "written": written}
+
+
+async def _self_dev_restart() -> None:
+    """self_dev restart_fn -- tell the tray to relaunch (SD-2 / #555)."""
+    await _broadcast({"type": "restart_felix"})
+
+
 async def _send(websocket, event: dict) -> None:
     try:
         await websocket.send(json.dumps(event))
@@ -5185,6 +5264,8 @@ def _wire_plugin_seams() -> None:
         ("documents", "set_launcher_fn", _docs_launch_writer),                      # S4 #455
         ("documents", "set_change_hook_fn", _docs_resume_change_hook),              # S7 #448
         ("job_search", "set_register_doc_fn", _jobs_register_doc),                  # S7 #448
+        ("self_dev", "set_edit_fn", _self_dev_edit),                                 # ADR-0015 edit step
+        ("self_dev", "set_restart_fn", _self_dev_restart),                           # ADR-0015 SD-2 #555
     ]
     for name, seam, factory in seams:
         try:

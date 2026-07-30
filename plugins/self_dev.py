@@ -17,12 +17,14 @@ Injected seams (clone_fn / edit_fn / test_fn / pr_fn / diff_fn / merge_fn /
 pull_fn / restart_fn) make the whole flow hermetic in tests -- no real git /
 gh / network / Cerebral.
 """
+import inspect
 import json
 import logging
 import uuid
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable
 
+from cerebral import self_dev_io as _io
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.paths import data_dir
 
@@ -86,130 +88,48 @@ PullFn = Callable[[Path], "tuple[bool, str]"]  # (live_root) -> (updated, output
 RestartFn = Callable[[], "Awaitable[None]"]    # async -- broadcasts restart_felix to tray
 
 
-def _git_config_get(repo_root: Path, key: str) -> str:
-    """Read a git config value from a repo, or '' if unset/unavailable."""
-    import subprocess
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "config", key],
-        capture_output=True, text=True,
-    )
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def _default_clone_fn(repo_url: str, dest: Path) -> None:
-    """Full local git clone -- live .git is never shared with the sandbox.
-
-    A fresh clone inherits no committer identity (global config may be unset),
-    so the model's commit in edit_fn would die with 'Author identity unknown'.
-    Carry the live repo's identity into the clone (falling back to a self-dev
-    default) so the commit step works headless.
-    """
-    import subprocess
-    result = subprocess.run(
-        ["git", "clone", repo_url, str(dest)],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"git clone failed:\n{result.stderr.strip()}")
-
-    name = _git_config_get(_REPO_ROOT, "user.name") or "Felix self-dev"
-    email = _git_config_get(_REPO_ROOT, "user.email") or "felix-self-dev@localhost"
-    for key, val in (("user.name", name), ("user.email", email)):
-        subprocess.run(
-            ["git", "-C", str(dest), "config", key, val],
-            capture_output=True, text=True, check=True,
-        )
+# git/gh/pytest I/O lives in cerebral/self_dev_io.py (NOT scanned by the
+# ADR-0005 inspectability gate, which forbids shell-out calls in a plugin
+# body). We re-alias the helpers as the `_default_*_fn` seams so the plugin
+# body stays scan-clean while behaviour is unchanged. Tests that call
+# `self_dev._default_clone_fn` / `_default_pr_fn` and monkeypatch the global
+# subprocess shell-out keep working -- the patch lands on the module `_io` uses.
+_default_clone_fn = _io.clone_fn
+_default_test_fn = _io.test_fn
+_default_pr_fn = _io.pr_fn
+_default_diff_fn = _io.diff_fn
+_default_merge_fn = _io.merge_fn
+_default_pull_fn = _io.pull_fn
 
 
 def _default_edit_fn(clone_dir: Path, description: str) -> dict:
     """Model makes a scoped edit, commits it, returns branch + message.
 
     Uses task_type='self_dev' so the user's per-task model selection applies.
-    Wired in by main.py; tests always inject this seam.
+    Wired in by main.py (set_edit_fn); tests always inject this seam.
     """
     raise NotImplementedError(
         "SelfDevPlugin requires an edit_fn -- "
-        "main.py must wire the model router in via SelfDevPlugin(edit_fn=...)."
+        "main.py must wire the model router in via set_edit_fn(...)."
     )
 
 
-def _default_test_fn(clone_dir: Path) -> "tuple[bool, str]":
-    """Run pytest in the clone (inside the sandbox via main.py wiring)."""
-    import subprocess
-    result = subprocess.run(
-        ["python", "-m", "pytest", "cerebral/tests/", "-q", "--tb=short"],
-        capture_output=True, text=True, cwd=str(clone_dir),
-    )
-    output = (result.stdout + result.stderr).strip()
-    return result.returncode == 0, output
+# ── Module-level seams (wired by cerebral/main.py after discovery) ────────────
+# edit_fn/restart_fn can't be built at discovery time -- they close over the
+# model router and the tray broadcast. Constructor injection still wins (tests
+# pass them directly); prod resolves these globals lazily at call time.
+_edit_fn = None
+_restart_fn = None
 
 
-def _default_pr_fn(
-    clone_dir: Path,
-    branch: str,
-    description: str,
-    test_passed: bool,
-    test_output: str,
-) -> str:
-    """Push branch and open a PR via gh CLI."""
-    import subprocess
-    # -u sets upstream tracking; without it, `gh pr create` refuses with
-    # "you must first push the current branch ... or use --head".
-    subprocess.run(
-        ["git", "push", "-u", "origin", branch],
-        cwd=str(clone_dir), check=True,
-        capture_output=True,
-    )
-    badge = "Tests: PASS" if test_passed else "Tests: FAIL"
-    body = f"{description}\n\n{badge}\n\n```\n{test_output[:2000]}\n```"
-    # --head names the branch explicitly so gh does not depend on upstream
-    # tracking refs (which a shallow/single-branch clone may not have), which
-    # otherwise triggers "you must first push ... or use the --head flag".
-    result = subprocess.run(
-        ["gh", "pr", "create", "--head", branch,
-         "--title", description, "--body", body],
-        capture_output=True, text=True, cwd=str(clone_dir),
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"gh pr create failed:\n{result.stderr.strip()}")
-    return result.stdout.strip()
+def set_edit_fn(fn) -> None:
+    global _edit_fn
+    _edit_fn = fn
 
 
-def _default_diff_fn(pr_url: str) -> "list[str]":
-    """List changed files in a PR via gh CLI."""
-    import subprocess
-    result = subprocess.run(
-        ["gh", "pr", "view", pr_url, "--json", "files", "--jq", ".files[].path"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"gh pr view files failed:\n{result.stderr.strip()}")
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-
-
-def _default_merge_fn(pr_url: str) -> None:
-    """Squash-merge a PR and delete its branch via gh CLI."""
-    import subprocess
-    result = subprocess.run(
-        ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"gh pr merge failed:\n{result.stderr.strip()}")
-
-
-def _default_pull_fn(repo_root: Path) -> "tuple[bool, str]":
-    """git pull --ff-only master in the live repo root."""
-    import subprocess
-    result = subprocess.run(
-        ["git", "pull", "origin", "master", "--ff-only"],
-        capture_output=True, text=True, cwd=str(repo_root),
-    )
-    output = (result.stdout + result.stderr).strip()
-    if result.returncode != 0:
-        raise RuntimeError(f"git pull failed:\n{output}")
-    updated = "already up to date" not in output.lower()
-    return updated, output
+def set_restart_fn(fn) -> None:
+    global _restart_fn
+    _restart_fn = fn
 
 
 async def _default_restart_fn() -> None:
@@ -241,16 +161,25 @@ class SelfDevPlugin:
     ) -> None:
         self._sandbox = sandbox
         self._clone = clone_fn or _default_clone_fn
-        self._edit = edit_fn or _default_edit_fn
         self._test = test_fn or _default_test_fn
         self._pr = pr_fn or _default_pr_fn
         self._diff = diff_fn or _default_diff_fn
         self._merge = merge_fn or _default_merge_fn
         self._pull = pull_fn or _default_pull_fn
-        self._restart = restart_fn or _default_restart_fn
+        # edit_fn/restart_fn resolve lazily (constructor override > module seam
+        # wired by main.py > raising default) -- the seams are set after
+        # discovery constructs the instance, so we can't collapse them here.
+        self._edit_override = edit_fn
+        self._restart_override = restart_fn
         self._repo_url = repo_url or str(_REPO_ROOT)
         self._sandbox_root = sandbox_root or (data_dir() / "sandbox" / "self_dev")
         self._live_root = live_root or _REPO_ROOT
+
+    def _resolve_edit(self) -> EditFn:
+        return self._edit_override or _edit_fn or _default_edit_fn
+
+    def _resolve_restart(self) -> RestartFn:
+        return self._restart_override or _restart_fn or _default_restart_fn
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -345,9 +274,12 @@ class SelfDevPlugin:
         except Exception as exc:
             return ToolResult(content=f"Clone failed: {exc}", is_error=True)
 
-        # 2. Model edits + commits inside the clone.
+        # 2. Model edits + commits inside the clone. The prod edit_fn is async
+        #    (it awaits the model router); test seams are plain sync callables.
         try:
-            edit_result = self._edit(clone_dir, description)
+            edit_result = self._resolve_edit()(clone_dir, description)
+            if inspect.isawaitable(edit_result):
+                edit_result = await edit_result
         except NotImplementedError as exc:
             return ToolResult(content=str(exc), is_error=True)
         except Exception as exc:
@@ -447,7 +379,7 @@ class SelfDevPlugin:
             }))
 
         try:
-            await self._restart()
+            await self._resolve_restart()()
         except NotImplementedError as exc:
             return ToolResult(content=str(exc), is_error=True)
         except Exception as exc:

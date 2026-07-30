@@ -589,7 +589,11 @@ class OllamaBackend:
 
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         import httpx
-        payload = {"model": self.model, "prompt": prompt, "stream": False}
+        # num_ctx: Ollama's default (4096) silently truncates long prompts --
+        # a self_dev edit ships whole source files and needs the headroom
+        # (mirrors complete_with_tools, Issue #274).
+        payload = {"model": self.model, "prompt": prompt, "stream": False,
+                   "options": {"num_ctx": 8192}}
         async with httpx.AsyncClient(timeout=_ollama_timeout_s()) as client:
             try:
                 resp = await client.post(f"{self.url}/api/generate", json=payload)
