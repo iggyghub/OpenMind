@@ -86,8 +86,24 @@ PullFn = Callable[[Path], "tuple[bool, str]"]  # (live_root) -> (updated, output
 RestartFn = Callable[[], "Awaitable[None]"]    # async -- broadcasts restart_felix to tray
 
 
+def _git_config_get(repo_root: Path, key: str) -> str:
+    """Read a git config value from a repo, or '' if unset/unavailable."""
+    import subprocess
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "config", key],
+        capture_output=True, text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def _default_clone_fn(repo_url: str, dest: Path) -> None:
-    """Full local git clone -- live .git is never shared with the sandbox."""
+    """Full local git clone -- live .git is never shared with the sandbox.
+
+    A fresh clone inherits no committer identity (global config may be unset),
+    so the model's commit in edit_fn would die with 'Author identity unknown'.
+    Carry the live repo's identity into the clone (falling back to a self-dev
+    default) so the commit step works headless.
+    """
     import subprocess
     result = subprocess.run(
         ["git", "clone", repo_url, str(dest)],
@@ -95,6 +111,14 @@ def _default_clone_fn(repo_url: str, dest: Path) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(f"git clone failed:\n{result.stderr.strip()}")
+
+    name = _git_config_get(_REPO_ROOT, "user.name") or "Felix self-dev"
+    email = _git_config_get(_REPO_ROOT, "user.email") or "felix-self-dev@localhost"
+    for key, val in (("user.name", name), ("user.email", email)):
+        subprocess.run(
+            ["git", "-C", str(dest), "config", key, val],
+            capture_output=True, text=True, check=True,
+        )
 
 
 def _default_edit_fn(clone_dir: Path, description: str) -> dict:
@@ -129,15 +153,21 @@ def _default_pr_fn(
 ) -> str:
     """Push branch and open a PR via gh CLI."""
     import subprocess
+    # -u sets upstream tracking; without it, `gh pr create` refuses with
+    # "you must first push the current branch ... or use --head".
     subprocess.run(
-        ["git", "push", "origin", branch],
+        ["git", "push", "-u", "origin", branch],
         cwd=str(clone_dir), check=True,
         capture_output=True,
     )
     badge = "Tests: PASS" if test_passed else "Tests: FAIL"
     body = f"{description}\n\n{badge}\n\n```\n{test_output[:2000]}\n```"
+    # --head names the branch explicitly so gh does not depend on upstream
+    # tracking refs (which a shallow/single-branch clone may not have), which
+    # otherwise triggers "you must first push ... or use the --head flag".
     result = subprocess.run(
-        ["gh", "pr", "create", "--title", description, "--body", body],
+        ["gh", "pr", "create", "--head", branch,
+         "--title", description, "--body", body],
         capture_output=True, text=True, cwd=str(clone_dir),
     )
     if result.returncode != 0:
