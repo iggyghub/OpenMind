@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from cerebral.settings import SettingsStore
+from cerebral.settings import SettingsStore, _DEFAULTS
 
 
 # ── SettingsStore unit tests ───────────────────────────────────────────────────
@@ -224,6 +224,27 @@ class TestSettingsStore:
         store = SettingsStore(tmp_path / "s.json")
         with pytest.raises(ValueError, match="enabled_skills must be a list of str"):
             store.set("enabled_skills", ["alpha", 42])
+
+    def test_reset_to_defaults(self, tmp_path):
+        p = tmp_path / "s.json"
+        store = SettingsStore(p)
+        store.set("notifications_enabled", True)
+        store.set("reminder_interval_minutes", 45)
+        store.set("mic_mode", "ptt")
+        store.set("tts_volume", 10)
+        store.set("browser_pause_on_verification", False)
+        store.set("enabled_skills", ["skill1"])
+
+        store.reset_to_defaults()
+
+        snap = store.all()
+        for key, default_val in _DEFAULTS.items():
+            assert snap[key] == default_val, f"{key} was not reset to default"
+
+        store2 = SettingsStore(p)
+        snap2 = store2.all()
+        for key, default_val in _DEFAULTS.items():
+            assert snap2[key] == default_val, f"{key} not persisted as default"
 
 
 # ── WS IPC tests ──────────────────────────────────────────────────────────────

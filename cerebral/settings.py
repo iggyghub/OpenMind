@@ -114,6 +114,11 @@ class SettingsStore:
         """Return a snapshot of all settings."""
         return {k: self._data.get(k, v) for k, v in _DEFAULTS.items()}
 
+    def reset_to_defaults(self) -> None:
+        """Restore every setting to its default value and write to disk."""
+        self._data = dict(_DEFAULTS)
+        self._save()
+
     # ── private ────────────────────────────────────────────────────────────────
 
     def _load(self) -> dict[str, Any]:
