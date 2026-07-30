@@ -75,6 +75,58 @@ describe('renderWidget detail', () => {
     expect(html).toContain('ps-empty');
     expect(html).not.toContain('ps-detail-row');
   });
+
+  test('field hint becomes an escaped native title tooltip', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'detail',
+      fields: [{ label: '', value: 'grill-me', hint: 'Grill a "plan" <hard>' }],
+    });
+    expect(html).toContain('title="Grill a &quot;plan&quot; &lt;hard&gt;"');
+    expect(html).toContain('cursor:help');
+    expect(html).toContain('grill-me');
+  });
+
+  test('field without hint has no title attribute', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'detail',
+      fields: [{ label: 'X', value: 'y' }],
+    });
+    expect(html).not.toContain('title=');
+  });
+});
+
+// ── renderWidget: toggle ─────────────────────────────────────────────────────
+
+describe('renderWidget toggle', () => {
+  test('checked=true renders a checked switch carrying both tools', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'toggle',
+      id: 'skill-grill-me-toggle',
+      label: 'Enabled',
+      checked: true,
+      enable_tool: 'skill_enable',
+      disable_tool: 'skill_disable',
+      tool_args: { name: 'grill-me' },
+    });
+    expect(html).toContain('ps-toggle');
+    expect(html).toContain('type="checkbox" checked');
+    expect(html).toContain('data-enable-tool="skill_enable"');
+    expect(html).toContain('data-disable-tool="skill_disable"');
+    expect(html).toContain('data-tool-args="{&quot;name&quot;:&quot;grill-me&quot;}"');
+    expect(html).toContain('Enabled');
+  });
+
+  test('checked=false renders an unchecked switch', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'toggle', enable_tool: 'skill_enable', disable_tool: 'skill_disable',
+    });
+    expect(html).toContain('type="checkbox"');
+    expect(html).not.toContain('checked');
+  });
+
+  test('toggle is in the widget whitelist', () => {
+    expect(PanelSpec.WIDGET_TYPES).toContain('toggle');
+  });
 });
 
 // ── renderWidget: security ───────────────────────────────────────────────────
@@ -301,6 +353,6 @@ describe('renderPanel', () => {
   });
 
   test('WIDGET_TYPES reports the whitelist', () => {
-    expect(PanelSpec.WIDGET_TYPES.sort()).toEqual(['action', 'detail', 'list', 'text']);
+    expect(PanelSpec.WIDGET_TYPES.sort()).toEqual(['action', 'detail', 'list', 'text', 'toggle']);
   });
 });

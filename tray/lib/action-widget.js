@@ -46,11 +46,39 @@
         });
       })(widgets[i]);
     }
+    initToggleWidgets(container, sendFn);
+  }
+
+  // Attach change handlers to every .ps-toggle switch in container. Flipping
+  // the switch fires enable_tool (now on) or disable_tool (now off). The switch
+  // stays in its new position optimistically -- the panel_spec re-broadcast the
+  // tool triggers replaces the DOM and reflects the real state.
+  function initToggleWidgets(container, sendFn) {
+    if (!container || typeof container.querySelectorAll !== 'function') return;
+    var toggles = container.querySelectorAll('.ps-toggle');
+    for (var i = 0; i < toggles.length; i++) {
+      (function (el) {
+        var input  = el.querySelector('.ps-toggle-input');
+        var status = el.querySelector('.ps-toggle-status');
+        if (!input) return;
+        var toolArgs = {};
+        try { toolArgs = JSON.parse(el.getAttribute('data-tool-args') || '{}'); } catch (_) {}
+        var enableTool  = el.getAttribute('data-enable-tool') || '';
+        var disableTool = el.getAttribute('data-disable-tool') || '';
+        input.addEventListener('change', function () {
+          var tool = input.checked ? enableTool : disableTool;
+          if (status) { status.textContent = '…'; }
+          input.disabled = true;
+          sendFn(buildActionMessage(tool, toolArgs, '', ''));
+        });
+      })(toggles[i]);
+    }
   }
 
   var _exports = {
     buildActionMessage: buildActionMessage,
     initActionWidgets:  initActionWidgets,
+    initToggleWidgets:  initToggleWidgets,
   };
 
   if (typeof module === 'object' && module && module.exports) {

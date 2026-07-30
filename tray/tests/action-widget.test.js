@@ -59,3 +59,11 @@ describe('initActionWidgets guards', () => {
     expect(() => ActionWidget.initActionWidgets({}, () => {})).not.toThrow();
   });
 });
+
+describe('initToggleWidgets guards', () => {
+  test('does not throw on a container without querySelectorAll', () => {
+    expect(() => ActionWidget.initToggleWidgets(null, () => {})).not.toThrow();
+    expect(() => ActionWidget.initToggleWidgets(undefined, () => {})).not.toThrow();
+    expect(() => ActionWidget.initToggleWidgets({}, () => {})).not.toThrow();
+  });
+});

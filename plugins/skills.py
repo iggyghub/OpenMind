@@ -105,6 +105,20 @@ def set_settings_store(store) -> None:
     global _settings_store
     _settings_store = store
 
+
+# S5 #542 -- module-level so the injection seam in cerebral.main
+# (get_plugin_module -> getattr(module, "set_broadcast_fn")) actually reaches
+# it. An instance method here would be invisible to that wiring and silently
+# skipped, leaving the Skills panel unable to re-render after a mutation (the
+# enable/disable toggle would stick on "..."). Mirrors documents.py.
+_broadcast_fn = None
+
+
+def set_broadcast_fn(fn) -> None:
+    """Inject the async re-broadcast callback from cerebral.main."""
+    global _broadcast_fn
+    _broadcast_fn = fn
+
 # <repo>/plugins/skills.py -> parent is plugins/, parent.parent is the repo root.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SKILL_FILE = "SKILL.md"
@@ -197,18 +211,11 @@ class SkillsPlugin:
         self._settings = settings
         # fetch_fn(repo, ref) -> tarball bytes. Default hits GitHub; tests inject.
         self._fetch = fetch_fn or _default_fetch
-        # S5 #542 -- optional async no-arg callback; cerebral.main wires it to
-        # re-broadcast the Skills panel_spec after a mutation (mirrors the
-        # documents plugin's set_broadcast_fn, S3 #454).
-        self._broadcast_fn = None
-
-    def set_broadcast_fn(self, fn) -> None:
-        """Inject the broadcast callback from cerebral.main (S5 #542)."""
-        self._broadcast_fn = fn
 
     async def _maybe_broadcast(self) -> None:
-        if self._broadcast_fn is not None:
-            await self._broadcast_fn()
+        # Reads the module-level callback wired by cerebral.main's seam loop.
+        if _broadcast_fn is not None:
+            await _broadcast_fn()
 
     # ------------------------------------------------------------------
     # Enable-state (S2 #538) -- opt-in enabled_skills in felix-settings.json
@@ -719,28 +726,23 @@ class SkillsPlugin:
 
         for s in skills:
             is_enabled = s.name in enabled
-            # Use the ungated review read so the user can inspect a disabled
-            # skill's text before enabling it (ADR-0014 review-before-enable).
-            # skill_use stays planner-facing (enabled-only); skill_preview is
-            # the management/review counterpart.
-            preview = self._skill_preview({"name": s.name})
-            body = (
-                json.loads(preview.content)["instructions"]
-                if not preview.is_error
-                else preview.content
-            )
+            # One scannable line per skill: the name, with the description on a
+            # 1s hover tooltip (renderer maps ``hint`` -> title=). The full body
+            # is no longer dumped inline (it made the tab unreadable across many
+            # skills); enabled state is conveyed by the toggle's Enable/Disable
+            # label, and the full text stays available via the skill_preview
+            # tool (ADR-0014 review-before-enable).
+            hint = f"{s.description}\nSource: {self._provenance_str(s)}"
             widgets.append({"type": "detail", "id": f"skill-{s.name}", "fields": [
-                {"label": "Name", "value": s.name},
-                {"label": "Source", "value": self._provenance_str(s)},
-                {"label": "Tools", "value": ", ".join(s.tools) or "none"},
-                {"label": "Enabled", "value": "yes" if is_enabled else "no"},
-                {"label": "Instructions", "value": body},
+                {"label": "", "value": s.name, "hint": hint},
             ]})
             widgets.append({
-                "type": "action",
+                "type": "toggle",
                 "id": f"skill-{s.name}-toggle",
-                "label": "Disable" if is_enabled else "Enable",
-                "tool": "skill_disable" if is_enabled else "skill_enable",
+                "label": "Enabled" if is_enabled else "Disabled",
+                "checked": is_enabled,
+                "enable_tool": "skill_enable",
+                "disable_tool": "skill_disable",
                 "tool_args": {"name": s.name},
             })
             if s.source == "installed":

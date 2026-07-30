@@ -10,10 +10,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+import plugins.skills as skills_mod
 from cerebral.settings import SettingsStore
 from plugins.skills import SkillsPlugin
 
-VALID_WIDGETS = frozenset({"list", "detail", "text", "action"})
+
+@pytest.fixture(autouse=True)
+def _reset_broadcast_fn():
+    """The broadcast callback is a module global (matches how cerebral.main's
+    seam wires it). Reset around each test so one test's wiring doesn't leak."""
+    skills_mod.set_broadcast_fn(None)
+    yield
+    skills_mod.set_broadcast_fn(None)
+
+VALID_WIDGETS = frozenset({"list", "detail", "text", "action", "toggle"})
 
 
 def _write_skill(root: Path, name: str, *, description="A test skill.",
@@ -80,37 +92,41 @@ def test_panel_spec_lists_each_skill_as_detail_plus_toggle(tmp_path):
     spec = plugin.panel_spec(1)
     widgets = spec["widgets"]
     types = [w["type"] for w in widgets]
-    # detail(summary), action(install), then per skill: detail + action(+action)
+    # detail(summary), action(install), then per skill: detail + toggle(+action)
     # custom (installed) also gets an uninstall action; grill-me (seed) does not.
     assert types == [
         "detail", "action",
-        "detail", "action",           # custom: detail, toggle
+        "detail", "toggle",           # custom: name line + on/off switch
         "action",                     # custom: uninstall
-        "detail", "action",           # grill-me: detail, toggle
+        "detail", "toggle",           # grill-me: name line + on/off switch
     ]
 
+    # One compact line per skill: the name is the value; description + source
+    # live in the hover hint (renderer -> native title tooltip).
     custom_detail = widgets[2]
-    fields = {f["label"]: f["value"] for f in custom_detail["fields"]}
-    assert fields["Name"] == "custom"
-    assert fields["Source"] == "installed"  # no provenance sidecar written
-    assert fields["Enabled"] == "no"
+    name_field = custom_detail["fields"][0]
+    assert name_field["value"] == "custom"
+    assert name_field["label"] == ""
+    assert "A test skill." in name_field["hint"]
+    assert "Source: installed" in name_field["hint"]  # no provenance sidecar written
 
+    # The switch carries the current state (unchecked = disabled) and both
+    # enable/disable tools; the handler picks one based on the flip direction.
     custom_toggle = widgets[3]
-    assert custom_toggle["tool"] == "skill_enable"
+    assert custom_toggle["checked"] is False
+    assert custom_toggle["label"] == "Disabled"  # word reflects state
+    assert custom_toggle["enable_tool"] == "skill_enable"
+    assert custom_toggle["disable_tool"] == "skill_disable"
     assert custom_toggle["tool_args"] == {"name": "custom"}
-    assert custom_toggle["label"] == "Enable"
 
     custom_uninstall = widgets[4]
     assert custom_uninstall["tool"] == "skill_uninstall"
     assert custom_uninstall["tool_args"] == {"name": "custom"}
 
-    grill_detail = widgets[5]
-    fields2 = {f["label"]: f["value"] for f in grill_detail["fields"]}
-    assert fields2["Enabled"] == "yes"
-
+    # grill-me is enabled -> its switch is checked (on).
     grill_toggle = widgets[6]
-    assert grill_toggle["tool"] == "skill_disable"
-    assert grill_toggle["label"] == "Disable"
+    assert grill_toggle["checked"] is True
+    assert grill_toggle["label"] == "Enabled"
 
 
 def test_panel_spec_seed_skill_has_no_uninstall_action(tmp_path):
@@ -141,8 +157,7 @@ def test_panel_spec_provenance_from_sidecar(tmp_path):
     plugin = _plugin(tmp_path)
     spec = plugin.panel_spec(1)
     detail = next(w for w in spec["widgets"] if w["type"] == "detail" and w["id"] == "skill-custom")
-    fields = {f["label"]: f["value"] for f in detail["fields"]}
-    assert fields["Source"] == "owner/repo@abc1234"
+    assert "Source: owner/repo@abc1234" in detail["fields"][0]["hint"]
 
 
 def test_panel_spec_seed_skill_source_is_seed(tmp_path):
@@ -150,31 +165,21 @@ def test_panel_spec_seed_skill_source_is_seed(tmp_path):
     plugin = _plugin(tmp_path)
     spec = plugin.panel_spec(1)
     detail = next(w for w in spec["widgets"] if w["type"] == "detail" and w["id"] == "skill-grill-me")
-    fields = {f["label"]: f["value"] for f in detail["fields"]}
-    assert fields["Source"] == "seed"
+    assert "Source: seed" in detail["fields"][0]["hint"]
 
 
-def test_panel_spec_disabled_skill_instructions_show_body_for_review(tmp_path):
-    """A disabled skill's real body is shown so the user can review it before
-    enabling (ADR-0014 review-before-enable); the panel uses the ungated
-    skill_preview read, not the planner-facing skill_use gate."""
+def test_panel_spec_does_not_dump_skill_body_inline(tmp_path):
+    """The full SKILL.md body is no longer inlined per skill -- it made the tab
+    unreadable across many skills. Only the name (line) + description (hover)
+    show; the body stays available via the skill_preview tool."""
     _write_skill(tmp_path / "seed", "grill-me", body="Ask five hard questions.")
-    plugin = _plugin(tmp_path)  # not enabled
+    plugin = _plugin(tmp_path)
     spec = plugin.panel_spec(1)
     detail = next(w for w in spec["widgets"] if w["type"] == "detail" and w["id"] == "skill-grill-me")
-    fields = {f["label"]: f["value"] for f in detail["fields"]}
-    assert fields["Enabled"] == "no"
-    assert "Ask five hard questions." in fields["Instructions"]
-    assert "disabled" not in fields["Instructions"]
-
-
-def test_panel_spec_enabled_skill_instructions_show_body(tmp_path):
-    _write_skill(tmp_path / "seed", "grill-me", body="Ask five hard questions.")
-    plugin = _plugin(tmp_path, enabled=["grill-me"])
-    spec = plugin.panel_spec(1)
-    detail = next(w for w in spec["widgets"] if w["type"] == "detail" and w["id"] == "skill-grill-me")
-    fields = {f["label"]: f["value"] for f in detail["fields"]}
-    assert "Ask five hard questions." in fields["Instructions"]
+    field = detail["fields"][0]
+    assert field["value"] == "grill-me"
+    assert "A test skill." in field["hint"]              # description on hover
+    assert "Ask five hard questions." not in field["hint"]  # body not inlined
 
 
 def test_panel_spec_carries_no_html_or_scripts(tmp_path):
@@ -199,7 +204,7 @@ async def test_broadcast_fn_called_after_successful_enable(tmp_path):
     async def fake_broadcast():
         calls.append(1)
 
-    plugin.set_broadcast_fn(fake_broadcast)
+    skills_mod.set_broadcast_fn(fake_broadcast)
     result = await plugin.call_tool("skill_enable", {"name": "alpha"})
     assert not result.is_error
     assert calls == [1]
@@ -212,7 +217,7 @@ async def test_broadcast_fn_not_called_on_error(tmp_path):
     async def fake_broadcast():
         calls.append(1)
 
-    plugin.set_broadcast_fn(fake_broadcast)
+    skills_mod.set_broadcast_fn(fake_broadcast)
     result = await plugin.call_tool("skill_enable", {"name": "ghost"})
     assert result.is_error
     assert calls == []

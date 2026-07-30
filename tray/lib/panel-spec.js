@@ -53,7 +53,13 @@
     }
     var rows = fields.map(function (f) {
       if (!f || typeof f !== 'object') return '';
-      return '<div class="ps-detail-row">' +
+      // hint -> native title tooltip (delayed hover, no CSS/JS). Used by the
+      // Skills panel to show a skill's description on hover without bloating
+      // the row. cursor:help signals the row is hoverable.
+      var hint = f.hint
+        ? ' title="' + escHtml(f.hint) + '" style="cursor:help"'
+        : '';
+      return '<div class="ps-detail-row"' + hint + '>' +
         '<div class="ps-detail-label">' + escHtml(f.label || '') + '</div>' +
         '<div class="ps-detail-value">' + escHtml(f.value == null ? '' : f.value) + '</div>' +
       '</div>';
@@ -116,11 +122,41 @@
     );
   }
 
+  // Toggle widget -- an on/off switch (Skills enable/disable). Unlike the
+  // action button, it shows current state at a glance (checked = on) and flips
+  // optimistically on click; the panel re-render on the tool's panel_spec
+  // broadcast confirms or corrects it. ``checked`` is the current state;
+  // ``enable_tool`` fires when switching on, ``disable_tool`` when switching
+  // off (both with the same ``tool_args``). Handler lives in action-widget.js.
+  function _renderToggle(w) {
+    var id          = escHtml(w.id || '');
+    var toolArgs    = escHtml(JSON.stringify(w.tool_args != null ? w.tool_args : {}));
+    var enableTool  = escHtml(w.enable_tool || '');
+    var disableTool = escHtml(w.disable_tool || '');
+    var checked     = w.checked ? ' checked' : '';
+    var label       = w.label
+      ? '<span class="ps-toggle-label">' + escHtml(w.label) + '</span>'
+      : '';
+    return (
+      '<label class="ps-toggle"' +
+        ' data-widget-id="'   + id + '"' +
+        ' data-enable-tool="' + enableTool + '"' +
+        ' data-disable-tool="' + disableTool + '"' +
+        ' data-tool-args="'   + toolArgs + '">' +
+        '<input class="ps-toggle-input" type="checkbox"' + checked + '>' +
+        '<span class="ps-toggle-slider"></span>' +
+        label +
+        '<span class="ps-toggle-status"></span>' +
+      '</label>'
+    );
+  }
+
   var WIDGETS = {
     list:   _renderList,
     detail: _renderDetail,
     text:   _renderText,
     action: _renderAction,
+    toggle: _renderToggle,
   };
 
   // Renders one widget. Unknown or malformed types return '' -- inert.
