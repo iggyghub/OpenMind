@@ -4,9 +4,7 @@ Felix modifies its own core through clone -> test -> PR -> restart. Driver for
 `scripts/run-self-dev.ps1`. Each slice runs in a fresh headless Claude Code
 session; this file + the issue are the only memory between them.
 
-Status: blocked
-SD-3 PR #560 awaiting human review
-
+Status: ready
 Model: sonnet
 
 ## Next slice -- start here
@@ -26,6 +24,7 @@ Type: HITL
 
 - PR #558: SD-1 -- self_dev plugin (clone -> branch -> edit -> test -> PR)
 - PR #559: SD-2 -- restart-to-load handoff for merged self-dev PRs
+- PR #560: SD-3 -- boot self-check + SHA rollback + state snapshot
 
 ## Notes
 
