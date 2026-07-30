@@ -105,6 +105,7 @@ class Tool:
     # ModalSurface even when a Session/Persistent grant would otherwise
     # cover the class. The 16-class capability vocabulary is unchanged.
     irreversible: bool = False
+    required_capabilities: frozenset[str] | None = None
 
 
 @dataclass
@@ -510,6 +511,9 @@ class MCPOrchestrator:
             either upgraded to SILENT/DENY by the consent surface, or
             (when no surface is wired) fails closed to DENY.
         """
+        tool = self._tool_lookup.get(tool_name)
+        if tool is not None and tool.required_capabilities is not None:
+            capabilities = tool.required_capabilities
         # Defensive — never silently allow an unknown tool. The queue may
         # hold a tool_name whose plugin was unregistered between add and
         # approve; we must not dispatch it.
