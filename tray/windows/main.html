@@ -4811,6 +4811,20 @@
     .ps-toggle-input:disabled + .ps-toggle-slider { opacity: 0.6; cursor: default; }
     .ps-toggle-input:focus-visible + .ps-toggle-slider { outline: 2px solid var(--accent); outline-offset: 2px; }
     .ps-toggle-status { font-size: 11px; color: var(--text-muted); }
+    /* Loading spinner shown while a skill toggle is switching (action-widget.js
+       clears the status text and adds this class; the panel re-render removes
+       it). Reuses the health-swirl rotate keyframe. */
+    .ps-toggle-status--loading::before {
+      content: '';
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border: 2px solid var(--text-muted);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: health-swirl 0.7s linear infinite;
+      vertical-align: middle;
+    }
 
   </style>
 </head>
