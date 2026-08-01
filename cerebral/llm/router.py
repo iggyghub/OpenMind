@@ -96,8 +96,21 @@ class ToolCall:
 
 @runtime_checkable
 class Backend(Protocol):
+    # supports_vision: True when the backend's configured model can ground on
+    # image bytes. ModelRouter.complete_with_images walks the priority chain
+    # and picks the first backend where this is True (ADR-0016 sec 5).
+    supports_vision: bool
+
     async def complete(self, prompt: str, task_type: str) -> str: ...
     async def complete_with_tools(self, prompt: str, tools: list[dict]) -> ToolCall | str: ...
+    async def complete_with_images(
+        self, prompt: str, images: list[bytes], task_type: str
+    ) -> str: ...
+
+
+# ADR-0016 sec 5: pixel-vision grounding is routed on this task_type so the
+# priority chain (local -> Budd -> cloud) picks the first VL-capable backend.
+VISION_TASK = "computer_use_vision"
 
 
 # Preferred models for the "quality" task type (issue #349), best first.
@@ -440,6 +453,49 @@ class ModelRouter:
         logger.info("[router] %s handled request", model_id)
         return response
 
+    def _vision_chain(self) -> list[str]:
+        """Priority-ordered enabled + routable backends that self-declare vision.
+        Honors local_only via _routable_chain (cloud tiers excluded)."""
+        return [
+            mid for mid in self._routable_chain()
+            if getattr(self._backends[mid], "supports_vision", False)
+        ]
+
+    async def complete_with_images(
+        self, prompt: str, images: list[bytes], task_type: str = VISION_TASK
+    ) -> str:
+        """Route a grounding request through the priority chain (ADR-0016 sec 5).
+
+        First VL-capable backend in priority order wins; a tier without a
+        vision-capable model is skipped. ConnectionError on a picked tier
+        falls through to the next VL tier. Raises ModelUnavailableError if
+        no VL tier is reachable (local-only + no local VL model -> raise;
+        caller escalates to attended-handoff per ADR-0016 sec 5)."""
+        chain = self._vision_chain()
+        if not chain:
+            raise ModelUnavailableError(
+                "no vision-capable model available "
+                f"(task_type={task_type!r}, local_only={self._local_only})"
+            )
+        last_exc: Exception | None = None
+        for mid in chain:
+            try:
+                response = await self._backends[mid].complete_with_images(
+                    prompt, images, task_type
+                )
+            except (OSError, ConnectionError) as exc:
+                last_exc = exc
+                logger.warning(
+                    "[router] vision: '%s' unavailable (%s) -- trying next", mid, exc,
+                )
+                continue
+            self._last_model = mid
+            logger.info("[router] %s handled vision request", mid)
+            return response
+        raise ModelUnavailableError(
+            f"all vision-capable models unavailable: {last_exc}"
+        ) from last_exc
+
     async def complete_with_tools(
         self, prompt: str, tools: list[dict]
     ) -> ToolCall | str:
@@ -532,6 +588,10 @@ class DynamicModelBackend:
         self.api_key = api_key
         self._model = cached_model or ""
         self.on_resolved = on_resolved
+        # Dynamic backends can't know if the resolved model is VL without
+        # calling the endpoint, so they default off; a caller can flip this
+        # once the user pins a VL model at the endpoint.
+        self.supports_vision = False
         self._openai_list = openai_list_fn or (
             lambda u, k: list_openai_models(u, api_key=k)
         )
@@ -582,6 +642,11 @@ class DynamicModelBackend:
     ) -> ToolCall | str:
         return await self._call("complete_with_tools", prompt, tools)
 
+    async def complete_with_images(
+        self, prompt: str, images: list[bytes], task_type: str = VISION_TASK
+    ) -> str:
+        return await self._call("complete_with_images", prompt, images, task_type)
+
 
 def _real_backends() -> dict[str, Backend]:
     """Build backends from whatever Ollama has installed + the fixed cloud entries.
@@ -617,9 +682,18 @@ def _real_models(backends: dict[str, Backend]) -> dict[str, dict]:
 class OllamaBackend:
     """Calls Ollama's generate endpoint directly (local, no cloud dependency)."""
 
-    def __init__(self, url: str = "http://localhost:11434", model: str = "qwen2.5:7b"):
+    def __init__(
+        self,
+        url: str = "http://localhost:11434",
+        model: str = "qwen2.5:7b",
+        supports_vision: bool = False,
+    ):
         self.url = url
         self.model = model
+        # ADR-0016 sec 5: opt-in per instance -- Ollama VL models (llava,
+        # qwen2.5vl, ...) advertise this so the router's vision chain picks
+        # them; text-only Ollama tiers stay skipped.
+        self.supports_vision = supports_vision
 
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         import httpx
@@ -684,6 +758,31 @@ class OllamaBackend:
                     args = {}
             return ToolCall(name=fn["name"], args=args)
         return message.get("content") or ""
+
+    async def complete_with_images(
+        self, prompt: str, images: list[bytes], task_type: str = VISION_TASK
+    ) -> str:
+        """Multimodal generate via Ollama's /api/generate `images` field.
+
+        Images are base64-encoded strings alongside the prompt. Requires a
+        VL model (llava, qwen2.5vl, ...); a text-only model will 400 or
+        return garbage -- gate via supports_vision so the router skips it."""
+        import base64
+        import httpx
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "images": [base64.b64encode(img).decode("ascii") for img in images],
+            "stream": False,
+            "options": {"num_ctx": 8192},
+        }
+        async with httpx.AsyncClient(timeout=_ollama_timeout_s()) as client:
+            try:
+                resp = await client.post(f"{self.url}/api/generate", json=payload)
+                resp.raise_for_status()
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                raise ConnectionError(str(exc)) from exc
+        return resp.json()["response"]
 
     @staticmethod
     def list_installed_models(
@@ -768,10 +867,14 @@ class ClawBackend:
         url: str = "http://localhost:3000",
         model: str = "claude-haiku-4-5-20251001",
         api_key: str | None = None,
+        supports_vision: bool = False,
     ):
         self.url = _normalize_openai_base(url)
         self.model = model
         self.api_key = api_key
+        # ADR-0016 sec 5: Budd is the expected VL tier in practice; set True
+        # when the configured model at this endpoint is multimodal.
+        self.supports_vision = supports_vision
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -855,6 +958,44 @@ class ClawBackend:
         return message.get("content") or ""
 
 
+    async def complete_with_images(
+        self, prompt: str, images: list[bytes], task_type: str = VISION_TASK
+    ) -> str:
+        """Multimodal chat via OpenAI-compat content array (data-URL images).
+
+        Works with Budd / any OpenAI-compat server serving a VL model.
+        Gate via supports_vision so the router doesn't send images to a
+        text-only endpoint."""
+        import base64
+        import httpx
+        content = [{"type": "text", "text": prompt}]
+        for img in images:
+            b64 = base64.b64encode(img).decode("ascii")
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64}"},
+            })
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": content}],
+        }
+        async with httpx.AsyncClient(timeout=_claw_timeout_s()) as client:
+            try:
+                resp = await client.post(
+                    f"{self.url}/v1/chat/completions",
+                    json=payload,
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                raise ConnectionError(str(exc)) from exc
+            except httpx.HTTPStatusError as exc:
+                raise ConnectionError(
+                    f"HTTP {exc.response.status_code} from {exc.request.url}"
+                ) from exc
+        return resp.json()["choices"][0]["message"]["content"]
+
+
 class AnthropicBackend:
     """Calls the Anthropic API directly via the official SDK.
 
@@ -870,10 +1011,14 @@ class AnthropicBackend:
         model: str = "claude-haiku-4-5",
         api_key: str | None = None,
         client=None,  # injectable AsyncAnthropic for tests
+        supports_vision: bool = True,
     ):
         self.model = model
         self._api_key = api_key
         self._client = client
+        # ADR-0016 sec 5: all current Claude models are multimodal; default
+        # True. Overridable for a hypothetical text-only future model.
+        self.supports_vision = supports_vision
 
     def _get_client(self):
         if self._client is None:
@@ -890,6 +1035,37 @@ class AnthropicBackend:
                 model=self.model,
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
+            )
+        except anthropic.APIError as exc:
+            raise ConnectionError(str(exc)) from exc
+        return "".join(b.text for b in resp.content if b.type == "text")
+
+    async def complete_with_images(
+        self, prompt: str, images: list[bytes], task_type: str = VISION_TASK
+    ) -> str:
+        """Multimodal message with base64 image blocks (Anthropic native).
+
+        Screenshots are sent as image/png -- the router doesn't sniff mime
+        for a single-purpose grounding path."""
+        import base64
+        import anthropic
+
+        content: list[dict] = []
+        for img in images:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.b64encode(img).decode("ascii"),
+                },
+            })
+        content.append({"type": "text", "text": prompt})
+        try:
+            resp = await self._get_client().messages.create(
+                model=self.model,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": content}],
             )
         except anthropic.APIError as exc:
             raise ConnectionError(str(exc)) from exc
