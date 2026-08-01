@@ -2063,6 +2063,7 @@ def _credentials_state_event(
                            "client_id": "", "detail": ""},
                 "static_tokens": {},
                 "browser_logins": {},
+                "discord_user": {"status": "not configured", "source": "none"},
             },
         }
     store = _get_credential_store()
@@ -2089,6 +2090,7 @@ def _credentials_state_event(
             },
             "static_tokens": _static_tokens_state(),
             "browser_logins": _browser_logins_state(),
+            "discord_user": _discord_user_state(),
         },
     }
 
@@ -2146,6 +2148,24 @@ def _static_tokens_state() -> dict[str, dict[str, str]]:
             "source": source,
         }
     return out
+
+
+def _discord_user_state() -> dict[str, str]:
+    """{status, source} for the active profile's Discord user-account token.
+
+    Kept out of ``_static_tokens_state`` (discord_user is excluded from
+    ``_STATIC_TOKEN_PROVIDERS`` per ADR-0006 friction-as-safety) but surfaced
+    here so the Sign-in tab's dedicated Discord card can show configured/not
+    without ever echoing the token value (write-only contract)."""
+    if _active_profile is None:
+        return {"status": "not configured", "source": "none"}
+    token, source = _static_token_from_store_or_env(
+        _DISCORD_USER_PROVIDER, DISCORD_USER_TOKEN_ENV,
+    )
+    return {
+        "status": "connected" if token else "not configured",
+        "source": source,
+    }
 
 
 # ── IPC helpers ───────────────────────────────────────────────────────────────
@@ -3774,6 +3794,46 @@ async def _handle_message(msg: dict) -> None:
         )
         await _broadcast(_credentials_state_event())
 
+    elif t == "set_discord_user_token":
+        # Dedicated setter for the Discord user-account (self-bot) token.
+        # discord_user is deliberately excluded from _STATIC_TOKEN_PROVIDERS
+        # (ADR-0006 friction), so it can't ride set_static_token's provider
+        # whitelist -- it gets its own IPC. Written to discord_user/api_token,
+        # the exact slot _get_discord_user_token_provider reads. The value is
+        # NEVER logged or echoed back to the renderer.
+        if _active_profile is None:
+            logger.warning("[cerebral] set_discord_user_token with no active profile")
+            return
+        value = ((msg.get("data") or {}).get("value") or "").strip()
+        if not value:
+            logger.warning("[cerebral] set_discord_user_token empty value")
+            return
+        store = _get_credential_store()
+        store.set_secret(
+            _active_profile.id, _DISCORD_USER_PROVIDER, "api_token", value,
+        )
+        store.set_credential(
+            _active_profile.id, _DISCORD_USER_PROVIDER,
+            client_id="", email="", scopes=[], status="connected",
+        )
+        logger.info(
+            "[cerebral] Discord user token set for profile %d", _active_profile.id,
+        )
+        await _broadcast(_credentials_state_event())
+
+    elif t == "clear_discord_user_token":
+        if _active_profile is None:
+            logger.warning("[cerebral] clear_discord_user_token with no active profile")
+            return
+        _get_credential_store().delete_credential(
+            _active_profile.id, _DISCORD_USER_PROVIDER,
+        )
+        logger.info(
+            "[cerebral] Discord user token cleared for profile %d",
+            _active_profile.id,
+        )
+        await _broadcast(_credentials_state_event())
+
     elif t == "set_browser_login":
         # ADR-0005 amendment 2026-06-25 — user entered a browser web-login
         # (email + password) in the tray Credentials window's "Browser
@@ -5369,8 +5429,19 @@ _harness_channels = HarnessChannelStore(channels=_HARNESS_CHANNELS)
 
 def _harness_status_event() -> dict:
     running = _openclaw_subscriber_running()
-    ch_state = "connected" if running else "down"
     cfg = {row["name"]: row for row in _harness_channels.status()}
+
+    def _ch_state(row: dict) -> str:
+        # Honest per-channel status: a channel with no secret can't be signed
+        # in, so it's never "connected" just because the shared daemon is up.
+        if not row["secret_set"]:
+            return "not signed in"
+        if not running:
+            return "down"
+        if not row["enabled"]:
+            return "disabled"
+        return "connected"
+
     return {
         "type": "harness_status",
         "data": {
@@ -5378,7 +5449,7 @@ def _harness_status_event() -> dict:
             "channels": [
                 {
                     "name": ch,
-                    "state": ch_state,
+                    "state": _ch_state(cfg[ch]),
                     "enabled": cfg[ch]["enabled"],
                     "secret_set": cfg[ch]["secret_set"],
                 }

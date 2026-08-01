@@ -224,6 +224,24 @@ async def test_set_channel_enabled_persists_and_broadcasts(harness_rig):
     assert snap["Discord"]["enabled"] is False
 
 
+async def test_channel_without_secret_never_reads_connected(harness_rig):
+    """A channel with no secret must not show 'connected' just because the
+    shared daemon is running -- the user hasn't signed in yet."""
+    harness_rig.daemon_state["running"] = True
+    # Give one channel a secret; leave another without.
+    await harness_rig.handle({
+        "type": "set_channel_secret",
+        "data": {"channel": "Discord", "secret": "tok"},
+    })
+    await harness_rig.handle({
+        "type": "set_channel_enabled",
+        "data": {"channel": "Discord", "enabled": True},
+    })
+    snap = {c["name"]: c for c in harness_rig.last_status()["channels"]}
+    assert snap["Discord"]["state"] == "connected"      # secret + enabled + up
+    assert snap["Telegram"]["state"] == "not signed in"  # no secret
+
+
 async def test_set_channel_enabled_unknown_channel_no_broadcast(harness_rig):
     await harness_rig.handle({
         "type": "set_channel_enabled",

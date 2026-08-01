@@ -372,6 +372,53 @@ async def test_static_token_payload_never_carries_value(cred_rig, monkeypatch):
     assert "KEYRING-KEY-MUST-NOT-LEAK" not in blob
 
 
+# ── Discord user-account token (ADR-0006 dedicated IPC) ───────────────────────
+
+async def test_set_discord_user_token_persists_and_marks_configured(cred_rig):
+    await cred_rig.handle({
+        "type": "set_discord_user_token",
+        "data": {"value": "user-token-xyz"},
+    })
+    assert cred_rig.store.get_secret(1, "discord_user", "api_token") == "user-token-xyz"
+    assert cred_rig.states()[-1]["data"]["discord_user"]["status"] == "connected"
+
+
+async def test_set_discord_user_token_value_never_broadcast_or_logged(cred_rig, caplog):
+    with caplog.at_level("INFO"):
+        await cred_rig.handle({
+            "type": "set_discord_user_token",
+            "data": {"value": "DISCORD-WRITE-ONLY"},
+        })
+    assert "DISCORD-WRITE-ONLY" not in repr(cred_rig.sent)
+    assert "DISCORD-WRITE-ONLY" not in caplog.text
+
+
+async def test_set_discord_user_token_empty_value_no_op(cred_rig):
+    await cred_rig.handle({
+        "type": "set_discord_user_token",
+        "data": {"value": "   "},
+    })
+    assert cred_rig.store.get_secret(1, "discord_user", "api_token") is None
+    assert cred_rig.states() == []
+
+
+async def test_clear_discord_user_token_removes_it(cred_rig, monkeypatch):
+    monkeypatch.delenv("DISCORD_USER_TOKEN", raising=False)
+    await cred_rig.handle({
+        "type": "set_discord_user_token", "data": {"value": "tok"},
+    })
+    await cred_rig.handle({"type": "clear_discord_user_token"})
+    assert cred_rig.store.get_secret(1, "discord_user", "api_token") is None
+    assert cred_rig.states()[-1]["data"]["discord_user"]["status"] == "not configured"
+
+
+async def test_discord_user_stays_out_of_static_token_list(cred_rig):
+    """discord_user keeps its own card but is NOT in the static-token list
+    (ADR-0006 friction-as-safety)."""
+    await cred_rig.handle({"type": "list_credentials"})
+    assert "discord_user" not in cred_rig.states()[-1]["data"]["static_tokens"]
+
+
 # ── Issue #148 — set_static_token ─────────────────────────────────────────────
 
 async def test_set_static_token_persists_to_keyring(cred_rig):
