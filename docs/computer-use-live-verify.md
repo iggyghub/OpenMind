@@ -155,3 +155,41 @@ Run these manually on a Windows machine where the target apps are installed.
       payload for `computer_use:handoff_needed`. Verify it contains only
       `handoff_id`, `window_title`, `reason` -- no image data (ADR-0016
       sec 7 audio-buffer rule extends across the seam).
+
+## S7 #580 -- browser-as-app stealth path + planner selection
+
+Needs a running Windows host with a real browser (Chrome / Edge / Firefox)
+plus real network egress. All steps use `computer_use.browser_navigate`.
+
+- [ ] Open Chrome / Edge to a blank tab. Ask Felix: "Open discord.com/app".
+      Verify: `browser_navigate` runs, the plugin trace's `target` is the
+      address bar (name contains "Address and search bar"), the URL types
+      into it, Enter fires, the resulting page loads discord.com, and the
+      trace's `elements` field lists the post-navigate UIA tree. Confirm the
+      request path is stealth: page-side JS console reports
+      `navigator.webdriver === false` and no CDP client id in the browser's
+      internals -- the OS-input path leaves no automation fingerprint.
+- [ ] Log in to Discord in the SAME window (once, by hand). Now ask Felix
+      to navigate to a specific channel URL and read the latest visible
+      message name. Verify: `browser_navigate` submits the URL, and the
+      subsequent tool call (e.g. `read_ui`) sees the logged-in surface with
+      the channel visible. The logged-in cookie / session survived because
+      Felix drove the user's own browser, not a fresh Playwright context.
+- [ ] Repeat with Firefox to confirm the address-bar candidate list picks
+      up "Search or enter address" (Firefox's default name). If a locale
+      renders a different name, pass `address_bar` explicitly and verify
+      the override wins.
+- [ ] Coexistence check: ask Felix to read the anonymous job board (a
+      benign public URL) and verify the planner picks the Browser plugin's
+      `navigate` (Playwright DOM, no visible window), NOT
+      `browser_navigate`. Same session, immediately after, ask for a
+      Discord action and verify it flips back to `browser_navigate`.
+- [ ] Kill-switch check on the stealth path: mid-navigate (during the URL
+      type), slam the mouse to a screen corner. Verify: the plugin trace
+      records `corner-failsafe abort` and no Enter fires.
+- [ ] Handoff check on the stealth path: point Felix at a browser window
+      with the address bar removed (kiosk mode / full-screen video).
+      Verify: `browser_navigate` exhausts its retries with "address bar
+      not found", then the attended-handoff seam fires (notification +
+      SetActive), and a `computer_use_handoff_done` reply resumes the
+      chain.
