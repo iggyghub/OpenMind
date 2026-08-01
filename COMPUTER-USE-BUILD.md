@@ -9,7 +9,7 @@ fallback), Windows-only v1, fail-closed elsewhere.
 
 ## Next slice -- start here
 
-- **Active:** S6 -- #579
+- **Active:** S7 -- #580
 - **Model:** opus
 
 ## Queue (AFK -- auto-run, in blocker order)
@@ -18,7 +18,7 @@ fallback), Windows-only v1, fail-closed elsewhere.
 - [x] S2 -- #576 -- 3-part kill switch (corner + F11+F12 + Visualiser Stop) + window-bounded region
 - [x] S4 -- #575 -- multimodal Backend seam + computer_use_vision routing (local -> Budd -> cloud, honors local_only)
 - [x] S5 -- #578 -- pixel-vision fallback + RAM thumbnail buffer + DRM-black escalation
-- [ ] S6 -- #579 -- attended handoff on retry exhaustion / no structured surface
+- [x] S6 -- #579 -- attended handoff on retry exhaustion / no structured surface
 - [ ] S7 -- #580 -- browser-as-app stealth path + planner selection vs Browser plugin
 
 ## Human-gated -- NOT auto-run (the loop must NEVER set these Active)
@@ -32,6 +32,7 @@ fallback), Windows-only v1, fail-closed elsewhere.
 - S2 -- #576 -- PR #583
 - S4 -- #575 -- PR #584
 - S5 -- #578 -- PR #585
+- S6 -- #579 -- PR #586
 
 ## SAFETY
 
