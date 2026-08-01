@@ -43,9 +43,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sys
 from collections import deque
-from typing import Awaitable, Callable, Optional, Protocol, runtime_checkable
+from typing import Awaitable, Callable, Literal, Optional, Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
 
@@ -174,6 +176,13 @@ class ComputerUseBackend(Protocol):
         """S6 #579: bring the target window to the foreground so the human can
         take over. Best-effort -- failures must not break the handoff."""
 
+    def press_key(self, key: str) -> None:
+        """S7 #580: press a named key (e.g. ``"enter"``). Optional -- backends
+        without it disable the browser-as-app path's URL-submit step; the
+        plugin falls back to appending ``\\n`` via ``type_text`` when absent.
+        On Windows, must translate ``pyautogui.FailSafeException`` into
+        ``CornerAbort`` (same rule as the other actuation methods)."""
+
 
 def _make_default_backend() -> Optional[ComputerUseBackend]:
     """Windows: lazily construct the UIA/pyautogui backend. Elsewhere: None."""
@@ -225,6 +234,86 @@ def _is_black_frame(frame: bytes | None) -> bool:
     if not frame:
         return True
     return not any(frame)
+
+
+# S7 #580: browser-as-app stealth path. UIA names Chrome / Edge / Firefox use
+# for the address bar. Substring match, first hit wins -- keeps the LLM from
+# having to know the browser's exact locale/version string.
+_ADDRESS_BAR_CANDIDATES: tuple[str, ...] = (
+    "Address and search bar",   # Chrome, Edge (English)
+    "Search or enter address",  # Firefox (English)
+    "Search Google or type a URL",
+    "Search or type URL",
+    "URL bar",
+    "Location",                 # older Firefox
+)
+
+# S7 #580: routing heuristic (stealth-sensitive vs benign). Hosts here are the
+# places a CDP / navigator.webdriver fingerprint gets a session flagged or
+# banned -- planner should route them through computer_use (OS-level input)
+# rather than the Browser (Playwright) plugin. Discord is the motivating case
+# in ADR-0016; the rest are common bot-detection targets (Cloudflare Turnstile,
+# major socials). Match is exact-or-subdomain, so ``www.discord.com`` counts
+# just like ``discord.com``.
+_STEALTH_HOSTS: frozenset[str] = frozenset({
+    "discord.com",
+    "discord.gg",
+    "discordapp.com",
+    "linkedin.com",
+    "twitter.com",
+    "x.com",
+    "facebook.com",
+    "instagram.com",
+    "cloudflare.com",
+    "challenges.cloudflare.com",
+})
+
+_URL_RE = re.compile(r"https?://[^\s'\"<>()\[\]]+", re.IGNORECASE)
+
+
+def _extract_host(url_or_host: str) -> str | None:
+    """Return the hostname of a URL or the bare token itself, lowercased."""
+    if not url_or_host:
+        return None
+    s = url_or_host.strip().lower()
+    if "://" in s:
+        try:
+            return (urlparse(s).hostname or "").lower() or None
+        except Exception:
+            return None
+    return s.split("/", 1)[0] or None
+
+
+def stealth_sensitive(url_or_text: str) -> bool:
+    """True when the input names a stealth-sensitive host -- one where OS-level
+    input beats Playwright/CDP because the site fingerprints automated clients
+    (ADR-0016). Accepts a URL, a bare hostname, or free text containing one.
+    Unknown hosts are benign by default (fast path stays default)."""
+    if not url_or_text:
+        return False
+    text = url_or_text.strip()
+    urls = _URL_RE.findall(text)
+    if urls:
+        candidates = urls
+    else:
+        # Try the whole thing as a bare host (no scheme).
+        candidates = [text.split()[-1]] if text else []
+    for cand in candidates:
+        host = _extract_host(cand)
+        if not host:
+            continue
+        for known in _STEALTH_HOSTS:
+            if host == known or host.endswith("." + known):
+                return True
+    return False
+
+
+def select_web_path(url_or_text: str) -> Literal["computer_use", "browser"]:
+    """Pick which plugin family should handle a web target: ``computer_use``
+    (OS input, no CDP fingerprint) for stealth-sensitive sites, ``browser``
+    (Playwright DOM, faster) for the benign default. The two plugins coexist
+    permanently -- ADR-0016 sec 2."""
+    return "computer_use" if stealth_sensitive(url_or_text) else "browser"
 
 
 def _clamp_retries(n: int | None) -> int:
@@ -370,6 +459,43 @@ class ComputerUsePlugin:
                 },
             ),
             Tool(
+                name="browser_navigate",
+                description=(
+                    "Navigate a NORMAL, user-launched browser window to a URL "
+                    "via OS-level input (address-bar type + Enter) -- the "
+                    "stealth path with no Playwright/CDP fingerprint. Reads "
+                    "the resulting page's UIA tree back. For benign public "
+                    "reads (no login, no detection risk), the Browser plugin "
+                    "(navigate / web_search / read_pdf) is faster."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "window_title": {
+                            "type": "string",
+                            "description": "Title (substring) of the open browser window.",
+                        },
+                        "url": {
+                            "type": "string",
+                            "description": "URL to navigate to.",
+                        },
+                        "address_bar": {
+                            "type": "string",
+                            "description": (
+                                "Optional UIA name for the address bar element. "
+                                "Defaults to common Chrome/Edge/Firefox names."
+                            ),
+                        },
+                        "retries": {
+                            "type": "integer",
+                            "description": "Max failed tries (1-5, default 3).",
+                        },
+                    },
+                    "required": ["window_title", "url"],
+                },
+            ),
+            Tool(
                 name="type_into",
                 description=(
                     "Type text into a UIA element by name. Observes -> "
@@ -403,6 +529,8 @@ class ComputerUsePlugin:
             return await self._click_element(args)
         if tool_name == "type_into":
             return await self._type_into(args)
+        if tool_name == "browser_navigate":
+            return await self._browser_navigate(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _window_bounds(self, window_title: str) -> list[int] | None:
@@ -868,6 +996,162 @@ class ComputerUsePlugin:
         finally:
             await self._emit_driving(False)
 
+    def _find_address_bar(
+        self, elements: list[dict], override_name: str | None,
+    ) -> dict | None:
+        """Return the browser's address-bar element, preferring an explicit
+        name override, then walking the built-in candidate list. Substring
+        match on ``name`` -- the OS localises "Address and search bar" so
+        an exact-match is too brittle."""
+        if override_name:
+            hit = _find_element(elements, override_name, None)
+            if hit is not None:
+                return hit
+        for el in elements:
+            name = (el.get("name") or "").strip().lower()
+            if not name:
+                continue
+            for cand in _ADDRESS_BAR_CANDIDATES:
+                if cand.lower() in name:
+                    return el
+        return None
+
+    async def _browser_navigate(self, args: dict) -> ToolResult:
+        """S7 #580: type ``url`` into the target browser window's address bar
+        via OS-level input, submit, and read the resulting page's UIA tree.
+        No Playwright / CDP -- deliberately the stealth path. Composes the S1
+        seams (read_ui + click + type_text) plus one new one (press_key /
+        typewriter-newline fallback). On UIA exhaustion, hands off to the
+        human via the S6 attended-handoff seam."""
+        window_title = args["window_title"]
+        url = args.get("url") or ""
+        override = args.get("address_bar") or None
+        limit = _clamp_retries(args.get("retries"))
+        trace = {
+            "tool": "browser_navigate",
+            "window_title": window_title,
+            "target": None,
+            "action": "navigate",
+            "url": url,
+            "tries": [],
+            "ok": False,
+        }
+        if not url:
+            trace["tries"].append(
+                {"n": 1, "observed": False, "acted": False,
+                 "expected": "non-empty url", "actual": "empty", "ok": False}
+            )
+            return self._finish(trace)
+        self._abort_event.clear()
+        await self._emit_driving(True)
+        try:
+            for n in range(1, limit + 1):
+                await asyncio.sleep(0)
+                if self._abort_event.is_set():
+                    trace["tries"].append(
+                        {"n": n, "observed": False, "acted": False,
+                         "expected": f"navigate to {url!r}",
+                         "actual": "aborted by kill switch", "ok": False}
+                    )
+                    return self._finish(trace)
+                try:
+                    elements = self._backend.read_ui(window_title)  # type: ignore[union-attr]
+                except Exception as exc:
+                    trace["tries"].append(
+                        {"n": n, "observed": False, "acted": False,
+                         "expected": "address bar",
+                         "actual": f"read_ui error: {exc}", "ok": False}
+                    )
+                    continue
+                bar = self._find_address_bar(elements, override)
+                if bar is None:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": "address bar element",
+                         "actual": "not found in UIA tree", "ok": False}
+                    )
+                    continue
+                bbox = bar.get("bbox") or []
+                if len(bbox) != 4:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": "address bar bbox [l,t,r,b]",
+                         "actual": f"bbox={bbox!r}", "ok": False}
+                    )
+                    continue
+                wb = self._window_bounds(window_title)
+                if wb is not None and not _bbox_within(bbox, wb):
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"bbox {bbox} inside window {wb}",
+                         "actual": "outside window bounds -- refused",
+                         "ok": False}
+                    )
+                    continue
+                trace["target"] = {
+                    "name": bar.get("name"),
+                    "role": bar.get("role"),
+                    "bbox": bbox,
+                }
+                try:
+                    self._backend.click(bbox)  # type: ignore[union-attr]
+                    self._backend.type_text(url)  # type: ignore[union-attr]
+                    press_key = getattr(self._backend, "press_key", None)
+                    if press_key is not None:
+                        press_key("enter")
+                    else:
+                        # Fallback for backends without press_key: typewriter
+                        # newline is treated as Enter by most edit controls.
+                        self._backend.type_text("\n")  # type: ignore[union-attr]
+                except CornerAbort:
+                    self._abort_event.set()
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"navigate to {url!r}",
+                         "actual": "corner-failsafe abort", "ok": False}
+                    )
+                    return self._finish(trace)
+                except Exception as exc:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"navigate to {url!r}",
+                         "actual": f"error: {exc}", "ok": False}
+                    )
+                    continue
+                # Post-navigate: re-read UIA so the caller can see the new
+                # page. A read failure doesn't fail the call -- the address-
+                # bar submit already fired.
+                try:
+                    after = self._backend.read_ui(window_title)  # type: ignore[union-attr]
+                except Exception as exc:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": True,
+                         "expected": f"post-navigate elements for {url!r}",
+                         "actual": f"re-read error: {exc}", "ok": True}
+                    )
+                    trace["ok"] = True
+                    return self._finish(trace)
+                trace["tries"].append(
+                    {"n": n, "observed": True, "acted": True,
+                     "expected": f"navigate to {url!r}",
+                     "actual": f"submitted; {len(after)} elements after",
+                     "ok": True}
+                )
+                trace["ok"] = True
+                trace["elements"] = after
+                return self._finish(trace)
+            # UIA exhausted with no address bar found -- attended handoff.
+            if not self._abort_event.is_set():
+                if await self._escalate_to_handoff(
+                    window_title, "address bar",
+                    f"could not navigate to {url!r} after {limit} tries",
+                    trace,
+                ):
+                    trace["ok"] = True
+            return self._finish(trace)
+        finally:
+            await self._emit_driving(False)
+
 
 # --- Windows backend (lazily imported; never touched in tests) --------------
 
@@ -926,6 +1210,13 @@ class _WindowsBackend:
     def type_text(self, text: str) -> None:
         try:
             self._pyautogui.typewrite(text, interval=0.01)
+        except self._pyautogui.FailSafeException as exc:
+            raise CornerAbort(str(exc)) from exc
+
+    def press_key(self, key: str) -> None:
+        """S7 #580: single named-key press (Enter after typing a URL, etc.)."""
+        try:
+            self._pyautogui.press(key)
         except self._pyautogui.FailSafeException as exc:
             raise CornerAbort(str(exc)) from exc
 
