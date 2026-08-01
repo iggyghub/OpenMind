@@ -9,13 +9,13 @@ fallback), Windows-only v1, fail-closed elsewhere.
 
 ## Next slice -- start here
 
-- **Active:** S2 -- #576
+- **Active:** S4 -- #575
 - **Model:** opus
 
 ## Queue (AFK -- auto-run, in blocker order)
 
 - [x] S1 -- #574 -- computer_use plugin spine (window capture + UIA read + actuation + retry loop) on Calculator
-- [ ] S2 -- #576 -- 3-part kill switch (corner + F11+F12 + Visualiser Stop) + window-bounded region
+- [x] S2 -- #576 -- 3-part kill switch (corner + F11+F12 + Visualiser Stop) + window-bounded region
 - [ ] S4 -- #575 -- multimodal Backend seam + computer_use_vision routing (local -> Budd -> cloud, honors local_only)
 - [ ] S5 -- #578 -- pixel-vision fallback + RAM thumbnail buffer + DRM-black escalation
 - [ ] S6 -- #579 -- attended handoff on retry exhaustion / no structured surface
@@ -29,6 +29,7 @@ fallback), Windows-only v1, fail-closed elsewhere.
 ## Landed PRs
 
 - S1 -- #574 -- PR #582
+- S2 -- #576 -- PR #583
 
 ## SAFETY
 
