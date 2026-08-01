@@ -1504,3 +1504,296 @@ def test_profile_fallback_enabled_round_trips(tmp_path):
     # And a fresh manager on the same DB sees the same value
     pm2 = ProfileManager(db_path=db)
     assert pm2.get(p.id).fallback_enabled is True
+
+
+# ---------------------------------------------------------------------------
+# S4 #575 -- multimodal Backend seam + computer_use_vision routing (ADR-0016)
+# ---------------------------------------------------------------------------
+
+
+def _vision_backend(reply: str = "coords", vision: bool = True):
+    """Fake Backend that implements complete_with_images and declares vision."""
+    b = AsyncMock()
+    b.supports_vision = vision
+    b.complete_with_images = AsyncMock(return_value=reply)
+    return b
+
+
+def _text_backend(reply: str = "text"):
+    b = AsyncMock()
+    b.supports_vision = False
+    b.complete = AsyncMock(return_value=reply)
+    b.complete_with_images = AsyncMock(
+        side_effect=AssertionError("text-only backend must not receive images")
+    )
+    return b
+
+
+async def test_complete_with_images_picks_first_vision_capable_backend():
+    text = _text_backend()
+    vl = _vision_backend("clicked (10,20)")
+    r = ModelRouter(
+        backends={"ollama/text": text, "ollama/vl": vl},
+        models={
+            "ollama/text": {"label": "T", "is_cloud": False},
+            "ollama/vl": {"label": "V", "is_cloud": False},
+        },
+        default_model="ollama/text",
+    )
+    result = await r.complete_with_images("where is the button?", [b"png-bytes"])
+    assert result == "clicked (10,20)"
+    vl.complete_with_images.assert_awaited_once_with(
+        "where is the button?", [b"png-bytes"], "computer_use_vision"
+    )
+
+
+async def test_complete_with_images_skips_non_vision_in_priority_order():
+    """A text-only tier at the top of priority is stepped over, not called."""
+    text = _text_backend()
+    vl = _vision_backend("ok")
+    r = ModelRouter(
+        backends={"ollama/text": text, "custom/budd": vl},
+        models={
+            "ollama/text": {"label": "T", "is_cloud": False},
+            "custom/budd": {"label": "Budd", "is_cloud": False},
+        },
+        default_model="ollama/text",
+    )
+    await r.complete_with_images("q", [b"img"])
+    # text-only backend was never even asked
+    text.complete_with_images.assert_not_called()
+    vl.complete_with_images.assert_awaited_once()
+
+
+async def test_complete_with_images_local_only_excludes_cloud_vl():
+    """local_only=True hides cloud tiers from the vision chain."""
+    cloud_vl = _vision_backend("cloud grounded")
+    r = ModelRouter(
+        backends={"claude/haiku": cloud_vl},
+        models={"claude/haiku": {"label": "Claude", "is_cloud": True}},
+    )
+    r.set_local_only(True)
+    with pytest.raises(ModelUnavailableError, match="no vision-capable model"):
+        await r.complete_with_images("q", [b"img"])
+    cloud_vl.complete_with_images.assert_not_called()
+
+
+async def test_complete_with_images_local_only_prefers_local_vl_over_cloud():
+    local_vl = _vision_backend("local grounded")
+    cloud_vl = _vision_backend("cloud grounded")
+    r = ModelRouter(
+        backends={"ollama/qwen2.5vl": local_vl, "claude/sonnet": cloud_vl},
+        models={
+            "ollama/qwen2.5vl": {"label": "qwen2.5vl", "is_cloud": False},
+            "claude/sonnet": {"label": "Sonnet", "is_cloud": True},
+        },
+        default_model="ollama/qwen2.5vl",
+    )
+    r.set_local_only(True)
+    assert await r.complete_with_images("q", [b"img"]) == "local grounded"
+    cloud_vl.complete_with_images.assert_not_called()
+
+
+async def test_complete_with_images_raises_when_no_vision_backend():
+    text = _text_backend()
+    r = ModelRouter(backends={"ollama/text": text})
+    with pytest.raises(ModelUnavailableError, match="no vision-capable model"):
+        await r.complete_with_images("q", [b"img"])
+
+
+async def test_complete_with_images_falls_through_on_connection_error():
+    """A picked VL tier that raises ConnectionError yields to the next VL tier."""
+    down = AsyncMock()
+    down.supports_vision = True
+    down.complete_with_images = AsyncMock(side_effect=ConnectionError("gone"))
+    up = _vision_backend("recovered")
+    r = ModelRouter(
+        backends={"custom/first": down, "custom/second": up},
+        models={
+            "custom/first": {"label": "First", "is_cloud": False},
+            "custom/second": {"label": "Second", "is_cloud": False},
+        },
+        default_model="custom/first",
+    )
+    assert await r.complete_with_images("q", [b"img"]) == "recovered"
+
+
+async def test_complete_with_images_all_vl_down_raises():
+    a = AsyncMock(); a.supports_vision = True
+    a.complete_with_images = AsyncMock(side_effect=ConnectionError("a"))
+    b = AsyncMock(); b.supports_vision = True
+    b.complete_with_images = AsyncMock(side_effect=ConnectionError("b"))
+    r = ModelRouter(backends={"custom/a": a, "custom/b": b}, default_model="custom/a")
+    with pytest.raises(ModelUnavailableError, match="all vision-capable"):
+        await r.complete_with_images("q", [b"img"])
+
+
+async def test_complete_with_images_updates_last_model():
+    vl = _vision_backend()
+    r = ModelRouter(backends={"custom/budd": vl}, default_model="custom/budd")
+    await r.complete_with_images("q", [b"img"])
+    assert r.last_model == "custom/budd"
+
+
+async def test_complete_with_images_skips_disabled_vl_backend():
+    disabled = _vision_backend("first")
+    later = _vision_backend("later")
+    r = ModelRouter(
+        backends={"custom/a": disabled, "custom/b": later},
+        models={
+            "custom/a": {"label": "A", "is_cloud": False},
+            "custom/b": {"label": "B", "is_cloud": False},
+        },
+        default_model="custom/a",
+    )
+    r.set_model_enabled("custom/a", False)
+    assert await r.complete_with_images("q", [b"img"]) == "later"
+    disabled.complete_with_images.assert_not_called()
+
+
+async def test_text_complete_path_unchanged_after_multimodal_seam():
+    """Regression guard: complete() still routes text-only, doesn't touch vision."""
+    text = _text_backend("text-reply")
+    vl = _vision_backend("vision-reply")
+    r = ModelRouter(
+        backends={"ollama/text": text, "custom/vl": vl},
+        models={
+            "ollama/text": {"label": "T", "is_cloud": False},
+            "custom/vl": {"label": "V", "is_cloud": False},
+        },
+        default_model="ollama/text",
+    )
+    result = await r.complete("hi", task_type="chat")
+    assert result == "text-reply"
+    vl.complete_with_images.assert_not_called()
+
+
+# --- Backend-level image encoding -------------------------------------------
+
+async def test_ollama_backend_complete_with_images_base64_encodes(monkeypatch):
+    """OllamaBackend sends images as base64 strings in the /api/generate `images`
+    field alongside the prompt."""
+    from cerebral.llm.router import OllamaBackend
+    import base64
+    import httpx
+
+    captured = {}
+
+    async def fake_post(self, url, json=None):
+        captured["url"] = url
+        captured["json"] = json
+        return httpx.Response(
+            200, json={"response": "clicked (100,200)"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    b = OllamaBackend(model="qwen2.5vl", supports_vision=True)
+    result = await b.complete_with_images("where is Send?", [b"\x89PNG-fake"])
+
+    assert result == "clicked (100,200)"
+    assert captured["url"].endswith("/api/generate")
+    assert captured["json"]["model"] == "qwen2.5vl"
+    assert captured["json"]["prompt"] == "where is Send?"
+    assert captured["json"]["images"] == [base64.b64encode(b"\x89PNG-fake").decode("ascii")]
+    assert captured["json"]["stream"] is False
+
+
+async def test_claw_backend_complete_with_images_uses_data_url(monkeypatch):
+    """ClawBackend (OpenAI-compat) encodes images as data-URLs in a content array."""
+    from cerebral.llm.router import ClawBackend
+    import base64
+
+    resp = _FakeHttpxResponse(
+        200, {"choices": [{"message": {"content": "grounded"}}]}
+    )
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    b = ClawBackend(url="http://budd", model="qwen-vl", api_key="k",
+                    supports_vision=True)
+    result = await b.complete_with_images("find the Send button", [b"fake-img"])
+
+    assert result == "grounded"
+    assert captured["url"] == "http://budd/v1/chat/completions"
+    assert captured["headers"].get("Authorization") == "Bearer k"
+    msg = captured["json"]["messages"][0]
+    assert msg["role"] == "user"
+    parts = msg["content"]
+    assert parts[0] == {"type": "text", "text": "find the Send button"}
+    b64 = base64.b64encode(b"fake-img").decode("ascii")
+    assert parts[1] == {
+        "type": "image_url",
+        "image_url": {"url": f"data:image/png;base64,{b64}"},
+    }
+
+
+async def test_anthropic_backend_complete_with_images_native_image_block():
+    """AnthropicBackend sends a native image block with base64 source."""
+    from cerebral.llm.router import AnthropicBackend
+    import base64
+
+    fake = _FakeAnthropicClient([_FakeBlock("text", text="the Send button is at (120, 300)")])
+    b = AnthropicBackend(client=fake)
+    result = await b.complete_with_images("where is Send?", [b"png-payload"])
+
+    assert result == "the Send button is at (120, 300)"
+    msgs = fake.last_kwargs["messages"]
+    content = msgs[0]["content"]
+    b64 = base64.b64encode(b"png-payload").decode("ascii")
+    assert content[0] == {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": b64},
+    }
+    assert content[-1] == {"type": "text", "text": "where is Send?"}
+
+
+async def test_anthropic_backend_complete_with_images_api_error_maps_to_connection_error():
+    from cerebral.llm.router import AnthropicBackend
+    import anthropic
+    import httpx
+
+    class _ErrClient:
+        class messages:
+            @staticmethod
+            async def create(**kwargs):
+                raise anthropic.APIConnectionError(
+                    request=httpx.Request("POST", "https://api.anthropic.com")
+                )
+
+    b = AnthropicBackend(client=_ErrClient())
+    with pytest.raises(ConnectionError):
+        await b.complete_with_images("q", [b"img"])
+
+
+def test_supports_vision_defaults():
+    """Text-first defaults: Ollama/Claw off, Anthropic on (all current Claudes are VL)."""
+    from cerebral.llm.router import OllamaBackend, ClawBackend, AnthropicBackend
+    assert OllamaBackend().supports_vision is False
+    assert ClawBackend().supports_vision is False
+    assert AnthropicBackend().supports_vision is True
+
+
+async def test_dynamic_backend_complete_with_images_delegates(monkeypatch):
+    """DynamicModelBackend passes complete_with_images through to the inner backend."""
+    from cerebral.llm.router import DynamicModelBackend
+    import base64
+
+    resp = _FakeHttpxResponse(
+        200, {"choices": [{"message": {"content": "grounded"}}]}
+    )
+    captured = {}
+    _install_fake_post(monkeypatch, resp, captured)
+
+    b = DynamicModelBackend(
+        "openai", "http://srv", api_key="k",
+        openai_list_fn=lambda u, k: ["gpt-vl"],
+    )
+    assert await b.complete_with_images("q", [b"i"]) == "grounded"
+    assert captured["json"]["model"] == "gpt-vl"
+    parts = captured["json"]["messages"][0]["content"]
+    assert parts[0]["type"] == "text"
+    assert parts[1]["type"] == "image_url"
+    assert parts[1]["image_url"]["url"] == (
+        f"data:image/png;base64,{base64.b64encode(b'i').decode('ascii')}"
+    )
