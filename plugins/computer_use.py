@@ -40,11 +40,15 @@ Injection seams (test + import stay Windows-lib-free):
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import sys
-from typing import Callable, Optional, Protocol, runtime_checkable
+from typing import Awaitable, Callable, Optional, Protocol, runtime_checkable
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
+
+logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "computer_use"
 
@@ -65,6 +69,43 @@ MAX_RETRY_LIMIT = 5
 _UNSET: object = object()
 
 
+class CornerAbort(Exception):
+    """Backend raised the pyautogui corner-failsafe: mouse slammed to a screen
+    corner mid-action. The plugin treats this as the (a) kill-switch leg of
+    the ADR-0016 three-part containment: hard-abort the observe-act loop."""
+
+
+# Module-level seams -- main.py wires these once at startup; tests inject
+# per-instance via the constructor (constructor-injected wins).
+DrivingFn = Callable[[bool], Awaitable[None]]
+HotkeyRegisterFn = Callable[[Callable[[], None]], Optional[Callable[[], None]]]
+
+_driving_fn: Optional[DrivingFn] = None
+_hotkey_register_fn: Optional[HotkeyRegisterFn] = None
+_plugin_instance: Optional["ComputerUsePlugin"] = None
+
+
+def set_driving_fn(fn: DrivingFn) -> None:
+    """Wire main.py's async broadcaster for the "Felix is driving" IPC event
+    that lights up the Visualiser's Stop control."""
+    global _driving_fn
+    _driving_fn = fn
+
+
+def set_hotkey_register_fn(fn: HotkeyRegisterFn) -> None:
+    """Wire the F11+F12 global-hotkey registrar. Called once with a nullary
+    ``abort`` callback; may return an unregister function (unused today)."""
+    global _hotkey_register_fn
+    _hotkey_register_fn = fn
+
+
+def abort_current() -> None:
+    """Module-level abort: signals the (c) Visualiser Stop leg. IPC in main.py
+    calls this on a ``computer_use_stop`` message from the tray."""
+    if _plugin_instance is not None:
+        _plugin_instance.abort()
+
+
 @runtime_checkable
 class ComputerUseBackend(Protocol):
     """Platform seam. Windows default + testable fake both fit this shape."""
@@ -74,13 +115,22 @@ class ComputerUseBackend(Protocol):
         [{"name": str, "role": str, "bbox": [l, t, r, b]}, ...]."""
 
     def click(self, bbox: list[int]) -> None:
-        """Actuate a left-click at the centre of ``bbox``."""
+        """Actuate a left-click at the centre of ``bbox``.
+
+        On Windows, must translate ``pyautogui.FailSafeException`` into the
+        plugin's ``CornerAbort`` so the loop can treat corner-slam as a
+        first-class kill-switch event without importing pyautogui here."""
 
     def type_text(self, text: str) -> None:
         """Actuate a keyboard type of ``text`` at the current focus."""
 
     def capture_frame(self, window_title: str) -> Optional[bytes]:
         """Return window pixel bytes (RAM only, never persisted). May be None."""
+
+    def window_bounds(self, window_title: str) -> Optional[list[int]]:
+        """Return the target window's client-rect ``[l, t, r, b]`` in screen
+        coordinates, or None when the window is missing / bounds unavailable.
+        Used as the soft window-bounded-region check for every actuation."""
 
 
 def _make_default_backend() -> Optional[ComputerUseBackend]:
@@ -112,6 +162,16 @@ def _bbox_center(bbox: list[int]) -> tuple[int, int]:
     return ((l + r) // 2, (t + b) // 2)
 
 
+def _bbox_within(inner: list[int], outer: list[int]) -> bool:
+    """True when ``inner`` bbox sits fully inside ``outer``. Both are
+    ``[left, top, right, bottom]``; equal edges count as inside."""
+    if len(inner) != 4 or len(outer) != 4:
+        return False
+    il, it, ir, ib = inner
+    ol, ot, orr, ob = outer
+    return il >= ol and it >= ot and ir <= orr and ib <= ob
+
+
 def _clamp_retries(n: int | None) -> int:
     if n is None:
         return DEFAULT_RETRY_LIMIT
@@ -133,12 +193,59 @@ class ComputerUsePlugin:
         self,
         backend=_UNSET,
         record_trace_fn: Callable[[dict], None] | None = None,
+        *,
+        driving_fn: DrivingFn | None = None,
+        hotkey_register_fn: HotkeyRegisterFn | None | object = _UNSET,
     ) -> None:
         if backend is _UNSET:
             self._backend = _make_default_backend()
         else:
             self._backend = backend  # explicit -- including None -> fail-closed
         self._record_trace_fn = record_trace_fn
+        # Constructor-injected seams win; module-level fallbacks are wired by
+        # main.py at startup. driving_fn broadcasts the ADR-0016 (c) "Felix is
+        # driving" state; hotkey_register_fn wires the ADR-0016 (b) F11+F12
+        # chord -- both may be None (kill-switch legs are best-effort so an
+        # unwired host is not silently disabled from computer_use entirely).
+        self._driving_fn: DrivingFn | None = driving_fn or _driving_fn
+        # asyncio.Event carries the abort signal across the (a) corner-failsafe,
+        # (b) F11+F12 chord, and (c) Visualiser Stop legs. Created here so it
+        # is safe to inspect before any tool call fires.
+        self._abort_event = asyncio.Event()
+        # F11+F12 registration -- once per plugin instance. Tests pass a fake
+        # that captures the callback; production leaves this alone so the
+        # module-level seam wired by main.py drives it.
+        reg = hotkey_register_fn if hotkey_register_fn is not _UNSET else _hotkey_register_fn
+        if reg is not None:
+            try:
+                reg(self.abort)
+            except Exception:
+                logger.warning(
+                    "[computer_use] hotkey_register_fn failed; "
+                    "F11+F12 kill-switch leg disabled", exc_info=True,
+                )
+        # Register the module-level singleton so main.py's IPC handler can
+        # reach abort() via ``abort_current()`` on a Visualiser Stop message.
+        global _plugin_instance
+        _plugin_instance = self
+
+    def abort(self) -> None:
+        """Signal the observe-act loop to short-circuit before its next try.
+
+        Called from the F11+F12 hotkey callback, the module-level
+        ``abort_current()`` (Visualiser Stop IPC), or a caller that owns the
+        plugin. Idempotent -- setting an already-set Event is a no-op."""
+        self._abort_event.set()
+
+    async def _emit_driving(self, driving: bool) -> None:
+        """Best-effort broadcast of the "Felix is driving" indicator. A broken
+        sink must never break a computer_use call in progress."""
+        if self._driving_fn is None:
+            return
+        try:
+            await self._driving_fn(driving)
+        except Exception:
+            logger.warning("[computer_use] driving_fn broadcast failed", exc_info=True)
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -220,10 +327,22 @@ class ComputerUsePlugin:
         if tool_name == "read_ui":
             return self._read_ui(args)
         if tool_name == "click_element":
-            return self._click_element(args)
+            return await self._click_element(args)
         if tool_name == "type_into":
-            return self._type_into(args)
+            return await self._type_into(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
+
+    def _window_bounds(self, window_title: str) -> list[int] | None:
+        """Bounds via the backend if it exposes them; ``None`` disables the
+        bounded-region check for that backend (backwards-compatible)."""
+        fn = getattr(self._backend, "window_bounds", None)
+        if fn is None:
+            return None
+        try:
+            wb = fn(window_title)
+        except Exception:
+            return None
+        return wb if isinstance(wb, list) and len(wb) == 4 else None
 
     def _finish(self, trace: dict) -> ToolResult:
         if self._record_trace_fn is not None:
@@ -261,7 +380,7 @@ class ComputerUsePlugin:
         trace["elements"] = elements
         return self._finish(trace)
 
-    def _click_element(self, args: dict) -> ToolResult:
+    async def _click_element(self, args: dict) -> ToolResult:
         window_title = args["window_title"]
         name = args["name"]
         role = args.get("role")
@@ -274,57 +393,92 @@ class ComputerUsePlugin:
             "tries": [],
             "ok": False,
         }
-        for n in range(1, limit + 1):
-            try:
-                elements = self._backend.read_ui(window_title)  # type: ignore[union-attr]
-            except Exception as exc:
+        # Fresh abort event for each call -- a Stop from a prior run must not
+        # short-circuit a new tool call the user just asked for.
+        self._abort_event.clear()
+        await self._emit_driving(True)
+        try:
+            for n in range(1, limit + 1):
+                # Yield to the event loop between tries so input is never 100%
+                # hijacked and the abort event can propagate mid-loop.
+                await asyncio.sleep(0)
+                if self._abort_event.is_set():
+                    trace["tries"].append(
+                        {"n": n, "observed": False, "acted": False,
+                         "expected": f"click element {name!r}",
+                         "actual": "aborted by kill switch", "ok": False}
+                    )
+                    return self._finish(trace)
+                try:
+                    elements = self._backend.read_ui(window_title)  # type: ignore[union-attr]
+                except Exception as exc:
+                    trace["tries"].append(
+                        {"n": n, "observed": False, "acted": False,
+                         "expected": f"element {name!r}",
+                         "actual": f"read_ui error: {exc}", "ok": False}
+                    )
+                    continue
+                match = _find_element(elements, name, role)
+                if match is None:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"element {name!r}",
+                         "actual": "not present", "ok": False}
+                    )
+                    continue
+                trace["target"] = {
+                    "name": match.get("name"),
+                    "role": match.get("role"),
+                    "bbox": match.get("bbox"),
+                }
+                bbox = match.get("bbox") or []
+                if len(bbox) != 4:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": "bbox [l,t,r,b]",
+                         "actual": f"bbox={bbox!r}", "ok": False}
+                    )
+                    continue
+                wb = self._window_bounds(window_title)
+                if wb is not None and not _bbox_within(bbox, wb):
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"bbox {bbox} inside window {wb}",
+                         "actual": "outside window bounds -- refused",
+                         "ok": False}
+                    )
+                    continue
+                x, y = _bbox_center(bbox)
+                try:
+                    self._backend.click(bbox)  # type: ignore[union-attr]
+                except CornerAbort:
+                    self._abort_event.set()
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"click at ({x},{y})",
+                         "actual": "corner-failsafe abort",
+                         "ok": False}
+                    )
+                    return self._finish(trace)
+                except Exception as exc:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"click at ({x},{y})",
+                         "actual": f"error: {exc}", "ok": False}
+                    )
+                    continue
                 trace["tries"].append(
-                    {"n": n, "observed": False, "acted": False,
-                     "expected": f"element {name!r}",
-                     "actual": f"read_ui error: {exc}", "ok": False}
-                )
-                continue
-            match = _find_element(elements, name, role)
-            if match is None:
-                trace["tries"].append(
-                    {"n": n, "observed": True, "acted": False,
-                     "expected": f"element {name!r}",
-                     "actual": "not present", "ok": False}
-                )
-                continue
-            trace["target"] = {
-                "name": match.get("name"),
-                "role": match.get("role"),
-                "bbox": match.get("bbox"),
-            }
-            bbox = match.get("bbox") or []
-            if len(bbox) != 4:
-                trace["tries"].append(
-                    {"n": n, "observed": True, "acted": False,
-                     "expected": "bbox [l,t,r,b]",
-                     "actual": f"bbox={bbox!r}", "ok": False}
-                )
-                continue
-            x, y = _bbox_center(bbox)
-            try:
-                self._backend.click(bbox)  # type: ignore[union-attr]
-            except Exception as exc:
-                trace["tries"].append(
-                    {"n": n, "observed": True, "acted": False,
+                    {"n": n, "observed": True, "acted": True,
                      "expected": f"click at ({x},{y})",
-                     "actual": f"error: {exc}", "ok": False}
+                     "actual": "clicked", "ok": True}
                 )
-                continue
-            trace["tries"].append(
-                {"n": n, "observed": True, "acted": True,
-                 "expected": f"click at ({x},{y})",
-                 "actual": "clicked", "ok": True}
-            )
-            trace["ok"] = True
+                trace["ok"] = True
+                return self._finish(trace)
             return self._finish(trace)
-        return self._finish(trace)
+        finally:
+            await self._emit_driving(False)
 
-    def _type_into(self, args: dict) -> ToolResult:
+    async def _type_into(self, args: dict) -> ToolResult:
         window_title = args["window_title"]
         name = args["name"]
         text = args.get("text", "")
@@ -338,84 +492,114 @@ class ComputerUsePlugin:
             "tries": [],
             "ok": False,
         }
-        for n in range(1, limit + 1):
-            try:
-                elements = self._backend.read_ui(window_title)  # type: ignore[union-attr]
-            except Exception as exc:
-                trace["tries"].append(
-                    {"n": n, "observed": False, "acted": False,
-                     "expected": f"element {name!r}",
-                     "actual": f"read_ui error: {exc}", "ok": False}
-                )
-                continue
-            match = _find_element(elements, name, role)
-            if match is None:
-                trace["tries"].append(
-                    {"n": n, "observed": True, "acted": False,
-                     "expected": f"element {name!r}",
-                     "actual": "not present", "ok": False}
-                )
-                continue
-            trace["target"] = {
-                "name": match.get("name"),
-                "role": match.get("role"),
-                "bbox": match.get("bbox"),
-            }
-            bbox = match.get("bbox") or []
-            if len(bbox) != 4:
-                trace["tries"].append(
-                    {"n": n, "observed": True, "acted": False,
-                     "expected": "bbox [l,t,r,b]",
-                     "actual": f"bbox={bbox!r}", "ok": False}
-                )
-                continue
-            try:
-                self._backend.click(bbox)  # type: ignore[union-attr]
-                self._backend.type_text(text)  # type: ignore[union-attr]
-            except Exception as exc:
-                trace["tries"].append(
-                    {"n": n, "observed": True, "acted": False,
-                     "expected": f"type {text!r}",
-                     "actual": f"error: {exc}", "ok": False}
-                )
-                continue
-            # Verify: re-read UIA and check the target's value contains the text
-            # (falls back to "acted" when the backend doesn't expose values).
-            try:
-                after = self._backend.read_ui(window_title)  # type: ignore[union-attr]
-            except Exception as exc:
-                trace["tries"].append(
-                    {"n": n, "observed": True, "acted": True,
-                     "expected": f"post-type value contains {text!r}",
-                     "actual": f"re-read error: {exc}", "ok": False}
-                )
-                continue
-            after_match = _find_element(after, name, role) or {}
-            value = after_match.get("value")
-            if isinstance(value, str) and text in value:
+        self._abort_event.clear()
+        await self._emit_driving(True)
+        try:
+            for n in range(1, limit + 1):
+                await asyncio.sleep(0)
+                if self._abort_event.is_set():
+                    trace["tries"].append(
+                        {"n": n, "observed": False, "acted": False,
+                         "expected": f"type into {name!r}",
+                         "actual": "aborted by kill switch", "ok": False}
+                    )
+                    return self._finish(trace)
+                try:
+                    elements = self._backend.read_ui(window_title)  # type: ignore[union-attr]
+                except Exception as exc:
+                    trace["tries"].append(
+                        {"n": n, "observed": False, "acted": False,
+                         "expected": f"element {name!r}",
+                         "actual": f"read_ui error: {exc}", "ok": False}
+                    )
+                    continue
+                match = _find_element(elements, name, role)
+                if match is None:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"element {name!r}",
+                         "actual": "not present", "ok": False}
+                    )
+                    continue
+                trace["target"] = {
+                    "name": match.get("name"),
+                    "role": match.get("role"),
+                    "bbox": match.get("bbox"),
+                }
+                bbox = match.get("bbox") or []
+                if len(bbox) != 4:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": "bbox [l,t,r,b]",
+                         "actual": f"bbox={bbox!r}", "ok": False}
+                    )
+                    continue
+                wb = self._window_bounds(window_title)
+                if wb is not None and not _bbox_within(bbox, wb):
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"bbox {bbox} inside window {wb}",
+                         "actual": "outside window bounds -- refused",
+                         "ok": False}
+                    )
+                    continue
+                try:
+                    self._backend.click(bbox)  # type: ignore[union-attr]
+                    self._backend.type_text(text)  # type: ignore[union-attr]
+                except CornerAbort:
+                    self._abort_event.set()
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"type {text!r}",
+                         "actual": "corner-failsafe abort",
+                         "ok": False}
+                    )
+                    return self._finish(trace)
+                except Exception as exc:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": False,
+                         "expected": f"type {text!r}",
+                         "actual": f"error: {exc}", "ok": False}
+                    )
+                    continue
+                # Verify: re-read UIA and check the target's value contains the
+                # text (falls back to "acted" when the backend doesn't expose
+                # values).
+                try:
+                    after = self._backend.read_ui(window_title)  # type: ignore[union-attr]
+                except Exception as exc:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": True,
+                         "expected": f"post-type value contains {text!r}",
+                         "actual": f"re-read error: {exc}", "ok": False}
+                    )
+                    continue
+                after_match = _find_element(after, name, role) or {}
+                value = after_match.get("value")
+                if isinstance(value, str) and text in value:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": True,
+                         "expected": f"value contains {text!r}",
+                         "actual": f"value={value!r}", "ok": True}
+                    )
+                    trace["ok"] = True
+                    return self._finish(trace)
+                if value is None:
+                    trace["tries"].append(
+                        {"n": n, "observed": True, "acted": True,
+                         "expected": f"typed {text!r}",
+                         "actual": "no value read; assumed ok", "ok": True}
+                    )
+                    trace["ok"] = True
+                    return self._finish(trace)
                 trace["tries"].append(
                     {"n": n, "observed": True, "acted": True,
                      "expected": f"value contains {text!r}",
-                     "actual": f"value={value!r}", "ok": True}
+                     "actual": f"value={value!r}", "ok": False}
                 )
-                trace["ok"] = True
-                return self._finish(trace)
-            if value is None:
-                # Backend didn't expose element value -> can't verify; treat
-                # the typed action itself as success (best-effort verify).
-                trace["tries"].append(
-                    {"n": n, "observed": True, "acted": True,
-                     "expected": f"typed {text!r}",
-                     "actual": "no value read; assumed ok", "ok": True}
-                )
-                trace["ok"] = True
-                return self._finish(trace)
-            trace["tries"].append(
-                {"n": n, "observed": True, "acted": True,
-                 "expected": f"value contains {text!r}",
-                 "actual": f"value={value!r}", "ok": False}
-            )
-        return self._finish(trace)
+            return self._finish(trace)
+        finally:
+            await self._emit_driving(False)
 
 
 # --- Windows backend (lazily imported; never touched in tests) --------------
@@ -426,7 +610,9 @@ class _WindowsBackend:
     def __init__(self) -> None:
         import pyautogui
         import uiautomation as uia
-        # Fail-safe: slam mouse to a screen corner to hard-abort mid-action.
+        # (a) Corner-failsafe: slam mouse to a screen corner mid-action -> a
+        # pyautogui.FailSafeException we re-raise as CornerAbort so the plugin
+        # loop can treat it as first-class abort without depending on pyautogui.
         pyautogui.FAILSAFE = True
         self._pyautogui = pyautogui
         self._uia = uia
@@ -456,15 +642,64 @@ class _WindowsBackend:
     def click(self, bbox: list[int]) -> None:
         l, t, r, b = bbox
         x, y = (l + r) // 2, (t + b) // 2
-        self._pyautogui.click(x, y)
+        try:
+            self._pyautogui.click(x, y)
+        except self._pyautogui.FailSafeException as exc:
+            raise CornerAbort(str(exc)) from exc
 
     def type_text(self, text: str) -> None:
-        self._pyautogui.typewrite(text, interval=0.01)
+        try:
+            self._pyautogui.typewrite(text, interval=0.01)
+        except self._pyautogui.FailSafeException as exc:
+            raise CornerAbort(str(exc)) from exc
 
     def capture_frame(self, window_title: str) -> bytes | None:
         # S1 does not use capture; S5 will wire the RAM-only frame buffer.
         return None
 
+    def window_bounds(self, window_title: str) -> list[int] | None:
+        """Bounds of the target window's outer rect, in screen coords.
+        Returns None when the window isn't currently open -- the plugin then
+        skips the bounded-region check for that iteration (retry surface will
+        record ``element not present`` on the next observation)."""
+        win = self._window(window_title)
+        if not win.Exists(0):
+            return None
+        try:
+            rect = win.BoundingRectangle
+        except Exception:
+            return None
+        return [rect.left, rect.top, rect.right, rect.bottom]
+
+
+def _default_hotkey_register(abort: Callable[[], None]) -> Callable[[], None] | None:
+    """Default (b) F11+F12 chord registrar on Windows using the ``keyboard``
+    package. Failures fall through silently -- the plugin still works, just
+    without this leg of the kill switch (the corner-failsafe + Visualiser Stop
+    legs remain). No-op on non-Windows."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import keyboard  # type: ignore[import-not-found]
+    except Exception:
+        logger.warning(
+            "[computer_use] `keyboard` package not installed -- F11+F12 "
+            "kill-switch leg disabled",
+        )
+        return None
+    try:
+        keyboard.add_hotkey("f11+f12", abort, suppress=False)
+    except Exception:
+        logger.warning(
+            "[computer_use] failed to register F11+F12 hotkey", exc_info=True,
+        )
+        return None
+    return lambda: keyboard.remove_hotkey("f11+f12")
+
 
 def create() -> ComputerUsePlugin:
+    # Wire the default F11+F12 registrar so a production plugin gets the
+    # kill-switch leg even without main.py explicitly setting the seam.
+    if _hotkey_register_fn is None:
+        set_hotkey_register_fn(_default_hotkey_register)
     return ComputerUsePlugin()

@@ -34,3 +34,30 @@ Run these manually on a Windows machine where the target apps are installed.
       name, role, bbox, per-try verification). Verify NO PNG / JPG / raw
       frame bytes exist anywhere under `cerebral/data/` -- the audio-buffer
       rule (ADR-0016 sec 7) must hold.
+
+## S2 #576 -- 3-part kill switch + window-bounded region
+
+- [ ] (a) Corner-failsafe: with a `type_into` in flight against Notepad,
+      slam the mouse to a screen corner. Verify: pyautogui.FailSafeException
+      fires; the plugin returns is_error with a trace entry containing
+      "corner-failsafe abort"; no further keystrokes land after the abort.
+- [ ] (b) F11+F12 chord: with a long-running `type_into` in flight, press
+      F11 and F12 together. Verify: the tool trace's final try records
+      "aborted by kill switch"; typing halts within one action of the press;
+      no zombie keystrokes reach the target window after the abort.
+- [ ] (c) Visualiser "Felix is driving" state + Stop: enable the Visualiser
+      (tray menu). Trigger any `click_element` / `type_into`. Verify: the
+      "Felix is driving" badge appears over the orb the moment the tool
+      starts and disappears the moment it ends; the STOP button is
+      clickable (window is not click-through while driving); clicking STOP
+      halts the tool and the trace's final try records "aborted by kill
+      switch". Verify the Visualiser reverts to click-through after the
+      tool ends.
+- [ ] Window-bounded region: open Calculator, then ask Felix to click a
+      known element while Calculator's title changes / the window is moved
+      such that the previously-observed bbox no longer sits inside the
+      window's outer rect. Verify: the click is refused with
+      "outside window bounds -- refused" in the trace and NO cursor moves.
+- [ ] Loop yields: while a long retry sequence runs, verify the mouse is
+      still usable (drag a window, click another app) -- input is NOT 100%
+      hijacked because the plugin yields to the event loop between tries.

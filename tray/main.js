@@ -293,6 +293,30 @@ function handleCerebralEvent(event) {
       // SD-3 (#556): pin SHA + snapshot state before relaunching.
       restartFelixSelfDev();
       break;
+
+    case 'computer_use:driving':
+      // S2 #576 (ADR-0016 (c)): render the "Felix is driving" indicator +
+      // Stop control on the Visualiser. Open the window if it isn't already
+      // so the user always has a visible way to hit Stop while Felix drives.
+      routeDrivingToVisualiser(event);
+      break;
+  }
+}
+
+function routeDrivingToVisualiser(event) {
+  const { driving, changed } = visState.handleEvent(event);
+  if (!changed) return;
+  // The kill-switch Stop must always be reachable while driving -- if the
+  // Visualiser was hidden, open it now (not persisted; a routine Stop leg,
+  // not a preference change).
+  if (driving && (!visualiserWindow || visualiserWindow.isDestroyed())) {
+    openVisualiserWindow();
+  }
+  if (visualiserWindow && !visualiserWindow.isDestroyed()) {
+    // While driving, the Visualiser must accept mouse input on its Stop
+    // button (default is click-through). Restored when driving flips off.
+    visualiserWindow.setIgnoreMouseEvents(!driving);
+    visualiserWindow.webContents.send('visualiser:driving', driving);
   }
 }
 
@@ -487,6 +511,12 @@ ipcMain.on('irreversible-modal:choose', (_event, { request_id, choice }) => {
   modalManager.respond(request_id, choice);
 });
 
+// S2 #576 (ADR-0016 (c)): the Visualiser's Stop control fires this from the
+// renderer. Forward it to Cerebral so plugins/computer_use.py can abort.
+ipcMain.on('computer-use:stop', () => {
+  sendToCerebral({ type: 'computer_use_stop' });
+});
+
 ipcMain.on('irreversible-modal:ready', (event) => {
   for (const [request_id, win] of modalWindows.entries()) {
     if (!win.isDestroyed() && win.webContents === event.sender) {
@@ -530,14 +560,19 @@ function openVisualiserWindow() {
     },
   });
 
-  // Click-through: mouse events pass to whatever is underneath
-  visualiserWindow.setIgnoreMouseEvents(true);
+  // Click-through: mouse events pass to whatever is underneath -- unless
+  // computer_use is currently driving, in which case the Stop button must be
+  // clickable. S2 #576 sets this back to true when driving flips off.
+  visualiserWindow.setIgnoreMouseEvents(!visState.driving);
   visualiserWindow.setMenuBarVisibility(false);
   visualiserWindow.loadFile(path.join(__dirname, 'windows', 'visualiser.html'));
 
   // Sync current state immediately after load
   visualiserWindow.webContents.once('did-finish-load', () => {
     visualiserWindow.webContents.send('visualiser:state', visState.state);
+    // S2 #576: sync the (c) Felix-is-driving overlay on window open so the
+    // Stop control is present the moment the window mounts.
+    visualiserWindow.webContents.send('visualiser:driving', visState.driving);
   });
 
   // Persist position when dragged (user can drag via –webkit-app-region if needed)

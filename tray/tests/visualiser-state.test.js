@@ -140,7 +140,7 @@ describe('change events', () => {
     vs.on('change', (payload) => calls.push(payload));
     vs.handleEvent({ type: 'wake' });
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual({ state: 'active', visible: false });
+    expect(calls[0]).toEqual({ state: 'active', visible: false, driving: false });
   });
 
   test('does not emit change when state stays same', () => {
@@ -157,7 +157,7 @@ describe('change events', () => {
     vs.on('change', (payload) => calls.push(payload));
     vs.toggle();
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual({ state: 'passive', visible: true });
+    expect(calls[0]).toEqual({ state: 'passive', visible: true, driving: false });
   });
 });
 
@@ -171,4 +171,58 @@ test('accepts custom initialState for testing', () => {
 test('accepts initialVisible:true for testing', () => {
   const vs = new VisualiserState({ initialVisible: true });
   expect(vs.visible).toBe(true);
+});
+
+// ── S2 #576 (ADR-0016 (c)) — Felix-is-driving overlay ────────────────────────
+
+describe('computer_use:driving overlay', () => {
+  test('starts not driving', () => {
+    const vs = new VisualiserState();
+    expect(vs.driving).toBe(false);
+  });
+
+  test('flips on for driving:true', () => {
+    const vs = new VisualiserState();
+    vs.handleEvent({ type: 'computer_use:driving', data: { driving: true } });
+    expect(vs.driving).toBe(true);
+  });
+
+  test('flips off for driving:false', () => {
+    const vs = new VisualiserState({ initialDriving: true });
+    vs.handleEvent({ type: 'computer_use:driving', data: { driving: false } });
+    expect(vs.driving).toBe(false);
+  });
+
+  test('does not touch animation state', () => {
+    const vs = new VisualiserState();
+    vs.handleEvent({ type: 'wake' });
+    vs.handleEvent({ type: 'computer_use:driving', data: { driving: true } });
+    expect(vs.state).toBe('active');
+    expect(vs.driving).toBe(true);
+  });
+
+  test('emits change with driving payload on flip', () => {
+    const vs = new VisualiserState();
+    const calls = [];
+    vs.on('change', (p) => calls.push(p));
+    vs.handleEvent({ type: 'computer_use:driving', data: { driving: true } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ state: 'passive', visible: false, driving: true });
+  });
+
+  test('does not emit change when driving stays same', () => {
+    const vs = new VisualiserState({ initialDriving: true });
+    const calls = [];
+    vs.on('change', () => calls.push(1));
+    vs.handleEvent({ type: 'computer_use:driving', data: { driving: true } });
+    expect(calls).toHaveLength(0);
+  });
+
+  test('returns changed flag and current driving value', () => {
+    const vs = new VisualiserState();
+    const r = vs.handleEvent({ type: 'computer_use:driving', data: { driving: true } });
+    expect(r).toEqual({
+      state: 'passive', visible: false, driving: true, changed: true,
+    });
+  });
 });
