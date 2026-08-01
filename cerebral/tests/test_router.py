@@ -443,6 +443,18 @@ def test_refresh_local_backends_keeps_active_when_still_installed():
     assert router.active_model == "claude/haiku"  # unchanged
 
 
+def test_refresh_local_backends_preserves_disabled_flag():
+    """A model the user disabled must stay disabled across a refresh — otherwise
+    it snaps back to enabled and _persist_priority writes that to the DB."""
+    router = ModelRouter(
+        backends={"ollama/gemma3:latest": AsyncMock(), "claude/haiku": AsyncMock()},
+    )
+    router.set_model_enabled("ollama/gemma3:latest", False)
+    fake_tags = lambda url: {"models": [{"name": "gemma3:latest"}]}  # still installed
+    router.refresh_local_backends(tags_fetch_fn=fake_tags)
+    assert router.enabled_map()["ollama/gemma3:latest"] is False
+
+
 # ---------------------------------------------------------------------------
 # Slice 10 — integration tests (real HTTP; skipped unless -m integration)
 # ---------------------------------------------------------------------------

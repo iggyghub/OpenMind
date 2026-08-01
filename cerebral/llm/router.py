@@ -345,7 +345,11 @@ class ModelRouter:
             if mid.startswith("ollama/"):
                 del self._backends[mid]
                 self._models.pop(mid, None)
-                self._enabled.pop(mid, None)
+                # Keep _enabled: a model the user disabled must stay disabled
+                # across a refresh. setdefault below only fills NEW ids, so a
+                # surviving/reinstalled model keeps its prior toggle instead of
+                # snapping back to enabled (which _persist_priority would then
+                # write to the DB, un-disabling it permanently).
         self._priority = [m for m in self._priority if not m.startswith("ollama/")]
 
         new_ids: list[str] = []
