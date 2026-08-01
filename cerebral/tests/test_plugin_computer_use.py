@@ -1054,3 +1054,305 @@ async def test_set_vision_ground_fn_module_seam(monkeypatch):
     )
     assert not r.is_error, r.content
     assert backend.click_at_calls == [(7, 8)]
+
+
+# ---------------------------------------------------------------------------
+# S6 #579 -- attended-handoff on retry exhaustion / no-tree / DRM-black
+# ---------------------------------------------------------------------------
+
+class _HandoffBackend(_FakeBackend):
+    """Fake backend that also records surface_window calls (for S6)."""
+
+    def __init__(self, *a, window_bounds=None, **kw) -> None:
+        super().__init__(*a, **kw)
+        self._window_bounds = window_bounds
+        self.surface_calls: list[str] = []
+
+    def window_bounds(self, window_title: str) -> list[int] | None:
+        return list(self._window_bounds) if self._window_bounds else None
+
+    def surface_window(self, window_title: str) -> None:
+        self.surface_calls.append(window_title)
+
+
+def _fake_handoff(result: bool):
+    calls: list[tuple[str, str]] = []
+
+    async def _fn(window_title: str, reason: str) -> bool:
+        calls.append((window_title, reason))
+        return result
+    return _fn, calls
+
+
+async def test_click_retry_exhaustion_escalates_to_handoff_and_resumes():
+    """N failed UIA tries + no pixel fallback -> attended-handoff seam is
+    invoked with the target window; a True return flips trace.ok."""
+    handoff, hcalls = _fake_handoff(True)
+    backend = _HandoffBackend([[], [], []])  # element never present
+    plugin = ComputerUsePlugin(backend=backend, attended_handoff_fn=handoff)
+    r = await plugin.call_tool(
+        "click_element",
+        {"window_title": "SendApp", "name": "Send", "retries": 3},
+    )
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["ok"] is True
+    assert len(hcalls) == 1
+    assert hcalls[0][0] == "SendApp"
+    assert "Send" in hcalls[0][1]
+    assert backend.surface_calls == ["SendApp"]
+    # Last try records the handoff outcome, marked path="handoff".
+    last = data["tries"][-1]
+    assert last["path"] == "handoff"
+    assert last["ok"] is True
+    assert "handoff completed" in last["actual"]
+
+
+async def test_click_handoff_declined_leaves_trace_failed():
+    handoff, hcalls = _fake_handoff(False)
+    backend = _HandoffBackend([[], [], []])
+    plugin = ComputerUsePlugin(backend=backend, attended_handoff_fn=handoff)
+    r = await plugin.call_tool(
+        "click_element",
+        {"window_title": "App", "name": "Send", "retries": 3},
+    )
+    assert r.is_error
+    data = json.loads(r.content)
+    assert data["ok"] is False
+    assert len(hcalls) == 1
+    last = data["tries"][-1]
+    assert last["path"] == "handoff"
+    assert last["ok"] is False
+    assert "declined" in last["actual"]
+
+
+async def test_click_no_tree_routes_to_handoff():
+    """No structured surface (read_ui returns []) with no vision seam wired
+    -> retries exhaust via 'not present' -> handoff fires."""
+    handoff, hcalls = _fake_handoff(True)
+    backend = _HandoffBackend([[]])  # every read is empty
+    plugin = ComputerUsePlugin(backend=backend, attended_handoff_fn=handoff)
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "TreelessApp", "name": "Go"},
+    )
+    assert not r.is_error
+    assert len(hcalls) == 1
+    assert hcalls[0][0] == "TreelessApp"
+
+
+async def test_click_drm_black_frame_routes_to_handoff():
+    """A DRM/GPU-protected window captures fully black. The pixel path
+    escalates internally, then the plugin routes to attended-handoff."""
+    ground, ground_calls = _fake_ground((10, 20))
+    handoff, hcalls = _fake_handoff(True)
+
+    class _BlackFrameBackend(_HandoffBackend):
+        def capture_frame(self, window_title: str) -> bytes | None:
+            self.capture_calls.append(window_title)
+            return b"\x00" * 64
+
+    backend = _BlackFrameBackend([[]], window_bounds=[0, 0, 200, 200])
+    plugin = ComputerUsePlugin(
+        backend=backend,
+        vision_ground_fn=ground,
+        attended_handoff_fn=handoff,
+    )
+    r = await plugin.call_tool(
+        "click_element",
+        {"window_title": "Netflix", "name": "Play", "retries": 1},
+    )
+    assert not r.is_error
+    data = json.loads(r.content)
+    assert data["ok"] is True
+    escalated = [t for t in data["tries"] if t.get("escalated")]
+    assert len(escalated) == 1  # DRM-black escalated try recorded
+    assert len(hcalls) == 1     # then handoff fired
+    assert ground_calls == []    # VL model never called on black frame
+
+
+async def test_click_pixel_success_short_circuits_handoff():
+    """When pixel fallback succeeds, no handoff runs -- the sub-goal is done."""
+    ground, _ = _fake_ground((50, 60))
+    handoff, hcalls = _fake_handoff(True)
+
+    class _PixelHandoffBackend(_HandoffBackend):
+        def capture_frame(self, window_title):
+            return b"\xff" * 8
+
+        def click_at(self, x, y):
+            self.click_at_calls = getattr(self, "click_at_calls", [])
+            self.click_at_calls.append((x, y))
+
+    backend = _PixelHandoffBackend([[]], window_bounds=[0, 0, 200, 200])
+    plugin = ComputerUsePlugin(
+        backend=backend,
+        vision_ground_fn=ground,
+        attended_handoff_fn=handoff,
+    )
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "Paint", "name": "Brush"},
+    )
+    assert not r.is_error
+    assert hcalls == []  # handoff never invoked when pixel path wins
+
+
+async def test_click_handoff_not_invoked_when_seam_unwired():
+    """Backwards-compat: pre-S6 callers with no handoff seam wired see the
+    same exhaustion-fails-the-call behaviour they had before."""
+    backend = _HandoffBackend([[], [], []])
+    plugin = ComputerUsePlugin(backend=backend)  # no attended_handoff_fn
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "App", "name": "Ghost", "retries": 3},
+    )
+    assert r.is_error
+    data = json.loads(r.content)
+    assert data["ok"] is False
+    assert backend.surface_calls == []
+
+
+async def test_click_handoff_not_invoked_when_kill_switch_fired():
+    """A kill-switch abort (a/b/c) must NOT then escalate to a human --
+    the human already told Felix to stop."""
+    handoff, hcalls = _fake_handoff(True)
+    backend = _HandoffBackend(
+        [_elems(("Two", "Button", [10, 20, 50, 60]))],
+        raise_on_click=CornerAbort("corner"),
+    )
+    plugin = ComputerUsePlugin(backend=backend, attended_handoff_fn=handoff)
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "C", "name": "Two", "retries": 3},
+    )
+    assert r.is_error
+    assert hcalls == []
+    assert backend.surface_calls == []
+
+
+async def test_type_into_retry_exhaustion_escalates_to_handoff():
+    """type_into has no pixel fallback -- on UIA exhaustion it goes straight
+    to attended-handoff."""
+    handoff, hcalls = _fake_handoff(True)
+    backend = _HandoffBackend([[], [], []])
+    plugin = ComputerUsePlugin(backend=backend, attended_handoff_fn=handoff)
+    r = await plugin.call_tool(
+        "type_into",
+        {"window_title": "Editor", "name": "Field", "text": "hi", "retries": 3},
+    )
+    assert not r.is_error
+    data = json.loads(r.content)
+    assert data["ok"] is True
+    assert len(hcalls) == 1
+    assert hcalls[0][0] == "Editor"
+    last = data["tries"][-1]
+    assert last["path"] == "handoff"
+    assert last["ok"] is True
+
+
+async def test_type_into_handoff_declined_stays_failed():
+    handoff, _ = _fake_handoff(False)
+    backend = _HandoffBackend([[]])
+    plugin = ComputerUsePlugin(backend=backend, attended_handoff_fn=handoff)
+    r = await plugin.call_tool(
+        "type_into",
+        {"window_title": "E", "name": "F", "text": "x", "retries": 1},
+    )
+    assert r.is_error
+    data = json.loads(r.content)
+    assert data["ok"] is False
+
+
+async def test_handoff_seam_failure_does_not_break_tool():
+    """A broken handoff seam records the error try but does not raise past
+    the tool boundary."""
+    async def _boom(_wt, _reason):
+        raise RuntimeError("notifier down")
+    backend = _HandoffBackend([[]])
+    plugin = ComputerUsePlugin(backend=backend, attended_handoff_fn=_boom)
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "A", "name": "B", "retries": 1},
+    )
+    assert r.is_error
+    data = json.loads(r.content)
+    assert "handoff seam raised" in data["tries"][-1]["actual"]
+
+
+async def test_handoff_surface_window_failure_does_not_break():
+    """A backend surface_window that raises must not skip the handoff seam."""
+    handoff, hcalls = _fake_handoff(True)
+
+    class _BadSurfaceBackend(_HandoffBackend):
+        def surface_window(self, window_title):
+            raise RuntimeError("SetForegroundWindow denied")
+
+    backend = _BadSurfaceBackend([[]])
+    plugin = ComputerUsePlugin(backend=backend, attended_handoff_fn=handoff)
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "A", "name": "B", "retries": 1},
+    )
+    assert not r.is_error
+    assert len(hcalls) == 1  # handoff still invoked despite surface failure
+
+
+async def test_set_attended_handoff_fn_module_seam(monkeypatch):
+    """Module-level seam mirrors the constructor arg (used by main.py)."""
+    handoff, hcalls = _fake_handoff(True)
+    monkeypatch.setattr(cu_mod, "_attended_handoff_fn", handoff)
+    backend = _HandoffBackend([[]])
+    plugin = ComputerUsePlugin(backend=backend)
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "W", "name": "X", "retries": 1},
+    )
+    assert not r.is_error
+    assert len(hcalls) == 1
+
+
+async def test_handoff_driving_broadcast_flips_off_before_seam():
+    """During the handoff await, driving must be False so a UI shows
+    'Felix paused' and not 'Felix is driving'."""
+    driving_states: list[bool] = []
+
+    async def _drive(state: bool) -> None:
+        driving_states.append(state)
+
+    driving_at_seam: list[bool] = []
+
+    async def _hf(_wt, _r):
+        # Snapshot the last-emitted driving state at the moment handoff
+        # runs; the plugin should have flipped it to False by now.
+        driving_at_seam.append(driving_states[-1])
+        return True
+
+    backend = _HandoffBackend([[]])
+    plugin = ComputerUsePlugin(
+        backend=backend, driving_fn=_drive, attended_handoff_fn=_hf,
+    )
+    await plugin.call_tool(
+        "click_element", {"window_title": "W", "name": "X", "retries": 1},
+    )
+    assert driving_at_seam == [False]
+    # And the final emission is still False.
+    assert driving_states[-1] is False
+
+
+async def test_handoff_backend_without_surface_window_still_calls_seam():
+    """A minimal backend without surface_window() must still trigger the
+    handoff (surface is best-effort, not a precondition)."""
+    handoff, hcalls = _fake_handoff(True)
+
+    class _NoSurfaceBackend:
+        def read_ui(self, wt):
+            return []
+
+        def click(self, bbox):
+            pass
+
+        def type_text(self, t):
+            pass
+
+    plugin = ComputerUsePlugin(
+        backend=_NoSurfaceBackend(), attended_handoff_fn=handoff,
+    )
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "W", "name": "X", "retries": 1},
+    )
+    assert not r.is_error
+    assert len(hcalls) == 1
