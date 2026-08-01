@@ -27,6 +27,7 @@ from cerebral.db.profiles import Profile, ProfileManager
 from cerebral.llm.router import (
     CUSTOM_KINDS,
     DYNAMIC_CUSTOM_KINDS,
+    VISION_TASK,
     DynamicModelBackend,
     ModelRouter,
     ModelUnavailableError,
@@ -294,6 +295,41 @@ async def _computer_use_driving(driving: bool) -> None:  # S2 #576 (ADR-0016)
     up its Stop control. Called by plugins/computer_use.py at loop entry/exit
     of each actuating tool call (click_element / type_into)."""
     await _broadcast({"type": "computer_use:driving", "data": {"driving": bool(driving)}})
+
+
+_VISION_GROUND_COORD_RE = re.compile(r"(-?\d+)\s*[, ]\s*(-?\d+)")
+
+
+async def _computer_use_vision_ground(  # S5 #578 (ADR-0016 sec 5)
+    name: str, frame: bytes,
+) -> tuple[int, int] | None:
+    """Pixel-vision grounding for the computer_use fallback path.
+
+    Routes through the model-priority chain via the multimodal seam
+    (``complete_with_images`` picks the first VL-capable backend in priority
+    order, honoring local_only). Prompts the VL model for the ``x, y`` pixel
+    of the named element and parses the first ``x,y`` pair from the reply.
+    Returns None on grounding failure so the plugin escalates instead of
+    clicking a bogus coordinate."""
+    prompt = (
+        f"You are grounding a UI action in a screenshot of a Windows app "
+        f"window. Return the pixel coordinate to click for the element the "
+        f"user described as {name!r}. Respond with ONLY two integers "
+        f"separated by a comma (e.g. \"842, 391\") -- no other text."
+    )
+    try:
+        reply = await _router.complete_with_images(prompt, [frame], task_type=VISION_TASK)
+    except ModelUnavailableError as exc:
+        logger.warning("[computer_use] vision grounding unavailable: %s", exc)
+        return None
+    match = _VISION_GROUND_COORD_RE.search(reply or "")
+    if match is None:
+        logger.warning(
+            "[computer_use] vision reply had no x,y coord (name=%r, reply=%r)",
+            name, (reply or "")[:80],
+        )
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 async def _docs_convert(source_path: str, fmt: str, out_dir: str) -> str:  # S3 #454
@@ -5359,6 +5395,7 @@ def _wire_plugin_seams() -> None:
         ("self_dev", "set_edit_fn", _self_dev_edit),                                 # ADR-0015 edit step
         ("self_dev", "set_restart_fn", _self_dev_restart),                           # ADR-0015 SD-2 #555
         ("computer_use", "set_driving_fn", _computer_use_driving),                   # S2 #576 (ADR-0016 (c))
+        ("computer_use", "set_vision_ground_fn", _computer_use_vision_ground),       # S5 #578 (ADR-0016 sec 5)
     ]
     for name, seam, factory in seams:
         try:

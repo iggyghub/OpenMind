@@ -44,6 +44,7 @@ import asyncio
 import json
 import logging
 import sys
+from collections import deque
 from typing import Awaitable, Callable, Optional, Protocol, runtime_checkable
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
@@ -63,6 +64,13 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"screen_capture", "device_con
 DEFAULT_RETRY_LIMIT = 3
 MAX_RETRY_LIMIT = 5
 
+# S5 #578: RAM-only thumbnail ring for in-session debug. Bytes are held for
+# the lifetime of the plugin instance and dropped when the ring rolls over;
+# nothing is written to disk (ADR-0016 sec 7 audio-buffer rule). "Cleared
+# on restart" = the ring lives in process memory, so a Cerebral restart
+# creates a fresh empty ring.
+DEFAULT_THUMBNAIL_RING_SIZE = 8
+
 # Sentinel so tests can inject ``backend=None`` to force fail-closed without
 # the constructor re-running _make_default_backend(). Mirrors shell.py's
 # ``_UNSET`` pattern for the sandbox.
@@ -79,9 +87,16 @@ class CornerAbort(Exception):
 # per-instance via the constructor (constructor-injected wins).
 DrivingFn = Callable[[bool], Awaitable[None]]
 HotkeyRegisterFn = Callable[[Callable[[], None]], Optional[Callable[[], None]]]
+# S5 #578: pixel-vision grounding seam. Given the target element name (as the
+# user described it) and the target window's raw frame bytes, return a
+# ``(x, y)`` screen coordinate to click, or None when grounding refuses /
+# fails. Wired in main.py to run through the router's ``complete_with_images``
+# priority chain (ADR-0016 sec 5); tests inject a fake to avoid a live model.
+VisionGroundFn = Callable[[str, bytes], Awaitable[Optional[tuple[int, int]]]]
 
 _driving_fn: Optional[DrivingFn] = None
 _hotkey_register_fn: Optional[HotkeyRegisterFn] = None
+_vision_ground_fn: Optional[VisionGroundFn] = None
 _plugin_instance: Optional["ComputerUsePlugin"] = None
 
 
@@ -97,6 +112,13 @@ def set_hotkey_register_fn(fn: HotkeyRegisterFn) -> None:
     ``abort`` callback; may return an unregister function (unused today)."""
     global _hotkey_register_fn
     _hotkey_register_fn = fn
+
+
+def set_vision_ground_fn(fn: VisionGroundFn) -> None:
+    """Wire the pixel-vision grounding seam (S5 #578). Fallback stays disabled
+    when this is unset -- structured-only is the safe default."""
+    global _vision_ground_fn
+    _vision_ground_fn = fn
 
 
 def abort_current() -> None:
@@ -172,6 +194,19 @@ def _bbox_within(inner: list[int], outer: list[int]) -> bool:
     return il >= ol and it >= ot and ir <= orr and ib <= ob
 
 
+def _is_black_frame(frame: bytes | None) -> bool:
+    """S5 #578: DRM/GPU-protected windows capture as a fully-black raster
+    (Netflix, some anti-cheat games, protected video). Detect the two ways
+    this shows up so the pixel-vision fallback escalates instead of clicking
+    blind at whatever coordinate a confused VL model returns for a black
+    frame: (a) capture backend returned None / empty bytes, or (b) every
+    byte is zero. ``any(bytes)`` short-circuits on the first non-zero byte
+    so this is O(1) on a normal (non-DRM) frame."""
+    if not frame:
+        return True
+    return not any(frame)
+
+
 def _clamp_retries(n: int | None) -> int:
     if n is None:
         return DEFAULT_RETRY_LIMIT
@@ -196,6 +231,8 @@ class ComputerUsePlugin:
         *,
         driving_fn: DrivingFn | None = None,
         hotkey_register_fn: HotkeyRegisterFn | None | object = _UNSET,
+        vision_ground_fn: VisionGroundFn | None = None,
+        thumbnail_ring_size: int = DEFAULT_THUMBNAIL_RING_SIZE,
     ) -> None:
         if backend is _UNSET:
             self._backend = _make_default_backend()
@@ -208,6 +245,12 @@ class ComputerUsePlugin:
         # chord -- both may be None (kill-switch legs are best-effort so an
         # unwired host is not silently disabled from computer_use entirely).
         self._driving_fn: DrivingFn | None = driving_fn or _driving_fn
+        # S5 #578: pixel-vision grounding + RAM-only thumbnail ring. Fallback
+        # is opt-in via the seam: unwired = structured-only (safe default and
+        # what pre-S5 callers expect). Ring lives in process memory; a
+        # restart clears it -- audio-buffer rule (ADR-0016 sec 7).
+        self._vision_ground_fn: VisionGroundFn | None = vision_ground_fn or _vision_ground_fn
+        self._thumbnail_ring: deque[bytes] = deque(maxlen=max(1, int(thumbnail_ring_size)))
         # asyncio.Event carries the abort signal across the (a) corner-failsafe,
         # (b) F11+F12 chord, and (c) Visualiser Stop legs. Created here so it
         # is safe to inspect before any tool call fires.
@@ -228,6 +271,11 @@ class ComputerUsePlugin:
         # reach abort() via ``abort_current()`` on a Visualiser Stop message.
         global _plugin_instance
         _plugin_instance = self
+
+    def thumbnail_ring_snapshot(self) -> list[bytes]:
+        """S5 #578: peek at the RAM-only frame ring (in-session debug). The
+        ring is process-memory-only; a Cerebral restart clears it."""
+        return list(self._thumbnail_ring)
 
     def abort(self) -> None:
         """Signal the observe-act loop to short-circuit before its next try.
@@ -343,6 +391,123 @@ class ComputerUsePlugin:
         except Exception:
             return None
         return wb if isinstance(wb, list) and len(wb) == 4 else None
+
+    async def _pixel_fallback_click(
+        self, window_title: str, name: str, trace: dict,
+    ) -> bool:
+        """S5 #578: pixel-vision fallback after structured UIA exhausted.
+
+        Runs at most one extra try: capture window frame -> escalate on
+        DRM/black-capture -> ground via ``vision_ground_fn`` -> refuse a
+        coord outside the window bounds -> actuate. Records each outcome as
+        a ``path="pixel"`` try so the trace tells structured-vs-pixel apart.
+        Opt-in: an unwired grounding seam (or a backend with no ``capture_frame``)
+        makes this a no-op so pre-S5 callers keep structured-only behaviour."""
+        if self._vision_ground_fn is None:
+            return False
+        capture_fn = getattr(self._backend, "capture_frame", None)
+        if capture_fn is None:
+            return False
+        n = len(trace["tries"]) + 1
+        if self._abort_event.is_set():
+            trace["tries"].append(
+                {"n": n, "observed": False, "acted": False,
+                 "expected": f"pixel fallback for {name!r}",
+                 "actual": "aborted by kill switch",
+                 "ok": False, "path": "pixel"}
+            )
+            return False
+        try:
+            frame = capture_fn(window_title)
+        except Exception as exc:
+            trace["tries"].append(
+                {"n": n, "observed": False, "acted": False,
+                 "expected": "window frame bytes",
+                 "actual": f"capture error: {exc}",
+                 "ok": False, "path": "pixel"}
+            )
+            return False
+        if _is_black_frame(frame):
+            trace["tries"].append(
+                {"n": n, "observed": False, "acted": False,
+                 "expected": "non-black window frame",
+                 "actual": "black/protected capture -- escalating",
+                 "ok": False, "path": "pixel", "escalated": True}
+            )
+            return False
+        # Non-black frame -- park it in the RAM ring for in-session debug.
+        # ADR-0016 sec 7: bytes never leave process memory.
+        self._thumbnail_ring.append(bytes(frame))
+        try:
+            coord = await self._vision_ground_fn(name, frame)
+        except Exception as exc:
+            trace["tries"].append(
+                {"n": n, "observed": True, "acted": False,
+                 "expected": f"grounded coords for {name!r}",
+                 "actual": f"grounding error: {exc}",
+                 "ok": False, "path": "pixel"}
+            )
+            return False
+        if coord is None or not (isinstance(coord, (tuple, list)) and len(coord) == 2):
+            trace["tries"].append(
+                {"n": n, "observed": True, "acted": False,
+                 "expected": f"grounded coords for {name!r}",
+                 "actual": f"grounding returned {coord!r}",
+                 "ok": False, "path": "pixel"}
+            )
+            return False
+        try:
+            x, y = int(coord[0]), int(coord[1])
+        except (TypeError, ValueError):
+            trace["tries"].append(
+                {"n": n, "observed": True, "acted": False,
+                 "expected": f"grounded coords for {name!r}",
+                 "actual": f"non-integer coords {coord!r}",
+                 "ok": False, "path": "pixel"}
+            )
+            return False
+        wb = self._window_bounds(window_title)
+        if wb is not None and not (wb[0] <= x <= wb[2] and wb[1] <= y <= wb[3]):
+            trace["tries"].append(
+                {"n": n, "observed": True, "acted": False,
+                 "expected": f"({x},{y}) inside window {wb}",
+                 "actual": "outside window bounds -- refused",
+                 "ok": False, "path": "pixel"}
+            )
+            return False
+        try:
+            click_at = getattr(self._backend, "click_at", None)
+            if click_at is not None:
+                click_at(x, y)
+            else:
+                # Backwards-compatible: reuse the bbox click seam by passing
+                # a 1x1 rect at the target coord.
+                self._backend.click([x, y, x, y])  # type: ignore[union-attr]
+        except CornerAbort:
+            self._abort_event.set()
+            trace["tries"].append(
+                {"n": n, "observed": True, "acted": False,
+                 "expected": f"pixel click at ({x},{y})",
+                 "actual": "corner-failsafe abort",
+                 "ok": False, "path": "pixel"}
+            )
+            return False
+        except Exception as exc:
+            trace["tries"].append(
+                {"n": n, "observed": True, "acted": False,
+                 "expected": f"pixel click at ({x},{y})",
+                 "actual": f"error: {exc}",
+                 "ok": False, "path": "pixel"}
+            )
+            return False
+        trace["target"] = {"name": name, "role": None, "bbox": [x, y, x, y]}
+        trace["tries"].append(
+            {"n": n, "observed": True, "acted": True,
+             "expected": f"pixel click at ({x},{y})",
+             "actual": "clicked", "ok": True, "path": "pixel"}
+        )
+        trace["ok"] = True
+        return True
 
     def _finish(self, trace: dict) -> ToolResult:
         if self._record_trace_fn is not None:
@@ -474,6 +639,10 @@ class ComputerUsePlugin:
                 )
                 trace["ok"] = True
                 return self._finish(trace)
+            # S5 #578: structured retries exhausted. Try the pixel-vision
+            # fallback once. No-op when the grounding seam isn't wired, so
+            # structured-only remains the default posture.
+            await self._pixel_fallback_click(window_title, name, trace)
             return self._finish(trace)
         finally:
             await self._emit_driving(False)
@@ -647,6 +816,15 @@ class _WindowsBackend:
         except self._pyautogui.FailSafeException as exc:
             raise CornerAbort(str(exc)) from exc
 
+    def click_at(self, x: int, y: int) -> None:
+        """S5 #578: single-coordinate click for the pixel-vision fallback
+        path (grounded coord -> click). Same corner-failsafe translation as
+        ``click``."""
+        try:
+            self._pyautogui.click(int(x), int(y))
+        except self._pyautogui.FailSafeException as exc:
+            raise CornerAbort(str(exc)) from exc
+
     def type_text(self, text: str) -> None:
         try:
             self._pyautogui.typewrite(text, interval=0.01)
@@ -654,8 +832,32 @@ class _WindowsBackend:
             raise CornerAbort(str(exc)) from exc
 
     def capture_frame(self, window_title: str) -> bytes | None:
-        # S1 does not use capture; S5 will wire the RAM-only frame buffer.
-        return None
+        """S5 #578: RAM-only window capture for pixel-vision grounding.
+
+        Uses ``mss`` to grab the target window's outer rect and returns raw
+        BGRA bytes. Bytes never touch disk -- the plugin holds them in a
+        capped ring buffer + hands them to the vision seam, then drops the
+        reference (ADR-0016 sec 7 audio-buffer rule). Returns None when the
+        window is gone, mss is missing, or grab fails (fallback then skips
+        this attempt rather than clicking blind)."""
+        if self._mss is None:
+            try:
+                import mss  # type: ignore[import-not-found]
+                self._mss = mss.mss()
+            except Exception:
+                return None
+        wb = self.window_bounds(window_title)
+        if wb is None:
+            return None
+        l, t, r, b = wb
+        if r <= l or b <= t:
+            return None
+        monitor = {"left": l, "top": t, "width": r - l, "height": b - t}
+        try:
+            shot = self._mss.grab(monitor)
+        except Exception:
+            return None
+        return bytes(shot.rgb)
 
     def window_bounds(self, window_title: str) -> list[int] | None:
         """Bounds of the target window's outer rect, in screen coords.

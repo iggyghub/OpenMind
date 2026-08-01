@@ -86,3 +86,37 @@ Run these manually on a Windows machine where the target apps are installed.
       screenshot. Verify at the network level (Fiddler / Wireshark) that
       exactly ONE image block is sent, the media_type is `image/png`, and
       the response text names a UI element visible in the frame.
+
+## S5 #578 -- pixel-vision fallback + RAM thumbnail buffer + DRM-black escalation
+
+- [ ] Open MS Paint on a fresh canvas. Configure Budd (or any VL Ollama
+      model) at the top of the model priority. Ask Felix: "click the
+      Brush tool in Paint". Verify: UIA exhausts (Paint's ribbon is
+      partially UIA-blank on some tool palettes), the plugin falls
+      through to pixel-vision, the trace's final try has
+      `path: "pixel"` and `ok: true`, and the Brush tool becomes the
+      active selection. Verify NO PNG / raw frame bytes exist under
+      `cerebral/data/` -- the ring stays in RAM.
+- [ ] Repeat with a target Felix should be able to find in the UIA tree
+      (e.g. "click the File menu"). Verify: it succeeds on the
+      structured path -- final try has no `path` key or `path: "uia"` --
+      and `capture_frame` is never invoked (no pixel round-trip on the
+      happy structured case).
+- [ ] Open Netflix (or any DRM-protected video player) and start a
+      video. Ask Felix: "click the pause button". Verify: `capture_frame`
+      returns a black raster; the trace's final try records
+      `escalated: true` with the "black/protected capture" message; NO
+      cursor moves; the plugin surfaces `is_error: true` for the caller
+      to escalate (S6 will wire attended-handoff).
+- [ ] Ask Felix a target that requires pixel fallback. Immediately after
+      it succeeds, call `plugin.thumbnail_ring_snapshot()` from a debug
+      REPL. Verify: exactly one non-empty `bytes` entry; run 8+ more
+      fallback tasks and verify the ring caps at
+      `DEFAULT_THUMBNAIL_RING_SIZE` (oldest rolls off). Restart Cerebral;
+      verify the ring starts empty (audio-buffer rule -- RAM only, never
+      persisted).
+- [ ] With Budd stopped and no local VL model installed, force the
+      pixel fallback (Paint brush task). Verify: the grounding seam
+      returns None (router raises `ModelUnavailableError` -> seam logs
+      and returns None); the trace records a fallback try with
+      `ok: false` and no coord; no click fires. Caller escalates.
