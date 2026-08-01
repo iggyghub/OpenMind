@@ -12,12 +12,50 @@
     background: transparent;
     overflow: hidden;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     user-select: none;
     -webkit-user-select: none;
     pointer-events: none;
   }
+
+  /* S2 #576 (ADR-0016 (c)): "Felix is driving" badge + Stop control.
+     Hidden by default; body.driving flips it on. The Stop button is the
+     only interactive element on the click-through overlay -- main.js
+     toggles setIgnoreMouseEvents so the click actually lands. */
+  .driving-panel {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    background: rgba(30, 10, 60, 0.85);
+    border: 1px solid rgba(232, 121, 249, 0.6);
+    border-radius: 8px;
+    padding: 6px 10px;
+    color: #f5d0fe;
+    font: 600 11px system-ui, -apple-system, sans-serif;
+    text-align: center;
+    pointer-events: auto;
+    box-shadow: 0 0 12px rgba(232, 121, 249, 0.35);
+  }
+  body.driving .driving-panel { display: flex; }
+
+  .driving-panel button {
+    all: unset;
+    cursor: pointer;
+    background: #b91c1c;
+    color: #fff;
+    padding: 3px 12px;
+    border-radius: 4px;
+    font: 700 11px system-ui, -apple-system, sans-serif;
+    letter-spacing: 0.5px;
+  }
+  .driving-panel button:hover { background: #dc2626; }
 
   /* ── Orb container ─────────────────────────────────────── */
   .orb-wrap {
@@ -180,6 +218,11 @@
 </head>
 <body class="passive">
 
+<div class="driving-panel" id="driving-panel">
+  <div>Felix is driving</div>
+  <button id="stop-btn" type="button">STOP</button>
+</div>
+
 <div class="orb-wrap">
   <div class="ring"></div>
   <div class="orb"></div>
@@ -209,6 +252,15 @@
 
   ipcRenderer.on('visualiser:state', (_e, newState) => {
     setState(newState);
+  });
+
+  // S2 #576 (ADR-0016 (c)): the "Felix is driving" overlay + Stop control.
+  ipcRenderer.on('visualiser:driving', (_e, driving) => {
+    document.body.classList.toggle('driving', !!driving);
+  });
+
+  document.getElementById('stop-btn').addEventListener('click', () => {
+    ipcRenderer.send('computer-use:stop');
   });
 </script>
 </body>

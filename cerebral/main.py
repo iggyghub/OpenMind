@@ -289,6 +289,13 @@ async def _skills_broadcast() -> None:  # S5 #542
     await _broadcast(_plugins_panel_spec_event("skills"))
 
 
+async def _computer_use_driving(driving: bool) -> None:  # S2 #576 (ADR-0016)
+    """Broadcast the "Felix is driving" indicator so the Visualiser can light
+    up its Stop control. Called by plugins/computer_use.py at loop entry/exit
+    of each actuating tool call (click_element / type_into)."""
+    await _broadcast({"type": "computer_use:driving", "data": {"driving": bool(driving)}})
+
+
 async def _docs_convert(source_path: str, fmt: str, out_dir: str) -> str:  # S3 #454
     """Real soffice converter wired into the documents plugin as a seam.
 
@@ -4051,6 +4058,22 @@ async def _handle_message(msg: dict) -> None:
         d = msg.get("data", {})
         await _dispatch_tray_call_tool(d.get("name", ""), d.get("args", {}))
 
+    elif t == "computer_use_stop":
+        # S2 #576 -- (c) leg of the ADR-0016 three-part kill switch. Fired by
+        # the Visualiser's Stop control when Felix is driving. The plugin
+        # short-circuits its observe-act loop at the next yield point.
+        try:
+            module = _orc.get_plugin_module("computer_use")
+        except KeyError:
+            logger.info("[cerebral] computer_use_stop: plugin not loaded (ignored)")
+            return
+        stopper = getattr(module, "abort_current", None)
+        if stopper is None:
+            logger.warning("[cerebral] computer_use_stop: abort_current seam missing")
+            return
+        stopper()
+        await _broadcast({"type": "computer_use:driving", "data": {"driving": False}})
+
     elif t == "user_text_command":
         # Issue #185 / ADR-0007 -- typed input from the Main window. Same
         # orchestrator path as a voice wake, minus the TTS leg: a typed
@@ -5335,6 +5358,7 @@ def _wire_plugin_seams() -> None:
         ("job_search", "set_register_doc_fn", _jobs_register_doc),                  # S7 #448
         ("self_dev", "set_edit_fn", _self_dev_edit),                                 # ADR-0015 edit step
         ("self_dev", "set_restart_fn", _self_dev_restart),                           # ADR-0015 SD-2 #555
+        ("computer_use", "set_driving_fn", _computer_use_driving),                   # S2 #576 (ADR-0016 (c))
     ]
     for name, seam, factory in seams:
         try:

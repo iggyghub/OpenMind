@@ -1,4 +1,4 @@
-"""Unit tests for the computer_use plugin (ADR-0016 S1 / Issue #574).
+"""Unit tests for the computer_use plugin (ADR-0016 S1 #574 / S2 #576).
 
 All tests use a fake ComputerUseBackend -- no real UIA, mouse, keyboard, or
 screen. Fail-closed on non-Windows is covered by forcing the default backend
@@ -6,6 +6,7 @@ to None on sys.platform != "win32".
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -19,6 +20,8 @@ from plugins.computer_use import (
     DEFAULT_RETRY_LIMIT,
     MAX_RETRY_LIMIT,
     ComputerUsePlugin,
+    CornerAbort,
+    _bbox_within,
     _find_element,
     _make_default_backend,
 )
@@ -368,3 +371,264 @@ def test_create_factory_fails_closed_on_non_windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     plugin = cu_mod.create()
     assert plugin._backend is None
+
+
+# ---------------------------------------------------------------------------
+# S2 #576 -- 3-part kill switch + window-bounded region + driving broadcast
+# ---------------------------------------------------------------------------
+
+class _FakeBackendWithBounds(_FakeBackend):
+    """Backend that reports a fixed window rect, so the bounded-region check
+    engages. Existing S1 fake has no window_bounds and correctly disables
+    the check for backwards compatibility."""
+
+    def __init__(self, *a, window_bounds: list[int] | None = None, **kw) -> None:
+        super().__init__(*a, **kw)
+        self._window_bounds = window_bounds
+
+    def window_bounds(self, window_title: str) -> list[int] | None:
+        return list(self._window_bounds) if self._window_bounds else None
+
+
+# ---- (a) Corner-failsafe leg ---------------------------------------------
+
+async def test_click_aborts_on_corner_failsafe_mid_action():
+    """CornerAbort raised by backend.click -> loop short-circuits with an
+    'aborted' try, no further retries fired."""
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    fake = _FakeBackend([els, els, els], raise_on_click=CornerAbort("corner"))
+    plugin = ComputerUsePlugin(backend=fake)
+    r = await plugin.call_tool(
+        "click_element",
+        {"window_title": "Calc", "name": "Two", "retries": 5},
+    )
+    assert r.is_error
+    data = json.loads(r.content)
+    assert data["ok"] is False
+    # One try, ended with the corner-failsafe abort marker.
+    assert len(data["tries"]) == 1
+    assert "corner-failsafe" in data["tries"][0]["actual"]
+    # Abort event was set -- a subsequent tool call resets it (see below).
+    assert plugin._abort_event.is_set()
+
+
+async def test_type_aborts_on_corner_failsafe():
+    box = {"name": "Box", "role": "Edit", "bbox": [0, 0, 50, 20]}
+    fake = _FakeBackend([[box]], raise_on_click=CornerAbort("corner"))
+    plugin = ComputerUsePlugin(backend=fake)
+    r = await plugin.call_tool(
+        "type_into",
+        {"window_title": "App", "name": "Box", "text": "hi", "retries": 3},
+    )
+    assert r.is_error
+    data = json.loads(r.content)
+    assert "corner-failsafe" in data["tries"][-1]["actual"]
+
+
+async def test_abort_event_resets_between_tool_calls():
+    """A prior abort must not silently short-circuit the next tool call."""
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    plugin = ComputerUsePlugin(backend=_FakeBackend([els]))
+    plugin.abort()  # simulate an earlier Stop
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "Calc", "name": "Two"},
+    )
+    assert not r.is_error, json.loads(r.content)
+
+
+# ---- (b) F11+F12 chord leg -----------------------------------------------
+
+def test_hotkey_register_fn_receives_abort_callback_at_construction():
+    captured: list = []
+    plugin = ComputerUsePlugin(
+        backend=_FakeBackend(),
+        hotkey_register_fn=lambda cb: captured.append(cb),
+    )
+    assert len(captured) == 1
+    assert callable(captured[0])
+    # Calling the captured callback fires the plugin's abort event.
+    assert not plugin._abort_event.is_set()
+    captured[0]()
+    assert plugin._abort_event.is_set()
+
+
+async def test_hotkey_abort_stops_loop_before_retries_exhaust():
+    """Fire the injected 'F11+F12' hotkey between tries -> loop stops early."""
+    captured: list = []
+    # Empty read_ui -> element not present -> the loop keeps retrying up to
+    # 5 tries. We fire the hotkey after one yield so the abort catches at
+    # the top of iteration 2 (or 3), well short of 5.
+    fake = _FakeBackend([[], [], [], [], []])
+    plugin = ComputerUsePlugin(
+        backend=fake,
+        hotkey_register_fn=lambda cb: captured.append(cb),
+    )
+    hotkey_cb = captured[0]
+
+    async def _fire_hotkey_soon() -> None:
+        # Yield twice so the loop starts its first try; then trigger the abort.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        hotkey_cb()
+
+    call = plugin.call_tool(
+        "click_element", {"window_title": "X", "name": "Ghost", "retries": 5},
+    )
+    r, _ = await asyncio.gather(call, _fire_hotkey_soon())
+    assert r.is_error
+    data = json.loads(r.content)
+    assert len(data["tries"]) < 5, data["tries"]
+    assert data["tries"][-1]["actual"] == "aborted by kill switch"
+
+
+def test_hotkey_register_failure_does_not_disable_plugin():
+    """A broken hotkey registrar must not crash the plugin -- (a) + (c) legs
+    remain usable even if (b) is unavailable."""
+    def _boom(_cb):
+        raise RuntimeError("no keyboard package")
+    plugin = ComputerUsePlugin(backend=_FakeBackend(), hotkey_register_fn=_boom)
+    # Still callable; abort event exists.
+    plugin.abort()
+    assert plugin._abort_event.is_set()
+
+
+# ---- (c) Visualiser "Felix is driving" broadcast + Stop ------------------
+
+async def test_driving_broadcast_fires_true_then_false_around_click():
+    calls: list[bool] = []
+    async def _driving(state: bool) -> None:
+        calls.append(state)
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    plugin = ComputerUsePlugin(backend=_FakeBackend([els]), driving_fn=_driving)
+    await plugin.call_tool("click_element", {"window_title": "C", "name": "Two"})
+    assert calls == [True, False]
+
+
+async def test_driving_broadcast_flips_off_even_on_error():
+    """A failing loop must still emit driving=False so the Stop control isn't
+    left stuck on after the tool call ends."""
+    calls: list[bool] = []
+    async def _driving(state: bool) -> None:
+        calls.append(state)
+    plugin = ComputerUsePlugin(
+        backend=_FakeBackend([[]]), driving_fn=_driving,
+    )
+    await plugin.call_tool(
+        "click_element", {"window_title": "C", "name": "Ghost", "retries": 1},
+    )
+    assert calls == [True, False]
+
+
+async def test_driving_broadcast_failure_does_not_break_tool():
+    async def _broken(_state: bool) -> None:
+        raise RuntimeError("sink dead")
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    plugin = ComputerUsePlugin(backend=_FakeBackend([els]), driving_fn=_broken)
+    r = await plugin.call_tool("click_element", {"window_title": "C", "name": "Two"})
+    assert not r.is_error
+
+
+async def test_abort_current_signals_the_singleton_plugin():
+    """Module-level abort_current() (wired to the Visualiser Stop IPC) fires
+    the abort event of the last-constructed plugin instance."""
+    plugin = ComputerUsePlugin(backend=_FakeBackend())
+    assert not plugin._abort_event.is_set()
+    cu_mod.abort_current()
+    assert plugin._abort_event.is_set()
+
+
+# ---- Loop yields between actions -----------------------------------------
+
+async def test_loop_yields_between_iterations_for_peer_tasks():
+    """The retry loop must ``await asyncio.sleep(0)`` between tries so other
+    coroutines (input handling, the abort event, the driving broadcast) get
+    to run. Verifiable by a peer task that ticks on each yield."""
+    fake = _FakeBackend([[], [], [], [], []])
+    plugin = ComputerUsePlugin(backend=fake)
+    tick = 0
+
+    async def _peer() -> None:
+        nonlocal tick
+        for _ in range(20):
+            tick += 1
+            await asyncio.sleep(0)
+
+    call = plugin.call_tool(
+        "click_element", {"window_title": "X", "name": "Ghost", "retries": 5},
+    )
+    await asyncio.gather(call, _peer())
+    # If the loop never yielded, the peer would only tick once (before the
+    # call was awaited) or after the call completed. With per-iteration yields
+    # the peer runs interleaved -- at least 2 ticks recorded during 5 tries.
+    assert tick >= 2, tick
+
+
+# ---- Window-bounded region -----------------------------------------------
+
+def test_bbox_within_helper():
+    assert _bbox_within([10, 10, 50, 50], [0, 0, 100, 100]) is True
+    assert _bbox_within([0, 0, 100, 100], [0, 0, 100, 100]) is True  # equal edges
+    assert _bbox_within([90, 90, 110, 110], [0, 0, 100, 100]) is False  # right/bottom out
+    assert _bbox_within([-1, 0, 10, 10], [0, 0, 100, 100]) is False  # left out
+    assert _bbox_within([0, 0, 0], [0, 0, 100, 100]) is False  # malformed
+
+
+async def test_click_refused_when_bbox_outside_window_bounds():
+    """A click aimed outside the target window's bounds is refused and never
+    actuated. Fresh backend so a mis-grounded coordinate can't hit another app."""
+    el_outside = {"name": "Ghost", "role": "Button", "bbox": [500, 500, 550, 550]}
+    fake = _FakeBackendWithBounds(
+        [[el_outside]], window_bounds=[0, 0, 200, 200],
+    )
+    plugin = ComputerUsePlugin(backend=fake)
+    r = await plugin.call_tool(
+        "click_element",
+        {"window_title": "SmallApp", "name": "Ghost", "retries": 1},
+    )
+    assert r.is_error
+    data = json.loads(r.content)
+    assert data["ok"] is False
+    assert "outside window bounds" in data["tries"][-1]["actual"]
+    assert fake.click_calls == []  # NEVER actuated
+
+
+async def test_click_accepted_when_bbox_inside_window_bounds():
+    el_inside = {"name": "OK", "role": "Button", "bbox": [50, 50, 90, 90]}
+    fake = _FakeBackendWithBounds(
+        [[el_inside]], window_bounds=[0, 0, 200, 200],
+    )
+    plugin = ComputerUsePlugin(backend=fake)
+    r = await plugin.call_tool(
+        "click_element",
+        {"window_title": "App", "name": "OK"},
+    )
+    assert not r.is_error
+    assert fake.click_calls == [[50, 50, 90, 90]]
+
+
+async def test_type_into_refused_outside_window_bounds():
+    el_outside = {"name": "Field", "role": "Edit", "bbox": [500, 10, 600, 30]}
+    fake = _FakeBackendWithBounds(
+        [[el_outside]], window_bounds=[0, 0, 200, 200],
+    )
+    plugin = ComputerUsePlugin(backend=fake)
+    r = await plugin.call_tool(
+        "type_into",
+        {"window_title": "App", "name": "Field", "text": "hi", "retries": 1},
+    )
+    assert r.is_error
+    assert fake.type_calls == []  # NEVER typed
+
+
+async def test_bounds_check_skipped_when_backend_returns_none():
+    """A backend that can't report bounds (window missing / no support) must
+    not block otherwise-valid actions -- the bounded-region check is a soft
+    guard, not the fail-closed gate."""
+    el = {"name": "OK", "role": "Button", "bbox": [500, 500, 550, 550]}
+    fake = _FakeBackendWithBounds([[el]], window_bounds=None)
+    plugin = ComputerUsePlugin(backend=fake)
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "X", "name": "OK"},
+    )
+    assert not r.is_error
+    assert fake.click_calls == [[500, 500, 550, 550]]
