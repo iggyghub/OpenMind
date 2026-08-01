@@ -196,16 +196,26 @@ test('standalone models pane no longer exists', () => {
   expect(root.querySelector('.pane[data-route="models"]')).toBeNull();
 });
 
-test('settings pane has General + AI-models sub-tabs', () => {
+test('settings pane has General, AI-models, Sign-in + Permissions sub-tabs', () => {
   const pane = root.querySelector('.pane[data-route="settings"]');
   const tabs = pane.querySelectorAll('.set-tab');
-  expect(tabs.length).toBe(2);
+  expect(tabs.length).toBe(4);
   const subs = Array.from(tabs).map((t) => t.getAttribute('data-set-sub'));
   expect(subs).toContain('general');
   expect(subs).toContain('models');
+  expect(subs).toContain('signin');
+  expect(subs).toContain('permissions');
   // Model controls live in the models sub-pane; appearance in the general one.
   expect(pane.querySelector('.set-subpane[data-set-sub="models"] #set-model-priority-list')).not.toBeNull();
   expect(pane.querySelector('.set-subpane[data-set-sub="general"] #set-scale-select')).not.toBeNull();
+  // Sign-in sub-tab absorbs the channels list (Discord/…) and Google card;
+  // Permissions sub-tab hosts the capability/tool tier rows.
+  expect(pane.querySelector('.set-subpane[data-set-sub="signin"] #int-channels-list')).not.toBeNull();
+  expect(pane.querySelector('.set-subpane[data-set-sub="signin"] #cred-card-google')).not.toBeNull();
+  // Dedicated Discord user-token card (writes to discord_user/api_token).
+  expect(pane.querySelector('.set-subpane[data-set-sub="signin"] #cred-card-discord')).not.toBeNull();
+  expect(pane.querySelector('.set-subpane[data-set-sub="signin"] #cred-discord-token')).not.toBeNull();
+  expect(pane.querySelector('.set-subpane[data-set-sub="permissions"] #perm-capability-rows')).not.toBeNull();
 });
 
 test('model priority panel replaces switch-model list (P2 #532)', () => {
@@ -423,7 +433,8 @@ test('conversation pane has attach button and drag-drop overlay (S14)', () => {
 // ── S15 — integrations pane HARNESS section ──────────────────────────────────
 
 test('integrations pane has HARNESS section, daemon row, and channels list (S15)', () => {
-  const pane = root.querySelector('.pane[data-route="integrations"]');
+  // Content moved into the Settings pane's Sign-in sub-tab.
+  const pane = root.querySelector('.set-subpane[data-set-sub="signin"]');
   expect(pane).not.toBeNull();
 
   // Placeholder must be gone.
@@ -476,6 +487,14 @@ test('inline script wires channel enable/secret IPC events (S16)', () => {
   expect(inlineScript).toMatch(/['"]set_channel_secret['"]/);
 });
 
+test('channel rows are collapsible and use the shared .ps-toggle switch', () => {
+  // Collapsible header + persisted expansion state.
+  expect(inlineScript).toMatch(/data-int-expand/);
+  expect(inlineScript).toMatch(/_intExpanded/);
+  // Enable/disable is the shared switch component, not a bespoke button.
+  expect(inlineScript).toMatch(/ps-toggle-input/);
+});
+
 test('channel renderer uses password input for the secret field (S16)', () => {
   // The secret input must be a type="password" element so it never
   // renders the plaintext on screen. The element is created by the
@@ -488,7 +507,7 @@ test('channel renderer uses password input for the secret field (S16)', () => {
 // ── S17 — service directory ──────────────────────────────────────────────────
 
 test('integrations pane has SERVICES section and svc body container (S17)', () => {
-  const pane = root.querySelector('.pane[data-route="integrations"]');
+  const pane = root.querySelector('.set-subpane[data-set-sub="signin"]');
   expect(pane).not.toBeNull();
 
   const svcSection = pane.querySelector('#int-svc-section');
@@ -518,7 +537,7 @@ test('inline script references service directory Connect handler (S17)', () => {
 // ── S18 — channel inbox surface ──────────────────────────────────────────────
 
 test('integrations pane has Inbox section, empty state, and list container (S18)', () => {
-  const pane = root.querySelector('.pane[data-route="integrations"]');
+  const pane = root.querySelector('.set-subpane[data-set-sub="signin"]');
   expect(pane).not.toBeNull();
 
   const section = pane.querySelector('#int-inbox-section');

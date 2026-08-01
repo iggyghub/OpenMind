@@ -67,16 +67,19 @@ test('#plugins redirects to harness', () => {
   expect(routeFromHash('#plugins')).toBe('harness');
 });
 
-test('#integrations redirects to harness', () => {
-  expect(routeFromHash('#integrations')).toBe('harness');
+test('#integrations redirects to the Settings Sign-in tab', () => {
+  expect(routeFromHash('#integrations')).toBe('settings');
+  expect(subFromHash('#integrations')).toBe('signin');
 });
 
-test('#credentials redirects to harness', () => {
-  expect(routeFromHash('#credentials')).toBe('harness');
+test('#credentials redirects to the Settings Sign-in tab', () => {
+  expect(routeFromHash('#credentials')).toBe('settings');
+  expect(subFromHash('#credentials')).toBe('signin');
 });
 
-test('#permissions redirects to harness', () => {
-  expect(routeFromHash('#permissions')).toBe('harness');
+test('#permissions redirects to the Settings Permissions tab', () => {
+  expect(routeFromHash('#permissions')).toBe('settings');
+  expect(subFromHash('#permissions')).toBe('permissions');
 });
 
 test('#memory redirects to library', () => {

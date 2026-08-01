@@ -1379,12 +1379,11 @@
     .int-btn.is-danger  { color: #e0855a; border-color: #e0855a55; }
     .int-btn.is-danger:hover:not(:disabled)  { border-color: #e0855a; }
 
-    /* Channel rows have a 2-line layout: status line + actions line. */
+    /* Collapsible channel rows: a full-width header button toggles a body
+       holding the enable switch + secret field. */
     .int-channel-row {
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      padding: 11px 18px;
       border-bottom: 1px solid #1e1c30;
     }
     .int-channel-row:last-child { border-bottom: none; }
@@ -1393,42 +1392,40 @@
       display: flex;
       align-items: center;
       gap: 10px;
-    }
-
-    .int-channel-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-
-    /* Compact 3-state pill: enabled ON/OFF. */
-    .int-toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 8px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
+      width: 100%;
+      padding: 11px 18px;
+      border: none;
+      background: none;
+      color: inherit;
+      font: inherit;
+      text-align: left;
       cursor: pointer;
-      font-size: 10px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--text-muted);
-      background: var(--bg);
-      user-select: none;
     }
-    .int-toggle:hover { color: var(--text-dim); border-color: #4a4670; }
-    .int-toggle.is-on { color: #4bd49a; border-color: #4bd49a55; }
+    .int-channel-head:hover { background: var(--bg-elev); }
+    /* Push the status dot + text to the right edge of the header. */
+    .int-channel-head .int-status-dot { margin-left: auto; }
 
-    .int-secret-pill {
-      font-size: 10px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--text-muted);
-      margin-left: auto;
+    .int-chevron {
+      flex: none;
+      width: 0; height: 0;
+      border-left: 5px solid var(--text-muted);
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      transition: transform 0.15s;
     }
-    .int-secret-pill.is-set { color: #4fc77a; }
+    .int-channel-row.is-expanded .int-chevron { transform: rotate(90deg); }
+
+    .int-channel-body {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 2px 18px 14px 33px;
+    }
+
+    .int-secret-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
 
     .int-secret-row {
       display: flex;
@@ -5040,110 +5037,14 @@
     <section class="pane" data-route="insights" hidden></section>
     <section class="pane" data-route="memory" hidden></section>
 
-    <section class="pane" data-route="permissions" hidden>
-      <div class="perm-tabs">
-        <button class="perm-tab is-active" data-perm-tab="capabilities">Capabilities</button>
-        <button class="perm-tab"           data-perm-tab="tools">Tools</button>
-      </div>
+    <!-- S5 #473 + Sign-in/Permissions Settings tabs: content moved into the
+         Settings pane (Permissions sub-tab). Shell kept so #permissions still
+         resolves and render-smoke's PANE_ROUTES loop passes. -->
+    <section class="pane" data-route="permissions" hidden></section>
 
-      <div class="perm-body">
-        <div class="perm-panel is-active" id="perm-panel-capabilities">
-          <div class="perm-section">Capability classes</div>
-          <div id="perm-capability-rows"></div>
-
-          <div class="perm-section">Session grants</div>
-          <div id="perm-session-rows">
-            <div class="perm-empty">No active session grants.</div>
-          </div>
-
-          <div class="perm-section">New plugins to review</div>
-          <div id="perm-plugin-rows">
-            <div class="perm-empty">No new plugins waiting for review.</div>
-          </div>
-        </div>
-
-        <div class="perm-panel" id="perm-panel-tools">
-          <div class="perm-tools-search">
-            <input type="search" id="perm-tools-search-input"
-                   placeholder="Search tools or plugins…" />
-          </div>
-          <div id="perm-tool-rows"></div>
-        </div>
-      </div>
-
-      <!-- Shell-exec confirmation modal — scoped inside the pane. -->
-      <div class="perm-modal-veil" id="perm-shell-modal">
-        <div class="perm-modal" role="dialog" aria-modal="true">
-          <h2>Enable shell access?</h2>
-          <p>Shell access lets Felix run commands on your computer — the highest-blast-radius capability. Once unlocked, you can still set the policy to <strong>ask</strong> or <strong>deny</strong>, but the row cannot be re-locked from this UI.</p>
-          <div class="perm-modal-actions">
-            <button class="perm-modal-cancel"  id="perm-shell-modal-cancel">Cancel</button>
-            <button class="perm-modal-confirm" id="perm-shell-modal-confirm">Enable</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="pane" data-route="credentials" hidden>
-      <div class="cred-body">
-        <div class="cred-card" id="cred-card-google">
-          <div class="cred-card-title">Google</div>
-          <div class="cred-status" id="cred-status">
-            <span class="cred-status-dot"></span>
-            <span class="cred-status-text" id="cred-status-text">Loading…</span>
-          </div>
-
-          <div class="cred-field">
-            <label for="cred-client-id">Client ID</label>
-            <input id="cred-client-id" type="text" autocomplete="off"
-                   placeholder="xxxxx.apps.googleusercontent.com" />
-          </div>
-          <div class="cred-field">
-            <label for="cred-client-secret">Client secret</label>
-            <input id="cred-client-secret" type="password" autocomplete="off"
-                   placeholder="(write-only — never shown back)" />
-          </div>
-
-          <div class="cred-actions">
-            <button class="cred-btn cred-btn-secondary" id="cred-btn-save">Save credentials</button>
-            <button class="cred-btn cred-btn-primary" id="cred-btn-connect">Connect Google</button>
-            <button class="cred-btn cred-btn-danger" id="cred-btn-disconnect">Disconnect</button>
-          </div>
-
-          <div class="cred-hint">
-            Credentials are stored per profile. The secret is written to your
-            OS keyring and is never displayed or logged. Connecting opens your
-            browser to grant Gmail &amp; Calendar access.
-          </div>
-        </div>
-
-        <div class="cred-card" id="cred-card-api-keys">
-          <div class="cred-card-title">API keys</div>
-          <div id="cred-static-tokens-list">
-            <!-- rows rendered by renderStaticTokens() -->
-          </div>
-          <div class="cred-hint">
-            Per-profile API keys for static-token plugins. Saved keys live in
-            your OS keyring and override any environment variable. Clearing a
-            key falls back to the environment variable if one is set.
-          </div>
-        </div>
-
-        <div class="cred-card" id="cred-card-browser-logins">
-          <div class="cred-card-title">Browser logins</div>
-          <div id="cred-browser-logins-list">
-            <!-- rows rendered by renderCredentialsBrowserLogins() -->
-          </div>
-          <div class="cred-hint">
-            Web accounts the browser-automation harness signs in as. Use a
-            DEDICATED secondary account, never your primary one. The email is
-            stored locally; the password lives in your OS keyring and is never
-            shown again. Felix normally logs in once by hand and reuses the
-            session — the password is only the unattended re-login fallback.
-          </div>
-        </div>
-      </div>
-    </section>
+    <!-- Content moved into the Settings pane (Sign-in sub-tab). Shell kept so
+         #credentials still resolves and render-smoke's PANE_ROUTES loop passes. -->
+    <section class="pane" data-route="credentials" hidden></section>
 
     <section class="pane" data-route="harness" hidden>
       <!-- S5 #542: Skills sub-tab, sibling to Plugins (ADR-0014 decision 8).
@@ -5302,6 +5203,173 @@
       <div class="set-tabs" id="set-tabs">
         <button class="set-tab is-active" data-set-sub="general" type="button">General</button>
         <button class="set-tab" data-set-sub="models" type="button">AI models</button>
+        <button class="set-tab" data-set-sub="signin" type="button">Sign-in</button>
+        <button class="set-tab" data-set-sub="permissions" type="button">Permissions</button>
+      </div>
+
+      <!-- Sign-in sub-tab: OpenClaw daemon + channels (Discord/…) + services +
+           inbox (was #integrations), plus Google / API keys / browser logins
+           (was #credentials). Both panes were orphaned by the #473 route
+           collapse; folded here as a Settings tab. -->
+      <div class="set-subpane" data-set-sub="signin">
+        <div class="set-body">
+          <div class="int-body" id="int-body">
+            <div class="int-section" id="int-harness-section">Harness</div>
+            <div class="int-row" id="int-daemon-row">
+              <span class="int-row-name">OpenClaw</span>
+              <span class="int-row-right">
+                <span class="int-status-dot" id="int-daemon-dot"></span>
+                <span class="int-status-text" id="int-daemon-text">&#8212;</span>
+                <button class="int-btn is-primary" id="int-daemon-start"  type="button">Start</button>
+                <button class="int-btn is-danger"  id="int-daemon-stop"   type="button">Stop</button>
+                <button class="int-btn"            id="int-daemon-restart" type="button">Restart</button>
+              </span>
+            </div>
+            <div id="int-channels-list"></div>
+
+            <!-- S17 (#300) -- service directory -->
+            <div class="int-section" id="int-svc-section">Services</div>
+            <div id="int-svc-body">
+              <!-- rows rendered by renderServiceDirectory() -->
+            </div>
+
+            <!-- S18 (#301) -- channel inbox: inbound channel messages + reply -->
+            <div class="int-section" id="int-inbox-section">Inbox</div>
+            <div id="int-inbox-body">
+              <div class="int-inbox-empty" id="int-inbox-empty">
+                No channel messages yet.
+              </div>
+              <div id="int-inbox-list" hidden></div>
+            </div>
+          </div>
+
+          <div class="cred-body">
+            <div class="cred-card" id="cred-card-google">
+              <div class="cred-card-title">Google</div>
+              <div class="cred-status" id="cred-status">
+                <span class="cred-status-dot"></span>
+                <span class="cred-status-text" id="cred-status-text">Loading&#8230;</span>
+              </div>
+
+              <div class="cred-field">
+                <label for="cred-client-id">Client ID</label>
+                <input id="cred-client-id" type="text" autocomplete="off"
+                       placeholder="xxxxx.apps.googleusercontent.com" />
+              </div>
+              <div class="cred-field">
+                <label for="cred-client-secret">Client secret</label>
+                <input id="cred-client-secret" type="password" autocomplete="off"
+                       placeholder="(write-only — never shown back)" />
+              </div>
+
+              <div class="cred-actions">
+                <button class="cred-btn cred-btn-secondary" id="cred-btn-save">Save credentials</button>
+                <button class="cred-btn cred-btn-primary" id="cred-btn-connect">Connect Google</button>
+                <button class="cred-btn cred-btn-danger" id="cred-btn-disconnect">Disconnect</button>
+              </div>
+
+              <div class="cred-hint">
+                Credentials are stored per profile. The secret is written to your
+                OS keyring and is never displayed or logged. Connecting opens your
+                browser to grant Gmail &amp; Calendar access.
+              </div>
+            </div>
+
+            <div class="cred-card" id="cred-card-api-keys">
+              <div class="cred-card-title">API keys</div>
+              <div id="cred-static-tokens-list">
+                <!-- rows rendered by renderStaticTokens() -->
+              </div>
+              <div class="cred-hint">
+                Per-profile API keys for static-token plugins. Saved keys live in
+                your OS keyring and override any environment variable. Clearing a
+                key falls back to the environment variable if one is set.
+              </div>
+            </div>
+
+            <div class="cred-card" id="cred-card-browser-logins">
+              <div class="cred-card-title">Browser logins</div>
+              <div id="cred-browser-logins-list">
+                <!-- rows rendered by renderCredentialsBrowserLogins() -->
+              </div>
+              <div class="cred-hint">
+                Web accounts the browser-automation harness signs in as. Use a
+                DEDICATED secondary account, never your primary one. The email is
+                stored locally; the password lives in your OS keyring and is never
+                shown again. Felix normally logs in once by hand and reuses the
+                session — the password is only the unattended re-login fallback.
+              </div>
+            </div>
+
+            <div class="cred-card" id="cred-card-discord">
+              <div class="cred-card-title">Discord (user account)</div>
+              <div class="cred-status" id="cred-discord-status">
+                <span class="cred-status-dot"></span>
+                <span class="cred-status-text" id="cred-discord-status-text">Loading&#8230;</span>
+              </div>
+              <div class="cred-token-row-actions">
+                <input id="cred-discord-token" type="password" autocomplete="off"
+                       placeholder="Paste your Discord user token (write-only)" />
+                <button class="cred-btn cred-btn-secondary" id="cred-discord-save">Save</button>
+                <button class="cred-btn cred-btn-danger" id="cred-discord-clear">Clear</button>
+              </div>
+              <div class="cred-hint">
+                Your Discord <strong>user-account</strong> token (self-bot) &mdash;
+                NOT a bot token. Powers discord_list_guilds / discord_list_channels /
+                discord_send_message. Stored in your OS keyring, never shown again.
+                &#9888; Automating a user account violates Discord&rsquo;s Terms and
+                risks a permanent ban (ADR-0006) &mdash; use a throwaway account.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Permissions sub-tab: capability tiers + per-tool policy (was
+           #permissions, orphaned by #473). position:relative so the shell-exec
+           veil (.perm-modal-veil, position:absolute inset:0) fills this pane. -->
+      <div class="set-subpane" data-set-sub="permissions" style="position: relative;">
+        <div class="perm-tabs">
+          <button class="perm-tab is-active" data-perm-tab="capabilities">Capabilities</button>
+          <button class="perm-tab"           data-perm-tab="tools">Tools</button>
+        </div>
+
+        <div class="perm-body">
+          <div class="perm-panel is-active" id="perm-panel-capabilities">
+            <div class="perm-section">Capability classes</div>
+            <div id="perm-capability-rows"></div>
+
+            <div class="perm-section">Session grants</div>
+            <div id="perm-session-rows">
+              <div class="perm-empty">No active session grants.</div>
+            </div>
+
+            <div class="perm-section">New plugins to review</div>
+            <div id="perm-plugin-rows">
+              <div class="perm-empty">No new plugins waiting for review.</div>
+            </div>
+          </div>
+
+          <div class="perm-panel" id="perm-panel-tools">
+            <div class="perm-tools-search">
+              <input type="search" id="perm-tools-search-input"
+                     placeholder="Search tools or plugins…" />
+            </div>
+            <div id="perm-tool-rows"></div>
+          </div>
+        </div>
+
+        <!-- Shell-exec confirmation modal — scoped inside the pane. -->
+        <div class="perm-modal-veil" id="perm-shell-modal">
+          <div class="perm-modal" role="dialog" aria-modal="true">
+            <h2>Enable shell access?</h2>
+            <p>Shell access lets Felix run commands on your computer — the highest-blast-radius capability. Once unlocked, you can still set the policy to <strong>ask</strong> or <strong>deny</strong>, but the row cannot be re-locked from this UI.</p>
+            <div class="perm-modal-actions">
+              <button class="perm-modal-cancel"  id="perm-shell-modal-cancel">Cancel</button>
+              <button class="perm-modal-confirm" id="perm-shell-modal-confirm">Enable</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="set-subpane" data-set-sub="models">
@@ -5526,37 +5594,9 @@
     <!-- S5 #473: recipes content moved into library pane -->
     <section class="pane" data-route="recipes" hidden></section>
 
-    <section class="pane" data-route="integrations" hidden>
-      <div class="int-body" id="int-body">
-        <div class="int-section" id="int-harness-section">Harness</div>
-        <div class="int-row" id="int-daemon-row">
-          <span class="int-row-name">OpenClaw</span>
-          <span class="int-row-right">
-            <span class="int-status-dot" id="int-daemon-dot"></span>
-            <span class="int-status-text" id="int-daemon-text">&#8212;</span>
-            <button class="int-btn is-primary" id="int-daemon-start"  type="button">Start</button>
-            <button class="int-btn is-danger"  id="int-daemon-stop"   type="button">Stop</button>
-            <button class="int-btn"            id="int-daemon-restart" type="button">Restart</button>
-          </span>
-        </div>
-        <div id="int-channels-list"></div>
-
-        <!-- S17 (#300) -- service directory -->
-        <div class="int-section" id="int-svc-section">Services</div>
-        <div id="int-svc-body">
-          <!-- rows rendered by renderServiceDirectory() -->
-        </div>
-
-        <!-- S18 (#301) -- channel inbox: inbound channel messages + reply -->
-        <div class="int-section" id="int-inbox-section">Inbox</div>
-        <div id="int-inbox-body">
-          <div class="int-inbox-empty" id="int-inbox-empty">
-            No channel messages yet.
-          </div>
-          <div id="int-inbox-list" hidden></div>
-        </div>
-      </div>
-    </section>
+    <!-- Content moved into the Settings pane (Sign-in sub-tab). Shell kept so
+         #integrations still resolves and render-smoke's PANE_ROUTES loop passes. -->
+    <section class="pane" data-route="integrations" hidden></section>
 
     <!-- S5 #473: job-search/documents content moved to library pane; models pane kept as-is -->
     <section class="pane" data-route="job-search" hidden></section>
@@ -5826,6 +5866,11 @@
     const credBtnDisconnect = document.getElementById('cred-btn-disconnect');
     const credStaticTokensListEl = document.getElementById('cred-static-tokens-list');
     const credBrowserLoginsListEl = document.getElementById('cred-browser-logins-list');
+    const credDiscordStatusEl     = document.getElementById('cred-discord-status');
+    const credDiscordStatusTextEl = document.getElementById('cred-discord-status-text');
+    const credDiscordTokenEl      = document.getElementById('cred-discord-token');
+    const credDiscordSaveEl       = document.getElementById('cred-discord-save');
+    const credDiscordClearEl      = document.getElementById('cred-discord-clear');
     const permCapRowsEl     = document.getElementById('perm-capability-rows');
     const permSessionRowsEl = document.getElementById('perm-session-rows');
     const permPluginRowsEl  = document.getElementById('perm-plugin-rows');
@@ -8318,6 +8363,20 @@
       renderCredentialsGoogle(payload.google);
       renderCredentialsStaticTokens(payload.static_tokens);
       renderCredentialsBrowserLogins(payload.browser_logins);
+      renderCredentialsDiscord(payload.discord_user);
+    }
+
+    function renderCredentialsDiscord(discord) {
+      if (!credDiscordStatusEl) return;
+      const d = discord || { status: 'not configured', source: 'none' };
+      const status = d.status || 'not configured';
+      credDiscordStatusEl.className = 'cred-status ' + (CRED_STATUS_CLASS[status] || '');
+      let text = CRED_STATUS_LABEL[status] || status;
+      if (status === 'connected') {
+        text = d.source === 'env' ? 'Configured (from env var)' : 'Configured';
+      }
+      credDiscordStatusTextEl.textContent = text;
+      if (credDiscordClearEl) credDiscordClearEl.disabled = (status === 'not configured');
     }
 
     function renderCredentialsGoogle(google) {
@@ -8531,6 +8590,23 @@
 
     // First render of the browser-logins section before any state arrives.
     renderCredentialsBrowserLogins(null);
+
+    // Discord user-account token (dedicated card -- discord_user is excluded
+    // from the static-token list, ADR-0006). Writes to discord_user/api_token.
+    if (credDiscordSaveEl) {
+      credDiscordSaveEl.addEventListener('click', () => {
+        const value = credDiscordTokenEl ? credDiscordTokenEl.value.trim() : '';
+        if (!value) return;
+        sendEvent({ type: 'set_discord_user_token', data: { value } });
+        if (credDiscordTokenEl) credDiscordTokenEl.value = '';  // write-only
+      });
+    }
+    if (credDiscordClearEl) {
+      credDiscordClearEl.addEventListener('click', () => {
+        sendEvent({ type: 'clear_discord_user_token' });
+      });
+    }
+    renderCredentialsDiscord((credentialsState || {}).discord_user);
 
     // ── S17 (#300): service directory ────────────────────────────────────
     // Renders the CONTEXT.md integration registry grouped by category.
@@ -9468,10 +9544,9 @@
 
     const _INT_CHANNELS = ['WhatsApp', 'Telegram', 'Discord', 'Slack', 'Teams'];
 
-    // Track which channel rows have their secret input expanded (S16). Reset
-    // implicitly on each renderIntegrations call -- the user re-clicks
-    // "Configure" if a broadcast collapsed the form mid-edit.
-    let _intSecretEditing = null;
+    // Which channel rows are expanded. Persisted across the ~5s harness_status
+    // re-renders so an open row (and any secret being typed) survives.
+    const _intExpanded = new Set();
 
     function renderIntegrations() {
       const d = integrationsData;
@@ -9495,53 +9570,71 @@
         intChannelsEl.innerHTML = '';
         return;
       }
-      intChannelsEl.innerHTML = channels.map(function (ch) {
-        const chDotCls = ch.state === 'connected' ? 'is-connected' : 'is-down';
-        const chTxtCls = ch.state === 'connected' ? 'is-connected' : 'is-down';
-        const enabled  = !!ch.enabled;
-        const toggleCls    = enabled ? 'int-toggle is-on' : 'int-toggle';
-        const toggleLabel  = enabled ? 'Enabled' : 'Disabled';
-        const secretSet    = !!ch.secret_set;
-        const secretLabel  = secretSet ? 'secret set' : 'no secret';
-        const secretClass  = secretSet ? 'int-secret-pill is-set' : 'int-secret-pill';
-        const editing      = _intSecretEditing === ch.name;
-        const editorHtml   = editing
-          ? ('<div class="int-secret-row">' +
-              '<input type="password" autocomplete="off" data-int-secret-input="' + escHtml(ch.name) + '" ' +
-                'placeholder="Channel secret (write-only)" />' +
-              '<button class="int-btn is-primary" data-int-secret-save="' + escHtml(ch.name) + '" type="button">Save</button>' +
-              '<button class="int-btn"            data-int-secret-cancel="' + escHtml(ch.name) + '" type="button">Cancel</button>' +
-              (secretSet
-                ? '<button class="int-btn is-danger" data-int-secret-clear="' + escHtml(ch.name) + '" type="button">Clear</button>'
-                : '') +
-            '</div>')
-          : ('<button class="int-btn" data-int-secret-edit="' + escHtml(ch.name) + '" type="button">' +
-              (secretSet ? 'Replace secret' : 'Set secret') +
-            '</button>');
 
-        return '<div class="int-channel-row" data-int-channel="' + escHtml(ch.name) + '">' +
-          '<div class="int-channel-head">' +
-            '<span class="int-row-name">' + escHtml(ch.name) + '</span>' +
-            '<span class="int-status-dot ' + chDotCls + '"></span>' +
-            '<span class="int-status-text ' + chTxtCls + '">' + escHtml(ch.state || 'unknown') + '</span>' +
-            '<span class="' + secretClass + '">' + secretLabel + '</span>' +
-          '</div>' +
-          '<div class="int-channel-actions">' +
-            '<button class="' + toggleCls + '" data-int-toggle="' + escHtml(ch.name) + '" data-int-enabled="' + (enabled ? '1' : '0') + '" type="button">' +
-              toggleLabel +
-            '</button>' +
-            editorHtml +
-          '</div>' +
+      // Preserve an in-progress secret across the re-render (broadcasts fire
+      // every ~5s; without this the user's keystrokes would be wiped).
+      const active = document.activeElement;
+      let _preserve = null;
+      if (active && active.getAttribute && active.getAttribute('data-int-secret-input')) {
+        _preserve = {
+          name:  active.getAttribute('data-int-secret-input'),
+          value: active.value,
+          caret: active.selectionStart,
+        };
+      }
+
+      intChannelsEl.innerHTML = channels.map(function (ch) {
+        const name       = escHtml(ch.name);
+        const connected  = ch.state === 'connected';
+        const dotCls     = connected ? 'is-connected' : 'is-down';
+        const enabled    = !!ch.enabled;
+        const secretSet  = !!ch.secret_set;
+        const expanded   = _intExpanded.has(ch.name);
+
+        const body = expanded
+          ? ('<div class="int-channel-body">' +
+               // Shared switch (.ps-toggle) -- same component as the Skills
+               // panel, so a restyle there restyles every switch at once.
+               '<label class="ps-toggle">' +
+                 '<input class="ps-toggle-input" type="checkbox" data-int-toggle="' + name + '"' +
+                    (enabled ? ' checked' : '') + '>' +
+                 '<span class="ps-toggle-slider"></span>' +
+                 '<span class="ps-toggle-label">' + (enabled ? 'Enabled' : 'Disabled') + '</span>' +
+               '</label>' +
+               '<div class="int-secret-row">' +
+                 '<input type="password" autocomplete="off" data-int-secret-input="' + name + '" ' +
+                   'placeholder="' + (secretSet ? 'Replace secret (write-only)' : 'Paste this channel’s secret / token') + '" />' +
+                 '<button class="int-btn is-primary" data-int-secret-save="' + name + '" type="button">Save</button>' +
+                 (secretSet
+                   ? '<button class="int-btn is-danger" data-int-secret-clear="' + name + '" type="button">Clear</button>'
+                   : '') +
+               '</div>' +
+               (secretSet
+                 ? ''
+                 : '<div class="int-secret-hint">Not signed in yet — paste the secret above to connect.</div>') +
+             '</div>')
+          : '';
+
+        return '<div class="int-channel-row' + (expanded ? ' is-expanded' : '') + '" data-int-channel="' + name + '">' +
+          '<button class="int-channel-head" type="button" data-int-expand="' + name + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">' +
+            '<span class="int-chevron" aria-hidden="true"></span>' +
+            '<span class="int-row-name">' + name + '</span>' +
+            '<span class="int-status-dot ' + dotCls + '"></span>' +
+            '<span class="int-status-text ' + dotCls + '">' + escHtml(ch.state || 'unknown') + '</span>' +
+          '</button>' +
+          body +
           '</div>';
       }).join('');
 
-      // Re-focus the secret input after the re-render if the user just
-      // clicked "Set secret" or "Replace secret".
-      if (_intSecretEditing) {
-        const focusInput = intChannelsEl.querySelector(
-          'input[data-int-secret-input="' + cssEscape(_intSecretEditing) + '"]'
+      if (_preserve) {
+        const inp = intChannelsEl.querySelector(
+          'input[data-int-secret-input="' + cssEscape(_preserve.name) + '"]'
         );
-        if (focusInput) focusInput.focus();
+        if (inp) {
+          inp.value = _preserve.value;
+          inp.focus();
+          try { inp.setSelectionRange(_preserve.caret, _preserve.caret); } catch (e) {}
+        }
       }
     }
 
@@ -9561,53 +9654,35 @@
       sendEvent({ type: 'restart_openclaw_daemon' });
     });
 
-    // Per-channel actions: delegated click handler -- rows are re-rendered
-    // on every harness_status broadcast so per-node listeners would leak.
+    // Per-channel actions: delegated handlers -- rows are re-rendered on every
+    // harness_status broadcast so per-node listeners would leak. Uses closest()
+    // because clicks land on inner spans (chevron/name) of the header button.
     intChannelsEl.addEventListener('click', function (e) {
       const target = e.target;
       if (!target || target.nodeType !== 1) return;
 
-      const toggleCh = target.getAttribute('data-int-toggle');
-      if (toggleCh) {
-        const enabled = target.getAttribute('data-int-enabled') === '1';
-        sendEvent({
-          type: 'set_channel_enabled',
-          data: { channel: toggleCh, enabled: !enabled },
-        });
-        return;
-      }
-
-      const editCh = target.getAttribute('data-int-secret-edit');
-      if (editCh) {
-        _intSecretEditing = editCh;
+      const expandBtn = target.closest('[data-int-expand]');
+      if (expandBtn) {
+        const name = expandBtn.getAttribute('data-int-expand');
+        if (_intExpanded.has(name)) _intExpanded.delete(name);
+        else _intExpanded.add(name);
         renderIntegrations();
         return;
       }
 
-      const cancelCh = target.getAttribute('data-int-secret-cancel');
-      if (cancelCh) {
-        _intSecretEditing = null;
-        renderIntegrations();
-        return;
-      }
-
-      const saveCh = target.getAttribute('data-int-secret-save');
-      if (saveCh) {
+      const saveBtn = target.closest('[data-int-secret-save]');
+      if (saveBtn) {
+        const saveCh = saveBtn.getAttribute('data-int-secret-save');
         const input = intChannelsEl.querySelector(
           'input[data-int-secret-input="' + cssEscape(saveCh) + '"]'
         );
         if (!input) return;
         const value = input.value;
-        // Write-only invariant (rule 3): clear the DOM input BEFORE we
-        // even send so the plaintext token cannot be retrieved by a
-        // later DOM inspector / screenshot. Bound checks fall on the
-        // backend.
+        // Write-only invariant (rule 3): clear the DOM input BEFORE we even
+        // send so the plaintext token can't be recovered from a later DOM
+        // inspector / screenshot. Bound checks fall on the backend.
         input.value = '';
-        _intSecretEditing = null;
-        if (!value) {
-          renderIntegrations();
-          return;
-        }
+        if (!value) return;
         sendEvent({
           type: 'set_channel_secret',
           data: { channel: saveCh, secret: value },
@@ -9615,15 +9690,24 @@
         return;
       }
 
-      const clearCh = target.getAttribute('data-int-secret-clear');
-      if (clearCh) {
-        _intSecretEditing = null;
+      const clearBtn = target.closest('[data-int-secret-clear]');
+      if (clearBtn) {
         sendEvent({
           type: 'clear_channel_secret',
-          data: { channel: clearCh },
+          data: { channel: clearBtn.getAttribute('data-int-secret-clear') },
         });
         return;
       }
+    });
+
+    // Enable/disable switch (.ps-toggle checkbox) fires a change, not a click.
+    intChannelsEl.addEventListener('change', function (e) {
+      const cb = e.target && e.target.closest && e.target.closest('.ps-toggle-input[data-int-toggle]');
+      if (!cb) return;
+      sendEvent({
+        type: 'set_channel_enabled',
+        data: { channel: cb.getAttribute('data-int-toggle'), enabled: cb.checked },
+      });
     });
 
     // ── Channel inbox (S18 / #301) ──────────────────────────────────────
@@ -10664,7 +10748,8 @@
 
     // Settings sub-tab activation (General / AI models). Mirrors libActivateSub.
     function settingsActivateSub(sub) {
-      const target = (sub === 'models') ? 'models' : 'general';
+      const KNOWN_SUBS = new Set(['general', 'models', 'signin', 'permissions']);
+      const target = KNOWN_SUBS.has(sub) ? sub : 'general';
       document.querySelectorAll('.set-tab').forEach((btn) => {
         btn.classList.toggle('is-active', btn.dataset.setSub === target);
       });
@@ -10710,6 +10795,12 @@
       } else if (route === 'settings') {
         sendEvent({ type: 'refresh_models' });
         sendEvent({ type: 'list_settings' });
+        // Sign-in + Permissions sub-tabs live here now (moved from the orphaned
+        // #integrations/#credentials/#permissions panes) -- prime their data.
+        sendEvent({ type: 'list_credentials' });
+        sendEvent({ type: 'list_permissions' });
+        sendEvent({ type: 'list_tools' });
+        sendEvent({ type: 'request_channel_inbox' });
         settingsActivateSub(sub || 'general');
       } else if (route === 'profiles') {
         sendEvent({ type: 'list_profiles' });
@@ -10759,7 +10850,12 @@
     _sc.init(document.getElementById('perm-panel-capabilities'), 'permissions');
     _sc.init(document.getElementById('plug-main-view'), 'harness');
     _sc.init(document.querySelector('.prof-body'), 'profiles');
-    _sc.init(document.querySelector('.set-body'), 'settings');
+    // Every settings sub-tab body — not just the first — so the General and
+    // AI-models accordions keep working now that Sign-in/Permissions sub-tabs
+    // sit ahead of them in DOM order. init() is idempotent + only touches
+    // direct-child *-section headers, so this is safe on all of them.
+    document.querySelectorAll('.pane[data-route="settings"] .set-body')
+      .forEach((el) => _sc.init(el, 'settings'));
 
     // S1 -- #480: sidebar collapse + Ctrl+B hotkey
     const _sidebarEl = document.getElementById('sidebar');

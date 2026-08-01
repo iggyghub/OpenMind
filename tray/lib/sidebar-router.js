@@ -39,9 +39,9 @@
     'job-search':    'library',
     'documents':     'library',
     'plugins':       'harness',
-    'integrations':  'harness',
-    'credentials':   'harness',
-    'permissions':   'harness',
+    'integrations':  'settings/signin',
+    'credentials':   'settings/signin',
+    'permissions':   'settings/permissions',
     'models':        'settings/models',
   };
 
