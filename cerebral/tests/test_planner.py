@@ -265,3 +265,80 @@ def test_shortlist_no_usable_words_passes_through():
     tools = _fake_registry()
     # every word under 4 chars -> no signal -> don't guess, send everything
     assert shortlist_tools("hi do it now", tools, limit=30) == tools
+
+
+# ── ADR-0016 S7 (#580) — stealth-vs-fast web routing heuristic ────────────────
+
+_BROWSER_NAVIGATE_TOOL = {
+    "name": "browser_navigate",
+    "description": "OS-level browser drive (computer_use, stealth path)",
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+_BROWSER_PLUGIN_NAVIGATE = {
+    "name": "navigate",
+    "description": "Playwright DOM navigate (Browser plugin, fast path)",
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+_UNRELATED_TOOL = {
+    "name": "get_time",
+    "description": "Get the current time",
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+
+def test_prefer_web_path_stealth_url_prefers_computer_use():
+    from cerebral.llm.planner import prefer_web_path
+
+    tools = [_BROWSER_PLUGIN_NAVIGATE, _UNRELATED_TOOL, _BROWSER_NAVIGATE_TOOL]
+    out = prefer_web_path("open https://discord.com/app for me", tools)
+    # computer_use browser_navigate should sit first; Browser plugin's navigate
+    # should sit last; the unrelated tool preserves its middle position.
+    assert out[0]["name"] == "browser_navigate"
+    assert out[-1]["name"] == "navigate"
+
+
+def test_prefer_web_path_benign_url_prefers_browser_plugin():
+    from cerebral.llm.planner import prefer_web_path
+
+    tools = [_BROWSER_NAVIGATE_TOOL, _UNRELATED_TOOL, _BROWSER_PLUGIN_NAVIGATE]
+    out = prefer_web_path("please read https://example.com/article", tools)
+    assert out[0]["name"] == "navigate"
+    assert out[-1]["name"] == "browser_navigate"
+
+
+def test_prefer_web_path_no_url_is_noop():
+    from cerebral.llm.planner import prefer_web_path
+
+    tools = [_BROWSER_NAVIGATE_TOOL, _BROWSER_PLUGIN_NAVIGATE, _UNRELATED_TOOL]
+    out = prefer_web_path("what time is it in Tokyo?", tools)
+    assert [t["name"] for t in out] == [
+        "browser_navigate", "navigate", "get_time",
+    ]
+
+
+def test_shortlist_biases_stealth_url_toward_computer_use():
+    """Even in a small registry that passes the shortlist word-count guard,
+    a stealth URL still promotes the computer_use tool to the front."""
+    from cerebral.llm.planner import shortlist_tools
+
+    tools = [_BROWSER_PLUGIN_NAVIGATE, _UNRELATED_TOOL, _BROWSER_NAVIGATE_TOOL]
+    out = shortlist_tools("please open https://discord.com/app", tools, limit=30)
+    assert out[0]["name"] == "browser_navigate"
+
+
+def test_shortlist_biases_benign_url_toward_browser_plugin():
+    from cerebral.llm.planner import shortlist_tools
+
+    tools = [_BROWSER_NAVIGATE_TOOL, _UNRELATED_TOOL, _BROWSER_PLUGIN_NAVIGATE]
+    out = shortlist_tools("read https://example.com/post please", tools, limit=30)
+    assert out[0]["name"] == "navigate"
+
+
+def test_coexistence_browser_plugin_still_registers_three_tools():
+    """ADR-0016 sec 2 coexistence: the Browser plugin (Playwright) keeps its
+    role for benign/anonymous use -- computer_use does not replace it."""
+    from plugins.browser import BrowserPlugin
+    names = {t.name for t in BrowserPlugin().list_tools()}
+    assert names == {"web_search", "navigate", "read_pdf"}

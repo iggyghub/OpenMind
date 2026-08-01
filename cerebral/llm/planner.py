@@ -95,6 +95,40 @@ def validate_tool_args(
     return None
 
 
+# ADR-0016 S7 (#580): tool families for the browser stealth-vs-fast heuristic.
+# When the transcript names a URL, the planner leans toward the family whose
+# fingerprint fits: computer_use (OS input, no CDP) for stealth-sensitive
+# hosts, Browser (Playwright DOM) for the benign default. Both plugins
+# coexist -- see ADR-0016 sec 2.
+_COMPUTER_USE_WEB_TOOLS: frozenset[str] = frozenset({"browser_navigate"})
+_BROWSER_PLUGIN_WEB_TOOLS: frozenset[str] = frozenset({"navigate", "web_search", "read_pdf"})
+
+
+def prefer_web_path(transcript: str, tools: list[dict]) -> list[dict]:
+    """Reorder ``tools`` so the family that fits the transcript's URL comes
+    first: stealth-sensitive -> computer_use, benign -> Browser plugin. No-op
+    when no URL is detected -- keeps unaffected callers unchanged. Non-web
+    tools keep their original relative order (stable sort by category)."""
+    # Local import so plugin discovery order can't wedge the planner into
+    # importing a plugin that isn't loaded in the current process.
+    try:
+        from plugins.computer_use import _URL_RE, select_web_path
+    except Exception:
+        return list(tools)
+    if not _URL_RE.search(transcript or ""):
+        return list(tools)
+    prefer_cu = select_web_path(transcript) == "computer_use"
+
+    def category(t: dict) -> int:
+        name = (t.get("name") or "").lower()
+        if name in _COMPUTER_USE_WEB_TOOLS:
+            return 0 if prefer_cu else 2
+        if name in _BROWSER_PLUGIN_WEB_TOOLS:
+            return 0 if not prefer_cu else 2
+        return 1  # unrelated tools sit between preferred and deprioritised
+    return sorted(tools, key=category)
+
+
 def shortlist_tools(
     transcript: str, tools: list[dict], limit: int = 30
 ) -> list[dict]:
@@ -110,7 +144,11 @@ def shortlist_tools(
     matching the tool *name* counts triple. Ties keep registration order
     (sorted() is stable).
     ponytail: lexical overlap; upgrade to embedding recall if misses show up.
+
+    ADR-0016 S7 (#580): when the transcript names a URL, tools get pre-biased
+    by ``prefer_web_path`` so the stealth-vs-fast family wins ties.
     """
+    tools = prefer_web_path(transcript, list(tools))
     words = {w for w in re.findall(r"[a-z0-9]+", transcript.lower()) if len(w) >= 4}
     if not words or len(tools) <= limit:
         return list(tools)

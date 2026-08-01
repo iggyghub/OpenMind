@@ -81,10 +81,10 @@ def test_plugin_declares_expected_capabilities():
     assert cu_mod.REQUIRED_CAPABILITIES == frozenset({"screen_capture", "device_control"})
 
 
-def test_plugin_registers_three_tools():
+def test_plugin_registers_expected_tools():
     plugin = ComputerUsePlugin(backend=_FakeBackend())
     names = {t.name for t in plugin.list_tools()}
-    assert names == {"read_ui", "click_element", "type_into"}
+    assert names == {"read_ui", "click_element", "type_into", "browser_navigate"}
 
 
 def test_source_passes_inspectability_scan():
@@ -1356,3 +1356,266 @@ async def test_handoff_backend_without_surface_window_still_calls_seam():
     )
     assert not r.is_error
     assert len(hcalls) == 1
+
+
+# ---------------------------------------------------------------------------
+# S7 #580 -- browser-as-app stealth path + planner selection vs Browser plugin
+# ---------------------------------------------------------------------------
+
+class _BrowserBackend(_FakeBackend):
+    """Fake backend that also records ``press_key`` presses (S7 URL submit)
+    and lets tests script two-phase read_ui (address-bar tree, then loaded-page
+    tree)."""
+
+    def __init__(
+        self,
+        read_ui_returns=None,
+        window_bounds=None,
+        raise_on_press_key=None,
+    ) -> None:
+        super().__init__(read_ui_returns=read_ui_returns)
+        self._window_bounds = window_bounds
+        self._raise_on_press_key = raise_on_press_key
+        self.press_calls: list[str] = []
+        self.surface_calls: list[str] = []
+
+    def window_bounds(self, window_title):
+        return list(self._window_bounds) if self._window_bounds else None
+
+    def press_key(self, key: str) -> None:
+        if self._raise_on_press_key is not None:
+            raise self._raise_on_press_key
+        self.press_calls.append(key)
+
+    def surface_window(self, window_title):
+        self.surface_calls.append(window_title)
+
+
+def _address_bar_element(name="Address and search bar", bbox=(10, 10, 400, 40)):
+    return {"name": name, "role": "Edit", "bbox": list(bbox)}
+
+
+def _page_element(name, role="Text", bbox=(10, 50, 800, 80)):
+    return {"name": name, "role": role, "bbox": list(bbox)}
+
+
+async def test_browser_navigate_registers_as_a_tool():
+    plugin = ComputerUsePlugin(backend=_BrowserBackend())
+    names = {t.name for t in plugin.list_tools()}
+    assert "browser_navigate" in names
+
+
+async def test_browser_navigate_types_url_and_submits_via_press_key():
+    """Happy path: find address bar -> click -> type URL -> Enter -> re-read page."""
+    bar = _address_bar_element()
+    page_after = [
+        _page_element("Discord | Your place to talk"),
+        _page_element("Messages", role="List"),
+    ]
+    backend = _BrowserBackend(
+        read_ui_returns=[[bar], page_after],
+        window_bounds=[0, 0, 1200, 800],
+    )
+    plugin = ComputerUsePlugin(backend=backend)
+    r = await plugin.call_tool(
+        "browser_navigate",
+        {"window_title": "Google Chrome", "url": "https://discord.com/app"},
+    )
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["ok"] is True
+    assert data["url"] == "https://discord.com/app"
+    assert data["target"]["name"] == "Address and search bar"
+    assert backend.click_calls == [[10, 10, 400, 40]]
+    assert backend.type_calls == ["https://discord.com/app"]
+    assert backend.press_calls == ["enter"]
+    # Re-read UIA is exposed to the caller as the page snapshot.
+    assert data["elements"] == page_after
+
+
+async def test_browser_navigate_falls_back_to_newline_without_press_key():
+    """Backwards-compat: a pre-S7 backend without press_key still submits by
+    typing a trailing newline into the address bar."""
+    bar = _address_bar_element()
+
+    class _NoPressBackend(_FakeBackend):
+        def __init__(self):
+            super().__init__(read_ui_returns=[[bar], []])
+
+        def window_bounds(self, window_title):
+            return [0, 0, 1200, 800]
+        # No press_key attribute -> plugin falls back.
+
+    backend = _NoPressBackend()
+    plugin = ComputerUsePlugin(backend=backend)
+    r = await plugin.call_tool(
+        "browser_navigate",
+        {"window_title": "Chrome", "url": "https://example.com"},
+    )
+    assert not r.is_error, r.content
+    assert backend.type_calls == ["https://example.com", "\n"]
+
+
+async def test_browser_navigate_uses_address_bar_override():
+    """An explicit ``address_bar`` arg wins over the built-in candidate list."""
+    custom = {"name": "SuperBrowser URL Field", "role": "Edit", "bbox": [0, 0, 100, 20]}
+    backend = _BrowserBackend(
+        read_ui_returns=[[custom], []],
+        window_bounds=[0, 0, 800, 600],
+    )
+    plugin = ComputerUsePlugin(backend=backend)
+    r = await plugin.call_tool(
+        "browser_navigate",
+        {
+            "window_title": "SB",
+            "url": "https://example.com",
+            "address_bar": "SuperBrowser URL Field",
+        },
+    )
+    assert not r.is_error
+    data = json.loads(r.content)
+    assert data["target"]["name"] == "SuperBrowser URL Field"
+
+
+async def test_browser_navigate_uses_no_playwright_no_cdp():
+    """ADR-0016 sec 2: this path deliberately does NOT reach for Playwright /
+    CDP. The plugin file must not IMPORT anything that would introduce the
+    fingerprint (mentions in comments are fine -- they document the choice)."""
+    src = Path(cu_mod.__file__).read_text(encoding="utf-8").lower()
+    forbidden = ("playwright", "pyppeteer", "chrome_devtools", "selenium")
+    for bad in forbidden:
+        assert f"import {bad}" not in src, (
+            f"computer_use must not import {bad!r} (ADR-0016 sec 2)"
+        )
+        assert f"from {bad}" not in src, (
+            f"computer_use must not import from {bad!r} (ADR-0016 sec 2)"
+        )
+
+
+async def test_browser_navigate_retries_when_address_bar_missing():
+    """Address bar not visible on first observation; shows up on try 2 and wins."""
+    bar = _address_bar_element()
+    backend = _BrowserBackend(
+        read_ui_returns=[[], [bar], []],  # miss, hit, post-navigate
+        window_bounds=[0, 0, 1200, 800],
+    )
+    plugin = ComputerUsePlugin(backend=backend)
+    r = await plugin.call_tool(
+        "browser_navigate",
+        {"window_title": "Edge", "url": "https://example.com", "retries": 3},
+    )
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["ok"] is True
+    assert len(data["tries"]) == 2
+    assert data["tries"][0]["ok"] is False
+    assert data["tries"][1]["ok"] is True
+
+
+async def test_browser_navigate_empty_url_records_error():
+    plugin = ComputerUsePlugin(backend=_BrowserBackend())
+    r = await plugin.call_tool(
+        "browser_navigate", {"window_title": "Chrome", "url": ""},
+    )
+    assert r.is_error
+    data = json.loads(r.content)
+    assert "non-empty url" in data["tries"][0]["expected"]
+
+
+async def test_browser_navigate_refused_outside_window_bounds():
+    """Address bar sitting outside the target window's rect is refused --
+    the soft window-bounded region check (same as click/type)."""
+    bar = {"name": "Address and search bar", "role": "Edit", "bbox": [900, 10, 1300, 40]}
+    backend = _BrowserBackend(
+        read_ui_returns=[[bar]],
+        window_bounds=[0, 0, 800, 600],
+    )
+    plugin = ComputerUsePlugin(backend=backend)
+    r = await plugin.call_tool(
+        "browser_navigate",
+        {"window_title": "Chrome", "url": "https://example.com", "retries": 1},
+    )
+    assert r.is_error
+    data = json.loads(r.content)
+    assert "outside window bounds" in data["tries"][-1]["actual"]
+    assert backend.click_calls == []
+    assert backend.press_calls == []
+
+
+async def test_browser_navigate_escalates_to_handoff_on_exhaustion():
+    """No address bar found after retries -> attended-handoff seam invoked."""
+    handoff, hcalls = _fake_handoff(True)
+    backend = _BrowserBackend(read_ui_returns=[[], [], []], window_bounds=[0, 0, 800, 600])
+    plugin = ComputerUsePlugin(backend=backend, attended_handoff_fn=handoff)
+    r = await plugin.call_tool(
+        "browser_navigate",
+        {"window_title": "Chrome", "url": "https://discord.com", "retries": 3},
+    )
+    assert not r.is_error
+    assert len(hcalls) == 1
+    assert backend.surface_calls == ["Chrome"]
+
+
+async def test_browser_navigate_corner_failsafe_aborts_loop():
+    bar = _address_bar_element()
+    backend = _BrowserBackend(
+        read_ui_returns=[[bar]],
+        window_bounds=[0, 0, 1200, 800],
+        raise_on_press_key=CornerAbort("corner"),
+    )
+    plugin = ComputerUsePlugin(backend=backend)
+    r = await plugin.call_tool(
+        "browser_navigate",
+        {"window_title": "Chrome", "url": "https://example.com", "retries": 3},
+    )
+    assert r.is_error
+    data = json.loads(r.content)
+    assert "corner-failsafe" in data["tries"][-1]["actual"]
+    assert plugin._abort_event.is_set()
+
+
+async def test_browser_navigate_fails_closed_on_non_windows(monkeypatch):
+    """Same fail-closed guarantee as read_ui/click_element/type_into."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    plugin = ComputerUsePlugin()  # default backend -> None on non-Windows
+    r = await plugin.call_tool(
+        "browser_navigate",
+        {"window_title": "Chrome", "url": "https://example.com"},
+    )
+    assert r.is_error
+    assert "not available" in r.content
+
+
+# ---- stealth_sensitive / select_web_path heuristic -----------------------
+
+def test_stealth_sensitive_recognises_known_hosts():
+    from plugins.computer_use import stealth_sensitive
+    assert stealth_sensitive("https://discord.com/channels/1/2") is True
+    assert stealth_sensitive("https://www.discord.com") is True  # subdomain
+    assert stealth_sensitive("https://linkedin.com/in/foo") is True
+    assert stealth_sensitive("https://x.com/felix") is True
+    assert stealth_sensitive("go check https://discord.com please") is True
+
+
+def test_stealth_sensitive_recognises_bare_hostnames():
+    from plugins.computer_use import stealth_sensitive
+    assert stealth_sensitive("discord.com") is True
+    assert stealth_sensitive("linkedin.com/in/x") is True
+
+
+def test_stealth_sensitive_benign_defaults_false():
+    from plugins.computer_use import stealth_sensitive
+    assert stealth_sensitive("") is False
+    assert stealth_sensitive("hello world") is False
+    assert stealth_sensitive("https://example.com") is False
+    assert stealth_sensitive("https://news.ycombinator.com") is False
+    # A subdomain of a stealth host is caught; an *unrelated* host with a
+    # similar suffix is not.
+    assert stealth_sensitive("https://notdiscord.com") is False
+
+
+def test_select_web_path_routes_by_sensitivity():
+    from plugins.computer_use import select_web_path
+    assert select_web_path("https://discord.com") == "computer_use"
+    assert select_web_path("https://example.com") == "browser"
+    assert select_web_path("") == "browser"  # nothing to route -> fast default
