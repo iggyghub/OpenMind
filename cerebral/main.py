@@ -300,6 +300,48 @@ async def _computer_use_driving(driving: bool) -> None:  # S2 #576 (ADR-0016)
 _VISION_GROUND_COORD_RE = re.compile(r"(-?\d+)\s*[, ]\s*(-?\d+)")
 
 
+_computer_use_handoff_pending: dict[str, asyncio.Future] = {}
+_computer_use_handoff_next_id: int = 0
+
+
+async def _computer_use_attended_handoff(  # S6 #579 (ADR-0016 sec 6)
+    window_title: str, reason: str,
+) -> bool:
+    """Attended-handoff wiring: notify the user, broadcast a handoff-needed
+    event so the tray can render a "take over" affordance, then await the
+    matching ``computer_use_handoff_done`` IPC reply. Returns True when the
+    human completed the step, False when they declined (or the tool call was
+    stopped). Behaviour beyond the notification + await path (target-window
+    surfacing on real Windows) is covered by the plugin's backend
+    surface_window seam; end-to-end live verification lives in
+    docs/computer-use-live-verify.md."""
+    global _computer_use_handoff_next_id
+    _computer_use_handoff_next_id += 1
+    handoff_id = f"h{_computer_use_handoff_next_id}"
+    loop = asyncio.get_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    _computer_use_handoff_pending[handoff_id] = fut
+    try:
+        await _notify_user(
+            "Felix needs you to take over",
+            f"{reason} in {window_title}. Finish the step and let Felix know when done.",
+        )
+        await _broadcast({
+            "type": "computer_use:handoff_needed",
+            "data": {
+                "handoff_id": handoff_id,
+                "window_title": window_title,
+                "reason": reason,
+            },
+        })
+        try:
+            return bool(await fut)
+        except asyncio.CancelledError:
+            return False
+    finally:
+        _computer_use_handoff_pending.pop(handoff_id, None)
+
+
 async def _computer_use_vision_ground(  # S5 #578 (ADR-0016 sec 5)
     name: str, frame: bytes,
 ) -> tuple[int, int] | None:
@@ -4097,7 +4139,12 @@ async def _handle_message(msg: dict) -> None:
     elif t == "computer_use_stop":
         # S2 #576 -- (c) leg of the ADR-0016 three-part kill switch. Fired by
         # the Visualiser's Stop control when Felix is driving. The plugin
-        # short-circuits its observe-act loop at the next yield point.
+        # short-circuits its observe-act loop at the next yield point. S6
+        # #579: if a handoff is pending, treat Stop as "decline handoff" so
+        # the plugin isn't left awaiting a done reply the user won't send.
+        for _fut in list(_computer_use_handoff_pending.values()):
+            if not _fut.done():
+                _fut.set_result(False)
         try:
             module = _orc.get_plugin_module("computer_use")
         except KeyError:
@@ -4109,6 +4156,24 @@ async def _handle_message(msg: dict) -> None:
             return
         stopper()
         await _broadcast({"type": "computer_use:driving", "data": {"driving": False}})
+
+    elif t == "computer_use_handoff_done":
+        # S6 #579 -- reply to a computer_use:handoff_needed broadcast. The
+        # tray sends this when the user clicks the "Done" affordance during
+        # an attended handoff. ``completed`` defaults to True (the button's
+        # normal semantic); a client can pass False to explicitly decline.
+        d = msg.get("data") or {}
+        hid = d.get("handoff_id")
+        completed = bool(d.get("completed", True))
+        fut = _computer_use_handoff_pending.get(hid) if isinstance(hid, str) else None
+        if fut is None:
+            logger.info(
+                "[cerebral] computer_use_handoff_done: no pending handoff for id=%r",
+                hid,
+            )
+            return
+        if not fut.done():
+            fut.set_result(completed)
 
     elif t == "user_text_command":
         # Issue #185 / ADR-0007 -- typed input from the Main window. Same
@@ -5396,6 +5461,7 @@ def _wire_plugin_seams() -> None:
         ("self_dev", "set_restart_fn", _self_dev_restart),                           # ADR-0015 SD-2 #555
         ("computer_use", "set_driving_fn", _computer_use_driving),                   # S2 #576 (ADR-0016 (c))
         ("computer_use", "set_vision_ground_fn", _computer_use_vision_ground),       # S5 #578 (ADR-0016 sec 5)
+        ("computer_use", "set_attended_handoff_fn", _computer_use_attended_handoff), # S6 #579 (ADR-0016 sec 6)
     ]
     for name, seam, factory in seams:
         try:

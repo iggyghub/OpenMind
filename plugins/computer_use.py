@@ -93,10 +93,18 @@ HotkeyRegisterFn = Callable[[Callable[[], None]], Optional[Callable[[], None]]]
 # fails. Wired in main.py to run through the router's ``complete_with_images``
 # priority chain (ADR-0016 sec 5); tests inject a fake to avoid a live model.
 VisionGroundFn = Callable[[str, bytes], Awaitable[Optional[tuple[int, int]]]]
+# S6 #579: attended-handoff seam. Given the target window title and a compact
+# reason, notify the user + surface the target window + await the human's
+# "done" (True) or "declined" (False). Wired in main.py to emit the notify +
+# broadcast pair and await an IPC ``computer_use_handoff_done`` reply; tests
+# inject a fake that returns immediately. When unwired, the plugin falls
+# through with the failed trace (matches pre-S6 behaviour on exhaustion).
+AttendedHandoffFn = Callable[[str, str], Awaitable[bool]]
 
 _driving_fn: Optional[DrivingFn] = None
 _hotkey_register_fn: Optional[HotkeyRegisterFn] = None
 _vision_ground_fn: Optional[VisionGroundFn] = None
+_attended_handoff_fn: Optional[AttendedHandoffFn] = None
 _plugin_instance: Optional["ComputerUsePlugin"] = None
 
 
@@ -119,6 +127,14 @@ def set_vision_ground_fn(fn: VisionGroundFn) -> None:
     when this is unset -- structured-only is the safe default."""
     global _vision_ground_fn
     _vision_ground_fn = fn
+
+
+def set_attended_handoff_fn(fn: AttendedHandoffFn) -> None:
+    """Wire the attended-handoff seam (S6 #579). Called on retry exhaustion or
+    DRM-black escalation -- surface the target window + await the human. When
+    unwired the plugin fails the tool call as before (no silent handoff)."""
+    global _attended_handoff_fn
+    _attended_handoff_fn = fn
 
 
 def abort_current() -> None:
@@ -153,6 +169,10 @@ class ComputerUseBackend(Protocol):
         """Return the target window's client-rect ``[l, t, r, b]`` in screen
         coordinates, or None when the window is missing / bounds unavailable.
         Used as the soft window-bounded-region check for every actuation."""
+
+    def surface_window(self, window_title: str) -> None:
+        """S6 #579: bring the target window to the foreground so the human can
+        take over. Best-effort -- failures must not break the handoff."""
 
 
 def _make_default_backend() -> Optional[ComputerUseBackend]:
@@ -232,6 +252,7 @@ class ComputerUsePlugin:
         driving_fn: DrivingFn | None = None,
         hotkey_register_fn: HotkeyRegisterFn | None | object = _UNSET,
         vision_ground_fn: VisionGroundFn | None = None,
+        attended_handoff_fn: AttendedHandoffFn | None = None,
         thumbnail_ring_size: int = DEFAULT_THUMBNAIL_RING_SIZE,
     ) -> None:
         if backend is _UNSET:
@@ -250,6 +271,10 @@ class ComputerUsePlugin:
         # what pre-S5 callers expect). Ring lives in process memory; a
         # restart clears it -- audio-buffer rule (ADR-0016 sec 7).
         self._vision_ground_fn: VisionGroundFn | None = vision_ground_fn or _vision_ground_fn
+        # S6 #579: attended-handoff seam. Unwired = no handoff (fail as before).
+        self._attended_handoff_fn: AttendedHandoffFn | None = (
+            attended_handoff_fn or _attended_handoff_fn
+        )
         self._thumbnail_ring: deque[bytes] = deque(maxlen=max(1, int(thumbnail_ring_size)))
         # asyncio.Event carries the abort signal across the (a) corner-failsafe,
         # (b) F11+F12 chord, and (c) Visualiser Stop legs. Created here so it
@@ -509,6 +534,58 @@ class ComputerUsePlugin:
         trace["ok"] = True
         return True
 
+    async def _escalate_to_handoff(
+        self, window_title: str, name: str, reason: str, trace: dict,
+    ) -> bool:
+        """S6 #579: attended-handoff on retry exhaustion / DRM-black. Surface
+        the target window, invoke the handoff seam, and record the outcome as
+        a ``path="handoff"`` try so the trace tells structured / pixel /
+        handoff apart. Returns True when the human completed the step (caller
+        flips ``trace.ok``); False otherwise (seam unwired, declined, or
+        raised). Never fires when the loop was killed by the (a)/(b)/(c) kill
+        switch -- the calling loop returns early before reaching this."""
+        handoff_fn = self._attended_handoff_fn
+        if handoff_fn is None:
+            return False
+        surface = getattr(self._backend, "surface_window", None)
+        if surface is not None:
+            try:
+                surface(window_title)
+            except Exception:
+                logger.warning(
+                    "[computer_use] surface_window failed", exc_info=True,
+                )
+        # Handing over to the human -- flip driving off so any UI shows the
+        # correct "Felix paused" state. The tool's outer finally emits a
+        # second False on return; harmless.
+        await self._emit_driving(False)
+        n = len(trace["tries"]) + 1
+        try:
+            completed = bool(await handoff_fn(window_title, reason))
+        except Exception as exc:
+            trace["tries"].append(
+                {"n": n, "observed": False, "acted": False,
+                 "expected": f"attended handoff for {name!r}",
+                 "actual": f"handoff seam raised: {exc}",
+                 "ok": False, "path": "handoff"}
+            )
+            return False
+        if completed:
+            trace["tries"].append(
+                {"n": n, "observed": True, "acted": True,
+                 "expected": f"human completes {name!r}",
+                 "actual": "handoff completed by human",
+                 "ok": True, "path": "handoff"}
+            )
+            return True
+        trace["tries"].append(
+            {"n": n, "observed": True, "acted": False,
+             "expected": f"human completes {name!r}",
+             "actual": "handoff declined by human",
+             "ok": False, "path": "handoff"}
+        )
+        return False
+
     def _finish(self, trace: dict) -> ToolResult:
         if self._record_trace_fn is not None:
             try:
@@ -643,6 +720,17 @@ class ComputerUsePlugin:
             # fallback once. No-op when the grounding seam isn't wired, so
             # structured-only remains the default posture.
             await self._pixel_fallback_click(window_title, name, trace)
+            # S6 #579: still failing after structured + pixel? Escalate to
+            # attended-handoff (notify + surface window + await human). DRM-
+            # black also reaches here because _pixel_fallback_click returns
+            # False after recording the escalated try.
+            if not trace.get("ok") and not self._abort_event.is_set():
+                if await self._escalate_to_handoff(
+                    window_title, name,
+                    f"structured + pixel retries exhausted on {name!r}",
+                    trace,
+                ):
+                    trace["ok"] = True
             return self._finish(trace)
         finally:
             await self._emit_driving(False)
@@ -766,6 +854,16 @@ class ComputerUsePlugin:
                      "expected": f"value contains {text!r}",
                      "actual": f"value={value!r}", "ok": False}
                 )
+            # S6 #579: type_into has no pixel fallback (text input can't be
+            # coordinate-clicked into a field the tree can't see). On UIA
+            # exhaustion, hand over to the human directly.
+            if not self._abort_event.is_set():
+                if await self._escalate_to_handoff(
+                    window_title, name,
+                    f"could not type into {name!r} after {limit} tries",
+                    trace,
+                ):
+                    trace["ok"] = True
             return self._finish(trace)
         finally:
             await self._emit_driving(False)
@@ -872,6 +970,21 @@ class _WindowsBackend:
         except Exception:
             return None
         return [rect.left, rect.top, rect.right, rect.bottom]
+
+    def surface_window(self, window_title: str) -> None:
+        """S6 #579: bring the target window to the foreground so the human can
+        take over during an attended handoff. Best-effort -- silently ignores
+        a missing window or an OS refusal (Windows sometimes denies
+        SetForegroundWindow to a background process)."""
+        win = self._window(window_title)
+        if not win.Exists(0):
+            return
+        try:
+            win.SetActive()
+        except Exception:
+            logger.warning(
+                "[computer_use] SetActive failed for %r", window_title, exc_info=True,
+            )
 
 
 def _default_hotkey_register(abort: Callable[[], None]) -> Callable[[], None] | None:

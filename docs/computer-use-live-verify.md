@@ -120,3 +120,38 @@ Run these manually on a Windows machine where the target apps are installed.
       returns None (router raises `ModelUnavailableError` -> seam logs
       and returns None); the trace records a fallback try with
       `ok: false` and no coord; no click fires. Caller escalates.
+
+## S6 #579 -- attended-handoff on retry exhaustion / DRM-black
+
+- [ ] Open Calculator and ask Felix to click a button that does not exist
+      (e.g. "click the Antimatter button in Calculator"). Verify: after
+      `DEFAULT_RETRY_LIMIT` structured tries + a pixel fallback attempt,
+      Cerebral emits a `computer_use:handoff_needed` broadcast, an OS
+      notification titled "Felix needs you to take over" fires, and the
+      Calculator window is surfaced (SetActive brings it forward). Verify
+      the plugin trace's final try has `path: "handoff"` and awaits a
+      reply. Send `{"type":"computer_use_handoff_done","data":{"handoff_id":"h1","completed":true}}`
+      via the tray IPC (or a dev harness). Verify: the tool call returns
+      `is_error: false`, the final try records `handoff completed by human`,
+      and the transcript shows Felix continuing.
+- [ ] Repeat the flow but respond with `completed: false`. Verify: the
+      tool call returns `is_error: true`, the final try records
+      `handoff declined by human`, and Felix does not continue.
+- [ ] Open Netflix (or any DRM-protected video) and ask Felix to click a
+      control (e.g. "click Pause"). Verify: `capture_frame` returns a
+      black raster, the pixel path records an `escalated: true` try, and
+      the plugin then invokes the handoff seam (notification + broadcast).
+      Complete the step manually and reply `computer_use_handoff_done` +
+      `completed: true`. Verify: Felix continues.
+- [ ] Ask Felix to interact with an app that exposes no UIA tree at all
+      (e.g. a custom-drawn canvas window). Verify: read_ui returns an
+      empty list every try -> retries exhaust -> attended-handoff fires
+      even without an explicit "element not found" record.
+- [ ] While a handoff is pending (Felix is awaiting the human), click the
+      Visualiser's Stop control. Verify: the pending handoff resolves as
+      declined (`is_error: true`, "handoff declined by human"), the
+      driving indicator flips off, and no further tool calls run.
+- [ ] Confirm the handoff carries NO frame bytes: dump the broadcast
+      payload for `computer_use:handoff_needed`. Verify it contains only
+      `handoff_id`, `window_title`, `reason` -- no image data (ADR-0016
+      sec 7 audio-buffer rule extends across the seam).
