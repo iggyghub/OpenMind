@@ -5,11 +5,11 @@ Autonomous loop for the ADR-0016 computer-use capability (see
 mouse/keyboard itself: hybrid modality (UIA structured-first, pixel-vision
 fallback), Windows-only v1, fail-closed elsewhere.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S7 -- #580
+- **Active:** (none -- AFK queue exhausted; S3/#577 and S8/#581 remain Human-gated)
 - **Model:** opus
 
 ## Queue (AFK -- auto-run, in blocker order)
@@ -19,7 +19,7 @@ fallback), Windows-only v1, fail-closed elsewhere.
 - [x] S4 -- #575 -- multimodal Backend seam + computer_use_vision routing (local -> Budd -> cloud, honors local_only)
 - [x] S5 -- #578 -- pixel-vision fallback + RAM thumbnail buffer + DRM-black escalation
 - [x] S6 -- #579 -- attended handoff on retry exhaustion / no structured surface
-- [ ] S7 -- #580 -- browser-as-app stealth path + planner selection vs Browser plugin
+- [x] S7 -- #580 -- browser-as-app stealth path + planner selection vs Browser plugin
 
 ## Human-gated -- NOT auto-run (the loop must NEVER set these Active)
 
@@ -33,6 +33,7 @@ fallback), Windows-only v1, fail-closed elsewhere.
 - S4 -- #575 -- PR #584
 - S5 -- #578 -- PR #585
 - S6 -- #579 -- PR #586
+- S7 -- #580 -- PR #587
 
 ## SAFETY
 
