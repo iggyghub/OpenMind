@@ -43,6 +43,15 @@ Also adds an ``on_manual_override`` callback seam: when
 notifies ``cerebral/discord_presence.py``'s ``DiscordPresenceController``
 so the auto-presence machinery knows a manual override is in effect.
 
+Server navigation adds two read-only discovery tools so the LLM can
+reach *server* channels, not just DMs:
+  - ``discord_list_guilds``   -- servers the user is in (id + name).
+  - ``discord_list_channels`` -- channels in a guild (id, name, type,
+    parent category), ordered by Discord position.
+The existing ``discord_send_message`` / ``discord_get_messages`` /
+``discord_react`` / ``discord_edit`` / ``discord_delete`` already take a
+``channel_id``, so once a channel is found they work unchanged.
+
 Architecture
 ------------
 
@@ -103,8 +112,9 @@ PLUGIN_NAME = "discord_user"
 #     never calls keyring.* directly), but handing a self-bot credential
 #     the silent-class free pass is the wrong default.
 #
-#   - external_data_read: discord_list_conversations + discord_get_messages
-#     read the user's DM transcripts (external data).
+#   - external_data_read: discord_list_conversations, discord_list_guilds,
+#     discord_list_channels + discord_get_messages read the user's servers,
+#     channels, and DM/channel transcripts (external data).
 #
 #   - external_data_write: discord_send_message mutates external state
 #     (delivers a real DM into the recipient's client). Ask-class
@@ -419,6 +429,39 @@ class DiscordUserPlugin:
                 },
             ),
             Tool(
+                name="discord_list_guilds",
+                description=(
+                    "List the Discord servers (guilds) the user belongs to. "
+                    "Returns each server's id and name. Pass a server id to "
+                    "discord_list_channels to find channels to read or send to."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="discord_list_channels",
+                description=(
+                    "List the channels in a Discord server (guild). Returns "
+                    "each channel's id, name, type (text/voice/category/"
+                    "announcement/forum/...), and parent category id, ordered "
+                    "as they appear in Discord. Send to a text or announcement "
+                    "channel by passing its id to discord_send_message."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "guild_id": {
+                            "type": "string",
+                            "description": (
+                                "Server id from discord_list_guilds."
+                            ),
+                        },
+                    },
+                    "required": ["guild_id"],
+                },
+            ),
+            Tool(
                 name="discord_get_messages",
                 description=(
                     "Read recent messages in a Discord DM or channel. "
@@ -632,6 +675,10 @@ class DiscordUserPlugin:
         args = args or {}
         if tool_name == "discord_list_conversations":
             return await self._list_conversations(args)
+        if tool_name == "discord_list_guilds":
+            return await self._list_guilds(args)
+        if tool_name == "discord_list_channels":
+            return await self._list_channels(args)
         if tool_name == "discord_get_messages":
             return await self._get_messages(args)
         if tool_name == "discord_send_message":
@@ -680,6 +727,48 @@ class DiscordUserPlugin:
                 continue
             threads.append(_shape_conversation(ch))
         return ToolResult(content=json.dumps({"conversations": threads}))
+
+    async def _list_guilds(self, args: dict) -> ToolResult:
+        token, err = self._resolve_token()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+        try:
+            raw = await self._request("GET", "users/@me/guilds", token)
+        except Exception as exc:
+            return self._fail("discord_list_guilds", exc)
+        if not isinstance(raw, list):
+            return ToolResult(
+                content="unexpected Discord guilds response", is_error=True,
+            )
+        guilds = [_shape_guild(g) for g in raw if isinstance(g, dict)]
+        return ToolResult(content=json.dumps({"guilds": guilds}))
+
+    async def _list_channels(self, args: dict) -> ToolResult:
+        guild_id = args.get("guild_id")
+        if not isinstance(guild_id, str) or not guild_id:
+            return ToolResult(
+                content="missing required arg(s) for discord_list_channels: "
+                        "guild_id",
+                is_error=True,
+            )
+        token, err = self._resolve_token()
+        if err is not None:
+            return ToolResult(content=err, is_error=True)
+        try:
+            raw = await self._request(
+                "GET", f"guilds/{guild_id}/channels", token,
+            )
+        except Exception as exc:
+            return self._fail("discord_list_channels", exc)
+        if not isinstance(raw, list):
+            return ToolResult(
+                content="unexpected Discord channels response", is_error=True,
+            )
+        channels = sorted(
+            (_shape_guild_channel(c) for c in raw if isinstance(c, dict)),
+            key=lambda c: c["position"],
+        )
+        return ToolResult(content=json.dumps({"channels": channels}))
 
     async def _get_messages(self, args: dict) -> ToolResult:
         channel_id = args.get("channel_id")
@@ -1338,6 +1427,39 @@ def _shape_message(m: dict) -> dict:
 def _channel_type_label(ctype: Any) -> str:
     """Map Discord's int channel-type codes to readable labels."""
     return {1: "dm", 3: "group_dm"}.get(ctype, str(ctype) if ctype else "")
+
+
+# Guild (server) channel type codes -- distinct from the DM set above.
+# https://discord.com/developers/docs/resources/channel#channel-object-channel-types
+_GUILD_CHANNEL_TYPES = {
+    0: "text", 2: "voice", 4: "category", 5: "announcement",
+    10: "announcement_thread", 11: "public_thread", 12: "private_thread",
+    13: "stage", 15: "forum",
+}
+
+
+def _guild_channel_type_label(ctype: Any) -> str:
+    return _GUILD_CHANNEL_TYPES.get(ctype, str(ctype) if ctype is not None else "")
+
+
+def _shape_guild(g: dict) -> dict:
+    """Flatten a Discord guild (server) object for the LLM."""
+    return {
+        "id": str(g.get("id", "") or ""),
+        "name": g.get("name") or "",
+    }
+
+
+def _shape_guild_channel(ch: dict) -> dict:
+    """Flatten a Discord guild channel for the LLM. ``position`` is kept so
+    the caller can order channels as they appear in the server."""
+    return {
+        "id": str(ch.get("id", "") or ""),
+        "name": ch.get("name") or "",
+        "type": _guild_channel_type_label(ch.get("type")),
+        "parent_id": str(ch.get("parent_id") or ""),
+        "position": ch.get("position", 0) if isinstance(ch.get("position"), int) else 0,
+    }
 
 
 def _channel_type_name(channel: Any) -> str:

@@ -209,12 +209,14 @@ def _make_plugin(
 # Tool surface -- shape, count, capability declarations
 # ===========================================================================
 
-def test_list_tools_returns_seven_discord_tools():
+def test_list_tools_returns_discord_tool_surface():
     plugin = _make_plugin()
     tools = plugin.list_tools()
     names = [t.name for t in tools]
     assert set(names) == {
         "discord_list_conversations",
+        "discord_list_guilds",
+        "discord_list_channels",
         "discord_get_messages",
         "discord_send_message",
         "discord_set_presence",
@@ -297,6 +299,72 @@ async def test_list_conversations_returns_dm_threads():
     assert by_id["300"]["type"] == "group_dm"
     assert "Alice" in by_id["300"]["recipient_names"]
     assert "Bob" in by_id["300"]["recipient_names"]
+
+
+# ===========================================================================
+# discord_list_guilds / discord_list_channels -- server navigation
+# ===========================================================================
+
+async def test_list_guilds_returns_id_and_name():
+    fetch = FakeFetch(responses={
+        ("GET", "users/@me/guilds"): [
+            {"id": "10", "name": "Homelab"},
+            {"id": "20", "name": "Book Club"},
+            "junk",  # non-dict entries are skipped
+        ],
+    })
+    plugin = _make_plugin(fetch=fetch)
+
+    result = await plugin.call_tool("discord_list_guilds", {})
+    assert result.is_error is False
+    guilds = json.loads(result.content)["guilds"]
+    assert guilds == [
+        {"id": "10", "name": "Homelab"},
+        {"id": "20", "name": "Book Club"},
+    ]
+
+
+async def test_list_channels_shapes_types_and_orders_by_position():
+    fetch = FakeFetch(responses={
+        ("GET", "guilds/10/channels"): [
+            {"id": "3", "name": "general", "type": 0, "position": 1,
+             "parent_id": "9"},
+            {"id": "1", "name": "Text Channels", "type": 4, "position": 0},
+            {"id": "2", "name": "Lobby", "type": 2, "position": 5,
+             "parent_id": "9"},
+        ],
+    })
+    plugin = _make_plugin(fetch=fetch)
+
+    result = await plugin.call_tool(
+        "discord_list_channels", {"guild_id": "10"},
+    )
+    assert result.is_error is False
+    channels = json.loads(result.content)["channels"]
+    # Ordered by Discord position.
+    assert [c["id"] for c in channels] == ["1", "3", "2"]
+    by_id = {c["id"]: c for c in channels}
+    assert by_id["1"]["type"] == "category"
+    assert by_id["3"]["type"] == "text"
+    assert by_id["3"]["parent_id"] == "9"
+    assert by_id["2"]["type"] == "voice"
+
+
+async def test_list_channels_requires_guild_id():
+    plugin = _make_plugin(fetch=FakeFetch())
+    result = await plugin.call_tool("discord_list_channels", {})
+    assert result.is_error is True
+    assert "guild_id" in result.content
+
+
+async def test_list_channels_targets_the_guild_endpoint():
+    fetch = FakeFetch(responses={("GET", "guilds/42/channels"): []})
+    plugin = _make_plugin(fetch=fetch)
+    await plugin.call_tool("discord_list_channels", {"guild_id": "42"})
+    assert any(
+        c["method"] == "GET" and c["url"].endswith("guilds/42/channels")
+        for c in fetch.calls
+    )
 
 
 async def test_list_conversations_authorization_header_is_raw_token():
