@@ -61,6 +61,43 @@ PLUGIN_NAME = "computer_use"
 # gating happens at the planner via `irreversible`, not per-primitive).
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"screen_capture", "device_control"})
 
+# ADR-0016 sec 3 -- consequence-level gate. device_control primitives are
+# SILENT, but a click whose target *commits* an unrecoverable effect
+# (send / submit / delete / pay ...) is flagged irreversible so it routes
+# through the ADR-0005 modal. The classifier is intentionally conservative:
+# it matches whole words in the UIA element name so "Send" trips but
+# "Sender name" (a text field) does not, and "Two"/"Plus"/"Cancel" never do.
+# Cerebral (main.py) calls is_committing_action at the gate site and, when it
+# returns True, raises the irreversible CallFlag so the action routes through
+# the modal. No Tool here declares a static irreversible marking -- the
+# consequence is dynamic (depends on the click target). On the pixel-fallback path
+# the intent still arrives as a named target, so the same classification
+# applies before the UIA-vs-pixel resolution is known -- the gate sees the
+# planner's intent, not the resolution path.
+_COMMIT_VERBS: frozenset[str] = frozenset({
+    "send", "submit", "post", "publish", "delete", "remove", "discard",
+    "pay", "buy", "purchase", "checkout", "order", "confirm", "transfer",
+    "withdraw", "deposit", "unsubscribe", "deactivate", "disable",
+})
+
+
+def is_committing_action(tool_name: str, args: dict | None) -> bool:
+    """True when a computer_use call commits an unrecoverable effect.
+
+    Only click_element (and the browser URL-submit) can commit; read_ui and
+    plain typing do not. Matches a whole word in the target element name
+    against _COMMIT_VERBS. Pure + import-free so Cerebral's gate wiring and
+    the test suite can call it without a plugin instance.
+    """
+    args = args or {}
+    if tool_name != "click_element":
+        return False
+    name = str(args.get("name") or "").lower()
+    if not name:
+        return False
+    words = set(re.findall(r"[a-z]+", name))
+    return bool(words & _COMMIT_VERBS)
+
 # Retry ceiling for the observe-act-verify loop (ADR-0016 sec 6). Default 3;
 # ADR range is 3-5. A `success` short-circuits; only failed tries consume.
 DEFAULT_RETRY_LIMIT = 3

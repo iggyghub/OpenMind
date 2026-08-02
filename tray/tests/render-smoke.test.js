@@ -495,6 +495,14 @@ test('channel rows are collapsible and use the shared .ps-toggle switch', () => 
   expect(inlineScript).toMatch(/ps-toggle-input/);
 });
 
+test('Permissions pane wires the computer-use full-autonomy switch (ADR-0016 S3)', () => {
+  // The badged, default-off switch renders in the capabilities panel and
+  // posts set_computer_use_full_autonomy on change.
+  expect(inlineScript).toMatch(/data-perm-fullauto/);
+  expect(inlineScript).toMatch(/['"]set_computer_use_full_autonomy['"]/);
+  expect(inlineScript).toMatch(/perm-fullauto-badge/);
+});
+
 test('channel renderer uses password input for the secret field (S16)', () => {
   // The secret input must be a type="password" element so it never
   // renders the plaintext on screen. The element is created by the

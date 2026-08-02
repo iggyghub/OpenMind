@@ -1136,10 +1136,65 @@ def _job_apply_auto_gate(tool_name: str, args: object) -> bool:
         return False
 
 
+# ── Computer-use gate wiring (S3 #577, ADR-0016 sec 3-4) ─────────────────────
+#
+# Consequence-gate: device_control primitives are SILENT, but a committing
+# computer_use action (click a Send/Submit/Delete button) is flagged
+# irreversible so it routes through the modal. The classifier lives in the
+# plugin (get_plugin_module, never `import plugins.*` -- #153).
+#
+# Full-autonomy switch: the badged, default-off master switch that removes the
+# irreversible floor for computer_use actions ONLY -- the single documented
+# exception to ADR-0005's non-bypassable-irreversible rule (ADR-0016 sec 4).
+# RAM-only + default off + reset on profile switch: a floor-removing toggle
+# must never silently persist across a restart or leak across identities.
+_computer_use_full_autonomy: bool = False
+
+
+def _gate_flags_for(tool_name: str, tool_args: object) -> CallFlags:
+    """CallFlags for a tool dispatch. Flags a committing computer_use action
+    irreversible (ADR-0016 sec 3); CallFlags() for everything else."""
+    if _orc.plugin_for_tool(tool_name) != "computer_use":
+        return CallFlags()
+    try:
+        cu = _orc.get_plugin_module("computer_use")
+    except KeyError:
+        return CallFlags()
+    args = tool_args if isinstance(tool_args, dict) else {}
+    if cu.is_committing_action(tool_name, args):
+        return CallFlags(irreversible=True)
+    return CallFlags()
+
+
+def _computer_use_full_auto_gate(tool_name: str, args: object) -> bool:
+    """ADR-0016 sec 4: while the full-autonomy switch is on, auto-approve
+    irreversible computer_use actions (removes the floor) -- and ONLY
+    computer_use. Every other plugin's irreversible modal is untouched."""
+    return (
+        _computer_use_full_autonomy
+        and _orc.plugin_for_tool(tool_name) == "computer_use"
+    )
+
+
+def _modal_auto_gate(tool_name: str, args: object) -> bool:
+    """Composed modal auto-approve: the ADR-0009 job-submit exception OR the
+    ADR-0016 computer-use full-autonomy switch. Both are tool-scoped; neither
+    loosens the modal for any other tool."""
+    return _job_apply_auto_gate(tool_name, args) or _computer_use_full_auto_gate(tool_name, args)
+
+
+def _computer_use_full_autonomy_event() -> dict:
+    """State event driving the permanent 'full autonomy' indicator (ADR-0016 sec 4)."""
+    return {
+        "type": "computer_use:full_autonomy",
+        "data": {"enabled": _computer_use_full_autonomy},
+    }
+
+
 _modal_surface = ModalSurface(
     prompt_fn=_modal_prompt,
     has_subscriber_fn=_consent_has_subscriber,
-    auto_gate_fn=_job_apply_auto_gate,  # S7 #340: ADR-0009 tool-scoped exception
+    auto_gate_fn=_modal_auto_gate,  # ADR-0009 job-submit + ADR-0016 full-autonomy
 )
 _orc.set_modal_surface(_modal_surface)
 
@@ -2702,6 +2757,7 @@ def _permissions_state_event() -> dict:
                 "session_class_grants": {},
                 "shell_exec_unlocked": False,
                 "sandbox_available": _sandbox_available(),
+                "computer_use_full_autonomy": _computer_use_full_autonomy,
             },
         }
     acl = _orc.acl
@@ -2727,6 +2783,7 @@ def _permissions_state_event() -> dict:
             "session_class_grants": session_grants,
             "shell_exec_unlocked": _active_profile.shell_exec_unlocked,
             "sandbox_available": _sandbox_available(),
+            "computer_use_full_autonomy": _computer_use_full_autonomy,
         },
     }
 
@@ -3063,7 +3120,9 @@ async def _dispatch_tray_call_tool(tool_name: str, tool_args: dict) -> ToolResul
         else None
     )
     if caps:
-        decision = await _orc.check_capabilities(tool_name, caps, CallFlags())
+        decision = await _orc.check_capabilities(
+            tool_name, caps, _gate_flags_for(tool_name, tool_args)
+        )
     else:
         decision = Decision.SILENT
     if decision is Decision.SILENT:
@@ -3271,6 +3330,11 @@ async def _handle_message(msg: dict) -> None:
                 # Rebuild the ACL on profile switch — Issue #45 / ADR-0005
                 # mandates that once + session grants clear on switch.
                 _orc.set_acl(_build_acl(p))
+                # ADR-0016 sec 4: full autonomy is per-identity + never leaks
+                # across a switch. Reset off and clear the indicator.
+                global _computer_use_full_autonomy
+                _computer_use_full_autonomy = False
+                await _broadcast(_computer_use_full_autonomy_event())
                 logger.info("[cerebral] Switched to profile: %s", p.name)
                 await _broadcast(_profile_event(p))
                 # Issue #53 — re-read ACL state for the switched profile.
@@ -3420,6 +3484,21 @@ async def _handle_message(msg: dict) -> None:
             _active_profile = _pm.get(_active_profile.id)
         logger.info("[cerebral] Local-only %s", "enabled" if enabled else "disabled")
         await _broadcast(_models_list_event())
+
+    elif t == "set_computer_use_full_autonomy":
+        # ADR-0016 sec 4: the badged full-autonomy master switch. Default off,
+        # RAM-only (resets on restart + profile switch), the ONE documented
+        # exception to ADR-0005's non-bypassable-irreversible rule -- scoped to
+        # computer_use only (see _computer_use_full_auto_gate).
+        # (global declared once in this handler at the switch_profile branch.)
+        _computer_use_full_autonomy = bool(msg.get("data", {}).get("enabled"))
+        logger.warning(
+            "[cerebral] Computer-use FULL AUTONOMY %s -- irreversible modal is "
+            "%s for computer_use actions",
+            "ENABLED" if _computer_use_full_autonomy else "disabled",
+            "BYPASSED" if _computer_use_full_autonomy else "enforced",
+        )
+        await _broadcast(_computer_use_full_autonomy_event())
 
     elif t == "add_custom_model":
         d = msg.get("data", {})
@@ -5155,7 +5234,7 @@ async def _process_command(
     await _broadcast({"type": "thinking"})
     planner = Planner(_router)
 
-    async def _gate(tool_name: str) -> Decision:
+    async def _gate(tool_name: str, tool_args: dict) -> Decision:
         # Recipe synthetic tools don't have a plugin; treat them as SILENT at
         # the gate level -- per-step gates fire inside _replay_recipe.
         if tool_name.startswith("recipe_"):
@@ -5167,7 +5246,9 @@ async def _process_command(
             else None
         )
         if caps:
-            return await _orc.check_capabilities(tool_name, caps, CallFlags())
+            return await _orc.check_capabilities(
+                tool_name, caps, _gate_flags_for(tool_name, tool_args)
+            )
         return Decision.SILENT
 
     async def _execute(tool_name: str, tool_args: dict) -> ToolResult:
@@ -5286,7 +5367,12 @@ async def _replay_recipe(synthetic_name: str, profile_id: int) -> ToolResult:
             return ToolResult(content=notice, is_error=True)
 
         caps = _orc.required_capabilities_for(plugin_name)
-        decision = await _orc.check_capabilities(tool_name, caps, CallFlags()) if caps else Decision.SILENT
+        decision = (
+            await _orc.check_capabilities(
+                tool_name, caps, _gate_flags_for(tool_name, tool_args)
+            )
+            if caps else Decision.SILENT
+        )
 
         if decision is not Decision.SILENT:
             return ToolResult(

@@ -27,13 +27,15 @@ class ChainEngine:
     def __init__(
         self,
         planner: Planner,
-        gate_fn: Callable[[str], Awaitable[object]],
+        gate_fn: Callable[[str, dict], Awaitable[object]],
         execute_fn: Callable[[str, dict], Awaitable[object]],
         record_fn: Callable[[str, dict], Awaitable[None]],
     ) -> None:
         """
         planner   — Planner instance (S1 engine).
-        gate_fn   — async (tool_name: str) -> Decision; fires ADR-0005 gate.
+        gate_fn   — async (tool_name: str, args: dict) -> Decision; fires the
+                    ADR-0005 gate. Args are passed so the ADR-0016 consequence-
+                    gate can flag a committing computer_use action irreversible.
         execute_fn — async (tool_name: str, args: dict) -> ToolResult.
         record_fn — async (kind: str, content: dict) -> None; persists turns.
         """
@@ -88,7 +90,7 @@ class ChainEngine:
             await self._record_fn(KIND_TOOL_CALL, {"name": result.name, "args": result.args})
 
             # Per-step gate -- independent, no whole-chain pre-approval (ADR-0008)
-            decision = await self._gate_fn(result.name)
+            decision = await self._gate_fn(result.name, result.args)
 
             if decision is not Decision.SILENT:
                 logger.info("[chain] step %d: gate denied '%s'", step_num + 1, result.name)

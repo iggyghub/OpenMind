@@ -156,6 +156,30 @@ Run these manually on a Windows machine where the target apps are installed.
       `handoff_id`, `window_title`, `reason` -- no image data (ADR-0016
       sec 7 audio-buffer rule extends across the seam).
 
+## S3 #577 -- ADR-0005 gate integration + full-autonomy switch
+
+- [ ] Start Cerebral with a tray connected. Ask Felix to read Calculator's UI
+      (`read_ui`) then click a benign button (`click_element` name="Two").
+      Verify: `screen_capture` prompts a consent card **once** (choose Session);
+      subsequent captures this session do not re-prompt. `device_control`
+      (the click) is SILENT -- no prompt.
+- [ ] Ask Felix to click a COMMITTING control -- open any app with a Send /
+      Submit / Delete button and ask "click the Send button". Verify: the
+      **irreversible modal** pops (not a consent card), Accept lets the click
+      fire, Cancel blocks it. Confirm a benign click ("click Cancel",
+      "click Two") never pops the modal.
+- [ ] Open Permissions -> Capabilities. Verify the **Computer-use full
+      autonomy** switch renders at the top, default OFF, with the amber warning
+      text and no ON badge.
+- [ ] Flip full autonomy ON. Verify: the row shows the permanent **ON** badge +
+      amber highlight. Now repeat the committing click ("click Send"): verify it
+      fires with **no modal**. Confirm a DIFFERENT plugin's irreversible action
+      (e.g. `gmail_send`) STILL pops its modal -- the switch is scoped to
+      computer use only.
+- [ ] With full autonomy ON, restart Cerebral. Verify it comes back OFF (badge
+      gone) -- RAM-only, never persisted. Repeat: turn it on, switch profile,
+      verify it resets OFF for the new profile.
+
 ## S7 #580 -- browser-as-app stealth path + planner selection
 
 Needs a running Windows host with a real browser (Chrome / Edge / Firefox)
