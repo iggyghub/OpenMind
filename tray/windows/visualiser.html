@@ -23,7 +23,13 @@
   /* S2 #576 (ADR-0016 (c)): "Felix is driving" badge + Stop control.
      Hidden by default; body.driving flips it on. The Stop button is the
      only interactive element on the click-through overlay -- main.js
-     toggles setIgnoreMouseEvents so the click actually lands. */
+     toggles setIgnoreMouseEvents so the click actually lands.
+     #594 (ADR-0016 amendment f): mode-aware styling. Foreground (default)
+     keeps the original urgent purple/pink -- a moving cursor means the user
+     can't use the PC. body.mode-background swaps in a calmer blue: a
+     background action has no cursor, so "surface harder" means legible, not
+     alarming. A #593 soft trip flips the class in real time (main.js already
+     re-sends on every mode change). */
   .driving-panel {
     position: absolute;
     top: 8px;
@@ -42,8 +48,16 @@
     text-align: center;
     pointer-events: auto;
     box-shadow: 0 0 12px rgba(232, 121, 249, 0.35);
+    max-width: 190px;
   }
   body.driving .driving-panel { display: flex; }
+
+  body.driving.mode-background .driving-panel {
+    background: rgba(8, 30, 48, 0.85);
+    border-color: rgba(96, 165, 250, 0.6);
+    color: #bfdbfe;
+    box-shadow: 0 0 12px rgba(96, 165, 250, 0.35);
+  }
 
   .driving-panel button {
     all: unset;
@@ -219,7 +233,7 @@
 <body class="passive">
 
 <div class="driving-panel" id="driving-panel">
-  <div>Felix is driving</div>
+  <div id="driving-text">Felix is driving</div>
   <button id="stop-btn" type="button">STOP</button>
 </div>
 
@@ -255,8 +269,24 @@
   });
 
   // S2 #576 (ADR-0016 (c)): the "Felix is driving" overlay + Stop control.
-  ipcRenderer.on('visualiser:driving', (_e, driving) => {
-    document.body.classList.toggle('driving', !!driving);
+  // #594 (ADR-0016 amendment f): mode-aware -- the payload is now an object
+  // ({driving, mode, windowTitle, action}), not a bare bool. Tolerate a bare
+  // bool too (backward-compat: must not crash on an old-shaped payload).
+  const drivingTextEl = document.getElementById('driving-text');
+  ipcRenderer.on('visualiser:driving', (_e, payload) => {
+    const p = (payload && typeof payload === 'object') ? payload : { driving: !!payload };
+    const driving = !!p.driving;
+    document.body.classList.toggle('driving', driving);
+    if (!driving) {
+      document.body.classList.remove('mode-background');
+      return;
+    }
+    const isBackground = p.mode === 'background';
+    document.body.classList.toggle('mode-background', isBackground);
+    const windowTitle = p.windowTitle || p.window_title || 'the background';
+    drivingTextEl.textContent = isBackground
+      ? `Felix is acting in ${windowTitle} (background) -- you can keep working`
+      : 'Felix is driving';
   });
 
   document.getElementById('stop-btn').addEventListener('click', () => {

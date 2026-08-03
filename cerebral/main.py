@@ -290,11 +290,20 @@ async def _skills_broadcast() -> None:  # S5 #542
     await _broadcast(_plugins_panel_spec_event("skills"))
 
 
-async def _computer_use_driving(driving: bool) -> None:  # S2 #576 (ADR-0016)
+async def _computer_use_driving(payload: dict) -> None:  # S2 #576 (ADR-0016)
     """Broadcast the "Felix is driving" indicator so the Visualiser can light
     up its Stop control. Called by plugins/computer_use.py at loop entry/exit
-    of each actuating tool call (click_element / type_into)."""
-    await _broadcast({"type": "computer_use:driving", "data": {"driving": bool(driving)}})
+    of each actuating tool call (click_element / type_into / browser_navigate).
+
+    #594 (ADR-0016 amendment f): the plugin's seam evolved from a bare bool to
+    a dict -- {"driving", "mode", "window_title", "action"} -- so the
+    indicator can render mode-aware ("Felix is acting in <window>
+    (background) -- you can keep working" vs the foreground cursor-in-use
+    urgency). Broadcast the payload through unchanged; the tray renderer
+    reads the fields it needs."""
+    if not isinstance(payload, dict):
+        payload = {"driving": bool(payload)}  # tolerate a legacy bool caller
+    await _broadcast({"type": "computer_use:driving", "data": payload})
 
 
 _VISION_GROUND_COORD_RE = re.compile(r"(-?\d+)\s*[, ]\s*(-?\d+)")

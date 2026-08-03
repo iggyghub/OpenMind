@@ -140,7 +140,10 @@ describe('change events', () => {
     vs.on('change', (payload) => calls.push(payload));
     vs.handleEvent({ type: 'wake' });
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual({ state: 'active', visible: false, driving: false });
+    expect(calls[0]).toEqual({
+      state: 'active', visible: false, driving: false,
+      mode: null, windowTitle: null, action: null,
+    });
   });
 
   test('does not emit change when state stays same', () => {
@@ -157,7 +160,10 @@ describe('change events', () => {
     vs.on('change', (payload) => calls.push(payload));
     vs.toggle();
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual({ state: 'passive', visible: true, driving: false });
+    expect(calls[0]).toEqual({
+      state: 'passive', visible: true, driving: false,
+      mode: null, windowTitle: null, action: null,
+    });
   });
 });
 
@@ -207,7 +213,10 @@ describe('computer_use:driving overlay', () => {
     vs.on('change', (p) => calls.push(p));
     vs.handleEvent({ type: 'computer_use:driving', data: { driving: true } });
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual({ state: 'passive', visible: false, driving: true });
+    expect(calls[0]).toEqual({
+      state: 'passive', visible: false, driving: true,
+      mode: null, windowTitle: null, action: null,
+    });
   });
 
   test('does not emit change when driving stays same', () => {
@@ -222,7 +231,63 @@ describe('computer_use:driving overlay', () => {
     const vs = new VisualiserState();
     const r = vs.handleEvent({ type: 'computer_use:driving', data: { driving: true } });
     expect(r).toEqual({
-      state: 'passive', visible: false, driving: true, changed: true,
+      state: 'passive', visible: false, driving: true,
+      mode: null, windowTitle: null, action: null, changed: true,
     });
+  });
+});
+
+// ── #594 (ADR-0016 amendment f) — mode-aware driving payload ─────────────────
+
+describe('computer_use:driving mode-aware payload', () => {
+  test('carries background mode + window_title + action', () => {
+    const vs = new VisualiserState();
+    vs.handleEvent({
+      type: 'computer_use:driving',
+      data: { driving: true, mode: 'background', window_title: 'Notepad', action: 'click_element' },
+    });
+    expect(vs.mode).toBe('background');
+    expect(vs.windowTitle).toBe('Notepad');
+    expect(vs.action).toBe('click_element');
+  });
+
+  test('carries foreground mode', () => {
+    const vs = new VisualiserState();
+    vs.handleEvent({
+      type: 'computer_use:driving',
+      data: { driving: true, mode: 'foreground', window_title: 'Calc', action: 'type_into' },
+    });
+    expect(vs.mode).toBe('foreground');
+  });
+
+  test('a soft-trip flip from background to foreground re-emits change', () => {
+    const vs = new VisualiserState();
+    vs.handleEvent({
+      type: 'computer_use:driving',
+      data: { driving: true, mode: 'background', window_title: 'Notepad', action: 'click_element' },
+    });
+    const calls = [];
+    vs.on('change', (p) => calls.push(p));
+    // #593 soft trip: same tool call, still driving:true, mode flips.
+    vs.handleEvent({
+      type: 'computer_use:driving',
+      data: { driving: true, mode: 'foreground', window_title: 'Notepad', action: 'click_element' },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].mode).toBe('foreground');
+    expect(vs.driving).toBe(true);
+  });
+
+  test('driving:false clears mode/window/action back to null', () => {
+    const vs = new VisualiserState();
+    vs.handleEvent({
+      type: 'computer_use:driving',
+      data: { driving: true, mode: 'background', window_title: 'Notepad', action: 'click_element' },
+    });
+    vs.handleEvent({ type: 'computer_use:driving', data: { driving: false } });
+    expect(vs.driving).toBe(false);
+    expect(vs.mode).toBeNull();
+    expect(vs.windowTitle).toBeNull();
+    expect(vs.action).toBeNull();
   });
 });

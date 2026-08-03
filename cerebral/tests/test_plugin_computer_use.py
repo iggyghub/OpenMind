@@ -497,32 +497,43 @@ def test_hotkey_register_failure_does_not_disable_plugin():
 # ---- (c) Visualiser "Felix is driving" broadcast + Stop ------------------
 
 async def test_driving_broadcast_fires_true_then_false_around_click():
-    calls: list[bool] = []
-    async def _driving(state: bool) -> None:
-        calls.append(state)
+    # #594: the seam now broadcasts a dict payload, not a bare bool -- a
+    # sink written against the old bool contract still receives one
+    # positional argument (here it just captures the whole payload).
+    calls: list[dict] = []
+    async def _driving(payload: dict) -> None:
+        calls.append(payload)
     els = _elems(("Two", "Button", [10, 20, 50, 60]))
     plugin = ComputerUsePlugin(backend=_FakeBackend([els]), driving_fn=_driving)
     await plugin.call_tool("click_element", {"window_title": "C", "name": "Two"})
-    assert calls == [True, False]
+    assert [c["driving"] for c in calls] == [True, True, False]
+    # _FakeBackend has no resolve_element/pattern_click -- background
+    # actuation is on by default (#592) so the initial guess is
+    # "background", then the call falls straight through to the pyautogui
+    # fallback and flips mode to "foreground" before it actually clicks.
+    assert calls[0]["mode"] == "background"
+    assert calls[0]["window_title"] == "C"
+    assert calls[0]["action"] == "click_element"
+    assert calls[1]["mode"] == "foreground"
 
 
 async def test_driving_broadcast_flips_off_even_on_error():
     """A failing loop must still emit driving=False so the Stop control isn't
     left stuck on after the tool call ends."""
-    calls: list[bool] = []
-    async def _driving(state: bool) -> None:
-        calls.append(state)
+    calls: list[dict] = []
+    async def _driving(payload: dict) -> None:
+        calls.append(payload)
     plugin = ComputerUsePlugin(
         backend=_FakeBackend([[]]), driving_fn=_driving,
     )
     await plugin.call_tool(
         "click_element", {"window_title": "C", "name": "Ghost", "retries": 1},
     )
-    assert calls == [True, False]
+    assert [c["driving"] for c in calls] == [True, False]
 
 
 async def test_driving_broadcast_failure_does_not_break_tool():
-    async def _broken(_state: bool) -> None:
+    async def _broken(_payload: dict) -> None:
         raise RuntimeError("sink dead")
     els = _elems(("Two", "Button", [10, 20, 50, 60]))
     plugin = ComputerUsePlugin(backend=_FakeBackend([els]), driving_fn=_broken)
@@ -1308,12 +1319,12 @@ async def test_set_attended_handoff_fn_module_seam(monkeypatch):
 async def test_handoff_driving_broadcast_flips_off_before_seam():
     """During the handoff await, driving must be False so a UI shows
     'Felix paused' and not 'Felix is driving'."""
-    driving_states: list[bool] = []
+    driving_states: list[dict] = []
 
-    async def _drive(state: bool) -> None:
-        driving_states.append(state)
+    async def _drive(payload: dict) -> None:
+        driving_states.append(payload)
 
-    driving_at_seam: list[bool] = []
+    driving_at_seam: list[dict] = []
 
     async def _hf(_wt, _r):
         # Snapshot the last-emitted driving state at the moment handoff
@@ -1328,9 +1339,9 @@ async def test_handoff_driving_broadcast_flips_off_before_seam():
     await plugin.call_tool(
         "click_element", {"window_title": "W", "name": "X", "retries": 1},
     )
-    assert driving_at_seam == [False]
+    assert driving_at_seam[0]["driving"] is False
     # And the final emission is still False.
-    assert driving_states[-1] is False
+    assert driving_states[-1]["driving"] is False
 
 
 async def test_handoff_backend_without_surface_window_still_calls_seam():
