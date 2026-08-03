@@ -55,6 +55,7 @@ class TestSettingsStore:
             "enabled_skills",
             "background_actuation",
             "setvalue_roles",
+            "user_idle_ms",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):
@@ -265,6 +266,22 @@ class TestSettingsStore:
         store = SettingsStore(tmp_path / "s.json")
         with pytest.raises(ValueError, match="setvalue_roles must be a list of str"):
             store.set("setvalue_roles", ["Edit", 42])
+
+    def test_user_idle_ms_defaults_4000(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("user_idle_ms") == 4000
+
+    def test_user_idle_ms_roundtrip_and_type(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("user_idle_ms", 3000)
+        assert store.get("user_idle_ms") == 3000
+        with pytest.raises(ValueError, match="expects int"):
+            store.set("user_idle_ms", "nope")
+
+    def test_user_idle_ms_clamps_negative_to_zero(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("user_idle_ms", -500)
+        assert store.get("user_idle_ms") == 0
 
 
 # ── WS IPC tests ──────────────────────────────────────────────────────────────

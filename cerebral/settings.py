@@ -8,7 +8,7 @@ Keys: notifications_enabled, reminder_interval_minutes, camera_enabled,
       visualiser_visible, mic_mode, tts_muted, tts_volume,
       mic_input_device, browser_pause_on_verification,
       disabled_plugins, enabled_skills, background_actuation,
-      setvalue_roles
+      setvalue_roles, user_idle_ms
 """
 from __future__ import annotations
 
@@ -53,6 +53,13 @@ _DEFAULTS: dict[str, Any] = {
     # list keeps pattern clicks background but forces all text through
     # foreground typing.
     "setvalue_roles": ["Edit", "Document"],
+    # ADR-0016 amendment (d), #593 -- "what I'm doing takes priority". Below
+    # this many ms since the user's last physical input, Felix treats them
+    # as PRESENT and will not grab the mouse/keyboard for the foreground
+    # (pyautogui) fallback; it waits for idle or hands off to the human
+    # instead. Ignored while the full-autonomy switch is on. ADR range:
+    # 3000-5000ms.
+    "user_idle_ms": 4000,
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -72,6 +79,7 @@ _TYPES: dict[str, type] = {
     "enabled_skills":            list,
     "background_actuation":      bool,
     "setvalue_roles":            list,
+    "user_idle_ms":              int,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
@@ -115,6 +123,8 @@ class SettingsStore:
             value = max(0, value)
         if key == "tts_volume":
             value = max(0, min(100, value))
+        if key == "user_idle_ms":
+            value = max(0, value)
         if key == "mic_mode" and value not in _MIC_MODE_VALUES:
             raise ValueError(
                 f"mic_mode must be one of {sorted(_MIC_MODE_VALUES)}, got {value!r}"
