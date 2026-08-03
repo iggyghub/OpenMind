@@ -1156,7 +1156,15 @@ class ComputerUsePlugin:
 # --- Windows backend (lazily imported; never touched in tests) --------------
 
 class _WindowsBackend:
-    """UIA read + pyautogui actuation + mss capture. Constructed on Windows only."""
+    """UIA read + pyautogui actuation + mss capture. Constructed on Windows only.
+
+    ponytail: drives the ONE physical cursor/keyboard on the user's live,
+    contended desktop -- it takes turns with the user, it does not run
+    alongside them (ADR-0016 §6 + consequences). Concurrency ("Felix drives
+    while I keep working") needs an isolated session / virtual desktop, which
+    ADR-0016 explicitly defers post-v1. The kill switch + "Felix is driving"
+    indicator exist because of this sharing; don't remove them.
+    """
 
     def __init__(self) -> None:
         import pyautogui
