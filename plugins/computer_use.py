@@ -37,6 +37,26 @@ Injection seams (test + import stay Windows-lib-free):
   record_trace_fn -- optional callable(dict) -> None to persist a per-call
                      structured trace turn (wired by main.py -> Conversation
                      store as KIND_TOOL_RESULT). Never receives frame bytes.
+
+Background actuation (ADR-0016 amendment 2026-08-02, Issue #592):
+  click_element / type_into now try a UIA control pattern first (Invoke /
+  Toggle / SelectionItem.Select / ExpandCollapse for clicks, ValuePattern.
+  SetValue for text) -- no cursor move, no synthetic keystrokes, so the user
+  keeps the mouse/keyboard while Felix drives. The live control is re-resolved
+  just-in-time per try (``_resolve_element`` on the backend) and never carried
+  across an ``await``. When no usable pattern exists, the SAME re-resolved
+  element's bbox feeds the existing pyautogui foreground fallback. Each try
+  records ``path``: ``"uia_pattern"`` (background), ``"uia_synthetic"``
+  (today's foreground bbox click/type, keeps its old behaviour+name), or
+  ``"pixel"`` (S5, unchanged). SetValue only fires on an allowlisted role
+  (``computer_use.setvalue_roles``, default Edit/Document) outside a browser/
+  Electron surface -- it fills, it never submits. Both knobs live in
+  felix-settings.json as flat keys ``background_actuation`` (master, default
+  on) and ``setvalue_roles`` (default ``["Edit", "Document"]``; empty forces
+  all text through foreground typing while leaving pattern clicks background).
+  Idle-gating the foreground fallback (#593), the driving-indicator's
+  background/foreground mode (#594), and live-verify docs (#595) are follow-on
+  slices -- not built here.
 """
 from __future__ import annotations
 
@@ -144,12 +164,26 @@ VisionGroundFn = Callable[[str, bytes], Awaitable[Optional[tuple[int, int]]]]
 # inject a fake that returns immediately. When unwired, the plugin falls
 # through with the failed trace (matches pre-S6 behaviour on exhaustion).
 AttendedHandoffFn = Callable[[str, str], Awaitable[bool]]
+# #592 (ADR-0016 amendment): felix-settings.json getters, mirroring
+# browser_session.py's ``set_pause_on_verification`` seam exactly -- a
+# nullary callable read fresh on every actuation (never cached), so a
+# mid-session settings change takes effect on the next tool call.
+BackgroundActuationFn = Callable[[], bool]
+SetValueRolesFn = Callable[[], list[str]]
 
 _driving_fn: Optional[DrivingFn] = None
 _hotkey_register_fn: Optional[HotkeyRegisterFn] = None
 _vision_ground_fn: Optional[VisionGroundFn] = None
 _attended_handoff_fn: Optional[AttendedHandoffFn] = None
+_background_actuation_fn: Optional[BackgroundActuationFn] = None
+_setvalue_roles_fn: Optional[SetValueRolesFn] = None
 _plugin_instance: Optional["ComputerUsePlugin"] = None
+
+# ADR-0016 amendment defaults -- used whenever no getter is wired (tests,
+# or a host that hasn't started main.py's settings wiring yet). Match
+# felix-settings.json's shipped defaults in cerebral/settings.py.
+DEFAULT_BACKGROUND_ACTUATION = True
+DEFAULT_SETVALUE_ROLES: tuple[str, ...] = ("Edit", "Document")
 
 
 def set_driving_fn(fn: DrivingFn) -> None:
@@ -179,6 +213,23 @@ def set_attended_handoff_fn(fn: AttendedHandoffFn) -> None:
     unwired the plugin fails the tool call as before (no silent handoff)."""
     global _attended_handoff_fn
     _attended_handoff_fn = fn
+
+
+def set_background_actuation_fn(fn: BackgroundActuationFn) -> None:
+    """Wire a getter for the ``background_actuation`` setting (#592 master
+    switch). True (default) tries the UIA control pattern before pyautogui;
+    False restores pre-amendment pure-foreground behaviour."""
+    global _background_actuation_fn
+    _background_actuation_fn = fn
+
+
+def set_setvalue_roles_fn(fn: SetValueRolesFn) -> None:
+    """Wire a getter for the ``setvalue_roles`` allowlist (#592). Controls
+    whose UIA role is in the list may be filled via ValuePattern.SetValue;
+    an empty list keeps pattern clicks background but forces all text
+    through foreground typing (SetValue is the ONLY gated primitive)."""
+    global _setvalue_roles_fn
+    _setvalue_roles_fn = fn
 
 
 def abort_current() -> None:
@@ -225,6 +276,40 @@ class ComputerUseBackend(Protocol):
         On Windows, must translate ``pyautogui.FailSafeException`` into
         ``CornerAbort`` (same rule as the other actuation methods)."""
 
+    def resolve_element(
+        self, window_title: str, name: str, role: str | None,
+    ) -> tuple[object, list[int]] | None:
+        """#592: re-walk the LIVE UIA tree just-in-time and return
+        ``(live_element, bbox)`` for the first name/role match (same
+        first-match semantics as ``_find_element`` / ``read_ui``), or ``None``
+        when absent. ``live_element`` is opaque to the plugin -- only
+        ``pattern_click`` / ``pattern_set_value`` inspect it, and it must
+        never be held across an ``await`` (resolve fresh on every try).
+        Optional: a backend without this method disables background
+        actuation entirely and the plugin falls straight to the existing
+        foreground path."""
+
+    def pattern_click(self, element: object) -> bool:
+        """#592: attempt a background UIA control-pattern click on the live
+        ``element`` -- ``InvokePattern.Invoke()``, then ``TogglePattern``,
+        then ``SelectionItemPattern.Select()``, then
+        ``ExpandCollapsePattern`` -- no cursor movement, no synthetic click.
+        Returns True when a pattern fired; False when the element exposes
+        none of them, so the caller falls back to a foreground bbox click on
+        the same resolved element."""
+
+    def pattern_set_value(self, element: object, text: str) -> bool:
+        """#592: attempt ``ValuePattern.SetValue(text)`` on the live
+        ``element`` -- atomic fill, no keystrokes, never a submit. Returns
+        False (never raises) when the pattern is unavailable or the control
+        reports read-only, so the caller falls back to foreground click+type."""
+
+    def window_class(self, window_title: str) -> Optional[str]:
+        """#592: the target window's native class name (e.g.
+        ``"Chrome_WidgetWin_1"``), or ``None`` when unavailable. Used to keep
+        SetValue out of any browser/Electron (webview) surface regardless of
+        the control's own role (ADR-0016 amendment c)."""
+
 
 def _make_default_backend() -> Optional[ComputerUseBackend]:
     """Windows: lazily construct the UIA/pyautogui backend. Elsewhere: None."""
@@ -248,6 +333,43 @@ def _find_element(elements: list[dict], name: str, role: str | None) -> dict | N
             continue
         return e
     return None
+
+
+def _count_matches(elements: list[dict], name: str, role: str | None) -> int:
+    """Count of name/role matches -- same predicate as ``_find_element``, used
+    to flag a non-unique target in the trace instead of silently guessing
+    (ADR-0016 amendment b). First-match semantics are unchanged; this only
+    adds a ``multi_match`` note when more than one element qualifies."""
+    n = (name or "").strip().lower()
+    r = (role or "").strip().lower() or None
+    count = 0
+    for e in elements:
+        if (e.get("name") or "").strip().lower() != n:
+            continue
+        if r is not None and (e.get("role") or "").strip().lower() != r:
+            continue
+        count += 1
+    return count
+
+
+# ADR-0016 amendment (c): SetValue must never fire inside a Chromium/Gecko
+# render surface -- a normal browser OR an Electron app, which embeds the
+# same Chromium shell and is indistinguishable from a browser by window
+# class. Matched by substring on the native window class so locale/version
+# don't matter. ponytail: class-name allowlist is a real UIA signal, not a
+# guess by app name; upgrade to process-name introspection only if a
+# Chromium-classed native app turns up that legitimately needs SetValue.
+_WEBVIEW_WINDOW_CLASSES: tuple[str, ...] = ("chrome_widgetwin", "mozillawindowclass")
+
+
+def _is_webview_class(window_class: str | None) -> bool:
+    """True when ``window_class`` names a browser/Electron render surface, or
+    when it's unknown. Unknown means doubt, and ADR-0016 amendment (c) is
+    explicit: any doubt falls to foreground typing, never SetValue."""
+    if not window_class:
+        return True
+    c = window_class.strip().lower()
+    return any(w in c for w in _WEBVIEW_WINDOW_CLASSES)
 
 
 def _bbox_center(bbox: list[int]) -> tuple[int, int]:
@@ -385,6 +507,8 @@ class ComputerUsePlugin:
         vision_ground_fn: VisionGroundFn | None = None,
         attended_handoff_fn: AttendedHandoffFn | None = None,
         thumbnail_ring_size: int = DEFAULT_THUMBNAIL_RING_SIZE,
+        background_actuation_fn: BackgroundActuationFn | None = None,
+        setvalue_roles_fn: SetValueRolesFn | None = None,
     ) -> None:
         if backend is _UNSET:
             self._backend = _make_default_backend()
@@ -405,6 +529,15 @@ class ComputerUsePlugin:
         # S6 #579: attended-handoff seam. Unwired = no handoff (fail as before).
         self._attended_handoff_fn: AttendedHandoffFn | None = (
             attended_handoff_fn or _attended_handoff_fn
+        )
+        # #592 (ADR-0016 amendment): felix-settings.json getters. Unwired =
+        # DEFAULT_* constants (matches cerebral/settings.py's shipped
+        # defaults) -- background-first is the safe-and-usable default.
+        self._background_actuation_fn: BackgroundActuationFn | None = (
+            background_actuation_fn or _background_actuation_fn
+        )
+        self._setvalue_roles_fn: SetValueRolesFn | None = (
+            setvalue_roles_fn or _setvalue_roles_fn
         )
         self._thumbnail_ring: deque[bytes] = deque(maxlen=max(1, int(thumbnail_ring_size)))
         # asyncio.Event carries the abort signal across the (a) corner-failsafe,
@@ -586,6 +719,107 @@ class ComputerUsePlugin:
         except Exception:
             return None
         return wb if isinstance(wb, list) and len(wb) == 4 else None
+
+    # ── #592 background actuation (ADR-0016 amendment) ─────────────────────
+
+    def _background_actuation_enabled(self) -> bool:
+        fn = self._background_actuation_fn
+        if fn is None:
+            return DEFAULT_BACKGROUND_ACTUATION
+        try:
+            return bool(fn())
+        except Exception:
+            logger.warning(
+                "[computer_use] background_actuation getter failed; "
+                "defaulting to background-first", exc_info=True,
+            )
+            return DEFAULT_BACKGROUND_ACTUATION
+
+    def _setvalue_roles(self) -> list[str]:
+        fn = self._setvalue_roles_fn
+        if fn is None:
+            return list(DEFAULT_SETVALUE_ROLES)
+        try:
+            roles = fn()
+        except Exception:
+            logger.warning(
+                "[computer_use] setvalue_roles getter failed; "
+                "defaulting to %r", DEFAULT_SETVALUE_ROLES, exc_info=True,
+            )
+            return list(DEFAULT_SETVALUE_ROLES)
+        if not isinstance(roles, list):
+            return list(DEFAULT_SETVALUE_ROLES)
+        return [str(r) for r in roles]
+
+    def _is_webview_window(self, window_title: str) -> bool:
+        """Any doubt (no backend support, lookup error, unknown class) counts
+        as a webview -- forces foreground typing, never SetValue."""
+        fn = getattr(self._backend, "window_class", None)
+        if fn is None:
+            return True
+        try:
+            return _is_webview_class(fn(window_title))
+        except Exception:
+            return True
+
+    def _try_pattern_click(
+        self, window_title: str, name: str, role: str | None,
+    ) -> tuple[bool, list[int] | None]:
+        """Resolve the live element fresh and attempt a background UIA
+        pattern click. Returns ``(fired, live_bbox)`` -- ``live_bbox`` is the
+        SAME re-resolved element's bbox, handed back so the caller's
+        foreground fallback (when ``fired`` is False) targets the identical
+        element rather than the possibly-stale bbox from the earlier
+        ``read_ui`` snapshot. Never raises -- any backend error is "no usable
+        pattern", which is exactly the documented fallback trigger."""
+        resolve_fn = getattr(self._backend, "resolve_element", None)
+        pattern_fn = getattr(self._backend, "pattern_click", None)
+        if resolve_fn is None or pattern_fn is None:
+            return False, None
+        try:
+            resolved = resolve_fn(window_title, name, role)
+        except Exception:
+            return False, None
+        if resolved is None:
+            return False, None
+        live_element, live_bbox = resolved
+        bbox = live_bbox if isinstance(live_bbox, list) and len(live_bbox) == 4 else None
+        try:
+            fired = bool(pattern_fn(live_element))
+        except Exception:
+            fired = False
+        return fired, bbox
+
+    def _try_pattern_set_value(
+        self, window_title: str, name: str, role: str | None, text: str,
+    ) -> tuple[bool, list[int] | None]:
+        """Same shape as ``_try_pattern_click`` for the ``type_into`` path,
+        gated by the SetValue role allowlist + the webview-surface check
+        (ADR-0016 amendment c) BEFORE the backend is even asked -- the gate
+        is by control class + surface, never by guessing reactivity."""
+        role_name = (role or "").strip().lower()
+        allowed = {r.strip().lower() for r in self._setvalue_roles()}
+        if not allowed or role_name not in allowed:
+            return False, None
+        if self._is_webview_window(window_title):
+            return False, None
+        resolve_fn = getattr(self._backend, "resolve_element", None)
+        setval_fn = getattr(self._backend, "pattern_set_value", None)
+        if resolve_fn is None or setval_fn is None:
+            return False, None
+        try:
+            resolved = resolve_fn(window_title, name, role)
+        except Exception:
+            return False, None
+        if resolved is None:
+            return False, None
+        live_element, live_bbox = resolved
+        bbox = live_bbox if isinstance(live_bbox, list) and len(live_bbox) == 4 else None
+        try:
+            filled = bool(setval_fn(live_element, text))
+        except Exception:
+            filled = False
+        return filled, bbox
 
     async def _pixel_fallback_click(
         self, window_title: str, name: str, trace: dict,
@@ -843,6 +1077,10 @@ class ComputerUsePlugin:
                     "role": match.get("role"),
                     "bbox": match.get("bbox"),
                 }
+                # ADR-0016 amendment (b): flag a non-unique name/role match in
+                # the trace instead of silently guessing. First-match
+                # semantics (whichever _find_element picked) are unchanged.
+                multi_match = _count_matches(elements, name, role) > 1
                 bbox = match.get("bbox") or []
                 if len(bbox) != 4:
                     trace["tries"].append(
@@ -860,30 +1098,57 @@ class ComputerUsePlugin:
                          "ok": False}
                     )
                     continue
-                x, y = _bbox_center(bbox)
+                # #592: try the background UIA control pattern first -- no
+                # cursor movement. Falls back to the existing foreground
+                # pyautogui click, on the SAME re-resolved element's bbox,
+                # when no usable pattern exists (or the master switch is off).
+                path = "uia_synthetic"
+                click_bbox = bbox
+                if self._background_actuation_enabled():
+                    fired, live_bbox = self._try_pattern_click(window_title, name, role)
+                    if live_bbox is not None:
+                        click_bbox = live_bbox
+                    if fired:
+                        x, y = _bbox_center(click_bbox)
+                        entry = {
+                            "n": n, "observed": True, "acted": True,
+                            "expected": f"click at ({x},{y})",
+                            "actual": "clicked via uia_pattern", "ok": True,
+                            "path": "uia_pattern",
+                        }
+                        if multi_match:
+                            entry["multi_match"] = True
+                        trace["tries"].append(entry)
+                        trace["ok"] = True
+                        return self._finish(trace)
+                x, y = _bbox_center(click_bbox)
                 try:
-                    self._backend.click(bbox)  # type: ignore[union-attr]
+                    self._backend.click(click_bbox)  # type: ignore[union-attr]
                 except CornerAbort:
                     self._abort_event.set()
                     trace["tries"].append(
                         {"n": n, "observed": True, "acted": False,
                          "expected": f"click at ({x},{y})",
                          "actual": "corner-failsafe abort",
-                         "ok": False}
+                         "ok": False, "path": "uia_synthetic"}
                     )
                     return self._finish(trace)
                 except Exception as exc:
                     trace["tries"].append(
                         {"n": n, "observed": True, "acted": False,
                          "expected": f"click at ({x},{y})",
-                         "actual": f"error: {exc}", "ok": False}
+                         "actual": f"error: {exc}", "ok": False,
+                         "path": "uia_synthetic"}
                     )
                     continue
-                trace["tries"].append(
-                    {"n": n, "observed": True, "acted": True,
-                     "expected": f"click at ({x},{y})",
-                     "actual": "clicked", "ok": True}
-                )
+                entry = {
+                    "n": n, "observed": True, "acted": True,
+                    "expected": f"click at ({x},{y})",
+                    "actual": "clicked", "ok": True, "path": path,
+                }
+                if multi_match:
+                    entry["multi_match"] = True
+                trace["tries"].append(entry)
                 trace["ok"] = True
                 return self._finish(trace)
             # S5 #578: structured retries exhausted. Try the pixel-vision
@@ -953,6 +1218,7 @@ class ComputerUsePlugin:
                     "role": match.get("role"),
                     "bbox": match.get("bbox"),
                 }
+                multi_match = _count_matches(elements, name, role) > 1
                 bbox = match.get("bbox") or []
                 if len(bbox) != 4:
                     trace["tries"].append(
@@ -970,25 +1236,43 @@ class ComputerUsePlugin:
                          "ok": False}
                     )
                     continue
-                try:
-                    self._backend.click(bbox)  # type: ignore[union-attr]
-                    self._backend.type_text(text)  # type: ignore[union-attr]
-                except CornerAbort:
-                    self._abort_event.set()
-                    trace["tries"].append(
-                        {"n": n, "observed": True, "acted": False,
-                         "expected": f"type {text!r}",
-                         "actual": "corner-failsafe abort",
-                         "ok": False}
+                # #592: SetValue fills, never submits -- only on an
+                # allowlisted role outside any browser/Electron surface
+                # (checked inside _try_pattern_set_value). Falls back to the
+                # existing foreground click+type on the SAME re-resolved
+                # element's bbox when the gate refuses or no pattern exists.
+                path = "uia_synthetic"
+                type_bbox = bbox
+                filled = False
+                if self._background_actuation_enabled():
+                    filled, live_bbox = self._try_pattern_set_value(
+                        window_title, name, match.get("role"), text,
                     )
-                    return self._finish(trace)
-                except Exception as exc:
-                    trace["tries"].append(
-                        {"n": n, "observed": True, "acted": False,
-                         "expected": f"type {text!r}",
-                         "actual": f"error: {exc}", "ok": False}
-                    )
-                    continue
+                    if live_bbox is not None:
+                        type_bbox = live_bbox
+                if filled:
+                    path = "uia_pattern"
+                else:
+                    try:
+                        self._backend.click(type_bbox)  # type: ignore[union-attr]
+                        self._backend.type_text(text)  # type: ignore[union-attr]
+                    except CornerAbort:
+                        self._abort_event.set()
+                        trace["tries"].append(
+                            {"n": n, "observed": True, "acted": False,
+                             "expected": f"type {text!r}",
+                             "actual": "corner-failsafe abort",
+                             "ok": False, "path": "uia_synthetic"}
+                        )
+                        return self._finish(trace)
+                    except Exception as exc:
+                        trace["tries"].append(
+                            {"n": n, "observed": True, "acted": False,
+                             "expected": f"type {text!r}",
+                             "actual": f"error: {exc}", "ok": False,
+                             "path": "uia_synthetic"}
+                        )
+                        continue
                 # Verify: re-read UIA and check the target's value contains the
                 # text (falls back to "acted" when the backend doesn't expose
                 # values).
@@ -998,31 +1282,39 @@ class ComputerUsePlugin:
                     trace["tries"].append(
                         {"n": n, "observed": True, "acted": True,
                          "expected": f"post-type value contains {text!r}",
-                         "actual": f"re-read error: {exc}", "ok": False}
+                         "actual": f"re-read error: {exc}", "ok": False,
+                         "path": path}
                     )
                     continue
                 after_match = _find_element(after, name, role) or {}
                 value = after_match.get("value")
                 if isinstance(value, str) and text in value:
-                    trace["tries"].append(
-                        {"n": n, "observed": True, "acted": True,
-                         "expected": f"value contains {text!r}",
-                         "actual": f"value={value!r}", "ok": True}
-                    )
+                    entry = {
+                        "n": n, "observed": True, "acted": True,
+                        "expected": f"value contains {text!r}",
+                        "actual": f"value={value!r}", "ok": True, "path": path,
+                    }
+                    if multi_match:
+                        entry["multi_match"] = True
+                    trace["tries"].append(entry)
                     trace["ok"] = True
                     return self._finish(trace)
                 if value is None:
-                    trace["tries"].append(
-                        {"n": n, "observed": True, "acted": True,
-                         "expected": f"typed {text!r}",
-                         "actual": "no value read; assumed ok", "ok": True}
-                    )
+                    entry = {
+                        "n": n, "observed": True, "acted": True,
+                        "expected": f"typed {text!r}",
+                        "actual": "no value read; assumed ok", "ok": True,
+                        "path": path,
+                    }
+                    if multi_match:
+                        entry["multi_match"] = True
+                    trace["tries"].append(entry)
                     trace["ok"] = True
                     return self._finish(trace)
                 trace["tries"].append(
                     {"n": n, "observed": True, "acted": True,
                      "expected": f"value contains {text!r}",
-                     "actual": f"value={value!r}", "ok": False}
+                     "actual": f"value={value!r}", "ok": False, "path": path}
                 )
             # S6 #579: type_into has no pixel fallback (text input can't be
             # coordinate-clicked into a field the tree can't see). On UIA
@@ -1330,6 +1622,94 @@ class _WindowsBackend:
             logger.warning(
                 "[computer_use] SetActive failed for %r", window_title, exc_info=True,
             )
+
+    def resolve_element(
+        self, window_title: str, name: str, role: str | None,
+    ) -> tuple[object, list[int]] | None:
+        """#592: fresh re-walk of the live UIA tree, same traversal order (and
+        therefore same first-match result) as ``read_ui`` -- returns the live
+        control + its current bbox, never held past this call."""
+        win = self._window(window_title)
+        if not win.Exists(0):
+            return None
+        n = (name or "").strip().lower()
+        r = (role or "").strip().lower() or None
+        stack = [(win, 0)]
+        while stack:
+            ctrl, depth = stack.pop()
+            try:
+                if (ctrl.Name or "").strip().lower() == n and (
+                    r is None or (ctrl.ControlTypeName or "").strip().lower() == r
+                ):
+                    rect = ctrl.BoundingRectangle
+                    return ctrl, [rect.left, rect.top, rect.right, rect.bottom]
+            except Exception:
+                pass
+            if depth < _UIA_MAX_DEPTH:
+                try:
+                    for child in ctrl.GetChildren():
+                        stack.append((child, depth + 1))
+                except Exception:
+                    continue
+        return None
+
+    def pattern_click(self, element) -> bool:
+        """#592: background UIA control-pattern click -- Invoke, then Toggle,
+        then SelectionItem.Select, then ExpandCollapse.Expand, in that
+        preference order. No cursor movement. False when none apply."""
+        try:
+            pattern = element.GetInvokePattern()
+            if pattern:
+                pattern.Invoke()
+                return True
+        except Exception:
+            pass
+        try:
+            pattern = element.GetTogglePattern()
+            if pattern:
+                pattern.Toggle()
+                return True
+        except Exception:
+            pass
+        try:
+            pattern = element.GetSelectionItemPattern()
+            if pattern:
+                pattern.Select()
+                return True
+        except Exception:
+            pass
+        try:
+            pattern = element.GetExpandCollapsePattern()
+            if pattern:
+                pattern.Expand()
+                return True
+        except Exception:
+            pass
+        return False
+
+    def pattern_set_value(self, element, text: str) -> bool:
+        """#592: ValuePattern.SetValue -- atomic fill, no keystrokes fired, no
+        submit. False (never raises) when unavailable or read-only."""
+        try:
+            pattern = element.GetValuePattern()
+            if not pattern or pattern.IsReadOnly:
+                return False
+            pattern.SetValue(text)
+            return True
+        except Exception:
+            return False
+
+    def window_class(self, window_title: str) -> str | None:
+        """#592: native window class (e.g. ``"Chrome_WidgetWin_1"``) of the
+        target window, used to keep SetValue out of any browser/Electron
+        surface. None when the window is missing or unreadable."""
+        win = self._window(window_title)
+        if not win.Exists(0):
+            return None
+        try:
+            return win.ClassName or None
+        except Exception:
+            return None
 
 
 def _default_hotkey_register(abort: Callable[[], None]) -> Callable[[], None] | None:

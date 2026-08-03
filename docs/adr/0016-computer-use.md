@@ -255,3 +255,127 @@ risky, hardest-UIA case. Sequence:
 - Felix drives the user's **live, contended desktop** in v1 (the isolated-
   session option is deferred), which is precisely why the kill switch and the
   visible "Felix is driving" state are non-negotiable rather than nice-to-have.
+
+## Amendment 2026-08-02: Background (concurrent) actuation
+
+### Context
+
+S1 (#574) live-verify surfaced a usability floor: `_WindowsBackend` actuates
+through `pyautogui`, so every `click_element` / `type_into` / `browser_navigate`
+**steals the physical cursor and keyboard** — the user cannot use the PC while
+Felix drives. `read_ui` is already pure UIA (no cursor) and safe to run during
+use; only the actuation methods hijack input. The original ADR treated
+"structured vs pixel" as one modality spectrum, which hid the fact that
+*perception* and *actuation* are **independent axes**.
+
+### Decision
+
+**Two orthogonal axes.** Perception: `structured` (UIA tree) vs `pixel` (vision
+grounding). Actuation: **background** (UIA control patterns — `Invoke`,
+`SetValue`, `Toggle`, `Select`, `ExpandCollapse` — no cursor, no keystrokes) vs
+**foreground** (`pyautogui` synthetic input — steals devices). Control-pattern
+actuation exists **only on the structured axis** (a pixel coordinate has no
+control handle); `pixel + background` is an impossible cell. Background is
+therefore a *property the structured path can have*, not a third sibling of
+structured/pixel.
+
+**a. Tiered actuation, background-first.** On the structured path, try the
+control pattern first (background, concurrent). Fall back to `pyautogui`
+(foreground) only when the control exposes no usable pattern. Pixel is always
+foreground.
+
+**b. Re-resolve, never carry a durable handle.** The observe→act→verify loop
+already re-reads the UIA tree and re-matches by name/role every try, so
+actuation re-resolves the **live** `AutomationElement` just-in-time
+(`_resolve_element`) and uses that same element for both the pattern attempt and
+its foreground-bbox fallback. `read_ui`'s public contract stays
+`{name, role, bbox}` text — no COM objects leak to the model, and no COM pointer
+is held across an `await`. Re-resolution reliability equals today's bbox
+targeting reliability (same first-match `_find_element`); a non-unique match is
+flagged in the trace rather than silently guessed.
+
+**c. `SetValue` fills, never submits.** `SetValue` sets text atomically and
+bypasses per-keystroke handlers, so search-as-you-type, input masks, JS
+`keydown`, and Enter/Tab/`@` semantics never fire. It is therefore used **only**
+to populate a plain field — a non-readonly `Edit`/`Document` control **outside**
+any browser/Electron (webview) surface — and **never** to trigger or submit; the
+submit is always a discrete `click_element`/`press_key` step (which keeps it in
+front of the `is_committing_action` gate). Reactivity is not detectable from the
+tree, so the rule is by **control class + surface**, not by classification, and
+any doubt falls to foreground typing. Two `felix-settings.json` knobs:
+`computer_use.background_actuation` (master, default on; off = today's pure
+foreground) and `computer_use.setvalue_roles` (allowlist, default
+`["Edit","Document"]`; empty it to keep pattern clicks background while forcing
+all text through foreground typing).
+
+**d. "What I'm doing takes priority" — idle-gated foreground fallback.**
+Background patterns run concurrently, always. The **foreground** fallback is the
+input-thief, so before any `pyautogui` action Felix checks `GetLastInputInfo`:
+if the user touched input within `computer_use.user_idle_ms` (default 3–5s) the
+user is *present* and Felix does **not** grab input — it waits for idle or
+escalates to attended-handoff (S6). When the user is idle/away, or under
+full-autonomy, foreground proceeds as today. One syscall distinguishes
+present-vs-away and does the right thing in both states; background pattern
+actuation emits no input events, so the idle signal reflects only the user.
+Additionally, a pattern action that *unexpectedly* foregrounds the target
+(measured via before/after `GetForegroundWindow`) is a **soft trip**: stamp the
+trace, stop, and do **not** escalate to the input-stealing foreground fallback.
+
+**e. Kill switch is two-tier.** Corner-slam is a `pyautogui`-cursor mechanism
+and is **meaningless for a cursor-less background action** — it guards the
+**foreground** path only, and that is not a regression (a background action has
+no cursor to escape). **F11+F12** and **Visualiser Stop** are the always-
+available legs covering both paths (the `_abort_event` check between tries is
+already path-independent). Two legs suffice for background because it is
+inherently lower-stakes (no input theft to physically flee) and idle-gated.
+
+**f. Safer-because-invisible: surface harder, don't gate harder.** The
+`irreversible` gate is already **path-independent by construction** —
+`is_committing_action` reads the planner's *intent* (target element name), not
+the actuation path, so a background `Invoke()` on "Send" hits the ADR-0005 modal
+exactly like a foreground click. That property is now load-bearing and recorded.
+"Surface harder" lives in the **indicator**, not a second gate: a background
+action has no moving cursor, so the "Felix is driving" state is its *only*
+feedback and carries `mode: "background"|"foreground"` + target window + current
+action (background reads *"Felix is acting in Notepad (background) — you can keep
+working"*). No stricter gate on non-irreversible background actions (that is the
+friction full-auto exists to avoid); the fix for "easy to miss" is visibility,
+not another consent wall.
+
+**g. Trace records both axes.** Per-try:
+`path: "uia_pattern" | "uia_synthetic" | "pixel"` (keeps S5's `"pixel"`;
+today's structured-foreground click becomes `"uia_synthetic"`) **plus**
+`foregrounded: bool`. Live-verify asserts background-vs-foreground and
+focus-theft per action, mirroring S5's `path` field.
+
+### Considered and rejected
+
+- **Carry a durable `AutomationElement` reference** across tries. A COM pointer
+  held across `await` marshals across the loop's thread boundary and goes stale
+  on any redraw — a new failure mode. Re-resolution rides the loop we already
+  pay for.
+- **Classify field reactivity to decide `SetValue` vs typing.** UIA exposes no
+  "has keydown handler" property; classification would be a guess. Gate by
+  control class + surface, fall to typing on doubt.
+- **Foreground fallback always fires (no idle gate).** Less code, but steals
+  input mid-keystroke on every no-pattern control — contradicts the entire
+  concurrent-use purpose. The idle gate is one syscall and is correct in both
+  present and away states.
+- **A single-key background panic key.** F11+F12 + Visualiser Stop suffice;
+  background actions are idle-gated and non-input-stealing, so the panic urgency
+  is genuinely lower than for the cursor-thief foreground path.
+- **A stricter consent tier for background actions.** "Invisible" is a
+  perception gap; the mode-aware always-on indicator closes it. A second gate
+  would tax full-auto for no safety the modal doesn't already provide.
+
+### Consequences
+
+- Actuation gains a background tier on the structured path; `read_ui`'s text
+  contract is unchanged. `GetLastInputInfo` + `GetForegroundWindow` (ctypes /
+  `win32gui` one-liners; already in the Win32 surface `uiautomation` pulls in)
+  become the idle gate + focus-theft probe.
+- The isolated-session/VM option (§6) remains the deferred path for *true*
+  isolation; UIA-pattern background actuation is the v1 concurrency story on the
+  live desktop, not a replacement for it.
+- `felix-settings.json` gains `background_actuation`, `setvalue_roles`, and
+  `user_idle_ms`, all riding ADR-0005's existing toggle machinery.

@@ -5548,6 +5548,10 @@ def _wire_plugin_seams() -> None:
         ("computer_use", "set_driving_fn", _computer_use_driving),                   # S2 #576 (ADR-0016 (c))
         ("computer_use", "set_vision_ground_fn", _computer_use_vision_ground),       # S5 #578 (ADR-0016 sec 5)
         ("computer_use", "set_attended_handoff_fn", _computer_use_attended_handoff), # S6 #579 (ADR-0016 sec 6)
+        ("computer_use", "set_background_actuation_fn",
+         lambda: _settings.get("background_actuation")),                            # #592 (ADR-0016 amendment)
+        ("computer_use", "set_setvalue_roles_fn",
+         lambda: _settings.get("setvalue_roles")),                                  # #592 (ADR-0016 amendment)
     ]
     for name, seam, factory in seams:
         try:

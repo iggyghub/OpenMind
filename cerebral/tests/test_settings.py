@@ -53,6 +53,8 @@ class TestSettingsStore:
             "browser_pause_on_verification",
             "disabled_plugins",
             "enabled_skills",
+            "background_actuation",
+            "setvalue_roles",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):
@@ -224,6 +226,45 @@ class TestSettingsStore:
         store = SettingsStore(tmp_path / "s.json")
         with pytest.raises(ValueError, match="enabled_skills must be a list of str"):
             store.set("enabled_skills", ["alpha", 42])
+
+    def test_background_actuation_defaults_on(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("background_actuation") is True
+
+    def test_background_actuation_roundtrip_and_type(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("background_actuation", False)
+        assert store.get("background_actuation") is False
+        with pytest.raises(ValueError, match="expects bool"):
+            store.set("background_actuation", "nope")
+
+    def test_setvalue_roles_default_edit_document(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("setvalue_roles") == ["Edit", "Document"]
+
+    def test_setvalue_roles_set_and_get_roundtrip(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("setvalue_roles", [])
+        assert store.get("setvalue_roles") == []
+        store.set("setvalue_roles", ["Edit"])
+        assert store.get("setvalue_roles") == ["Edit"]
+
+    def test_setvalue_roles_persists_to_disk(self, tmp_path):
+        p = tmp_path / "s.json"
+        s1 = SettingsStore(p)
+        s1.set("setvalue_roles", ["Document"])
+        s2 = SettingsStore(p)
+        assert s2.get("setvalue_roles") == ["Document"]
+
+    def test_setvalue_roles_wrong_type_raises(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        with pytest.raises(ValueError, match="expects list"):
+            store.set("setvalue_roles", "Edit")
+
+    def test_setvalue_roles_rejects_non_str_items(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        with pytest.raises(ValueError, match="setvalue_roles must be a list of str"):
+            store.set("setvalue_roles", ["Edit", 42])
 
 
 # ── WS IPC tests ──────────────────────────────────────────────────────────────
