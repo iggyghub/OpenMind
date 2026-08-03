@@ -47,7 +47,7 @@ def _make_engine(planner, gate_decisions, tool_results, recorded=None):
     result_iter = iter(tool_results)
     recorded_turns = recorded if recorded is not None else []
 
-    async def gate_fn(tool_name):
+    async def gate_fn(tool_name, args=None):
         return next(gate_iter)
 
     async def execute_fn(tool_name, args):
@@ -272,7 +272,7 @@ async def test_immediate_text_response_skips_tool():
 
     gate_called = []
 
-    async def gate_fn(name):
+    async def gate_fn(name, args=None):
         gate_called.append(name)
         return Decision.SILENT
 

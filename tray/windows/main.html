@@ -2392,6 +2392,30 @@
     }
     .perm-row:last-child { border-bottom: none; }
 
+    /* ADR-0016 sec 4 -- full-autonomy switch. Amber accent + a permanent ON
+       badge so a floor-removing mode is never invisible. */
+    .perm-fullauto {
+      padding: 12px 18px;
+      border-bottom: 1px solid #1e1c30;
+      background: rgba(224, 133, 90, 0.06);
+    }
+    .perm-fullauto.is-on {
+      background: rgba(224, 133, 90, 0.14);
+      box-shadow: inset 3px 0 0 #e0855a;
+    }
+    .perm-fullauto-badge {
+      display: inline-block;
+      margin-left: 8px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: #e0855a;
+      color: #1a1526;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      vertical-align: middle;
+    }
+
     .perm-row-head {
       display: flex;
       align-items: center;
@@ -8732,7 +8756,25 @@
           </div>
         `;
       }).join('');
-      permCapRowsEl.innerHTML = capHtml;
+
+      // ADR-0016 sec 4 -- badged, default-off full-autonomy master switch.
+      // The ONE documented exception to the non-bypassable-irreversible rule:
+      // while on, irreversible computer-use actions skip the modal. Scoped to
+      // computer use only; wears a permanent ON badge while active.
+      const faOn = !!state.computer_use_full_autonomy;
+      const faHtml = `
+        <div class="perm-fullauto${faOn ? ' is-on' : ''}">
+          <div class="perm-row-head">
+            <div class="perm-row-label">Computer-use full autonomy${faOn ? ' <span class="perm-fullauto-badge">ON</span>' : ''}</div>
+            <label class="ps-toggle">
+              <input class="ps-toggle-input" type="checkbox" data-perm-fullauto ${faOn ? 'checked' : ''}>
+              <span class="ps-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="perm-row-desc">&#9888; Lets Felix perform irreversible computer-use actions (send / submit / delete) <strong>without the confirmation modal</strong> &mdash; it will click them without asking. Default off; resets on restart and profile switch. Affects computer use only, never other tools.</div>
+        </div>
+      `;
+      permCapRowsEl.innerHTML = faHtml + capHtml;
 
       // Session-grants list.
       const sessionEntries = Object.entries(state.session_class_grants || {});
@@ -8814,6 +8856,13 @@
       if (e.target.classList.contains('perm-btn-unlock-shell')) {
         permShellModal.classList.add('is-open');
       }
+    });
+
+    // ADR-0016 sec 4 -- full-autonomy switch (delegated; the panel re-renders).
+    permCapRowsEl.addEventListener('change', (e) => {
+      const cb = e.target.closest('input[data-perm-fullauto]');
+      if (!cb) return;
+      sendEvent({ type: 'set_computer_use_full_autonomy', data: { enabled: cb.checked } });
     });
 
     permSessionRowsEl.addEventListener('click', (e) => {
