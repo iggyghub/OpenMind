@@ -217,3 +217,126 @@ plus real network egress. All steps use `computer_use.browser_navigate`.
       not found", then the attended-handoff seam fires (notification +
       SetActive), and a `computer_use_handoff_done` reply resumes the
       chain.
+
+## Background actuation (ADR-0016 amendment 2026-08-02) -- S4 #595
+
+Verifies decisions (a)/(b)/(c)/(d)/(e)/(f)/(g) of the amendment: background
+UIA-pattern actuation runs concurrently with the user, `SetValue` never
+submits, the idle gate defers to a present user, the kill switch covers both
+actuation paths, and the driving indicator is mode-aware. All checks assume
+`computer_use.background_actuation` is at its default (on) unless a step says
+otherwise.
+
+- [ ] Concurrent use: open Notepad and click into its editing area so the
+      caret is blinking there. Open Calculator as a SECOND, background
+      window. While continuously typing in Notepad yourself, ask Felix:
+      "click the Two button in Calculator". Verify: the caret never leaves
+      Notepad, the cursor never moves, focus never jumps away from Notepad
+      (you can keep typing the whole time and your keystrokes land in
+      Notepad, not Calculator), and the `click_element` trace's successful
+      try shows `"path": "uia_pattern"` and `"foregrounded": false`.
+- [ ] Focus-theft per control class -- button `Invoke`: ask Felix to click a
+      plain button with no side dialog (e.g. Calculator's "Two"). Verify the
+      successful try records `"path": "uia_pattern"`, `"foregrounded": false`.
+- [ ] Focus-theft per control class -- checkbox `Toggle`: point Felix at a
+      background window containing a checkbox (e.g. a Settings toggle, or
+      Notepad's Format menu "Word Wrap" if exposed as a checkbox) and ask
+      Felix to toggle it while another window stays focused. Verify: the
+      checkbox state actually flips, the successful try records
+      `"path": "uia_pattern"`, `"foregrounded": false`.
+- [ ] Focus-theft per control class -- background `Edit` `SetValue`: with a
+      plain, non-browser `Edit` control in a background window (e.g.
+      Notepad's Find dialog text field), ask Felix to `type_into` it. Verify
+      the successful try records `"path": "uia_pattern"`, `"foregrounded":
+      false`, and no `Edit`/`Document` window ever became foreground.
+- [ ] Focus-theft actually detected: pick (or contrive) a control that opens
+      a modal / steals focus the instant it's invoked via its control
+      pattern. Ask Felix to click it. Verify: the try records
+      `"foregrounded": true`, `"ok": false`, `"actual"` containing "soft
+      trip", and the call returns immediately WITHOUT falling through to the
+      pyautogui foreground fallback (no cursor moves after the soft trip).
+- [ ] `SetValue` fills, never submits: pick a native (non-browser,
+      non-Electron) `Edit`/`Document` control with autocomplete-like
+      behavior -- e.g. Windows Explorer's search box, or Notepad's Find
+      dialog field -- and ask Felix to `type_into` it. Verify: no
+      navigation, search, or dialog action fires as a side effect of the
+      fill; the successful try shows `"path": "uia_pattern"`. Then, as a
+      SEPARATE step, ask Felix to `click_element` the Find Next / Search
+      button. Verify: the two actions are distinct trace entries (`type_into`
+      then `click_element`) -- the fill never auto-submitted -- and if the
+      submit button's name matches an `is_committing_action` verb (e.g.
+      "Delete", "Send"), the irreversible modal pops on that second call and
+      not on the `type_into` call. NOTE: the plugin exposes no standalone
+      `press_key` tool -- the only Felix-callable submit step today is a
+      second `click_element` call (see Mismatch note below).
+- [ ] Kill-switch remap -- F11+F12 aborts a background action: ask Felix to
+      run a `click_element`/`type_into` against a background window under
+      conditions that keep the retry loop in flight for a few tries (e.g. a
+      name that briefly doesn't resolve). Mid-loop, press F11+F12 together.
+      Verify: the trace's final try records `"actual": "aborted by kill
+      switch"`, `"ok": false` (this early-abort entry carries no `path` key
+      -- the abort fires before a path is chosen), and no further UIA
+      pattern calls or keystrokes occur after the press.
+- [ ] Kill-switch remap -- Visualiser Stop aborts a background action: same
+      setup as above, click the Visualiser's STOP button instead of the
+      hotkey. Verify the same trace shape: final try `"actual": "aborted by
+      kill switch"`, `"ok": false`.
+- [ ] Kill-switch remap -- corner-slam is foreground-only (documented, not a
+      defect): with background actuation succeeding via `uia_pattern` (no
+      cursor movement), slam the mouse to a screen corner mid-loop. Verify:
+      the action completes normally -- `CornerAbort` is only ever raised
+      inside the backend's `click()`/`type_text()` calls (the foreground
+      path), never inside `pattern_click()`/`pattern_set_value()`, so a
+      background action has no cursor to slam and the corner-failsafe simply
+      does not apply to it. This is intentional: corner-slam covers the
+      foreground leg (verified in S2 #576); F11+F12 and Visualiser Stop are
+      the two legs that cover BOTH paths, because the `_abort_event` check at
+      the top of every retry loop runs before the background/foreground
+      branch is chosen.
+- [ ] Idle gate: force the foreground fallback (either set
+      `computer_use.background_actuation` to off, or target a control with
+      no usable pattern) and actively move the mouse / type on the keyboard
+      yourself, staying within `computer_use.user_idle_ms` (default 4000ms)
+      of continuous activity. Ask Felix to click/type into that control.
+      Verify: while you stay active, each try is recorded as waiting --
+      `"actual"` contains "user present (idle Nms < 4000ms) -- waiting for
+      idle instead of stealing input", `"ok": false`, `"path": "uia_
+      synthetic"` -- and the cursor never moves. Then stop touching input
+      for >= 4000ms and verify the very next try proceeds with the
+      foreground click/type. If you never go idle, verify the retry loop
+      exhausts and escalates to attended-handoff (S6 #579) rather than ever
+      stealing input from a present user.
+- [ ] Idle gate bypassed under full autonomy: flip the full-autonomy switch
+      ON (S3 #577). Repeat the previous check while continuously active.
+      Verify: the foreground fallback proceeds immediately despite you being
+      "present" -- full autonomy bypasses the idle gate the same way it
+      bypasses the irreversible floor.
+- [ ] Mode-aware indicator -- background: enable the Visualiser. Ask Felix
+      to click/type into a background-actuatable control. Verify: the
+      driving panel shows the calm blue `mode-background` style with the
+      text "Felix is acting in `<window title>` (background) -- you can
+      keep working" for as long as the pattern actuation is running.
+- [ ] Mode-aware indicator -- soft trip flips to foreground/urgent: force a
+      focus-theft soft trip (per the check above) or target a control with
+      no usable pattern (forcing the foreground fallback). Verify: the
+      indicator flips in real time to the original urgent purple/pink style
+      with the text "Felix is driving" -- the same broadcast, no separate
+      gate, purely a mode change.
+- [ ] Mode-aware indicator -- `browser_navigate` is always foreground: ask
+      Felix to `browser_navigate`. Verify: the indicator NEVER shows the
+      background style for this tool, even with `background_actuation` on --
+      `browser_navigate` has no control-pattern equivalent and always emits
+      `mode="foreground"`.
+
+**Doc-vs-code mismatch found while writing this section:** the issue's
+suggested "submit is a separate gated `click_element`/`press_key` step" does
+not fully match the merged code. `plugins/computer_use.py` exposes exactly
+four tools -- `read_ui`, `click_element`, `browser_navigate`, `type_into` --
+and no standalone `press_key` tool the planner can call. `press_key` exists
+only as an internal `ComputerUseBackend` method used by `browser_navigate`'s
+own URL-submit (Enter after typing the address), which is not routed through
+`is_committing_action` at all (that gate only fires for `tool_name ==
+"click_element"`, per its docstring and implementation at line ~138-153).
+The check above is written against `click_element` as the submit step, which
+is what the gate actually covers -- it does not assert a `press_key` tool or
+gate that does not exist.
