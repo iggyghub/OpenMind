@@ -7,7 +7,8 @@ settings must be read and written via WebSocket to Cerebral.
 Keys: notifications_enabled, reminder_interval_minutes, camera_enabled,
       visualiser_visible, mic_mode, tts_muted, tts_volume,
       mic_input_device, browser_pause_on_verification,
-      disabled_plugins, enabled_skills
+      disabled_plugins, enabled_skills, background_actuation,
+      setvalue_roles
 """
 from __future__ import annotations
 
@@ -39,6 +40,19 @@ _DEFAULTS: dict[str, Any] = {
     # The INVERSE of disabled_plugins: skills are disabled-by-default, so this
     # is an opt-in list. Only enabled skills are visible to the planner.
     "enabled_skills": [],
+    # ADR-0016 amendment 2026-08-02 (computer_use background actuation,
+    # #592) — master switch. On (default): click_element/type_into try a
+    # UIA control pattern (Invoke/Toggle/Select/ExpandCollapse/SetValue)
+    # before the pyautogui foreground fallback, so the user keeps the mouse
+    # and keyboard while Felix drives. Off: pre-amendment pure-foreground
+    # behaviour.
+    "background_actuation": True,
+    # ADR-0016 amendment — UIA control-type allowlist SetValue may fill.
+    # SetValue fills, never submits, and only outside a browser/Electron
+    # surface (checked separately by control class, not this list). Empty
+    # list keeps pattern clicks background but forces all text through
+    # foreground typing.
+    "setvalue_roles": ["Edit", "Document"],
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -56,6 +70,8 @@ _TYPES: dict[str, type] = {
     "browser_pause_on_verification": bool,
     "disabled_plugins":          list,
     "enabled_skills":            list,
+    "background_actuation":      bool,
+    "setvalue_roles":            list,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
@@ -107,6 +123,8 @@ class SettingsStore:
             raise ValueError("disabled_plugins must be a list of str")
         if key == "enabled_skills" and not all(isinstance(i, str) for i in value):
             raise ValueError("enabled_skills must be a list of str")
+        if key == "setvalue_roles" and not all(isinstance(i, str) for i in value):
+            raise ValueError("setvalue_roles must be a list of str")
         self._data[key] = value
         self._save()
 

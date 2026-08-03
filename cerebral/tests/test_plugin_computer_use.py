@@ -1359,6 +1359,421 @@ async def test_handoff_backend_without_surface_window_still_calls_seam():
 
 
 # ---------------------------------------------------------------------------
+# #592 (ADR-0016 amendment 2026-08-02) -- background actuation via UIA
+# control patterns. No cursor move, no synthetic keystrokes: pattern-first,
+# pyautogui-foreground-fallback, on the SAME re-resolved element.
+# ---------------------------------------------------------------------------
+
+class _PatternBackend(_FakeBackend):
+    """Fake backend adding the #592 seam: a scripted ``resolve_element`` ->
+    (opaque live-element token, fresh bbox), and scripted pattern results.
+    ``pattern_click_result`` / ``pattern_setvalue_result`` may be a bool or
+    an Exception instance (raised) to exercise the "any doubt -> foreground"
+    fallback rule."""
+
+    def __init__(
+        self,
+        read_ui_returns=None,
+        window_bounds=None,
+        resolve_returns: list | None = None,
+        raise_on_resolve: Exception | None = None,
+        pattern_click_result=None,
+        pattern_setvalue_result=None,
+        window_class_value: str | None = None,
+    ) -> None:
+        super().__init__(read_ui_returns=read_ui_returns)
+        self._window_bounds = window_bounds
+        self._resolve_returns = resolve_returns or []
+        self._raise_on_resolve = raise_on_resolve
+        self._pattern_click_result = pattern_click_result
+        self._pattern_setvalue_result = pattern_setvalue_result
+        self._window_class_value = window_class_value
+        self.resolve_calls: list[tuple] = []
+        self.pattern_click_calls: list = []
+        self.pattern_setvalue_calls: list[tuple] = []
+        self.window_class_calls: list[str] = []
+
+    def window_bounds(self, window_title):
+        return list(self._window_bounds) if self._window_bounds else None
+
+    def resolve_element(self, window_title, name, role):
+        self.resolve_calls.append((window_title, name, role))
+        if self._raise_on_resolve is not None:
+            raise self._raise_on_resolve
+        if not self._resolve_returns:
+            return None
+        idx = min(len(self.resolve_calls) - 1, len(self._resolve_returns) - 1)
+        return self._resolve_returns[idx]
+
+    def pattern_click(self, element) -> bool:
+        self.pattern_click_calls.append(element)
+        if isinstance(self._pattern_click_result, Exception):
+            raise self._pattern_click_result
+        return bool(self._pattern_click_result)
+
+    def pattern_set_value(self, element, text: str) -> bool:
+        self.pattern_setvalue_calls.append((element, text))
+        if isinstance(self._pattern_setvalue_result, Exception):
+            raise self._pattern_setvalue_result
+        return bool(self._pattern_setvalue_result)
+
+    def window_class(self, window_title):
+        self.window_class_calls.append(window_title)
+        return self._window_class_value
+
+
+# ---- (a) pattern-first, then foreground fallback -- click_element --------
+
+async def test_click_uses_uia_pattern_when_available():
+    """A pattern-clickable element is actuated in the background -- the
+    plugin never touches backend.click() (no cursor movement)."""
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    backend = _PatternBackend(
+        read_ui_returns=[els],
+        resolve_returns=[("live-two", [10, 20, 50, 60])],
+        pattern_click_result=True,
+    )
+    plugin = ComputerUsePlugin(backend=backend, background_actuation_fn=lambda: True)
+    r = await plugin.call_tool("click_element", {"window_title": "Calc", "name": "Two"})
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["ok"] is True
+    assert data["tries"][-1]["path"] == "uia_pattern"
+    assert backend.pattern_click_calls == ["live-two"]
+    assert backend.click_calls == []
+
+
+async def test_click_falls_back_to_foreground_on_same_resolved_bbox():
+    """No usable pattern -> foreground click fires, targeting the SAME
+    re-resolved element's (fresh) bbox, not the earlier read_ui snapshot."""
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    backend = _PatternBackend(
+        read_ui_returns=[els],
+        resolve_returns=[("live-two", [11, 21, 51, 61])],  # fresh bbox differs
+        pattern_click_result=False,
+    )
+    plugin = ComputerUsePlugin(backend=backend, background_actuation_fn=lambda: True)
+    r = await plugin.call_tool("click_element", {"window_title": "Calc", "name": "Two"})
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_synthetic"
+    assert backend.pattern_click_calls == ["live-two"]
+    assert backend.click_calls == [[11, 21, 51, 61]]
+
+
+async def test_click_resolve_element_error_falls_back_to_foreground():
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    backend = _PatternBackend(read_ui_returns=[els], raise_on_resolve=RuntimeError("uia dead"))
+    plugin = ComputerUsePlugin(backend=backend, background_actuation_fn=lambda: True)
+    r = await plugin.call_tool("click_element", {"window_title": "Calc", "name": "Two"})
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_synthetic"
+    assert backend.click_calls == [[10, 20, 50, 60]]
+
+
+async def test_click_pattern_click_error_falls_back_to_foreground():
+    """Any doubt falls to foreground -- a raising pattern_click is treated as
+    'no usable pattern', not a hard failure."""
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    backend = _PatternBackend(
+        read_ui_returns=[els],
+        resolve_returns=[("live-two", [10, 20, 50, 60])],
+        pattern_click_result=RuntimeError("pattern boom"),
+    )
+    plugin = ComputerUsePlugin(backend=backend, background_actuation_fn=lambda: True)
+    r = await plugin.call_tool("click_element", {"window_title": "Calc", "name": "Two"})
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_synthetic"
+
+
+async def test_click_default_backend_without_pattern_support_uses_uia_synthetic():
+    """Backwards-compat: a backend without resolve_element/pattern_click
+    (every pre-#592 fake in this file) keeps working -- background_actuation
+    defaults True but the plugin can't ask a backend that doesn't offer it."""
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    plugin = ComputerUsePlugin(backend=_FakeBackend([els]))
+    r = await plugin.call_tool("click_element", {"window_title": "Calc", "name": "Two"})
+    data = json.loads(r.content)
+    assert data["ok"] is True
+    assert data["tries"][-1]["path"] == "uia_synthetic"
+
+
+# ---- (d) background_actuation=false restores pure foreground -------------
+
+async def test_click_background_actuation_false_restores_pure_foreground():
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    backend = _PatternBackend(
+        read_ui_returns=[els],
+        resolve_returns=[("live-two", [10, 20, 50, 60])],
+        pattern_click_result=True,  # would fire if ever asked -- must NOT be asked
+    )
+    plugin = ComputerUsePlugin(backend=backend, background_actuation_fn=lambda: False)
+    r = await plugin.call_tool("click_element", {"window_title": "Calc", "name": "Two"})
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_synthetic"
+    assert backend.resolve_calls == []
+    assert backend.pattern_click_calls == []
+    assert backend.click_calls == [[10, 20, 50, 60]]
+
+
+# ---- (b) SetValue role/surface gate -- type_into --------------------------
+
+async def test_type_into_uses_setvalue_on_allowlisted_role_outside_webview():
+    field = {"name": "Box", "role": "Edit", "bbox": [0, 0, 100, 20], "value": ""}
+    field_after = {"name": "Box", "role": "Edit", "bbox": [0, 0, 100, 20], "value": "hello"}
+    backend = _PatternBackend(
+        read_ui_returns=[[field], [field_after]],
+        resolve_returns=[("live-box", [0, 0, 100, 20])],
+        pattern_setvalue_result=True,
+        window_class_value="Notepad",
+    )
+    plugin = ComputerUsePlugin(
+        backend=backend,
+        background_actuation_fn=lambda: True,
+        setvalue_roles_fn=lambda: ["Edit", "Document"],
+    )
+    r = await plugin.call_tool(
+        "type_into", {"window_title": "Notepad", "name": "Box", "text": "hello"},
+    )
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["ok"] is True
+    assert data["tries"][-1]["path"] == "uia_pattern"
+    assert backend.pattern_setvalue_calls == [("live-box", "hello")]
+    assert backend.click_calls == []
+    assert backend.type_calls == []  # no keystrokes fired
+
+
+async def test_type_into_setvalue_skipped_for_non_allowlisted_role():
+    field = {"name": "Combo", "role": "ComboBox", "bbox": [0, 0, 100, 20], "value": ""}
+    field_after = {"name": "Combo", "role": "ComboBox", "bbox": [0, 0, 100, 20], "value": "x"}
+    backend = _PatternBackend(
+        read_ui_returns=[[field], [field_after]],
+        resolve_returns=[("live-combo", [0, 0, 100, 20])],
+        pattern_setvalue_result=True,
+        window_class_value="Notepad",
+    )
+    plugin = ComputerUsePlugin(
+        backend=backend, background_actuation_fn=lambda: True,
+        setvalue_roles_fn=lambda: ["Edit", "Document"],
+    )
+    r = await plugin.call_tool(
+        "type_into", {"window_title": "App", "name": "Combo", "text": "x"},
+    )
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_synthetic"
+    assert backend.pattern_setvalue_calls == []
+    assert backend.click_calls == [[0, 0, 100, 20]]
+    assert backend.type_calls == ["x"]
+
+
+async def test_type_into_setvalue_skipped_inside_webview_surface():
+    """An Edit control inside a Chromium/Electron window never gets SetValue,
+    even though its role is allowlisted -- the surface gate wins."""
+    field = {"name": "Search", "role": "Edit", "bbox": [0, 0, 100, 20], "value": ""}
+    field_after = {"name": "Search", "role": "Edit", "bbox": [0, 0, 100, 20], "value": "hi"}
+    backend = _PatternBackend(
+        read_ui_returns=[[field], [field_after]],
+        resolve_returns=[("live-search", [0, 0, 100, 20])],
+        pattern_setvalue_result=True,
+        window_class_value="Chrome_WidgetWin_1",
+    )
+    plugin = ComputerUsePlugin(
+        backend=backend, background_actuation_fn=lambda: True,
+        setvalue_roles_fn=lambda: ["Edit", "Document"],
+    )
+    r = await plugin.call_tool(
+        "type_into", {"window_title": "Chrome", "name": "Search", "text": "hi"},
+    )
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_synthetic"
+    assert backend.pattern_setvalue_calls == []
+    assert backend.type_calls == ["hi"]
+
+
+async def test_type_into_pattern_setvalue_false_falls_back_on_same_resolved_bbox():
+    """A backend-refused SetValue (e.g. read-only) falls back to foreground
+    click+type on the SAME re-resolved element's bbox."""
+    field = {"name": "Box", "role": "Edit", "bbox": [0, 0, 100, 20], "value": ""}
+    field_after = {"name": "Box", "role": "Edit", "bbox": [0, 0, 100, 20], "value": "z"}
+    backend = _PatternBackend(
+        read_ui_returns=[[field], [field_after]],
+        resolve_returns=[("live-box", [1, 1, 99, 19])],
+        pattern_setvalue_result=False,
+        window_class_value="Notepad",
+    )
+    plugin = ComputerUsePlugin(
+        backend=backend, background_actuation_fn=lambda: True,
+        setvalue_roles_fn=lambda: ["Edit"],
+    )
+    r = await plugin.call_tool(
+        "type_into", {"window_title": "App", "name": "Box", "text": "z"},
+    )
+    assert not r.is_error, r.content
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_synthetic"
+    assert backend.pattern_setvalue_calls == [("live-box", "z")]
+    assert backend.click_calls == [[1, 1, 99, 19]]
+    assert backend.type_calls == ["z"]
+
+
+async def test_setvalue_roles_empty_forces_foreground_typing_but_click_pattern_stays():
+    """Emptying setvalue_roles only degrades type_into -- click_element's
+    pattern actuation is a separate knob and stays background."""
+    field = {"name": "Box", "role": "Edit", "bbox": [0, 0, 100, 20], "value": ""}
+    field_after = {"name": "Box", "role": "Edit", "bbox": [0, 0, 100, 20], "value": "z"}
+    type_backend = _PatternBackend(
+        read_ui_returns=[[field], [field_after]],
+        resolve_returns=[("live-box", [0, 0, 100, 20])],
+        pattern_setvalue_result=True,
+        window_class_value="Notepad",
+    )
+    type_plugin = ComputerUsePlugin(
+        backend=type_backend, background_actuation_fn=lambda: True,
+        setvalue_roles_fn=lambda: [],
+    )
+    r1 = await type_plugin.call_tool(
+        "type_into", {"window_title": "App", "name": "Box", "text": "z"},
+    )
+    data1 = json.loads(r1.content)
+    assert data1["tries"][-1]["path"] == "uia_synthetic"
+    assert type_backend.pattern_setvalue_calls == []
+
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    click_backend = _PatternBackend(
+        read_ui_returns=[els],
+        resolve_returns=[("live-two", [10, 20, 50, 60])],
+        pattern_click_result=True,
+    )
+    click_plugin = ComputerUsePlugin(
+        backend=click_backend, background_actuation_fn=lambda: True,
+        setvalue_roles_fn=lambda: [],
+    )
+    r2 = await click_plugin.call_tool(
+        "click_element", {"window_title": "Calc", "name": "Two"},
+    )
+    data2 = json.loads(r2.content)
+    assert data2["tries"][-1]["path"] == "uia_pattern"
+
+
+# ---- (c) path field values -------------------------------------------------
+
+def test_is_webview_class_detects_chromium_and_gecko():
+    assert cu_mod._is_webview_class("Chrome_WidgetWin_1") is True
+    assert cu_mod._is_webview_class("MozillaWindowClass") is True
+    assert cu_mod._is_webview_class("Notepad") is False
+    assert cu_mod._is_webview_class("") is True   # doubt -> webview -> foreground
+    assert cu_mod._is_webview_class(None) is True
+
+
+def test_count_matches_helper():
+    els = _elems(
+        ("Item", "ListItem", [0, 0, 10, 10]),
+        ("Item", "ListItem", [0, 20, 10, 30]),
+        ("Other", "Button", [0, 40, 10, 50]),
+    )
+    assert cu_mod._count_matches(els, "Item", "ListItem") == 2
+    assert cu_mod._count_matches(els, "Other", None) == 1
+    assert cu_mod._count_matches(els, "Ghost", None) == 0
+
+
+async def test_click_flags_multi_match_when_name_not_unique():
+    els = _elems(
+        ("Item", "ListItem", [0, 0, 10, 10]),
+        ("Item", "ListItem", [0, 20, 10, 30]),
+    )
+    plugin = ComputerUsePlugin(backend=_FakeBackend([els]), background_actuation_fn=lambda: False)
+    r = await plugin.call_tool(
+        "click_element", {"window_title": "List", "name": "Item", "role": "ListItem"},
+    )
+    data = json.loads(r.content)
+    assert data["tries"][-1]["multi_match"] is True
+
+
+async def test_click_no_multi_match_flag_when_unique():
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    plugin = ComputerUsePlugin(backend=_FakeBackend([els]), background_actuation_fn=lambda: False)
+    r = await plugin.call_tool("click_element", {"window_title": "Calc", "name": "Two"})
+    data = json.loads(r.content)
+    assert "multi_match" not in data["tries"][-1]
+
+
+# ---- settings getter defaults / failure handling ---------------------------
+
+async def test_background_actuation_getter_exception_defaults_to_enabled():
+    def _boom():
+        raise RuntimeError("settings dead")
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    backend = _PatternBackend(
+        read_ui_returns=[els],
+        resolve_returns=[("live", [10, 20, 50, 60])],
+        pattern_click_result=True,
+    )
+    plugin = ComputerUsePlugin(backend=backend, background_actuation_fn=_boom)
+    r = await plugin.call_tool("click_element", {"window_title": "C", "name": "Two"})
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_pattern"
+
+
+async def test_setvalue_roles_getter_exception_defaults_to_edit_document():
+    def _boom():
+        raise RuntimeError("settings dead")
+    field = {"name": "Box", "role": "Edit", "bbox": [0, 0, 100, 20], "value": ""}
+    field_after = {"name": "Box", "role": "Edit", "bbox": [0, 0, 100, 20], "value": "z"}
+    backend = _PatternBackend(
+        read_ui_returns=[[field], [field_after]],
+        resolve_returns=[("live", [0, 0, 100, 20])],
+        pattern_setvalue_result=True,
+        window_class_value="Notepad",
+    )
+    plugin = ComputerUsePlugin(
+        backend=backend, background_actuation_fn=lambda: True, setvalue_roles_fn=_boom,
+    )
+    r = await plugin.call_tool("type_into", {"window_title": "App", "name": "Box", "text": "z"})
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_pattern"
+
+
+async def test_set_background_actuation_fn_module_seam(monkeypatch):
+    """Module-level seam (used by main.py at startup) survives the same
+    injection round-trip as the constructor arg."""
+    monkeypatch.setattr(cu_mod, "_background_actuation_fn", lambda: False)
+    els = _elems(("Two", "Button", [10, 20, 50, 60]))
+    backend = _PatternBackend(
+        read_ui_returns=[els],
+        resolve_returns=[("live", [10, 20, 50, 60])],
+        pattern_click_result=True,
+    )
+    plugin = ComputerUsePlugin(backend=backend)  # no per-instance override
+    r = await plugin.call_tool("click_element", {"window_title": "C", "name": "Two"})
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_synthetic"
+    assert backend.pattern_click_calls == []
+
+
+async def test_set_setvalue_roles_fn_module_seam(monkeypatch):
+    monkeypatch.setattr(cu_mod, "_setvalue_roles_fn", lambda: [])
+    field = {"name": "Box", "role": "Edit", "bbox": [0, 0, 100, 20], "value": ""}
+    field_after = {"name": "Box", "role": "Edit", "bbox": [0, 0, 100, 20], "value": "z"}
+    backend = _PatternBackend(
+        read_ui_returns=[[field], [field_after]],
+        resolve_returns=[("live", [0, 0, 100, 20])],
+        pattern_setvalue_result=True,
+        window_class_value="Notepad",
+    )
+    plugin = ComputerUsePlugin(backend=backend)  # background_actuation defaults True
+    r = await plugin.call_tool("type_into", {"window_title": "App", "name": "Box", "text": "z"})
+    data = json.loads(r.content)
+    assert data["tries"][-1]["path"] == "uia_synthetic"
+    assert backend.pattern_setvalue_calls == []
+
+
+# ---------------------------------------------------------------------------
 # S7 #580 -- browser-as-app stealth path + planner selection vs Browser plugin
 # ---------------------------------------------------------------------------
 
