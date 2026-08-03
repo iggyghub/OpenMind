@@ -103,6 +103,11 @@ def is_committing_action(tool_name: str, args: dict | None) -> bool:
 DEFAULT_RETRY_LIMIT = 3
 MAX_RETRY_LIMIT = 5
 
+# read_ui subtree walk depth cap. ponytail: guards a pathological UIA tree
+# (a browser DOM surfaced as UIA can be tens of thousands of nodes deep);
+# raise it if a real target legitimately sits deeper than this.
+_UIA_MAX_DEPTH = 50
+
 # S5 #578: RAM-only thumbnail ring for in-session debug. Bytes are held for
 # the lifetime of the plugin instance and dropped when the ring rolls over;
 # nothing is written to disk (ADR-0016 sec 7 audio-buffer rule). "Cleared
@@ -1211,20 +1216,32 @@ class _WindowsBackend:
 
     def read_ui(self, window_title: str) -> list[dict]:
         win = self._window(window_title)
-        if not win.Exists(0):
+        if not win.Exists(1):
             return []
+        # Iterative subtree walk via GetChildren. The prior `uia.WalkTree(win)`
+        # call was broken against uiautomation 2.0.29: with no traversal
+        # callback it yields nothing, and it yields (control, depth, remaining)
+        # 3-tuples the old 2-var unpack couldn't take. GetChildren is stable
+        # across uiautomation versions -- no signature to drift under us.
         out: list[dict] = []
-        for ctrl, _depth in self._uia.WalkTree(win):
+        stack = [(win, 0)]
+        while stack:
+            ctrl, depth = stack.pop()
             try:
                 rect = ctrl.BoundingRectangle
-                bbox = [rect.left, rect.top, rect.right, rect.bottom]
                 out.append({
                     "name": ctrl.Name or "",
                     "role": ctrl.ControlTypeName or "",
-                    "bbox": bbox,
+                    "bbox": [rect.left, rect.top, rect.right, rect.bottom],
                 })
             except Exception:
-                continue
+                pass
+            if depth < _UIA_MAX_DEPTH:
+                try:
+                    for child in ctrl.GetChildren():
+                        stack.append((child, depth + 1))
+                except Exception:
+                    continue
         return out
 
     def click(self, bbox: list[int]) -> None:
