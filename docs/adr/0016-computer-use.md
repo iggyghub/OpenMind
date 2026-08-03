@@ -376,6 +376,165 @@ focus-theft per action, mirroring S5's `path` field.
   become the idle gate + focus-theft probe.
 - The isolated-session/VM option (§6) remains the deferred path for *true*
   isolation; UIA-pattern background actuation is the v1 concurrency story on the
-  live desktop, not a replacement for it.
+  live desktop, not a replacement for it. **(Promoted to an accepted post-v1
+  follow-up in the 2026-08-03 amendment below — it becomes the escalation for
+  exactly the cases background-pattern actuation cannot make concurrent:
+  foreground synthetic input and the pixel path.)**
 - `felix-settings.json` gains `background_actuation`, `setvalue_roles`, and
   `user_idle_ms`, all riding ADR-0005's existing toggle machinery.
+
+## Amendment 2026-08-03: Isolated interactive session (issue #601)
+
+The v1 "Considered and rejected" entry, and the 2026-08-02 amendment's
+consequences, deferred the isolated virtual-desktop session ("stronger
+containment, heavier build, defeats watch-and-take-over"). This amendment
+**promotes it to an accepted post-v1 follow-up** and records the design settled
+in the 2026-08-03 grill.
+
+### Where it sits relative to background actuation
+
+The 2026-08-02 amendment made the *structured, control-pattern* path concurrent
+on the live desktop (cursor-less `Invoke`/`SetValue`/…). But two cases still
+**steal the user's input** and are only handled by idle-gating or attended-
+handoff: **foreground synthetic input** (`pyautogui` typing/clicks where no
+usable control pattern exists) and the **pixel path** (games, canvases,
+tree-less apps). The isolated session is the escalation for exactly those: when
+Felix must use the input-stealing paths *and* the user wants to keep working,
+it does them in **its own session** instead of waiting for idle or stealing the
+cursor. Background-pattern actuation stays the cheapest first choice on the live
+desktop; the isolated session is not a replacement for it.
+
+**Framing that governs the whole amendment:** isolation replaces the
+*shared-desktop* guardrails; it does **not** replace the *consequence*
+guardrails. A confident wrong *send* is just as real from session 2 as from
+session 1, so the `irreversible`/consequence gate (§3/§4) is untouched
+throughout.
+
+1. **Vehicle — a dedicated `Felix` Windows user in a second concurrent
+   interactive session.** Not Windows Sandbox (ephemeral by design → wipes
+   Felix's persistent app logins every launch, defeating "operate my stuff";
+   its Hyper-V isolation is genuinely stronger but that is not the constraint
+   that matters here). Not a full VM (strongest isolation, heaviest, loses "my
+   accounts/my desktop"; kept only as the fallback if hard kernel isolation is
+   ever required). Standard Windows allows one interactive session **per user**,
+   so a concurrent session is necessarily a *separate* user account — accepted.
+
+2. **Seam — brain/actuator split.** `pyautogui`/UIA drive whatever desktop the
+   *process* is attached to, so the actuator must run *in* Felix's session. The
+   in-session worker is a **new client on Cerebral's existing localhost
+   WebSocket IPC** (the tray's channel), speaking a small **device-agnostic
+   perception+action protocol** (`read_ui`/`capture`/`click`/`type`/`result`).
+   Same `cerebral.*` codebase, launched by Cerebral; Cerebral keeps the planner,
+   consequence-gate, and kill switch — the worker is dumb hands. **Generalizes
+   to phone/glasses:** the same protocol later rides OpenClaw to an Android/AR
+   actuator instead of localhost — one brain, swappable hands.
+
+3. **Provisioning — Cerebral auto-provisions via loopback RDP.** A logon *token*
+   (`LogonUser`) is not an interactive *desktop*; something must actually log the
+   account on. Cerebral RDP-connects to `localhost` as `Felix` → a real session
+   with a real cursor. Felix's password lives in **Windows Credential Manager
+   via the existing `keyring`** store. `Felix` is a **standard (non-admin)**
+   user — the blast-radius ceiling that makes a stored interactive-logon
+   credential tolerable. (Rejected: registry auto-logon — a plaintext-adjacent
+   security-setting change.)
+
+4. **Kill switch — out-of-session, routed through Cerebral.** The live-desktop
+   controls no longer reach the user: corner-failsafe acts on Felix's cursor,
+   and the F11+F12 chord is captured by whichever session has focus. So: (a)
+   **primary** — Visualiser Stop → Cerebral → stop feeding actions +
+   `TerminateProcess` the worker; the F11+F12 chord's **listener re-homes to the
+   user's session** and fires the same Cerebral-Stop path; (b) **dead-man #1** —
+   worker launched in a Job Object with `KILL_ON_JOB_CLOSE` (reuse
+   `cerebral/sandbox/_windows.py`) → Cerebral dies → OS kills worker; (c)
+   **dead-man #2** — worker self-halts on missed Cerebral heartbeat (covers a
+   hung brain / wedged WS). The worker cannot outlive or outrun its brain.
+
+5. **Capture — ship an indirect-display driver (IDD) with this feature.** A
+   headless/disconnected RDP session stops compositing → **pixel** capture goes
+   black; the **UIA structured path reads the tree, not pixels, so it is
+   unaffected** and remains the workhorse. To keep the pixel-fallback working
+   headless, bind an **IDD virtual display** to Felix's session so it always has
+   a live framebuffer (chosen over deferring: full capability parity from day
+   one, at the cost of the single heaviest component — a signed display driver +
+   install step). **DRM/GPU-protected windows still capture black** — the
+   unchanged §7 gap; fall to UIA or escalate.
+
+6. **Identity — per-app map of "user's account vs Felix's own."** Felix's
+   profile is separate, and **DPAPI (per-user) makes copying the user's existing
+   logins impossible** — so every app is a **one-time fresh interactive login in
+   Felix's session**, persisted in Felix's profile. Default preserves the
+   ADR-0016 motivation (Felix acts *as the user* — e.g. the user's Discord, live
+   concurrently on both sessions), with per-app opt-out to a distinct Felix
+   identity (e.g. Felix's own email/GitHub). It is a **mix**, keyed per app.
+
+7. **Watch-and-take-over — restored (the original reason for deferral).**
+   *Watch* = passive, always-on **thumbnail stream** from the frames Felix
+   already captures for grounding, to the user-session Visualiser over the WS
+   IPC (reuse the §7 RAM-only thumbnail ring buffer) — cheaper than a continuous
+   RDP encode. *Take over* = on-demand **RDP window** into Felix's session;
+   clicking "Take over" **pauses the worker** (same path as the kill switch), the
+   user drives with real input, "Release" resumes — so user and Felix never
+   contend for session 2's cursor (the take-turns problem is brain-mediated, not
+   merely relocated).
+
+8. **Relaxed rules in the dedicated session** (safe because every window in
+   session 2 is Felix's — no user secrets to protect): **window-bounded
+   actions** → dropped (full desktop); **window-scoped capture** → full-desktop
+   capture; **`screen_capture` = ask** → silent within session 2 (capturing
+   Felix's own screen is not a user-privacy event); **yield-between-actions and
+   the 2026-08-02 idle-gate on foreground input** → dropped — in session 2 there
+   is no user cursor to be polite to, so **foreground synthetic input and the
+   pixel path run at full speed, concurrently**, which is the whole point.
+   **Unchanged: the consequence/irreversible modal** (§3/§4), still overridable
+   only by the badged full-autonomy switch.
+
+9. **Modes coexist; a three-tier ladder.** The planner picks per task: (1)
+   **background-pattern actuation on the live desktop** (2026-08-02 amendment) —
+   cheapest, concurrent, first choice for structured targets with a usable
+   control pattern; (2) **isolated dedicated session** — the default whenever the
+   input-stealing paths (foreground/pixel) are needed, or for bulk autonomous
+   work; (3) **live-desktop foreground take-turns** (idle-gated, v1) — opt-in
+   ("do it on my screen") or auto-selected when a target only lives in the user's
+   session. Same "planner picks per case" pattern as browser-as-app vs Playwright
+   (§2) and the two Discord paths (ADR-0006). **Lifecycle:** Felix's session is
+   provisioned **lazily on first need and kept warm** (not per-task teardown —
+   cold logins + RDP latency; not eager-at-boot — wasted when unused).
+
+10. **Failure is never silent.** Any dedicated-path failure (RDP provision,
+    logon, worker connect, IDD absent, mid-task session death) **notifies the
+    user** — Visualiser when attended, **OpenClaw/push when AFK** — stating which
+    mode failed, why, and the fallback taken. Then: **attended** → fall back to
+    tier 3 live-desktop take-turns (which *is* the safety net); **unattended** →
+    escalate to attended-handoff / park (the ADR-0006 retry-exhaustion pattern),
+    never silent-retry.
+
+### Considered and rejected (amendment)
+
+- **Windows Sandbox as the vehicle.** Stronger (Hyper-V) isolation, but ephemeral
+  by design wipes Felix's persistent logins every launch — defeats "operate my
+  stuff." Dedicated user keeps a persistent profile.
+- **Full VM.** Strongest isolation, but heaviest and loses "my accounts/my
+  desktop." Kept only as the fallback if hard kernel isolation is ever needed.
+- **Copy the user's logins into Felix's profile.** DPAPI is per-user; copied
+  cookie/credential stores are undecryptable. Fresh per-app login is mandatory.
+- **In-session kill switch (hotkey/corner-failsafe) as the human control.**
+  Neither crosses the session boundary; the out-of-session Cerebral path + two
+  dead-men replace them.
+- **Defer the IDD virtual display (structured-only headless).** Loses the pixel
+  path in the background session (games/canvases) — a real capability regression
+  given ADR-0016's "operate anything" goal. Ship the IDD with the feature.
+- **Isolated session replaces the live-desktop modes.** It is heavier and forces
+  a second login per target; the three modes coexist, planner picks per case.
+
+### Consequences (amendment)
+
+- `keyboard`/`pyautogui`/`uiautomation`/`mss` already declared (#589 / PR #590).
+  This adds an **IDD virtual-display driver** as a Windows install-time
+  dependency, a `CreateProcessAsUser` / loopback-RDP **session launcher**, a
+  **brain/actuator WS action protocol**, and a stored standard-user Windows
+  credential in Credential Manager.
+- The brain/actuator WS protocol is the first concrete step toward the
+  multi-actuator (phone/glasses) future the seam was chosen to enable.
+- `felix-settings.json` gains an isolated-session block (enable, default mode per
+  task class, `user_idle_ms` reuse, per-app identity map), riding ADR-0005's
+  toggle machinery.
