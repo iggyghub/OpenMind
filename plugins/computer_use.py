@@ -54,9 +54,8 @@ Background actuation (ADR-0016 amendment 2026-08-02, Issue #592):
   felix-settings.json as flat keys ``background_actuation`` (master, default
   on) and ``setvalue_roles`` (default ``["Edit", "Document"]``; empty forces
   all text through foreground typing while leaving pattern clicks background).
-  Idle-gating the foreground fallback (#593), the driving-indicator's
-  background/foreground mode (#594), and live-verify docs (#595) are follow-on
-  slices -- not built here.
+  Idle-gating the foreground fallback (#593) and live-verify docs (#595) are
+  the other follow-on slices -- #595 is not built here.
 
 Idle gate + focus-theft probe (ADR-0016 amendment d/g, Issue #593):
   Before ANY pyautogui foreground action -- the click_element/type_into
@@ -76,6 +75,21 @@ Idle gate + focus-theft probe (ADR-0016 amendment d/g, Issue #593):
   input-stealing foreground fallback. Both backend methods are optional:
   absent -> the gate always allows (unknown idle can't block) and
   ``foregrounded`` always stamps False (matches pre-#593 behaviour).
+
+Mode-aware driving indicator (ADR-0016 amendment f, Issue #594):
+  A background pattern action has no moving cursor, so the "Felix is
+  driving" broadcast is its only feedback. ``_emit_driving`` therefore
+  carries a payload -- not a bare bool -- with ``mode: "background" |
+  "foreground"``, ``window_title``, and ``action`` alongside ``driving``.
+  The initial guess for a click/type call is "background" when
+  ``background_actuation`` is on (a pattern is attempted first), else
+  "foreground"; ``browser_navigate`` has no control-pattern equivalent so it
+  is always "foreground". The call sites re-emit with ``mode="foreground"``
+  the moment a try actually falls through to the pyautogui fallback, and
+  again immediately on a #593 soft trip -- so a focus-theft mid-action flips
+  the live indicator to the foreground/urgent style in real time, same
+  broadcast, no second gate. The ``irreversible``/``is_committing_action``
+  gate is untouched (sec 3): this is visibility only.
 """
 from __future__ import annotations
 
@@ -169,7 +183,14 @@ class CornerAbort(Exception):
 
 # Module-level seams -- main.py wires these once at startup; tests inject
 # per-instance via the constructor (constructor-injected wins).
-DrivingFn = Callable[[bool], Awaitable[None]]
+# #594 (ADR-0016 amendment f): the payload evolved from a bare bool to a
+# dict -- {"driving": bool, "mode": "background"|"foreground", "window_title":
+# str, "action": str} -- so the mode-aware indicator has somewhere to read
+# mode/window/action from. A sink written against the old bool-only contract
+# still receives a single positional argument and does not crash; it simply
+# needs updating to read ``payload["driving"]`` (main.py + the tray renderer
+# are updated together with this change).
+DrivingFn = Callable[[dict], Awaitable[None]]
 HotkeyRegisterFn = Callable[[Callable[[], None]], Optional[Callable[[], None]]]
 # S5 #578: pixel-vision grounding seam. Given the target element name (as the
 # user described it) and the target window's raw frame bytes, return a
@@ -649,15 +670,43 @@ class ComputerUsePlugin:
         plugin. Idempotent -- setting an already-set Event is a no-op."""
         self._abort_event.set()
 
-    async def _emit_driving(self, driving: bool) -> None:
+    async def _emit_driving(
+        self,
+        driving: bool,
+        *,
+        mode: str = "foreground",
+        window_title: str = "",
+        action: str = "",
+    ) -> None:
         """Best-effort broadcast of the "Felix is driving" indicator. A broken
-        sink must never break a computer_use call in progress."""
+        sink must never break a computer_use call in progress.
+
+        #594: the payload carries ``mode`` ("background" while a UIA control
+        pattern is driving with no cursor, "foreground" once a pyautogui
+        fallback is about to touch the mouse/keyboard or a soft trip has just
+        flipped it) plus ``window_title``/``action`` so the Visualiser can
+        render "Felix is acting in <window> (background)" vs the existing
+        cursor-in-use urgency, driven entirely by this one broadcast."""
         if self._driving_fn is None:
             return
+        payload = {
+            "driving": driving,
+            "mode": mode,
+            "window_title": window_title,
+            "action": action,
+        }
         try:
-            await self._driving_fn(driving)
+            await self._driving_fn(payload)
         except Exception:
             logger.warning("[computer_use] driving_fn broadcast failed", exc_info=True)
+
+    def _driving_mode(self) -> str:
+        """Initial mode guess for a click/type call, before any try has run:
+        "background" when background actuation is enabled (a control pattern
+        is attempted first), else "foreground". Call sites flip this to
+        "foreground" in real time the moment a try actually falls through to
+        the pyautogui fallback or soft-trips (ADR-0016 amendment f)."""
+        return "background" if self._background_actuation_enabled() else "foreground"
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -1231,7 +1280,9 @@ class ComputerUsePlugin:
         # Fresh abort event for each call -- a Stop from a prior run must not
         # short-circuit a new tool call the user just asked for.
         self._abort_event.clear()
-        await self._emit_driving(True)
+        await self._emit_driving(
+            True, mode=self._driving_mode(), window_title=window_title, action="click_element",
+        )
         try:
             for n in range(1, limit + 1):
                 # Yield to the event loop between tries so input is never 100%
@@ -1315,10 +1366,15 @@ class ComputerUsePlugin:
                             # pattern action that unexpectedly foregrounds
                             # the target is a SOFT TRIP -- stop here, never
                             # fall through to the input-stealing foreground
-                            # fallback.
+                            # fallback. #594: flip the live indicator to the
+                            # foreground/urgent style in real time.
                             entry["actual"] = (
                                 "soft trip: background click unexpectedly "
                                 "foregrounded the target window"
+                            )
+                            await self._emit_driving(
+                                True, mode="foreground", window_title=window_title,
+                                action="click_element",
                             )
                         trace["tries"].append(entry)
                         trace["ok"] = not stole_focus
@@ -1330,6 +1386,11 @@ class ComputerUsePlugin:
                 # exhaustion below already escalates to attended-handoff.
                 if not self._foreground_gate(window_title, name, n, trace):
                     continue
+                # #594: no usable pattern -- this try is actually going to
+                # steal the cursor, so flip the indicator to foreground now.
+                await self._emit_driving(
+                    True, mode="foreground", window_title=window_title, action="click_element",
+                )
                 x, y = _bbox_center(click_bbox)
                 fg_before = self._foreground_window_safe()
                 try:
@@ -1397,7 +1458,9 @@ class ComputerUsePlugin:
             "ok": False,
         }
         self._abort_event.clear()
-        await self._emit_driving(True)
+        await self._emit_driving(
+            True, mode=self._driving_mode(), window_title=window_title, action="type_into",
+        )
         try:
             for n in range(1, limit + 1):
                 await asyncio.sleep(0)
@@ -1471,7 +1534,8 @@ class ComputerUsePlugin:
                             # #593 (ADR-0016 amendment d): soft trip -- a
                             # background SetValue unexpectedly foregrounded
                             # the target. Stop here, never fall through to
-                            # the input-stealing foreground fallback.
+                            # the input-stealing foreground fallback. #594:
+                            # flip the live indicator in real time.
                             entry = {
                                 "n": n, "observed": True, "acted": True,
                                 "expected": f"SetValue {text!r}",
@@ -1485,6 +1549,10 @@ class ComputerUsePlugin:
                             }
                             if multi_match:
                                 entry["multi_match"] = True
+                            await self._emit_driving(
+                                True, mode="foreground", window_title=window_title,
+                                action="type_into",
+                            )
                             trace["tries"].append(entry)
                             trace["ok"] = False
                             return self._finish(trace)
@@ -1495,6 +1563,12 @@ class ComputerUsePlugin:
                     # retry-exhaustion escalation as click_element.
                     if not self._foreground_gate(window_title, name, n, trace):
                         continue
+                    # #594: no usable pattern -- flip the indicator to
+                    # foreground before the pyautogui click+type actually
+                    # steals the cursor.
+                    await self._emit_driving(
+                        True, mode="foreground", window_title=window_title, action="type_into",
+                    )
                     fg_before = self._foreground_window_safe()
                     try:
                         self._backend.click(type_bbox)  # type: ignore[union-attr]
@@ -1624,7 +1698,12 @@ class ComputerUsePlugin:
             )
             return self._finish(trace)
         self._abort_event.clear()
-        await self._emit_driving(True)
+        # #594: browser_navigate has no control-pattern equivalent (address
+        # bar type + Enter only) -- it is always foreground, regardless of
+        # the background_actuation setting.
+        await self._emit_driving(
+            True, mode="foreground", window_title=window_title, action="browser_navigate",
+        )
         try:
             for n in range(1, limit + 1):
                 await asyncio.sleep(0)

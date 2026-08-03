@@ -304,7 +304,7 @@ function handleCerebralEvent(event) {
 }
 
 function routeDrivingToVisualiser(event) {
-  const { driving, changed } = visState.handleEvent(event);
+  const { driving, changed, mode, windowTitle, action } = visState.handleEvent(event);
   if (!changed) return;
   // The kill-switch Stop must always be reachable while driving -- if the
   // Visualiser was hidden, open it now (not persisted; a routine Stop leg,
@@ -316,7 +316,11 @@ function routeDrivingToVisualiser(event) {
     // While driving, the Visualiser must accept mouse input on its Stop
     // button (default is click-through). Restored when driving flips off.
     visualiserWindow.setIgnoreMouseEvents(!driving);
-    visualiserWindow.webContents.send('visualiser:driving', driving);
+    // #594 (ADR-0016 amendment f): forward the mode-aware payload so the
+    // renderer can show "Felix is acting in <window> (background)" vs the
+    // foreground cursor-in-use urgency -- same broadcast, real-time flip on
+    // a #593 soft trip.
+    visualiserWindow.webContents.send('visualiser:driving', { driving, mode, windowTitle, action });
   }
 }
 
@@ -571,8 +575,13 @@ function openVisualiserWindow() {
   visualiserWindow.webContents.once('did-finish-load', () => {
     visualiserWindow.webContents.send('visualiser:state', visState.state);
     // S2 #576: sync the (c) Felix-is-driving overlay on window open so the
-    // Stop control is present the moment the window mounts.
-    visualiserWindow.webContents.send('visualiser:driving', visState.driving);
+    // Stop control is present the moment the window mounts. #594: include
+    // the mode-aware fields so a mid-flight open (e.g. after a crash
+    // recovery) shows the correct background/foreground phrasing.
+    visualiserWindow.webContents.send('visualiser:driving', {
+      driving: visState.driving, mode: visState.mode,
+      windowTitle: visState.windowTitle, action: visState.action,
+    });
   });
 
   // Persist position when dragged (user can drag via –webkit-app-region if needed)
