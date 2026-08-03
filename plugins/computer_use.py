@@ -57,10 +57,30 @@ Background actuation (ADR-0016 amendment 2026-08-02, Issue #592):
   Idle-gating the foreground fallback (#593), the driving-indicator's
   background/foreground mode (#594), and live-verify docs (#595) are follow-on
   slices -- not built here.
+
+Idle gate + focus-theft probe (ADR-0016 amendment d/g, Issue #593):
+  Before ANY pyautogui foreground action -- the click_element/type_into
+  fallback, browser_navigate, and the pixel-vision click -- the plugin
+  checks ``GetLastInputInfo`` via the backend's ``last_input_ms()``. If the
+  user touched input more recently than ``computer_use.user_idle_ms``
+  (default 4000ms) they are PRESENT, so Felix does not grab input: the try
+  is recorded as waiting and the existing observe-act-verify retry loop
+  carries the wait, escalating to attended-handoff (S6) on exhaustion same
+  as any other failure -- no new escalation path. Full-autonomy bypasses the
+  gate exactly as it bypasses the irreversible floor (sec 4). Independently,
+  every actuated try (pattern AND foreground) captures
+  ``GetForegroundWindow()`` before/after via ``foreground_window()`` and
+  stamps ``foregrounded: bool``. A BACKGROUND pattern action that
+  unexpectedly foregrounds the target is a SOFT TRIP: the try is recorded
+  failed and the call returns immediately -- it never falls through to the
+  input-stealing foreground fallback. Both backend methods are optional:
+  absent -> the gate always allows (unknown idle can't block) and
+  ``foregrounded`` always stamps False (matches pre-#593 behaviour).
 """
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import logging
 import re
@@ -170,6 +190,13 @@ AttendedHandoffFn = Callable[[str, str], Awaitable[bool]]
 # mid-session settings change takes effect on the next tool call.
 BackgroundActuationFn = Callable[[], bool]
 SetValueRolesFn = Callable[[], list[str]]
+# #593 (ADR-0016 amendment d): same getter-seam pattern for the idle gate.
+# ``UserIdleMsFn`` reads ``computer_use.user_idle_ms``; ``FullAutonomyFn``
+# mirrors main.py's ``_computer_use_full_autonomy`` badge switch (sec 4) --
+# full-autonomy bypasses the idle gate exactly as it bypasses the
+# irreversible floor, so it needs the same read-fresh getter, not a copy.
+UserIdleMsFn = Callable[[], int]
+FullAutonomyFn = Callable[[], bool]
 
 _driving_fn: Optional[DrivingFn] = None
 _hotkey_register_fn: Optional[HotkeyRegisterFn] = None
@@ -177,6 +204,8 @@ _vision_ground_fn: Optional[VisionGroundFn] = None
 _attended_handoff_fn: Optional[AttendedHandoffFn] = None
 _background_actuation_fn: Optional[BackgroundActuationFn] = None
 _setvalue_roles_fn: Optional[SetValueRolesFn] = None
+_user_idle_ms_fn: Optional[UserIdleMsFn] = None
+_full_autonomy_fn: Optional[FullAutonomyFn] = None
 _plugin_instance: Optional["ComputerUsePlugin"] = None
 
 # ADR-0016 amendment defaults -- used whenever no getter is wired (tests,
@@ -184,6 +213,9 @@ _plugin_instance: Optional["ComputerUsePlugin"] = None
 # felix-settings.json's shipped defaults in cerebral/settings.py.
 DEFAULT_BACKGROUND_ACTUATION = True
 DEFAULT_SETVALUE_ROLES: tuple[str, ...] = ("Edit", "Document")
+# #593: midpoint of the ADR's documented 3000-5000ms range.
+DEFAULT_USER_IDLE_MS = 4000
+DEFAULT_FULL_AUTONOMY = False
 
 
 def set_driving_fn(fn: DrivingFn) -> None:
@@ -230,6 +262,24 @@ def set_setvalue_roles_fn(fn: SetValueRolesFn) -> None:
     through foreground typing (SetValue is the ONLY gated primitive)."""
     global _setvalue_roles_fn
     _setvalue_roles_fn = fn
+
+
+def set_user_idle_ms_fn(fn: UserIdleMsFn) -> None:
+    """Wire a getter for the ``user_idle_ms`` setting (#593, ADR-0016
+    amendment d). Read fresh before every foreground (pyautogui) action --
+    a present user (last input younger than this threshold) blocks the
+    input-stealing fallback."""
+    global _user_idle_ms_fn
+    _user_idle_ms_fn = fn
+
+
+def set_full_autonomy_fn(fn: FullAutonomyFn) -> None:
+    """Wire a getter mirroring main.py's badged full-autonomy switch (#593,
+    ADR-0016 amendment d / sec 4). While on, the foreground fallback ignores
+    the idle gate exactly as full-autonomy already bypasses the irreversible
+    floor for computer_use."""
+    global _full_autonomy_fn
+    _full_autonomy_fn = fn
 
 
 def abort_current() -> None:
@@ -309,6 +359,20 @@ class ComputerUseBackend(Protocol):
         ``"Chrome_WidgetWin_1"``), or ``None`` when unavailable. Used to keep
         SetValue out of any browser/Electron (webview) surface regardless of
         the control's own role (ADR-0016 amendment c)."""
+
+    def last_input_ms(self) -> int:
+        """#593: milliseconds since the user's last physical input
+        (``GetLastInputInfo``). The idle gate for the foreground fallback --
+        "what I'm doing takes priority" (ADR-0016 amendment d). Optional: a
+        backend without this method disables the idle gate (foreground
+        proceeds unconditionally, matching pre-#593 behaviour)."""
+
+    def foreground_window(self) -> Optional[str]:
+        """#593: the current OS foreground window's title
+        (``GetForegroundWindow`` + ``GetWindowText``), used as the
+        focus-theft probe -- captured before/after every actuation to stamp
+        ``foregrounded`` in the trace (ADR-0016 amendment d/g). Optional: a
+        backend without this method always stamps ``foregrounded: False``."""
 
 
 def _make_default_backend() -> Optional[ComputerUseBackend]:
@@ -509,6 +573,8 @@ class ComputerUsePlugin:
         thumbnail_ring_size: int = DEFAULT_THUMBNAIL_RING_SIZE,
         background_actuation_fn: BackgroundActuationFn | None = None,
         setvalue_roles_fn: SetValueRolesFn | None = None,
+        user_idle_ms_fn: UserIdleMsFn | None = None,
+        full_autonomy_fn: FullAutonomyFn | None = None,
     ) -> None:
         if backend is _UNSET:
             self._backend = _make_default_backend()
@@ -538,6 +604,15 @@ class ComputerUsePlugin:
         )
         self._setvalue_roles_fn: SetValueRolesFn | None = (
             setvalue_roles_fn or _setvalue_roles_fn
+        )
+        # #593 (ADR-0016 amendment d): idle gate + full-autonomy bypass
+        # getters. Unwired = DEFAULT_* constants (idle gate active at the
+        # documented default; full-autonomy off).
+        self._user_idle_ms_fn: UserIdleMsFn | None = (
+            user_idle_ms_fn or _user_idle_ms_fn
+        )
+        self._full_autonomy_fn: FullAutonomyFn | None = (
+            full_autonomy_fn or _full_autonomy_fn
         )
         self._thumbnail_ring: deque[bytes] = deque(maxlen=max(1, int(thumbnail_ring_size)))
         # asyncio.Event carries the abort signal across the (a) corner-failsafe,
@@ -762,6 +837,112 @@ class ComputerUsePlugin:
         except Exception:
             return True
 
+    # ── #593 idle gate + focus-theft probe (ADR-0016 amendment d/g) ────────
+
+    def _user_idle_ms_threshold(self) -> int:
+        fn = self._user_idle_ms_fn
+        if fn is None:
+            return DEFAULT_USER_IDLE_MS
+        try:
+            return int(fn())
+        except Exception:
+            logger.warning(
+                "[computer_use] user_idle_ms getter failed; defaulting to "
+                "%dms", DEFAULT_USER_IDLE_MS, exc_info=True,
+            )
+            return DEFAULT_USER_IDLE_MS
+
+    def _full_autonomy_enabled(self) -> bool:
+        fn = self._full_autonomy_fn
+        if fn is None:
+            return DEFAULT_FULL_AUTONOMY
+        try:
+            return bool(fn())
+        except Exception:
+            logger.warning(
+                "[computer_use] full_autonomy getter failed; defaulting to "
+                "off", exc_info=True,
+            )
+            return DEFAULT_FULL_AUTONOMY
+
+    def _last_input_ms(self) -> int | None:
+        """None when the backend doesn't expose the probe -- callers treat
+        that as "can't tell, don't block" (matches pre-#593 behaviour)."""
+        fn = getattr(self._backend, "last_input_ms", None)
+        if fn is None:
+            return None
+        try:
+            return int(fn())
+        except Exception:
+            return None
+
+    def _foreground_window_safe(self) -> str | None:
+        fn = getattr(self._backend, "foreground_window", None)
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_target_foreground(fg_title: str | None, window_title: str) -> bool:
+        """Substring match, same convention as UIA window lookup elsewhere
+        in this plugin (``WindowControl(SubName=window_title)``)."""
+        if not fg_title or not window_title:
+            return False
+        return window_title.strip().lower() in fg_title.strip().lower()
+
+    def _foregrounded(
+        self, fg_before: str | None, fg_after: str | None, window_title: str,
+    ) -> bool:
+        """True when the target window BECAME the foreground window as a
+        result of this actuation -- wasn't foreground before, is now. A
+        backend without ``foreground_window`` always yields False on both
+        sides, so this degrades to "unknown -> False" (pre-#593 behaviour)."""
+        return (
+            not self._is_target_foreground(fg_before, window_title)
+            and self._is_target_foreground(fg_after, window_title)
+        )
+
+    def _idle_allows_foreground(self) -> tuple[bool, int | None, int]:
+        """Core idle-gate check, path-label-agnostic. Returns
+        ``(allowed, idle_ms, threshold)``. Full-autonomy bypasses the gate
+        (mirrors sec 4's irreversible-floor bypass); an unknown idle time
+        (backend doesn't expose the probe) also allows -- "can't tell,
+        don't block" matches pre-#593 behaviour."""
+        threshold = self._user_idle_ms_threshold()
+        if self._full_autonomy_enabled():
+            return True, None, threshold
+        idle_ms = self._last_input_ms()
+        return (idle_ms is None or idle_ms >= threshold), idle_ms, threshold
+
+    def _foreground_gate(
+        self, window_title: str, name: str, n: int, trace: dict,
+        *, path: str = "uia_synthetic",
+    ) -> bool:
+        """ADR-0016 amendment (d): "what I'm doing takes priority". Called
+        immediately before any pyautogui foreground action. True -> caller
+        may proceed. False -> the user is present (idle time under the
+        threshold) and full-autonomy is off; this try is recorded as
+        waiting and the caller must ``continue``/return-False -- the
+        existing observe-act-verify retry loop IS the wait, and its normal
+        exhaustion already escalates to attended-handoff (S6), so no new
+        escalation path is needed."""
+        allowed, idle_ms, threshold = self._idle_allows_foreground()
+        if allowed:
+            return True
+        trace["tries"].append({
+            "n": n, "observed": True, "acted": False,
+            "expected": f"foreground action for {name!r} in {window_title!r}",
+            "actual": (
+                f"user present (idle {idle_ms}ms < {threshold}ms) -- "
+                "waiting for idle instead of stealing input"
+            ),
+            "ok": False, "path": path,
+        })
+        return False
+
     def _try_pattern_click(
         self, window_title: str, name: str, role: str | None,
     ) -> tuple[bool, list[int] | None]:
@@ -904,6 +1085,12 @@ class ComputerUsePlugin:
                  "ok": False, "path": "pixel"}
             )
             return False
+        # #593: pixel actuation is always foreground (a coordinate has no
+        # control-pattern handle) -- gate on user idle same as the
+        # structured foreground fallback, before touching the mouse.
+        if not self._foreground_gate(window_title, name, n, trace, path="pixel"):
+            return False
+        fg_before = self._foreground_window_safe()
         try:
             click_at = getattr(self._backend, "click_at", None)
             if click_at is not None:
@@ -929,11 +1116,13 @@ class ComputerUsePlugin:
                  "ok": False, "path": "pixel"}
             )
             return False
+        fg_after = self._foreground_window_safe()
         trace["target"] = {"name": name, "role": None, "bbox": [x, y, x, y]}
         trace["tries"].append(
             {"n": n, "observed": True, "acted": True,
              "expected": f"pixel click at ({x},{y})",
-             "actual": "clicked", "ok": True, "path": "pixel"}
+             "actual": "clicked", "ok": True, "path": "pixel",
+             "foregrounded": self._foregrounded(fg_before, fg_after, window_title)}
         )
         trace["ok"] = True
         return True
@@ -1105,23 +1294,44 @@ class ComputerUsePlugin:
                 path = "uia_synthetic"
                 click_bbox = bbox
                 if self._background_actuation_enabled():
+                    fg_before = self._foreground_window_safe()
                     fired, live_bbox = self._try_pattern_click(window_title, name, role)
                     if live_bbox is not None:
                         click_bbox = live_bbox
                     if fired:
+                        fg_after = self._foreground_window_safe()
+                        stole_focus = self._foregrounded(fg_before, fg_after, window_title)
                         x, y = _bbox_center(click_bbox)
                         entry = {
                             "n": n, "observed": True, "acted": True,
                             "expected": f"click at ({x},{y})",
-                            "actual": "clicked via uia_pattern", "ok": True,
-                            "path": "uia_pattern",
+                            "actual": "clicked via uia_pattern", "ok": not stole_focus,
+                            "path": "uia_pattern", "foregrounded": stole_focus,
                         }
                         if multi_match:
                             entry["multi_match"] = True
+                        if stole_focus:
+                            # #593 (ADR-0016 amendment d): a background
+                            # pattern action that unexpectedly foregrounds
+                            # the target is a SOFT TRIP -- stop here, never
+                            # fall through to the input-stealing foreground
+                            # fallback.
+                            entry["actual"] = (
+                                "soft trip: background click unexpectedly "
+                                "foregrounded the target window"
+                            )
                         trace["tries"].append(entry)
-                        trace["ok"] = True
+                        trace["ok"] = not stole_focus
                         return self._finish(trace)
+                # ADR-0016 amendment (d): "what I'm doing takes priority" --
+                # gate the foreground fallback on user idle before grabbing
+                # the mouse. A present user gets this try recorded as
+                # waiting; the loop's own retries are the wait, and normal
+                # exhaustion below already escalates to attended-handoff.
+                if not self._foreground_gate(window_title, name, n, trace):
+                    continue
                 x, y = _bbox_center(click_bbox)
+                fg_before = self._foreground_window_safe()
                 try:
                     self._backend.click(click_bbox)  # type: ignore[union-attr]
                 except CornerAbort:
@@ -1141,10 +1351,12 @@ class ComputerUsePlugin:
                          "path": "uia_synthetic"}
                     )
                     continue
+                fg_after = self._foreground_window_safe()
                 entry = {
                     "n": n, "observed": True, "acted": True,
                     "expected": f"click at ({x},{y})",
                     "actual": "clicked", "ok": True, "path": path,
+                    "foregrounded": self._foregrounded(fg_before, fg_after, window_title),
                 }
                 if multi_match:
                     entry["multi_match"] = True
@@ -1244,15 +1456,46 @@ class ComputerUsePlugin:
                 path = "uia_synthetic"
                 type_bbox = bbox
                 filled = False
+                foregrounded_now = False
                 if self._background_actuation_enabled():
+                    fg_before = self._foreground_window_safe()
                     filled, live_bbox = self._try_pattern_set_value(
                         window_title, name, match.get("role"), text,
                     )
                     if live_bbox is not None:
                         type_bbox = live_bbox
-                if filled:
-                    path = "uia_pattern"
-                else:
+                    if filled:
+                        fg_after = self._foreground_window_safe()
+                        stole_focus = self._foregrounded(fg_before, fg_after, window_title)
+                        if stole_focus:
+                            # #593 (ADR-0016 amendment d): soft trip -- a
+                            # background SetValue unexpectedly foregrounded
+                            # the target. Stop here, never fall through to
+                            # the input-stealing foreground fallback.
+                            entry = {
+                                "n": n, "observed": True, "acted": True,
+                                "expected": f"SetValue {text!r}",
+                                "actual": (
+                                    "soft trip: background SetValue "
+                                    "unexpectedly foregrounded the target "
+                                    "window"
+                                ),
+                                "ok": False, "path": "uia_pattern",
+                                "foregrounded": True,
+                            }
+                            if multi_match:
+                                entry["multi_match"] = True
+                            trace["tries"].append(entry)
+                            trace["ok"] = False
+                            return self._finish(trace)
+                        path = "uia_pattern"
+                if not filled:
+                    # ADR-0016 amendment (d): idle-gate the foreground
+                    # click+type fallback -- same "waiting" try + normal
+                    # retry-exhaustion escalation as click_element.
+                    if not self._foreground_gate(window_title, name, n, trace):
+                        continue
+                    fg_before = self._foreground_window_safe()
                     try:
                         self._backend.click(type_bbox)  # type: ignore[union-attr]
                         self._backend.type_text(text)  # type: ignore[union-attr]
@@ -1273,6 +1516,8 @@ class ComputerUsePlugin:
                              "path": "uia_synthetic"}
                         )
                         continue
+                    fg_after = self._foreground_window_safe()
+                    foregrounded_now = self._foregrounded(fg_before, fg_after, window_title)
                 # Verify: re-read UIA and check the target's value contains the
                 # text (falls back to "acted" when the backend doesn't expose
                 # values).
@@ -1283,7 +1528,7 @@ class ComputerUsePlugin:
                         {"n": n, "observed": True, "acted": True,
                          "expected": f"post-type value contains {text!r}",
                          "actual": f"re-read error: {exc}", "ok": False,
-                         "path": path}
+                         "path": path, "foregrounded": foregrounded_now}
                     )
                     continue
                 after_match = _find_element(after, name, role) or {}
@@ -1293,6 +1538,7 @@ class ComputerUsePlugin:
                         "n": n, "observed": True, "acted": True,
                         "expected": f"value contains {text!r}",
                         "actual": f"value={value!r}", "ok": True, "path": path,
+                        "foregrounded": foregrounded_now,
                     }
                     if multi_match:
                         entry["multi_match"] = True
@@ -1304,7 +1550,7 @@ class ComputerUsePlugin:
                         "n": n, "observed": True, "acted": True,
                         "expected": f"typed {text!r}",
                         "actual": "no value read; assumed ok", "ok": True,
-                        "path": path,
+                        "path": path, "foregrounded": foregrounded_now,
                     }
                     if multi_match:
                         entry["multi_match"] = True
@@ -1314,7 +1560,8 @@ class ComputerUsePlugin:
                 trace["tries"].append(
                     {"n": n, "observed": True, "acted": True,
                      "expected": f"value contains {text!r}",
-                     "actual": f"value={value!r}", "ok": False, "path": path}
+                     "actual": f"value={value!r}", "ok": False, "path": path,
+                     "foregrounded": foregrounded_now}
                 )
             # S6 #579: type_into has no pixel fallback (text input can't be
             # coordinate-clicked into a field the tree can't see). On UIA
@@ -1427,6 +1674,13 @@ class ComputerUsePlugin:
                     "role": bar.get("role"),
                     "bbox": bbox,
                 }
+                # ADR-0016 amendment (d): browser_navigate is entirely
+                # foreground (address-bar type + Enter, no control-pattern
+                # equivalent) -- idle-gate it exactly like the other
+                # foreground fallbacks before touching the mouse/keyboard.
+                if not self._foreground_gate(window_title, "address bar", n, trace):
+                    continue
+                fg_before = self._foreground_window_safe()
                 try:
                     self._backend.click(bbox)  # type: ignore[union-attr]
                     self._backend.type_text(url)  # type: ignore[union-attr]
@@ -1452,6 +1706,8 @@ class ComputerUsePlugin:
                          "actual": f"error: {exc}", "ok": False}
                     )
                     continue
+                fg_after = self._foreground_window_safe()
+                foregrounded = self._foregrounded(fg_before, fg_after, window_title)
                 # Post-navigate: re-read UIA so the caller can see the new
                 # page. A read failure doesn't fail the call -- the address-
                 # bar submit already fired.
@@ -1461,7 +1717,8 @@ class ComputerUsePlugin:
                     trace["tries"].append(
                         {"n": n, "observed": True, "acted": True,
                          "expected": f"post-navigate elements for {url!r}",
-                         "actual": f"re-read error: {exc}", "ok": True}
+                         "actual": f"re-read error: {exc}", "ok": True,
+                         "foregrounded": foregrounded}
                     )
                     trace["ok"] = True
                     return self._finish(trace)
@@ -1469,7 +1726,7 @@ class ComputerUsePlugin:
                     {"n": n, "observed": True, "acted": True,
                      "expected": f"navigate to {url!r}",
                      "actual": f"submitted; {len(after)} elements after",
-                     "ok": True}
+                     "ok": True, "foregrounded": foregrounded}
                 )
                 trace["ok"] = True
                 trace["elements"] = after
@@ -1710,6 +1967,34 @@ class _WindowsBackend:
             return win.ClassName or None
         except Exception:
             return None
+
+    def last_input_ms(self) -> int:
+        """#593: ms since the user's last physical input, via
+        ``GetLastInputInfo`` -- one syscall, no cursor moved. The idle gate
+        for the foreground (pyautogui) fallback (ADR-0016 amendment d)."""
+        class _LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        lii = _LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+        ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii))
+        tick_count = ctypes.windll.kernel32.GetTickCount()
+        return max(0, tick_count - lii.dwTime)
+
+    def foreground_window(self) -> str | None:
+        """#593: the current OS foreground window's title, via
+        ``GetForegroundWindow`` + ``GetWindowText`` -- the focus-theft probe
+        (ADR-0016 amendment d/g). None when there is no foreground window or
+        its title can't be read."""
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return None
+        buf = ctypes.create_unicode_buffer(length + 1)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value or None
 
 
 def _default_hotkey_register(abort: Callable[[], None]) -> Callable[[], None] | None:

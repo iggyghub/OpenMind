@@ -5552,6 +5552,10 @@ def _wire_plugin_seams() -> None:
          lambda: _settings.get("background_actuation")),                            # #592 (ADR-0016 amendment)
         ("computer_use", "set_setvalue_roles_fn",
          lambda: _settings.get("setvalue_roles")),                                  # #592 (ADR-0016 amendment)
+        ("computer_use", "set_user_idle_ms_fn",
+         lambda: _settings.get("user_idle_ms")),                                    # #593 (ADR-0016 amendment d)
+        ("computer_use", "set_full_autonomy_fn",
+         lambda: _computer_use_full_autonomy),                                      # #593 (ADR-0016 amendment d)
     ]
     for name, seam, factory in seams:
         try:
