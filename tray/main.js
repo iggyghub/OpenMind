@@ -300,6 +300,23 @@ function handleCerebralEvent(event) {
       // so the user always has a visible way to hit Stop while Felix drives.
       routeDrivingToVisualiser(event);
       break;
+
+    case 'computer_use:thumbnail':
+      // S15 #609: passive frame from Felix's isolated session. Forward to the
+      // Visualiser only when it's currently mounted -- no persistence, no
+      // buffering. If the window is closed the frame is dropped on the floor,
+      // matching the ADR-0016 sec 7 "never-persisted, ephemeral" rule.
+      if (visualiserWindow && !visualiserWindow.isDestroyed()) {
+        visualiserWindow.webContents.send('visualiser:thumbnail', (event.data || {}).frame_b64);
+      }
+      break;
+
+    case 'computer_use:taken_over':
+      // S15 #609: server-authoritative flip of the Take over/Release state.
+      if (visualiserWindow && !visualiserWindow.isDestroyed()) {
+        visualiserWindow.webContents.send('visualiser:taken-over', !!(event.data || {}).taken_over);
+      }
+      break;
   }
 }
 
@@ -519,6 +536,16 @@ ipcMain.on('irreversible-modal:choose', (_event, { request_id, choice }) => {
 // renderer. Forward it to Cerebral so plugins/computer_use.py can abort.
 ipcMain.on('computer-use:stop', () => {
   sendToCerebral({ type: 'computer_use_stop' });
+});
+
+// S15 #609: Take-over / Release from the Visualiser. Cerebral broadcasts
+// computer_use:taken_over on both flips so the button label re-syncs from
+// server-authoritative state (no local optimistic toggling).
+ipcMain.on('computer-use:take-over', () => {
+  sendToCerebral({ type: 'computer_use_take_over' });
+});
+ipcMain.on('computer-use:release', () => {
+  sendToCerebral({ type: 'computer_use_release' });
 });
 
 ipcMain.on('irreversible-modal:ready', (event) => {

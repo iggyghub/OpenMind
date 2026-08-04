@@ -306,6 +306,29 @@ async def _computer_use_driving(payload: dict) -> None:  # S2 #576 (ADR-0016)
     await _broadcast({"type": "computer_use:driving", "data": payload})
 
 
+async def _computer_use_thumbnail(frame: bytes) -> None:  # S15 #609 (ADR-0016)
+    """Broadcast one captured window frame to the Visualiser as a passive
+    thumbnail. Wired to the plugin's ThumbnailEmitFn seam; called once per
+    frame the pixel-fallback path captures (isolated-session or local
+    backend). Base64-encoded on the wire because the WS carries JSON; the
+    tray decodes into a data: URL for the <img> element.
+
+    ADR-0016 sec 7: the frame is broadcast, not persisted -- same rolling
+    audio-buffer treatment (raw signal never touches disk, only the
+    structured trace does)."""
+    import base64 as _b64
+    await _broadcast({
+        "type": "computer_use:thumbnail",
+        "data": {"frame_b64": _b64.b64encode(frame).decode()},
+    })
+
+
+# S15 #609: "Take over" state -- True while a user is driving session 2 via RDP
+# and Felix's worker must not send input. Broadcast on flip so the Visualiser
+# can swap the Take-over button for a Release button.
+_computer_use_taken_over: bool = False
+
+
 _VISION_GROUND_COORD_RE = re.compile(r"(-?\d+)\s*[, ]\s*(-?\d+)")
 
 
@@ -4407,6 +4430,41 @@ async def _handle_message(msg: dict) -> None:
         stopper()
         await _broadcast({"type": "computer_use:driving", "data": {"driving": False}})
 
+    elif t == "computer_use_take_over":
+        # S15 #609: user clicked "Take over" in the Visualiser. Soft-pause the
+        # worker so the RDP window owns session 2's cursor uncontended, and
+        # broadcast the taken_over flip so the tray can swap Take-over for
+        # Release. Reuses the plugin's abort/pause seam pattern (kill switch
+        # sibling from #606) -- no separate wire.
+        global _computer_use_taken_over
+        try:
+            module = _orc.get_plugin_module("computer_use")
+        except KeyError:
+            logger.info("[cerebral] computer_use_take_over: plugin not loaded (ignored)")
+            return
+        pauser = getattr(module, "pause_current", None)
+        if pauser is not None:
+            pauser()
+        _computer_use_taken_over = True
+        await _broadcast({"type": "computer_use:taken_over",
+                          "data": {"taken_over": True}})
+
+    elif t == "computer_use_release":
+        # S15 #609: "Release" side of Take over -- resumes worker actuation.
+        # (No second `global` needed: the take_over branch above already
+        # declared it in this function's scope.)
+        try:
+            module = _orc.get_plugin_module("computer_use")
+        except KeyError:
+            logger.info("[cerebral] computer_use_release: plugin not loaded (ignored)")
+            return
+        resumer = getattr(module, "resume_current", None)
+        if resumer is not None:
+            resumer()
+        _computer_use_taken_over = False
+        await _broadcast({"type": "computer_use:taken_over",
+                          "data": {"taken_over": False}})
+
     elif t == "heartbeat_ack":
         pass  # S12 #606: worker acknowledged our heartbeat ping -- no further action needed.
 
@@ -5760,6 +5818,7 @@ def _wire_plugin_seams() -> None:
          lambda: _settings.get("user_idle_ms")),                                    # #593 (ADR-0016 amendment d)
         ("computer_use", "set_full_autonomy_fn",
          lambda: _computer_use_full_autonomy),                                      # #593 (ADR-0016 amendment d)
+        ("computer_use", "set_thumbnail_emit_fn", _computer_use_thumbnail),         # S15 #609 (ADR-0016 sec 7)
     ]
     for name, seam, factory in seams:
         try:

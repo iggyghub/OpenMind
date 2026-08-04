@@ -223,6 +223,11 @@ FullAutonomyFn = Callable[[], bool]
 # When set, the 3 core primitives (read_ui / click / type) route to the worker
 # instead of the local _WindowsBackend; None = local backend (default).
 SessionDispatchFn = Callable[..., "Awaitable[dict]"]
+# S15 #609: broadcast one just-captured window frame to the Visualiser as a
+# passive thumbnail stream. Fire-and-forget: a broken sink must never break a
+# tool call. Wired by main.py to _broadcast_thumbnail; unwired = ring-only
+# (matches pre-S15 behaviour).
+ThumbnailEmitFn = Callable[[bytes], "Awaitable[None]"]
 
 _driving_fn: Optional[DrivingFn] = None
 _hotkey_register_fn: Optional[HotkeyRegisterFn] = None
@@ -234,6 +239,7 @@ _user_idle_ms_fn: Optional[UserIdleMsFn] = None
 _full_autonomy_fn: Optional[FullAutonomyFn] = None
 _session_dispatch_fn: Optional["SessionDispatchFn"] = None  # S11 #605
 _terminate_worker_fn: Optional[Callable[[], None]] = None  # S12 #606
+_thumbnail_emit_fn: Optional["ThumbnailEmitFn"] = None  # S15 #609
 _plugin_instance: Optional["ComputerUsePlugin"] = None
 
 # ADR-0016 amendment defaults -- used whenever no getter is wired (tests,
@@ -345,6 +351,31 @@ def abort_current() -> None:
             _terminate_worker_fn()
         except Exception:
             logger.warning("[computer_use] terminate_worker_fn failed", exc_info=True)
+
+
+def set_thumbnail_emit_fn(fn: "ThumbnailEmitFn | None") -> None:
+    """S15 #609: wire (or clear) the passive thumbnail-stream broadcast seam.
+
+    Called once per captured window frame with the raw bytes so main.py can
+    forward it to the Visualiser. Best-effort: a failure never propagates."""
+    global _thumbnail_emit_fn
+    _thumbnail_emit_fn = fn
+
+
+def pause_current() -> None:
+    """S15 #609: soft-pause the observe-act loop -- the ``Take over``
+    reversible sibling of abort_current(). Blocks input-emitting primitives
+    (click / type / press_key) until resume_current() is called; read_ui /
+    capture keep flowing so the thumbnail stream doesn't stall. Reuses the
+    same IPC/seam pipe as the kill switch (per #609 acceptance)."""
+    if _plugin_instance is not None:
+        _plugin_instance.pause()
+
+
+def resume_current() -> None:
+    """S15 #609: release the ``Take over`` pause. Idempotent."""
+    if _plugin_instance is not None:
+        _plugin_instance.resume()
 
 
 @runtime_checkable
@@ -683,6 +714,14 @@ class ComputerUsePlugin:
         # (b) F11+F12 chord, and (c) Visualiser Stop legs. Created here so it
         # is safe to inspect before any tool call fires.
         self._abort_event = asyncio.Event()
+        # S15 #609: "Take over" pause. asyncio.Event flipped by pause()/resume():
+        # SET = worker allowed to act (default), CLEAR = paused. Input-emitting
+        # primitives (click/type/press_key) await this before dispatch so the
+        # user-owned RDP window doesn't contend with worker input on session 2.
+        # read_ui and capture keep flowing -- the thumbnail stream is passive
+        # and the AC forbids INPUT contention, not observation.
+        self._can_actuate = asyncio.Event()
+        self._can_actuate.set()
         # F11+F12 registration -- once per plugin instance. Tests pass a fake
         # that captures the callback; production leaves this alone so the
         # module-level seam wired by main.py drives it.
@@ -716,6 +755,19 @@ class ComputerUsePlugin:
         ``abort_current()`` (Visualiser Stop IPC), or a caller that owns the
         plugin. Idempotent -- setting an already-set Event is a no-op."""
         self._abort_event.set()
+
+    def pause(self) -> None:
+        """S15 #609: soft-pause worker input dispatch (take-over). Idempotent."""
+        self._can_actuate.clear()
+
+    def resume(self) -> None:
+        """S15 #609: release the take-over pause. Idempotent."""
+        self._can_actuate.set()
+
+    @property
+    def is_paused(self) -> bool:
+        """S15 #609: True while a take-over pause is in effect."""
+        return not self._can_actuate.is_set()
 
     async def _emit_driving(
         self,
@@ -1111,8 +1163,13 @@ class ComputerUsePlugin:
         makes this a no-op so pre-S5 callers keep structured-only behaviour."""
         if self._vision_ground_fn is None:
             return False
-        capture_fn = getattr(self._backend, "capture_frame", None)
-        if capture_fn is None:
+        # Capture-not-supported short-circuit: applies to both the local
+        # backend (no capture_frame attr) and the worker path (S11 backend
+        # without capture_frame). In the worker path we won't know until we
+        # dispatch, so let _prim_capture handle it and treat a raised error
+        # or None frame as "no capture" below.
+        if (self._session_dispatch_fn is None
+                and getattr(self._backend, "capture_frame", None) is None):
             return False
         n = len(trace["tries"]) + 1
         if self._abort_event.is_set():
@@ -1124,7 +1181,11 @@ class ComputerUsePlugin:
             )
             return False
         try:
-            frame = capture_fn(window_title)
+            # S15 #609: routed capture -- ring append + thumbnail emit happen
+            # inside _prim_capture (isolated session or local backend, same
+            # code path). Pre-S15 pixel fallback appended to the ring inline;
+            # that's now factored into _prim_capture.
+            frame = await self._prim_capture(window_title)
         except Exception as exc:
             trace["tries"].append(
                 {"n": n, "observed": False, "acted": False,
@@ -1141,9 +1202,6 @@ class ComputerUsePlugin:
                  "ok": False, "path": "pixel", "escalated": True}
             )
             return False
-        # Non-black frame -- park it in the RAM ring for in-session debug.
-        # ADR-0016 sec 7: bytes never leave process memory.
-        self._thumbnail_ring.append(bytes(frame))
         try:
             coord = await self._vision_ground_fn(name, frame)
         except Exception as exc:
@@ -1298,6 +1356,9 @@ class ComputerUsePlugin:
         return self._backend.read_ui(window_title)  # type: ignore[union-attr]
 
     async def _prim_click(self, bbox: list[int]) -> None:
+        # S15 #609: soft-pause gate. Blocks INPUT dispatch during take-over so
+        # the user-owned RDP window has session 2's cursor to itself.
+        await self._can_actuate.wait()
         fn = self._session_dispatch_fn
         if fn is not None:
             await fn("click", {"bbox": bbox})
@@ -1305,11 +1366,43 @@ class ComputerUsePlugin:
         self._backend.click(bbox)  # type: ignore[union-attr]
 
     async def _prim_type(self, text: str) -> None:
+        await self._can_actuate.wait()  # S15 #609: take-over gate
         fn = self._session_dispatch_fn
         if fn is not None:
             await fn("type", {"text": text})
             return
         self._backend.type_text(text)  # type: ignore[union-attr]
+
+    async def _prim_capture(self, window_title: str) -> bytes | None:
+        """S15 #609: capture a window frame, park it in the RAM thumbnail ring,
+        and (best-effort) emit it to the passive thumbnail stream. Routes to
+        the in-session worker when isolated-session mode is on; otherwise the
+        local backend. Returns None when capture isn't supported."""
+        fn = self._session_dispatch_fn
+        frame: bytes | None
+        if fn is not None:
+            r = await fn("capture", {"window_title": window_title})
+            b64 = r.get("frame_b64")
+            if b64 is None:
+                frame = None
+            else:
+                import base64 as _b64
+                frame = _b64.b64decode(b64)
+        else:
+            capture_fn = getattr(self._backend, "capture_frame", None)
+            frame = capture_fn(window_title) if capture_fn is not None else None
+        # Skip ring + emit on missing/black frames -- ADR-0016 sec 7 (only
+        # useful pixels in the debug buffer), and DRM-black is a
+        # pixel-fallback escalate signal, not a thumbnail.
+        if frame is not None and not _is_black_frame(frame):
+            self._thumbnail_ring.append(bytes(frame))
+            if _thumbnail_emit_fn is not None:
+                try:
+                    await _thumbnail_emit_fn(bytes(frame))
+                except Exception:
+                    logger.warning("[computer_use] thumbnail emit failed",
+                                   exc_info=True)
+        return frame
 
     async def _read_ui(self, args: dict) -> ToolResult:
         window_title = args["window_title"]

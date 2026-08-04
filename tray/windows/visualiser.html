@@ -71,6 +71,35 @@
   }
   .driving-panel button:hover { background: #dc2626; }
 
+  /* S15 #609: Take-over / Release button lives alongside Stop; a blue
+     "take turns" affordance rather than the red panic Stop. It ONLY shows
+     when a passive thumbnail has arrived (isolated-session mode gave us
+     something to watch); the local backend never streams, so the button
+     stays absent on the live-desktop path. */
+  #takeover-btn {
+    background: #1d4ed8;
+    display: none;
+  }
+  #takeover-btn:hover { background: #2563eb; }
+  body.taken-over #takeover-btn { background: #16a34a; }
+  body.taken-over #takeover-btn:hover { background: #22c55e; }
+  body.has-thumbnail #takeover-btn { display: inline-block; }
+
+  /* Passive thumbnail. Small so the orb stays the visual anchor; capped
+     because a 200x200 window can't spare more. hidden by default -- shown
+     only once a frame has actually arrived. */
+  #thumbnail {
+    display: none;
+    width: 180px;
+    max-height: 60px;
+    object-fit: contain;
+    border-radius: 4px;
+    margin-top: 4px;
+    background: #000;
+    pointer-events: none;
+  }
+  body.has-thumbnail #thumbnail { display: block; }
+
   /* ── Orb container ─────────────────────────────────────── */
   .orb-wrap {
     position: relative;
@@ -234,7 +263,11 @@
 
 <div class="driving-panel" id="driving-panel">
   <div id="driving-text">Felix is driving</div>
-  <button id="stop-btn" type="button">STOP</button>
+  <img id="thumbnail" alt="" />
+  <div style="display: flex; gap: 6px;">
+    <button id="stop-btn" type="button">STOP</button>
+    <button id="takeover-btn" type="button">TAKE OVER</button>
+  </div>
 </div>
 
 <div class="orb-wrap">
@@ -291,6 +324,32 @@
 
   document.getElementById('stop-btn').addEventListener('click', () => {
     ipcRenderer.send('computer-use:stop');
+  });
+
+  // S15 #609: passive thumbnail stream from Felix's isolated session. Every
+  // frame is a data: URL swap on the same <img> -- no persistence, matches
+  // ADR-0016 sec 7 (raw pixels never touch disk). body.has-thumbnail reveals
+  // both the <img> and the Take-over button on the first arrival.
+  const thumbEl = document.getElementById('thumbnail');
+  ipcRenderer.on('visualiser:thumbnail', (_e, frame_b64) => {
+    thumbEl.src = `data:image/png;base64,${frame_b64}`;
+    document.body.classList.add('has-thumbnail');
+  });
+
+  // S15 #609: Take-over / Release. One button, two states -- reuses the
+  // existing modal-manager pattern (single control that flips label based on
+  // server-authoritative state). Cerebral broadcasts computer_use:taken_over
+  // on both flips so a mid-session tray restart re-syncs correctly.
+  const takeoverBtn = document.getElementById('takeover-btn');
+  ipcRenderer.on('visualiser:taken-over', (_e, takenOver) => {
+    document.body.classList.toggle('taken-over', !!takenOver);
+    takeoverBtn.textContent = takenOver ? 'RELEASE' : 'TAKE OVER';
+  });
+  takeoverBtn.addEventListener('click', () => {
+    // Server-authoritative: send the intent, wait for the broadcast to flip
+    // the label. Prevents click-vs-broadcast races on double-click.
+    const takenOver = document.body.classList.contains('taken-over');
+    ipcRenderer.send(takenOver ? 'computer-use:release' : 'computer-use:take-over');
   });
 </script>
 </body>
