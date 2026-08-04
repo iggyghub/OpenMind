@@ -5345,6 +5345,27 @@
                 risks a permanent ban (ADR-0006) &mdash; use a throwaway account.
               </div>
             </div>
+
+            <div class="cred-card" id="cred-card-felix-session">
+              <div class="cred-card-title">Felix session account (Windows)</div>
+              <div class="cred-status" id="cred-felix-session-status">
+                <span class="cred-status-dot"></span>
+                <span class="cred-status-text" id="cred-felix-session-status-text">Loading&#8230;</span>
+              </div>
+              <div class="cred-token-row-actions">
+                <input id="cred-felix-session-password" type="password" autocomplete="off"
+                       placeholder="Password for the 'Felix' Windows user (write-only)" />
+                <button class="cred-btn cred-btn-secondary" id="cred-felix-session-save">Save</button>
+                <button class="cred-btn cred-btn-danger" id="cred-felix-session-clear">Clear</button>
+              </div>
+              <div class="cred-hint">
+                The dedicated <strong>standard Windows user</strong> Felix runs the
+                isolated second session in (ADR-0016 #601). Create it first as a
+                non-admin local user. Stored in Windows Credential Manager, never
+                shown again. Nothing uses it until the isolated-session
+                provisioning (#604) ships.
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -5895,6 +5916,11 @@
     const credDiscordTokenEl      = document.getElementById('cred-discord-token');
     const credDiscordSaveEl       = document.getElementById('cred-discord-save');
     const credDiscordClearEl      = document.getElementById('cred-discord-clear');
+    const credFelixSessionStatusEl     = document.getElementById('cred-felix-session-status');
+    const credFelixSessionStatusTextEl = document.getElementById('cred-felix-session-status-text');
+    const credFelixSessionPasswordEl   = document.getElementById('cred-felix-session-password');
+    const credFelixSessionSaveEl       = document.getElementById('cred-felix-session-save');
+    const credFelixSessionClearEl      = document.getElementById('cred-felix-session-clear');
     const permCapRowsEl     = document.getElementById('perm-capability-rows');
     const permSessionRowsEl = document.getElementById('perm-session-rows');
     const permPluginRowsEl  = document.getElementById('perm-plugin-rows');
@@ -8388,6 +8414,19 @@
       renderCredentialsStaticTokens(payload.static_tokens);
       renderCredentialsBrowserLogins(payload.browser_logins);
       renderCredentialsDiscord(payload.discord_user);
+      renderCredentialsFelixSession(payload.felix_session_login);
+    }
+
+    function renderCredentialsFelixSession(felix) {
+      if (!credFelixSessionStatusEl) return;
+      const f = felix || { stored: false, username: 'Felix' };
+      const stored = !!f.stored;
+      const status = stored ? 'connected' : 'not configured';
+      credFelixSessionStatusEl.className = 'cred-status ' + (CRED_STATUS_CLASS[status] || '');
+      credFelixSessionStatusTextEl.textContent = stored
+        ? 'Stored for ' + (f.username || 'Felix')
+        : 'Not configured';
+      if (credFelixSessionClearEl) credFelixSessionClearEl.disabled = !stored;
     }
 
     function renderCredentialsDiscord(discord) {
@@ -8631,6 +8670,23 @@
       });
     }
     renderCredentialsDiscord((credentialsState || {}).discord_user);
+
+    // Felix isolated-session Windows login (ADR-0016 #601/#604). Machine-global
+    // (write-only); do NOT trim -- edge characters in a password may matter.
+    if (credFelixSessionSaveEl) {
+      credFelixSessionSaveEl.addEventListener('click', () => {
+        const password = credFelixSessionPasswordEl ? credFelixSessionPasswordEl.value : '';
+        if (!password) return;
+        sendEvent({ type: 'set_felix_session_login', data: { password } });
+        if (credFelixSessionPasswordEl) credFelixSessionPasswordEl.value = '';  // write-only
+      });
+    }
+    if (credFelixSessionClearEl) {
+      credFelixSessionClearEl.addEventListener('click', () => {
+        sendEvent({ type: 'clear_felix_session_login' });
+      });
+    }
+    renderCredentialsFelixSession((credentialsState || {}).felix_session_login);
 
     // ── S17 (#300): service directory ────────────────────────────────────
     // Renders the CONTEXT.md integration registry grouped by category.

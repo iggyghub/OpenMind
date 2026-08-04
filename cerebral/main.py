@@ -1919,6 +1919,30 @@ _BROWSER_LOGIN_PROVIDER_NAMES: frozenset[str] = frozenset(
     p for p, _ in _BROWSER_LOGIN_PROVIDERS
 )
 
+# ADR-0016 #601/#604 — Felix isolated-session Windows login. Machine-global
+# (one dedicated Windows user per install, NOT per app profile), so it lives at
+# a flat keyring (service, username) rather than the profile-namespaced store.
+# The pinned key is shared with scripts/set-felix-session-login.ps1 and the
+# #604 auto-provisioning reader. Write-only: the state event reports presence,
+# never the value.
+_FELIX_SESSION_SERVICE = "openmind-felix-session"
+_FELIX_SESSION_USER = "Felix"
+
+
+def _felix_session_login_state() -> dict:
+    """{"stored": bool, "username": "Felix"} — presence of the isolated-session
+    Windows password in Credential Manager. Never carries the value. Machine-
+    global, so reported regardless of the active profile."""
+    try:
+        stored = bool(
+            _get_credential_store().get_global_secret(
+                _FELIX_SESSION_SERVICE, _FELIX_SESSION_USER
+            )
+        )
+    except Exception:
+        stored = False
+    return {"stored": stored, "username": _FELIX_SESSION_USER}
+
 # In-flight guard for the attended "Log in now" seed (seed_browser_login). The
 # manual-login window blocks for up to manual_login_timeout while a human
 # completes login + 2FA; a second click must NOT open a second window. Keyed by
@@ -2421,6 +2445,7 @@ def _credentials_state_event(
                 "static_tokens": {},
                 "browser_logins": {},
                 "discord_user": {"status": "not configured", "source": "none"},
+                "felix_session_login": _felix_session_login_state(),
             },
         }
     store = _get_credential_store()
@@ -2448,6 +2473,7 @@ def _credentials_state_event(
             "static_tokens": _static_tokens_state(),
             "browser_logins": _browser_logins_state(),
             "discord_user": _discord_user_state(),
+            "felix_session_login": _felix_session_login_state(),
         },
     }
 
@@ -4214,6 +4240,32 @@ async def _handle_message(msg: dict) -> None:
             "[cerebral] Discord user token cleared for profile %d",
             _active_profile.id,
         )
+        await _broadcast(_credentials_state_event())
+
+    elif t == "set_felix_session_login":
+        # ADR-0016 #601/#604 — user entered the isolated-session Windows
+        # password in the tray "Felix session account" card. Machine-global
+        # (one dedicated Windows user per install), so it does NOT require an
+        # active profile. Do NOT strip the password (edge chars may be
+        # significant); only reject a wholly empty one. Written to the pinned
+        # flat keyring key; NEVER logged or echoed back to the renderer.
+        password = (msg.get("data") or {}).get("password") or ""
+        if not password:
+            logger.warning("[cerebral] set_felix_session_login empty value")
+            return
+        _get_credential_store().set_global_secret(
+            _FELIX_SESSION_SERVICE, _FELIX_SESSION_USER, password,
+        )
+        logger.info(
+            "[cerebral] Felix session login stored (user %s)", _FELIX_SESSION_USER,
+        )
+        await _broadcast(_credentials_state_event())
+
+    elif t == "clear_felix_session_login":
+        _get_credential_store().delete_global_secret(
+            _FELIX_SESSION_SERVICE, _FELIX_SESSION_USER,
+        )
+        logger.info("[cerebral] Felix session login cleared")
         await _broadcast(_credentials_state_event())
 
     elif t == "set_browser_login":
