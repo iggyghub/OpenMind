@@ -235,6 +235,24 @@ async def test_felix_session_login_works_without_active_profile(cred_rig):
     assert _felix(cred_rig) == {"stored": True, "username": "Felix"}
 
 
+async def test_run_felix_account_setup_dispatches(cred_rig, monkeypatch):
+    """The 'Set up Felix's session' button fires the self-elevating launcher."""
+    called = []
+    monkeypatch.setattr(
+        cred_rig.module, "_launch_felix_account_setup",
+        lambda: (called.append(True), True)[1],
+    )
+    await cred_rig.handle({"type": "run_felix_account_setup"})
+    assert called == [True]
+
+
+def test_launch_felix_setup_noop_off_windows(monkeypatch):
+    """Windows-only: no spawn attempt on other platforms."""
+    import cerebral.main as main_mod
+    monkeypatch.setattr(main_mod.sys, "platform", "linux")
+    assert main_mod._launch_felix_account_setup() is False
+
+
 # ── set_credential_client ─────────────────────────────────────────────────────
 
 async def test_set_client_persists_id_metadata_and_secret_keyring(cred_rig):
