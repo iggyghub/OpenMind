@@ -21,12 +21,13 @@ reason; append the real-hardware check to live-verify and proceed with fakes.
 
 ## Next slice -- start here
 
-- **Active:** S12 -- #606 (out-of-session kill switch + Job-Object/heartbeat dead-men, built against fakes)
-- **Model:** sonnet
+- **Active:** S15 -- #609 (watch thumbnail stream + on-demand RDP take-over that pauses the worker, built against fakes)
+- **Model:** opus
 
 ### Landed PRs
 
 - S11 -- #605 -- in-session worker + device-agnostic action protocol -- PR #612
+- S12 -- #606 -- out-of-session kill switch + Job-Object/heartbeat dead-men -- PR #613
 
 ---
 
@@ -58,7 +59,7 @@ cross-session behaviour is APPENDED to `docs/computer-use-live-verify.md`, never
 performed by the loop.
 
 - [x] S11 -- #605 -- in-session worker + device-agnostic action protocol over Cerebral's WS IPC (blocked by S10 real vehicle) -- PR #612
-- [ ] S12 -- #606 -- out-of-session kill switch + Job-Object/heartbeat dead-men (blocked by S11)
+- [x] S12 -- #606 -- out-of-session kill switch + Job-Object/heartbeat dead-men (blocked by S11) -- PR #613
 - [ ] S15 -- #609 -- watch thumbnail stream + on-demand RDP take-over that pauses the worker (blocked by S11, S12)
 - [ ] S16 -- #610 -- three-tier mode ladder + never-silent failure/notify (blocked by S12, S13, S14)
 
