@@ -538,3 +538,59 @@ throughout.
 - `felix-settings.json` gains an isolated-session block (enable, default mode per
   task class, `user_idle_ms` reuse, per-app identity map), riding ADR-0005's
   toggle machinery.
+
+## Amendment 2026-08-04: live-verify correction — the vehicle is a VM, not loopback RDP
+
+The 2026-08-03 amendment's vehicle (a dedicated Windows user brought up in a
+second **concurrent interactive session via loopback RDP**) **does not work on
+client Windows.** The #603 spike hit `"the console session is in use"` and
+created no second session.
+
+**The constraint:** client Windows (10/11, **Pro included**) allows only one
+*Active* (rendered) interactive session at a time. Fast User Switching lets
+several users be *logged in*, but only one is active; the rest are *Disconnected*.
+Loopback RDP as `Felix` therefore contends with the console session instead of
+running beside it. Simultaneous multi-session is a Windows **Server/RDS** feature,
+or needs the RDPWrap `termsrv.dll` patch — ToS-gray, update-fragile, already
+rejected in §6. (An earlier claim in discussion that "Pro allows a concurrent
+session" was wrong; corrected here.)
+
+**What a disconnected session can and cannot do** (this is the ceiling of the
+RDP/dedicated-user path): UIA *read* and UIA *control-pattern* actuation
+(`Invoke`/`SetValue`) work; **synthetic input (pyautogui) and pixel capture do
+not** (no active input desktop, no composition). That is essentially the
+2026-08-02 background-actuation capability minus pixel/foreground — so the
+dedicated-session path buys isolation but not the full modality.
+
+**Decision — pivot the vehicle to a VM guest (the §6 / "Considered and rejected"
+VM option, promoted).** A VM guest is a real active OS with its own virtual
+display, so **pixel capture and input injection both work, with full isolation**
+— the only non-fragile way to get full-modality concurrency on a client-Windows
+host. Crucially, **the brain/actuator split carries over unchanged**: the
+`session_worker` (#605) runs *inside the guest* and connects to host Cerebral
+over the VM network instead of `localhost` — exactly the remoting the WS action
+protocol was chosen to enable (the same seam that later reaches phone/glasses).
+
+**What changes vs. what is reused:**
+- **Superseded** (client-Windows-specific, obsolete): loopback-RDP provisioning
+  and the dedicated host-side `Felix` user — issues #603 (spike), #604 (RDP
+  provisioning + the setup button/scripts), #607 (IDD virtual display; the VM's
+  own display replaces it). The host-side setup tooling (`setup-felix-account.ps1`,
+  the Credentials card's provisioning) becomes VM-host setup instead.
+- **Reused unchanged:** the software seams — #605 worker + action protocol, #606
+  kill switch + dead-men, #609 watch/take-over, #610 mode ladder + failure/notify
+  — plus the per-app identity map (#608), now applied to accounts *inside the
+  guest*. Grounding still runs on the host model-priority chain (Budd), so no GPU
+  passthrough is needed.
+
+**New human-led steps (like account creation before):** a hypervisor (Hyper-V is
+built into Win10 Pro), a Windows **guest OS + license/ISO**, and installing
+Felix's apps/logins *in the guest*. Cerebral can automate the host side (enable
+Hyper-V, create/start the VM, run the guest worker), but the OS install and
+licensing are the user's, and can't be silent.
+
+**Known cost:** heavier setup and resource use (RAM/disk/CPU shared with the
+host's GTX 1080), and Felix's guest apps are separate logins from the host — the
+accepted trade for real isolation + full modality. RDPWrap (bare-metal
+concurrency) stays rejected: building the agent on a monthly-breaking,
+ToS-violating `termsrv.dll` patch is not a foundation to rely on.
