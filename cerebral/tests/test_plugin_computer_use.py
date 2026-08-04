@@ -2045,3 +2045,226 @@ def test_select_web_path_routes_by_sensitivity():
     assert select_web_path("https://discord.com") == "computer_use"
     assert select_web_path("https://example.com") == "browser"
     assert select_web_path("") == "browser"  # nothing to route -> fast default
+
+
+# ---------------------------------------------------------------------------
+# S15 #609 -- watch (thumbnail stream) + Take-over pause
+# ---------------------------------------------------------------------------
+#
+# AC (ADR-0016 amendment "Isolated interactive session", pt 7):
+#   1. Passive thumbnail stream while worker is active, via existing ring.
+#   2. Take over pauses the worker via the SAME pause path as kill switch.
+#   3. Release resumes -- no worker restart, thumbnails keep flowing.
+#   4. No contention: while user is in "Take over", worker sends no input.
+
+async def test_pause_blocks_click_until_resume():
+    """AC 2/3/4: _prim_click awaits _can_actuate. Paused -> hangs; resumed
+    -> completes with the click delivered."""
+    plugin = ComputerUsePlugin(backend=_FakeBackend())
+    plugin.pause()
+    assert plugin.is_paused is True
+    task = asyncio.create_task(plugin._prim_click([1, 2, 3, 4]))
+    # Give the gate a tick to prove the click really is blocked.
+    await asyncio.sleep(0.01)
+    assert not task.done()
+    assert plugin._backend.click_calls == []  # no input mid-take-over
+    plugin.resume()
+    assert plugin.is_paused is False
+    await asyncio.wait_for(task, timeout=1.0)
+    assert plugin._backend.click_calls == [[1, 2, 3, 4]]
+
+
+async def test_pause_blocks_type_until_resume():
+    """AC 4: type_text is input; must not fire while taken over."""
+    plugin = ComputerUsePlugin(backend=_FakeBackend())
+    plugin.pause()
+    task = asyncio.create_task(plugin._prim_type("hello"))
+    await asyncio.sleep(0.01)
+    assert not task.done()
+    assert plugin._backend.type_calls == []
+    plugin.resume()
+    await asyncio.wait_for(task, timeout=1.0)
+    assert plugin._backend.type_calls == ["hello"]
+
+
+async def test_pause_does_not_block_read_ui_or_capture():
+    """AC 1: read_ui + capture keep flowing (observation is not contention).
+    Otherwise the thumbnail stream would stall the moment the user takes over."""
+    ground_calls: list[bytes] = []
+
+    async def emit(frame: bytes) -> None:
+        ground_calls.append(frame)
+
+    backend = _PixelBackend(
+        read_ui_returns=[[{"name": "OK", "role": "Button", "bbox": [0, 0, 1, 1]}]],
+        capture_returns=[b"\xff" * 32],
+    )
+    plugin = ComputerUsePlugin(backend=backend)
+    cu_mod.set_thumbnail_emit_fn(emit)
+    try:
+        plugin.pause()
+        # Both must complete promptly even while paused.
+        elems = await asyncio.wait_for(plugin._prim_read_ui("Notepad"), timeout=1.0)
+        frame = await asyncio.wait_for(plugin._prim_capture("Notepad"), timeout=1.0)
+        assert elems and frame == b"\xff" * 32
+        assert ground_calls == [b"\xff" * 32]
+    finally:
+        cu_mod.set_thumbnail_emit_fn(None)
+        plugin.resume()
+
+
+async def test_pause_resume_are_idempotent():
+    """Double-clicks / broadcast retries must not accumulate state."""
+    plugin = ComputerUsePlugin(backend=_FakeBackend())
+    plugin.pause()
+    plugin.pause()
+    assert plugin.is_paused
+    plugin.resume()
+    plugin.resume()
+    assert not plugin.is_paused
+
+
+async def test_module_level_pause_resume_seams_drive_plugin_instance():
+    """The IPC handler in main.py calls pause_current()/resume_current()
+    module-level; the plugin instance must respond via the same registry
+    the kill switch uses."""
+    plugin = ComputerUsePlugin(backend=_FakeBackend())
+    # Constructor registers self as _plugin_instance (same as kill switch).
+    assert cu_mod._plugin_instance is plugin
+    cu_mod.pause_current()
+    assert plugin.is_paused
+    cu_mod.resume_current()
+    assert not plugin.is_paused
+
+
+async def test_pause_current_noop_when_no_plugin_instance(monkeypatch):
+    """Never crash when the plugin isn't loaded (IPC-first race)."""
+    monkeypatch.setattr(cu_mod, "_plugin_instance", None)
+    cu_mod.pause_current()   # no crash
+    cu_mod.resume_current()  # no crash
+
+
+async def test_thumbnail_emit_fn_called_on_non_black_capture():
+    """AC 1: every captured frame reaches the emit seam so main.py can
+    broadcast to the Visualiser -- the passive thumbnail stream."""
+    emitted: list[bytes] = []
+
+    async def emit(frame: bytes) -> None:
+        emitted.append(frame)
+
+    backend = _PixelBackend(
+        read_ui_returns=[[]],
+        capture_returns=[b"\xff" * 64],
+        window_bounds=[0, 0, 100, 100],
+    )
+    ground, _ = _fake_ground((10, 20))
+    plugin = ComputerUsePlugin(backend=backend, vision_ground_fn=ground)
+    cu_mod.set_thumbnail_emit_fn(emit)
+    try:
+        await plugin.call_tool(
+            "click_element", {"window_title": "P", "name": "X", "retries": 1},
+        )
+    finally:
+        cu_mod.set_thumbnail_emit_fn(None)
+    assert emitted == [b"\xff" * 64]
+
+
+async def test_thumbnail_emit_fn_skipped_on_black_capture():
+    """DRM-black doesn't reach the Visualiser -- it escalates instead."""
+    emitted: list[bytes] = []
+
+    async def emit(frame: bytes) -> None:
+        emitted.append(frame)
+
+    backend = _PixelBackend(
+        read_ui_returns=[[]],
+        capture_returns=[b"\x00" * 64],
+        window_bounds=[0, 0, 100, 100],
+    )
+    ground, _ = _fake_ground((10, 20))
+    plugin = ComputerUsePlugin(backend=backend, vision_ground_fn=ground)
+    cu_mod.set_thumbnail_emit_fn(emit)
+    try:
+        await plugin.call_tool(
+            "click_element", {"window_title": "P", "name": "X", "retries": 1},
+        )
+    finally:
+        cu_mod.set_thumbnail_emit_fn(None)
+    assert emitted == []
+
+
+async def test_thumbnail_emit_fn_failure_does_not_break_tool():
+    """A broken sink must never break a tool call -- fire-and-forget seam."""
+    async def broken_emit(frame: bytes) -> None:
+        raise RuntimeError("sink down")
+
+    backend = _PixelBackend(
+        read_ui_returns=[[]],
+        capture_returns=[b"\xff" * 64],
+        window_bounds=[0, 0, 100, 100],
+    )
+    ground, _ = _fake_ground((10, 20))
+    plugin = ComputerUsePlugin(backend=backend, vision_ground_fn=ground)
+    cu_mod.set_thumbnail_emit_fn(broken_emit)
+    try:
+        r = await plugin.call_tool(
+            "click_element", {"window_title": "P", "name": "X", "retries": 1},
+        )
+    finally:
+        cu_mod.set_thumbnail_emit_fn(None)
+    # Emit blew up, but ring still populated + click still succeeded.
+    assert not r.is_error, r.content
+    assert plugin.thumbnail_ring_snapshot() == [b"\xff" * 64]
+
+
+async def test_thumbnail_emit_fn_routes_through_worker_dispatch():
+    """Isolated-session path: capture flows through session_dispatch_fn.
+    The passive thumbnail stream must include those frames too (that IS
+    the whole point of the watch feature)."""
+    import base64 as _b64
+    emitted: list[bytes] = []
+
+    async def emit(frame: bytes) -> None:
+        emitted.append(frame)
+
+    async def fake_dispatch(action: str, params: dict) -> dict:
+        assert action == "capture" and params == {"window_title": "N"}
+        return {"frame_b64": _b64.b64encode(b"worker-frame").decode()}
+
+    plugin = ComputerUsePlugin(backend=None, session_dispatch_fn=fake_dispatch)
+    cu_mod.set_thumbnail_emit_fn(emit)
+    try:
+        frame = await plugin._prim_capture("N")
+    finally:
+        cu_mod.set_thumbnail_emit_fn(None)
+    assert frame == b"worker-frame"
+    assert emitted == [b"worker-frame"]
+
+
+async def test_thumbnail_ring_populated_from_worker_capture():
+    """Same as above but confirming the ring gets the worker frame -- the
+    RAM buffer that outlives a WS drop."""
+    import base64 as _b64
+
+    async def fake_dispatch(action: str, params: dict) -> dict:
+        return {"frame_b64": _b64.b64encode(b"w").decode()}
+
+    plugin = ComputerUsePlugin(backend=None, session_dispatch_fn=fake_dispatch)
+    await plugin._prim_capture("N")
+    assert plugin.thumbnail_ring_snapshot() == [b"w"]
+
+
+async def test_pause_current_does_not_touch_abort_event():
+    """Take-over is REVERSIBLE; kill switch is NOT. They must not share state.
+    Regression guard: a Release must not resurrect an aborted loop, and a
+    Take over must not fire the kill switch."""
+    plugin = ComputerUsePlugin(backend=_FakeBackend())
+    cu_mod.pause_current()
+    assert plugin.is_paused
+    assert not plugin._abort_event.is_set()
+    cu_mod.resume_current()
+    assert not plugin._abort_event.is_set()
+    # And the reverse -- kill switch fires abort but does NOT auto-pause.
+    cu_mod.abort_current()
+    assert plugin._abort_event.is_set()
+    assert not plugin.is_paused
