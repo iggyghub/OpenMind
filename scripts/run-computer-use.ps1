@@ -7,7 +7,7 @@
 #
 # Stop conditions:
 #   - STOP file created by scripts/stop-computer-use.ps1 (graceful, between steps)
-#   - COMPUTER-USE-BUILD.md Status: done    (all AFK slices landed; S7/#580 last)
+#   - COMPUTER-USE-BUILD.md Status: done    (all AFK slices landed; Phase 2 last is S16/#610)
 #   - COMPUTER-USE-BUILD.md Status: blocked (a session hit a HITL slice or needs a human)
 #   - Claude subscription usage limit reached (auto-resume after reset)
 #   - A slice fails 3 attempts in a row (debug retries exhausted)
@@ -119,16 +119,16 @@ try {
 
     $rules = "Hard rules, in order: " +
              "(1) Read COMPUTER-USE-BUILD.md (including the SAFETY block) and docs/adr/0016-computer-use.md first. The active slice is named in the 'Next slice' block as 'Sx -- #N'. Run gh issue view N for its full spec. " +
-             "(2) SAFETY GATE (highest priority): if the active slice is #577 or #581 (the Human-gated HITL slices), do NOT implement it -- set Status: blocked (reason: HITL needs human review), commit the driver to master, and STOP without a PR. AFK slices must NOT modify cerebral/security/ (the ADR-0005 gate); if a slice seems to need that, set Status: blocked (reason: needs guardrail change) and STOP. Never drive real mouse/keyboard, real screen grounding, live Discord, or any live external endpoint in tests -- inject fakes (OllamaBackend tags_fetch_fn / AnthropicBackend client / discord_user fetch_fn seam pattern). Behaviour only checkable on real hardware or a live app -> APPEND to docs/computer-use-live-verify.md and do NOT perform it. " +
+             "(2) SAFETY GATE (highest priority): if the active slice is #577, #581, #603, #604, #607, or #608 (the Human-gated HITL / Phase-2 Human-led slices -- guardrail edits, ban-risk, or real OS user / RDP / driver install / real logins), do NOT implement it -- set Status: blocked (reason: needs a human), commit the driver to master, and STOP without a PR. AFK slices must NOT modify cerebral/security/ (the ADR-0005 gate); if a slice seems to need that, set Status: blocked (reason: needs guardrail change) and STOP. Never drive real mouse/keyboard, real screen grounding, live Discord, or any live external endpoint in tests, and never create/alter a real Windows user, do a real loopback-RDP connect, install the IDD display driver, write a real credential, or perform a real app login -- inject fakes (fake session token / process launcher / WS transport / keyring; OllamaBackend tags_fetch_fn / AnthropicBackend client / discord_user fetch_fn seam pattern). Behaviour only checkable on real hardware or a live app -> APPEND to docs/computer-use-live-verify.md and do NOT perform it. " +
              "(3) Branch off the latest origin/master (git fetch then git checkout -b computer-use/sN-short-name origin/master). " +
-             "(4) Implement ONLY that one slice exactly as the issue specifies. One PR per issue. Code areas: plugins/computer_use.py, cerebral/llm/router.py (S4 multimodal seam), cerebral/main.py (IPC seams only, NOT the gate), cerebral/tests/*, tray/windows/main.html, tray/lib/*.js. Cover fail-closed-on-non-Windows with a test. " +
+             "(4) Implement ONLY that one slice exactly as the issue specifies. One PR per issue. Code areas: plugins/computer_use.py, the new isolated-session worker module under cerebral/ (Phase 2 seam), cerebral/llm/router.py (S4 multimodal seam), cerebral/main.py (IPC seams only, NOT the gate), cerebral/tests/*, tray/windows/main.html, tray/lib/*.js. Cover fail-closed-on-non-Windows with a test. " +
              "(5) Run the FULL test suite (python -m pytest cerebral/tests -q, plus npx jest in tray/ when tray/windows/main.html or tray/lib changed) and proceed ONLY if ALL pass. Re-run the full suite, do not trust a subset. " +
              "If you launch Cerebral to smoke IPC, launch it in the BACKGROUND and ALWAYS terminate it before you finish -- leave no orphan 'python -m cerebral.main' process. " +
              "(6) Open the PR with 'Closes #N' in the body. Merge YOUR OWN PR: gh pr merge <n> --squash --delete-branch. " +
              "If gh reports the PR is not mergeable yet, wait ~15s and retry up to 5 times. If --delete-branch fails because master is checked out elsewhere, merge without it and delete the remote branch with git push origin --delete. " +
              "(7) git checkout master and git pull origin master so master is current. " +
              "(8) Rewrite the COMPUTER-USE-BUILD.md 'Next slice' block: tick the landed entry in the Queue, set the next unticked AFK Queue entry as Active with Model: opus, " +
-             "set 'Status:' (ready while AFK slices remain; done after S7/#580 lands -- the Human-gated slices are NOT auto-run), and add the merged PR under 'Landed PRs'. " +
+             "set 'Status:' (ready while AFK software slices remain; done after S16/#610 lands; blocked if the next slice is Human-led -- the Human-gated / Human-led slices are NOT auto-run), and add the merged PR under 'Landed PRs'. " +
              "Commit the COMPUTER-USE-BUILD.md change directly to master and push it. COMPUTER-USE-BUILD.md is the ONLY thing you may commit straight to master. " +
              "(9) If tests fail and you cannot fix them, or the slice genuinely needs a human / live action, set Status: blocked with a one-line reason, commit that to master, and stop WITHOUT merging the PR. " +
              "(10) Leave the working tree on master with no uncommitted changes before you finish."
