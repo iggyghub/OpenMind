@@ -340,3 +340,28 @@ own URL-submit (Enter after typing the address), which is not routed through
 The check above is written against `click_element` as the submit step, which
 is what the gate actually covers -- it does not assert a `press_key` tool or
 gate that does not exist.
+
+## S11 #605 -- in-session worker + action protocol (blocked by S10 #604 real vehicle)
+
+The automated test suite covers the fake-backend round-trip. Real-session
+verification requires Felix's isolated OS session (provisioned by #604).
+
+- [ ] Launch Cerebral in session 1 (`python -m cerebral.main`). In Felix's
+      session (session 2), launch the worker (`python -m cerebral.session_worker`).
+      Verify Cerebral logs "In-session worker connected (v1)".
+- [ ] Send `{"type": "set_isolated_session_mode", "data": {"enabled": true}}`
+      over WS from a test client. Verify Cerebral logs
+      "isolated_session_mode=True" and the computer_use plugin's
+      `_session_dispatch_fn` is no longer None.
+- [ ] Open Notepad in session 2. Send from session 1 the IPC sequence:
+        1. `read_ui` action to the worker (window_title="Notepad") -- verify
+           result contains the Notepad UIA elements (Text field, title bar).
+        2. `click` action with the text-area bbox -- verify result ok=True
+           and the cursor moves inside the text field in session 2.
+        3. `type` action with text="hello S11" -- verify text appears in the
+           session-2 Notepad and result ok=True.
+      Session 1's desktop must be completely unaffected (cursor unmoved, no
+      keystrokes to session-1 apps) throughout.
+- [ ] Kill the worker process mid-action. Verify Cerebral logs
+      "Client disconnected" and in-flight futures are cancelled (no hang
+      in the plugin's observe-act loop beyond the 30s timeout).

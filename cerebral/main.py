@@ -312,6 +312,78 @@ _VISION_GROUND_COORD_RE = re.compile(r"(-?\d+)\s*[, ]\s*(-?\d+)")
 _computer_use_handoff_pending: dict[str, asyncio.Future] = {}
 _computer_use_handoff_next_id: int = 0
 
+# S11 #605: in-session worker IPC seams (ADR-0016 Phase 2).
+# _worker_ws    -- the single connected SessionWorker WS client (None = none).
+# _worker_pending -- in-flight request futures keyed by request id.
+# _isolated_session_mode -- when True, the computer_use plugin routes its 3
+#   core primitives (read_ui / click / type) through _dispatch_to_worker
+#   instead of the local _WindowsBackend.
+_worker_ws = None
+_worker_pending: dict[str, asyncio.Future] = {}
+_worker_req_counter: int = 0
+_isolated_session_mode: bool = False
+
+
+def _next_worker_req_id() -> str:
+    global _worker_req_counter
+    _worker_req_counter += 1
+    return f"w{_worker_req_counter}"
+
+
+async def _dispatch_to_worker(action: str, params: dict) -> dict:
+    """Route one primitive action to the in-session worker and await result.
+
+    Raises RuntimeError when no worker is connected. Called by the
+    computer_use plugin's session_dispatch_fn seam when
+    isolated_session_mode is True and a worker is connected."""
+    if _worker_ws is None:
+        raise RuntimeError("no in-session worker connected")
+    req_id = _next_worker_req_id()
+    loop = asyncio.get_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    _worker_pending[req_id] = fut
+    try:
+        await _worker_ws.send(json.dumps({"type": action, "id": req_id, **params}))
+        return await asyncio.wait_for(fut, timeout=30.0)
+    finally:
+        _worker_pending.pop(req_id, None)
+
+
+def _wire_session_worker(ws) -> None:
+    """Called when a worker client sends worker_hello. Stores the WS and,
+    if isolated_session_mode is on, wires the plugin's dispatch seam."""
+    global _worker_ws
+    _worker_ws = ws
+    if _isolated_session_mode:
+        _update_session_dispatch_seam()
+
+
+def _unwire_session_worker() -> None:
+    """Called when the worker WS disconnects. Clears the seam and cancels
+    any in-flight requests."""
+    global _worker_ws
+    _worker_ws = None
+    _update_session_dispatch_seam()  # fn becomes None -> local backend
+    for fut in list(_worker_pending.values()):
+        if not fut.done():
+            fut.cancel()
+    _worker_pending.clear()
+
+
+def _update_session_dispatch_seam() -> None:
+    """Wire or clear computer_use's session_dispatch_fn based on current state.
+
+    The fn is set only when BOTH isolated_session_mode is True AND a worker
+    is connected; otherwise None (local backend)."""
+    fn = _dispatch_to_worker if (_isolated_session_mode and _worker_ws is not None) else None
+    try:
+        cu = _orc.get_plugin_module("computer_use")
+        setter = getattr(cu, "set_session_dispatch_fn", None)
+        if setter is not None:
+            setter(fn)
+    except (KeyError, Exception):
+        pass
+
 
 async def _computer_use_attended_handoff(  # S6 #579 (ADR-0016 sec 6)
     window_title: str, reason: str,
@@ -4245,6 +4317,23 @@ async def _handle_message(msg: dict) -> None:
         stopper()
         await _broadcast({"type": "computer_use:driving", "data": {"driving": False}})
 
+    elif t == "result" and isinstance(msg.get("id"), str):
+        # S11 #605: result message from the in-session SessionWorker.
+        req_id = msg["id"]
+        fut = _worker_pending.get(req_id)
+        if fut is not None and not fut.done():
+            if msg.get("ok"):
+                fut.set_result(msg.get("data", {}))
+            else:
+                fut.set_exception(RuntimeError(msg.get("error", "worker error")))
+
+    elif t == "set_isolated_session_mode":
+        # S11 #605: toggle isolated-session routing for computer_use primitives.
+        global _isolated_session_mode
+        _isolated_session_mode = bool(msg.get("data", {}).get("enabled"))
+        _update_session_dispatch_seam()
+        logger.info("[cerebral] isolated_session_mode=%s", _isolated_session_mode)
+
     elif t == "computer_use_handoff_done":
         # S6 #579 -- reply to a computer_use:handoff_needed broadcast. The
         # tray sends this when the user clicks the "Done" affordance during
@@ -5091,11 +5180,22 @@ async def _ws_handler(websocket) -> None:
 
     await _greet(websocket)
 
+    is_worker = False  # S11 #605: set True when worker_hello is received
     try:
         async for raw in websocket:
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
+                continue
+            # S11 #605: first worker_hello from this connection registers it
+            # as the in-session worker client (no dispatch needed for hello).
+            if not is_worker and isinstance(msg, dict) and msg.get("type") == "worker_hello":
+                is_worker = True
+                _wire_session_worker(websocket)
+                logger.info(
+                    "[cerebral] In-session worker connected (v%s)",
+                    msg.get("version", "?"),
+                )
                 continue
             try:
                 await _handle_message(msg)
@@ -5118,6 +5218,8 @@ async def _ws_handler(websocket) -> None:
         pass
     finally:
         _connected.discard(websocket)
+        if is_worker:
+            _unwire_session_worker()
         logger.info("[cerebral] Client disconnected (%d remaining)", len(_connected))
 
 
