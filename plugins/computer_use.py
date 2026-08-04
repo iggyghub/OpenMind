@@ -233,6 +233,7 @@ _setvalue_roles_fn: Optional[SetValueRolesFn] = None
 _user_idle_ms_fn: Optional[UserIdleMsFn] = None
 _full_autonomy_fn: Optional[FullAutonomyFn] = None
 _session_dispatch_fn: Optional["SessionDispatchFn"] = None  # S11 #605
+_terminate_worker_fn: Optional[Callable[[], None]] = None  # S12 #606
 _plugin_instance: Optional["ComputerUsePlugin"] = None
 
 # ADR-0016 amendment defaults -- used whenever no getter is wired (tests,
@@ -320,11 +321,30 @@ def set_session_dispatch_fn(fn: "SessionDispatchFn | None") -> None:
     _session_dispatch_fn = fn
 
 
+def set_terminate_worker_fn(fn: "Callable[[], None] | None") -> None:
+    """S12 #606: wire (or clear) the out-of-session worker termination seam.
+
+    Called by main.py when a worker process handle is tracked. When set,
+    abort_current() (Visualiser Stop + F11+F12 path) also kills the worker
+    process so stop always crosses the session boundary. Pass None to clear
+    (worker disconnected / handle released)."""
+    global _terminate_worker_fn
+    _terminate_worker_fn = fn
+
+
 def abort_current() -> None:
-    """Module-level abort: signals the (c) Visualiser Stop leg. IPC in main.py
-    calls this on a ``computer_use_stop`` message from the tray."""
+    """Module-level abort: signals the kill-switch. IPC in main.py calls this
+    on a ``computer_use_stop`` message; F11+F12 routes through this too (S12).
+
+    S12 #606: also calls _terminate_worker_fn() when wired so the in-session
+    worker is killed even if the WS heartbeat leg hasn't fired yet."""
     if _plugin_instance is not None:
         _plugin_instance.abort()
+    if _terminate_worker_fn is not None:
+        try:
+            _terminate_worker_fn()
+        except Exception:
+            logger.warning("[computer_use] terminate_worker_fn failed", exc_info=True)
 
 
 @runtime_checkable
@@ -669,7 +689,11 @@ class ComputerUsePlugin:
         reg = hotkey_register_fn if hotkey_register_fn is not _UNSET else _hotkey_register_fn
         if reg is not None:
             try:
-                reg(self.abort)
+                # S12 #606: pass abort_current (not self.abort) so F11+F12 also
+                # triggers _terminate_worker_fn when an in-session worker is live.
+                # abort_current() calls _plugin_instance.abort() internally, so
+                # existing tests that check _abort_event is set still pass.
+                reg(abort_current)
             except Exception:
                 logger.warning(
                     "[computer_use] hotkey_register_fn failed; "

@@ -365,3 +365,50 @@ verification requires Felix's isolated OS session (provisioned by #604).
 - [ ] Kill the worker process mid-action. Verify Cerebral logs
       "Client disconnected" and in-flight futures are cancelled (no hang
       in the plugin's observe-act loop beyond the 30s timeout).
+
+## S12 #606 -- out-of-session kill switch + Job Object / heartbeat dead-men
+
+### Visualiser Stop (out-of-session kill leg)
+
+- [ ] With the in-session worker running mid-task in session 2, click the
+      Visualiser Stop button in session 1. Verify: Cerebral logs
+      "in-session worker process terminated (kill switch)"; the worker process
+      in session 2 exits immediately (within 1 s); the session-2 desktop is
+      not left with a hung Felix session.
+- [ ] With no worker connected, click Visualiser Stop. Verify: no error or
+      crash -- _terminate_worker_process() is a clean no-op.
+
+### F11+F12 (re-homed to session 1)
+
+- [ ] With the in-session worker running mid-action, press F11+F12 in the
+      session-1 desktop (even while session 2 has foreground focus). Verify:
+      abort_current() fires, _terminate_worker_fn() is called, the worker
+      exits, and the session-1 "Felix is driving" indicator clears within 1 s.
+
+### Job Object dead-man (#1 -- OS kills worker when Cerebral dies)
+
+- [ ] Launch the in-session worker inside a Job Object
+      (create_kill_on_close_job() + assign_process_to_job()). While the
+      worker is idle in session 2, kill the Cerebral process directly
+      (taskkill /F /PID <cerebral_pid> or End Task in Task Manager). Verify:
+      the worker process in session 2 exits on its own within ~1 s (OS
+      KILL_ON_JOB_CLOSE fires when the Job Object handle closes). No hung
+      Python process should be visible in session 2.
+
+### Heartbeat dead-man (#2 -- worker self-halts on missed heartbeats)
+
+- [ ] Pause Cerebral's heartbeat sender by suspending the process
+      (SuspendThread / debugger attach) or by manually stopping the task.
+      Verify: after HEARTBEAT_INTERVAL_S * HEARTBEAT_MISSED_LIMIT seconds
+      (default 30 s), the worker logs "no heartbeat for ... halting" and
+      exits cleanly. No further actuation must occur after the halt.
+- [ ] Resume Cerebral after one or two missed heartbeats (before the
+      deadline). Verify: the worker continues normally (did not halt early).
+
+### Combined demo
+
+- [ ] Launch worker in a Job Object, start a long-running action (e.g. type
+      a large block of text into session-2 Notepad). Kill Cerebral directly
+      (hard kill, not graceful). Verify: worker exits within
+      HEARTBEAT_INTERVAL_S * HEARTBEAT_MISSED_LIMIT seconds or immediately
+      if the Job Object fires first. Session 2 is clean.
