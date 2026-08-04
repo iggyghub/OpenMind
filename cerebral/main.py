@@ -1968,6 +1968,42 @@ def _launch_felix_account_setup() -> bool:
     logger.info("[cerebral] launched Felix account setup (self-elevating)")
     return True
 
+
+def _felix_provisioning_state() -> dict:
+    """Real system provisioning status for the Felix isolated session, for the
+    card's completion checkmark: does the account exist, is it in Remote Desktop
+    Users, is Remote Desktop enabled. Best-effort (Windows-only); anything we
+    can't confirm counts as not-done. Runs one short PowerShell probe -- call it
+    off the event loop (asyncio.to_thread)."""
+    state = {"account": False, "rdp_group": False, "rdp_enabled": False,
+             "provisioned": False, "supported": sys.platform == "win32"}
+    if sys.platform != "win32":
+        return state
+    ps = (
+        "$u=[bool](Get-LocalUser -Name 'Felix' -ErrorAction SilentlyContinue);"
+        "try{$g=[bool](Get-LocalGroupMember -Group 'Remote Desktop Users' -ErrorAction Stop|"
+        "Where-Object{$_.Name -like '*\\Felix'})}catch{$g=$false};"
+        "$r=((Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server' "
+        "-Name fDenyTSConnections -ErrorAction SilentlyContinue).fDenyTSConnections -eq 0);"
+        "[pscustomobject]@{account=$u;rdp_group=$g;rdp_enabled=$r}|ConvertTo-Json -Compress"
+    )
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            capture_output=True, text=True, timeout=15,
+        ).stdout.strip()
+        d = json.loads(out)
+        state["account"] = bool(d.get("account"))
+        state["rdp_group"] = bool(d.get("rdp_group"))
+        state["rdp_enabled"] = bool(d.get("rdp_enabled"))
+        state["provisioned"] = (
+            state["account"] and state["rdp_group"] and state["rdp_enabled"]
+        )
+    except Exception as exc:
+        logger.warning("[cerebral] felix provisioning check failed: %s", exc)
+    return state
+
 # In-flight guard for the attended "Log in now" seed (seed_browser_login). The
 # manual-login window blocks for up to manual_login_timeout while a human
 # completes login + 2FA; a second click must NOT open a second window. Keyed by
@@ -4298,6 +4334,13 @@ async def _handle_message(msg: dict) -> None:
         # self-elevating provisioning script; the human approves one UAC prompt.
         # Fire-and-forget (the script owns its own console + progress).
         _launch_felix_account_setup()
+
+    elif t == "check_felix_provisioning":
+        # Real system state for the card's completion checkmark. Runs a short
+        # PowerShell probe off the event loop; the tray polls this after the
+        # setup button so the ✓ appears once the elevated script finishes.
+        prov = await asyncio.to_thread(_felix_provisioning_state)
+        await _broadcast({"type": "felix_provisioning", "data": prov})
 
     elif t == "set_browser_login":
         # ADR-0005 amendment 2026-06-25 — user entered a browser web-login

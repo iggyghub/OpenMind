@@ -35,9 +35,16 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
     exit
 }
 
+$transcriptOn = $false
 try {
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+    $logDir = Join-Path $repoRoot ".claude\tmp\felix-setup"
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $log = Join-Path $logDir ("setup-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+    try { Start-Transcript -Path $log -Force | Out-Null; $transcriptOn = $true } catch {}
+
     Write-Host "=== Felix isolated-session setup (elevated) ===" -ForegroundColor Cyan
+    Write-Host ("log: {0}" -f $log)
     Write-Host ""
 
     $svc = "openmind-felix-session"
@@ -102,5 +109,6 @@ try {
     Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
     exit 1
 } finally {
+    if ($transcriptOn) { try { Stop-Transcript | Out-Null } catch {} }
     Read-Host "Press Enter to close" | Out-Null
 }
