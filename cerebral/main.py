@@ -533,6 +533,32 @@ async def _computer_use_attended_handoff(  # S6 #579 (ADR-0016 sec 6)
         _computer_use_handoff_pending.pop(handoff_id, None)
 
 
+async def _computer_use_failure_notify(  # S16 #610 (ADR-0016 mode ladder)
+    mode: str, reason: str, fallback: str,
+) -> None:
+    """Wire for the computer_use FailureNotifyFn seam (S16 #610).
+
+    Called when a dedicated-path (session-2 worker) dispatch fails. Notifies
+    the user via _notify_user so the Visualiser (attended) and OpenClaw push
+    (AFK) both fire -- the user is never left in a silent-failure state.
+    Naming: mode is the tier that failed (e.g. "isolated_session"), reason is
+    the exception message, fallback is the tier the plugin fell back to."""
+    await _notify_user(
+        f"computer_use: {mode} failed",
+        f"{reason} -- falling back to {fallback}",
+    )
+
+
+def _computer_use_effective_caps(plugin_name: str | None, caps) -> frozenset | None:
+    """S16 #610: when in isolated-session mode, screen_capture is Felix's own
+    dedicated screen -- treat it as SILENT (drop it from the capability set so
+    the ASK consent dialog never fires for session-2 computer_use tool calls).
+    Live-desktop / session-1 behavior is unchanged (caps returned as-is)."""
+    if caps and _isolated_session_mode and plugin_name == "computer_use":
+        return frozenset(caps) - {"screen_capture"}
+    return caps
+
+
 async def _computer_use_vision_ground(  # S5 #578 (ADR-0016 sec 5)
     name: str, frame: bytes,
 ) -> tuple[int, int] | None:
@@ -3310,6 +3336,7 @@ async def _dispatch_tray_call_tool(tool_name: str, tool_args: dict) -> ToolResul
         if plugin_name is not None
         else None
     )
+    caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
     if caps:
         decision = await _orc.check_capabilities(
             tool_name, caps, _gate_flags_for(tool_name, tool_args)
@@ -4818,6 +4845,7 @@ async def _handle_message(msg: dict) -> None:
                 if plugin_name is not None
                 else None
             )
+            caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
             if caps:
                 decision = await _orc.check_capabilities(
                     item.tool_name, caps, CallFlags(passive=True),
@@ -5507,6 +5535,7 @@ async def _process_command(
             if plugin_name is not None
             else None
         )
+        caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
         if caps:
             return await _orc.check_capabilities(
                 tool_name, caps, _gate_flags_for(tool_name, tool_args)
@@ -5629,6 +5658,7 @@ async def _replay_recipe(synthetic_name: str, profile_id: int) -> ToolResult:
             return ToolResult(content=notice, is_error=True)
 
         caps = _orc.required_capabilities_for(plugin_name)
+        caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
         decision = (
             await _orc.check_capabilities(
                 tool_name, caps, _gate_flags_for(tool_name, tool_args)
@@ -5819,6 +5849,7 @@ def _wire_plugin_seams() -> None:
         ("computer_use", "set_full_autonomy_fn",
          lambda: _computer_use_full_autonomy),                                      # #593 (ADR-0016 amendment d)
         ("computer_use", "set_thumbnail_emit_fn", _computer_use_thumbnail),         # S15 #609 (ADR-0016 sec 7)
+        ("computer_use", "set_failure_notify_fn", _computer_use_failure_notify),   # S16 #610 (ADR-0016 ladder)
     ]
     for name, seam, factory in seams:
         try:
