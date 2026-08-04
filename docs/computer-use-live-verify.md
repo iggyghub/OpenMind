@@ -412,3 +412,58 @@ verification requires Felix's isolated OS session (provisioned by #604).
       (hard kill, not graceful). Verify: worker exits within
       HEARTBEAT_INTERVAL_S * HEARTBEAT_MISSED_LIMIT seconds or immediately
       if the Job Object fires first. Session 2 is clean.
+
+## S16 #610 -- three-tier mode ladder + never-silent failure/notify
+
+### Relaxed rules inside session 2 (point 8)
+
+- [ ] With a session-2 worker connected and `_isolated_session_mode=True`,
+      ask Felix to click an element whose UIA bbox lies outside the local
+      session-1 window bounds. Verify: the click is dispatched to the worker
+      (NOT refused with "outside window bounds") -- full-desktop actions are
+      allowed inside session 2. Compare with the same scenario without a
+      worker connected: the bounds check must refuse.
+- [ ] Start a `click_element` call in session 2 while the session-1 user is
+      actively typing (idle_ms close to 0). Verify: Felix does NOT wait for
+      the idle gate -- it dispatches to session 2 immediately (no "waiting for
+      idle" trace entry). The idle gate still blocks session-1 foreground
+      clicks for the same idle condition (regression check).
+- [ ] Trigger `read_ui` against a session-2 window while the local
+      screen_capture capability is set to ASK (not yet granted). Verify: no
+      consent dialog fires for the session-2 read -- screen_capture is silently
+      allowed for session-2 computer_use calls. A session-1 read still asks.
+- [ ] Click a "Send" button via the session-2 worker. Verify: the
+      irreversible / consequence modal STILL fires (the relaxed rules do NOT
+      bypass the ADR-0005 gate for committing actions). The full-autonomy
+      switch is the only way to remove this gate, same as in session 1.
+
+### Three-tier mode ladder (point 9)
+
+- [ ] Ask Felix to "read the Calculator UI in the background". Verify:
+      `select_actuation_tier()` returns "background" and the plugin uses
+      UIA control patterns (no cursor move, no session 2 dispatch). The
+      `computer_use:driving` broadcast shows `mode: "background"`.
+- [ ] Ask Felix to "click a button in Calculator without stealing my
+      cursor" (implicit foreground path where no UIA pattern exists).
+      Verify: `select_actuation_tier(needs_foreground=True)` returns
+      "isolated_session" and the action is dispatched to session 2.
+- [ ] Ask Felix to interact with something ONLY in the user's live session
+      (e.g. an app the user opened and Felix has no separate login for).
+      Verify: `select_actuation_tier(live_desktop_only=True)` returns
+      "take_turns" and the existing idle-gated live-desktop path is used.
+
+### Never-silent failure (point 10)
+
+- [ ] With the session-2 worker connected, forcibly kill the worker process
+      (Task Manager or `TerminateProcess`). Immediately ask Felix to read or
+      click something via the worker. Verify: a notification appears in the
+      Visualiser (and in the OpenClaw push log if AFK) naming the mode that
+      failed ("isolated_session"), the reason (worker disconnect error), and
+      the fallback tier ("take_turns"). The tool call should still complete by
+      falling back to the local backend, NOT produce a silent error.
+- [ ] Simulate an AFK failure: disconnect the tray (close the Visualiser
+      window) so Felix is running unattended, then kill the worker. Verify: an
+      OpenClaw push notification fires (check OpenClaw's outbound log) with the
+      mode + reason + fallback. The tool either falls back (take_turns) or
+      escalates to attended-handoff/park per the ADR-0006 retry-exhaustion
+      pattern -- no silent retry loop and no crash.

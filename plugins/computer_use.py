@@ -90,6 +90,23 @@ Mode-aware driving indicator (ADR-0016 amendment f, Issue #594):
   the live indicator to the foreground/urgent style in real time, same
   broadcast, no second gate. The ``irreversible``/``is_committing_action``
   gate is untouched (sec 3): this is visibility only.
+
+Mode ladder + session-2 relaxations (ADR-0016 S16 #610):
+  ``select_actuation_tier(needs_foreground, live_desktop_only)`` exposes the
+  three-tier planner ladder: ``"background"`` (UIA control patterns, no
+  cursor), ``"isolated_session"`` (Felix's dedicated session, default for
+  foreground/pixel work), ``"take_turns"`` (live-desktop foreground, opt-in
+  when a target exists ONLY in the user's session). Inside session 2 (i.e.
+  when ``_session_dispatch_fn`` is wired -- ``_in_isolated_session()`` is
+  True): the window-bounded region check and the foreground idle-gate are
+  both dropped (full-desktop actions are allowed and there is no user cursor
+  to yield to in session 2). screen_capture consent is silenced for session-2
+  tool calls at the main.py capability-check layer. A ``FailureNotifyFn``
+  seam is called whenever a dedicated-path dispatch raises (worker disconnect,
+  session death) -- it fires before falling back to the local backend so the
+  user is NEVER left in a silent-failure state. The consequence/irreversible
+  modal is unchanged: committing actions still route through the ADR-0005
+  modal regardless of session.
 """
 from __future__ import annotations
 
@@ -228,6 +245,12 @@ SessionDispatchFn = Callable[..., "Awaitable[dict]"]
 # tool call. Wired by main.py to _broadcast_thumbnail; unwired = ring-only
 # (matches pre-S15 behaviour).
 ThumbnailEmitFn = Callable[[bytes], "Awaitable[None]"]
+# S16 #610: notified when a dedicated-path (isolated-session worker) dispatch
+# fails. Arguments: (mode, reason, fallback). mode is the tier that failed
+# ("isolated_session"); reason is the exception message; fallback is the tier
+# the plugin is falling back to ("take_turns" on attended fallback). Wired by
+# main.py to _notify_user so the user is never left in a silent-failure state.
+FailureNotifyFn = Callable[[str, str, str], "Awaitable[None]"]
 
 _driving_fn: Optional[DrivingFn] = None
 _hotkey_register_fn: Optional[HotkeyRegisterFn] = None
@@ -240,6 +263,7 @@ _full_autonomy_fn: Optional[FullAutonomyFn] = None
 _session_dispatch_fn: Optional["SessionDispatchFn"] = None  # S11 #605
 _terminate_worker_fn: Optional[Callable[[], None]] = None  # S12 #606
 _thumbnail_emit_fn: Optional["ThumbnailEmitFn"] = None  # S15 #609
+_failure_notify_fn: Optional["FailureNotifyFn"] = None  # S16 #610
 _plugin_instance: Optional["ComputerUsePlugin"] = None
 
 # ADR-0016 amendment defaults -- used whenever no getter is wired (tests,
@@ -360,6 +384,47 @@ def set_thumbnail_emit_fn(fn: "ThumbnailEmitFn | None") -> None:
     forward it to the Visualiser. Best-effort: a failure never propagates."""
     global _thumbnail_emit_fn
     _thumbnail_emit_fn = fn
+
+
+def set_failure_notify_fn(fn: "FailureNotifyFn | None") -> None:
+    """S16 #610: wire (or clear) the dedicated-path failure notification seam.
+
+    Called when a session-2 worker dispatch fails (connect error, session
+    death). Arguments forwarded to fn: (mode, reason, fallback). main.py
+    wires this to _notify_user so the Visualiser / OpenClaw push fires on
+    failure -- the user is never left in a silent-failure state. Pass None
+    to clear (e.g. at teardown)."""
+    global _failure_notify_fn
+    _failure_notify_fn = fn
+
+
+def select_actuation_tier(
+    *,
+    needs_foreground: bool = False,
+    live_desktop_only: bool = False,
+) -> "Literal['background', 'isolated_session', 'take_turns']":
+    """S16 #610: three-tier planner-facing mode ladder (ADR-0016 point 9).
+
+    Returns the recommended actuation tier for a computer-use task:
+      "background"        -- UIA control patterns, no cursor, concurrent
+                            with the user. Cheapest; try first for structured
+                            targets with a usable control pattern.
+      "isolated_session"  -- Felix's dedicated session (#603-#609). Default
+                            when foreground or pixel input-stealing paths are
+                            needed, or for bulk autonomous work.
+      "take_turns"        -- Live-desktop foreground. Opt-in when the target
+                            exists ONLY in the user's own session (something
+                            the user has open that Felix has no separate
+                            login for) -- the existing idle-gated path.
+
+    Planner picks per task, same pattern as select_web_path (ADR-0016 sec 2)
+    and the two Discord paths (ADR-0006). Not a hardware call -- pure logic,
+    safe to call from any context."""
+    if live_desktop_only:
+        return "take_turns"
+    if needs_foreground:
+        return "isolated_session"
+    return "background"
 
 
 def pause_current() -> None:
@@ -665,6 +730,7 @@ class ComputerUsePlugin:
         user_idle_ms_fn: UserIdleMsFn | None = None,
         full_autonomy_fn: FullAutonomyFn | None = None,
         session_dispatch_fn: "SessionDispatchFn | None" = None,
+        failure_notify_fn: "FailureNotifyFn | None" = None,
     ) -> None:
         if backend is _UNSET:
             self._backend = _make_default_backend()
@@ -708,6 +774,11 @@ class ComputerUsePlugin:
         # the module-level global wired by main.py when a worker connects.
         self._session_dispatch_fn: SessionDispatchFn | None = (
             session_dispatch_fn or _session_dispatch_fn
+        )
+        # S16 #610: dedicated-path failure notification seam. Unwired = silent
+        # on worker errors (pre-S16 behaviour -- the trace records the error).
+        self._failure_notify_fn: FailureNotifyFn | None = (
+            failure_notify_fn or _failure_notify_fn
         )
         self._thumbnail_ring: deque[bytes] = deque(maxlen=max(1, int(thumbnail_ring_size)))
         # asyncio.Event carries the abort signal across the (a) corner-failsafe,
@@ -768,6 +839,27 @@ class ComputerUsePlugin:
     def is_paused(self) -> bool:
         """S15 #609: True while a take-over pause is in effect."""
         return not self._can_actuate.is_set()
+
+    def _in_isolated_session(self) -> bool:
+        """S16 #610: True when the session-dispatch seam is wired, i.e. the
+        plugin is routing its primitives to a session-2 worker. Used to apply
+        the relaxed-rules posture: no window-bounded check, no idle gate."""
+        return self._session_dispatch_fn is not None
+
+    async def _notify_dedicated_path_failure(
+        self, mode: str, reason: str, fallback: str,
+    ) -> None:
+        """S16 #610: fire the failure-notification seam when a dedicated-path
+        (worker) dispatch raises. Best-effort: a broken sink never propagates.
+        Reads the instance seam first (constructor-injected), then the module
+        global wired by main.py (same lookup pattern as _driving_fn)."""
+        fn = self._failure_notify_fn or _failure_notify_fn
+        if fn is None:
+            return
+        try:
+            await fn(mode, reason, fallback)
+        except Exception:
+            logger.warning("[computer_use] failure_notify_fn raised", exc_info=True)
 
     async def _emit_driving(
         self,
@@ -1351,8 +1443,16 @@ class ComputerUsePlugin:
     async def _prim_read_ui(self, window_title: str) -> list[dict]:
         fn = self._session_dispatch_fn
         if fn is not None:
-            r = await fn("read_ui", {"window_title": window_title})
-            return r.get("elements", [])
+            try:
+                r = await fn("read_ui", {"window_title": window_title})
+                return r.get("elements", [])
+            except Exception as exc:
+                # S16 #610: never-silent failure -- notify then fall back to
+                # the local backend (take_turns tier: session-1 read_ui, no
+                # input theft, always safe).
+                await self._notify_dedicated_path_failure(
+                    "isolated_session", str(exc), "take_turns",
+                )
         return self._backend.read_ui(window_title)  # type: ignore[union-attr]
 
     async def _prim_click(self, bbox: list[int]) -> None:
@@ -1361,16 +1461,29 @@ class ComputerUsePlugin:
         await self._can_actuate.wait()
         fn = self._session_dispatch_fn
         if fn is not None:
-            await fn("click", {"bbox": bbox})
-            return
+            try:
+                await fn("click", {"bbox": bbox})
+                return
+            except Exception as exc:
+                # S16 #610: notify on worker failure, then fall back to local
+                # pyautogui (take_turns tier -- user-session foreground click).
+                await self._notify_dedicated_path_failure(
+                    "isolated_session", str(exc), "take_turns",
+                )
         self._backend.click(bbox)  # type: ignore[union-attr]
 
     async def _prim_type(self, text: str) -> None:
         await self._can_actuate.wait()  # S15 #609: take-over gate
         fn = self._session_dispatch_fn
         if fn is not None:
-            await fn("type", {"text": text})
-            return
+            try:
+                await fn("type", {"text": text})
+                return
+            except Exception as exc:
+                # S16 #610: notify on worker failure, fall back to local typing.
+                await self._notify_dedicated_path_failure(
+                    "isolated_session", str(exc), "take_turns",
+                )
         self._backend.type_text(text)  # type: ignore[union-attr]
 
     async def _prim_capture(self, window_title: str) -> bytes | None:
@@ -1381,13 +1494,22 @@ class ComputerUsePlugin:
         fn = self._session_dispatch_fn
         frame: bytes | None
         if fn is not None:
-            r = await fn("capture", {"window_title": window_title})
-            b64 = r.get("frame_b64")
-            if b64 is None:
-                frame = None
-            else:
-                import base64 as _b64
-                frame = _b64.b64decode(b64)
+            try:
+                r = await fn("capture", {"window_title": window_title})
+                b64 = r.get("frame_b64")
+                if b64 is None:
+                    frame = None
+                else:
+                    import base64 as _b64
+                    frame = _b64.b64decode(b64)
+            except Exception as exc:
+                # S16 #610: notify on worker capture failure; fall back to
+                # local backend capture (which returns None when unsupported).
+                await self._notify_dedicated_path_failure(
+                    "isolated_session", str(exc), "take_turns",
+                )
+                capture_fn = getattr(self._backend, "capture_frame", None)
+                return capture_fn(window_title) if capture_fn is not None else None
         else:
             capture_fn = getattr(self._backend, "capture_frame", None)
             frame = capture_fn(window_title) if capture_fn is not None else None
@@ -1495,15 +1617,18 @@ class ComputerUsePlugin:
                          "actual": f"bbox={bbox!r}", "ok": False}
                     )
                     continue
-                wb = self._window_bounds(window_title)
-                if wb is not None and not _bbox_within(bbox, wb):
-                    trace["tries"].append(
-                        {"n": n, "observed": True, "acted": False,
-                         "expected": f"bbox {bbox} inside window {wb}",
-                         "actual": "outside window bounds -- refused",
-                         "ok": False}
-                    )
-                    continue
+                # S16 #610: session 2 allows full-desktop actions (no window
+                # bound restriction -- the whole session belongs to Felix).
+                if not self._in_isolated_session():
+                    wb = self._window_bounds(window_title)
+                    if wb is not None and not _bbox_within(bbox, wb):
+                        trace["tries"].append(
+                            {"n": n, "observed": True, "acted": False,
+                             "expected": f"bbox {bbox} inside window {wb}",
+                             "actual": "outside window bounds -- refused",
+                             "ok": False}
+                        )
+                        continue
                 # #592: try the background UIA control pattern first -- no
                 # cursor movement. Falls back to the existing foreground
                 # pyautogui click, on the SAME re-resolved element's bbox,
@@ -1547,10 +1672,11 @@ class ComputerUsePlugin:
                         return self._finish(trace)
                 # ADR-0016 amendment (d): "what I'm doing takes priority" --
                 # gate the foreground fallback on user idle before grabbing
-                # the mouse. A present user gets this try recorded as
-                # waiting; the loop's own retries are the wait, and normal
-                # exhaustion below already escalates to attended-handoff.
-                if not self._foreground_gate(window_title, name, n, trace):
+                # the mouse. S16: dropped inside session 2 (no user cursor
+                # to yield to in Felix's dedicated session).
+                if not self._in_isolated_session() and not self._foreground_gate(
+                    window_title, name, n, trace
+                ):
                     continue
                 # #594: no usable pattern -- this try is actually going to
                 # steal the cursor, so flip the indicator to foreground now.
@@ -1668,15 +1794,17 @@ class ComputerUsePlugin:
                          "actual": f"bbox={bbox!r}", "ok": False}
                     )
                     continue
-                wb = self._window_bounds(window_title)
-                if wb is not None and not _bbox_within(bbox, wb):
-                    trace["tries"].append(
-                        {"n": n, "observed": True, "acted": False,
-                         "expected": f"bbox {bbox} inside window {wb}",
-                         "actual": "outside window bounds -- refused",
-                         "ok": False}
-                    )
-                    continue
+                # S16 #610: session 2 allows full-desktop type actions.
+                if not self._in_isolated_session():
+                    wb = self._window_bounds(window_title)
+                    if wb is not None and not _bbox_within(bbox, wb):
+                        trace["tries"].append(
+                            {"n": n, "observed": True, "acted": False,
+                             "expected": f"bbox {bbox} inside window {wb}",
+                             "actual": "outside window bounds -- refused",
+                             "ok": False}
+                        )
+                        continue
                 # #592: SetValue fills, never submits -- only on an
                 # allowlisted role outside any browser/Electron surface
                 # (checked inside _try_pattern_set_value). Falls back to the
@@ -1725,9 +1853,11 @@ class ComputerUsePlugin:
                         path = "uia_pattern"
                 if not filled:
                     # ADR-0016 amendment (d): idle-gate the foreground
-                    # click+type fallback -- same "waiting" try + normal
-                    # retry-exhaustion escalation as click_element.
-                    if not self._foreground_gate(window_title, name, n, trace):
+                    # click+type fallback. S16: dropped inside session 2 (no
+                    # user cursor in Felix's dedicated session).
+                    if not self._in_isolated_session() and not self._foreground_gate(
+                        window_title, name, n, trace
+                    ):
                         continue
                     # #594: no usable pattern -- flip the indicator to
                     # foreground before the pyautogui click+type actually
