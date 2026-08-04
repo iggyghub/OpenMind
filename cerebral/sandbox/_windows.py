@@ -151,6 +151,56 @@ class _SECURITY_ATTRIBUTES_SA(ctypes.Structure):
 # ---------------------------------------------------------------------------
 # Job Object helpers
 # ---------------------------------------------------------------------------
+def create_kill_on_close_job():
+    """Create a Job Object with KILL_ON_JOB_CLOSE only. Returns the job handle,
+    or None on non-Windows or when pywin32 is unavailable.
+
+    Caller must keep the handle open for as long as the worker should live.
+    When Cerebral exits (handle closes), the OS kills all job member processes.
+    Reuses the same CreateJobObject/SetInformationJobObject pattern as _apply_limits.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import win32job
+        job = win32job.CreateJobObject(None, "")
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        ok = ctypes.windll.kernel32.SetInformationJobObject(
+            int(job), JobObjectExtendedLimitInformation,
+            ctypes.byref(info), ctypes.sizeof(info),
+        )
+        if not ok:
+            import win32api
+            win32api.CloseHandle(job)
+            return None
+        return job
+    except Exception:
+        return None
+
+
+def assign_process_to_job(job_handle, proc_handle: int) -> bool:
+    """Assign a process (by raw Win32 handle int) to a Job Object.
+
+    Returns True on success, False on failure. Non-Windows returns False.
+    Reuses the AssignProcessToJobObject pattern from WindowsSandbox._run().
+    """
+    if sys.platform != "win32" or job_handle is None:
+        return False
+    try:
+        import win32job
+        import win32api, win32con
+        h = win32api.OpenProcess(win32con.PROCESS_ALL_ACCESS, False,
+                                  ctypes.windll.kernel32.GetProcessId(proc_handle))
+        try:
+            win32job.AssignProcessToJobObject(job_handle, h)
+        finally:
+            win32api.CloseHandle(h)
+        return True
+    except Exception:
+        return False
+
+
 def _apply_limits(job_handle, max_procs: int, max_commit_bytes: int) -> None:
     info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
     flags = (

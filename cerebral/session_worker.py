@@ -15,11 +15,13 @@ Cerebral -> Worker:
   {"type": "click",     "id": "<id>", "bbox": [l, t, r, b]}
   {"type": "type",      "id": "<id>", "text": "<text>"}
   {"type": "press_key", "id": "<id>", "key": "<key>"}
+  {"type": "heartbeat"}                              -- S12 dead-man ping
 
 Worker -> Cerebral:
   {"type": "worker_hello", "version": "1"}          -- sent on connect
   {"type": "result", "id": "<id>", "ok": true,  "data": {...}}
   {"type": "result", "id": "<id>", "ok": false, "error": "<msg>"}
+  {"type": "heartbeat_ack"}                         -- S12 reply to each ping
 
 "data" shapes:
   read_ui:   {"elements": [{"name": str, "role": str, "bbox": [l,t,r,b]}, ...]}
@@ -27,6 +29,11 @@ Worker -> Cerebral:
   click:     {}
   type:      {}
   press_key: {}
+
+S12 dead-man: Cerebral sends a heartbeat every HEARTBEAT_INTERVAL_S seconds.
+The worker's _watchdog() task fires if no heartbeat arrives within
+HEARTBEAT_INTERVAL_S * HEARTBEAT_MISSED_LIMIT seconds and halts the worker
+(covers a hung brain or wedged WS without any Cerebral involvement).
 
 The protocol has no Windows-specific types; a future phone/glasses
 actuator over OpenClaw implements the same contract with its own backend.
@@ -37,11 +44,16 @@ import asyncio
 import json
 import logging
 import sys
-from typing import Protocol, runtime_checkable
+from typing import Callable, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
 WORKER_PROTOCOL_VERSION = "1"
+
+# S12 #606: dead-man heartbeat defaults. Worker halts if no heartbeat arrives
+# within interval_s * missed_limit seconds. Configurable via __init__ params.
+HEARTBEAT_INTERVAL_S: float = 10.0
+HEARTBEAT_MISSED_LIMIT: int = 3
 
 
 @runtime_checkable
@@ -80,11 +92,30 @@ class SessionWorker:
     ``_make_default_actuator()`` which returns None on non-Windows.
     When backend is None every action returns ``ok=False, error="not-windows"``
     (fail-closed per SAFETY 2 / ADR-0016 SAFETY 4).
+
+    S12 #606 dead-man: Cerebral sends ``{"type": "heartbeat"}`` every
+    ``heartbeat_interval_s`` seconds. If the worker misses ``missed_limit``
+    consecutive heartbeats (i.e. no heartbeat arrives within
+    ``heartbeat_interval_s * missed_limit`` seconds), ``_exit_fn`` is called
+    to halt the process. ``_exit_fn`` defaults to ``lambda: sys.exit(0)``; tests
+    inject a sentinel-raising callable to catch the event without killing pytest.
     """
 
-    def __init__(self, ws, backend: ActuatorBackend | None) -> None:
+    def __init__(
+        self,
+        ws,
+        backend: ActuatorBackend | None,
+        *,
+        heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S,
+        missed_limit: int = HEARTBEAT_MISSED_LIMIT,
+        _exit_fn: Optional[Callable[[], None]] = None,
+    ) -> None:
         self._ws = ws
         self._backend = backend
+        self._heartbeat_interval_s = heartbeat_interval_s
+        self._missed_limit = missed_limit
+        self._exit_fn: Callable[[], None] = _exit_fn or (lambda: sys.exit(0))
+        self._last_heartbeat: float = 0.0
 
     async def _send_result(self, req_id: str, **kwargs) -> None:
         await self._ws.send(json.dumps({"type": "result", "id": req_id, **kwargs}))
@@ -138,23 +169,48 @@ class SessionWorker:
             logger.warning("[session_worker] %r failed: %s", action, exc, exc_info=True)
             await self._send_result(req_id, ok=False, error=str(exc))
 
+    async def _watchdog(self) -> None:
+        """S12 #606: halt if no heartbeat arrives within the deadline."""
+        deadline = self._heartbeat_interval_s * self._missed_limit
+        while True:
+            await asyncio.sleep(self._heartbeat_interval_s)
+            elapsed = asyncio.get_event_loop().time() - self._last_heartbeat
+            if elapsed >= deadline:
+                logger.warning(
+                    "[session_worker] no heartbeat for %.0fs (limit %d x %.0fs) -- halting",
+                    elapsed, self._missed_limit, self._heartbeat_interval_s,
+                )
+                self._exit_fn()
+                return  # unreachable in production; lets tests proceed past _exit_fn
+
     async def run(self) -> None:
         """Register with Cerebral then receive actions until the WS closes."""
         await self._ws.send(json.dumps({
             "type": "worker_hello",
             "version": WORKER_PROTOCOL_VERSION,
         }))
-        async for raw in self._ws:
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            # Ignore non-action messages (Cerebral broadcasts state to all clients).
-            if msg.get("type") not in {
-                "read_ui", "capture", "click", "type", "press_key",
-            }:
-                continue
-            await self._handle(msg)
+        # S12: start watchdog; reset _last_heartbeat so time-since-connect counts.
+        self._last_heartbeat = asyncio.get_event_loop().time()
+        watchdog = asyncio.create_task(self._watchdog())
+        try:
+            async for raw in self._ws:
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                # S12: heartbeat ping -- reset dead-man timer, send ack, no further dispatch.
+                if msg.get("type") == "heartbeat":
+                    self._last_heartbeat = asyncio.get_event_loop().time()
+                    await self._ws.send(json.dumps({"type": "heartbeat_ack"}))
+                    continue
+                # Ignore non-action messages (Cerebral broadcasts state to all clients).
+                if msg.get("type") not in {
+                    "read_ui", "capture", "click", "type", "press_key",
+                }:
+                    continue
+                await self._handle(msg)
+        finally:
+            watchdog.cancel()
 
 
 async def connect_and_run(url: str, backend: ActuatorBackend | None) -> None:

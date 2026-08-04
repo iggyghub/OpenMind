@@ -313,15 +313,75 @@ _computer_use_handoff_pending: dict[str, asyncio.Future] = {}
 _computer_use_handoff_next_id: int = 0
 
 # S11 #605: in-session worker IPC seams (ADR-0016 Phase 2).
-# _worker_ws    -- the single connected SessionWorker WS client (None = none).
-# _worker_pending -- in-flight request futures keyed by request id.
+# _worker_ws         -- the single connected SessionWorker WS client (None = none).
+# _worker_pending    -- in-flight request futures keyed by request id.
 # _isolated_session_mode -- when True, the computer_use plugin routes its 3
 #   core primitives (read_ui / click / type) through _dispatch_to_worker
 #   instead of the local _WindowsBackend.
+# S12 #606:
+# _worker_proc_handle -- raw Win32 process handle for the worker process (set by
+#   S10's provisioner seam via set_worker_process_handle()). Used for
+#   TerminateProcess when Visualiser Stop / F11+F12 fires.
+# _worker_job_handle  -- Job Object handle (KILL_ON_JOB_CLOSE). Kept open so OS
+#   kills the worker if Cerebral exits unexpectedly.
+# _worker_heartbeat_task -- asyncio.Task sending periodic heartbeats to the worker.
 _worker_ws = None
 _worker_pending: dict[str, asyncio.Future] = {}
 _worker_req_counter: int = 0
 _isolated_session_mode: bool = False
+_worker_proc_handle: int | None = None
+_worker_job_handle = None  # win32job handle or None
+_worker_heartbeat_task: asyncio.Task | None = None
+
+# S12: heartbeat interval (seconds). Worker's missed_limit is 3, so the
+# worker halts after ~WORKER_HEARTBEAT_INTERVAL_S * 3 seconds without a ping.
+WORKER_HEARTBEAT_INTERVAL_S: float = 10.0
+
+
+def set_worker_process_handle(proc_handle: int | None, job_handle=None) -> None:
+    """S12 #606: register (or clear) the worker process + job handles.
+
+    Called by S10's session provisioner when the worker process is launched
+    inside a Job Object. proc_handle is a raw Win32 HANDLE int usable with
+    TerminateProcess; job_handle is the KILL_ON_JOB_CLOSE Job Object handle
+    (kept alive here so the OS kills the worker if Cerebral exits).
+    Pass (None, None) to clear after the worker process exits."""
+    global _worker_proc_handle, _worker_job_handle
+    _worker_proc_handle = proc_handle
+    _worker_job_handle = job_handle
+    _update_terminate_worker_seam()
+
+
+def _terminate_worker_process() -> None:
+    """S12 #606: forcibly kill the in-session worker process.
+
+    Called from the computer_use_stop IPC handler (Visualiser Stop) and
+    from abort_current() (F11+F12 leg, via the terminate_worker seam).
+    Safe to call when no worker is running -- no-op in that case."""
+    if _worker_proc_handle is None:
+        return
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes as _ct
+        _ct.windll.kernel32.TerminateProcess(_worker_proc_handle, 1)
+        logger.info("[cerebral] in-session worker process terminated (kill switch)")
+    except Exception:
+        logger.warning("[cerebral] TerminateProcess failed", exc_info=True)
+
+
+async def _worker_heartbeat_loop() -> None:
+    """S12 #606: send a heartbeat message to the worker every N seconds.
+
+    Runs as a background task while the worker is connected. If Cerebral
+    hangs this task also stops, triggering the worker's dead-man timer."""
+    while True:
+        await asyncio.sleep(WORKER_HEARTBEAT_INTERVAL_S)
+        if _worker_ws is not None:
+            try:
+                await _worker_ws.send(json.dumps({"type": "heartbeat"}))
+            except Exception:
+                break  # WS gone; _unwire_session_worker() will clean up
 
 
 def _next_worker_req_id() -> str:
@@ -351,23 +411,35 @@ async def _dispatch_to_worker(action: str, params: dict) -> dict:
 
 def _wire_session_worker(ws) -> None:
     """Called when a worker client sends worker_hello. Stores the WS and,
-    if isolated_session_mode is on, wires the plugin's dispatch seam."""
-    global _worker_ws
+    if isolated_session_mode is on, wires the plugin's dispatch seam.
+    S12: also starts the heartbeat sender task."""
+    global _worker_ws, _worker_heartbeat_task
     _worker_ws = ws
     if _isolated_session_mode:
         _update_session_dispatch_seam()
+    # S12: start heartbeat sender so the worker's dead-man timer is fed.
+    if _worker_heartbeat_task is None or _worker_heartbeat_task.done():
+        _worker_heartbeat_task = asyncio.get_event_loop().create_task(
+            _worker_heartbeat_loop()
+        )
+    _update_terminate_worker_seam()
 
 
 def _unwire_session_worker() -> None:
-    """Called when the worker WS disconnects. Clears the seam and cancels
-    any in-flight requests."""
-    global _worker_ws
+    """Called when the worker WS disconnects. Clears the seam, cancels
+    in-flight requests, and stops the heartbeat task."""
+    global _worker_ws, _worker_heartbeat_task
     _worker_ws = None
     _update_session_dispatch_seam()  # fn becomes None -> local backend
     for fut in list(_worker_pending.values()):
         if not fut.done():
             fut.cancel()
     _worker_pending.clear()
+    # S12: stop heartbeat sender.
+    if _worker_heartbeat_task is not None and not _worker_heartbeat_task.done():
+        _worker_heartbeat_task.cancel()
+    _worker_heartbeat_task = None
+    _update_terminate_worker_seam()
 
 
 def _update_session_dispatch_seam() -> None:
@@ -379,6 +451,21 @@ def _update_session_dispatch_seam() -> None:
     try:
         cu = _orc.get_plugin_module("computer_use")
         setter = getattr(cu, "set_session_dispatch_fn", None)
+        if setter is not None:
+            setter(fn)
+    except (KeyError, Exception):
+        pass
+
+
+def _update_terminate_worker_seam() -> None:
+    """S12 #606: wire or clear computer_use's terminate_worker_fn.
+
+    Wired when a worker WS is connected (so the kill switch can reach it);
+    cleared when the worker disconnects or the process handle is released."""
+    fn = _terminate_worker_process if _worker_ws is not None else None
+    try:
+        cu = _orc.get_plugin_module("computer_use")
+        setter = getattr(cu, "set_terminate_worker_fn", None)
         if setter is not None:
             setter(fn)
     except (KeyError, Exception):
@@ -4302,9 +4389,12 @@ async def _handle_message(msg: dict) -> None:
         # short-circuits its observe-act loop at the next yield point. S6
         # #579: if a handoff is pending, treat Stop as "decline handoff" so
         # the plugin isn't left awaiting a done reply the user won't send.
+        # S12 #606: also terminates the in-session worker process if one is
+        # connected (out-of-session kill switch crosses the session boundary).
         for _fut in list(_computer_use_handoff_pending.values()):
             if not _fut.done():
                 _fut.set_result(False)
+        _terminate_worker_process()  # S12: no-op when no worker is connected
         try:
             module = _orc.get_plugin_module("computer_use")
         except KeyError:
@@ -4316,6 +4406,9 @@ async def _handle_message(msg: dict) -> None:
             return
         stopper()
         await _broadcast({"type": "computer_use:driving", "data": {"driving": False}})
+
+    elif t == "heartbeat_ack":
+        pass  # S12 #606: worker acknowledged our heartbeat ping -- no further action needed.
 
     elif t == "result" and isinstance(msg.get("id"), str):
         # S11 #605: result message from the in-session SessionWorker.
