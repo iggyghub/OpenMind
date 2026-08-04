@@ -283,6 +283,40 @@ class CredentialStore:
             _KEYRING_SERVICE, _keyring_username(profile_id, provider, field)
         )
 
+    # ── machine-global secrets (not profile-scoped) ───────────────────────────
+
+    def set_global_secret(self, service: str, username: str, value: str) -> None:
+        """Store an install-wide secret under an explicit keyring (service,
+        username) — NOT namespaced per profile. For credentials that are one
+        per machine, not one per profile: the isolated-session Windows login
+        (#604), stored at service ``openmind-felix-session`` / user ``Felix``.
+        Same write-only contract as ``set_secret`` (value never logged)."""
+        kr = self._keyring()
+        if kr is None:
+            raise RuntimeError(
+                "keyring not installed — run: pip install keyring"
+            )
+        kr.set_password(service, username, value)
+        logger.debug("[credentials] global secret set service=%s user=%s",
+                     service, username)
+
+    def get_global_secret(self, service: str, username: str) -> str | None:
+        """Read an install-wide secret, or None when absent / keyring missing."""
+        kr = self._keyring()
+        if kr is None:
+            return None
+        return kr.get_password(service, username)
+
+    def delete_global_secret(self, service: str, username: str) -> None:
+        """Remove an install-wide secret; no-op if keyring missing or absent."""
+        kr = self._keyring()
+        if kr is None:
+            return
+        try:
+            kr.delete_password(service, username)
+        except Exception:
+            pass  # absent, or a backend without delete — nothing to remove
+
     # ── delete ────────────────────────────────────────────────────────────────
 
     def delete_credential(self, profile_id: int, provider: str) -> None:

@@ -264,6 +264,30 @@ def test_static_token_metadata_row_is_degenerate():
 
 # ── password field (2026-06-25 amendment, browser web-login) ──────────────────
 
+def test_global_secret_roundtrip_and_delete():
+    """Machine-global secret (isolated-session Windows login, #604) writes a
+    flat (service, username) keyring entry, reads back, and deletes."""
+    cs, kr = _cs()
+    assert cs.get_global_secret("openmind-felix-session", "Felix") is None
+    cs.set_global_secret("openmind-felix-session", "Felix", "pw123")
+    assert cs.get_global_secret("openmind-felix-session", "Felix") == "pw123"
+    # stored under the flat key both the script and #604 reader use
+    assert kr.get_password("openmind-felix-session", "Felix") == "pw123"
+    cs.delete_global_secret("openmind-felix-session", "Felix")
+    assert cs.get_global_secret("openmind-felix-session", "Felix") is None
+
+
+def test_set_global_secret_raises_when_keyring_missing(keyring_missing):
+    cs = CredentialStore(db_path=":memory:")  # no stub injected
+    with pytest.raises(RuntimeError):
+        cs.set_global_secret("openmind-felix-session", "Felix", "pw")
+
+
+def test_get_global_secret_none_when_keyring_missing(keyring_missing):
+    cs = CredentialStore(db_path=":memory:")  # no stub injected
+    assert cs.get_global_secret("openmind-felix-session", "Felix") is None
+
+
 def test_set_get_password_roundtrip():
     """password is the fifth secret field — stored in the keyring like the
     others, namespaced per profile. Used by the browser-automation harness

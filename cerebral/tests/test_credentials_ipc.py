@@ -186,6 +186,55 @@ async def test_status_payload_never_carries_secret(cred_rig):
     assert "SECRET" not in blob
 
 
+# ── felix_session_login (machine-global, #601/#604) ───────────────────────────
+
+def _felix(rig):
+    return rig.states()[-1]["data"]["felix_session_login"]
+
+
+async def test_felix_session_login_not_stored_by_default(cred_rig):
+    await cred_rig.handle({"type": "list_credentials"})
+    assert _felix(cred_rig) == {"stored": False, "username": "Felix"}
+
+
+async def test_set_felix_session_login_stores_and_broadcasts(cred_rig):
+    await cred_rig.handle(
+        {"type": "set_felix_session_login", "data": {"password": "s3cret pw"}}
+    )
+    assert cred_rig.store.get_global_secret("openmind-felix-session", "Felix") == "s3cret pw"
+    assert _felix(cred_rig)["stored"] is True
+
+
+async def test_set_felix_session_login_empty_is_no_op(cred_rig):
+    await cred_rig.handle({"type": "set_felix_session_login", "data": {"password": ""}})
+    assert cred_rig.store.get_global_secret("openmind-felix-session", "Felix") is None
+    assert cred_rig.states() == []  # returned before any broadcast
+
+
+async def test_felix_session_login_never_broadcasts_password(cred_rig):
+    await cred_rig.handle(
+        {"type": "set_felix_session_login", "data": {"password": "TOPSECRET"}}
+    )
+    assert "TOPSECRET" not in repr(cred_rig.states()[-1])
+
+
+async def test_clear_felix_session_login(cred_rig):
+    cred_rig.store.set_global_secret("openmind-felix-session", "Felix", "pw")
+    await cred_rig.handle({"type": "clear_felix_session_login"})
+    assert cred_rig.store.get_global_secret("openmind-felix-session", "Felix") is None
+    assert _felix(cred_rig)["stored"] is False
+
+
+async def test_felix_session_login_works_without_active_profile(cred_rig):
+    # Machine-global: not tied to a profile, so it stores + reports with none active.
+    cred_rig.no_profile()
+    await cred_rig.handle(
+        {"type": "set_felix_session_login", "data": {"password": "pw"}}
+    )
+    assert cred_rig.store.get_global_secret("openmind-felix-session", "Felix") == "pw"
+    assert _felix(cred_rig) == {"stored": True, "username": "Felix"}
+
+
 # ── set_credential_client ─────────────────────────────────────────────────────
 
 async def test_set_client_persists_id_metadata_and_secret_keyring(cred_rig):
