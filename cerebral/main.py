@@ -1943,6 +1943,31 @@ def _felix_session_login_state() -> dict:
         stored = False
     return {"stored": stored, "username": _FELIX_SESSION_USER}
 
+
+def _launch_felix_account_setup() -> bool:
+    """Spawn scripts/setup-felix-account.ps1 (self-elevating one-click provision
+    of the Felix user + RDP). Windows-only; returns True when launched.
+
+    Uses CREATE_NEW_CONSOLE, NOT DETACHED_PROCESS: PowerShell 5.1 started under
+    DETACHED_PROCESS with -File exits 0 WITHOUT running the script (the #519
+    'Restart Felix' gotcha). The one UAC prompt comes from the script's own
+    self-elevation."""
+    if sys.platform != "win32":
+        logger.info("[cerebral] Felix account setup is Windows-only; ignoring")
+        return False
+    script = Path(__file__).parent.parent / "scripts" / "setup-felix-account.ps1"
+    if not script.exists():
+        logger.warning("[cerebral] setup-felix-account.ps1 not found at %s", script)
+        return False
+    import subprocess
+    CREATE_NEW_CONSOLE = 0x00000010
+    subprocess.Popen(
+        ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        creationflags=CREATE_NEW_CONSOLE,
+    )
+    logger.info("[cerebral] launched Felix account setup (self-elevating)")
+    return True
+
 # In-flight guard for the attended "Log in now" seed (seed_browser_login). The
 # manual-login window blocks for up to manual_login_timeout while a human
 # completes login + 2FA; a second click must NOT open a second window. Keyed by
@@ -4267,6 +4292,12 @@ async def _handle_message(msg: dict) -> None:
         )
         logger.info("[cerebral] Felix session login cleared")
         await _broadcast(_credentials_state_event())
+
+    elif t == "run_felix_account_setup":
+        # ADR-0016 #604 — "Set up Felix's session" button. Launches the
+        # self-elevating provisioning script; the human approves one UAC prompt.
+        # Fire-and-forget (the script owns its own console + progress).
+        _launch_felix_account_setup()
 
     elif t == "set_browser_login":
         # ADR-0005 amendment 2026-06-25 — user entered a browser web-login

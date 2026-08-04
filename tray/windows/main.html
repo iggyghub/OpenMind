@@ -5358,12 +5358,17 @@
                 <button class="cred-btn cred-btn-secondary" id="cred-felix-session-save">Save</button>
                 <button class="cred-btn cred-btn-danger" id="cred-felix-session-clear">Clear</button>
               </div>
+              <div class="cred-actions">
+                <button class="cred-btn cred-btn-primary" id="cred-felix-session-setup">Set up Felix&rsquo;s session</button>
+                <span class="cred-hint" id="cred-felix-session-setup-hint" style="margin:0;"></span>
+              </div>
               <div class="cred-hint">
                 The dedicated <strong>standard Windows user</strong> Felix runs the
-                isolated second session in (ADR-0016 #601). Create it first as a
-                non-admin local user. Stored in Windows Credential Manager, never
-                shown again. Nothing uses it until the isolated-session
-                provisioning (#604) ships.
+                isolated second session in (ADR-0016 #601). Save a password here,
+                then <strong>Set up Felix&rsquo;s session</strong> creates the account
+                (if needed), adds Remote Desktop access, and enables it &mdash; one
+                Windows (UAC) approval. The password is stored in Windows Credential
+                Manager and never shown again.
               </div>
             </div>
           </div>
@@ -5921,6 +5926,8 @@
     const credFelixSessionPasswordEl   = document.getElementById('cred-felix-session-password');
     const credFelixSessionSaveEl       = document.getElementById('cred-felix-session-save');
     const credFelixSessionClearEl      = document.getElementById('cred-felix-session-clear');
+    const credFelixSessionSetupEl      = document.getElementById('cred-felix-session-setup');
+    const credFelixSessionSetupHintEl  = document.getElementById('cred-felix-session-setup-hint');
     const permCapRowsEl     = document.getElementById('perm-capability-rows');
     const permSessionRowsEl = document.getElementById('perm-session-rows');
     const permPluginRowsEl  = document.getElementById('perm-plugin-rows');
@@ -8684,6 +8691,15 @@
     if (credFelixSessionClearEl) {
       credFelixSessionClearEl.addEventListener('click', () => {
         sendEvent({ type: 'clear_felix_session_login' });
+      });
+    }
+    if (credFelixSessionSetupEl) {
+      credFelixSessionSetupEl.addEventListener('click', () => {
+        sendEvent({ type: 'run_felix_account_setup' });
+        if (credFelixSessionSetupHintEl) {
+          credFelixSessionSetupHintEl.textContent =
+            'Launching… approve the Windows (UAC) prompt in the window that opens.';
+        }
       });
     }
     renderCredentialsFelixSession((credentialsState || {}).felix_session_login);
