@@ -5,23 +5,19 @@ Autonomous loop for the ADR-0016 computer-use capability (see
 mouse/keyboard itself: hybrid modality (UIA structured-first, pixel-vision
 fallback), Windows-only v1, fail-closed elsewhere.
 
-## Status: ready
+## Status: done
 
-Running the **AFK software seams against fakes** (S11/#605 -> S12/#606 ->
-S15/#609 -> S16/#610), each in a fresh session on an efficient model (sonnet),
-per the v1 fakes-first pattern (SAFETY 2). The software seams are decoupled from
-the real vehicle: the protocol, worker, kill/dead-man logic, thumbnail stream,
-and mode ladder are all built + unit-tested with injected fakes (fake session
-token / process launcher / WS transport / keyring). The **vehicle** slices (#603
-spike, #604 provisioning, #607 IDD driver, #608 real logins) stay **Human-led /
-never auto-run** (SAFETY 1/6). The "blocked by <vehicle>" note on each software
-slice refers to REAL-session verification, which is DEFERRED to
-`docs/computer-use-live-verify.md` -- do NOT set `Status: blocked` for that
-reason; append the real-hardware check to live-verify and proceed with fakes.
+All AFK software seams (S11/#605, S12/#606, S15/#609, S16/#610) landed. The
+software seams are decoupled from the real vehicle: the protocol, worker,
+kill/dead-man logic, thumbnail stream, and mode ladder are all built +
+unit-tested with injected fakes (fake session token / process launcher / WS
+transport / keyring). The **vehicle** slices (#603 spike, #604 provisioning,
+#607 IDD driver, #608 real logins) stay **Human-led / never auto-run** (SAFETY
+1/6). Real-session verification deferred to `docs/computer-use-live-verify.md`.
 
 ## Next slice -- start here
 
-- **Active:** S16 -- #610 (three-tier mode ladder + never-silent failure/notify, built against fakes)
+- **Active:** none -- all AFK software seams landed; next slices are Human-led
 - **Model:** sonnet
 
 ### Landed PRs
@@ -29,6 +25,7 @@ reason; append the real-hardware check to live-verify and proceed with fakes.
 - S11 -- #605 -- in-session worker + device-agnostic action protocol -- PR #612
 - S12 -- #606 -- out-of-session kill switch + Job-Object/heartbeat dead-men -- PR #613
 - S15 -- #609 -- watch thumbnail stream + on-demand RDP take-over that pauses the worker -- PR #614
+- S16 -- #610 -- three-tier mode ladder + never-silent failure/notify -- PR #615
 
 ---
 
@@ -62,7 +59,7 @@ performed by the loop.
 - [x] S11 -- #605 -- in-session worker + device-agnostic action protocol over Cerebral's WS IPC (blocked by S10 real vehicle) -- PR #612
 - [x] S12 -- #606 -- out-of-session kill switch + Job-Object/heartbeat dead-men (blocked by S11) -- PR #613
 - [x] S15 -- #609 -- watch thumbnail stream + on-demand RDP take-over that pauses the worker (blocked by S11, S12) -- PR #614
-- [ ] S16 -- #610 -- three-tier mode ladder + never-silent failure/notify (blocked by S12, S13, S14)
+- [x] S16 -- #610 -- three-tier mode ladder + never-silent failure/notify (blocked by S12, S13, S14) -- PR #615
 
 ### Model
 
