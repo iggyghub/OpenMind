@@ -218,6 +218,11 @@ SetValueRolesFn = Callable[[], list[str]]
 # irreversible floor, so it needs the same read-fresh getter, not a copy.
 UserIdleMsFn = Callable[[], int]
 FullAutonomyFn = Callable[[], bool]
+# S11 #605: async fn that routes a primitive action to the in-session worker.
+# Signature: (action: str, params: dict) -> Awaitable[dict]
+# When set, the 3 core primitives (read_ui / click / type) route to the worker
+# instead of the local _WindowsBackend; None = local backend (default).
+SessionDispatchFn = Callable[..., "Awaitable[dict]"]
 
 _driving_fn: Optional[DrivingFn] = None
 _hotkey_register_fn: Optional[HotkeyRegisterFn] = None
@@ -227,6 +232,7 @@ _background_actuation_fn: Optional[BackgroundActuationFn] = None
 _setvalue_roles_fn: Optional[SetValueRolesFn] = None
 _user_idle_ms_fn: Optional[UserIdleMsFn] = None
 _full_autonomy_fn: Optional[FullAutonomyFn] = None
+_session_dispatch_fn: Optional["SessionDispatchFn"] = None  # S11 #605
 _plugin_instance: Optional["ComputerUsePlugin"] = None
 
 # ADR-0016 amendment defaults -- used whenever no getter is wired (tests,
@@ -301,6 +307,17 @@ def set_full_autonomy_fn(fn: FullAutonomyFn) -> None:
     floor for computer_use."""
     global _full_autonomy_fn
     _full_autonomy_fn = fn
+
+
+def set_session_dispatch_fn(fn: "SessionDispatchFn | None") -> None:
+    """S11 #605: wire (or clear) the in-session worker dispatch seam.
+
+    When set and isolated_session_mode is on, the 3 core primitives
+    (read_ui / click / type) are routed to the in-session worker over
+    Cerebral's WS IPC instead of the local _WindowsBackend. Pass None to
+    restore local-backend routing (worker disconnected / mode off)."""
+    global _session_dispatch_fn
+    _session_dispatch_fn = fn
 
 
 def abort_current() -> None:
@@ -596,6 +613,7 @@ class ComputerUsePlugin:
         setvalue_roles_fn: SetValueRolesFn | None = None,
         user_idle_ms_fn: UserIdleMsFn | None = None,
         full_autonomy_fn: FullAutonomyFn | None = None,
+        session_dispatch_fn: "SessionDispatchFn | None" = None,
     ) -> None:
         if backend is _UNSET:
             self._backend = _make_default_backend()
@@ -634,6 +652,11 @@ class ComputerUsePlugin:
         )
         self._full_autonomy_fn: FullAutonomyFn | None = (
             full_autonomy_fn or _full_autonomy_fn
+        )
+        # S11 #605: isolated-session dispatch seam. Constructor arg wins over
+        # the module-level global wired by main.py when a worker connects.
+        self._session_dispatch_fn: SessionDispatchFn | None = (
+            session_dispatch_fn or _session_dispatch_fn
         )
         self._thumbnail_ring: deque[bytes] = deque(maxlen=max(1, int(thumbnail_ring_size)))
         # asyncio.Event carries the abort signal across the (a) corner-failsafe,
@@ -823,7 +846,7 @@ class ComputerUsePlugin:
                 is_error=True,
             )
         if tool_name == "read_ui":
-            return self._read_ui(args)
+            return await self._read_ui(args)
         if tool_name == "click_element":
             return await self._click_element(args)
         if tool_name == "type_into":
@@ -1238,7 +1261,33 @@ class ComputerUsePlugin:
                 pass
         return ToolResult(content=json.dumps(trace), is_error=not trace.get("ok", False))
 
-    def _read_ui(self, args: dict) -> ToolResult:
+    # S11 #605: async primitive helpers. When _session_dispatch_fn is set they
+    # route to the in-session worker over WS; otherwise call the local backend
+    # synchronously (same behavior as before). The 3 core tool methods become
+    # async to accommodate the await in both paths.
+
+    async def _prim_read_ui(self, window_title: str) -> list[dict]:
+        fn = self._session_dispatch_fn
+        if fn is not None:
+            r = await fn("read_ui", {"window_title": window_title})
+            return r.get("elements", [])
+        return self._backend.read_ui(window_title)  # type: ignore[union-attr]
+
+    async def _prim_click(self, bbox: list[int]) -> None:
+        fn = self._session_dispatch_fn
+        if fn is not None:
+            await fn("click", {"bbox": bbox})
+            return
+        self._backend.click(bbox)  # type: ignore[union-attr]
+
+    async def _prim_type(self, text: str) -> None:
+        fn = self._session_dispatch_fn
+        if fn is not None:
+            await fn("type", {"text": text})
+            return
+        self._backend.type_text(text)  # type: ignore[union-attr]
+
+    async def _read_ui(self, args: dict) -> ToolResult:
         window_title = args["window_title"]
         trace = {
             "tool": "read_ui",
@@ -1249,7 +1298,7 @@ class ComputerUsePlugin:
             "ok": False,
         }
         try:
-            elements = self._backend.read_ui(window_title)  # type: ignore[union-attr]
+            elements = await self._prim_read_ui(window_title)
         except Exception as exc:
             trace["tries"].append(
                 {"n": 1, "observed": False, "acted": False,
@@ -1296,7 +1345,7 @@ class ComputerUsePlugin:
                     )
                     return self._finish(trace)
                 try:
-                    elements = self._backend.read_ui(window_title)  # type: ignore[union-attr]
+                    elements = await self._prim_read_ui(window_title)
                 except Exception as exc:
                     trace["tries"].append(
                         {"n": n, "observed": False, "acted": False,
@@ -1394,7 +1443,7 @@ class ComputerUsePlugin:
                 x, y = _bbox_center(click_bbox)
                 fg_before = self._foreground_window_safe()
                 try:
-                    self._backend.click(click_bbox)  # type: ignore[union-attr]
+                    await self._prim_click(click_bbox)
                 except CornerAbort:
                     self._abort_event.set()
                     trace["tries"].append(
@@ -1472,7 +1521,7 @@ class ComputerUsePlugin:
                     )
                     return self._finish(trace)
                 try:
-                    elements = self._backend.read_ui(window_title)  # type: ignore[union-attr]
+                    elements = await self._prim_read_ui(window_title)
                 except Exception as exc:
                     trace["tries"].append(
                         {"n": n, "observed": False, "acted": False,
@@ -1571,8 +1620,8 @@ class ComputerUsePlugin:
                     )
                     fg_before = self._foreground_window_safe()
                     try:
-                        self._backend.click(type_bbox)  # type: ignore[union-attr]
-                        self._backend.type_text(text)  # type: ignore[union-attr]
+                        await self._prim_click(type_bbox)
+                        await self._prim_type(text)
                     except CornerAbort:
                         self._abort_event.set()
                         trace["tries"].append(
@@ -1596,7 +1645,7 @@ class ComputerUsePlugin:
                 # text (falls back to "acted" when the backend doesn't expose
                 # values).
                 try:
-                    after = self._backend.read_ui(window_title)  # type: ignore[union-attr]
+                    after = await self._prim_read_ui(window_title)
                 except Exception as exc:
                     trace["tries"].append(
                         {"n": n, "observed": True, "acted": True,
