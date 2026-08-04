@@ -253,6 +253,25 @@ def test_launch_felix_setup_noop_off_windows(monkeypatch):
     assert main_mod._launch_felix_account_setup() is False
 
 
+async def test_check_felix_provisioning_broadcasts(cred_rig, monkeypatch):
+    """The card's checkmark poll gets real system state back."""
+    fake = {"account": True, "rdp_group": True, "rdp_enabled": True,
+            "provisioned": True, "supported": True}
+    monkeypatch.setattr(cred_rig.module, "_felix_provisioning_state", lambda: fake)
+    await cred_rig.handle({"type": "check_felix_provisioning"})
+    evs = [e for e in cred_rig.sent if e["type"] == "felix_provisioning"]
+    assert evs and evs[-1]["data"] == fake
+
+
+def test_felix_provisioning_state_off_windows(monkeypatch):
+    """Off Windows: unsupported, never reported as provisioned."""
+    import cerebral.main as main_mod
+    monkeypatch.setattr(main_mod.sys, "platform", "linux")
+    s = main_mod._felix_provisioning_state()
+    assert s["supported"] is False
+    assert s["provisioned"] is False
+
+
 # ── set_credential_client ─────────────────────────────────────────────────────
 
 async def test_set_client_persists_id_metadata_and_secret_keyring(cred_rig):

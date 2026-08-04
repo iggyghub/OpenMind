@@ -5362,6 +5362,10 @@
                 <button class="cred-btn cred-btn-primary" id="cred-felix-session-setup">Set up Felix&rsquo;s session</button>
                 <span class="cred-hint" id="cred-felix-session-setup-hint" style="margin:0;"></span>
               </div>
+              <div class="cred-status" id="cred-felix-provision-status">
+                <span class="cred-status-dot"></span>
+                <span class="cred-status-text" id="cred-felix-provision-text">Checking&#8230;</span>
+              </div>
               <div class="cred-hint">
                 The dedicated <strong>standard Windows user</strong> Felix runs the
                 isolated second session in (ADR-0016 #601). Save a password here,
@@ -5928,6 +5932,8 @@
     const credFelixSessionClearEl      = document.getElementById('cred-felix-session-clear');
     const credFelixSessionSetupEl      = document.getElementById('cred-felix-session-setup');
     const credFelixSessionSetupHintEl  = document.getElementById('cred-felix-session-setup-hint');
+    const credFelixProvisionStatusEl   = document.getElementById('cred-felix-provision-status');
+    const credFelixProvisionTextEl     = document.getElementById('cred-felix-provision-text');
     const permCapRowsEl     = document.getElementById('perm-capability-rows');
     const permSessionRowsEl = document.getElementById('perm-session-rows');
     const permPluginRowsEl  = document.getElementById('perm-plugin-rows');
@@ -6370,6 +6376,9 @@
           credentialsState = event.data || null;
           renderCredentials();
           renderServiceDirectory();
+          break;
+        case 'felix_provisioning':
+          renderFelixProvisioning(event.data || {});
           break;
         case 'browser_login_seed': {
           // Transient pulse from the attended "Log in now" seed. "seeding"
@@ -8436,6 +8445,37 @@
       if (credFelixSessionClearEl) credFelixSessionClearEl.disabled = !stored;
     }
 
+    let felixProvisionPoll = null;
+
+    function requestFelixProvisioning() {
+      sendEvent({ type: 'check_felix_provisioning' });
+    }
+
+    function renderFelixProvisioning(state) {
+      if (!credFelixProvisionStatusEl) return;
+      const s = state || {};
+      if (s.supported === false) {
+        credFelixProvisionStatusEl.className = 'cred-status';
+        credFelixProvisionTextEl.textContent = 'Second session is Windows-only.';
+        return;
+      }
+      if (s.provisioned) {
+        credFelixProvisionStatusEl.className = 'cred-status is-connected';
+        credFelixProvisionTextEl.textContent = '✓ Session ready (account, Remote Desktop access, RDP enabled)';
+        if (credFelixSessionSetupHintEl) credFelixSessionSetupHintEl.textContent = '';
+        if (felixProvisionPoll) { clearInterval(felixProvisionPoll); felixProvisionPoll = null; }
+        return;
+      }
+      const missing = [];
+      if (!s.account)      missing.push('create the Felix account');
+      if (!s.rdp_group)    missing.push('add Remote Desktop access');
+      if (!s.rdp_enabled)  missing.push('enable Remote Desktop');
+      credFelixProvisionStatusEl.className = 'cred-status is-client-set';
+      credFelixProvisionTextEl.textContent = missing.length
+        ? 'Not set up yet — needs to: ' + missing.join(', ') + '.'
+        : 'Not set up yet.';
+    }
+
     function renderCredentialsDiscord(discord) {
       if (!credDiscordStatusEl) return;
       const d = discord || { status: 'not configured', source: 'none' };
@@ -8700,9 +8740,19 @@
           credFelixSessionSetupHintEl.textContent =
             'Launching… approve the Windows (UAC) prompt in the window that opens.';
         }
+        // The elevated script runs async; poll real system state until the
+        // ✓ appears (or ~2 min elapses). renderFelixProvisioning clears the
+        // interval once provisioned.
+        if (felixProvisionPoll) clearInterval(felixProvisionPoll);
+        let ticks = 0;
+        felixProvisionPoll = setInterval(() => {
+          if (++ticks > 30) { clearInterval(felixProvisionPoll); felixProvisionPoll = null; return; }
+          requestFelixProvisioning();
+        }, 4000);
       });
     }
     renderCredentialsFelixSession((credentialsState || {}).felix_session_login);
+    requestFelixProvisioning();
 
     // ── S17 (#300): service directory ────────────────────────────────────
     // Renders the CONTEXT.md integration registry grouped by category.
