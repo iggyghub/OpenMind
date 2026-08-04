@@ -5,19 +5,24 @@ Autonomous loop for the ADR-0016 computer-use capability (see
 mouse/keyboard itself: hybrid modality (UIA structured-first, pixel-vision
 fallback), Windows-only v1, fail-closed elsewhere.
 
-## Status: blocked
+## Status: ready
 
-Reason: Phase 2 (isolated interactive session, #601) starts on the **vehicle**
-slices -- creating a real Windows user, loopback-RDP provisioning, and a signed
-display-driver install. Those are real-account / system-setting / driver-install
-actions the autonomous loop must NEVER perform (see SAFETY 6). The vehicle is
-**human-led**; the loop resumes automatically on the software seams once the
-vehicle + driver land and a human flips `Status: ready`. See "Phase 2" below.
+Running the **AFK software seams against fakes** (S11/#605 -> S12/#606 ->
+S15/#609 -> S16/#610), each in a fresh session on an efficient model (sonnet),
+per the v1 fakes-first pattern (SAFETY 2). The software seams are decoupled from
+the real vehicle: the protocol, worker, kill/dead-man logic, thumbnail stream,
+and mode ladder are all built + unit-tested with injected fakes (fake session
+token / process launcher / WS transport / keyring). The **vehicle** slices (#603
+spike, #604 provisioning, #607 IDD driver, #608 real logins) stay **Human-led /
+never auto-run** (SAFETY 1/6). The "blocked by <vehicle>" note on each software
+slice refers to REAL-session verification, which is DEFERRED to
+`docs/computer-use-live-verify.md` -- do NOT set `Status: blocked` for that
+reason; append the real-hardware check to live-verify and proceed with fakes.
 
 ## Next slice -- start here
 
-- **Active:** S9 -- #603 (Human-led SPIKE -- do by hand, NOT the loop)
-- **Model:** opus
+- **Active:** S11 -- #605 (in-session worker + action protocol, built against fakes)
+- **Model:** sonnet
 
 ---
 
@@ -55,7 +60,7 @@ performed by the loop.
 
 ### Model
 
-- **Model:** opus (for the AFK software seams when they resume)
+- **Model:** sonnet (efficient model for the AFK software seams)
 
 ---
 
