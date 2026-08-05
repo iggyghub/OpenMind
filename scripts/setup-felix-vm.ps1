@@ -19,7 +19,8 @@ param(
     [string]$Name = "FelixVM",
     [int]$MemoryGB = 4,
     [int]$DiskGB = 60,
-    [string]$IsoPath = ""
+    [string]$IsoPath = "",
+    [string]$VmPath = ""   # where the VM + disk live; defaults to D:\FelixVM if D: exists
 )
 
 # ---- self-elevate (one UAC) -------------------------------------------------
@@ -29,7 +30,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
     Write-Host "Requesting administrator approval (one UAC prompt)..." -ForegroundColor Cyan
     Start-Process powershell -Verb RunAs -ArgumentList @(
         "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"",
-        "-Name", $Name, "-MemoryGB", $MemoryGB, "-DiskGB", $DiskGB, "-IsoPath", "`"$IsoPath`""
+        "-Name", $Name, "-MemoryGB", $MemoryGB, "-DiskGB", $DiskGB,
+        "-IsoPath", "`"$IsoPath`"", "-VmPath", "`"$VmPath`""
     )
     exit
 }
@@ -67,13 +69,16 @@ try {
     if (Get-VM -Name $Name -ErrorAction SilentlyContinue) {
         Write-Host "[ok] VM '$Name' already exists -- starting it" -ForegroundColor Green
     } else {
-        $vmRoot = Join-Path $env:PUBLIC "FelixVM"
-        New-Item -ItemType Directory -Force -Path $vmRoot | Out-Null
-        $vhd = Join-Path $vmRoot "$Name.vhdx"
+        if ([string]::IsNullOrWhiteSpace($VmPath)) {
+            $VmPath = if (Test-Path "D:\") { "D:\FelixVM" } else { Join-Path $env:PUBLIC "FelixVM" }
+        }
+        New-Item -ItemType Directory -Force -Path $VmPath | Out-Null
+        $vhd = Join-Path $VmPath "$Name.vhdx"
+        Write-Host "VM location: $VmPath" -ForegroundColor Cyan
 
         Write-Host "Creating VM '$Name' ($MemoryGB GB RAM, $DiskGB GB disk)..." -ForegroundColor Cyan
         New-VM -Name $Name -Generation 2 -MemoryStartupBytes ($MemoryGB * 1GB) `
-            -NewVHDPath $vhd -NewVHDSizeBytes ($DiskGB * 1GB) `
+            -Path $VmPath -NewVHDPath $vhd -NewVHDSizeBytes ($DiskGB * 1GB) `
             -SwitchName "Default Switch" | Out-Null
         Set-VM -Name $Name -DynamicMemory -MemoryMinimumBytes 2GB -MemoryMaximumBytes ($MemoryGB * 1GB)
         Set-VMProcessor -VMName $Name -Count 2
