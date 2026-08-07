@@ -484,6 +484,7 @@ class MCPOrchestrator:
         tool_name: str,
         capabilities: frozenset[str],
         flags: CallFlags | None,
+        args: dict | None = None,
     ) -> Decision:
         """Resolve the worst Decision across a tool's declared capabilities
         without invoking the tool (Issue #52).
@@ -561,12 +562,12 @@ class MCPOrchestrator:
         assert worst_cap is not None  # unreachable: capabilities non-empty
         if flags is not None and flags.irreversible and worst is not Decision.DENY:
             if self._modal is not None:
-                worst = await self._modal.request(worst_cap, tool_name, {}, flags)
+                worst = await self._modal.request(worst_cap, tool_name, args or {}, flags)
             else:
                 worst = Decision.DENY
         elif worst is Decision.ASK:
             if self._consent is not None:
-                worst = await self._consent.request(worst_cap, tool_name, {}, flags)
+                worst = await self._consent.request(worst_cap, tool_name, args or {}, flags)
             else:
                 worst = Decision.DENY
 
