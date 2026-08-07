@@ -3426,7 +3426,7 @@ async def _dispatch_tray_call_tool(tool_name: str, tool_args: dict) -> ToolResul
     caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
     if caps:
         decision = await _orc.check_capabilities(
-            tool_name, caps, _gate_flags_for(tool_name, tool_args)
+            tool_name, caps, _gate_flags_for(tool_name, tool_args), tool_args
         )
     else:
         decision = Decision.SILENT
@@ -4975,6 +4975,7 @@ async def _handle_message(msg: dict) -> None:
             if caps:
                 decision = await _orc.check_capabilities(
                     item.tool_name, caps, CallFlags(passive=True),
+                    getattr(item, "tool_args", None),
                 )
             else:
                 # No declared capabilities (legacy register() path or
@@ -5664,7 +5665,7 @@ async def _process_command(
         caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
         if caps:
             return await _orc.check_capabilities(
-                tool_name, caps, _gate_flags_for(tool_name, tool_args)
+                tool_name, caps, _gate_flags_for(tool_name, tool_args), tool_args
             )
         return Decision.SILENT
 
@@ -5787,7 +5788,7 @@ async def _replay_recipe(synthetic_name: str, profile_id: int) -> ToolResult:
         caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
         decision = (
             await _orc.check_capabilities(
-                tool_name, caps, _gate_flags_for(tool_name, tool_args)
+                tool_name, caps, _gate_flags_for(tool_name, tool_args), tool_args
             )
             if caps else Decision.SILENT
         )

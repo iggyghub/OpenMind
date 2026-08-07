@@ -1008,7 +1008,8 @@ class _RecordingConsent:
         self.received: list[dict] = []
 
     async def request(self, capability, tool_name, args, flags=None):
-        self.received.append({"capability": capability, "tool_name": tool_name})
+        self.received.append({"capability": capability, "tool_name": tool_name,
+                              "args": args})
         return self.decisions.pop(0) if self.decisions else Decision.SILENT
 
     def set_acl(self, acl) -> None:
@@ -1172,6 +1173,22 @@ async def test_check_capabilities_consent_called_once_even_with_multiple_ask_cap
     assert decision is Decision.SILENT
     # Worst is ASK; consent prompts ONCE with the worst cap.
     assert len(consent.received) == 1
+
+
+async def test_check_capabilities_forwards_args_to_consent():
+    # Regression: the consent "Why?" panel renders these args. Passing {}
+    # here (the old behaviour) left multi-capability tools showing
+    # "(no arguments)" — see the self_dev shell_exec prompt.
+    consent = _RecordingConsent(Decision.SILENT)
+    orc = MCPOrchestrator(consent=consent)
+    orc.register(_make_plugin("files", ["delete_file"]))
+
+    await orc.check_capabilities(
+        "delete_file", frozenset({"fs_write"}), None,
+        {"path": "/tmp/report.txt"},
+    )
+
+    assert consent.received[0]["args"] == {"path": "/tmp/report.txt"}
 
 
 async def test_check_capabilities_irreversible_routes_to_modal():
