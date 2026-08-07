@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -33,10 +34,90 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16_000
 BLOCK_SIZE = 4_000          # 0.25 s per callback
+CHUNK_SECONDS = BLOCK_SIZE / SAMPLE_RATE   # 0.25 s
 WAKE_WORD = "felix"
-POST_WAKE_SECONDS = 5
+
+# ── Endpointing (VAD): how Felix knows you finished talking ──────────────────
+# Instead of a blind fixed window, capture stops after a stretch of trailing
+# silence. ponytail: an RMS energy gate — no extra dependency. SILENCE_RMS is
+# the CALIBRATION KNOB: raise it in a noisy room, lower it if Felix cuts you
+# off mid-sentence. Swap for webrtcvad/silero if energy proves too blunt.
+SILENCE_RMS = 500.0            # int16 RMS below this counts as silence
+SILENCE_HANGOVER_S = 1.2       # trailing silence that ends one utterance
+NO_SPEECH_TIMEOUT_S = 4.0      # give up if no speech at all after waking
+MAX_UTTERANCE_S = 15.0         # hard cap on a single utterance
+CONTINUOUS_CAP_S = 300.0       # safety cap for "keep listening" mode
+
+# Phrases that leave an extended-listen session (case-insensitive).
+STOP_PHRASES = ("felix stop", "stop listening", "stop")
 
 VOSK_MODEL_PATH = Path(__file__).parent.parent / "models" / "vosk-model-small-en-us-0.15"
+
+
+def _rms(chunk: np.ndarray) -> float:
+    """Root-mean-square amplitude of an int16 mono chunk (0 for empty)."""
+    if len(chunk) == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(chunk.astype(np.float64)))))
+
+
+def endpoint_reached(
+    rms_values: list[float],
+    chunk_dur: float = CHUNK_SECONDS,
+    *,
+    silence_rms: float = SILENCE_RMS,
+    hangover_s: float = SILENCE_HANGOVER_S,
+    no_speech_s: float = NO_SPEECH_TIMEOUT_S,
+    max_s: float = MAX_UTTERANCE_S,
+) -> "tuple[bool, int]":
+    """Decide when one utterance ends, from a series of per-chunk RMS values.
+
+    Pure + testable — the threading capture loop feeds this incrementally.
+    Returns (ended, n_chunks_to_keep). ``ended`` is False when the series so
+    far shows neither a silence-endpoint nor a timeout; the caller keeps
+    collecting. Endpoints: (1) speech began, then >= hangover_s of silence;
+    (2) no speech at all for no_speech_s; (3) max_s hard cap.
+    """
+    speech_started = False
+    silent_run = 0.0
+    for i, r in enumerate(rms_values):
+        elapsed = (i + 1) * chunk_dur
+        if r >= silence_rms:
+            speech_started = True
+            silent_run = 0.0
+        elif speech_started:
+            silent_run += chunk_dur
+        if speech_started and silent_run >= hangover_s:
+            return True, i + 1
+        if not speech_started and elapsed >= no_speech_s:
+            return True, i + 1
+        if elapsed >= max_s:
+            return True, i + 1
+    return False, len(rms_values)
+
+
+def parse_listen_directive(text: str) -> "tuple[str, float]":
+    """Classify a wake command into a listen mode.
+
+    Returns ('single', 0) for a normal one-shot command, ('timed', seconds)
+    for "listen for N seconds/minutes", or ('continuous', 0) for
+    "keep listening" / "listen until ...".
+    """
+    t = text.lower().strip()
+    m = re.search(r"listen(?:ing)?\s+for\s+(\d+)\s*(second|minute)", t)
+    if m:
+        n = int(m.group(1))
+        return "timed", float(n * (60 if m.group(2).startswith("minute") else 1))
+    if any(p in t for p in ("keep listening", "listen until",
+                            "stay listening", "keep talking")):
+        return "continuous", 0.0
+    return "single", 0.0
+
+
+def is_stop_phrase(text: str) -> bool:
+    """True if a transcript ends an extended-listen session."""
+    t = text.lower().strip().strip(".!,")
+    return t in STOP_PHRASES or "felix stop" in t
 
 # Default signal words that trigger a passive 5W1H pass (beyond the wake word)
 DEFAULT_SIGNAL_WORDS: list[str] = [
@@ -208,6 +289,12 @@ class AudioPipeline:
             self._post_wake_chunks.append(chunk.copy())
             return
 
+        # In an active listen session but between utterances (transcribing a
+        # previous one): stay silent so the mic can't re-wake on "felix" or
+        # capture stray audio until the session ends.
+        if self._active:
+            return
+
         # Passive: feed Vosk for wake word / signal word detection
         if self._rec.AcceptWaveform(chunk.tobytes()):
             result = json.loads(self._rec.Result())
@@ -222,45 +309,91 @@ class AudioPipeline:
             return
         self._active = True
         logger.info("[audio] '%s' detected", WAKE_WORD)
-
-        pre_wake = self._buffer.snapshot()
-        post_chunks: list[np.ndarray] = []
-        self._post_wake_chunks = post_chunks
-
         threading.Thread(
-            target=self._collect_transcribe_emit,
-            args=(pre_wake, post_chunks),
+            target=self._run_wake_session,
             daemon=True,
-            name="felix-transcribe",
+            name="felix-wake",
         ).start()
 
-    def _collect_transcribe_emit(
-        self, pre_wake: np.ndarray, post_chunks: list[np.ndarray]
-    ) -> None:
+    def _capture_one_utterance(self) -> np.ndarray:
+        """Record from the mic until the caller stops talking (endpointing).
+
+        Registers a fresh post-wake chunk sink, polls the growing chunk list,
+        and stops on a silence-endpoint / no-speech / max-duration decision
+        (see ``endpoint_reached``). Returns the int16 audio up to the endpoint
+        (empty array if nothing was captured). No 60s look-back — only audio
+        that arrives after this call is included.
+        """
+        chunks: list[np.ndarray] = []
+        self._post_wake_chunks = chunks
+        rms_values: list[float] = []
+        processed = 0
+        keep = 0
         try:
-            time.sleep(POST_WAKE_SECONDS)
-            self._post_wake_chunks = None  # stop collecting
+            while self._running:
+                time.sleep(CHUNK_SECONDS / 2)
+                while processed < len(chunks):
+                    rms_values.append(_rms(chunks[processed]))
+                    processed += 1
+                ended, keep = endpoint_reached(rms_values)
+                if ended:
+                    break
+        finally:
+            self._post_wake_chunks = None
+        kept = chunks[:keep] if keep else chunks
+        return (
+            np.concatenate(kept) if kept else np.array([], dtype=np.int16)
+        )
 
-            post_wake = (
-                np.concatenate(post_chunks)
-                if post_chunks
-                else np.array([], dtype=np.int16)
-            )
-            combined_float = (
-                np.concatenate([pre_wake, post_wake]).astype(np.float32) / 32_768.0
-            )
-
-            transcript = self._transcribe(combined_float)
+    def _run_wake_session(self) -> None:
+        """One wake -> command(s). Default is a single endpointed utterance;
+        a "listen for N" / "keep listening" directive opens an extended
+        session that keeps taking commands (each pause = one command) until
+        the time runs out or the user says a stop phrase."""
+        try:
+            audio = self._capture_one_utterance()
+            transcript = self._transcribe(self._to_float(audio))
             logger.info("[audio] Transcript: %r", transcript)
 
-            if self._loop is not None:
-                asyncio.run_coroutine_threadsafe(
-                    self._on_wake(transcript), self._loop
-                )
+            mode, seconds = parse_listen_directive(transcript)
+            if mode == "single":
+                self._emit_wake(transcript)
+                return
+
+            logger.info(
+                "[audio] Entering %s listen mode (%.0fs)",
+                mode, seconds or CONTINUOUS_CAP_S,
+            )
+            deadline = time.time() + (seconds if mode == "timed" else CONTINUOUS_CAP_S)
+            while self._running and time.time() < deadline:
+                audio = self._capture_one_utterance()
+                if len(audio) == 0:
+                    continue
+                text = self._transcribe(self._to_float(audio))
+                logger.info("[audio] Listen-mode transcript: %r", text)
+                if not text:
+                    continue
+                if is_stop_phrase(text):
+                    logger.info("[audio] Stop phrase heard — leaving listen mode")
+                    break
+                self._emit_wake(text)
+            logger.info("[audio] Listen mode ended")
         except Exception:
-            logger.exception("[audio] Error in transcription thread")
+            logger.exception("[audio] Error in wake session")
         finally:
             self._active = False
+
+    @staticmethod
+    def _to_float(audio_int16: np.ndarray) -> np.ndarray:
+        """int16 mono -> float32 in [-1, 1) for Whisper (empty stays empty)."""
+        if len(audio_int16) == 0:
+            return np.array([], dtype=np.float32)
+        return audio_int16.astype(np.float32) / 32_768.0
+
+    def _emit_wake(self, transcript: str) -> None:
+        """Hand a finished command transcript to the async on_wake callback."""
+        if transcript and self._loop is not None:
+            asyncio.run_coroutine_threadsafe(self._on_wake(transcript), self._loop)
 
     def _matches_signal_word(self, text: str) -> bool:
         """Return True if any configured signal word appears in text (case-insensitive)."""
