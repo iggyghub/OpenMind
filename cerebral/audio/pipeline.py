@@ -54,8 +54,8 @@ def _get_whisper_model():
     with _whisper_lock:
         if _whisper_model is None:
             from faster_whisper import WhisperModel
-            logger.info("[audio] Loading Whisper tiny.en model (first use — may download ~75 MB)...")
-            _whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+            logger.info("[audio] Loading Whisper distil-small.en model (first use — may download ~142 MB)...")
+            _whisper_model = WhisperModel("distil-small.en", device="cpu", compute_type="int8")
             logger.info("[audio] Whisper model ready")
     return _whisper_model
 
@@ -321,5 +321,8 @@ class AudioPipeline:
     @staticmethod
     def _transcribe(audio_float32: np.ndarray) -> str:
         model = _get_whisper_model()
-        segments, _ = model.transcribe(audio_float32, language="en")
+        segments, _ = model.transcribe(
+            audio_float32, language="en",
+            initial_prompt="Felix, Cerebral, OpenMind, Ollama, MCP, Kokoro, Vosk.",
+        )
         return " ".join(seg.text for seg in segments).strip()
