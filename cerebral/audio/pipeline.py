@@ -48,6 +48,14 @@ NO_SPEECH_TIMEOUT_S = 4.0      # give up if no speech at all after waking
 MAX_UTTERANCE_S = 15.0         # hard cap on a single utterance
 CONTINUOUS_CAP_S = 300.0       # safety cap for "keep listening" mode
 
+# Look-back prepended to the FIRST utterance. Vosk finalises the wake word
+# only after the phrase completes, so a command said in one breath
+# ("Felix, what's the time?") is already over by the time we start
+# capturing — without this, Whisper only sees trailing silence and
+# hallucinates ("thank you"). Short on purpose (not the old 60s): just
+# enough to catch the command spoken with the wake word.
+PRE_WAKE_LOOKBACK_S = 4.0
+
 # Phrases that leave an extended-listen session (case-insensitive).
 STOP_PHRASES = ("felix stop", "stop listening", "stop")
 
@@ -59,6 +67,12 @@ def _rms(chunk: np.ndarray) -> float:
     if len(chunk) == 0:
         return 0.0
     return float(np.sqrt(np.mean(np.square(chunk.astype(np.float64)))))
+
+
+def tail_samples(audio: np.ndarray, seconds: float, rate: int = SAMPLE_RATE) -> np.ndarray:
+    """Last ``seconds`` of an audio array (the whole thing if it's shorter)."""
+    n = int(seconds * rate)
+    return audio[-n:] if len(audio) > n else audio
 
 
 def endpoint_reached(
@@ -309,8 +323,13 @@ class AudioPipeline:
             return
         self._active = True
         logger.info("[audio] '%s' detected", WAKE_WORD)
+        # Snapshot the recent look-back NOW (on the audio thread) — it holds
+        # the command spoken with the wake word, which Vosk only finalised
+        # after the fact. Passed into the first utterance below.
+        lookback = tail_samples(self._buffer.snapshot(), PRE_WAKE_LOOKBACK_S)
         threading.Thread(
             target=self._run_wake_session,
+            args=(lookback,),
             daemon=True,
             name="felix-wake",
         ).start()
@@ -345,13 +364,19 @@ class AudioPipeline:
             np.concatenate(kept) if kept else np.array([], dtype=np.int16)
         )
 
-    def _run_wake_session(self) -> None:
+    def _run_wake_session(self, lookback: np.ndarray | None = None) -> None:
         """One wake -> command(s). Default is a single endpointed utterance;
         a "listen for N" / "keep listening" directive opens an extended
         session that keeps taking commands (each pause = one command) until
-        the time runs out or the user says a stop phrase."""
+        the time runs out or the user says a stop phrase.
+
+        ``lookback`` is the few seconds captured just before the wake fired
+        (see ``_on_wake_detected``); it is prepended to the first utterance
+        so a one-breath "Felix, <command>" is transcribed in full."""
         try:
             audio = self._capture_one_utterance()
+            if lookback is not None and len(lookback):
+                audio = np.concatenate([lookback, audio])
             transcript = self._transcribe(self._to_float(audio))
             logger.info("[audio] Transcript: %r", transcript)
 
@@ -454,8 +479,12 @@ class AudioPipeline:
     @staticmethod
     def _transcribe(audio_float32: np.ndarray) -> str:
         model = _get_whisper_model()
+        # vad_filter drops non-speech before decoding, so trailing/leading
+        # silence in the captured window can't make Whisper hallucinate a
+        # phantom "thank you" / "thanks for watching".
         segments, _ = model.transcribe(
             audio_float32, language="en",
             initial_prompt="Felix, Cerebral, OpenMind, Ollama, MCP, Kokoro, Vosk.",
+            vad_filter=True,
         )
         return " ".join(seg.text for seg in segments).strip()

@@ -13,6 +13,7 @@ from cerebral.audio.pipeline import (
     endpoint_reached,
     is_stop_phrase,
     parse_listen_directive,
+    tail_samples,
     _rms,
 )
 
@@ -96,6 +97,19 @@ def test_non_stop_command_passes_through():
 
 
 # ── _rms sanity ──────────────────────────────────────────────────────────────
+
+def test_tail_samples_keeps_last_n_seconds():
+    # 10s of audio at 16kHz; ask for the last 4s -> 64000 samples.
+    audio = np.arange(16_000 * 10, dtype=np.int16)
+    tail = tail_samples(audio, 4.0, rate=16_000)
+    assert len(tail) == 16_000 * 4
+    assert tail[-1] == audio[-1]  # it's the END, not the start
+
+
+def test_tail_samples_shorter_than_window_returns_all():
+    audio = np.arange(1000, dtype=np.int16)
+    assert len(tail_samples(audio, 4.0, rate=16_000)) == 1000
+
 
 def test_rms_silence_below_threshold_speech_above():
     silence = np.zeros(4000, dtype=np.int16)
