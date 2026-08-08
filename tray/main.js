@@ -1,4 +1,4 @@
-const { app, Tray, Menu, BrowserWindow, Notification, nativeImage, ipcMain, screen, shell } = require('electron');
+const { app, Tray, Menu, BrowserWindow, Notification, nativeImage, ipcMain, screen, shell, globalShortcut } = require('electron');
 const WebSocket = require('ws');
 const path = require('path');
 const { VisualiserState }      = require('./lib/visualiser-state');
@@ -118,6 +118,34 @@ function connectToCerebral() {
   });
 }
 
+// ── Push-to-talk global hotkey ────────────────────────────────────────────
+// Registered only while mic_mode === 'ptt'. Pressing it tells Cerebral to
+// start a capture with no wake word (see main.py 'ptt'). Re-applied whenever
+// settings change so a rebind takes effect live.
+let pttRegisteredKey = null;
+function applyPTTHotkey() {
+  const wantKey = settingsCache.mic_mode === 'ptt' ? settingsCache.ptt_key : null;
+  if (wantKey === pttRegisteredKey) return;
+  if (pttRegisteredKey) {
+    try { globalShortcut.unregister(pttRegisteredKey); } catch (_) {}
+    pttRegisteredKey = null;
+  }
+  if (wantKey) {
+    try {
+      const ok = globalShortcut.register(wantKey, () => sendToCerebral({ type: 'ptt' }));
+      if (ok) {
+        pttRegisteredKey = wantKey;
+        console.log('[tray] PTT hotkey registered:', wantKey);
+      } else {
+        console.warn('[tray] PTT hotkey registration failed (already in use?):', wantKey);
+        electronNotify('Push-to-talk', `Couldn't register "${wantKey}" — it may be in use by another app. Pick a different key.`);
+      }
+    } catch (e) {
+      console.warn('[tray] PTT hotkey invalid:', wantKey, e.message);
+    }
+  }
+}
+
 function sendToCerebral(event) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(event));
@@ -218,6 +246,8 @@ function handleCerebralEvent(event) {
       const prev = settingsCache;
       settingsCache = event.data || {};
       notifManager.applySettings(settingsCache);
+      // (Re)apply the PTT hotkey — covers mode switches and live rebinds.
+      applyPTTHotkey();
       // Sync visualiser visibility if it changed.
       const visNow = !!settingsCache.visualiser_visible;
       if (visNow !== !!prev.visualiser_visible) {
@@ -898,4 +928,5 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  try { globalShortcut.unregisterAll(); } catch (_) {}
 });

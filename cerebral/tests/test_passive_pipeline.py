@@ -194,6 +194,25 @@ def test_speaking_suppresses_mic_input():
     assert received                      # listener fired now
 
 
+def test_ptt_only_skips_wake_detection():
+    # In PTT-only mode the callback must not run Vosk wake detection. The test
+    # pipeline never called start(), so ``_rec`` is None — if the wake path ran
+    # it would AttributeError. It must return cleanly and still buffer audio.
+    pipeline = _make_pipeline()
+    pipeline._running = True
+    pipeline.set_ptt_only(True)
+    indata = np.ones(100, dtype=np.int16).reshape(-1, 1)
+    pipeline._audio_callback(indata, 100, None, None)   # must not raise
+    assert len(pipeline._buffer) > 0                    # audio still buffered
+
+
+def test_trigger_ptt_ignored_when_already_active():
+    pipeline = _make_pipeline()
+    pipeline._active = True
+    pipeline.trigger_ptt()          # no-op: a session is already running
+    assert pipeline._active is True  # unchanged, no second session spun up
+
+
 def test_register_listener_is_idempotent():
     pipeline = _make_pipeline()
     received: list[np.ndarray] = []

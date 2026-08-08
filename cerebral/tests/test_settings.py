@@ -47,6 +47,7 @@ class TestSettingsStore:
             "camera_enabled",
             "visualiser_visible",
             "mic_mode",
+            "ptt_key",
             "tts_muted",
             "tts_volume",
             "mic_input_device",

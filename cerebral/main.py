@@ -5337,6 +5337,11 @@ async def _handle_message(msg: dict) -> None:
             else:
                 _env.disable_camera()
             await _broadcast(_env_context_event())
+        elif key == "mic_mode" and _audio_pipeline is not None:
+            # PTT mode turns off the always-on wake word; passive turns it
+            # back on. The tray registers/clears the global hotkey off the
+            # same setting.
+            _audio_pipeline.set_ptt_only(value == "ptt")
         await _broadcast(_settings_state_event())
 
     elif t == "set_camera_enabled":
@@ -5424,6 +5429,12 @@ async def _handle_message(msg: dict) -> None:
                 "[cerebral] send_channel_reply rejected (%s -> %r): %s",
                 session_key, (text or "")[:40], detail,
             )
+
+    elif t == "ptt":
+        # Push-to-talk: the tray's global hotkey fired. Start a capture with
+        # no wake word (fail-soft if the pipeline isn't up).
+        if _audio_pipeline is not None:
+            _audio_pipeline.trigger_ptt()
 
     elif t == "interrupt_turn":
         # S20 (#303) -- cancel the in-flight planner/chain task and silence TTS.
@@ -6407,6 +6418,8 @@ async def main() -> None:
         await loop.run_in_executor(None, lambda: pipeline.start(loop))
         global _audio_pipeline
         _audio_pipeline = pipeline
+        # Honour the persisted mic_mode: PTT disables always-on wake at boot.
+        pipeline.set_ptt_only(_settings.get("mic_mode") == "ptt")
         audio_active = True
     except FileNotFoundError as exc:
         logger.warning("[cerebral] Audio pipeline unavailable: %s", exc)

@@ -5532,6 +5532,14 @@
             <option value="disabled">Disabled</option>
           </select>
         </div>
+        <!-- PTT hotkey rebind — only meaningful in Push-to-talk mode -->
+        <div class="set-toggle-row" id="set-ptt-key-row" hidden>
+          <div>
+            <div class="set-toggle-label">Push-to-talk key</div>
+            <div class="set-toggle-sub" id="set-ptt-key-sub">Click, then press the key combo that starts a capture</div>
+          </div>
+          <button class="set-interval-select" id="set-ptt-key-btn" type="button">Control+Shift+Space</button>
+        </div>
         <!-- F3 (#326) -- microphone input device picker -->
         <div class="set-toggle-row" id="set-mic-device-row">
           <div>
@@ -6098,6 +6106,7 @@
       camera_enabled:            false,
       visualiser_visible:        false,
       mic_mode:                  'passive',
+      ptt_key:                   'Control+Shift+Space',
       tts_muted:                 false,
       tts_volume:                100,
       mic_input_device:          '',
@@ -10363,6 +10372,11 @@
     const hdrMicMode      = document.getElementById('hdr-mic-mode');
     const hdrMicSegs      = hdrMicMode ? Array.from(hdrMicMode.querySelectorAll('.hdr-mic-seg')) : [];
     const setMicModeSelect = document.getElementById('set-mic-mode-select');
+    // Push-to-talk key rebind
+    const setPttKeyRow = document.getElementById('set-ptt-key-row');
+    const setPttKeyBtn = document.getElementById('set-ptt-key-btn');
+    let currentPttKey = 'Control+Shift+Space';
+    let capturingPtt = false;
 
     // F3 (#326) -- mic input device picker
     const setMicDeviceSelect = document.getElementById('set-mic-device-select');
@@ -10383,6 +10397,8 @@
       });
       // Update settings select.
       if (setMicModeSelect) setMicModeSelect.value = mode;
+      // PTT key rebind row is only relevant in push-to-talk mode.
+      if (setPttKeyRow) setPttKeyRow.hidden = mode !== 'ptt';
     }
 
     // F3 (#326) -- populate the mic input device picker.
@@ -10463,6 +10479,9 @@
       setCameraToggle.checked = !!s.camera_enabled;
       setVisToggle.checked    = !!s.visualiser_visible;
       applyMicMode(s.mic_mode || 'passive');
+      // Restore the PTT hotkey label (unless mid-capture).
+      currentPttKey = s.ptt_key || 'Control+Shift+Space';
+      if (setPttKeyBtn && !capturingPtt) setPttKeyBtn.textContent = currentPttKey;
       applyTTS(!!s.tts_muted, s.tts_volume ?? 100);
       // F3 (#326) -- restore persisted mic device selection.
       if (setMicDeviceSelect && s.mic_input_device !== undefined) {
@@ -10500,6 +10519,45 @@
         sendEvent({ type: 'set_setting', data: { key: 'mic_mode', value: mode } });
         applyMicMode(mode);
       });
+    }
+
+    // ── Push-to-talk key rebind ──────────────────────────────────────────
+    // Build an Electron accelerator string ("Control+Shift+Space") from a
+    // keydown. Modifier-only presses are ignored; Escape cancels.
+    function accelFromEvent(e) {
+      const mods = [];
+      if (e.ctrlKey)  mods.push('Control');
+      if (e.altKey)   mods.push('Alt');
+      if (e.shiftKey) mods.push('Shift');
+      if (e.metaKey)  mods.push('Super');
+      let key = e.key;
+      if (['Control', 'Alt', 'Shift', 'Meta'].includes(key)) return null; // wait for a real key
+      if (key === ' ') key = 'Space';
+      else if (/^[a-z]$/i.test(key)) key = key.toUpperCase();
+      else if (key.startsWith('Arrow')) key = key.slice(5); // ArrowUp -> Up
+      return [...mods, key].join('+');
+    }
+    if (setPttKeyBtn) {
+      setPttKeyBtn.addEventListener('click', () => {
+        capturingPtt = true;
+        setPttKeyBtn.textContent = 'Press a key…';
+      });
+      document.addEventListener('keydown', (e) => {
+        if (!capturingPtt) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === 'Escape') {
+          capturingPtt = false;
+          setPttKeyBtn.textContent = currentPttKey;
+          return;
+        }
+        const accel = accelFromEvent(e);
+        if (!accel) return; // modifier-only so far
+        capturingPtt = false;
+        currentPttKey = accel;
+        setPttKeyBtn.textContent = accel;
+        sendEvent({ type: 'set_setting', data: { key: 'ptt_key', value: accel } });
+      }, true);
     }
 
     // F3 (#326) -- mic input device picker: persist selection + populate on init.
