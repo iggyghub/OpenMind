@@ -109,6 +109,10 @@ PORT = 7766
 _connected: set = set()
 _shutdown = asyncio.Event()
 
+# The running AudioPipeline (set in main()). Module-level so _speak() can
+# mute the mic while Felix's TTS plays (half-duplex).
+_audio_pipeline = None
+
 _pm = ProfileManager()
 _active_profile: Profile | None = _pm.get_active()
 _tts = TTSEngine()
@@ -3399,9 +3403,20 @@ async def _speak(text: str) -> None:
         return
     voice_id = _active_profile.voice_id if _active_profile else None
     volume = (_settings.get("tts_volume") or 100) / 100.0
+    # Half-duplex: mute the mic while speaking so Felix's own voice through
+    # the speakers can't self-trigger the wake word (feedback loop).
+    if _audio_pipeline is not None:
+        _audio_pipeline.set_speaking(True)
     await _broadcast({"type": "tts_speaking", "data": {"text": text, "voice_id": voice_id}})
-    await _tts.speak(text, voice_id, volume=volume)
-    await _broadcast({"type": "tts_done", "data": {}})
+    try:
+        await _tts.speak(text, voice_id, volume=volume)
+    finally:
+        await _broadcast({"type": "tts_done", "data": {}})
+        if _audio_pipeline is not None:
+            # Brief tail so the speaker's acoustic decay isn't captured as the
+            # start of a new command.
+            await asyncio.sleep(0.4)
+            _audio_pipeline.set_speaking(False)
 
 
 # ── Shared tray-IPC direct-call path (call_tool + plugins:test_call) ─────────
@@ -6390,6 +6405,8 @@ async def main() -> None:
             device=_settings.get('mic_input_device') or '',
         )
         await loop.run_in_executor(None, lambda: pipeline.start(loop))
+        global _audio_pipeline
+        _audio_pipeline = pipeline
         audio_active = True
     except FileNotFoundError as exc:
         logger.warning("[cerebral] Audio pipeline unavailable: %s", exc)

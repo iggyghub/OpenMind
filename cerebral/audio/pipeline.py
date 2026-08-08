@@ -183,6 +183,11 @@ class AudioPipeline:
         self._vosk_model = None  # Shared with voice consent (Issue #50)
         self._running = False
         self._active = False
+        # Half-duplex: True while Felix's TTS is playing. The always-on mic
+        # hears Felix's own voice through the speakers; without this the
+        # spoken reply self-triggers the wake word / gets captured, so Felix
+        # "listens all the time". Set by main.py around _speak().
+        self._speaking = False
         self._passive_active = False
         self._post_wake_chunks: list[np.ndarray] | None = None
         # Audio-chunk listeners (Issue #50). Snapshot-copied for iteration in
@@ -274,12 +279,23 @@ class AudioPipeline:
         """
         return self._vosk_model
 
+    def set_speaking(self, speaking: bool) -> None:
+        """Half-duplex gate. main.py sets True before Felix's TTS starts and
+        False a beat after it finishes, so the mic ignores Felix's own voice."""
+        self._speaking = speaking
+
     # ── Internals ────────────────────────────────────────────────────────────
 
     def _audio_callback(
         self, indata: np.ndarray, frames: int, time_info, status
     ) -> None:
         if not self._running:
+            return
+
+        # Half-duplex: while Felix is speaking, ignore the mic entirely — do
+        # not buffer (would poison the look-back) and do not wake. Prevents
+        # the TTS output from self-triggering through the speakers.
+        if self._speaking:
             return
 
         chunk = indata[:, 0]  # mono int16
