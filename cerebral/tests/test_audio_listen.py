@@ -14,6 +14,7 @@ from cerebral.audio.pipeline import (
     is_stop_phrase,
     parse_listen_directive,
     tail_samples,
+    transcript_confirms_wake,
     _rms,
 )
 
@@ -94,6 +95,25 @@ def test_stop_phrases():
 def test_non_stop_command_passes_through():
     # A normal command that merely contains "stop" must not end the session.
     assert not is_stop_phrase("stop the kitchen timer")
+
+
+# ── transcript_confirms_wake (false-wake guard) ──────────────────────────────
+
+def test_real_wake_is_confirmed():
+    assert transcript_confirms_wake("Felix, what time is it?")
+    assert transcript_confirms_wake("felix stop")
+
+
+def test_ambient_false_wakes_rejected():
+    # The exact false wakes from the field log — no wake word present.
+    assert not transcript_confirms_wake("Okay, let me just get back up here.")
+    assert not transcript_confirms_wake(", I like, explain holiday.")
+    assert not transcript_confirms_wake("")
+
+
+def test_common_whisper_mishears_accepted():
+    # Lenient on known mishears so a genuine wake isn't dropped.
+    assert transcript_confirms_wake("Phoenix what's the weather")
 
 
 # ── _rms sanity ──────────────────────────────────────────────────────────────

@@ -59,6 +59,20 @@ PRE_WAKE_LOOKBACK_S = 4.0
 # Phrases that leave an extended-listen session (case-insensitive).
 STOP_PHRASES = ("felix stop", "stop listening", "stop")
 
+# Two-stage wake confirmation. Vosk's constrained recogniser is an eager,
+# cheap trigger that mis-hears ambient speech as "felix". After it fires we
+# already transcribe the audio with Whisper, so we use that as the accurate
+# second stage: proceed only if the wake word (or a common Whisper mishear of
+# it) actually appears. Tunable — add variants if real wakes get dropped.
+WAKE_CONFIRM_VARIANTS = ("felix", "felex", "feelix", "phoenix", "felicks", "felicia")
+
+
+def transcript_confirms_wake(text: str) -> bool:
+    """True if a first-utterance transcript actually contains the wake word,
+    guarding against Vosk false positives on ambient audio."""
+    t = text.lower()
+    return any(v in t for v in WAKE_CONFIRM_VARIANTS)
+
 VOSK_MODEL_PATH = Path(__file__).parent.parent / "models" / "vosk-model-small-en-us-0.15"
 
 
@@ -395,6 +409,13 @@ class AudioPipeline:
                 audio = np.concatenate([lookback, audio])
             transcript = self._transcribe(self._to_float(audio))
             logger.info("[audio] Transcript: %r", transcript)
+
+            # Stage 2: confirm Vosk's trigger was a real wake, not ambient
+            # audio mis-heard as "felix". The look-back means a genuine
+            # "Felix, ..." shows the wake word here; a false wake does not.
+            if not transcript_confirms_wake(transcript):
+                logger.info("[audio] False wake discarded (no wake word in transcript)")
+                return
 
             mode, seconds = parse_listen_directive(transcript)
             if mode == "single":
