@@ -7,6 +7,7 @@ final text, repeat.  Stops when the planner returns text (done) or the step
 cap is reached.
 """
 
+import json
 import logging
 import os
 from typing import Awaitable, Callable
@@ -63,6 +64,11 @@ class ChainEngine:
         from cerebral.security import Decision
 
         prior_steps: list[dict] = []
+        # Signatures of tools already run successfully. A tool-native model
+        # that re-emits an identical call has stopped making progress (it isn't
+        # reading the result back as a tool message -- see Planner.finalize);
+        # break the loop and force a text answer instead of spinning to the cap.
+        completed_sigs: set[str] = set()
 
         for step_num in range(max_steps):
             result = await self._planner.plan(transcript, tools, prior_steps=prior_steps)
@@ -85,6 +91,13 @@ class ChainEngine:
                 )
                 if not isinstance(result, ToolCall):
                     return result if isinstance(result, str) else "Something went wrong. Please try again."
+
+            # Loop guard: the model re-asked for a tool it already ran with the
+            # same args. It isn't going to progress -- answer from what we have.
+            sig = f"{result.name}:{json.dumps(result.args, sort_keys=True, default=str)}"
+            if sig in completed_sigs:
+                logger.info("[chain] repeated call %r -- finalizing from results", result.name)
+                return await self._planner.finalize(transcript, prior_steps)
 
             # Surface the tool call as a Conversation turn before gating
             await self._record_fn(KIND_TOOL_CALL, {"name": result.name, "args": result.args})
@@ -115,8 +128,14 @@ class ChainEngine:
             if tool_result.is_error:
                 return f"The tool {result.name} encountered an error: {tool_result.content}"
 
-        # Hit the step cap -- stop gracefully and summarise
-        logger.warning("[chain] reached %d-step cap", max_steps)
+            if not tool_result.is_error:
+                completed_sigs.add(sig)
+
+        # Hit the step cap -- answer from whatever results we gathered rather
+        # than the robotic "I completed N steps" summary.
+        logger.warning("[chain] reached %d-step cap -- finalizing", max_steps)
+        if prior_steps:
+            return await self._planner.finalize(transcript, prior_steps)
         return _chain_summary(
             prior_steps, stopped_reason=f"reached the {max_steps}-step limit"
         )

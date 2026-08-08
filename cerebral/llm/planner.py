@@ -214,3 +214,26 @@ class Planner:
 
         prompt = "\n".join(parts)
         return await self._backend.complete_with_tools(prompt, tools)
+
+    async def finalize(self, transcript: str, prior_steps: list[dict]) -> str:
+        """Force a natural-language answer from tool results, WITHOUT tools.
+
+        Tool-native models (Qwen, Hermes, …) tend to keep emitting tool calls
+        while tools are offered, re-calling a tool they already ran instead of
+        answering — because the chain feeds history as prompt text, not as
+        structured tool-result messages. When the chain detects that loop (a
+        repeated call, or the step cap), it calls this: a plain text-only
+        completion the model cannot answer with another tool call.
+        """
+        lines = []
+        for s in prior_steps:
+            res = f"ERROR: {s['result']}" if s.get("is_error") else s["result"]
+            lines.append(f"{s['name']} -> {res}")
+        prompt = (
+            f"{_SYSTEM_PROMPT}\nUser: {transcript}\n\n"
+            "You already ran these tools and got these results:\n"
+            + "\n".join(lines)
+            + "\n\nAnswer the user now in one or two natural sentences using "
+            "those results. Do NOT call a tool."
+        )
+        return await self._backend.complete(prompt, task_type="chat")

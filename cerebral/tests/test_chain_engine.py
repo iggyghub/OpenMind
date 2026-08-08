@@ -145,47 +145,50 @@ async def test_two_step_chain_passes_prior_steps_to_planner():
 # Step cap (acceptance criterion AC-2)
 # ---------------------------------------------------------------------------
 
-async def test_cap_stops_chain_at_max_steps():
-    """If the planner never returns text the chain halts at max_steps."""
+async def test_repeated_call_breaks_loop_and_finalizes():
+    """A tool-native model that re-emits the SAME call (same name+args) has
+    stopped progressing. The chain must not spin to the cap -- it breaks on
+    the repeat and returns a tools-free finalized answer."""
     backend = AsyncMock()
-    # Always return a ToolCall; never text.
     backend.complete_with_tools.return_value = ToolCall(
-        name="gmail_search", args={"query": "x"}
-    )
+        name="get_time", args={}
+    )  # always the same call -> loop
+    backend.complete.return_value = "It's 3:45 PM."  # finalize (no tools)
     planner = Planner(backend)
 
+    engine, _ = _make_engine(
+        planner,
+        gate_decisions=[Decision.SILENT] * 5,
+        tool_results=[ToolResult(content="3:45 PM") for _ in range(5)],
+    )
+
+    response = await engine.run("what time is it", _TOOLS, max_steps=8)
+
+    assert response == "It's 3:45 PM."
+    backend.complete.assert_awaited_once()           # finalized
+    assert backend.complete_with_tools.call_count == 2  # step1 + the repeat
+
+
+async def test_cap_finalizes_from_results():
+    """Distinct tool calls that never resolve to text hit the cap and get
+    finalized (real answer) rather than a robotic 'I completed N steps'."""
+    backend = AsyncMock()
     cap = 3
+    backend.complete_with_tools.side_effect = [
+        ToolCall(name="gmail_search", args={"query": f"q{i}"}) for i in range(cap)
+    ]
+    backend.complete.return_value = "Here's what I found."
+    planner = Planner(backend)
+
     engine, _ = _make_engine(
         planner,
         gate_decisions=[Decision.SILENT] * cap,
-        tool_results=[ToolResult(content=f"result{i}") for i in range(cap)],
+        tool_results=[ToolResult(content=f"r{i}") for i in range(cap)],
     )
 
     response = await engine.run("...", _TOOLS, max_steps=cap)
-
-    assert str(cap) in response
-    assert "step" in response.lower()
-
-
-async def test_cap_stop_mentions_completed_tools():
-    """Grace-stop summary names the tools that did complete before the cap."""
-    backend = AsyncMock()
-    backend.complete_with_tools.return_value = ToolCall(
-        name="gmail_search", args={"query": "x"}
-    )
-    planner = Planner(backend)
-
-    engine, _ = _make_engine(
-        planner,
-        gate_decisions=[Decision.SILENT, Decision.SILENT],
-        tool_results=[
-            ToolResult(content="r1"),
-            ToolResult(content="r2"),
-        ],
-    )
-
-    response = await engine.run("...", _TOOLS, max_steps=2)
-    assert "gmail_search" in response
+    assert response == "Here's what I found."
+    backend.complete.assert_awaited_once()
 
 
 async def test_cap_is_env_overridable(monkeypatch):
