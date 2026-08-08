@@ -25,6 +25,10 @@ _DEFAULTS: dict[str, Any] = {
     "camera_enabled":            False,
     "visualiser_visible":        False,
     "mic_mode":                  "passive",
+    # Push-to-talk global hotkey (Electron accelerator string). Used by the
+    # tray to register a globalShortcut when mic_mode == "ptt"; pressing it
+    # triggers a capture with no wake word. User-rebindable from the UI.
+    "ptt_key":                   "Control+Shift+Space",
     "tts_muted":                 False,
     "tts_volume":                100,
     "mic_input_device":          "",
@@ -71,6 +75,7 @@ _TYPES: dict[str, type] = {
     "camera_enabled":            bool,
     "visualiser_visible":        bool,
     "mic_mode":                  str,
+    "ptt_key":                   str,
     "tts_muted":                 bool,
     "tts_volume":                int,
     "mic_input_device":          str,

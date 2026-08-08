@@ -197,6 +197,11 @@ class AudioPipeline:
         self._vosk_model = None  # Shared with voice consent (Issue #50)
         self._running = False
         self._active = False
+        # Push-to-talk: when True, the always-on Vosk wake path is skipped
+        # entirely — only trigger_ptt() (from the tray's global hotkey) starts
+        # a capture. Kills false wakes in noisy rooms. Set by main.py from the
+        # mic_mode setting.
+        self._ptt_only = False
         # Half-duplex: True while Felix's TTS is playing. The always-on mic
         # hears Felix's own voice through the speakers; without this the
         # spoken reply self-triggers the wake word / gets captured, so Felix
@@ -298,6 +303,29 @@ class AudioPipeline:
         False a beat after it finishes, so the mic ignores Felix's own voice."""
         self._speaking = speaking
 
+    def set_ptt_only(self, ptt_only: bool) -> None:
+        """Enable/disable push-to-talk-only mode. When on, the always-on wake
+        word is not listened for — only trigger_ptt() starts a capture."""
+        self._ptt_only = ptt_only
+        logger.info("[audio] PTT-only mode %s", "ON" if ptt_only else "OFF")
+
+    def trigger_ptt(self) -> None:
+        """Start a capture immediately, no wake word (push-to-talk hotkey).
+
+        Fresh capture from now until you stop talking (endpointing); no
+        look-back and no wake-word confirmation, since the keypress *is* the
+        explicit trigger. Ignored if a session is already active."""
+        if self._active:
+            return
+        self._active = True
+        logger.info("[audio] PTT triggered")
+        threading.Thread(
+            target=self._run_wake_session,
+            kwargs={"lookback": None, "confirm": False},
+            daemon=True,
+            name="felix-ptt",
+        ).start()
+
     # ── Internals ────────────────────────────────────────────────────────────
 
     def _audio_callback(
@@ -337,6 +365,11 @@ class AudioPipeline:
         # previous one): stay silent so the mic can't re-wake on "felix" or
         # capture stray audio until the session ends.
         if self._active:
+            return
+
+        # Push-to-talk mode: no always-on wake word. Only trigger_ptt() (the
+        # tray hotkey) starts a capture, so ambient speech can't false-wake.
+        if self._ptt_only:
             return
 
         # Passive: feed Vosk for wake word / signal word detection
@@ -394,7 +427,9 @@ class AudioPipeline:
             np.concatenate(kept) if kept else np.array([], dtype=np.int16)
         )
 
-    def _run_wake_session(self, lookback: np.ndarray | None = None) -> None:
+    def _run_wake_session(
+        self, lookback: np.ndarray | None = None, confirm: bool = True
+    ) -> None:
         """One wake -> command(s). Default is a single endpointed utterance;
         a "listen for N" / "keep listening" directive opens an extended
         session that keeps taking commands (each pause = one command) until
@@ -413,7 +448,8 @@ class AudioPipeline:
             # Stage 2: confirm Vosk's trigger was a real wake, not ambient
             # audio mis-heard as "felix". The look-back means a genuine
             # "Felix, ..." shows the wake word here; a false wake does not.
-            if not transcript_confirms_wake(transcript):
+            # Skipped for PTT (confirm=False) — the keypress is the trigger.
+            if confirm and not transcript_confirms_wake(transcript):
                 logger.info("[audio] False wake discarded (no wake word in transcript)")
                 return
 
