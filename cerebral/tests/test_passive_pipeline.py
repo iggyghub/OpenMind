@@ -172,6 +172,28 @@ def test_register_listener_receives_every_chunk():
     assert np.array_equal(received[1], chunk + 1)
 
 
+def test_speaking_suppresses_mic_input():
+    # Half-duplex: while Felix's TTS plays, the callback must ignore the mic
+    # entirely — no buffering (would poison the look-back) and no listener
+    # fan-out — so the spoken reply can't self-trigger a wake.
+    pipeline = _make_pipeline()
+    pipeline._running = True
+    received: list[np.ndarray] = []
+    pipeline.register_listener(lambda c: received.append(c))
+
+    pipeline.set_speaking(True)
+    indata = np.ones(100, dtype=np.int16).reshape(-1, 1)
+    pipeline._audio_callback(indata, 100, None, None)
+    assert len(pipeline._buffer) == 0   # nothing buffered while speaking
+    assert received == []               # listeners not fanned out
+
+    # Once speaking stops, audio flows again.
+    pipeline.set_speaking(False)
+    pipeline._post_wake_chunks = []      # skip the Vosk path
+    pipeline._audio_callback(indata, 100, None, None)
+    assert received                      # listener fired now
+
+
 def test_register_listener_is_idempotent():
     pipeline = _make_pipeline()
     received: list[np.ndarray] = []
