@@ -84,7 +84,7 @@ def test_plugin_declares_expected_capabilities():
 def test_plugin_registers_expected_tools():
     plugin = ComputerUsePlugin(backend=_FakeBackend())
     names = {t.name for t in plugin.list_tools()}
-    assert names == {"read_ui", "click_element", "type_into", "browser_navigate"}
+    assert names == {"read_ui", "click_element", "type_into", "browser_navigate", "press_keys"}
 
 
 def test_source_passes_inspectability_scan():

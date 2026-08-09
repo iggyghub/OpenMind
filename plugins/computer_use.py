@@ -198,6 +198,29 @@ class CornerAbort(Exception):
     the ADR-0016 three-part containment: hard-abort the observe-act loop."""
 
 
+# Normalise a few human aliases to the pyautogui key names.
+_KEY_ALIASES = {"ctl": "ctrl", "control": "ctrl", "cmd": "win", "super": "win",
+                "return": "enter", "esc": "escape"}
+
+
+def _parse_key_chord(spec: "str | list[str]") -> list[str]:
+    """'ctrl+k' / ['ctrl','k'] / 'enter' -> ['ctrl','k'] (lowercased, aliased).
+
+    Empty/garbage -> []. Kept pure + module-level so it's unit-testable
+    without a backend."""
+    if isinstance(spec, list):
+        parts = [str(p) for p in spec]
+    else:
+        parts = str(spec or "").split("+")
+    keys = []
+    for p in parts:
+        k = p.strip().lower()
+        if not k:
+            continue
+        keys.append(_KEY_ALIASES.get(k, k))
+    return keys
+
+
 # Module-level seams -- main.py wires these once at startup; tests inject
 # per-instance via the constructor (constructor-injected wins).
 # #594 (ADR-0016 amendment f): the payload evolved from a bare bool to a
@@ -479,6 +502,11 @@ class ComputerUseBackend(Protocol):
         plugin falls back to appending ``\\n`` via ``type_text`` when absent.
         On Windows, must translate ``pyautogui.FailSafeException`` into
         ``CornerAbort`` (same rule as the other actuation methods)."""
+
+    def press_hotkey(self, keys: list[str]) -> None:
+        """Press a key combo as a chord (e.g. ``["ctrl", "k"]``). Optional --
+        powers the keyboard-navigation path for UIA-opaque Chromium apps.
+        Same ``CornerAbort`` translation rule as the other actuation methods."""
 
     def resolve_element(
         self, window_title: str, name: str, role: str | None,
@@ -1005,6 +1033,32 @@ class ComputerUsePlugin:
                     "required": ["window_title", "name", "text"],
                 },
             ),
+            Tool(
+                name="press_keys",
+                description=(
+                    "Send a keyboard chord to a window (e.g. 'ctrl+k', 'ctrl+v', "
+                    "'enter', 'ctrl+shift+p'). The keyboard-navigation path for "
+                    "Chromium/Electron apps (Discord, Slack, VS Code) whose UI is "
+                    "opaque to read_ui/click_element. Focuses window_title first, "
+                    "then presses the combo. Respects the idle gate -- waits if "
+                    "you are actively using the keyboard."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "keys": {
+                            "type": "string",
+                            "description": "Chord like 'ctrl+k' or a single key like 'enter'.",
+                        },
+                        "window_title": {
+                            "type": "string",
+                            "description": "Optional: window to focus before pressing.",
+                        },
+                    },
+                    "required": ["keys"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -1021,6 +1075,8 @@ class ComputerUsePlugin:
             return await self._type_into(args)
         if tool_name == "browser_navigate":
             return await self._browser_navigate(args)
+        if tool_name == "press_keys":
+            return await self._press_keys(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _window_bounds(self, window_title: str) -> list[int] | None:
@@ -1156,6 +1212,46 @@ class ComputerUsePlugin:
             return True, None, threshold
         idle_ms = self._last_input_ms()
         return (idle_ms is None or idle_ms >= threshold), idle_ms, threshold
+
+    async def _press_keys(self, args: dict) -> ToolResult:
+        """Keyboard-navigation path: focus a window and press a key chord.
+
+        Idle-gated (won't fire while the user is typing) and kill-switch-armed
+        like the other foreground actions. For UIA-opaque Chromium/Electron
+        apps where click_element can't see the controls."""
+        combo = _parse_key_chord(args.get("keys", ""))
+        if not combo:
+            return ToolResult(content="press_keys: no keys given", is_error=True)
+
+        allowed, idle_ms, threshold = self._idle_allows_foreground()
+        if not allowed:
+            return ToolResult(
+                content=(
+                    f"Waiting: you used the keyboard/mouse {idle_ms}ms ago "
+                    f"(under the {threshold}ms idle threshold). Try again when idle."
+                ),
+                is_error=True,
+            )
+
+        window_title = args.get("window_title") or ""
+        if window_title:
+            surf = getattr(self._backend, "surface_window", None)
+            if surf is not None:
+                try:
+                    surf(window_title)
+                except Exception:
+                    logger.warning("[computer_use] surface_window(%r) failed", window_title)
+
+        try:
+            if len(combo) == 1:
+                self._backend.press_key(combo[0])
+            else:
+                self._backend.press_hotkey(combo)
+        except CornerAbort as exc:
+            return ToolResult(content=f"Aborted (kill-switch): {exc}", is_error=True)
+        except Exception as exc:
+            return ToolResult(content=f"press_keys failed: {exc}", is_error=True)
+        return ToolResult(content=f"pressed {'+'.join(combo)}")
 
     def _foreground_gate(
         self, window_title: str, name: str, n: int, trace: dict,
@@ -2195,6 +2291,15 @@ class _WindowsBackend:
         """S7 #580: single named-key press (Enter after typing a URL, etc.)."""
         try:
             self._pyautogui.press(key)
+        except self._pyautogui.FailSafeException as exc:
+            raise CornerAbort(str(exc)) from exc
+
+    def press_hotkey(self, keys: list[str]) -> None:
+        """Press a key combo (e.g. ['ctrl', 'k']) as a chord. Used by the
+        keyboard-navigation path for Chromium/Electron apps that are opaque to
+        UIA (Discord Ctrl+K, paste Ctrl+V, etc.)."""
+        try:
+            self._pyautogui.hotkey(*keys)
         except self._pyautogui.FailSafeException as exc:
             raise CornerAbort(str(exc)) from exc
 
