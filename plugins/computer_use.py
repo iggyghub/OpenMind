@@ -1241,6 +1241,26 @@ class ComputerUsePlugin:
                     surf(window_title)
                 except Exception:
                     logger.warning("[computer_use] surface_window(%r) failed", window_title)
+            # Verify the target actually came to the foreground. A chord is
+            # global -- if focus didn't land (Windows denied SetForegroundWindow,
+            # or the window is minimized/on another display), the keys would hit
+            # whatever WAS focused (Ctrl+K in the wrong app). Refuse instead.
+            await asyncio.sleep(0.3)  # let the OS focus change settle
+            fg_fn = getattr(self._backend, "foreground_window", None)
+            if fg_fn is not None:
+                try:
+                    fg = fg_fn() or ""
+                except Exception:
+                    fg = ""
+                if window_title.lower() not in fg.lower():
+                    return ToolResult(
+                        content=(
+                            f"Could not bring a window matching {window_title!r} to the "
+                            f"front (foreground is {fg!r}). It may be minimized or on "
+                            f"another display. Open it and try again."
+                        ),
+                        is_error=True,
+                    )
 
         try:
             if len(combo) == 1:
