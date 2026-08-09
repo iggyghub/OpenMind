@@ -10,14 +10,18 @@ from plugins.computer_use import ComputerUsePlugin, _parse_key_chord
 
 class _KeyBackend:
     """Minimal fake actuation backend for the press_keys path."""
-    def __init__(self, idle_ms: int = 5000):
+    def __init__(self, idle_ms: int = 5000, foreground: str = "Discord"):
         self._idle_ms = idle_ms
+        self._foreground = foreground
         self.hotkeys: list[list[str]] = []
         self.keys: list[str] = []
         self.surfaced: list[str] = []
 
     def last_input_ms(self) -> int:
         return self._idle_ms
+
+    def foreground_window(self):
+        return self._foreground
 
     def surface_window(self, window_title: str) -> None:
         self.surfaced.append(window_title)
@@ -58,6 +62,18 @@ async def test_press_keys_fires_when_idle():
     assert not r.is_error
     assert backend.hotkeys == [["ctrl", "k"]]
     assert backend.surfaced == ["Discord"]
+
+
+async def test_press_keys_refuses_when_target_not_focused():
+    # surface_window ran, but the target never came to the foreground (Windows
+    # denied it / minimized). The chord must NOT fire into the wrong app.
+    backend = _KeyBackend(idle_ms=5000, foreground="Some Other App")
+    r = await _plugin(backend).call_tool(
+        "press_keys", {"keys": "ctrl+k", "window_title": "Discord"},
+    )
+    assert r.is_error
+    assert "front" in r.content.lower()
+    assert backend.hotkeys == []       # refused, never pressed
 
 
 async def test_press_keys_blocked_when_user_present():
