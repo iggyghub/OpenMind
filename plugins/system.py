@@ -68,6 +68,22 @@ class SystemPlugin:
                 },
             ),
             Tool(
+                name="copy_image_to_clipboard",
+                description=(
+                    "Put an image file on the clipboard so it can be pasted "
+                    "(Ctrl+V) into an app -- e.g. paste a screenshot into a "
+                    "Discord/Slack message. Windows only."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Path to the image (PNG/JPG)."},
+                    },
+                    "required": ["path"],
+                },
+            ),
+            Tool(
                 name="get_wifi_status",
                 description="Return current WiFi connection status and SSID.",
                 plugin=PLUGIN_NAME,
@@ -94,6 +110,8 @@ class SystemPlugin:
             return self._set_volume(args)
         if tool_name == "take_screenshot":
             return self._take_screenshot(args)
+        if tool_name == "copy_image_to_clipboard":
+            return self._copy_image_to_clipboard(args)
         if tool_name == "get_wifi_status":
             return self._get_wifi_status()
         if tool_name == "shutdown":
@@ -192,6 +210,35 @@ class SystemPlugin:
                 self._run_fn(["scrot", path], capture_output=True, text=True, timeout=10)
             elif _PLATFORM == "Darwin":
                 self._run_fn(["screencapture", path], capture_output=True, text=True, timeout=10)
+            return ToolResult(content=json.dumps({"path": path, "ok": True}))
+        except Exception as exc:
+            return ToolResult(content=json.dumps({"ok": False, "error": str(exc)}))
+
+    def _copy_image_to_clipboard(self, args: dict) -> ToolResult:
+        """Place an image on the Windows clipboard as CF_DIB so apps can paste
+        it (Discord/Slack accept a pasted image as an attachment)."""
+        import os
+        path = args.get("path", "")
+        if not path or not os.path.exists(path):
+            return ToolResult(content=json.dumps({"ok": False, "error": f"not found: {path}"}))
+        if _PLATFORM != "Windows":
+            return ToolResult(content=json.dumps({"ok": False, "error": "Windows only"}))
+        try:
+            import io as _io
+            import win32clipboard
+            from PIL import Image
+            img = Image.open(path).convert("RGB")
+            buf = _io.BytesIO()
+            img.save(buf, "BMP")
+            # A BMP file starts with a 14-byte BITMAPFILEHEADER; CF_DIB wants
+            # everything after it (the DIB starting at BITMAPINFOHEADER).
+            dib = buf.getvalue()[14:]
+            win32clipboard.OpenClipboard()
+            try:
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib)
+            finally:
+                win32clipboard.CloseClipboard()
             return ToolResult(content=json.dumps({"path": path, "ok": True}))
         except Exception as exc:
             return ToolResult(content=json.dumps({"ok": False, "error": str(exc)}))
