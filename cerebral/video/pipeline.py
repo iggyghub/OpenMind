@@ -1,10 +1,11 @@
-"""Video pipeline — download + transcribe one video (ADR-0017 S1 #639).
+"""Video pipeline -- download + transcribe + (escalate) one video (ADR-0017).
 
 All I/O is injectable via set_download_fn / set_transcribe_fn so tests
 need no network and no binaries.  Production implementations use yt-dlp
 (audio-only pull) and faster-whisper (small/int8/CPU/vad_filter=True).
 
-Both are live-verify items: the real run goes through docs/video-live-verify.md.
+S2 #640 adds escalation: thin-transcript / deictic-cue or visual=True forces
+OCR + vision on scene-change keyframes (see cerebral.video.escalation).
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import logging
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from cerebral.video import escalation as _escalation
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +49,7 @@ def set_transcribe_fn(fn: Callable[[Path], str]) -> None:
 # ── production stubs (wired by _wire_plugin_seams, never called in tests) ─────
 
 def _prod_download(url: str, out_dir: Path) -> dict:
-    # ponytail: live-verify only — never called in the loop's tests
+    # ponytail: live-verify only -- never called in the loop's tests
     import yt_dlp  # type: ignore[import]
 
     opts = {
@@ -68,7 +71,7 @@ def _prod_download(url: str, out_dir: Path) -> dict:
 
 
 def _prod_transcribe(audio_path: Path) -> str:
-    # ponytail: live-verify only — never called in the loop's tests
+    # ponytail: live-verify only -- never called in the loop's tests
     from faster_whisper import WhisperModel  # type: ignore[import]
 
     model = WhisperModel("small", device="cpu", compute_type="int8")
@@ -86,9 +89,16 @@ def get_transcribe_fn() -> Callable[[Path], str]:
 
 # ── pipeline ──────────────────────────────────────────────────────────────────
 
-async def run(url: str) -> dict[str, Any]:
-    """Download + transcribe one video.  Returns metadata dict.
+async def run(
+    url: str,
+    *,
+    visual: bool = False,
+    budget: "_escalation.EscalationBudget | None" = None,
+) -> dict[str, Any]:
+    """Download + transcribe + (escalate) one video.  Returns metadata dict.
 
+    visual=True forces the visual layers (OCR + vision) regardless of triggers.
+    budget limits how many escalations a batch allows; None means uncapped.
     Runs blocking I/O in executor threads so Cerebral's asyncio loop stays free.
     """
     download = get_download_fn()
@@ -104,8 +114,23 @@ async def run(url: str) -> dict[str, Any]:
             None, transcribe, audio_path
         )
 
-    return {
-        "title": meta.get("title", ""),
-        "duration": meta.get("duration", 0.0),
-        "transcript": transcript,
-    }
+        result: dict[str, Any] = {
+            "title": meta.get("title", ""),
+            "duration": meta.get("duration", 0.0),
+            "transcript": transcript,
+            "ocr_text": "",
+            "visual_summary": "",
+            "escalated": False,
+        }
+
+        if _escalation.needs_escalation(transcript, visual=visual):
+            if budget is None or budget.consume():
+                vis = await _escalation.run(url, out_dir)
+                result.update(vis)
+                result["escalated"] = True
+            else:
+                logger.info(
+                    "[video] escalation cap reached, skipping visual for %s", url
+                )
+
+    return result

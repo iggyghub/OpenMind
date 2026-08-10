@@ -5927,7 +5927,7 @@ async def _apply_settings_control(key: str, value: Any) -> None:
     await _broadcast(_settings_state_event())
 
 
-# ── Video seams (ADR-0017 S1 #639) ───────────────────────────────────────────
+# ── Video seams (ADR-0017 S1 #639 / S2 #640) ────────────────────────────────
 
 def _video_download(url: str, out_dir) -> dict:
     """Production yt-dlp audio pull.  Live-verify only; stubs cover tests."""
@@ -5960,6 +5960,29 @@ def _video_transcribe(audio_path) -> str:
     model = WhisperModel("small", device="cpu", compute_type="int8")
     segments, _ = model.transcribe(str(audio_path), vad_filter=True)
     return " ".join(s.text.strip() for s in segments)
+
+
+def _video_keyframe(url: str, out_dir) -> list:
+    """Production keyframe extraction via yt-dlp + ffmpeg.  Live-verify only."""
+    # ponytail: delegates to escalation._prod_keyframe; seam exists for test injection
+    from cerebral.video.escalation import _prod_keyframe
+    from pathlib import Path as _Path
+    return _prod_keyframe(url, _Path(out_dir))
+
+
+def _video_ocr(frame_path) -> str:
+    """Production OCR via pytesseract.  Live-verify only."""
+    from cerebral.video.escalation import _prod_ocr
+    from pathlib import Path as _Path
+    return _prod_ocr(_Path(frame_path))
+
+
+def _video_vision(frames: list) -> str:
+    """Production vision-model description.  Live-verify only; routes via model priority."""
+    # ponytail: full model-priority routing is a live-verify step (see docs/video-live-verify.md)
+    from cerebral.video.escalation import _prod_vision
+    from pathlib import Path as _Path
+    return _prod_vision([_Path(f) for f in frames])
 
 
 def _wire_plugin_seams() -> None:
@@ -6045,6 +6068,9 @@ def _wire_plugin_seams() -> None:
         ("computer_use", "set_failure_notify_fn", _computer_use_failure_notify),   # S16 #610 (ADR-0016 ladder)
         ("video", "set_download_fn", _video_download),                               # S1 #639 (ADR-0017)
         ("video", "set_transcribe_fn", _video_transcribe),                           # S1 #639 (ADR-0017)
+        ("video", "set_keyframe_fn", _video_keyframe),                               # S2 #640 (ADR-0017)
+        ("video", "set_ocr_fn", _video_ocr),                                         # S2 #640 (ADR-0017)
+        ("video", "set_vision_fn", _video_vision),                                   # S2 #640 (ADR-0017)
     ]
     for name, seam, factory in seams:
         try:

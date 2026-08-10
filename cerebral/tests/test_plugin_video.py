@@ -33,6 +33,10 @@ def _wire(store: VideoStore, *, title="Test Video", duration=60.0, transcript="h
         "duration": duration,
     })
     video_mod.set_transcribe_fn(lambda path: transcript)
+    # S2 #640: stub escalation seams so short test transcripts don't call prod yt-dlp
+    video_mod.set_keyframe_fn(lambda url, out: [])
+    video_mod.set_ocr_fn(lambda f: "")
+    video_mod.set_vision_fn(lambda frames: "")
     return plugin
 
 
@@ -80,17 +84,20 @@ def test_store_missing_url_returns_none():
 
 async def test_video_ingest_stores_transcript():
     store = _make_store()
-    plugin = _wire(store, title="My Tiktok", transcript="buy crypto now")
+    # Rich enough transcript (>= THIN_MIN_WORDS) so escalation does not trigger.
+    rich = "buy crypto now " * 5  # 15 words -- wait, need 20+
+    rich = " ".join(["word"] * 25)
+    plugin = _wire(store, title="My Tiktok", transcript=rich)
     result = await plugin.call_tool("video_ingest", {"url": "https://tiktok.com/v/1"})
     assert not result.is_error
     data = json.loads(result.content)
     assert data["stage"] == "transcribed"
     assert data["title"] == "My Tiktok"
-    assert data["transcript_length"] == len("buy crypto now")
+    assert data["transcript_length"] == len(rich)
 
     v = store.get_by_url("https://tiktok.com/v/1")
     assert v is not None
-    assert v.transcript == "buy crypto now"
+    assert v.transcript == rich
     assert v.stage == "transcribed"
 
 
@@ -108,6 +115,9 @@ async def test_video_ingest_idempotent():
     video_mod.set_store(store)
     video_mod.set_download_fn(counting_download)
     video_mod.set_transcribe_fn(lambda p: "transcript text")
+    video_mod.set_keyframe_fn(lambda url, out: [])
+    video_mod.set_ocr_fn(lambda f: "")
+    video_mod.set_vision_fn(lambda frames: "")
 
     await plugin.call_tool("video_ingest", {"url": "https://tiktok.com/v/2"})
     result2 = await plugin.call_tool("video_ingest", {"url": "https://tiktok.com/v/2"})
