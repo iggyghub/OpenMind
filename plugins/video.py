@@ -356,5 +356,105 @@ class VideoPlugin:
         return ToolResult(content=json.dumps(video.to_dict()))
 
 
+    def panel_spec(self, profile_id: "int | None") -> dict:  # noqa: ARG002
+        """Declarative Videos panel (ADR-0017 decision 9, ADR-0012)."""
+        store = _get_store()
+        status = _channel.batch_status(store)
+        clusters = store.list_clusters()
+
+        widgets: list[dict] = []
+
+        # Ingest and batch-start action forms.
+        widgets.append({
+            "type": "action",
+            "id": "video-ingest",
+            "label": "Ingest video",
+            "tool": "video_ingest",
+            "tool_args": {},
+            "input_arg": "url",
+            "input_placeholder": "https://tiktok.com/... or YouTube URL",
+        })
+        widgets.append({
+            "type": "action",
+            "id": "video-batch-start",
+            "label": "Start channel batch",
+            "tool": "video_batch_start",
+            "tool_args": {},
+            "input_arg": "url",
+            "input_placeholder": "https://tiktok.com/@channel or YouTube channel URL",
+        })
+
+        # Batch status detail.
+        counts = status.get("stage_counts", {})
+        eta_secs = status.get("eta_seconds")
+        running = bool(status.get("running", False))
+        channel_name = status.get("channel") or "—"
+
+        status_fields: list[dict] = [
+            {"label": "Channel", "value": channel_name},
+            {"label": "Status",  "value": "Running" if running else "Idle"},
+        ]
+        for stage in ("enumerated", "downloaded", "transcribed", "escalated", "extracted", "verified"):
+            n = counts.get(stage, 0)
+            if n:
+                status_fields.append({"label": stage.capitalize(), "value": str(n)})
+        if eta_secs is not None:
+            mins, secs = divmod(int(eta_secs), 60)
+            status_fields.append({
+                "label": "ETA",
+                "value": f"{mins}m {secs}s" if mins else f"{secs}s",
+            })
+
+        widgets.append({"type": "detail", "fields": status_fields})
+
+        if running:
+            widgets.append({
+                "type": "action",
+                "id": "video-batch-stop",
+                "label": "Stop batch",
+                "tool": "video_batch_stop",
+                "tool_args": {},
+            })
+
+        # Clusters table (verdict/confidence are S6 #644; shown as pending here).
+        if clusters:
+            table_rows = [
+                [c["label"], str(c["member_count"]), "pending", "—"]
+                for c in clusters
+            ]
+            widgets.append({
+                "type": "table",
+                "columns": ["Idea cluster", "Videos", "Verdict", "Confidence"],
+                "rows": table_rows,
+            })
+
+            # Per-cluster video list (drill-in: up to 5 videos per cluster).
+            for cluster in clusters:
+                videos = store.list_videos_by_cluster(cluster["id"], limit=5)
+                if not videos:
+                    continue
+                widgets.append({
+                    "type": "detail",
+                    "fields": [{"label": "Cluster", "value": cluster["label"]}],
+                })
+                items = []
+                for v in videos:
+                    title = v["title"] or v["url"]
+                    idea = (v.get("idea_text") or "").strip()
+                    idea_preview = (idea[:80] + "…") if len(idea) > 80 else idea
+                    subtitle_parts = [v["stage"]]
+                    if idea_preview:
+                        subtitle_parts.append(idea_preview)
+                    items.append({
+                        "title": title,
+                        "subtitle": " · ".join(subtitle_parts),
+                    })
+                widgets.append({"type": "list", "items": items})
+        else:
+            widgets.append({"type": "list", "items": []})
+
+        return {"title": "Videos", "widgets": widgets}
+
+
 def create() -> VideoPlugin:
     return VideoPlugin()

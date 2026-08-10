@@ -136,7 +136,6 @@ describe('renderWidget security', () => {
     expect(PanelSpec.renderWidget({ type: 'script', code: 'alert(1)' })).toBe('');
     expect(PanelSpec.renderWidget({ type: 'iframe', src: 'x' })).toBe('');
     expect(PanelSpec.renderWidget({ type: 'form' })).toBe('');
-    expect(PanelSpec.renderWidget({ type: 'table' })).toBe('');
   });
 
   test('malformed widget returns empty string', () => {
@@ -302,6 +301,63 @@ describe('renderWidget action', () => {
   });
 });
 
+// ── renderWidget: table (S4 #643) ─────────────────────────────────────────────
+
+describe('renderWidget table', () => {
+  test('renders columns and rows', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'table',
+      columns: ['Cluster', 'Count', 'Verdict'],
+      rows: [
+        ['dropshipping', '14', 'pending'],
+        ['affiliate',    '8',  'pending'],
+      ],
+    });
+    expect(html).toContain('ps-table');
+    expect(html).toContain('ps-th');
+    expect(html).toContain('ps-td');
+    expect(html).toContain('Cluster');
+    expect(html).toContain('dropshipping');
+    expect(html).toContain('14');
+  });
+
+  test('empty columns and rows renders inert empty-state', () => {
+    const html = PanelSpec.renderWidget({ type: 'table', columns: [], rows: [] });
+    expect(html).toContain('ps-empty');
+    expect(html).not.toContain('<table');
+  });
+
+  test('missing columns/rows treated as empty', () => {
+    const html = PanelSpec.renderWidget({ type: 'table' });
+    expect(html).toContain('ps-empty');
+  });
+
+  test('HTML in cells is escaped, not executed', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'table',
+      columns: ['<script>alert(1)</script>'],
+      rows: [['<img src=x onerror=alert(1)>']],
+    });
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('&lt;img');
+  });
+
+  test('null cell values render as empty string', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'table',
+      columns: ['A'],
+      rows: [[null]],
+    });
+    expect(html).toContain('<td class="ps-td"></td>');
+  });
+
+  test('table is in the widget whitelist', () => {
+    expect(PanelSpec.WIDGET_TYPES).toContain('table');
+  });
+});
+
 // ── renderPanel ──────────────────────────────────────────────────────────────
 
 describe('renderPanel', () => {
@@ -353,6 +409,6 @@ describe('renderPanel', () => {
   });
 
   test('WIDGET_TYPES reports the whitelist', () => {
-    expect(PanelSpec.WIDGET_TYPES.sort()).toEqual(['action', 'detail', 'list', 'text', 'toggle']);
+    expect(PanelSpec.WIDGET_TYPES.sort()).toEqual(['action', 'detail', 'list', 'table', 'text', 'toggle']);
   });
 });

@@ -151,12 +151,37 @@
     );
   }
 
+  // Table widget -- read-only columnar data (ADR-0012 / ADR-0017 S4 #643).
+  // columns: string[] header labels; rows: string[][] cell values.
+  // All values are escaped; unknown/empty tables render an inert empty state.
+  function _renderTable(w) {
+    var cols = Array.isArray(w && w.columns) ? w.columns : [];
+    var rows = Array.isArray(w && w.rows) ? w.rows : [];
+    if (cols.length === 0 && rows.length === 0) {
+      return '<div class="ps-empty">No data.</div>';
+    }
+    var head = '';
+    if (cols.length) {
+      head = '<thead><tr>' +
+        cols.map(function (c) { return '<th class="ps-th">' + escHtml(c) + '</th>'; }).join('') +
+        '</tr></thead>';
+    }
+    var body = rows.map(function (row) {
+      var cells = Array.isArray(row) ? row : [];
+      return '<tr>' +
+        cells.map(function (c) { return '<td class="ps-td">' + escHtml(c == null ? '' : c) + '</td>'; }).join('') +
+        '</tr>';
+    }).join('');
+    return '<table class="ps-table">' + head + '<tbody>' + body + '</tbody></table>';
+  }
+
   var WIDGETS = {
     list:   _renderList,
     detail: _renderDetail,
     text:   _renderText,
     action: _renderAction,
     toggle: _renderToggle,
+    table:  _renderTable,
   };
 
   // Renders one widget. Unknown or malformed types return '' -- inert.

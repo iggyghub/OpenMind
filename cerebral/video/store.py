@@ -251,6 +251,40 @@ class VideoStore:
                 (video_id, idea_text, cluster_id),
             )
 
+    def list_clusters(self) -> list[dict]:
+        """Return all clusters ordered by member_count desc."""
+        with self._conn() as con:
+            rows = con.execute(
+                "SELECT id, label, member_count FROM video_clusters ORDER BY member_count DESC"
+            ).fetchall()
+        return [{"id": row["id"], "label": row["label"], "member_count": row["member_count"]} for row in rows]
+
+    def list_videos_by_cluster(self, cluster_id: int, limit: int = 5) -> list[dict]:
+        """Return up to limit videos in a cluster, newest first, with idea text."""
+        with self._conn() as con:
+            rows = con.execute(
+                """
+                SELECT v.id, v.title, v.url, v.stage, v.duration, vi.idea_text
+                FROM video_ideas vi
+                JOIN videos v ON v.id = vi.video_id
+                WHERE vi.cluster_id = ?
+                ORDER BY v.id DESC
+                LIMIT ?
+                """,
+                (cluster_id, limit),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "url": row["url"],
+                "stage": row["stage"],
+                "duration": row["duration"],
+                "idea_text": row["idea_text"],
+            }
+            for row in rows
+        ]
+
     def get_idea_for_video(self, video_id: int) -> dict | None:
         """Return the extracted idea row for a video, or None."""
         with self._conn() as con:
