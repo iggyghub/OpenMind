@@ -11,7 +11,7 @@ framework (build the second kind's abstraction when it exists).
 
 ## Next slice -- start here
 
-- **Active:** S5 -- #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
+- **Active:** S4 -- #643 -- Videos tab: declarative panel (list/table/form/detail/text)
 - **Model:** sonnet
 
 ## Queue
@@ -19,7 +19,7 @@ framework (build the second kind's abstraction when it exists).
 - [x] S1 -- #639 -- video primitive: store.py + pipeline.py (yt-dlp + whisper) + video_ingest/video_get
 - [x] S2 -- #640 -- visual escalation: OCR + vision on keyframes, thin-transcript/deictic triggers + cap
 - [x] S3 -- #641 -- channel batch runner: flat-playlist enumerate + resumable asyncio task + start/stop/status
-- [ ] S5 -- #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
+- [x] S5 -- #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
 - [ ] S4 -- #643 -- Videos tab: declarative panel (list/table/form/detail/text)
 - [ ] S6 -- #644 -- validity verdict per cluster (strong model + web search; seam-built, live-verify tail)
 - [ ] S7 -- #645 -- commit verified idea to Memory (video_commit)
@@ -35,6 +35,7 @@ slice, set the next entry's model on the `Model:` line above.
 - PR #646 — S1 #639 — video primitive: store + pipeline + video_ingest/video_get
 - PR #647 — S2 #640 -- visual escalation: OCR + vision on keyframes, thin-transcript/deictic triggers + cap
 - PR #648 — S3 #641 -- channel batch runner: enumerate + resumable asyncio task + start/stop/status
+- PR #649 — S5 #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
 
 ## SAFETY
 
