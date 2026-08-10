@@ -1,13 +1,16 @@
-"""Video MCP plugin — ADR-0017 S1 #639.
+"""Video MCP plugin -- ADR-0017.
 
-Tools: video_ingest(url), video_get(id).
+Tools: video_ingest(url, visual=False), video_get(id).
 
-All heavy I/O (download + transcribe) is behind injectable seams so the
-test suite never hits the network or real binaries.  See SAFETY in VIDEO.md.
+All heavy I/O (download, transcribe, OCR, vision) is behind injectable seams so
+the test suite never hits the network or real binaries.  See SAFETY in VIDEO.md.
 
 Seams exposed for _wire_plugin_seams:
-  set_download_fn(fn)   — injected into cerebral.video.pipeline
-  set_transcribe_fn(fn) — injected into cerebral.video.pipeline
+  set_download_fn(fn)   -- injected into cerebral.video.pipeline
+  set_transcribe_fn(fn) -- injected into cerebral.video.pipeline
+  set_keyframe_fn(fn)   -- injected into cerebral.video.escalation   S2 #640
+  set_ocr_fn(fn)        -- injected into cerebral.video.escalation   S2 #640
+  set_vision_fn(fn)     -- injected into cerebral.video.escalation   S2 #640
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
+from cerebral.video import escalation as _escalation
 from cerebral.video import pipeline as _pipeline
 from cerebral.video.store import VideoStore
 
@@ -58,6 +62,18 @@ def set_transcribe_fn(fn: Callable) -> None:
     _pipeline.set_transcribe_fn(fn)
 
 
+def set_keyframe_fn(fn: Callable) -> None:  # S2 #640
+    _escalation.set_keyframe_fn(fn)
+
+
+def set_ocr_fn(fn: Callable) -> None:  # S2 #640
+    _escalation.set_ocr_fn(fn)
+
+
+def set_vision_fn(fn: Callable) -> None:  # S2 #640
+    _escalation.set_vision_fn(fn)
+
+
 # ── plugin class ──────────────────────────────────────────────────────────────
 
 class VideoPlugin:
@@ -69,8 +85,10 @@ class VideoPlugin:
                 name="video_ingest",
                 description=(
                     "Download and transcribe a video from a URL (YouTube, TikTok, etc.). "
-                    "Stores the transcript in the video store and returns the video id. "
-                    "Idempotent: re-running on the same URL skips download/transcription."
+                    "Stores the transcript (and optional visual layers) in the video store "
+                    "and returns the video id. "
+                    "Idempotent: re-running on the same URL skips completed stages. "
+                    "Set visual=true to force OCR + vision even on rich-audio videos."
                 ),
                 plugin=PLUGIN_NAME,
                 required_capabilities=REQUIRED_CAPABILITIES,
@@ -85,13 +103,23 @@ class VideoPlugin:
                             "type": "string",
                             "description": "Optional channel name for grouping.",
                         },
+                        "visual": {
+                            "type": "boolean",
+                            "description": (
+                                "Force visual layers (OCR + vision on keyframes) "
+                                "regardless of transcript content."
+                            ),
+                        },
                     },
                     "required": ["url"],
                 },
             ),
             Tool(
                 name="video_get",
-                description="Get a stored video by its id. Returns metadata and transcript.",
+                description=(
+                    "Get a stored video by its id. "
+                    "Returns metadata, transcript, and visual data if escalated."
+                ),
                 plugin=PLUGIN_NAME,
                 required_capabilities=frozenset({"external_data_read"}),
                 schema={
@@ -117,51 +145,108 @@ class VideoPlugin:
     async def _video_ingest(self, args: dict) -> ToolResult:
         url: str = args.get("url", "").strip()
         channel: str | None = args.get("channel")
+        visual: bool = bool(args.get("visual", False))
         if not url:
             return ToolResult(content="url is required", is_error=True)
 
         store = _get_store()
 
-        # Idempotency: skip if already transcribed.
         existing = store.get_by_url(url)
-        if existing and existing.stage == "transcribed":
+
+        # Already escalated (or further) -- skip entirely.
+        if existing and existing.stage in ("escalated", "extracted", "verified"):
             return ToolResult(
                 content=json.dumps({
                     "id": existing.id,
                     "stage": existing.stage,
                     "title": existing.title,
                     "transcript_length": len(existing.transcript or ""),
+                    "ocr_text_length": len(existing.ocr_text or ""),
                     "skipped": True,
                 })
             )
 
-        # Persist enumerated row first so a crash before download is resumable.
+        # Already transcribed: run escalation only if needed, skip otherwise.
+        if existing and existing.stage == "transcribed":
+            transcript = existing.transcript or ""
+            if not _escalation.needs_escalation(transcript, visual=visual):
+                return ToolResult(
+                    content=json.dumps({
+                        "id": existing.id,
+                        "stage": "transcribed",
+                        "title": existing.title,
+                        "transcript_length": len(transcript),
+                        "skipped": True,
+                    })
+                )
+            # Escalate without re-downloading/transcribing.
+            return await self._escalate_existing(existing.id, url, transcript, store)
+
+        # Fresh ingest (enumerated or earlier).
         video_id = store.upsert(url, channel=channel, stage="enumerated")
 
         try:
-            meta = await _pipeline.run(url)
+            meta = await _pipeline.run(url, visual=visual)
         except Exception as exc:
             logger.error("[video] ingest failed for %s: %s", url, exc)
             return ToolResult(content=f"Ingest failed: {exc}", is_error=True)
 
-        # Commit transcribed state.
+        final_stage = "escalated" if meta["escalated"] else "transcribed"
         store.upsert(
             url,
             channel=channel,
             title=meta["title"],
             duration=meta["duration"],
             transcript=meta["transcript"],
-            stage="transcribed",
+            ocr_text=meta["ocr_text"] or None,
+            visual_summary=meta["visual_summary"] or None,
+            escalated=meta["escalated"],
+            stage=final_stage,
         )
 
         video = store.get_by_url(url)
         return ToolResult(
             content=json.dumps({
                 "id": video.id if video else video_id,
-                "stage": "transcribed",
+                "stage": final_stage,
                 "title": meta["title"],
                 "duration": meta["duration"],
                 "transcript_length": len(meta["transcript"]),
+                "ocr_text_length": len(meta["ocr_text"]),
+                "escalated": meta["escalated"],
+            })
+        )
+
+    async def _escalate_existing(
+        self, video_id: int, url: str, transcript: str, store: VideoStore
+    ) -> ToolResult:
+        """Run escalation on a video that was already transcribed."""
+        import tempfile
+        from pathlib import Path as _Path
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                vis = await _escalation.run(url, _Path(tmp))
+        except Exception as exc:
+            logger.error("[video] escalation failed for %s: %s", url, exc)
+            return ToolResult(content=f"Escalation failed: {exc}", is_error=True)
+
+        store.upsert(
+            url,
+            ocr_text=vis["ocr_text"] or None,
+            visual_summary=vis["visual_summary"] or None,
+            escalated=True,
+            stage="escalated",
+        )
+        video = store.get_by_id(video_id)
+        return ToolResult(
+            content=json.dumps({
+                "id": video_id,
+                "stage": "escalated",
+                "title": video.title if video else None,
+                "transcript_length": len(transcript),
+                "ocr_text_length": len(vis["ocr_text"]),
+                "escalated": True,
             })
         )
 

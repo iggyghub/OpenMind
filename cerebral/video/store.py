@@ -1,9 +1,11 @@
-"""Video store — SQLite backing for the video-watching primitive (ADR-0017 S1 #639).
+"""Video store -- SQLite backing for the video-watching primitive (ADR-0017).
 
 Schema lives in openmind.db as a `videos` table.  Every stage transition is
-committed per-video so the batch runner is fully resumable (#639 AC3).
+committed per-video so the batch runner is fully resumable (ADR-0017 decision 4).
 
-Stages: enumerated → downloaded → transcribed → escalated → extracted → verified
+Stages: enumerated -> downloaded -> transcribed -> escalated -> extracted -> verified
+
+S2 #640 adds: ocr_text, visual_summary, escalated columns.
 """
 
 from __future__ import annotations
@@ -20,17 +22,27 @@ _DEFAULT_DB = data_dir() / "openmind.db"
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS videos (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    url         TEXT    NOT NULL UNIQUE,
-    channel     TEXT,
-    title       TEXT,
-    duration    REAL,
-    transcript  TEXT,
-    stage       TEXT    NOT NULL DEFAULT 'enumerated',
-    created_at  TEXT    NOT NULL,
-    updated_at  TEXT    NOT NULL
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    url           TEXT    NOT NULL UNIQUE,
+    channel       TEXT,
+    title         TEXT,
+    duration      REAL,
+    transcript    TEXT,
+    ocr_text      TEXT,
+    visual_summary TEXT,
+    escalated     INTEGER DEFAULT 0,
+    stage         TEXT    NOT NULL DEFAULT 'enumerated',
+    created_at    TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL
 );
 """
+
+# Migration: add S2 columns to tables created before this slice.
+_MIGRATIONS = [
+    "ALTER TABLE videos ADD COLUMN ocr_text TEXT",
+    "ALTER TABLE videos ADD COLUMN visual_summary TEXT",
+    "ALTER TABLE videos ADD COLUMN escalated INTEGER DEFAULT 0",
+]
 
 
 @dataclass
@@ -41,6 +53,9 @@ class Video:
     title: Optional[str]
     duration: Optional[float]
     transcript: Optional[str]
+    ocr_text: Optional[str]
+    visual_summary: Optional[str]
+    escalated: bool
     stage: str
     created_at: str
     updated_at: str
@@ -53,6 +68,9 @@ class Video:
             "title": self.title,
             "duration": self.duration,
             "transcript": self.transcript,
+            "ocr_text": self.ocr_text,
+            "visual_summary": self.visual_summary,
+            "escalated": self.escalated,
             "stage": self.stage,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -66,6 +84,15 @@ class VideoStore:
         self._con = sqlite3.connect(str(db_path), check_same_thread=False)
         self._con.row_factory = sqlite3.Row
         self._con.executescript(_DDL)
+        self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        for sql in _MIGRATIONS:
+            try:
+                self._con.execute(sql)
+                self._con.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     def _conn(self) -> sqlite3.Connection:
         return self._con
@@ -82,6 +109,9 @@ class VideoStore:
         title: str | None = None,
         duration: float | None = None,
         transcript: str | None = None,
+        ocr_text: str | None = None,
+        visual_summary: str | None = None,
+        escalated: bool | None = None,
         stage: str = "enumerated",
     ) -> int:
         """Insert or update a video row.  Returns the video id."""
@@ -89,17 +119,28 @@ class VideoStore:
         with self._conn() as con:
             cur = con.execute(
                 """
-                INSERT INTO videos (url, channel, title, duration, transcript, stage, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO videos
+                    (url, channel, title, duration, transcript,
+                     ocr_text, visual_summary, escalated,
+                     stage, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(url) DO UPDATE SET
-                    channel    = COALESCE(excluded.channel,    channel),
-                    title      = COALESCE(excluded.title,      title),
-                    duration   = COALESCE(excluded.duration,   duration),
-                    transcript = COALESCE(excluded.transcript, transcript),
-                    stage      = excluded.stage,
-                    updated_at = excluded.updated_at
+                    channel        = COALESCE(excluded.channel,        channel),
+                    title          = COALESCE(excluded.title,          title),
+                    duration       = COALESCE(excluded.duration,       duration),
+                    transcript     = COALESCE(excluded.transcript,     transcript),
+                    ocr_text       = COALESCE(excluded.ocr_text,       ocr_text),
+                    visual_summary = COALESCE(excluded.visual_summary, visual_summary),
+                    escalated      = COALESCE(excluded.escalated,      escalated),
+                    stage          = excluded.stage,
+                    updated_at     = excluded.updated_at
                 """,
-                (url, channel, title, duration, transcript, stage, now, now),
+                (
+                    url, channel, title, duration, transcript,
+                    ocr_text, visual_summary,
+                    int(escalated) if escalated is not None else None,
+                    stage, now, now,
+                ),
             )
             if cur.lastrowid and cur.lastrowid != 0:
                 return cur.lastrowid
@@ -125,6 +166,9 @@ def _row_to_video(row: sqlite3.Row) -> Video:
         title=row["title"],
         duration=row["duration"],
         transcript=row["transcript"],
+        ocr_text=row["ocr_text"] if "ocr_text" in row.keys() else None,
+        visual_summary=row["visual_summary"] if "visual_summary" in row.keys() else None,
+        escalated=bool(row["escalated"] or 0) if "escalated" in row.keys() else False,
         stage=row["stage"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
