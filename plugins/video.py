@@ -519,14 +519,31 @@ class VideoPlugin:
                 confidence_val = (
                     f"{c['confidence']:.0%}" if c["confidence"] is not None else "—"
                 )
+                people = c.get("people_required") or 1
                 table_rows.append(
-                    [c["label"], str(c["member_count"]), verdict_val, confidence_val]
+                    [c["label"], str(c["member_count"]), str(people), verdict_val, confidence_val]
                 )
             widgets.append({
                 "type": "table",
-                "columns": ["Idea cluster", "Videos", "Verdict", "Confidence"],
+                "columns": ["Idea cluster", "Videos", "People", "Verdict", "Confidence"],
                 "rows": table_rows,
             })
+
+            # S8 #653: two-person ideas grouped together.
+            two_person = [c for c in clusters if (c.get("people_required") or 1) == 2]
+            if two_person:
+                widgets.append({
+                    "type": "detail",
+                    "fields": [{"label": "Group", "value": "Requires two people"}],
+                })
+                widgets.append({
+                    "type": "table",
+                    "columns": ["Idea cluster", "Videos", "Verdict"],
+                    "rows": [
+                        [c["label"], str(c["member_count"]), c["verdict"] or "pending"]
+                        for c in two_person
+                    ],
+                })
 
             # Per-cluster drill-in: status, evidence links, up to 5 videos.
             for cluster in clusters:

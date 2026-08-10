@@ -139,3 +139,10 @@ Complete these manually; do NOT perform them in an autonomous loop session.
 - [ ] **Un-committed cluster stays out of Memory.** After a batch run with multiple
       clusters, commit only one. Confirm only that cluster's idea appears in Memory recall;
       the others are absent.
+
+## S8 #653 -- verdict de-bias + people-count
+- [ ] Run a real verify on a @filthy.profit "unethical" item that is actually a
+      government grant/benefit: verdict must reflect the METHOD (legit) and NOT
+      inherit "scam/unethical" from the video's framing.
+- [ ] Confirm `people_required` is populated on real extractions and that a
+      genuinely two-person method lands in the "Requires two people" group.

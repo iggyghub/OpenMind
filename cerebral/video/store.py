@@ -67,6 +67,8 @@ _MIGRATIONS = [
     "ALTER TABLE video_clusters ADD COLUMN evidence_links TEXT",
     # S7 #645
     "ALTER TABLE video_clusters ADD COLUMN memory_id TEXT",
+    # S8 #653
+    "ALTER TABLE video_clusters ADD COLUMN people_required INTEGER DEFAULT 1",
 ]
 
 
@@ -232,12 +234,17 @@ class VideoStore:
             rows = con.execute("SELECT label FROM video_clusters ORDER BY id").fetchall()
         return [row["label"] for row in rows]
 
-    def get_or_create_cluster(self, label: str) -> int:
-        """Return cluster id for label, creating it and incrementing member_count."""
+    def get_or_create_cluster(self, label: str, people_required: int = 1) -> int:
+        """Return cluster id for label, creating it and incrementing member_count.
+
+        people_required is a property of the method, set once when the cluster is
+        first created (like the verdict); later videos in the cluster keep it.
+        """
         with self._conn() as con:
             con.execute(
-                "INSERT OR IGNORE INTO video_clusters (label, member_count) VALUES (?, 0)",
-                (label,),
+                "INSERT OR IGNORE INTO video_clusters (label, member_count, people_required)"
+                " VALUES (?, 0, ?)",
+                (label, people_required),
             )
             con.execute(
                 "UPDATE video_clusters SET member_count = member_count + 1 WHERE label = ?",
@@ -266,7 +273,8 @@ class VideoStore:
         """Return all clusters ordered by member_count desc, including verdict and memory_id."""
         with self._conn() as con:
             rows = con.execute(
-                "SELECT id, label, member_count, verdict, confidence, evidence_links, memory_id"
+                "SELECT id, label, member_count, verdict, confidence, evidence_links, memory_id,"
+                " people_required"
                 " FROM video_clusters ORDER BY member_count DESC"
             ).fetchall()
         import json as _json
@@ -286,6 +294,7 @@ class VideoStore:
                 "confidence": row["confidence"],
                 "evidence": evidence,
                 "memory_id": row["memory_id"],
+                "people_required": row["people_required"],
             })
         return result
 
@@ -294,7 +303,8 @@ class VideoStore:
         import json as _json
         with self._conn() as con:
             row = con.execute(
-                "SELECT id, label, member_count, verdict, confidence, evidence_links, memory_id"
+                "SELECT id, label, member_count, verdict, confidence, evidence_links, memory_id,"
+                " people_required"
                 " FROM video_clusters WHERE id = ?",
                 (cluster_id,),
             ).fetchone()
@@ -314,6 +324,7 @@ class VideoStore:
             "confidence": row["confidence"],
             "evidence": evidence,
             "memory_id": row["memory_id"],
+            "people_required": row["people_required"],
         }
 
     def get_cluster_idea_text(self, cluster_id: int) -> str | None:
