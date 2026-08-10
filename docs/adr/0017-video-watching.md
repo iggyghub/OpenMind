@@ -122,3 +122,15 @@ IP blocked (this is a hard external constraint, not a tuning knob).
   the shared vocabulary, not per-plugin code.
 - Verification is the only expensive stage and the only one with real API cost;
   the cluster-cache is what keeps a 200-video run affordable.
+
+## Amendment — S9 #655: no Anthropic key; Budd + OpenClaw web search
+
+Decision 7 named "a strong model + web search"; in practice the box runs with no
+Anthropic API key. Two facts made that clean: `_router.complete()` is text-only
+and local-first (cloud is an off-by-default fallback, so the key was never
+required), and the "search the web" instruction was never a real tool call.
+S9 makes grounding real without a key: `_video_verify` calls Felix's own
+`web_search` (OpenClaw gateway, keyless) and feeds the results into the model.
+Extraction + verdict route on a dedicated `task_type="video"` so Budd can be
+pinned for video without disturbing the jobs pipeline's `quality` route; a search
+outage degrades the verdict to knowledge-only rather than failing.

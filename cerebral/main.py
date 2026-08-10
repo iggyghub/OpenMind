@@ -6022,7 +6022,7 @@ async def _video_extract(                                                    # S
         + labels_block
         + f"\n\nVideo content:\n{content}"
     )
-    raw = await _router.complete(prompt, task_type="quality")
+    raw = await _router.complete(prompt, task_type="video")  # S9 #655: Budd/local, no API key
     m = _re.search(r"\{[^{}]*\}", raw, _re.DOTALL)
     if not m:
         raise ValueError(f"No JSON in extraction response: {raw[:200]!r}")
@@ -6047,29 +6047,29 @@ async def _video_commit(cluster_id: int, idea_text: str, cluster: dict) -> str: 
     return await mgr.remember(fact)
 
 
-async def _video_verify(cluster_label: str, idea_text: str) -> dict:  # S6 #644 (ADR-0017)
-    """Production validity verdict via strong model + web search.  Live-verify only; stubs cover tests."""
+async def _video_verify(cluster_label: str, idea_text: str) -> dict:  # S6 #644 / S9 #655 (ADR-0017)
+    """Production validity verdict: Budd (or local) grounded on Felix's web_search.
+
+    No Anthropic key — search runs via OpenClaw (web_search tool), the model runs
+    on the "video" task route. If search is unavailable the verdict degrades to
+    knowledge-only rather than failing. Live-verify only; stubs cover tests.
+    """
     import json as _json
     import re as _re
+    from cerebral.video.verdict import build_verdict_prompt
 
-    prompt = (
-        "You are a financial-idea fact-checker.  Judge the METHOD below on its own "
-        "merits — its actual legality and whether it really works.  Ignore any "
-        "sensational or clickbait framing from the source video (e.g. a channel "
-        "calling its ideas 'unethical' or 'secret'): many such videos actually "
-        "describe legitimate programs, such as government grants, benefits, tax "
-        "credits, or incentives paid for doing something.  Do NOT mark an idea as "
-        "'scam' or 'dubious' merely because of how the video is framed; base the "
-        "verdict on what the method itself is.\n"
-        "Given the money-making idea below, search the web and return ONLY valid "
-        "JSON with exactly three keys:\n"
-        '  "verdict": one of "legit", "dubious", "scam", "unverifiable"\n'
-        '  "confidence": a float between 0.0 and 1.0\n'
-        '  "evidence": a JSON array of 1-3 URLs or source descriptions supporting your verdict\n\n'
-        f"Cluster: {cluster_label}\n"
-        f"Idea: {idea_text}"
-    )
-    raw = await _router.complete(prompt, task_type="quality")
+    # Ground on Felix's own web search (OpenClaw, no API key). Best-effort:
+    # a search outage must not block the verdict, only weaken its grounding.
+    search_results = ""
+    try:
+        res = await _orc.call_tool("web_search", {"query": idea_text, "max_results": 5})
+        if res is not None and not getattr(res, "is_error", False):
+            search_results = res.content or ""
+    except Exception as exc:
+        logger.warning("[video/verdict] web_search unavailable, judging from knowledge: %s", exc)
+
+    prompt = build_verdict_prompt(cluster_label, idea_text, search_results)
+    raw = await _router.complete(prompt, task_type="video")
     m = _re.search(r"\{[\s\S]*?\}", raw)
     if not m:
         raise ValueError(f"No JSON in verdict response: {raw[:200]!r}")

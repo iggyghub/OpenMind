@@ -16,6 +16,22 @@ from cerebral.video.escalation import set_keyframe_fn, set_ocr_fn, set_vision_fn
 from cerebral.video.store import VideoStore
 
 
+# ── S9 #655: build_verdict_prompt (RAG grounding + de-bias) ───────────────────
+
+def test_build_verdict_prompt_grounds_on_search_results():
+    p = verdict.build_verdict_prompt("gov grants", "Apply for a federal grant", "RESULT: grants.gov says X")
+    assert "RESULT: grants.gov says X" in p
+    assert "Cite the relevant result URLs" in p
+    assert "unethical" in p  # de-bias clause present
+
+
+def test_build_verdict_prompt_falls_back_to_knowledge_when_no_results():
+    p = verdict.build_verdict_prompt("gov grants", "Apply for a federal grant", "")
+    assert "No web search results are available" in p
+    assert "inventing URLs" in p
+    assert "unethical" in p  # de-bias clause still present
+
+
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture
