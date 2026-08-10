@@ -168,11 +168,13 @@ def _restore_custom_models() -> None:
                     row["kind"], row["url"],
                     cached_model=row["model"], api_key=api_key,
                     on_resolved=_make_dynamic_persist_cb(_active_profile.id, row),
+                    supports_vision=row.get("supports_vision", False),
                 )
                 is_cloud = dynamic_is_cloud(row["kind"])
             else:
                 backend, is_cloud = build_custom_backend(
-                    row["kind"], row["url"], row["model"], api_key
+                    row["kind"], row["url"], row["model"], api_key,
+                    supports_vision=row.get("supports_vision", False),
                 )
         except ValueError as exc:
             logger.warning("[cerebral] skipping custom model %s: %s", row["id"], exc)
@@ -3827,6 +3829,7 @@ async def _handle_message(msg: dict) -> None:
         model = (d.get("model") or "").strip()
         label_in = (d.get("label") or "").strip()
         api_key = (d.get("api_key") or "").strip()
+        supports_vision = bool(d.get("supports_vision"))
         # Server-first (S3 #525): blank model + a kind that can list models
         # -> dynamic. The model is auto-resolved from the server on first use.
         dynamic = (not model) and (kind in DYNAMIC_CUSTOM_KINDS)
@@ -3853,11 +3856,13 @@ async def _handle_message(msg: dict) -> None:
                 if dynamic:
                     backend = DynamicModelBackend(
                         kind, url, cached_model="", api_key=api_key or None,
+                        supports_vision=supports_vision,
                     )
                     is_cloud = dynamic_is_cloud(kind)
                 else:
                     backend, is_cloud = build_custom_backend(
-                        kind, url, model, api_key or None
+                        kind, url, model, api_key or None,
+                        supports_vision=supports_vision,
                     )
             except ValueError as exc:
                 await _err(str(exc))
@@ -3901,7 +3906,7 @@ async def _handle_message(msg: dict) -> None:
             _custom_models.add(
                 _active_profile.id, id=mid, kind=kind, url=url, model=stored_model,
                 label=label, is_cloud=is_cloud, secret_ref=secret_ref,
-                dynamic=dynamic,
+                dynamic=dynamic, supports_vision=supports_vision,
             )
             logger.info(
                 "[cerebral] Custom model added: %s (%s%s)",

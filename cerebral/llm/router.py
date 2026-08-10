@@ -533,13 +533,15 @@ CUSTOM_KINDS = ("ollama", "openai", "anthropic")
 
 
 def build_custom_backend(
-    kind: str, url: str, model: str, api_key: str | None = None
+    kind: str, url: str, model: str, api_key: str | None = None,
+    supports_vision: bool = False,
 ) -> tuple[Backend, bool]:
     """Build a (backend, is_cloud) pair for a user-added remote model."""
     if kind == "ollama":
         return OllamaBackend(url=url, model=model), False
     if kind == "openai":
-        return ClawBackend(url=url, model=model, api_key=api_key), True
+        return ClawBackend(url=url, model=model, api_key=api_key,
+                           supports_vision=supports_vision), True
     if kind == "anthropic":
         return AnthropicBackend(model=model, api_key=api_key), True
     raise ValueError(f"unknown custom model kind {kind!r}; known: {CUSTOM_KINDS}")
@@ -575,6 +577,7 @@ class DynamicModelBackend:
         cached_model: str = "",
         api_key: str | None = None,
         on_resolved: Callable[[str], None] | None = None,
+        supports_vision: bool = False,
         # Test seams -- inject to avoid live HTTP.
         openai_list_fn: Callable[[str, str | None], list[str]] | None = None,
         ollama_list_fn: Callable[[str], list[str]] | None = None,
@@ -588,10 +591,9 @@ class DynamicModelBackend:
         self.api_key = api_key
         self._model = cached_model or ""
         self.on_resolved = on_resolved
-        # Dynamic backends can't know if the resolved model is VL without
-        # calling the endpoint, so they default off; a caller can flip this
-        # once the user pins a VL model at the endpoint.
-        self.supports_vision = False
+        # Dynamic backends can't auto-detect VL, so they default off; the user
+        # flips this on (supports_vision) when the endpoint serves a VL model.
+        self.supports_vision = supports_vision
         self._openai_list = openai_list_fn or (
             lambda u, k: list_openai_models(u, api_key=k)
         )
