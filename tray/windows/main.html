@@ -5674,6 +5674,7 @@
         <button class="lib-tab" data-lib="recipes" type="button">Recipes</button>
         <button class="lib-tab" data-lib="documents" type="button">Documents</button>
         <button class="lib-tab" data-lib="job-search" type="button">Job Search</button>
+        <button class="lib-tab" data-lib="videos" type="button">Videos</button>
       </div>
 
       <div class="lib-sub is-active" data-lib="memory">
@@ -5790,6 +5791,17 @@
           </div>
         </div>
       </div>
+
+      <!-- Videos sub-tab (S4 #643, ADR-0017): rendered from the video plugin's
+           declarative panel_spec (list/table/action/detail widgets) via
+           PanelSpec.renderPanel -- no plugin-authored HTML/JS reaches here
+           (ADR-0012 decision 3). Mirrors the Skills sub-tab under Harness. -->
+      <div class="lib-sub" data-lib="videos">
+        <div class="vid-body" id="videos-panel-body">
+          <div class="ps-empty">Loading Videos panel...</div>
+        </div>
+      </div>
+
     </section>
 
       </div><!-- /.ws-primary -->
@@ -6499,6 +6511,9 @@
           // same event, independent of the Workspace secondary-slot cache.
           if (event.data && event.data.plugin_name === 'skills') {
             renderSkillsPanel(event.data.spec);
+          }
+          if (event.data && event.data.plugin_name === 'video') {
+            renderVideosPanel(event.data.spec);
           }
           break;
         case 'recipe_run_result':
@@ -9612,6 +9627,19 @@
       }
     }
 
+    // ── Videos sub-tab (S4 #643, ADR-0017) ──────────────────────────────────
+    // Rendered entirely from the video plugin's declarative panel_spec
+    // (list/table/action/detail widgets) via PanelSpec.renderPanel.
+    const videosPanelBodyEl = document.getElementById('videos-panel-body');
+
+    function renderVideosPanel(spec) {
+      if (!videosPanelBodyEl || typeof window.PanelSpec === 'undefined') return;
+      videosPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
+      if (window.ActionWidget) {
+        window.ActionWidget.initActionWidgets(videosPanelBodyEl, sendEvent);
+      }
+    }
+
     // ── plugins pane (Issues #206, #187) ────────────────────────────────────
     // Consumes plugins_list (status + tool_count added in #187) and
     // plugin_settings (new in #187 for the Discord allowlist sub-pane).
@@ -11020,7 +11048,11 @@
         sendEvent({ type: 'list_recipes' });
         sendEvent({ type: 'list_documents' });
         sendEvent({ type: 'list_job_postings' });
-        libActivateSub(sub || 'memory');
+        const libSub = sub || 'memory';
+        if (libSub === 'videos') {
+          sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: 'video' } });
+        }
+        libActivateSub(libSub);
       } else if (route === 'settings') {
         sendEvent({ type: 'refresh_models' });
         sendEvent({ type: 'list_settings' });

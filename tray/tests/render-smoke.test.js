@@ -110,15 +110,15 @@ test('library pane exists with sub-tab bar (S5)', () => {
   expect(pane).not.toBeNull();
   const tabs = pane.querySelector('#lib-tabs');
   expect(tabs).not.toBeNull();
-  // Five sub-tabs.
+  // Six sub-tabs (memory / insights / recipes / documents / job-search / videos).
   const tabBtns = pane.querySelectorAll('.lib-tab');
-  expect(tabBtns.length).toBe(5);
+  expect(tabBtns.length).toBe(6);
 });
 
-test('library pane contains memory, insights, recipes, documents, job-search sub-sections (S5)', () => {
+test('library pane contains memory, insights, recipes, documents, job-search, videos sub-sections', () => {
   const pane = root.querySelector('.pane[data-route="library"]');
   expect(pane).not.toBeNull();
-  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search']) {
+  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos']) {
     const el = pane.querySelector(`.lib-sub[data-lib="${sub}"]`);
     expect(el).not.toBeNull();
   }
