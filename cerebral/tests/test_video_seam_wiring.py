@@ -23,6 +23,7 @@ _VIDEO_SEAMS = (
     "set_enumerate_fn",   # S3 #641
     "set_extract_fn",     # S5 #642
     "set_verify_fn",      # S6 #644
+    "set_commit_fn",      # S7 #645
 )
 
 
@@ -54,6 +55,7 @@ def test_wire_plugin_seams_reaches_video_module(monkeypatch):
     assert "set_enumerate_fn" in mod._calls, "set_enumerate_fn not wired"   # S3 #641
     assert "set_extract_fn" in mod._calls, "set_extract_fn not wired"       # S5 #642
     assert "set_verify_fn" in mod._calls, "set_verify_fn not wired"        # S6 #644
+    assert "set_commit_fn" in mod._calls, "set_commit_fn not wired"       # S7 #645
 
 
 def test_main_does_not_directly_import_video_seam_setters():

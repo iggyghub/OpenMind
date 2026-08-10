@@ -6027,6 +6027,24 @@ async def _video_extract(                                                    # S
     return _json.loads(m.group(0))
 
 
+async def _video_commit(cluster_id: int, idea_text: str, cluster: dict) -> str:  # S7 #645 (ADR-0017)
+    """Write a verified idea cluster to Memory as a durable fact.  Live-verify only; stubs cover tests."""
+    verdict = cluster.get("verdict", "unverifiable")
+    confidence = cluster.get("confidence") or 0.0
+    evidence = cluster.get("evidence") or []
+    label = cluster.get("label", "")
+    evidence_str = "; ".join(str(e) for e in evidence)
+    fact = (
+        f"Money-making idea — {label}: {idea_text}. "
+        f"Validity verdict: {verdict} (confidence {confidence:.0%}). "
+        f"Evidence: {evidence_str or 'none'}."
+    )
+    mgr = _get_memory()
+    if mgr is None:
+        raise RuntimeError("No active profile — load a profile before committing to Memory")
+    return await mgr.remember(fact)
+
+
 async def _video_verify(cluster_label: str, idea_text: str) -> dict:  # S6 #644 (ADR-0017)
     """Production validity verdict via strong model + web search.  Live-verify only; stubs cover tests."""
     import json as _json
@@ -6137,6 +6155,7 @@ def _wire_plugin_seams() -> None:
         ("video", "set_enumerate_fn", _video_enumerate),                             # S3 #641 (ADR-0017)
         ("video", "set_extract_fn", _video_extract),                                 # S5 #642 (ADR-0017)
         ("video", "set_verify_fn", _video_verify),                                   # S6 #644 (ADR-0017)
+        ("video", "set_commit_fn", _video_commit),                                    # S7 #645 (ADR-0017)
     ]
     for name, seam, factory in seams:
         try:

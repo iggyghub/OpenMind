@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS video_clusters (
     member_count   INTEGER NOT NULL DEFAULT 0,
     verdict        TEXT,
     confidence     REAL,
-    evidence_links TEXT
+    evidence_links TEXT,
+    memory_id      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS video_ideas (
@@ -64,6 +65,8 @@ _MIGRATIONS = [
     "ALTER TABLE video_clusters ADD COLUMN verdict TEXT",
     "ALTER TABLE video_clusters ADD COLUMN confidence REAL",
     "ALTER TABLE video_clusters ADD COLUMN evidence_links TEXT",
+    # S7 #645
+    "ALTER TABLE video_clusters ADD COLUMN memory_id TEXT",
 ]
 
 
@@ -260,10 +263,10 @@ class VideoStore:
             )
 
     def list_clusters(self) -> list[dict]:
-        """Return all clusters ordered by member_count desc, including verdict."""
+        """Return all clusters ordered by member_count desc, including verdict and memory_id."""
         with self._conn() as con:
             rows = con.execute(
-                "SELECT id, label, member_count, verdict, confidence, evidence_links"
+                "SELECT id, label, member_count, verdict, confidence, evidence_links, memory_id"
                 " FROM video_clusters ORDER BY member_count DESC"
             ).fetchall()
         import json as _json
@@ -282,8 +285,54 @@ class VideoStore:
                 "verdict": row["verdict"],
                 "confidence": row["confidence"],
                 "evidence": evidence,
+                "memory_id": row["memory_id"],
             })
         return result
+
+    def get_cluster_by_id(self, cluster_id: int) -> dict | None:
+        """Return a single cluster dict by id, or None if not found."""
+        import json as _json
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT id, label, member_count, verdict, confidence, evidence_links, memory_id"
+                " FROM video_clusters WHERE id = ?",
+                (cluster_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        evidence = []
+        if row["evidence_links"]:
+            try:
+                evidence = _json.loads(row["evidence_links"])
+            except Exception:
+                evidence = []
+        return {
+            "id": row["id"],
+            "label": row["label"],
+            "member_count": row["member_count"],
+            "verdict": row["verdict"],
+            "confidence": row["confidence"],
+            "evidence": evidence,
+            "memory_id": row["memory_id"],
+        }
+
+    def get_cluster_idea_text(self, cluster_id: int) -> str | None:
+        """Return the longest idea_text from a cluster as a representative sample."""
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT idea_text FROM video_ideas WHERE cluster_id = ?"
+                " ORDER BY LENGTH(idea_text) DESC LIMIT 1",
+                (cluster_id,),
+            ).fetchone()
+        return row["idea_text"] if row else None
+
+    def set_cluster_committed(self, cluster_id: int, memory_id: str) -> None:
+        """Mark a cluster as committed to Memory by storing its memory_id."""
+        with self._conn() as con:
+            con.execute(
+                "UPDATE video_clusters SET memory_id = ? WHERE id = ?",
+                (memory_id, cluster_id),
+            )
 
     def get_cluster_verdict(self, cluster_id: int) -> dict | None:
         """Return the verdict dict for a cluster, or None if not yet verified."""
