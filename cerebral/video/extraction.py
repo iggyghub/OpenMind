@@ -7,7 +7,8 @@ propose a new one.  No vector math; ChromaDB is the documented upgrade path.
 
 Injectable seam:
   set_extract_fn(async fn(transcript, ocr_text, visual_summary, labels) -> dict)
-  fn must return {"idea": str, "cluster_label": str}.
+  fn must return {"idea": str, "cluster_label": str, "people_required": int}.
+  (people_required is lenient — a missing value defaults to 1.)
 
 Tests always set the seam to a stub; the seam is never None in the loop.
 """
@@ -55,6 +56,18 @@ def _validate(result: object) -> None:
         raise ValueError(f"Missing/empty 'cluster_label': {result!r}")
 
 
+def _people_required(result: dict) -> int:
+    """Coerce people_required to a positive int; default 1 (solo) if missing/bad.
+
+    Lenient by design — a missing count must not fail an otherwise-valid extraction.
+    """
+    try:
+        n = int(result.get("people_required", 1))
+        return n if n >= 1 else 1
+    except (TypeError, ValueError):
+        return 1
+
+
 async def extract_idea(
     transcript: str,
     ocr_text: str,
@@ -79,6 +92,7 @@ async def extract_idea(
             return {
                 "idea": result["idea"].strip(),
                 "cluster_label": result["cluster_label"].strip(),
+                "people_required": _people_required(result),
             }
         except Exception as exc:
             last_exc = exc

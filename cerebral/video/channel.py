@@ -125,7 +125,10 @@ async def _run_batch(
                     meta["visual_summary"] or "",
                     labels,
                 )
-                cluster_id = store.get_or_create_cluster(extracted["cluster_label"])
+                cluster_id = store.get_or_create_cluster(
+                    extracted["cluster_label"],
+                    extracted.get("people_required", 1),
+                )
                 store.upsert_idea(row.id, extracted["idea"], cluster_id)
                 store.upsert(row.url, stage="extracted")
                 # S6 #644: verdict per cluster -- verify once, inherit on later videos

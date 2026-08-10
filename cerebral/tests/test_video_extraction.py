@@ -64,7 +64,32 @@ def test_extract_idea_sync_seam():
 def test_extract_idea_async_seam():
     extraction.set_extract_fn(_async_stub)
     result = asyncio.run(extraction.extract_idea("transcript", "", "", []))
-    assert result == {"idea": "Sell stuff online", "cluster_label": "dropshipping"}
+    assert result == {
+        "idea": "Sell stuff online",
+        "cluster_label": "dropshipping",
+        "people_required": 1,
+    }
+
+
+def test_extract_idea_people_required_defaults_to_one_when_missing():
+    # S8 #653: a missing people_required must not fail extraction; default solo.
+    extraction.set_extract_fn(_async_stub)
+    result = asyncio.run(extraction.extract_idea("t", "", "", []))
+    assert result["people_required"] == 1
+
+
+def test_extract_idea_people_required_honored_and_coerced():
+    # S8 #653: a provided count is carried through; junk/<1 coerces to 1.
+    async def _two(transcript, ocr, vis, labels):
+        return {"idea": "Referral bonus with a friend", "cluster_label": "referral", "people_required": "2"}
+
+    async def _junk(transcript, ocr, vis, labels):
+        return {"idea": "x", "cluster_label": "y", "people_required": "lots"}
+
+    extraction.set_extract_fn(_two)
+    assert asyncio.run(extraction.extract_idea("t", "", "", []))["people_required"] == 2
+    extraction.set_extract_fn(_junk)
+    assert asyncio.run(extraction.extract_idea("t", "", "", []))["people_required"] == 1
 
 
 # ── validate: retry on bad output ────────────────────────────────────────────

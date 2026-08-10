@@ -6014,9 +6014,11 @@ async def _video_extract(                                                    # S
         content += f"\n[Visual summary: {visual_summary.strip()}]"
     prompt = (
         "Extract the money-making idea from the TikTok video content below.\n"
-        "Return ONLY valid JSON with exactly two keys:\n"
+        "Return ONLY valid JSON with exactly three keys:\n"
         '  "idea": one clear sentence describing the money-making idea\n'
-        '  "cluster_label": a short 2-4 word category label'
+        '  "cluster_label": a short 2-4 word category label\n'
+        '  "people_required": integer, how many people the method needs to run'
+        " (1 if one person can do it alone, 2 if it requires a second person/partner, etc.)"
         + labels_block
         + f"\n\nVideo content:\n{content}"
     )
@@ -6051,8 +6053,16 @@ async def _video_verify(cluster_label: str, idea_text: str) -> dict:  # S6 #644 
     import re as _re
 
     prompt = (
-        "You are a financial-idea fact-checker.  Given the money-making idea below, "
-        "search the web and return ONLY valid JSON with exactly three keys:\n"
+        "You are a financial-idea fact-checker.  Judge the METHOD below on its own "
+        "merits — its actual legality and whether it really works.  Ignore any "
+        "sensational or clickbait framing from the source video (e.g. a channel "
+        "calling its ideas 'unethical' or 'secret'): many such videos actually "
+        "describe legitimate programs, such as government grants, benefits, tax "
+        "credits, or incentives paid for doing something.  Do NOT mark an idea as "
+        "'scam' or 'dubious' merely because of how the video is framed; base the "
+        "verdict on what the method itself is.\n"
+        "Given the money-making idea below, search the web and return ONLY valid "
+        "JSON with exactly three keys:\n"
         '  "verdict": one of "legit", "dubious", "scam", "unverifiable"\n'
         '  "confidence": a float between 0.0 and 1.0\n'
         '  "evidence": a JSON array of 1-3 URLs or source descriptions supporting your verdict\n\n'
