@@ -157,6 +157,48 @@ class VideoStore:
             row = con.execute("SELECT * FROM videos WHERE url = ?", (url,)).fetchone()
         return _row_to_video(row) if row else None
 
+    def enumerate_video(
+        self,
+        url: str,
+        channel: str,
+        title: str | None = None,
+    ) -> None:
+        """Insert a new video at stage=enumerated; skip if it already exists."""
+        now = self._now()
+        with self._conn() as con:
+            con.execute(
+                """
+                INSERT OR IGNORE INTO videos
+                    (url, channel, title, stage, created_at, updated_at)
+                VALUES (?, ?, ?, 'enumerated', ?, ?)
+                """,
+                (url, channel, title, now, now),
+            )
+
+    def next_enumerated(self, channel: str | None = None) -> Video | None:
+        """Return the lowest-id enumerated row for a channel (None if done)."""
+        sql = "SELECT * FROM videos WHERE stage = 'enumerated'"
+        params: list = []
+        if channel is not None:
+            sql += " AND channel = ?"
+            params.append(channel)
+        sql += " ORDER BY id LIMIT 1"
+        with self._conn() as con:
+            row = con.execute(sql, params).fetchone()
+        return _row_to_video(row) if row else None
+
+    def stage_counts(self, channel: str | None = None) -> dict[str, int]:
+        """Return COUNT(*) per stage for the given channel (or all channels)."""
+        sql = "SELECT stage, COUNT(*) AS cnt FROM videos"
+        params: list = []
+        if channel is not None:
+            sql += " WHERE channel = ?"
+            params.append(channel)
+        sql += " GROUP BY stage"
+        with self._conn() as con:
+            rows = con.execute(sql, params).fetchall()
+        return {row["stage"]: row["cnt"] for row in rows}
+
 
 def _row_to_video(row: sqlite3.Row) -> Video:
     return Video(
