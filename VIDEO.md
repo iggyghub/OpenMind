@@ -11,14 +11,14 @@ framework (build the second kind's abstraction when it exists).
 
 ## Next slice -- start here
 
-- **Active:** S3 -- #641 -- channel batch runner: flat-playlist enumerate + resumable asyncio task + start/stop/status
+- **Active:** S5 -- #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1 -- #639 -- video primitive: store.py + pipeline.py (yt-dlp + whisper) + video_ingest/video_get
 - [x] S2 -- #640 -- visual escalation: OCR + vision on keyframes, thin-transcript/deictic triggers + cap
-- [ ] S3 -- #641 -- channel batch runner: flat-playlist enumerate + resumable asyncio task + start/stop/status
+- [x] S3 -- #641 -- channel batch runner: flat-playlist enumerate + resumable asyncio task + start/stop/status
 - [ ] S5 -- #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
 - [ ] S4 -- #643 -- Videos tab: declarative panel (list/table/form/detail/text)
 - [ ] S6 -- #644 -- validity verdict per cluster (strong model + web search; seam-built, live-verify tail)
@@ -34,6 +34,7 @@ slice, set the next entry's model on the `Model:` line above.
 
 - PR #646 — S1 #639 — video primitive: store + pipeline + video_ingest/video_get
 - PR #647 — S2 #640 -- visual escalation: OCR + vision on keyframes, thin-transcript/deictic triggers + cap
+- PR #648 — S3 #641 -- channel batch runner: enumerate + resumable asyncio task + start/stop/status
 
 ## SAFETY
 
