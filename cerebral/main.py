@@ -5927,6 +5927,41 @@ async def _apply_settings_control(key: str, value: Any) -> None:
     await _broadcast(_settings_state_event())
 
 
+# ── Video seams (ADR-0017 S1 #639) ───────────────────────────────────────────
+
+def _video_download(url: str, out_dir) -> dict:
+    """Production yt-dlp audio pull.  Live-verify only; stubs cover tests."""
+    import yt_dlp  # type: ignore[import]
+    from pathlib import Path as _Path
+
+    out_dir = _Path(out_dir)
+    opts = {
+        "format": "bestaudio/best",
+        "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+    title = info.get("title", "")
+    duration = float(info.get("duration") or 0)
+    audio_path = next(out_dir.glob("*.mp3"), None)
+    if audio_path is None:
+        raise RuntimeError(f"yt-dlp produced no mp3 in {out_dir}")
+    return {"audio_path": audio_path, "title": title, "duration": duration}
+
+
+def _video_transcribe(audio_path) -> str:
+    """Production faster-whisper transcription.  Live-verify only; stubs cover tests."""
+    from faster_whisper import WhisperModel  # type: ignore[import]
+    from pathlib import Path as _Path
+
+    model = WhisperModel("small", device="cpu", compute_type="int8")
+    segments, _ = model.transcribe(str(audio_path), vad_filter=True)
+    return " ".join(s.text.strip() for s in segments)
+
+
 def _wire_plugin_seams() -> None:
     """Inject per-plugin factories into the orchestrator-loaded modules.
 
@@ -6008,6 +6043,8 @@ def _wire_plugin_seams() -> None:
          lambda: _computer_use_full_autonomy),                                      # #593 (ADR-0016 amendment d)
         ("computer_use", "set_thumbnail_emit_fn", _computer_use_thumbnail),         # S15 #609 (ADR-0016 sec 7)
         ("computer_use", "set_failure_notify_fn", _computer_use_failure_notify),   # S16 #610 (ADR-0016 ladder)
+        ("video", "set_download_fn", _video_download),                               # S1 #639 (ADR-0017)
+        ("video", "set_transcribe_fn", _video_transcribe),                           # S1 #639 (ADR-0017)
     ]
     for name, seam, factory in seams:
         try:
