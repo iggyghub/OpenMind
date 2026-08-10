@@ -56,10 +56,7 @@ def _default_clipboard(png_bytes: bytes) -> None:
         win32clipboard.CloseClipboard()
 
 
-def _default_focus(title: str) -> bool:
-    """Bring a window whose title contains `title` to the foreground and
-    report whether it actually got there (so the caller can refuse rather than
-    type into the wrong app)."""
+def _find_window(title: str) -> Optional[int]:
     import win32gui
     matches: list[int] = []
 
@@ -68,17 +65,67 @@ def _default_focus(title: str) -> bool:
             matches.append(hwnd)
 
     win32gui.EnumWindows(_cb, None)
-    if not matches:
-        return False
-    hwnd = matches[0]
+    return matches[0] if matches else None
+
+
+def _launch_discord() -> None:
+    """Launch Discord without shelling out (os.startfile keeps the plugin
+    inspectability-clean). Prefer the Update.exe stub, fall back to the Start
+    Menu shortcut."""
+    import os
+    from pathlib import Path
+    update = Path(os.environ.get("LOCALAPPDATA", "")) / "Discord" / "Update.exe"
+    if update.exists():
+        os.startfile(str(update), arguments="--processStart Discord.exe")  # type: ignore[call-arg]
+        return
+    lnk = (Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows"
+           / "Start Menu" / "Programs" / "Discord.lnk")
+    if lnk.exists():
+        os.startfile(str(lnk))
+
+
+def _force_foreground(hwnd: int) -> None:
+    """Bring hwnd to the front, working around Windows' focus-steal block via
+    the classic synthetic-Alt nudge."""
+    import ctypes
+    import win32con
+    import win32gui
+    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
     try:
-        win32gui.ShowWindow(hwnd, 9)          # SW_RESTORE (un-minimize)
+        # A synthetic Alt press unlocks SetForegroundWindow for a background
+        # process (Windows only lets the app that owns the current foreground
+        # set it otherwise).
+        ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)   # Alt down
+        ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)   # Alt up
         win32gui.SetForegroundWindow(hwnd)
     except Exception:
         pass
-    time.sleep(0.3)
-    fg = win32gui.GetWindowText(win32gui.GetForegroundWindow())
-    return title.lower() in fg.lower()
+
+
+def _default_focus(title: str) -> bool:
+    """Ensure `title` is the foreground window -- launching the app if it's
+    closed and forcing it forward if it's behind. Returns whether it actually
+    got there (so the caller can refuse rather than type into the wrong app)."""
+    import win32gui
+    hwnd = _find_window(title)
+    if hwnd is None:
+        _launch_discord()
+        # Poll for the window to appear after launch (cold start is slow).
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and hwnd is None:
+            time.sleep(0.5)
+            hwnd = _find_window(title)
+        if hwnd is None:
+            return False
+    # Retry the foreground push a few times -- the first attempt after a launch
+    # or from deep background often loses the race.
+    for _ in range(5):
+        _force_foreground(hwnd)
+        time.sleep(0.35)
+        fg = win32gui.GetWindowText(win32gui.GetForegroundWindow())
+        if title.lower() in fg.lower():
+            return True
+    return False
 
 
 def _default_press(keys: list[str]) -> None:
