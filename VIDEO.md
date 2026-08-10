@@ -23,6 +23,7 @@ framework (build the second kind's abstraction when it exists).
 - [x] S4 -- #643 -- Videos tab: declarative panel (list/table/form/detail/text)
 - [x] S6 -- #644 -- validity verdict per cluster (strong model + web search; seam-built, live-verify tail)
 - [x] S7 -- #645 -- commit verified idea to Memory (video_commit)
+- [x] S8 -- #653 -- de-bias verdict + people-count grouping (first-channel tuning)
 
 Order note: S4 depends on S3; S5 depends on S1 (runs in parallel with S2/S3);
 S6 depends on S5; S7 depends on S6. The queue above is a valid linear order.
@@ -39,6 +40,7 @@ slice, set the next entry's model on the `Model:` line above.
 - PR #650 — S4 #643 -- Videos tab: declarative panel (list/table/form/detail/text)
 - PR #651 — S6 #644 -- validity verdict per cluster (strong model + web search)
 - PR #652 — S7 #645 -- commit verified idea to Memory (video_commit)
+- PR #654 — S8 #653 -- de-bias verdict + people-count grouping (first-channel tuning)
 
 ## SAFETY
 
