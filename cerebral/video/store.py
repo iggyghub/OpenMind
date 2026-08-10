@@ -7,6 +7,7 @@ Stages: enumerated -> downloaded -> transcribed -> escalated -> extracted -> ver
 
 S2 #640 adds: ocr_text, visual_summary, escalated columns.
 S5 #642 adds: video_clusters + video_ideas tables.
+S6 #644 adds: verdict, confidence, evidence_links columns to video_clusters.
 """
 
 from __future__ import annotations
@@ -38,9 +39,12 @@ CREATE TABLE IF NOT EXISTS videos (
 );
 
 CREATE TABLE IF NOT EXISTS video_clusters (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    label        TEXT    NOT NULL UNIQUE,
-    member_count INTEGER NOT NULL DEFAULT 0
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    label          TEXT    NOT NULL UNIQUE,
+    member_count   INTEGER NOT NULL DEFAULT 0,
+    verdict        TEXT,
+    confidence     REAL,
+    evidence_links TEXT
 );
 
 CREATE TABLE IF NOT EXISTS video_ideas (
@@ -51,11 +55,15 @@ CREATE TABLE IF NOT EXISTS video_ideas (
 );
 """
 
-# Migration: add S2 columns to tables created before this slice.
+# Migration: add columns to tables created before this slice.
 _MIGRATIONS = [
     "ALTER TABLE videos ADD COLUMN ocr_text TEXT",
     "ALTER TABLE videos ADD COLUMN visual_summary TEXT",
     "ALTER TABLE videos ADD COLUMN escalated INTEGER DEFAULT 0",
+    # S6 #644
+    "ALTER TABLE video_clusters ADD COLUMN verdict TEXT",
+    "ALTER TABLE video_clusters ADD COLUMN confidence REAL",
+    "ALTER TABLE video_clusters ADD COLUMN evidence_links TEXT",
 ]
 
 
@@ -252,12 +260,67 @@ class VideoStore:
             )
 
     def list_clusters(self) -> list[dict]:
-        """Return all clusters ordered by member_count desc."""
+        """Return all clusters ordered by member_count desc, including verdict."""
         with self._conn() as con:
             rows = con.execute(
-                "SELECT id, label, member_count FROM video_clusters ORDER BY member_count DESC"
+                "SELECT id, label, member_count, verdict, confidence, evidence_links"
+                " FROM video_clusters ORDER BY member_count DESC"
             ).fetchall()
-        return [{"id": row["id"], "label": row["label"], "member_count": row["member_count"]} for row in rows]
+        import json as _json
+        result = []
+        for row in rows:
+            evidence = None
+            if row["evidence_links"]:
+                try:
+                    evidence = _json.loads(row["evidence_links"])
+                except Exception:
+                    evidence = None
+            result.append({
+                "id": row["id"],
+                "label": row["label"],
+                "member_count": row["member_count"],
+                "verdict": row["verdict"],
+                "confidence": row["confidence"],
+                "evidence": evidence,
+            })
+        return result
+
+    def get_cluster_verdict(self, cluster_id: int) -> dict | None:
+        """Return the verdict dict for a cluster, or None if not yet verified."""
+        import json as _json
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT verdict, confidence, evidence_links FROM video_clusters WHERE id = ?",
+                (cluster_id,),
+            ).fetchone()
+        if row is None or row["verdict"] is None:
+            return None
+        evidence = []
+        if row["evidence_links"]:
+            try:
+                evidence = _json.loads(row["evidence_links"])
+            except Exception:
+                evidence = []
+        return {
+            "verdict": row["verdict"],
+            "confidence": row["confidence"],
+            "evidence": evidence,
+        }
+
+    def set_cluster_verdict(
+        self,
+        cluster_id: int,
+        verdict: str,
+        confidence: float,
+        evidence: list[str],
+    ) -> None:
+        """Store the validity verdict on a cluster."""
+        import json as _json
+        with self._conn() as con:
+            con.execute(
+                "UPDATE video_clusters SET verdict=?, confidence=?, evidence_links=? WHERE id=?",
+                (verdict, confidence, _json.dumps(evidence), cluster_id),
+            )
 
     def list_videos_by_cluster(self, cluster_id: int, limit: int = 5) -> list[dict]:
         """Return up to limit videos in a cluster, newest first, with idea text."""

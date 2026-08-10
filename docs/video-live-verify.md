@@ -92,3 +92,29 @@ Complete these manually; do NOT perform them in an autonomous loop session.
 - [ ] **Extraction failure leaves transcribed stage.** With no extraction seam wired (or a
       seam that always raises), run the batch. Confirm rows remain at `stage=transcribed`
       and the batch does not crash or leave orphaned rows.
+
+## S6 -- validity verdict per cluster (strong model + web search)
+
+- [ ] **ANTHROPIC_API_KEY present.** Confirm `ANTHROPIC_API_KEY` is set in the environment
+      (`python -c "import os; print(bool(os.getenv('ANTHROPIC_API_KEY')))"` -> `True`).
+- [ ] **Verdict seam wired.** After `python -m cerebral.main` starts, run `video_batch_start`
+      on a 2-3 video channel. Confirm each processed row ends at `stage=verified` in the
+      `videos` table (not `extracted`).
+- [ ] **Cluster verdict populated.** After the batch, query
+      `SELECT label, verdict, confidence, evidence_links FROM video_clusters` in `openmind.db`.
+      Confirm each cluster has a non-null `verdict` (one of `legit/dubious/scam/unverifiable`),
+      a `confidence` value between 0.0 and 1.0, and `evidence_links` containing 1-3 entries.
+- [ ] **Verify once, inherit.** Process a channel where multiple videos share the same cluster
+      label. Confirm `video_clusters.verdict` is non-null after the first video and that no
+      second web-search call is made for later videos in the same cluster (check API call logs
+      or add a counter to `_video_verify` temporarily).
+- [ ] **JSON-forced retry in practice.** Enable debug logging and observe the verdict prompt.
+      Confirm the model is called with the full prompt including cluster label and idea text,
+      and the response is parsed as JSON. If the first response is malformed, confirm a retry
+      occurs and the final verdict is written correctly.
+- [ ] **Verdict failure leaves extracted stage.** Temporarily break the verify seam (raise an
+      exception). Run the batch. Confirm rows stay at `stage=extracted`, no null verdict is
+      written to `video_clusters`, and the batch does not crash.
+- [ ] **Panel shows verdict.** Open the Videos panel in the Felix UI. Confirm the cluster
+      table shows the verdict string and formatted confidence (e.g. "85%") instead of
+      "pending" / "—". Confirm the per-cluster drill-in shows evidence links.
