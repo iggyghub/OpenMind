@@ -5991,6 +5991,42 @@ def _video_enumerate(channel_url: str) -> list:
     return _prod_enumerate(channel_url)
 
 
+async def _video_extract(                                                    # S5 #642 (ADR-0017)
+    transcript: str,
+    ocr_text: str,
+    visual_summary: str,
+    existing_labels: list,
+) -> dict:
+    """Production idea extraction + cluster assignment.  Live-verify only; stubs cover tests."""
+    import json as _json
+    import re as _re
+
+    labels_block = ""
+    if existing_labels:
+        labels_block = (
+            "\n\nExisting cluster labels (reuse one if it fits; otherwise invent a short new label):\n"
+            + "\n".join(f"- {lbl}" for lbl in existing_labels)
+        )
+    content = (transcript or "").strip()[:4000]
+    if ocr_text:
+        content += f"\n[On-screen text: {ocr_text.strip()}]"
+    if visual_summary:
+        content += f"\n[Visual summary: {visual_summary.strip()}]"
+    prompt = (
+        "Extract the money-making idea from the TikTok video content below.\n"
+        "Return ONLY valid JSON with exactly two keys:\n"
+        '  "idea": one clear sentence describing the money-making idea\n'
+        '  "cluster_label": a short 2-4 word category label'
+        + labels_block
+        + f"\n\nVideo content:\n{content}"
+    )
+    raw = await _router.complete(prompt, task_type="quality")
+    m = _re.search(r"\{[^{}]*\}", raw, _re.DOTALL)
+    if not m:
+        raise ValueError(f"No JSON in extraction response: {raw[:200]!r}")
+    return _json.loads(m.group(0))
+
+
 def _wire_plugin_seams() -> None:
     """Inject per-plugin factories into the orchestrator-loaded modules.
 
@@ -6078,6 +6114,7 @@ def _wire_plugin_seams() -> None:
         ("video", "set_ocr_fn", _video_ocr),                                         # S2 #640 (ADR-0017)
         ("video", "set_vision_fn", _video_vision),                                   # S2 #640 (ADR-0017)
         ("video", "set_enumerate_fn", _video_enumerate),                             # S3 #641 (ADR-0017)
+        ("video", "set_extract_fn", _video_extract),                                 # S5 #642 (ADR-0017)
     ]
     for name, seam, factory in seams:
         try:
