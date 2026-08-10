@@ -38,6 +38,17 @@ def test_add_and_list_roundtrip():
     assert rows[0]["is_cloud"] is False
 
 
+def test_supports_vision_roundtrips():
+    s = _store()
+    s.add(1, id="custom/vl", kind="openai", url="http://a", model="qwen-vl",
+          label="VL", is_cloud=True, dynamic=True, supports_vision=True)
+    s.add(1, id="custom/text", kind="openai", url="http://b", model="m",
+          label="Text", is_cloud=True)  # default False
+    rows = {r["id"]: r for r in s.list(1)}
+    assert rows["custom/vl"]["supports_vision"] is True
+    assert rows["custom/text"]["supports_vision"] is False
+
+
 def test_add_upserts_in_place():
     s = _store()
     s.add(1, id="custom/x", kind="openai", url="http://a", model="gpt",
