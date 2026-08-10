@@ -7,11 +7,11 @@ to Memory. First channel: a ~200-video TikTok money-ideas channel. The
 money-idea extraction is concrete code for this first channel, NOT a job-config
 framework (build the second kind's abstraction when it exists).
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S7 -- #645 -- commit verified idea to Memory (video_commit)
+- **Active:** (all slices landed)
 - **Model:** sonnet
 
 ## Queue
@@ -22,7 +22,7 @@ framework (build the second kind's abstraction when it exists).
 - [x] S5 -- #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
 - [x] S4 -- #643 -- Videos tab: declarative panel (list/table/form/detail/text)
 - [x] S6 -- #644 -- validity verdict per cluster (strong model + web search; seam-built, live-verify tail)
-- [ ] S7 -- #645 -- commit verified idea to Memory (video_commit)
+- [x] S7 -- #645 -- commit verified idea to Memory (video_commit)
 
 Order note: S4 depends on S3; S5 depends on S1 (runs in parallel with S2/S3);
 S6 depends on S5; S7 depends on S6. The queue above is a valid linear order.
@@ -38,6 +38,7 @@ slice, set the next entry's model on the `Model:` line above.
 - PR #649 — S5 #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
 - PR #650 — S4 #643 -- Videos tab: declarative panel (list/table/form/detail/text)
 - PR #651 — S6 #644 -- validity verdict per cluster (strong model + web search)
+- PR #652 — S7 #645 -- commit verified idea to Memory (video_commit)
 
 ## SAFETY
 
