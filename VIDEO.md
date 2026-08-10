@@ -11,12 +11,12 @@ framework (build the second kind's abstraction when it exists).
 
 ## Next slice -- start here
 
-- **Active:** S1 -- #639 -- video primitive: store + pipeline + video_ingest/video_get
+- **Active:** S2 -- #640 -- visual escalation: OCR + vision on keyframes, thin-transcript/deictic triggers + cap
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] S1 -- #639 -- video primitive: store.py + pipeline.py (yt-dlp + whisper) + video_ingest/video_get
+- [x] S1 -- #639 -- video primitive: store.py + pipeline.py (yt-dlp + whisper) + video_ingest/video_get
 - [ ] S2 -- #640 -- visual escalation: OCR + vision on keyframes, thin-transcript/deictic triggers + cap
 - [ ] S3 -- #641 -- channel batch runner: flat-playlist enumerate + resumable asyncio task + start/stop/status
 - [ ] S5 -- #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
@@ -32,7 +32,7 @@ slice, set the next entry's model on the `Model:` line above.
 
 ## Landed PRs
 
-- (none yet)
+- PR #646 — S1 #639 — video primitive: store + pipeline + video_ingest/video_get
 
 ## SAFETY
 
