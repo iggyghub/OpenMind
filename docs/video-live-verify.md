@@ -146,3 +146,12 @@ Complete these manually; do NOT perform them in an autonomous loop session.
       inherit "scam/unethical" from the video's framing.
 - [ ] Confirm `people_required` is populated on real extractions and that a
       genuinely two-person method lands in the "Requires two people" group.
+
+## S9 #655 -- no API key: Budd + OpenClaw web_search
+- [ ] Confirm ANTHROPIC_API_KEY is unset and a real verdict still runs (extraction
+      + verdict route on task_type="video" -> Budd/local; pin "video" -> Budd in the
+      model-priority panel).
+- [ ] Confirm the verdict is grounded: web_search (OpenClaw) returns results that
+      appear to inform the verdict + evidence URLs.
+- [ ] Kill the OpenClaw search endpoint and confirm the verdict still completes
+      (knowledge-only fallback), never crashes.
