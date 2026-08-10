@@ -118,3 +118,24 @@ Complete these manually; do NOT perform them in an autonomous loop session.
 - [ ] **Panel shows verdict.** Open the Videos panel in the Felix UI. Confirm the cluster
       table shows the verdict string and formatted confidence (e.g. "85%") instead of
       "pending" / "—". Confirm the per-cluster drill-in shows evidence links.
+
+## S7 -- commit verified idea to Memory (video_commit)
+
+- [ ] **Profile loaded.** Confirm Felix has an active profile loaded (the commit tool writes to
+      that profile's ChromaDB). If no profile is set, `video_commit` will fail with
+      "No active profile".
+- [ ] **video_commit live round-trip.** After a batch run where at least one cluster has a
+      `verdict` set, open the Videos panel and click "Commit to Memory" on a verified cluster.
+      Confirm the response contains `"committed": true` and a non-null `memory_id` UUID.
+- [ ] **Memory written.** After a successful commit, open the Memory panel (or run
+      `memory_recall(query="money-making idea")`) and confirm the cluster's idea + verdict
+      appears as a recalled fact.
+- [ ] **Panel reflects committed state.** After committing, refresh the Videos panel.
+      Confirm the "Commit to Memory" button is replaced by "Committed — In Memory"
+      (the `detail` widget with `value: "In Memory"`).
+- [ ] **Idempotency.** Call `video_commit(cluster_id=<id>)` a second time on the same
+      cluster. Confirm the response contains `"already_committed": true` and the same
+      `memory_id`. Confirm no second fact appears in Memory (no duplicate).
+- [ ] **Un-committed cluster stays out of Memory.** After a batch run with multiple
+      clusters, commit only one. Confirm only that cluster's idea appears in Memory recall;
+      the others are absent.

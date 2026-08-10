@@ -1,7 +1,8 @@
 """Video MCP plugin -- ADR-0017.
 
 Tools: video_ingest(url, visual=False), video_get(id),
-       video_batch_start(url), video_batch_stop(), video_batch_status().
+       video_batch_start(url), video_batch_stop(), video_batch_status(),
+       video_commit(cluster_id).
 
 All heavy I/O (download, transcribe, OCR, vision, enumerate) is behind injectable
 seams so the test suite never hits the network or real binaries.  See SAFETY in VIDEO.md.
@@ -15,6 +16,7 @@ Seams exposed for _wire_plugin_seams:
   set_enumerate_fn(fn)  -- injected into cerebral.video.channel       S3 #641
   set_extract_fn(fn)    -- injected into cerebral.video.extraction    S5 #642
   set_verify_fn(fn)     -- injected into cerebral.video.verdict       S6 #644
+  set_commit_fn(fn)     -- async fn(cluster_id, idea_text, cluster) -> memory_id  S7 #645
 """
 
 from __future__ import annotations
@@ -91,6 +93,16 @@ def set_extract_fn(fn: Callable) -> None:  # S5 #642
 
 def set_verify_fn(fn: Callable) -> None:  # S6 #644
     _verdict.set_verify_fn(fn)
+
+
+# S7 #645: commit_fn writes a verified idea to Memory.
+# Signature: async fn(cluster_id: int, idea_text: str, cluster: dict) -> str (memory_id)
+_commit_fn: Optional[Callable] = None
+
+
+def set_commit_fn(fn: Callable) -> None:  # S7 #645
+    global _commit_fn
+    _commit_fn = fn
 
 
 # ── plugin class ──────────────────────────────────────────────────────────────
@@ -202,6 +214,26 @@ class VideoPlugin:
                 required_capabilities=frozenset({"external_data_read"}),
                 schema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="video_commit",
+                description=(
+                    "Commit a verified idea cluster to Memory as a durable fact with its verdict attached. "
+                    "The cluster must have a verdict before committing. "
+                    "Idempotent: committing the same cluster twice returns the existing memory entry."
+                ),
+                plugin=PLUGIN_NAME,
+                required_capabilities=frozenset({"external_data_read"}),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "cluster_id": {
+                            "type": "integer",
+                            "description": "The cluster id to commit to Memory.",
+                        },
+                    },
+                    "required": ["cluster_id"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -215,6 +247,8 @@ class VideoPlugin:
             return self._video_batch_stop()
         if tool_name == "video_batch_status":
             return self._video_batch_status()
+        if tool_name == "video_commit":
+            return await self._video_commit(args)
         return ToolResult(content=f"Unknown tool: {tool_name}", is_error=True)
 
     async def _video_ingest(self, args: dict) -> ToolResult:
@@ -361,6 +395,61 @@ class VideoPlugin:
             return ToolResult(content=f"No video with id {video_id}", is_error=True)
         return ToolResult(content=json.dumps(video.to_dict()))
 
+    async def _video_commit(self, args: dict) -> ToolResult:  # S7 #645
+        import asyncio as _asyncio
+        try:
+            cluster_id = int(args.get("cluster_id", 0))
+        except (TypeError, ValueError):
+            return ToolResult(content="cluster_id must be an integer", is_error=True)
+
+        store = _get_store()
+        cluster = store.get_cluster_by_id(cluster_id)
+        if cluster is None:
+            return ToolResult(content=f"No cluster with id {cluster_id}", is_error=True)
+
+        # Idempotent: already committed
+        if cluster.get("memory_id"):
+            return ToolResult(content=json.dumps({
+                "cluster_id": cluster_id,
+                "already_committed": True,
+                "memory_id": cluster["memory_id"],
+            }))
+
+        if not cluster.get("verdict"):
+            return ToolResult(
+                content=(
+                    f"Cluster {cluster['label']!r} has no verdict yet — "
+                    "run the batch or verify manually first"
+                ),
+                is_error=True,
+            )
+
+        idea_text = store.get_cluster_idea_text(cluster_id) or cluster["label"]
+
+        fn = _commit_fn
+        if fn is None:
+            return ToolResult(
+                content="commit_fn not wired — ensure _wire_plugin_seams ran",
+                is_error=True,
+            )
+
+        try:
+            result = fn(cluster_id, idea_text, cluster)
+            if _asyncio.iscoroutine(result):
+                result = await result
+            memory_id = str(result)
+        except Exception as exc:
+            logger.error("[video] commit failed for cluster %d: %s", cluster_id, exc)
+            return ToolResult(content=f"Commit failed: {exc}", is_error=True)
+
+        store.set_cluster_committed(cluster_id, memory_id)
+        return ToolResult(content=json.dumps({
+            "cluster_id": cluster_id,
+            "label": cluster["label"],
+            "verdict": cluster["verdict"],
+            "memory_id": memory_id,
+            "committed": True,
+        }))
 
     def panel_spec(self, profile_id: "int | None") -> dict:  # noqa: ARG002
         """Declarative Videos panel (ADR-0017 decision 9, ADR-0012)."""
@@ -457,6 +546,22 @@ class VideoPlugin:
                     for i, link in enumerate(cluster["evidence"], 1):
                         cluster_fields.append({"label": f"Evidence {i}", "value": str(link)})
                 widgets.append({"type": "detail", "fields": cluster_fields})
+
+                # Commit button: show when verified and not yet committed.
+                if cluster["verdict"] and not cluster.get("memory_id"):
+                    widgets.append({
+                        "type": "action",
+                        "id": f"video-commit-{cluster['id']}",
+                        "label": "Commit to Memory",
+                        "tool": "video_commit",
+                        "tool_args": {"cluster_id": cluster["id"]},
+                    })
+                elif cluster.get("memory_id"):
+                    widgets.append({
+                        "type": "detail",
+                        "fields": [{"label": "Committed", "value": "In Memory"}],
+                    })
+
                 items = []
                 for v in videos:
                     title = v["title"] or v["url"]
