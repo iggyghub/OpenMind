@@ -1,9 +1,10 @@
 """Video MCP plugin -- ADR-0017.
 
-Tools: video_ingest(url, visual=False), video_get(id).
+Tools: video_ingest(url, visual=False), video_get(id),
+       video_batch_start(url), video_batch_stop(), video_batch_status().
 
-All heavy I/O (download, transcribe, OCR, vision) is behind injectable seams so
-the test suite never hits the network or real binaries.  See SAFETY in VIDEO.md.
+All heavy I/O (download, transcribe, OCR, vision, enumerate) is behind injectable
+seams so the test suite never hits the network or real binaries.  See SAFETY in VIDEO.md.
 
 Seams exposed for _wire_plugin_seams:
   set_download_fn(fn)   -- injected into cerebral.video.pipeline
@@ -11,6 +12,7 @@ Seams exposed for _wire_plugin_seams:
   set_keyframe_fn(fn)   -- injected into cerebral.video.escalation   S2 #640
   set_ocr_fn(fn)        -- injected into cerebral.video.escalation   S2 #640
   set_vision_fn(fn)     -- injected into cerebral.video.escalation   S2 #640
+  set_enumerate_fn(fn)  -- injected into cerebral.video.channel       S3 #641
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
+from cerebral.video import channel as _channel
 from cerebral.video import escalation as _escalation
 from cerebral.video import pipeline as _pipeline
 from cerebral.video.store import VideoStore
@@ -72,6 +75,10 @@ def set_ocr_fn(fn: Callable) -> None:  # S2 #640
 
 def set_vision_fn(fn: Callable) -> None:  # S2 #640
     _escalation.set_vision_fn(fn)
+
+
+def set_enumerate_fn(fn: Callable) -> None:  # S3 #641
+    _channel.set_enumerate_fn(fn)
 
 
 # ── plugin class ──────────────────────────────────────────────────────────────
@@ -133,6 +140,56 @@ class VideoPlugin:
                     "required": ["id"],
                 },
             ),
+            Tool(
+                name="video_batch_start",
+                description=(
+                    "Enumerate all videos from a channel URL and start processing them "
+                    "sequentially in the background (download + transcribe + optional escalation). "
+                    "Idempotent per video: already-processed rows are skipped on resume. "
+                    "Returns immediately; use video_batch_status to track progress."
+                ),
+                plugin=PLUGIN_NAME,
+                required_capabilities=REQUIRED_CAPABILITIES,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "Channel URL (e.g. TikTok or YouTube channel page).",
+                        },
+                        "channel": {
+                            "type": "string",
+                            "description": "Human-readable channel name for grouping (defaults to url).",
+                        },
+                        "escalation_cap": {
+                            "type": "integer",
+                            "description": "Max videos that may trigger visual escalation in this run.",
+                        },
+                        "sleep_secs": {
+                            "type": "number",
+                            "description": "Seconds to sleep between each video download (anti-block).",
+                        },
+                    },
+                    "required": ["url"],
+                },
+            ),
+            Tool(
+                name="video_batch_stop",
+                description="Request the running channel batch to stop after the current video.",
+                plugin=PLUGIN_NAME,
+                required_capabilities=frozenset(),
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="video_batch_status",
+                description=(
+                    "Return the batch runner status: stage counts per stage and an ETA in seconds "
+                    "based on measured throughput. ETA is null until at least one video completes."
+                ),
+                plugin=PLUGIN_NAME,
+                required_capabilities=frozenset({"external_data_read"}),
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -140,6 +197,12 @@ class VideoPlugin:
             return await self._video_ingest(args)
         if tool_name == "video_get":
             return self._video_get(args)
+        if tool_name == "video_batch_start":
+            return await self._video_batch_start(args)
+        if tool_name == "video_batch_stop":
+            return self._video_batch_stop()
+        if tool_name == "video_batch_status":
+            return self._video_batch_status()
         return ToolResult(content=f"Unknown tool: {tool_name}", is_error=True)
 
     async def _video_ingest(self, args: dict) -> ToolResult:
@@ -249,6 +312,32 @@ class VideoPlugin:
                 "escalated": True,
             })
         )
+
+    async def _video_batch_start(self, args: dict) -> ToolResult:
+        url: str = args.get("url", "").strip()
+        if not url:
+            return ToolResult(content="url is required", is_error=True)
+        channel: str | None = args.get("channel")
+        escalation_cap: int = int(args.get("escalation_cap", 10))
+        sleep_secs: float = float(args.get("sleep_secs", 2.0))
+        try:
+            result = await _channel.batch_start(
+                url,
+                _get_store(),
+                channel=channel,
+                escalation_cap=escalation_cap,
+                sleep_secs=sleep_secs,
+            )
+        except Exception as exc:
+            logger.error("[video] batch_start failed: %s", exc)
+            return ToolResult(content=f"batch_start failed: {exc}", is_error=True)
+        return ToolResult(content=json.dumps(result))
+
+    def _video_batch_stop(self) -> ToolResult:
+        return ToolResult(content=json.dumps(_channel.batch_stop()))
+
+    def _video_batch_status(self) -> ToolResult:
+        return ToolResult(content=json.dumps(_channel.batch_status(_get_store())))
 
     def _video_get(self, args: dict) -> ToolResult:
         try:

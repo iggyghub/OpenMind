@@ -42,3 +42,30 @@ Complete these manually; do NOT perform them in an autonomous loop session.
 - [ ] **Per-batch cap.** Import `EscalationBudget(cap=2)` from `cerebral.video.escalation`
       and pass it to `pipeline.run` for a sequence of 5 thin-transcript videos.
       Confirm only 2 rows end up with `escalated=true`.
+
+## S3 -- channel batch runner (enumerate + resumable task)
+
+- [ ] **yt-dlp flat-playlist enumerate.** Run `yt-dlp --flat-playlist --dump-json --no-warnings <channel_url>`
+      against the target TikTok channel. Confirm it returns one JSON object per line (not truncated at 30)
+      and that each line has a `webpage_url` or `url` field for the individual video.
+- [ ] **video_batch_start live round-trip.** With Felix running, call
+      `video_batch_start(url="<channel_url>", escalation_cap=3, sleep_secs=5)`.
+      Confirm: response contains `"status": "started"` and `"enumerated": <N>` matching
+      the number of videos in the channel; rows appear in `openmind.db` `videos` table at
+      `stage=enumerated`.
+- [ ] **Sequential processing + sleep.** After `video_batch_start`, observe logs: each video
+      is processed one at a time with a sleep between them. Confirm no two yt-dlp downloads
+      overlap (check process list during a run).
+- [ ] **video_batch_status ETA.** After at least one video completes, call `video_batch_status()`.
+      Confirm `stage_counts` reflects actual DB state and `eta_seconds` is a plausible number
+      based on how long the first video took.
+- [ ] **Kill mid-run and resume.** Start a batch, wait for 2-3 videos to complete, then
+      restart Felix (`python -m cerebral.main`). Call `video_batch_start` with the same channel
+      URL again. Confirm: already-transcribed rows are NOT re-downloaded (check their
+      `updated_at` did not change); only the remaining `enumerated` rows are processed.
+- [ ] **video_batch_stop halts between videos.** Start a batch, then call `video_batch_stop()`.
+      Confirm: the current video finishes but no new downloads start; `video_batch_status()`
+      shows `running: false`.
+- [ ] **Escalation cap per batch.** Start a batch against a channel with several thin-transcript
+      (silent/music) videos and `escalation_cap=2`. Confirm only 2 rows end up with
+      `escalated=true` regardless of how many would qualify.

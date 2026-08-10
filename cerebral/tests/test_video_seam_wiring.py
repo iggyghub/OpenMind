@@ -17,9 +17,10 @@ _VIDEO_SEAMS = (
     "set_store",
     "set_download_fn",
     "set_transcribe_fn",
-    "set_keyframe_fn",   # S2 #640
-    "set_ocr_fn",        # S2 #640
-    "set_vision_fn",     # S2 #640
+    "set_keyframe_fn",    # S2 #640
+    "set_ocr_fn",         # S2 #640
+    "set_vision_fn",      # S2 #640
+    "set_enumerate_fn",   # S3 #641
 )
 
 
@@ -45,9 +46,10 @@ def test_wire_plugin_seams_reaches_video_module(monkeypatch):
 
     assert "set_download_fn" in mod._calls, "set_download_fn not wired"
     assert "set_transcribe_fn" in mod._calls, "set_transcribe_fn not wired"
-    assert "set_keyframe_fn" in mod._calls, "set_keyframe_fn not wired"   # S2 #640
-    assert "set_ocr_fn" in mod._calls, "set_ocr_fn not wired"             # S2 #640
-    assert "set_vision_fn" in mod._calls, "set_vision_fn not wired"       # S2 #640
+    assert "set_keyframe_fn" in mod._calls, "set_keyframe_fn not wired"       # S2 #640
+    assert "set_ocr_fn" in mod._calls, "set_ocr_fn not wired"               # S2 #640
+    assert "set_vision_fn" in mod._calls, "set_vision_fn not wired"         # S2 #640
+    assert "set_enumerate_fn" in mod._calls, "set_enumerate_fn not wired"   # S3 #641
 
 
 def test_main_does_not_directly_import_video_seam_setters():

@@ -5985,6 +5985,12 @@ def _video_vision(frames: list) -> str:
     return _prod_vision([_Path(f) for f in frames])
 
 
+def _video_enumerate(channel_url: str) -> list:
+    """Production yt-dlp --flat-playlist enumerate.  Live-verify only; stubs cover tests."""
+    from cerebral.video.channel import _prod_enumerate
+    return _prod_enumerate(channel_url)
+
+
 def _wire_plugin_seams() -> None:
     """Inject per-plugin factories into the orchestrator-loaded modules.
 
@@ -6071,6 +6077,7 @@ def _wire_plugin_seams() -> None:
         ("video", "set_keyframe_fn", _video_keyframe),                               # S2 #640 (ADR-0017)
         ("video", "set_ocr_fn", _video_ocr),                                         # S2 #640 (ADR-0017)
         ("video", "set_vision_fn", _video_vision),                                   # S2 #640 (ADR-0017)
+        ("video", "set_enumerate_fn", _video_enumerate),                             # S3 #641 (ADR-0017)
     ]
     for name, seam, factory in seams:
         try:
