@@ -6027,6 +6027,27 @@ async def _video_extract(                                                    # S
     return _json.loads(m.group(0))
 
 
+async def _video_verify(cluster_label: str, idea_text: str) -> dict:  # S6 #644 (ADR-0017)
+    """Production validity verdict via strong model + web search.  Live-verify only; stubs cover tests."""
+    import json as _json
+    import re as _re
+
+    prompt = (
+        "You are a financial-idea fact-checker.  Given the money-making idea below, "
+        "search the web and return ONLY valid JSON with exactly three keys:\n"
+        '  "verdict": one of "legit", "dubious", "scam", "unverifiable"\n'
+        '  "confidence": a float between 0.0 and 1.0\n'
+        '  "evidence": a JSON array of 1-3 URLs or source descriptions supporting your verdict\n\n'
+        f"Cluster: {cluster_label}\n"
+        f"Idea: {idea_text}"
+    )
+    raw = await _router.complete(prompt, task_type="quality")
+    m = _re.search(r"\{[\s\S]*?\}", raw)
+    if not m:
+        raise ValueError(f"No JSON in verdict response: {raw[:200]!r}")
+    return _json.loads(m.group(0))
+
+
 def _wire_plugin_seams() -> None:
     """Inject per-plugin factories into the orchestrator-loaded modules.
 
@@ -6115,6 +6136,7 @@ def _wire_plugin_seams() -> None:
         ("video", "set_vision_fn", _video_vision),                                   # S2 #640 (ADR-0017)
         ("video", "set_enumerate_fn", _video_enumerate),                             # S3 #641 (ADR-0017)
         ("video", "set_extract_fn", _video_extract),                                 # S5 #642 (ADR-0017)
+        ("video", "set_verify_fn", _video_verify),                                   # S6 #644 (ADR-0017)
     ]
     for name, seam, factory in seams:
         try:

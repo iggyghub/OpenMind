@@ -14,6 +14,7 @@ Seams exposed for _wire_plugin_seams:
   set_vision_fn(fn)     -- injected into cerebral.video.escalation   S2 #640
   set_enumerate_fn(fn)  -- injected into cerebral.video.channel       S3 #641
   set_extract_fn(fn)    -- injected into cerebral.video.extraction    S5 #642
+  set_verify_fn(fn)     -- injected into cerebral.video.verdict       S6 #644
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from cerebral.video import channel as _channel
 from cerebral.video import escalation as _escalation
 from cerebral.video import extraction as _extraction
 from cerebral.video import pipeline as _pipeline
+from cerebral.video import verdict as _verdict
 from cerebral.video.store import VideoStore
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,10 @@ def set_enumerate_fn(fn: Callable) -> None:  # S3 #641
 
 def set_extract_fn(fn: Callable) -> None:  # S5 #642
     _extraction.set_extract_fn(fn)
+
+
+def set_verify_fn(fn: Callable) -> None:  # S6 #644
+    _verdict.set_verify_fn(fn)
 
 
 # ── plugin class ──────────────────────────────────────────────────────────────
@@ -416,27 +422,41 @@ class VideoPlugin:
                 "tool_args": {},
             })
 
-        # Clusters table (verdict/confidence are S6 #644; shown as pending here).
+        # Clusters table with verdict/confidence (S6 #644).
         if clusters:
-            table_rows = [
-                [c["label"], str(c["member_count"]), "pending", "—"]
-                for c in clusters
-            ]
+            table_rows = []
+            for c in clusters:
+                verdict_val = c["verdict"] or "pending"
+                confidence_val = (
+                    f"{c['confidence']:.0%}" if c["confidence"] is not None else "—"
+                )
+                table_rows.append(
+                    [c["label"], str(c["member_count"]), verdict_val, confidence_val]
+                )
             widgets.append({
                 "type": "table",
                 "columns": ["Idea cluster", "Videos", "Verdict", "Confidence"],
                 "rows": table_rows,
             })
 
-            # Per-cluster video list (drill-in: up to 5 videos per cluster).
+            # Per-cluster drill-in: status, evidence links, up to 5 videos.
             for cluster in clusters:
                 videos = store.list_videos_by_cluster(cluster["id"], limit=5)
                 if not videos:
                     continue
-                widgets.append({
-                    "type": "detail",
-                    "fields": [{"label": "Cluster", "value": cluster["label"]}],
-                })
+                cluster_fields: list[dict] = [
+                    {"label": "Cluster", "value": cluster["label"]},
+                ]
+                if cluster["verdict"]:
+                    cluster_fields.append({"label": "Verdict", "value": cluster["verdict"]})
+                if cluster["confidence"] is not None:
+                    cluster_fields.append(
+                        {"label": "Confidence", "value": f"{cluster['confidence']:.0%}"}
+                    )
+                if cluster["evidence"]:
+                    for i, link in enumerate(cluster["evidence"], 1):
+                        cluster_fields.append({"label": f"Evidence {i}", "value": str(link)})
+                widgets.append({"type": "detail", "fields": cluster_fields})
                 items = []
                 for v in videos:
                     title = v["title"] or v["url"]

@@ -17,6 +17,7 @@ from typing import Callable, Optional
 
 from cerebral.video import extraction as _extraction
 from cerebral.video import pipeline as _pipeline
+from cerebral.video import verdict as _verdict
 from cerebral.video.escalation import EscalationBudget
 from cerebral.video.store import VideoStore
 
@@ -127,6 +128,20 @@ async def _run_batch(
                 cluster_id = store.get_or_create_cluster(extracted["cluster_label"])
                 store.upsert_idea(row.id, extracted["idea"], cluster_id)
                 store.upsert(row.url, stage="extracted")
+                # S6 #644: verdict per cluster -- verify once, inherit on later videos
+                try:
+                    existing_verdict = store.get_cluster_verdict(cluster_id)
+                    if existing_verdict is None:
+                        v = await _verdict.verify_cluster(
+                            extracted["cluster_label"], extracted["idea"]
+                        )
+                        store.set_cluster_verdict(
+                            cluster_id, v["verdict"], v["confidence"], v["evidence"]
+                        )
+                    store.upsert(row.url, stage="verified")
+                except Exception as exc:
+                    logger.error("[video/channel] verdict failed %s: %s", row.url, exc)
+                    # stage stays at extracted; batch continues
             except Exception as exc:
                 logger.error("[video/channel] extraction failed %s: %s", row.url, exc)
                 # stage stays at transcribed/escalated; batch continues
