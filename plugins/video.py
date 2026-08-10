@@ -13,6 +13,7 @@ Seams exposed for _wire_plugin_seams:
   set_ocr_fn(fn)        -- injected into cerebral.video.escalation   S2 #640
   set_vision_fn(fn)     -- injected into cerebral.video.escalation   S2 #640
   set_enumerate_fn(fn)  -- injected into cerebral.video.channel       S3 #641
+  set_extract_fn(fn)    -- injected into cerebral.video.extraction    S5 #642
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import Any, Callable, Optional
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.video import channel as _channel
 from cerebral.video import escalation as _escalation
+from cerebral.video import extraction as _extraction
 from cerebral.video import pipeline as _pipeline
 from cerebral.video.store import VideoStore
 
@@ -79,6 +81,10 @@ def set_vision_fn(fn: Callable) -> None:  # S2 #640
 
 def set_enumerate_fn(fn: Callable) -> None:  # S3 #641
     _channel.set_enumerate_fn(fn)
+
+
+def set_extract_fn(fn: Callable) -> None:  # S5 #642
+    _extraction.set_extract_fn(fn)
 
 
 # ── plugin class ──────────────────────────────────────────────────────────────

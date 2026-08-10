@@ -6,6 +6,7 @@ committed per-video so the batch runner is fully resumable (ADR-0017 decision 4)
 Stages: enumerated -> downloaded -> transcribed -> escalated -> extracted -> verified
 
 S2 #640 adds: ocr_text, visual_summary, escalated columns.
+S5 #642 adds: video_clusters + video_ideas tables.
 """
 
 from __future__ import annotations
@@ -34,6 +35,19 @@ CREATE TABLE IF NOT EXISTS videos (
     stage         TEXT    NOT NULL DEFAULT 'enumerated',
     created_at    TEXT    NOT NULL,
     updated_at    TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS video_clusters (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    label        TEXT    NOT NULL UNIQUE,
+    member_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS video_ideas (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id   INTEGER NOT NULL UNIQUE,
+    idea_text  TEXT    NOT NULL,
+    cluster_id INTEGER NOT NULL
 );
 """
 
@@ -198,6 +212,64 @@ class VideoStore:
         with self._conn() as con:
             rows = con.execute(sql, params).fetchall()
         return {row["stage"]: row["cnt"] for row in rows}
+
+    # ── S5 #642: idea extraction + incremental clustering ─────────────────────
+
+    def get_cluster_labels(self) -> list[str]:
+        """Return all existing cluster labels (passed to the LLM for reuse)."""
+        with self._conn() as con:
+            rows = con.execute("SELECT label FROM video_clusters ORDER BY id").fetchall()
+        return [row["label"] for row in rows]
+
+    def get_or_create_cluster(self, label: str) -> int:
+        """Return cluster id for label, creating it and incrementing member_count."""
+        with self._conn() as con:
+            con.execute(
+                "INSERT OR IGNORE INTO video_clusters (label, member_count) VALUES (?, 0)",
+                (label,),
+            )
+            con.execute(
+                "UPDATE video_clusters SET member_count = member_count + 1 WHERE label = ?",
+                (label,),
+            )
+            row = con.execute(
+                "SELECT id FROM video_clusters WHERE label = ?", (label,)
+            ).fetchone()
+        return row["id"]
+
+    def upsert_idea(self, video_id: int, idea_text: str, cluster_id: int) -> None:
+        """Insert or replace the extracted idea for a video."""
+        with self._conn() as con:
+            con.execute(
+                """
+                INSERT INTO video_ideas (video_id, idea_text, cluster_id)
+                VALUES (?, ?, ?)
+                ON CONFLICT(video_id) DO UPDATE SET
+                    idea_text  = excluded.idea_text,
+                    cluster_id = excluded.cluster_id
+                """,
+                (video_id, idea_text, cluster_id),
+            )
+
+    def get_idea_for_video(self, video_id: int) -> dict | None:
+        """Return the extracted idea row for a video, or None."""
+        with self._conn() as con:
+            row = con.execute(
+                """
+                SELECT vi.idea_text, vc.label AS cluster_label, vc.member_count
+                FROM video_ideas vi
+                JOIN video_clusters vc ON vc.id = vi.cluster_id
+                WHERE vi.video_id = ?
+                """,
+                (video_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "idea_text": row["idea_text"],
+            "cluster_label": row["cluster_label"],
+            "member_count": row["member_count"],
+        }
 
 
 def _row_to_video(row: sqlite3.Row) -> Video:

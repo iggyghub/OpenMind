@@ -69,3 +69,26 @@ Complete these manually; do NOT perform them in an autonomous loop session.
 - [ ] **Escalation cap per batch.** Start a batch against a channel with several thin-transcript
       (silent/music) videos and `escalation_cap=2`. Confirm only 2 rows end up with
       `escalated=true` regardless of how many would qualify.
+
+## S5 -- idea extraction + incremental clustering
+
+- [ ] **Extraction seam wired.** After `python -m cerebral.main` starts, call `video_batch_start`
+      on a 2-3 video channel. Confirm each processed row ends at `stage=extracted` in the
+      `videos` table (not `transcribed`).
+- [ ] **video_ideas populated.** After the batch, query `SELECT * FROM video_ideas` in
+      `openmind.db`. Confirm one row per processed video with non-empty `idea_text` and a
+      valid `cluster_id`.
+- [ ] **Incremental clustering: repeated ideas share a cluster.** Process a channel where
+      several videos pitch the same idea (e.g. dropshipping). Confirm multiple `video_ideas`
+      rows share the same `cluster_id` and the matching `video_clusters.member_count` equals
+      the number of videos in that cluster.
+- [ ] **New cluster created for novel idea.** Confirm that a video with a genuinely different
+      idea produces a new row in `video_clusters` with `member_count=1`.
+- [ ] **Existing labels passed to LLM.** Enable debug logging and observe the extraction
+      prompt: existing cluster labels must appear in the prompt sent to the LLM.
+- [ ] **JSON-forced retry in practice.** Temporarily replace the extraction seam with a stub
+      that returns bad JSON on the first call, valid JSON on the second. Confirm the idea is
+      written and `stage=extracted` (retry succeeded).
+- [ ] **Extraction failure leaves transcribed stage.** With no extraction seam wired (or a
+      seam that always raises), run the batch. Confirm rows remain at `stage=transcribed`
+      and the batch does not crash or leave orphaned rows.

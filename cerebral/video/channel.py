@@ -15,6 +15,7 @@ import logging
 import time
 from typing import Callable, Optional
 
+from cerebral.video import extraction as _extraction
 from cerebral.video import pipeline as _pipeline
 from cerebral.video.escalation import EscalationBudget
 from cerebral.video.store import VideoStore
@@ -114,6 +115,21 @@ async def _run_batch(
                 escalated=meta["escalated"],
                 stage=final_stage,
             )
+            # S5 #642: extract idea + assign cluster; stage advances to 'extracted'
+            try:
+                labels = store.get_cluster_labels()
+                extracted = await _extraction.extract_idea(
+                    meta["transcript"] or "",
+                    meta["ocr_text"] or "",
+                    meta["visual_summary"] or "",
+                    labels,
+                )
+                cluster_id = store.get_or_create_cluster(extracted["cluster_label"])
+                store.upsert_idea(row.id, extracted["idea"], cluster_id)
+                store.upsert(row.url, stage="extracted")
+            except Exception as exc:
+                logger.error("[video/channel] extraction failed %s: %s", row.url, exc)
+                # stage stays at transcribed/escalated; batch continues
         except Exception as exc:
             logger.error("[video/channel] failed %s: %s", row.url, exc)
             store.upsert(row.url, stage="failed")
