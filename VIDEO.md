@@ -11,7 +11,7 @@ framework (build the second kind's abstraction when it exists).
 
 ## Next slice -- start here
 
-- **Active:** S6 -- #644 -- validity verdict per cluster (strong model + web search; seam-built, live-verify tail)
+- **Active:** S7 -- #645 -- commit verified idea to Memory (video_commit)
 - **Model:** sonnet
 
 ## Queue
@@ -21,7 +21,7 @@ framework (build the second kind's abstraction when it exists).
 - [x] S3 -- #641 -- channel batch runner: flat-playlist enumerate + resumable asyncio task + start/stop/status
 - [x] S5 -- #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
 - [x] S4 -- #643 -- Videos tab: declarative panel (list/table/form/detail/text)
-- [ ] S6 -- #644 -- validity verdict per cluster (strong model + web search; seam-built, live-verify tail)
+- [x] S6 -- #644 -- validity verdict per cluster (strong model + web search; seam-built, live-verify tail)
 - [ ] S7 -- #645 -- commit verified idea to Memory (video_commit)
 
 Order note: S4 depends on S3; S5 depends on S1 (runs in parallel with S2/S3);
@@ -37,6 +37,7 @@ slice, set the next entry's model on the `Model:` line above.
 - PR #648 — S3 #641 -- channel batch runner: enumerate + resumable asyncio task + start/stop/status
 - PR #649 — S5 #642 -- idea extraction + incremental clustering (JSON-forced, validate/retry)
 - PR #650 — S4 #643 -- Videos tab: declarative panel (list/table/form/detail/text)
+- PR #651 — S6 #644 -- validity verdict per cluster (strong model + web search)
 
 ## SAFETY
 
