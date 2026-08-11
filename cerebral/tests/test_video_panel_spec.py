@@ -112,6 +112,56 @@ def test_panel_spec_running_batch_shows_eta(plugin, store, monkeypatch):
     assert "1m" in eta_field["value"]   # 75s -> 1m 15s
 
 
+def test_panel_spec_no_per_cluster_detail_wall(plugin, store, monkeypatch):
+    """S11 #659: many clusters must not emit a detail+list block per cluster."""
+    monkeypatch.setattr(_channel, "batch_status", _idle_status)
+    monkeypatch.setattr(_video_plugin, "_store", store)
+
+    for i in range(4):
+        vid = store.upsert(f"https://example.com/v{i}", channel="test", stage="verified")
+        cid = store.get_or_create_cluster(f"idea-{i}")
+        store.upsert_idea(vid, f"Idea number {i}", cid)
+        store.set_cluster_verdict(cid, "legit", 0.9, ["http://e"])
+
+    spec = plugin.panel_spec(None)
+    widgets = spec["widgets"]
+
+    # Each cluster appears exactly once — in the single clusters table.
+    tables = [w for w in widgets if w.get("type") == "table" and "Idea cluster" in w.get("columns", [])]
+    assert len(tables) == 1
+    assert len(tables[0]["rows"]) == 4
+
+    # No per-cluster detail wall: the only detail is the batch status (a "Status" field).
+    details = [w for w in widgets if w.get("type") == "detail"]
+    assert len(details) == 1, f"expected only the status detail, got {len(details)}"
+    assert not any(
+        f.get("label") == "Cluster" for w in details for f in w.get("fields", [])
+    ), "per-cluster detail widgets should be gone"
+
+    # One commit button per verified-and-uncommitted cluster (all 4 here).
+    commit_actions = [w for w in widgets if str(w.get("id", "")).startswith("video-commit-")]
+    assert len(commit_actions) == 4
+
+
+def test_panel_spec_committed_cluster_shows_in_memory_and_no_commit(plugin, store, monkeypatch):
+    """S11 #659: committed clusters read '✓' in the table and drop their commit button."""
+    monkeypatch.setattr(_channel, "batch_status", _idle_status)
+    monkeypatch.setattr(_video_plugin, "_store", store)
+
+    vid = store.upsert("https://example.com/c", channel="test", stage="verified")
+    cid = store.get_or_create_cluster("committed-idea")
+    store.upsert_idea(vid, "A committed idea", cid)
+    store.set_cluster_verdict(cid, "legit", 0.9, ["http://e"])
+    store.set_cluster_committed(cid, "mem-123")
+
+    spec = plugin.panel_spec(None)
+    widgets = spec["widgets"]
+    tbl = next(w for w in widgets if w.get("type") == "table" and "In Memory" in w.get("columns", []))
+    in_mem_idx = tbl["columns"].index("In Memory")
+    assert tbl["rows"][0][in_mem_idx] == "✓"
+    assert not [w for w in widgets if str(w.get("id", "")).startswith("video-commit-")]
+
+
 def test_panel_spec_no_html_in_widget_values(plugin, store, monkeypatch):
     """All field values must be plain strings, not HTML markup."""
     monkeypatch.setattr(_channel, "batch_status", _idle_status)

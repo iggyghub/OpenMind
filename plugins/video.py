@@ -479,21 +479,32 @@ class VideoPlugin:
             "input_placeholder": "https://tiktok.com/@channel or YouTube channel URL",
         })
 
-        # Batch status detail.
+        # ── Batch status (compact): Status + meaningful counts only. S11 #659 ──
         counts = status.get("stage_counts", {})
         eta_secs = status.get("eta_seconds")
         running = bool(status.get("running", False))
-        channel_name = status.get("channel") or "—"
+
+        verified = counts.get("verified", 0)
+        failed = counts.get("failed", 0)
+        pending = sum(
+            counts.get(s, 0)
+            for s in ("enumerated", "downloaded", "transcribed", "escalated", "extracted")
+        )
 
         status_fields: list[dict] = [
-            {"label": "Channel", "value": channel_name},
-            {"label": "Status",  "value": "Running" if running else "Idle"},
+            {"label": "Status", "value": "Running" if running else "Idle"},
         ]
-        for stage in ("enumerated", "downloaded", "transcribed", "escalated", "extracted", "verified"):
-            n = counts.get(stage, 0)
-            if n:
-                status_fields.append({"label": stage.capitalize(), "value": str(n)})
-        if eta_secs is not None:
+        # The active channel is only informative while a batch is in flight; when
+        # idle it's a stale single-video URL, so drop it (S11 #659).
+        if running and status.get("channel"):
+            status_fields.append({"label": "Channel", "value": status["channel"]})
+        if verified:
+            status_fields.append({"label": "Verified", "value": str(verified)})
+        if pending:
+            status_fields.append({"label": "Pending", "value": str(pending)})
+        if failed:
+            status_fields.append({"label": "Failed", "value": str(failed)})
+        if running and eta_secs is not None:
             mins, secs = divmod(int(eta_secs), 60)
             status_fields.append({
                 "label": "ETA",
@@ -511,25 +522,25 @@ class VideoPlugin:
                 "tool_args": {},
             })
 
-        # Clusters table with verdict/confidence (S6 #644).
+        # ── Results: clusters table is the single view (no per-cluster wall) ──
         if clusters:
-            table_rows = []
-            for c in clusters:
-                verdict_val = c["verdict"] or "pending"
-                confidence_val = (
-                    f"{c['confidence']:.0%}" if c["confidence"] is not None else "—"
-                )
-                people = c.get("people_required") or 1
-                table_rows.append(
-                    [c["label"], str(c["member_count"]), str(people), verdict_val, confidence_val]
-                )
             widgets.append({
                 "type": "table",
-                "columns": ["Idea cluster", "Videos", "People", "Verdict", "Confidence"],
-                "rows": table_rows,
+                "columns": ["Idea cluster", "Videos", "People", "Verdict", "Confidence", "In Memory"],
+                "rows": [
+                    [
+                        c["label"],
+                        str(c["member_count"]),
+                        str(c.get("people_required") or 1),
+                        c["verdict"] or "pending",
+                        f"{c['confidence']:.0%}" if c["confidence"] is not None else "—",
+                        "✓" if c.get("memory_id") else "",
+                    ]
+                    for c in clusters
+                ],
             })
 
-            # S8 #653: two-person ideas grouped together.
+            # S8 #653: two-person ideas grouped together (kept).
             two_person = [c for c in clusters if (c.get("people_required") or 1) == 2]
             if two_person:
                 widgets.append({
@@ -545,55 +556,29 @@ class VideoPlugin:
                     ],
                 })
 
-            # Per-cluster drill-in: status, evidence links, up to 5 videos.
-            for cluster in clusters:
-                videos = store.list_videos_by_cluster(cluster["id"], limit=5)
-                if not videos:
-                    continue
-                cluster_fields: list[dict] = [
-                    {"label": "Cluster", "value": cluster["label"]},
-                ]
-                if cluster["verdict"]:
-                    cluster_fields.append({"label": "Verdict", "value": cluster["verdict"]})
-                if cluster["confidence"] is not None:
-                    cluster_fields.append(
-                        {"label": "Confidence", "value": f"{cluster['confidence']:.0%}"}
-                    )
-                if cluster["evidence"]:
-                    for i, link in enumerate(cluster["evidence"], 1):
-                        cluster_fields.append({"label": f"Evidence {i}", "value": str(link)})
-                widgets.append({"type": "detail", "fields": cluster_fields})
-
-                # Commit button: show when verified and not yet committed.
-                if cluster["verdict"] and not cluster.get("memory_id"):
+            # Consolidated commit: one button per verified-and-uncommitted cluster.
+            for c in clusters:
+                if c["verdict"] and not c.get("memory_id"):
                     widgets.append({
                         "type": "action",
-                        "id": f"video-commit-{cluster['id']}",
-                        "label": "Commit to Memory",
+                        "id": f"video-commit-{c['id']}",
+                        "label": f"Commit “{c['label']}” to Memory",
                         "tool": "video_commit",
-                        "tool_args": {"cluster_id": cluster["id"]},
+                        "tool_args": {"cluster_id": c["id"]},
                     })
-                elif cluster.get("memory_id"):
-                    widgets.append({
-                        "type": "detail",
-                        "fields": [{"label": "Committed", "value": "In Memory"}],
-                    })
-
-                items = []
-                for v in videos:
-                    title = v["title"] or v["url"]
-                    idea = (v.get("idea_text") or "").strip()
-                    idea_preview = (idea[:80] + "…") if len(idea) > 80 else idea
-                    subtitle_parts = [v["stage"]]
-                    if idea_preview:
-                        subtitle_parts.append(idea_preview)
-                    items.append({
-                        "title": title,
-                        "subtitle": " · ".join(subtitle_parts),
-                    })
-                widgets.append({"type": "list", "items": items})
         else:
             widgets.append({"type": "list", "items": []})
+
+        # ── Recent videos: one capped list, not per-cluster walls. S11 #659 ──
+        recent = store.list_recent_videos(limit=8)
+        if recent:
+            items = []
+            for v in recent:
+                idea = (v.get("idea_text") or "").strip()
+                idea_preview = (idea[:70] + "…") if len(idea) > 70 else idea
+                sub = " · ".join(p for p in (v["stage"], idea_preview) if p)
+                items.append({"title": v["title"] or v["url"], "subtitle": sub})
+            widgets.append({"type": "list", "items": items})
 
         return {"title": "Videos", "widgets": widgets}
 
