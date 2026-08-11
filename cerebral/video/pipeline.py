@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from cerebral.video import escalation as _escalation
+from cerebral.video import screen_capture as _screen_capture
 
 logger = logging.getLogger(__name__)
 
@@ -93,26 +94,44 @@ async def run(
     url: str,
     *,
     visual: bool = False,
+    force_capture: bool = False,
     budget: "_escalation.EscalationBudget | None" = None,
 ) -> dict[str, Any]:
     """Download + transcribe + (escalate) one video.  Returns metadata dict.
 
     visual=True forces the visual layers (OCR + vision) regardless of triggers.
+    force_capture=True skips yt-dlp and acquires via screen-watch capture
+    (S10 #658); otherwise yt-dlp is tried first and capture is the fallback when
+    the download raises (e.g. TikTok's broken extractor).
     budget limits how many escalations a batch allows; None means uncapped.
     Runs blocking I/O in executor threads so Cerebral's asyncio loop stays free.
     """
+    loop = asyncio.get_event_loop()
     download = get_download_fn()
     transcribe = get_transcribe_fn()
+    capture = _screen_capture.get_capture_fn()
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        meta = await asyncio.get_event_loop().run_in_executor(
-            None, download, url, out_dir
-        )
+
+        # Acquisition: yt-dlp first, screen-watch capture as fallback (or forced).
+        captured_frames: list[Path] | None = None
+        if force_capture:
+            meta = await loop.run_in_executor(None, capture, url, out_dir)
+            captured_frames = meta.get("frames") or []
+        else:
+            try:
+                meta = await loop.run_in_executor(None, download, url, out_dir)
+            except Exception as exc:  # noqa: BLE001 -- any download failure is a fallback trigger
+                logger.warning(
+                    "[video] yt-dlp download failed for %s (%s); falling back to screen-watch capture",
+                    url, exc,
+                )
+                meta = await loop.run_in_executor(None, capture, url, out_dir)
+                captured_frames = meta.get("frames") or []
+
         audio_path: Path = meta["audio_path"]
-        transcript = await asyncio.get_event_loop().run_in_executor(
-            None, transcribe, audio_path
-        )
+        transcript = await loop.run_in_executor(None, transcribe, audio_path)
 
         result: dict[str, Any] = {
             "title": meta.get("title", ""),
@@ -125,7 +144,9 @@ async def run(
 
         if _escalation.needs_escalation(transcript, visual=visual):
             if budget is None or budget.consume():
-                vis = await _escalation.run(url, out_dir)
+                # Reuse frames from screen-watch capture when present; a captured
+                # source can't be re-fetched by yt-dlp for keyframes anyway.
+                vis = await _escalation.run(url, out_dir, frames=captured_frames)
                 result.update(vis)
                 result["escalated"] = True
             else:

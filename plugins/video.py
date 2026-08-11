@@ -31,6 +31,7 @@ from cerebral.video import channel as _channel
 from cerebral.video import escalation as _escalation
 from cerebral.video import extraction as _extraction
 from cerebral.video import pipeline as _pipeline
+from cerebral.video import screen_capture as _screen_capture
 from cerebral.video import verdict as _verdict
 from cerebral.video.store import VideoStore
 
@@ -87,6 +88,10 @@ def set_enumerate_fn(fn: Callable) -> None:  # S3 #641
     _channel.set_enumerate_fn(fn)
 
 
+def set_capture_fn(fn: Callable) -> None:  # S10 #658
+    _screen_capture.set_capture_fn(fn)
+
+
 def set_extract_fn(fn: Callable) -> None:  # S5 #642
     _extraction.set_extract_fn(fn)
 
@@ -139,6 +144,15 @@ class VideoPlugin:
                             "description": (
                                 "Force visual layers (OCR + vision on keyframes) "
                                 "regardless of transcript content."
+                            ),
+                        },
+                        "capture": {
+                            "type": "boolean",
+                            "description": (
+                                "Force screen-watch capture (open browser, play, "
+                                "record audio + frames) instead of yt-dlp. Use for "
+                                "sources yt-dlp can't download, e.g. TikTok. yt-dlp "
+                                "failures already fall back to capture automatically."
                             ),
                         },
                     },
@@ -255,6 +269,7 @@ class VideoPlugin:
         url: str = args.get("url", "").strip()
         channel: str | None = args.get("channel")
         visual: bool = bool(args.get("visual", False))
+        capture: bool = bool(args.get("capture", False))  # S10 #658: force screen-watch
         if not url:
             return ToolResult(content="url is required", is_error=True)
 
@@ -295,7 +310,7 @@ class VideoPlugin:
         video_id = store.upsert(url, channel=channel, stage="enumerated")
 
         try:
-            meta = await _pipeline.run(url, visual=visual)
+            meta = await _pipeline.run(url, visual=visual, force_capture=capture)
         except Exception as exc:
             logger.error("[video] ingest failed for %s: %s", url, exc)
             return ToolResult(content=f"Ingest failed: {exc}", is_error=True)
