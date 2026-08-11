@@ -232,8 +232,16 @@ def batch_resume(
 
 
 def batch_toggle(store: VideoStore, **kwargs) -> dict:
-    """Pause a running batch, or resume a paused one (S13 #664 hotkey target)."""
+    """Pause a running batch, or resume a paused one (S13 #664 hotkey target).
+
+    A graceful stop drains the current video before the task ends, so the task
+    reports "running" for up to a video's length after a pause. A toggle in that
+    window CANCELS the pending stop (resume intent) rather than re-requesting it.
+    """
     if _state.is_running():
+        if _state.stop_flag:
+            _state.stop_flag = False  # un-pause before the drain finishes
+            return {"action": "resumed", "status": "resumed", "channel": _state.channel_url}
         return {"action": "paused", **batch_stop()}
     return {"action": "resumed", **batch_resume(store, **kwargs)}
 

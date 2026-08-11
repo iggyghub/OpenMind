@@ -166,6 +166,30 @@ def test_batch_toggle_pauses_when_running(db):
         loop.close()
 
 
+def test_batch_toggle_during_drain_cancels_the_pause(db):
+    # A pause was requested but the current video is still draining (task running,
+    # stop_flag set). A second toggle should CANCEL the stop (resume), not re-pause.
+    import asyncio as _asyncio
+
+    async def _never():
+        await _asyncio.sleep(9999)
+
+    loop = _asyncio.new_event_loop()
+    try:
+        channel._state.task = loop.create_task(_never())
+        channel._state.stop_flag = True
+        res = channel.batch_toggle(db)
+        assert res["action"] == "resumed"
+        assert channel._state.stop_flag is False
+        channel._state.task.cancel()
+        try:
+            loop.run_until_complete(channel._state.task)
+        except _asyncio.CancelledError:
+            pass
+    finally:
+        loop.close()
+
+
 def test_batch_resume_processes_remaining_without_reenumerating(db):
     # Two enumerated rows already in the DB (as if a prior batch enumerated them).
     db.enumerate_video("http://example.com/v1", channel="ch", title="V1")
