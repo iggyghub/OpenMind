@@ -9632,12 +9632,35 @@
     // (list/table/action/detail widgets) via PanelSpec.renderPanel.
     const videosPanelBodyEl = document.getElementById('videos-panel-body');
 
+    let _lastVideosSpecJson = null;
     function renderVideosPanel(spec) {
       if (!videosPanelBodyEl || typeof window.PanelSpec === 'undefined') return;
+      // S15 #669: skip re-render when the spec is unchanged so live polling of a
+      // running batch doesn't flicker or reset scroll unless data actually moved.
+      const json = JSON.stringify(spec);
+      if (json === _lastVideosSpecJson) return;
+      _lastVideosSpecJson = json;
       videosPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
       if (window.ActionWidget) {
         window.ActionWidget.initActionWidgets(videosPanelBodyEl, sendEvent);
       }
+    }
+
+    // S15 #669: live-refresh the Videos panel while it's open (a batch adds
+    // clusters/verdicts over minutes). Polls panel_spec every 4s; skips the fetch
+    // while an input in the panel is focused so a URL being typed isn't clobbered.
+    let _videosPollTimer = null;
+    function startVideosPoll() {
+      stopVideosPoll();
+      _videosPollTimer = setInterval(function () {
+        const a = document.activeElement;
+        if (a && videosPanelBodyEl && videosPanelBodyEl.contains(a) &&
+            (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return;
+        sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: 'video' } });
+      }, 4000);
+    }
+    function stopVideosPoll() {
+      if (_videosPollTimer) { clearInterval(_videosPollTimer); _videosPollTimer = null; }
     }
 
     // ── plugins pane (Issues #206, #187) ────────────────────────────────────
@@ -11001,6 +11024,8 @@
       subs.forEach(function (el) {
         el.classList.toggle('is-active', el.dataset.lib === target);
       });
+      // S15 #669: live-refresh only while the Videos sub-tab is the active one.
+      if (target === 'videos') { startVideosPoll(); } else { stopVideosPoll(); }
     }
 
     // Settings sub-tab activation (General / AI models). Mirrors libActivateSub.
