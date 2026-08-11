@@ -266,10 +266,10 @@ class TestSystemPlugin:
         assert not result.is_error
         assert "restart" in result.content.lower() or "stub" in result.content.lower()
 
-    def test_list_tools_exposes_all_six(self):
+    def test_list_tools_exposes_all_seven(self):
         from plugins.system import create
         names = {t.name for t in create().list_tools()}
-        assert names == {"get_volume", "set_volume", "take_screenshot", "get_wifi_status", "shutdown", "restart"}
+        assert names == {"get_volume", "set_volume", "take_screenshot", "copy_image_to_clipboard", "get_wifi_status", "shutdown", "restart"}
 
     def test_create_returns_plugin_instance(self):
         from plugins.system import create
