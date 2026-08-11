@@ -26,7 +26,8 @@ framework (build the second kind's abstraction when it exists).
 - [x] S8 -- #653 -- de-bias verdict + people-count grouping (first-channel tuning)
 - [x] S9 -- #655 -- no API key: Budd + real OpenClaw web_search grounding
 - [x] S11 -- #659 -- declutter Videos tab (kill per-cluster wall + fix batch status)
-- [x] S10 -- #658 -- screen-watch capture (browser open/play + WASAPI loopback audio + frames); fallback when yt-dlp can't download (e.g. TikTok). Built seams-first; real capture is live-verify (needs `pip install sounddevice soundfile` + restart).
+- [x] S10 -- #658 -- screen-watch capture (soundcard loopback + real browser + frames); fallback when yt-dlp can't download. Plumbing live-verified end-to-end (PR #661,#662); deps: pip soundcard+soundfile, PATH tesseract.
+- [ ] S12 -- #663 -- make capture actually EXTRACT TikTok: play/unmute via browser harness, crop frames to the video element (usefulness+privacy), handle login/consent wall. S10 completes but yields muted-empty audio + full-desktop OCR.
 
 Order note: S4 depends on S3; S5 depends on S1 (runs in parallel with S2/S3);
 S6 depends on S5; S7 depends on S6. The queue above is a valid linear order.
