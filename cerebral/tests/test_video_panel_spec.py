@@ -162,6 +162,21 @@ def test_panel_spec_committed_cluster_shows_in_memory_and_no_commit(plugin, stor
     assert not [w for w in widgets if str(w.get("id", "")).startswith("video-commit-")]
 
 
+def test_panel_spec_shows_resume_when_idle_with_pending(plugin, store, monkeypatch):
+    # S16 #671: idle + pending 'enumerated' rows -> a Resume button appears.
+    monkeypatch.setattr(_channel, "batch_status", _idle_status)
+    monkeypatch.setattr(_video_plugin, "_store", store)
+    store.enumerate_video("http://ex/v1", channel="ch", title="V1")
+
+    spec = plugin.panel_spec(None)
+    action_ids = [w.get("id") for w in spec["widgets"] if w.get("type") == "action"]
+    assert "video-batch-resume" in action_ids
+    # And the volume shows as a Processed/Pending field even when idle.
+    detail = next(w for w in spec["widgets"] if w.get("type") == "detail")
+    labels = [f["label"] for f in detail.get("fields", [])]
+    assert "Pending" in labels
+
+
 def test_panel_spec_no_html_in_widget_values(plugin, store, monkeypatch):
     """All field values must be plain strings, not HTML markup."""
     monkeypatch.setattr(_channel, "batch_status", _idle_status)
