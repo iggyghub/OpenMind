@@ -5960,15 +5960,76 @@ def _video_download(url: str, out_dir) -> dict:
     return {"audio_path": audio_path, "title": title, "duration": duration}
 
 
+_whisper_model = None
+_whisper_model_key: "tuple[str, str] | None" = None
+
+
+def _setup_cuda_dll_path() -> None:  # S17 #673
+    """Put the pip nvidia CUDA libs (cublas/cudnn/cudart) on the DLL search path.
+
+    ctranslate2 delay-loads cublas64_12.dll via LoadLibrary, which searches PATH --
+    os.add_dll_directory alone is NOT enough. Idempotent; safe on boxes with no
+    nvidia wheels (does nothing).
+    """
+    import glob  # noqa: PLC0415
+    import site  # noqa: PLC0415
+
+    bins: set[str] = set()
+    for base in site.getsitepackages() + [site.getusersitepackages()]:
+        for b in glob.glob(os.path.join(base, "nvidia", "*", "bin")):
+            bins.add(b)
+    for b in bins:
+        try:
+            os.add_dll_directory(b)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+    if bins:
+        os.environ["PATH"] = os.pathsep.join(sorted(bins)) + os.pathsep + os.environ.get("PATH", "")
+
+
+def _get_whisper_model():  # S17 #673
+    """Load faster-whisper once (module-cached), GPU-first with a CPU fallback.
+
+    The 1080 (Pascal) supports cuda/int8 (DP4A) but not fp16/int8_float16. device
+    and compute are overridable via the video_whisper_device / video_whisper_compute
+    settings; any CUDA failure degrades to cpu/int8 rather than crashing a video.
+    """
+    global _whisper_model, _whisper_model_key
+    from faster_whisper import WhisperModel  # type: ignore[import]
+
+    device = (_settings.get("video_whisper_device") or "cuda").lower()
+    compute = _settings.get("video_whisper_compute") or "int8"
+    key = (device, compute)
+    if _whisper_model is not None and _whisper_model_key == key:
+        return _whisper_model
+
+    if device == "cuda":
+        try:
+            _setup_cuda_dll_path()
+            _whisper_model = WhisperModel("small", device="cuda", compute_type=compute)
+            _whisper_model_key = key
+            logger.info("[video] whisper model on GPU (cuda/%s)", compute)
+            return _whisper_model
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[video] GPU whisper unavailable (%s); using CPU", exc)
+
+    _whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
+    # Cache under the REQUESTED key so a cuda->cpu fallback isn't re-attempted
+    # (and the model reloaded) on every subsequent video.
+    _whisper_model_key = key
+    logger.info("[video] whisper model on CPU (int8)")
+    return _whisper_model
+
+
 def _video_transcribe(audio_path) -> str:
     """Production faster-whisper transcription.  Live-verify only; stubs cover tests.
 
     S14 #667: speed the audio (ffmpeg atempo) before whisper -- the AI 'watches'
     faster. Whisper cost scales with audio duration, so 2x audio ~= half the time.
+    S17 #673: transcribe on a cached GPU-first model (CPU fallback).
     ffmpeg failure falls back to 1x so a video is never blocked by the speed-up.
     """
     import subprocess  # noqa: PLC0415
-    from faster_whisper import WhisperModel  # type: ignore[import]
     from pathlib import Path as _Path
     from cerebral.video.pipeline import atempo_filter
 
@@ -5990,7 +6051,7 @@ def _video_transcribe(audio_path) -> str:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[video] audio speed-up failed (%s); transcribing at 1x", exc)
 
-    model = WhisperModel("small", device="cpu", compute_type="int8")
+    model = _get_whisper_model()
     segments, _ = model.transcribe(str(to_transcribe), vad_filter=True)
     return " ".join(s.text.strip() for s in segments)
 

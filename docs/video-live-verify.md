@@ -174,3 +174,9 @@ Complete these manually; do NOT perform them in an autonomous loop session.
       video_transcribe_speed setting if accuracy drops on fast talkers.
 - [ ] (Bigger win, separate) GPU whisper: install CUDA 12 runtime libs
       (cublas64_12.dll + cuDNN) so device="cuda" works on the 1080 (ctranslate2 sees it).
+
+## S17 #673 -- GPU whisper (cuda/int8 on the 1080)
+- [ ] Deps installed: pip nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12.
+- [ ] After restart, cerebral.err.log shows "whisper model on GPU (cuda/int8)".
+- [ ] nvidia-smi shows python using the GPU during a batch; per-video time drops sharply.
+- [ ] On a box without the CUDA libs, it logs "GPU whisper unavailable ... using CPU" and still works.
