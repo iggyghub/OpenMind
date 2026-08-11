@@ -1472,6 +1472,9 @@ _IRREVERSIBLE_PLUGINS: frozenset[str] = frozenset({
     "gmail.py",
     "openclaw_channels.py",
     "discord_user.py",
+    "discord_send.py",   # send_image_to_discord (#635) -- one-shot screenshot->DM
+                         # macro; a message sent to a real human is irreversible,
+                         # same posture as discord_user.py send.
     "google_docs.py",    # docs_create + docs_append (#224)
     "google_sheets.py",  # sheets_write_range + sheets_append_row + sheets_create (#225)
     "job_search.py",     # jobs_apply_submit (ADR-0009; sole exception to ADR-0005 irreversible-modal rule)
