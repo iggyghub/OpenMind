@@ -25,6 +25,7 @@ framework (build the second kind's abstraction when it exists).
 - [x] S7 -- #645 -- commit verified idea to Memory (video_commit)
 - [x] S8 -- #653 -- de-bias verdict + people-count grouping (first-channel tuning)
 - [x] S9 -- #655 -- no API key: Budd + real OpenClaw web_search grounding
+- [x] S11 -- #659 -- declutter Videos tab (kill per-cluster wall + fix batch status)
 - [ ] S10 -- #658 -- screen-watch capture (browser open/navigate/play + frames+audio); fallback when yt-dlp can't download (e.g. TikTok). Live-verified need; heavier slice (WASAPI loopback + browser playback) -- pick up manually or via loop when ready.
 
 Order note: S4 depends on S3; S5 depends on S1 (runs in parallel with S2/S3);
@@ -72,3 +73,5 @@ slice, set the next entry's model on the `Model:` line above.
 - Operator .ps1 scripts: ASCII-only bodies, pause-on-exit + -NoPause switch
   (CLAUDE.md rules).
 - Commit to master ONLY VIDEO.md. Everything else lands via a per-issue PR.
+
+- PR #660 — S11 #659 -- declutter Videos tab (kill per-cluster wall + fix batch status)
