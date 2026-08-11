@@ -5991,6 +5991,78 @@ def _video_enumerate(channel_url: str) -> list:
     return _prod_enumerate(channel_url)
 
 
+def _video_screen_capture(url: str, out_dir) -> dict:  # S10 #658 (ADR-0017)
+    """Production screen-watch capture: open browser, play, record audio + frames.
+
+    Live-verify ONLY (docs/video-live-verify.md); stubs cover tests. Runs in an
+    executor thread, so everything here is synchronous: navigation is a plain
+    OpenClaw POST (the browser plugin's endpoint), audio is a WASAPI loopback
+    recording of the playback, frames are grabbed from the screen. Lazy imports
+    keep sounddevice/soundfile/PIL optional -- a missing one raises a clear error
+    the user resolves once, and the pipeline's try/except leaves the video failed
+    rather than crashing the batch.
+    """
+    import time
+    import urllib.request
+    from pathlib import Path as _Path
+
+    out_dir = _Path(out_dir)
+    # Bound the recording: we can't know a video's length before it plays, so cap
+    # it. TikTok/Shorts are short; a longer clip is truncated (better than hanging).
+    CAP_SECONDS = 90
+    SAMPLE_RATE = 16000  # whisper-friendly
+    FRAME_COUNT = 8
+
+    # 1) Open + play in Felix's browser via the OpenClaw browser endpoint (sync).
+    try:
+        req = urllib.request.Request(
+            "http://localhost:3000/browser/navigate",
+            data=json.dumps({"url": url}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[video/capture] browser navigate failed (%s); recording anyway", exc)
+
+    # 2) Record system audio (WASAPI loopback) while sampling frames.
+    import sounddevice as sd  # type: ignore[import]
+    import soundfile as sf    # type: ignore[import]
+    import numpy as _np       # type: ignore[import]
+    from PIL import ImageGrab  # type: ignore[import]
+
+    wasapi = sd.WasapiSettings(loopback=True)
+    frames: list = []
+    audio_path = out_dir / "capture.wav"
+    frame_interval = max(1.0, CAP_SECONDS / FRAME_COUNT)
+
+    rec = sd.rec(
+        int(CAP_SECONDS * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=2,
+        dtype="float32", extra_settings=wasapi,
+    )
+    next_frame = time.monotonic()
+    for i in range(FRAME_COUNT):
+        while time.monotonic() < next_frame:
+            time.sleep(0.05)
+        fp = out_dir / f"frame{i:03d}.jpg"
+        try:
+            ImageGrab.grab().save(fp, "JPEG")
+            frames.append(fp)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[video/capture] frame grab failed: %s", exc)
+        next_frame += frame_interval
+    sd.wait()
+
+    # Trim trailing silence-ish tail is out of scope; write the whole buffer.
+    sf.write(str(audio_path), _np.asarray(rec), SAMPLE_RATE)
+
+    return {
+        "audio_path": audio_path,
+        "title": "",          # not available without a page scrape; extraction copes
+        "duration": float(CAP_SECONDS),
+        "frames": frames,
+    }
+
+
 async def _video_extract(                                                    # S5 #642 (ADR-0017)
     transcript: str,
     ocr_text: str,
@@ -6163,6 +6235,7 @@ def _wire_plugin_seams() -> None:
         ("video", "set_ocr_fn", _video_ocr),                                         # S2 #640 (ADR-0017)
         ("video", "set_vision_fn", _video_vision),                                   # S2 #640 (ADR-0017)
         ("video", "set_enumerate_fn", _video_enumerate),                             # S3 #641 (ADR-0017)
+        ("video", "set_capture_fn", _video_screen_capture),                          # S10 #658 (ADR-0017)
         ("video", "set_extract_fn", _video_extract),                                 # S5 #642 (ADR-0017)
         ("video", "set_verify_fn", _video_verify),                                   # S6 #644 (ADR-0017)
         ("video", "set_commit_fn", _video_commit),                                    # S7 #645 (ADR-0017)

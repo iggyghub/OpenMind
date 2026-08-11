@@ -155,3 +155,15 @@ Complete these manually; do NOT perform them in an autonomous loop session.
       appear to inform the verdict + evidence URLs.
 - [ ] Kill the OpenClaw search endpoint and confirm the verdict still completes
       (knowledge-only fallback), never crashes.
+
+## S10 #658 -- screen-watch capture (browser + WASAPI loopback)
+- [ ] Install the capture deps once: `pip install sounddevice soundfile` (PIL/numpy already present).
+- [ ] Ingest a TikTok URL that yt-dlp cannot download with capture forced
+      (`video_ingest(url, capture=true)`): Felix opens the browser, plays it, and
+      produces a transcript from the loopback audio.
+- [ ] Confirm the automatic path: a normal `video_batch_start` on a TikTok channel
+      now falls back to capture per-video when yt-dlp download raises (no more mass
+      'failed').
+- [ ] Confirm WASAPI loopback records the video's audio (not the mic) and that
+      other system sounds are quiet during capture.
+- [ ] Confirm sampled frames feed escalation (OCR/vision) for a thin/deictic clip.

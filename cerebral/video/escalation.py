@@ -146,13 +146,19 @@ def _prod_vision(frames: list[Path]) -> str:
 
 # ── async runner ──────────────────────────────────────────────────────────────
 
-async def run(url: str, out_dir: Path) -> dict[str, str]:
-    """Extract scene-change keyframes, run OCR + vision, discard frames."""
+async def run(
+    url: str, out_dir: Path, frames: "list[Path] | None" = None
+) -> dict[str, str]:
+    """Run OCR + vision on keyframes, discard frames.
+
+    frames: pre-captured frames (S10 #658 screen-watch) -- when provided they are
+    used directly and no yt-dlp keyframe pull happens (a screen-captured source
+    can't be re-fetched anyway). When None, scene-change keyframes are extracted.
+    """
     loop = asyncio.get_event_loop()
 
-    frames: list[Path] = await loop.run_in_executor(
-        None, get_keyframe_fn(), url, out_dir
-    )
+    if frames is None:
+        frames = await loop.run_in_executor(None, get_keyframe_fn(), url, out_dir)
     if not frames:
         logger.warning("[video] no keyframes extracted for %s", url)
         return {"ocr_text": "", "visual_summary": ""}
