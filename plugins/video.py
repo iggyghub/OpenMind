@@ -229,6 +229,16 @@ class VideoPlugin:
                 schema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="video_batch_resume",
+                description=(
+                    "Resume the channel batch after a restart -- continues the pending "
+                    "('enumerated') videos found in the store, no re-enumeration needed."
+                ),
+                plugin=PLUGIN_NAME,
+                required_capabilities=frozenset(),
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
                 name="video_batch_status",
                 description=(
                     "Return the batch runner status: stage counts per stage and an ETA in seconds "
@@ -271,6 +281,8 @@ class VideoPlugin:
             return self._video_batch_stop()
         if tool_name == "video_batch_toggle":
             return ToolResult(content=json.dumps(_channel.batch_toggle(_get_store())))
+        if tool_name == "video_batch_resume":
+            return ToolResult(content=json.dumps(_channel.batch_resume(_get_store())))
         if tool_name == "video_batch_status":
             return self._video_batch_status()
         if tool_name == "video_commit":
@@ -518,9 +530,19 @@ class VideoPlugin:
             for s in ("enumerated", "downloaded", "transcribed", "escalated", "extracted")
         )
 
+        # Global totals (survive a restart that cleared the active-channel state) --
+        # so the volume of work + resumable backlog show even when idle. S16 #671.
+        all_counts = store.stage_counts()
+        processed_total = sum(
+            all_counts.get(s, 0) for s in ("transcribed", "escalated", "extracted", "verified")
+        )
+        pending_total = store.total_pending()
+
         status_fields: list[dict] = [
             {"label": "Status", "value": "Running" if running else "Idle"},
         ]
+        if processed_total:
+            status_fields.append({"label": "Processed", "value": str(processed_total)})
         # The active channel is only informative while a batch is in flight; when
         # idle it's a stale single-video URL, so drop it (S11 #659).
         if running and status.get("channel"):
@@ -529,6 +551,8 @@ class VideoPlugin:
             status_fields.append({"label": "Verified", "value": str(verified)})
         if pending:
             status_fields.append({"label": "Pending", "value": str(pending)})
+        elif pending_total:
+            status_fields.append({"label": "Pending", "value": str(pending_total)})
         if failed:
             status_fields.append({"label": "Failed", "value": str(failed)})
         if running and eta_secs is not None:
@@ -546,6 +570,16 @@ class VideoPlugin:
                 "id": "video-batch-stop",
                 "label": "Stop batch",
                 "tool": "video_batch_stop",
+                "tool_args": {},
+            })
+        elif pending_total:
+            # S16 #671: after a restart the batch is idle but has pending rows --
+            # a one-click resume that recovers the channel from the DB.
+            widgets.append({
+                "type": "action",
+                "id": "video-batch-resume",
+                "label": f"Resume batch ({pending_total} pending)",
+                "tool": "video_batch_resume",
                 "tool_args": {},
             })
 

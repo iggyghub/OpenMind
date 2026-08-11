@@ -221,14 +221,18 @@ def batch_resume(
     """
     if _state.is_running():
         return {"status": "already_running", "channel": _state.channel_url}
-    if not _state.channel_url:
+    # After a Cerebral restart the in-memory channel is gone; recover it from the
+    # DB (the channel with pending rows) so resume still works (S16 #671).
+    channel = _state.channel_url or store.pending_channel()
+    if not channel:
         return {"status": "no_channel"}
+    _state.channel_url = channel  # re-establish for subsequent toggles/hotkey
     _state.stop_flag = False
     budget = EscalationBudget(escalation_cap)
     _state.task = asyncio.create_task(
-        _run_batch(store, _state.channel_url, budget, sleep_secs)
+        _run_batch(store, channel, budget, sleep_secs)
     )
-    return {"status": "resumed", "channel": _state.channel_url}
+    return {"status": "resumed", "channel": channel}
 
 
 def batch_toggle(store: VideoStore, **kwargs) -> dict:

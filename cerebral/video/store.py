@@ -226,6 +226,26 @@ class VideoStore:
             rows = con.execute(sql, params).fetchall()
         return {row["stage"]: row["cnt"] for row in rows}
 
+    def pending_channel(self) -> "str | None":
+        """The channel with the most unprocessed ('enumerated') rows.
+
+        S16 #671: lets a batch resume after a Cerebral restart wiped the in-memory
+        channel -- the work-to-do is discoverable from the DB.
+        """
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT channel FROM videos WHERE stage = 'enumerated' AND channel IS NOT NULL"
+                " GROUP BY channel ORDER BY COUNT(*) DESC LIMIT 1"
+            ).fetchone()
+        return row["channel"] if row else None
+
+    def total_pending(self) -> int:
+        """Count of all unprocessed ('enumerated') rows across channels (S16 #671)."""
+        with self._conn() as con:
+            return con.execute(
+                "SELECT COUNT(*) FROM videos WHERE stage = 'enumerated'"
+            ).fetchone()[0]
+
     # ── S5 #642: idea extraction + incremental clustering ─────────────────────
 
     def get_cluster_labels(self) -> list[str]:

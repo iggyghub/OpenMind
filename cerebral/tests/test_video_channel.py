@@ -190,6 +190,38 @@ def test_batch_toggle_during_drain_cancels_the_pause(db):
         loop.close()
 
 
+def test_pending_channel_and_total(db):
+    db.enumerate_video("http://a/1", channel="A")
+    db.enumerate_video("http://a/2", channel="A")
+    db.enumerate_video("http://b/1", channel="B")
+    assert db.pending_channel() == "A"   # channel with the most enumerated rows
+    assert db.total_pending() == 3
+
+
+def test_batch_resume_recovers_channel_from_db_after_restart(db):
+    # Restart wiped _state.channel_url, but enumerated rows remain in the DB.
+    db.enumerate_video("http://ex/v1", channel="chX", title="V1")
+    db.enumerate_video("http://ex/v2", channel="chX", title="V2")
+    channel._state.channel_url = None
+
+    def _enum_must_not_run(url):
+        raise AssertionError("resume must not re-enumerate")
+
+    channel.set_enumerate_fn(_enum_must_not_run)
+    pipeline.set_download_fn(_stub_pipeline)
+    pipeline.set_transcribe_fn(lambda p: " ".join(["word"] * 30))
+
+    async def _run():
+        res = channel.batch_resume(db, sleep_secs=0)
+        await channel._state.task
+        return res
+
+    res = asyncio.run(_run())
+    assert res["status"] == "resumed"
+    assert res["channel"] == "chX"
+    assert db.stage_counts(channel="chX").get("enumerated", 0) == 0
+
+
 def test_batch_resume_processes_remaining_without_reenumerating(db):
     # Two enumerated rows already in the DB (as if a prior batch enumerated them).
     db.enumerate_video("http://example.com/v1", channel="ch", title="V1")
