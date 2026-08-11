@@ -45,6 +45,7 @@ slice, set the next entry's model on the `Model:` line above.
 - PR #652 — S7 #645 -- commit verified idea to Memory (video_commit)
 - PR #654 — S8 #653 -- de-bias verdict + people-count grouping (first-channel tuning)
 - PR #656 — S9 #655 -- no API key: Budd + real OpenClaw web_search grounding
+- PR #660 — S11 #659 -- declutter Videos tab (kill per-cluster wall + fix batch status)
 
 ## SAFETY
 
@@ -73,5 +74,3 @@ slice, set the next entry's model on the `Model:` line above.
 - Operator .ps1 scripts: ASCII-only bodies, pause-on-exit + -NoPause switch
   (CLAUDE.md rules).
 - Commit to master ONLY VIDEO.md. Everything else lands via a per-issue PR.
-
-- PR #660 — S11 #659 -- declutter Videos tab (kill per-cluster wall + fix batch status)
