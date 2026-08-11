@@ -29,6 +29,7 @@ framework (build the second kind's abstraction when it exists).
 - [x] S10 -- #658 -- screen-watch capture (soundcard loopback + real browser + frames); fallback when yt-dlp can't download. Plumbing live-verified end-to-end (PR #661,#662); deps: pip soundcard+soundfile, PATH tesseract.
 - [x] S13 -- #664 -- global hotkey (Ctrl+Alt+P) to pause/resume the batch + tray notification
 - [x] S14 -- #667 -- 2x audio speed-up for faster transcription (video_transcribe_speed)
+- [x] S15 -- #669 -- live auto-refresh the Videos tab while a batch runs
 - [ ] S12 -- #663 -- make capture actually EXTRACT TikTok: play/unmute via browser harness, crop frames to the video element (usefulness+privacy), handle login/consent wall. S10 completes but yields muted-empty audio + full-desktop OCR.
 
 Order note: S4 depends on S3; S5 depends on S1 (runs in parallel with S2/S3);
