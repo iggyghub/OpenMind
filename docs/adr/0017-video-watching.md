@@ -134,3 +134,24 @@ S9 makes grounding real without a key: `_video_verify` calls Felix's own
 Extraction + verdict route on a dedicated `task_type="video"` so Budd can be
 pinned for video without disturbing the jobs pipeline's `quality` route; a search
 outage degrades the verdict to knowledge-only rather than failing.
+
+## Amendment — S10: screen-watch capture (for sources yt-dlp can't download)
+
+The live run against @filthy.profit exposed that yt-dlp's TikTok extractor is
+broken on this box: enumerate (`--flat-playlist`) works, but per-video download
+returns an unparseable "webpage request" response, and browser cookies do not
+help. yt-dlp downloads YouTube fine, so it stays the default acquisition path —
+but it cannot be the *only* one.
+
+Add a source-agnostic **screen-watch capture** backend that acquires a video the
+way a person does: Felix **opens its browser (the existing browser-automation
+harness), navigates to the video URL, and plays it**, capturing (a) system audio
+(Windows WASAPI loopback) -> faster-whisper for the transcript, and (b) sampled
+frames -> the existing OCR + vision escalation layer. It sits behind the
+pipeline's `_video_download` seam as an alternative acquisition method, selected
+as a **fallback when yt-dlp download fails** (or forced per source). Downloadable
+sources keep using yt-dlp (faster, cleaner); screen-watch is what makes TikTok
+and any un-downloadable source work. Reuses: the browser harness (open/navigate/
+play), escalation vision/OCR (frames), whisper (audio). New work: Windows loopback
+audio capture + playback timing/consent handling. This is the primitive's original
+"watch a video to understand it" intent, made literal.

@@ -25,6 +25,7 @@ framework (build the second kind's abstraction when it exists).
 - [x] S7 -- #645 -- commit verified idea to Memory (video_commit)
 - [x] S8 -- #653 -- de-bias verdict + people-count grouping (first-channel tuning)
 - [x] S9 -- #655 -- no API key: Budd + real OpenClaw web_search grounding
+- [ ] S10 -- #658 -- screen-watch capture (browser open/navigate/play + frames+audio); fallback when yt-dlp can't download (e.g. TikTok). Live-verified need; heavier slice (WASAPI loopback + browser playback) -- pick up manually or via loop when ready.
 
 Order note: S4 depends on S3; S5 depends on S1 (runs in parallel with S2/S3);
 S6 depends on S5; S7 depends on S6. The queue above is a valid linear order.
