@@ -6003,57 +6003,55 @@ def _video_screen_capture(url: str, out_dir) -> dict:  # S10 #658 (ADR-0017)
     rather than crashing the batch.
     """
     import time
-    import urllib.request
+    import webbrowser
     from pathlib import Path as _Path
 
     out_dir = _Path(out_dir)
     # Bound the recording: we can't know a video's length before it plays, so cap
     # it. TikTok/Shorts are short; a longer clip is truncated (better than hanging).
-    CAP_SECONDS = 90
+    CAP_SECONDS = 60
     SAMPLE_RATE = 16000  # whisper-friendly
     FRAME_COUNT = 8
+    LEAD_SECONDS = 3     # let the page open + start playing before recording
 
-    # 1) Open + play in Felix's browser via the OpenClaw browser endpoint (sync).
+    # 1) Open the URL in a real browser window so its audio plays through the
+    # system speakers (which the loopback below captures). A headless/automation
+    # browser would not route audio to the output device.
     try:
-        req = urllib.request.Request(
-            "http://localhost:3000/browser/navigate",
-            data=json.dumps({"url": url}).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req, timeout=15).read()
+        webbrowser.open(url)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[video/capture] browser navigate failed (%s); recording anyway", exc)
+        logger.warning("[video/capture] webbrowser.open failed (%s); recording anyway", exc)
+    time.sleep(LEAD_SECONDS)
 
-    # 2) Record system audio (WASAPI loopback) while sampling frames.
-    import sounddevice as sd  # type: ignore[import]
+    # 2) Record system audio via WASAPI loopback (soundcard), sampling frames
+    # between chunks. soundcard exposes the default speaker as a loopback mic;
+    # sounddevice's WasapiSettings has no loopback in this version.
+    import soundcard as sc    # type: ignore[import]
     import soundfile as sf    # type: ignore[import]
     import numpy as _np       # type: ignore[import]
     from PIL import ImageGrab  # type: ignore[import]
 
-    wasapi = sd.WasapiSettings(loopback=True)
+    speaker = sc.default_speaker()
+    mic = sc.get_microphone(speaker.name, include_loopback=True)
+
     frames: list = []
     audio_path = out_dir / "capture.wav"
     frame_interval = max(1.0, CAP_SECONDS / FRAME_COUNT)
+    chunk_frames = int(SAMPLE_RATE * frame_interval)
 
-    rec = sd.rec(
-        int(CAP_SECONDS * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=2,
-        dtype="float32", extra_settings=wasapi,
-    )
-    next_frame = time.monotonic()
-    for i in range(FRAME_COUNT):
-        while time.monotonic() < next_frame:
-            time.sleep(0.05)
-        fp = out_dir / f"frame{i:03d}.jpg"
-        try:
-            ImageGrab.grab().save(fp, "JPEG")
-            frames.append(fp)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[video/capture] frame grab failed: %s", exc)
-        next_frame += frame_interval
-    sd.wait()
+    chunks: list = []
+    with mic.recorder(samplerate=SAMPLE_RATE) as rec:
+        for i in range(FRAME_COUNT):
+            chunks.append(rec.record(numframes=chunk_frames))
+            fp = out_dir / f"frame{i:03d}.jpg"
+            try:
+                ImageGrab.grab().save(fp, "JPEG")
+                frames.append(fp)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[video/capture] frame grab failed: %s", exc)
 
-    # Trim trailing silence-ish tail is out of scope; write the whole buffer.
-    sf.write(str(audio_path), _np.asarray(rec), SAMPLE_RATE)
+    data = _np.concatenate(chunks, axis=0) if chunks else _np.zeros((1, 2), dtype="float32")
+    sf.write(str(audio_path), data, SAMPLE_RATE)
 
     return {
         "audio_path": audio_path,

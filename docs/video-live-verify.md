@@ -157,7 +157,7 @@ Complete these manually; do NOT perform them in an autonomous loop session.
       (knowledge-only fallback), never crashes.
 
 ## S10 #658 -- screen-watch capture (browser + WASAPI loopback)
-- [ ] Install the capture deps once: `pip install sounddevice soundfile` (PIL/numpy already present).
+- [ ] Install the capture deps once: `pip install soundcard soundfile` (PIL/numpy already present).
 - [ ] Ingest a TikTok URL that yt-dlp cannot download with capture forced
       (`video_ingest(url, capture=true)`): Felix opens the browser, plays it, and
       produces a transcript from the loopback audio.
