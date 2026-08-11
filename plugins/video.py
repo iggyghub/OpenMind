@@ -219,6 +219,16 @@ class VideoPlugin:
                 schema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="video_batch_toggle",
+                description=(
+                    "Pause the running channel batch, or resume a paused one on the same "
+                    "channel without re-enumerating. The global pause/resume hotkey target."
+                ),
+                plugin=PLUGIN_NAME,
+                required_capabilities=frozenset(),
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
                 name="video_batch_status",
                 description=(
                     "Return the batch runner status: stage counts per stage and an ETA in seconds "
@@ -259,6 +269,8 @@ class VideoPlugin:
             return await self._video_batch_start(args)
         if tool_name == "video_batch_stop":
             return self._video_batch_stop()
+        if tool_name == "video_batch_toggle":
+            return ToolResult(content=json.dumps(_channel.batch_toggle(_get_store())))
         if tool_name == "video_batch_status":
             return self._video_batch_status()
         if tool_name == "video_commit":
