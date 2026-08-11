@@ -167,3 +167,10 @@ Complete these manually; do NOT perform them in an autonomous loop session.
 - [ ] Confirm WASAPI loopback records the video's audio (not the mic) and that
       other system sounds are quiet during capture.
 - [ ] Confirm sampled frames feed escalation (OCR/vision) for a thin/deictic clip.
+
+## S14 #667 -- 2x audio speed-up for faster transcription
+- [ ] Confirm a batch transcribes ~2x faster (video_transcribe_speed default 2.0) with
+      idea extraction still landing correct clusters. Dial back via the
+      video_transcribe_speed setting if accuracy drops on fast talkers.
+- [ ] (Bigger win, separate) GPU whisper: install CUDA 12 runtime libs
+      (cublas64_12.dll + cuDNN) so device="cuda" works on the 1080 (ctranslate2 sees it).
