@@ -3798,6 +3798,14 @@ async def _handle_message(msg: dict) -> None:
         except ValueError as exc:
             logger.warning("[cerebral] set_task_model failed: %s", exc)
 
+    elif t == "video_batch_toggle":  # S13 #664 -- global hotkey pause/resume
+        result = await _dispatch_tray_call_tool("video_batch_toggle", {})
+        try:
+            data = json.loads(result.content) if not result.is_error else {}
+        except Exception:
+            data = {}
+        await _broadcast({"type": "video_batch_toggle", "data": data})
+
     elif t == "set_local_only":
         enabled = bool(msg.get("data", {}).get("enabled"))
         _router.set_local_only(enabled)

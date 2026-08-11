@@ -49,6 +49,7 @@ let settingsCache = {
   reminder_interval_minutes: 120,
   camera_enabled:            false,
   visualiser_visible:        false,
+  video_batch_hotkey:        'CommandOrControl+Alt+P',  // S13 #664 pause/resume
 };
 
 function electronNotify(title, body, onClick) {
@@ -143,6 +144,32 @@ function applyPTTHotkey() {
     } catch (e) {
       console.warn('[tray] PTT hotkey invalid:', wantKey, e.message);
     }
+  }
+}
+
+// ── Video batch pause/resume global hotkey (S13 #664) ─────────────────────
+// Registered always (default Ctrl+Alt+P, overridable via settings). Pressing it
+// toggles the channel batch: pause if running, resume (no re-enumerate) if not.
+// Global so it works while the user is in another app -- their screen is busy.
+let videoHotkeyRegistered = null;
+function applyVideoHotkey() {
+  const wantKey = settingsCache.video_batch_hotkey || 'CommandOrControl+Alt+P';
+  if (wantKey === videoHotkeyRegistered) return;
+  if (videoHotkeyRegistered) {
+    try { globalShortcut.unregister(videoHotkeyRegistered); } catch (_) {}
+    videoHotkeyRegistered = null;
+  }
+  if (!wantKey) return;
+  try {
+    const ok = globalShortcut.register(wantKey, () => sendToCerebral({ type: 'video_batch_toggle' }));
+    if (ok) {
+      videoHotkeyRegistered = wantKey;
+      console.log('[tray] Video batch hotkey registered:', wantKey);
+    } else {
+      console.warn('[tray] Video batch hotkey registration failed (already in use?):', wantKey);
+    }
+  } catch (e) {
+    console.warn('[tray] Video batch hotkey invalid:', wantKey, e.message);
   }
 }
 
@@ -242,12 +269,26 @@ function handleCerebralEvent(event) {
     case 'env_context_update':
       break;
 
+    case 'video_batch_toggle': {  // S13 #664 -- hotkey feedback
+      const d = event.data || {};
+      if (d.action === 'paused') {
+        electronNotify('Video batch', 'Paused — press the hotkey again to resume.');
+      } else if (d.action === 'resumed') {
+        electronNotify('Video batch',
+          d.status === 'no_channel'
+            ? 'Nothing to resume — start a channel batch first.'
+            : 'Resumed.');
+      }
+      break;
+    }
+
     case 'settings_updated': {
       const prev = settingsCache;
       settingsCache = event.data || {};
       notifManager.applySettings(settingsCache);
       // (Re)apply the PTT hotkey — covers mode switches and live rebinds.
       applyPTTHotkey();
+      applyVideoHotkey();  // S13 #664 -- video batch pause/resume hotkey
       // Sync visualiser visibility if it changed.
       const visNow = !!settingsCache.visualiser_visible;
       if (visNow !== !!prev.visualiser_visible) {
@@ -901,6 +942,7 @@ app.whenReady().then(() => {
   tray.on('click', () => openMainWindow());
 
   refreshMenu();
+  applyVideoHotkey();  // S13 #664 -- register the default before settings arrive
   connectToCerebral();
   // SD-3 (#556): set up the self-check Promise after connectToCerebral so
   // the timeout starts only when we're actually trying to reach Cerebral.

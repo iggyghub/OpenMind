@@ -210,6 +210,34 @@ def batch_stop() -> dict:
     return {"status": "stop_requested", "channel": _state.channel_url}
 
 
+def batch_resume(
+    store: VideoStore, *, escalation_cap: int = 10, sleep_secs: float = 2.0
+) -> dict:
+    """Resume a paused batch on the stored channel WITHOUT re-enumerating.
+
+    S13 #664: the rows are already in the DB, so resume just re-spawns the worker
+    over the remaining ``enumerated`` rows -- no 1822-row re-scan. Returns
+    ``no_channel`` if there is nothing to resume (e.g. Cerebral was restarted).
+    """
+    if _state.is_running():
+        return {"status": "already_running", "channel": _state.channel_url}
+    if not _state.channel_url:
+        return {"status": "no_channel"}
+    _state.stop_flag = False
+    budget = EscalationBudget(escalation_cap)
+    _state.task = asyncio.create_task(
+        _run_batch(store, _state.channel_url, budget, sleep_secs)
+    )
+    return {"status": "resumed", "channel": _state.channel_url}
+
+
+def batch_toggle(store: VideoStore, **kwargs) -> dict:
+    """Pause a running batch, or resume a paused one (S13 #664 hotkey target)."""
+    if _state.is_running():
+        return {"action": "paused", **batch_stop()}
+    return {"action": "resumed", **batch_resume(store, **kwargs)}
+
+
 def batch_status(store: VideoStore) -> dict:
     """Return stage counts + measured-throughput ETA for the active channel."""
     counts = store.stage_counts(channel=_state.channel_url)

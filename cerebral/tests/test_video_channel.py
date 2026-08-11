@@ -137,6 +137,60 @@ def test_batch_start_enumerates_and_inserts(db):
     assert result["enumerated"] == 2
 
 
+# ── batch_resume / batch_toggle (S13 #664) ──────────────────────────────────
+
+def test_batch_resume_no_channel_returns_no_channel(db):
+    channel._state.channel_url = None
+    assert channel.batch_resume(db)["status"] == "no_channel"
+
+
+def test_batch_toggle_pauses_when_running(db):
+    import asyncio as _asyncio
+
+    async def _never():
+        await _asyncio.sleep(9999)
+
+    loop = _asyncio.new_event_loop()
+    try:
+        channel._state.task = loop.create_task(_never())
+        res = channel.batch_toggle(db)
+        assert res["action"] == "paused"
+        assert res["status"] == "stop_requested"
+        assert channel._state.stop_flag is True
+        channel._state.task.cancel()
+        try:
+            loop.run_until_complete(channel._state.task)
+        except _asyncio.CancelledError:
+            pass
+    finally:
+        loop.close()
+
+
+def test_batch_resume_processes_remaining_without_reenumerating(db):
+    # Two enumerated rows already in the DB (as if a prior batch enumerated them).
+    db.enumerate_video("http://example.com/v1", channel="ch", title="V1")
+    db.enumerate_video("http://example.com/v2", channel="ch", title="V2")
+
+    def _enumerate_must_not_run(url):
+        raise AssertionError("resume must NOT re-enumerate")
+
+    channel.set_enumerate_fn(_enumerate_must_not_run)
+    pipeline.set_download_fn(_stub_pipeline)
+    pipeline.set_transcribe_fn(lambda p: " ".join(["word"] * 30))
+
+    async def _run():
+        channel._state.channel_url = "ch"
+        res = channel.batch_resume(db, sleep_secs=0)
+        await channel._state.task  # let it drain the remaining rows
+        return res
+
+    res = asyncio.run(_run())
+    assert res["status"] == "resumed"
+    counts = db.stage_counts(channel="ch")
+    assert counts.get("enumerated", 0) == 0  # both drained
+    assert counts.get("transcribed", 0) == 2
+
+
 def test_batch_start_already_running_returns_status(db):
     channel.set_enumerate_fn(lambda url: [])
     asyncio.run(channel.batch_start("http://channel.example.com", db, channel="ch", sleep_secs=0))
