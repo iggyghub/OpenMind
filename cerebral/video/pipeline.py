@@ -88,6 +88,24 @@ def get_transcribe_fn() -> Callable[[Path], str]:
     return _transcribe_fn or _prod_transcribe
 
 
+def atempo_filter(speed: float) -> str:
+    """Build an ffmpeg ``atempo`` chain for arbitrary speed (S14 #667).
+
+    Each ``atempo`` instance is limited to 0.5-2.0, so speeds above 2.0 chain
+    multiple filters (2.0 * 1.5 == 3.0 -> "atempo=2.0,atempo=1.5"). Speeding the
+    audio before whisper cuts transcription time ~proportionally, since whisper
+    cost scales with audio duration. Clamped to a sane [0.5, 3.0].
+    """
+    speed = max(0.5, min(3.0, float(speed)))
+    parts: list[str] = []
+    remaining = speed
+    while remaining > 2.0 + 1e-9:
+        parts.append(f"atempo={2.0:g}")
+        remaining /= 2.0
+    parts.append(f"atempo={remaining:g}")
+    return ",".join(parts)
+
+
 # ── pipeline ──────────────────────────────────────────────────────────────────
 
 async def run(

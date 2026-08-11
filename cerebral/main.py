@@ -5961,12 +5961,37 @@ def _video_download(url: str, out_dir) -> dict:
 
 
 def _video_transcribe(audio_path) -> str:
-    """Production faster-whisper transcription.  Live-verify only; stubs cover tests."""
+    """Production faster-whisper transcription.  Live-verify only; stubs cover tests.
+
+    S14 #667: speed the audio (ffmpeg atempo) before whisper -- the AI 'watches'
+    faster. Whisper cost scales with audio duration, so 2x audio ~= half the time.
+    ffmpeg failure falls back to 1x so a video is never blocked by the speed-up.
+    """
+    import subprocess  # noqa: PLC0415
     from faster_whisper import WhisperModel  # type: ignore[import]
     from pathlib import Path as _Path
+    from cerebral.video.pipeline import atempo_filter
+
+    src = _Path(audio_path)
+    to_transcribe = src
+    try:
+        speed = float(_settings.get("video_transcribe_speed") or 2.0)
+    except (TypeError, ValueError):
+        speed = 2.0
+    if speed > 1.0:
+        sped = src.with_name(f"{src.stem}_x{speed:g}.wav")
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(src), "-filter:a", atempo_filter(speed),
+                 "-ar", "16000", str(sped), "-loglevel", "error"],
+                check=True,
+            )
+            to_transcribe = sped
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[video] audio speed-up failed (%s); transcribing at 1x", exc)
 
     model = WhisperModel("small", device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(str(audio_path), vad_filter=True)
+    segments, _ = model.transcribe(str(to_transcribe), vad_filter=True)
     return " ".join(s.text.strip() for s in segments)
 
 
