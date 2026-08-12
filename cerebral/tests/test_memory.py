@@ -285,3 +285,22 @@ async def test_edited_fact_is_recallable(mgr):
     await mgr.edit(memory_id, "I have a parrot named Kiwi")
     results = await mgr.recall("parrot")
     assert any("Kiwi" in m.fact for m in results)
+
+
+# ── S20: category tags group memories on the Memory page ──────────────────────
+
+async def test_remember_stores_category(mgr):
+    await mgr.remember("Grant curation makes $500-3k/mo", category="money-making idea")
+    mems = mgr.list_all()
+    assert mems[0].category == "money-making idea"
+
+
+async def test_remember_defaults_to_blank_category(mgr):
+    await mgr.remember("My favourite colour is blue")
+    assert mgr.list_all()[0].category == ""
+
+
+async def test_recall_carries_category(mgr):
+    await mgr.remember("Unclaimed asset recovery pays per claim", category="money-making idea")
+    results = await mgr.recall("unclaimed asset")
+    assert results and results[0].category == "money-making idea"

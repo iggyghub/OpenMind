@@ -1951,6 +1951,28 @@
     }
     .mem-item:last-child { border-bottom: none; }
 
+    /* S20 -- category groups (collapsible "dropdown"): keeps a long Memory
+       page scannable by folding same-category facts under one header. */
+    .mem-group-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 18px;
+      cursor: pointer;
+      user-select: none;
+      background: var(--bg);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      border-bottom: 1px solid #1e1c30;
+    }
+    .mem-group-header:hover { background: #17152a; }
+    .mem-group-caret { font-size: 10px; color: var(--text-muted); transition: transform 0.12s; width: 10px; }
+    .mem-group.collapsed .mem-group-caret { transform: rotate(-90deg); }
+    .mem-group-name { font-size: 12px; font-weight: 600; color: #4bd49a; letter-spacing: 0.02em; }
+    .mem-group-count { font-size: 11px; color: var(--text-muted); }
+    .mem-group.collapsed .mem-item { display: none; }
+
     @keyframes mem-fadeIn {
       from { opacity: 0; transform: translateY(-4px); }
       to   { opacity: 1; transform: translateY(0); }
@@ -8275,8 +8297,25 @@
     // the cached card.dataset.original so a partial edit survives a
     // memory_update reconciliation cleanly.
 
+    // Category groups the user has collapsed; persists across re-renders.
+    const memoryCollapsed = new Set();
+
+    function memItemHtml(mem) {
+      return `
+        <div class="mem-item-header">
+          <span class="mem-item-fact">${escHtml(mem.fact)}</span>
+          <input class="mem-edit-input" value="${escHtml(mem.fact)}" />
+        </div>
+        <div class="mem-item-meta">⧗ ${escHtml(fmtDate(mem.created_at))}</div>
+        <div class="mem-item-actions">
+          <button class="mem-btn mem-btn-edit"   data-id="${escHtml(mem.id)}">Edit</button>
+          <button class="mem-btn mem-btn-save"   data-id="${escHtml(mem.id)}" style="display:none">Save</button>
+          <button class="mem-btn mem-btn-delete" data-id="${escHtml(mem.id)}">Delete</button>
+        </div>`;
+    }
+
     function renderMemory() {
-      memoryListEl.querySelectorAll('.mem-item').forEach((el) => el.remove());
+      memoryListEl.querySelectorAll('.mem-group').forEach((el) => el.remove());
 
       if (memoryItems.length === 0) {
         memoryEmptyEl.style.display = 'flex';
@@ -8284,26 +8323,42 @@
       }
       memoryEmptyEl.style.display = 'none';
 
+      // Group by category; uncategorised falls under "General" and sorts last.
+      const UNCAT = 'General';
+      const groups = new Map();
       memoryItems.forEach((mem) => {
-        const el = document.createElement('div');
-        el.className = 'mem-item';
-        el.dataset.id = mem.id;
+        const key = (mem.category || '').trim() || UNCAT;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(mem);
+      });
+      const names = [...groups.keys()].sort((a, b) =>
+        a === UNCAT ? 1 : b === UNCAT ? -1 : a.localeCompare(b));
 
-        el.innerHTML = `
-          <div class="mem-item-header">
-            <span class="mem-item-fact">${escHtml(mem.fact)}</span>
-            <input class="mem-edit-input" value="${escHtml(mem.fact)}" />
-          </div>
-          <div class="mem-item-meta">⧗ ${escHtml(fmtDate(mem.created_at))}</div>
-          <div class="mem-item-actions">
-            <button class="mem-btn mem-btn-edit"   data-id="${escHtml(mem.id)}">Edit</button>
-            <button class="mem-btn mem-btn-save"   data-id="${escHtml(mem.id)}" style="display:none">Save</button>
-            <button class="mem-btn mem-btn-delete" data-id="${escHtml(mem.id)}">Delete</button>
-          </div>
-        `;
-        memoryListEl.insertBefore(el, memoryEmptyEl);
+      names.forEach((name) => {
+        const items = groups.get(name);
+        const group = document.createElement('div');
+        group.className = 'mem-group' + (memoryCollapsed.has(name) ? ' collapsed' : '');
+        group.dataset.group = name;
+        group.innerHTML =
+          `<div class="mem-group-header" data-group="${escHtml(name)}">
+             <span class="mem-group-caret">▾</span>
+             <span class="mem-group-name">${escHtml(name)}</span>
+             <span class="mem-group-count">${items.length}</span>
+           </div>` +
+          items.map((mem) =>
+            `<div class="mem-item" data-id="${escHtml(mem.id)}">${memItemHtml(mem)}</div>`).join('');
+        memoryListEl.insertBefore(group, memoryEmptyEl);
       });
     }
+
+    memoryListEl.addEventListener('click', (e) => {
+      const header = e.target.closest('.mem-group-header');
+      if (!header) return;
+      const name = header.dataset.group;
+      if (memoryCollapsed.has(name)) memoryCollapsed.delete(name);
+      else memoryCollapsed.add(name);
+      header.closest('.mem-group').classList.toggle('collapsed');
+    });
 
     function commitMemoryEdit(card) {
       const id = card.dataset.id;

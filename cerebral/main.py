@@ -2769,7 +2769,8 @@ def _memory_update_event() -> dict:
     mgr = _get_memory()
     memories = mgr.list_all() if mgr else []
     return {"type": "memory_update", "data": {"memories": [
-        {"id": m.id, "fact": m.fact, "created_at": m.created_at} for m in memories
+        {"id": m.id, "fact": m.fact, "created_at": m.created_at, "category": m.category}
+        for m in memories
     ]}}
 
 
@@ -6208,7 +6209,7 @@ async def _video_commit(cluster_id: int, idea_text: str, cluster: dict) -> str: 
     mgr = _get_memory()
     if mgr is None:
         raise RuntimeError("No active profile — load a profile before committing to Memory")
-    return await mgr.remember(fact)
+    return await mgr.remember(fact, category="money-making idea")
 
 
 async def _video_verify(cluster_label: str, idea_text: str) -> dict:  # S6 #644 / S9 #655 (ADR-0017)
