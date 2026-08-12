@@ -32,6 +32,7 @@ framework (build the second kind's abstraction when it exists).
 - [x] S15 -- #669 -- live auto-refresh the Videos tab while a batch runs
 - [x] S16 -- #671 -- resume the batch after a restart (DB-backed Resume button + hotkey)
 - [x] S17 -- #673 -- GPU whisper (cuda/int8 on the 1080) + CPU fallback + cached model
+- [x] S18 -- #675 -- screen-capture opt-in only (fix 33-tabs auto-fallback bug)
 - [ ] S12 -- #663 -- make capture actually EXTRACT TikTok: play/unmute via browser harness, crop frames to the video element (usefulness+privacy), handle login/consent wall. S10 completes but yields muted-empty audio + full-desktop OCR.
 
 Order note: S4 depends on S3; S5 depends on S1 (runs in parallel with S2/S3);
