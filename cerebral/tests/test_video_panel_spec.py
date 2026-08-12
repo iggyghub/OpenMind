@@ -37,6 +37,21 @@ def _idle_status(_store):
     return {"running": False, "channel": None, "stage_counts": {}, "eta_seconds": None}
 
 
+def _all_widgets(spec: dict) -> list:
+    """Flatten the widget tree, descending into `group` children (#686).
+
+    Clusters now live inside collapsible per-collection groups, so assertions
+    about tables / commit actions must look through the groups.
+    """
+    out = []
+    for w in spec.get("widgets", []):
+        out.append(w)
+        if w.get("type") == "group":
+            for child in w.get("widgets", []):
+                out.append(child)
+    return out
+
+
 def test_panel_spec_returns_dict_with_title_and_widgets(plugin, store, monkeypatch):
     monkeypatch.setattr(_channel, "batch_status", _idle_status)
     spec = plugin.panel_spec(None)
@@ -81,7 +96,7 @@ def test_panel_spec_cluster_table_when_clusters_exist(plugin, store, monkeypatch
     store.upsert_idea(video_id, "Sell goods without holding inventory", cluster_id)
 
     spec = plugin.panel_spec(None)
-    table_widgets = [w for w in spec["widgets"] if w.get("type") == "table"]
+    table_widgets = [w for w in _all_widgets(spec) if w.get("type") == "table"]
     assert table_widgets, "expected a table widget listing clusters"
     tbl = table_widgets[0]
     assert "Idea cluster" in tbl["columns"]
@@ -124,9 +139,9 @@ def test_panel_spec_no_per_cluster_detail_wall(plugin, store, monkeypatch):
         store.set_cluster_verdict(cid, "legit", 0.9, ["http://e"])
 
     spec = plugin.panel_spec(None)
-    widgets = spec["widgets"]
+    widgets = _all_widgets(spec)
 
-    # Each cluster appears exactly once — in the single clusters table.
+    # All 4 same-collection clusters appear once, in one grouped clusters table.
     tables = [w for w in widgets if w.get("type") == "table" and "Idea cluster" in w.get("columns", [])]
     assert len(tables) == 1
     assert len(tables[0]["rows"]) == 4
@@ -155,7 +170,7 @@ def test_panel_spec_committed_cluster_shows_in_memory_and_no_commit(plugin, stor
     store.set_cluster_committed(cid, "mem-123")
 
     spec = plugin.panel_spec(None)
-    widgets = spec["widgets"]
+    widgets = _all_widgets(spec)
     tbl = next(w for w in widgets if w.get("type") == "table" and "In Memory" in w.get("columns", []))
     in_mem_idx = tbl["columns"].index("In Memory")
     assert tbl["rows"][0][in_mem_idx] == "✓"
@@ -181,8 +196,30 @@ def test_panel_spec_no_html_in_widget_values(plugin, store, monkeypatch):
     """All field values must be plain strings, not HTML markup."""
     monkeypatch.setattr(_channel, "batch_status", _idle_status)
     spec = plugin.panel_spec(None)
-    for w in spec["widgets"]:
+    for w in _all_widgets(spec):
         for field in w.get("fields", []):
             val = field.get("value", "")
             assert "<" not in val and ">" not in val, \
                 f"HTML found in field value: {val!r}"
+
+
+def test_panel_spec_groups_clusters_by_collection(plugin, store, monkeypatch):
+    """#686 follow-up: each collection folds into its own collapsible group."""
+    monkeypatch.setattr(_channel, "batch_status", _idle_status)
+    monkeypatch.setattr(_video_plugin, "_store", store)
+
+    m = store.get_or_create_cluster("Grant Curation", collection="money-making idea")
+    store.upsert_idea(store.upsert("https://ex/m", stage="verified"), "money idea", m)
+    h = store.get_or_create_cluster("Context Engineering", collection="harness improvement")
+    store.upsert_idea(store.upsert("https://ex/h", stage="verified"), "harness idea", h)
+
+    spec = plugin.panel_spec(None)
+    groups = [w for w in spec["widgets"] if w.get("type") == "group"]
+    labels = {g["label"] for g in groups}
+    assert labels == {"Money-making idea", "Harness improvement"}
+    # Exactly one group is open (the first / most-populous).
+    assert sum(1 for g in groups if g.get("open")) == 1
+    # Each group's table lists only its own collection's clusters.
+    for g in groups:
+        tbl = next(w for w in g["widgets"] if w.get("type") == "table")
+        assert len(tbl["rows"]) == 1
