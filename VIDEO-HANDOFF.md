@@ -44,17 +44,35 @@ government-money analysis run. Deep design context is in auto-memory
    -- it continues from the DB. Candidate hardening: make `_run_batch` catch +
    continue on any per-video exception so one bad call can't end the run.
 
-8. **Next wants (from the user):**
-   1. DONE -- **`video_query`** tool (filter/sort clusters by talking to Felix --
-      "show me the legit ones a solo person can do") + **cluster drill-in**
-      (cluster_id -> member videos). Shipped in PR #678 (#677, S19); each listed
-      cluster carries a `representative` video to watch. Awaiting merge.
-   2. DONE -- committed the 18 government-money clusters to Felix's Memory
-      (all legit, all solo/p=1, none require buying-first). Filters applied per
-      the user: government-only, drop 2-person and buy-first. `video_clusters`
-      now has 18 rows with a `memory_id`.
-   3. TODO -- scrub the ~6 junk rows from the pre-S18 capture bug.
-   4. Non-government legit clusters (17) were left uncommitted by design.
+8. **Review campaign status (2026-08-12):**
+   1. DONE -- **S19 `video_query`** (filter/sort clusters + cluster drill-in) --
+      PR #678 merged. List mode filters verdict/max_people/min_confidence/
+      min_members/uncommitted, sorts members|confidence, each cluster carries a
+      `representative` video; drill-in via `cluster_id`.
+   2. DONE -- **S20 Memory categories** -- PR #680 merged. `remember(fact,
+      category="")` stores category in Chroma metadata; `video_commit` tags facts
+      `category="money-making idea"`; Memory page groups by category under
+      collapsible headers ("General" for uncategorised). The pre-existing 18
+      committed memories were **re-tagged** in Chroma (profile_4) to carry the
+      category.
+   3. DONE -- **22 clusters committed to Memory** under "money-making idea": the
+      original 18 government + #912 Information Reselling, #997 Business Program
+      Curation, #899 Wealth Consulting, #903 AI Automation. Curated to the user's
+      rules: solo, minimal/no direct people contact (none preferred), no upfront
+      spend, legit. `video_clusters.memory_id` set on all 22.
+   4. Review board artifact (all 37 kept clusters, passive/active + contact +
+      setup + Felix profit estimates, sorted passive-first/least-contact):
+      https://claude.ai/code/artifact/8cdd9c58-2d77-4ef2-ac62-585d5771c806
+   5. KEY FINDING: the government debt-relief/assistance family monetizes mainly
+      as client consulting ($100-400/hr = contact). Genuinely passive winners are
+      the curation/content/digital-product ideas (#919, #912, #997, #915, #909).
+   6. Corpus: only **541 of 2427** videos watched (22%); 1882 enumerated-unwatched,
+      batch paused. One channel only (Lesko shorts). Resuming would add clusters.
+   7. TODO/candidates: scrub the ~4-6 junk rows (pre-S18 bug + "Missing Input"
+      cluster #1098); a **`video_uncommit`** tool (memory `forget()` already
+      exists) to prune the 4 contact-heavy committed gov ideas (#914 coaching,
+      #957 consulting, #972 referral, #932 contract-delivery) that fail the later
+      "no contact" rule.
 
 9. **Fresh-session note:** the prior session's `scratchpad/*.py` helpers won't
    exist. Check status by querying `cerebral/data/openmind.db` (tables `videos`,
