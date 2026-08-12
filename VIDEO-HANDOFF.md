@@ -37,6 +37,12 @@ government-money analysis run. Deep design context is in auto-memory
    (b) ~6 junk rows from the pre-S18 capture bug -- safe to delete.
    (c) verdicts are knowledge-only until the OpenClaw gateway scope is approved
    (`openclaw devices approve --latest`).
+   (d) the batch task has stopped once or twice on a transient error (no clear
+   cause in the log; possibly a Budd 504 propagating past `_run_batch`'s per-video
+   try). If `video_batch_status` shows `running:false` with rows still
+   `enumerated`, just **Resume** (tab button / Ctrl+Alt+P / `video_batch_resume`)
+   -- it continues from the DB. Candidate hardening: make `_run_batch` catch +
+   continue on any per-video exception so one bad call can't end the run.
 
 8. **Next wants (from the user):** a **`video_query`** tool (filter/sort clusters by
    talking to Felix -- "show me the legit ones a solo person can do") + **cluster
