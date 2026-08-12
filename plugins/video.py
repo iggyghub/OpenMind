@@ -239,6 +239,25 @@ class VideoPlugin:
                 schema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="video_batch_clear",
+                description=(
+                    "Clear the batch queue: delete unwatched ('enumerated') videos so a "
+                    "new channel can start clean. Watched clusters and committed ideas "
+                    "are kept. Stops the running batch first. Optional channel scopes it."
+                ),
+                plugin=PLUGIN_NAME,
+                required_capabilities=frozenset(),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "channel": {
+                            "type": "string",
+                            "description": "Only clear this channel's pending rows (default: all channels).",
+                        },
+                    },
+                },
+            ),
+            Tool(
                 name="video_batch_status",
                 description=(
                     "Return the batch runner status: stage counts per stage and an ETA in seconds "
@@ -335,6 +354,8 @@ class VideoPlugin:
             return ToolResult(content=json.dumps(_channel.batch_resume(_get_store())))
         if tool_name == "video_batch_status":
             return self._video_batch_status()
+        if tool_name == "video_batch_clear":
+            return self._video_batch_clear(args)
         if tool_name == "video_query":
             return self._video_query(args)
         if tool_name == "video_commit":
@@ -475,6 +496,13 @@ class VideoPlugin:
 
     def _video_batch_status(self) -> ToolResult:
         return ToolResult(content=json.dumps(_channel.batch_status(_get_store())))
+
+    def _video_batch_clear(self, args: dict) -> ToolResult:  # S21
+        # Stop the runner first so it can't re-insert / race the delete.
+        _channel.batch_stop()
+        channel = args.get("channel") or None
+        cleared = _get_store().clear_pending(channel=channel)
+        return ToolResult(content=json.dumps({"cleared": cleared, "channel": channel}))
 
     def _video_get(self, args: dict) -> ToolResult:
         try:
@@ -680,6 +708,16 @@ class VideoPlugin:
                 "id": "video-batch-resume",
                 "label": f"Resume batch ({pending_total} pending)",
                 "tool": "video_batch_resume",
+                "tool_args": {},
+            })
+
+        # S21: clear the unwatched queue (keeps watched clusters + committed ideas).
+        if not running and pending_total:
+            widgets.append({
+                "type": "action",
+                "id": "video-batch-clear",
+                "label": f"Clear queue ({pending_total} unwatched)",
+                "tool": "video_batch_clear",
                 "tool_args": {},
             })
 
