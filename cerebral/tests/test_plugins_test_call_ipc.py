@@ -6,7 +6,8 @@ Covers spec section 5.3:
   - content_preview truncated to 500 chars
   - plugin exception surfaces as is_error=True (orchestrator never-raise)
   - permissions gate applied (denied capability blocks dispatch)
-  - _record_turn recording still fires (shared path with call_tool)
+  - debug hook does NOT record transcript turns (record=False) so a stray
+    poller can't flood the chat log
   - no secret pattern in the serialized response payload (SAFETY #2)
 
 Uses the shared tray-IPC path in cerebral.main (_dispatch_tray_call_tool),
@@ -223,10 +224,11 @@ async def test_test_call_denied_capability_blocks_dispatch(tmp_path):
     assert "deny" in events[0]["data"]["content_preview"].lower()
 
 
-async def test_test_call_records_turn_pair(tmp_path):
-    """The shared path fires KIND_TOOL_CALL + KIND_TOOL_RESULT into _record_turn
-    exactly as the direct call_tool path does -- the transcript reflects a
-    harness test-fire, not just a silent dispatch."""
+async def test_test_call_does_not_record_turns(tmp_path):
+    """plugins:test_call is a DEBUG hook -- it must NOT write to the conversation
+    transcript. A stray poller hammering it (a status loop was flooding the chat
+    with thousands of tool_call/tool_result turns) must leave no trace in the log.
+    The plugins:test_call response still fires so the harness UI gets its result."""
     from cerebral.db.conversation import KIND_TOOL_CALL, KIND_TOOL_RESULT
     import cerebral.main as main_mod
 
@@ -245,8 +247,13 @@ async def test_test_call_records_turn_pair(tmp_path):
             setattr(main_mod, k, v)
 
     kinds = [r[0] for r in records]
-    assert KIND_TOOL_CALL in kinds
-    assert KIND_TOOL_RESULT in kinds
+    assert KIND_TOOL_CALL not in kinds
+    assert KIND_TOOL_RESULT not in kinds
+    # ...but the debug response is still delivered.
+    events = [e for e in sent if e["type"] == "plugins:test_call"]
+    assert len(events) == 1 and events[0]["data"]["content_preview"] == "ok"
+    # ...and no transient tool_result broadcast leaks into the chat either.
+    assert not [e for e in sent if e["type"] == "tool_result"]
 
 
 async def test_test_call_missing_tool_name_is_noop(tmp_path):
