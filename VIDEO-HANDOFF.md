@@ -74,7 +74,58 @@ government-money analysis run. Deep design context is in auto-memory
       #957 consulting, #972 referral, #932 contract-delivery) that fail the later
       "no contact" rule.
 
-9. **Fresh-session note:** the prior session's `scratchpad/*.py` helpers won't
+9. **NEXT SESSION -- start here (grill-first, then build S22 -> S23 -> new batch):**
+
+   State as of 2026-08-12 handoff:
+   1. Lesko queue CLEARED -- the 1882 enumerated rows were deleted (user
+      authorised). DB now: 541 watched videos, 40 clusters, 0 pending. 22
+      clusters committed to Memory under category "money-making idea".
+   2. S21 `video_batch_clear` merged? CHECK -- PR #682 was OPEN at handoff. If not
+      merged, merge it; the "Clear queue" button + tool go live on next restart.
+   3. Restarts this session already happened; a fresh restart is needed for S21 +
+      any S22/S23 code. Restart recipe is in section 5 above (PATH: Tesseract +
+      winget ffmpeg bin; kill electron+python; scripts/launch-felix.ps1).
+
+   Build order:
+   1. **S22 -- channel-scoped clusters + keyword.** Add a `collection` TEXT column
+      to `video_clusters`; change the UNIQUE(label) to UNIQUE(collection,label) and
+      key `get_or_create_cluster` on (collection,label). The batch runner passes the
+      active channel's collection keyword (a short user-supplied tag, default from
+      the channel). `video_query` + `list_clusters` + the panel gain a `collection`
+      filter. Backfill the existing 40 clusters as collection='lesko'. This is what
+      lets a NEW channel keep its own cluster set AND lets the user jump back to a
+      prior set by keyword (user's exact ask). Seam rule + a test as always.
+   2. **S23 -- review board inside Felix (the artifact, but native).** The verdict
+      step (cerebral/video/verdict.py + main._video_verify) should also emit, per
+      cluster: `contact_level` (none/minimal/some/high), `mode` (passive/active),
+      `setup` (easy/medium/hard), `profit_estimate` (short string). Store as columns
+      on `video_clusters`. The Videos-tab `panel_spec` renders them and sorts
+      passive-first then least-contact (the user's ranking). Backfill the current 40
+      -- the classifications already exist as a Claude artifact review board:
+      https://claude.ai/code/artifact/8cdd9c58-2d77-4ef2-ac62-585d5771c806 (its
+      `D=[...]` JS array has fit/contact/mode/setup/profit per cluster id -- reuse it
+      for the backfill). NOTE: contact/mode/setup/profit were HAND-computed via Felix
+      drill-ins this session; S23 makes the pipeline generate them going forward.
+   3. **Then start the new-channel batch** with its collection keyword, once S22 is
+      live so clusters stay separate. USER STILL OWES THE CHANNEL URL -- they said
+      they want "a channel that works with the harness + ways to improve it"; harness
+      sweet spot is YouTube spoken-word (regular or shorts), NOT TikTok (S12 open).
+      Confirm the URL + a short keyword before `video_batch_start(url, channel=<kw>)`.
+
+   Harness-improvement backlog surfaced this session (candidate slices; user is
+   interested in these):
+   1. `video_uncommit` -- prune a committed cluster from Memory (memory `forget()`
+      already exists); needed to remove the 4 contact-heavy gov ideas (#914/#957/
+      #972/#932) that fail the later "no contact" rule.
+   2. Harden `_run_batch` -- catch+continue on ANY per-video exception so one bad
+      Budd/504 can't end the run (section 7d).
+   3. YouTube 403 rate-limit after ~500 sequential downloads (section 7a) -- longer/
+      jittered sleeps or cookie/session rotation so long channels finish.
+   4. Scrub junk clusters: "Missing Input" #1098 (30 vids, no extractable idea) +
+      commentary #916/#986; a failed-extraction bucket shouldn't become a cluster.
+   5. S12 (#663) still open -- real TikTok extraction via the browser harness.
+
+10. **Fresh-session note:** the prior session's `scratchpad/*.py` helpers won't
    exist. Check status by querying `cerebral/data/openmind.db` (tables `videos`,
    `video_clusters`, `video_ideas`) or sending
    `{"type":"plugins:test_call","data":{"tool_name":"video_batch_status","args":{}}}`

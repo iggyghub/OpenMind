@@ -11,7 +11,9 @@ framework (build the second kind's abstraction when it exists).
 
 ## Next slice -- start here
 
-- **Active:** (all slices landed)
+- **Active:** S22 (channel-scoped clusters + keyword). Then S23 (in-Felix review
+  board). Then kick off the new-channel batch. Full brief in VIDEO-HANDOFF.md
+  section 9 ("NEXT SESSION").
 - **Model:** sonnet
 
 ## Queue
@@ -35,6 +37,10 @@ framework (build the second kind's abstraction when it exists).
 - [x] S18 -- #675 -- screen-capture opt-in only (fix 33-tabs auto-fallback bug)
 - [ ] S12 -- #663 -- make capture actually EXTRACT TikTok: play/unmute via browser harness, crop frames to the video element (usefulness+privacy), handle login/consent wall. S10 completes but yields muted-empty audio + full-desktop OCR.
 - [x] S19 -- #677 -- video_query: filter/sort clusters by talking to Felix + cluster drill-in (PR #678, merged)
+- [x] S20 -- #679 -- Memory categories: remember(category), video_commit tags "money-making idea", collapsible category groups on Memory page (PR #680, merged)
+- [x] S21 -- #681 -- video_batch_clear: clear the unwatched queue + Videos-tab button (PR #682, open)
+- [ ] S22 -- channel-scoped clusters + keyword: video_clusters gets a `collection` tag, clustering keyed on (collection,label), video_query/panel filter by it, backfill existing 40 as `lesko`. Enables separate cluster sets per channel + jump-back-by-keyword.
+- [ ] S23 -- in-Felix review board: verdict step emits per-cluster contact_level + mode (passive/active) + setup + profit_estimate, stored on video_clusters; Videos-tab panel renders + sorts by them (passive-first, least-contact). Backfill the current 40. Mirrors the Claude artifact review board.
 
 Order note: S4 depends on S3; S5 depends on S1 (runs in parallel with S2/S3);
 S6 depends on S5; S7 depends on S6. The queue above is a valid linear order.
