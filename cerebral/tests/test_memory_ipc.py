@@ -74,8 +74,9 @@ async def test_memory_update_payload_shape(memory_rig):
     await memory_rig.mgr.remember("My birthday is in June")
     await memory_rig.handle({"type": "list_memories"})
     mem = memory_rig.memory_updates()[0]["data"]["memories"][0]
-    assert set(mem.keys()) == {"id", "fact", "created_at"}
+    assert set(mem.keys()) == {"id", "fact", "created_at", "category"}
     assert mem["fact"] == "My birthday is in June"
+    assert mem["category"] == ""
     assert mem["created_at"] != ""
 
 

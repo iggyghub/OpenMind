@@ -46,6 +46,7 @@ class Memory:
     profile_id: int
     created_at: str
     distance: float = 0.0
+    category: str = ""  # groups the Memory page (e.g. "money-making idea"); "" = uncategorised
 
 
 class MemoryManager:
@@ -90,13 +91,16 @@ class MemoryManager:
 
     # ── Vector memory ─────────────────────────────────────────────────────────
 
-    async def remember(self, fact: str) -> str:
+    async def remember(self, fact: str, category: str = "") -> str:
         memory_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
+        meta = {"profile_id": self._profile_id, "created_at": created_at}
+        if category:
+            meta["category"] = category
         self._collection.add(
             documents=[fact],
             ids=[memory_id],
-            metadatas=[{"profile_id": self._profile_id, "created_at": created_at}],
+            metadatas=[meta],
         )
         logger.info("[memory] Stored fact for profile %d: %r", self._profile_id, fact[:60])
         return memory_id
@@ -125,6 +129,7 @@ class MemoryManager:
                 profile_id=meta.get("profile_id", self._profile_id),
                 created_at=meta.get("created_at", ""),
                 distance=dist,
+                category=(meta or {}).get("category", ""),
             ))
         return memories
 
@@ -168,6 +173,7 @@ class MemoryManager:
                 fact=doc,
                 profile_id=self._profile_id,
                 created_at=(meta or {}).get("created_at", ""),
+                category=(meta or {}).get("category", ""),
             )
             for mem_id, doc, meta in zip(
                 res["ids"], res["documents"], res["metadatas"]
