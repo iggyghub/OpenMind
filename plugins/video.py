@@ -249,6 +249,56 @@ class VideoPlugin:
                 schema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="video_query",
+                description=(
+                    "Filter, sort, and drill into the idea clusters by conversation "
+                    "(\"show me the legit ones a solo person can do\"). "
+                    "List mode: returns matching clusters, each with a representative "
+                    "video to watch. Drill-in mode: pass cluster_id to get that "
+                    "cluster's member videos."
+                ),
+                plugin=PLUGIN_NAME,
+                required_capabilities=frozenset({"external_data_read"}),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "cluster_id": {
+                            "type": "integer",
+                            "description": "Drill in: return this cluster's member videos instead of the list.",
+                        },
+                        "verdict": {
+                            "type": "string",
+                            "description": "Keep only clusters with this verdict (e.g. 'legit', 'dubious').",
+                        },
+                        "max_people": {
+                            "type": "integer",
+                            "description": "Keep only clusters doable by this many people or fewer (1 = solo).",
+                        },
+                        "min_confidence": {
+                            "type": "number",
+                            "description": "Keep only clusters at or above this verdict confidence (0-1).",
+                        },
+                        "min_members": {
+                            "type": "integer",
+                            "description": "Keep only clusters with at least this many source videos.",
+                        },
+                        "uncommitted": {
+                            "type": "boolean",
+                            "description": "Keep only clusters not yet committed to Memory.",
+                        },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["members", "confidence"],
+                            "description": "Sort order (default: members, most videos first).",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Cap the number of results (drill-in: member videos).",
+                        },
+                    },
+                },
+            ),
+            Tool(
                 name="video_commit",
                 description=(
                     "Commit a verified idea cluster to Memory as a durable fact with its verdict attached. "
@@ -285,6 +335,8 @@ class VideoPlugin:
             return ToolResult(content=json.dumps(_channel.batch_resume(_get_store())))
         if tool_name == "video_batch_status":
             return self._video_batch_status()
+        if tool_name == "video_query":
+            return self._video_query(args)
         if tool_name == "video_commit":
             return await self._video_commit(args)
         return ToolResult(content=f"Unknown tool: {tool_name}", is_error=True)
@@ -433,6 +485,54 @@ class VideoPlugin:
         if video is None:
             return ToolResult(content=f"No video with id {video_id}", is_error=True)
         return ToolResult(content=json.dumps(video.to_dict()))
+
+    def _video_query(self, args: dict) -> ToolResult:  # S19
+        """Filter/sort clusters, or drill into one cluster's videos."""
+        store = _get_store()
+
+        # Drill-in mode: cluster_id given -> that cluster + its member videos.
+        if args.get("cluster_id") is not None:
+            try:
+                cluster_id = int(args["cluster_id"])
+            except (TypeError, ValueError):
+                return ToolResult(content="cluster_id must be an integer", is_error=True)
+            cluster = store.get_cluster_by_id(cluster_id)
+            if cluster is None:
+                return ToolResult(content=f"No cluster with id {cluster_id}", is_error=True)
+            limit = int(args.get("limit", 5))
+            cluster["videos"] = store.list_videos_by_cluster(cluster_id, limit=limit)
+            return ToolResult(content=json.dumps(cluster))
+
+        # List mode: filter + sort.
+        clusters = store.list_clusters()
+        verdict = args.get("verdict")
+        if verdict:
+            clusters = [c for c in clusters if c["verdict"] == verdict]
+        if args.get("max_people") is not None:
+            mp = int(args["max_people"])
+            clusters = [c for c in clusters if (c.get("people_required") or 1) <= mp]
+        if args.get("min_confidence") is not None:
+            mc = float(args["min_confidence"])
+            clusters = [c for c in clusters if (c.get("confidence") or 0) >= mc]
+        if args.get("min_members") is not None:
+            mm = int(args["min_members"])
+            clusters = [c for c in clusters if c["member_count"] >= mm]
+        if args.get("uncommitted"):
+            clusters = [c for c in clusters if not c.get("memory_id")]
+
+        if args.get("sort") == "confidence":
+            clusters.sort(key=lambda c: (c.get("confidence") or 0, c["member_count"]), reverse=True)
+        # else: list_clusters already returns member_count desc
+
+        if args.get("limit") is not None:
+            clusters = clusters[: int(args["limit"])]
+
+        # Attach one representative video per cluster so Felix can offer a watch.
+        for c in clusters:
+            rep = store.list_videos_by_cluster(c["id"], limit=1)
+            c["representative"] = rep[0] if rep else None
+
+        return ToolResult(content=json.dumps({"count": len(clusters), "clusters": clusters}))
 
     async def _video_commit(self, args: dict) -> ToolResult:  # S7 #645
         import asyncio as _asyncio
