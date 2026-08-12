@@ -246,6 +246,21 @@ class VideoStore:
                 "SELECT COUNT(*) FROM videos WHERE stage = 'enumerated'"
             ).fetchone()[0]
 
+    def clear_pending(self, channel: str | None = None) -> int:
+        """Delete unwatched ('enumerated') rows so the queue can be reset (S21).
+
+        Only removes never-processed rows -- watched videos, clusters, and
+        committed ideas are untouched. Scoped to one channel if given.
+        """
+        sql = "DELETE FROM videos WHERE stage = 'enumerated'"
+        params: list = []
+        if channel is not None:
+            sql += " AND channel = ?"
+            params.append(channel)
+        with self._conn() as con:
+            cur = con.execute(sql, params)
+            return cur.rowcount
+
     # ── S5 #642: idea extraction + incremental clustering ─────────────────────
 
     def get_cluster_labels(self) -> list[str]:
