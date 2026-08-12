@@ -108,17 +108,45 @@
       ? '<input class="ps-action-input" type="text" placeholder="' +
           escHtml(w.input_placeholder || '') + '">'
       : '';
+    // Optional second field (e.g. a category alongside a URL). Backward-compatible:
+    // widgets without input_arg2 render exactly as before.
+    var inputArg2 = w.input_arg2 ? escHtml(w.input_arg2) : '';
+    var input2    = inputArg2
+      ? '<input class="ps-action-input2" type="text" placeholder="' +
+          escHtml(w.input_placeholder2 || '') + '">'
+      : '';
     return (
       '<div class="ps-action"' +
         ' data-widget-id="' + id + '"' +
         ' data-tool="'      + tool + '"' +
         ' data-tool-args="' + toolArgs + '"' +
         (inputArg ? ' data-input-arg="' + inputArg + '"' : '') +
+        (inputArg2 ? ' data-input-arg2="' + inputArg2 + '"' : '') +
         '>' +
         input +
+        input2 +
         '<button class="ps-action-btn" type="button">' + label + '</button>' +
         '<span class="ps-action-status"></span>' +
       '</div>'
+    );
+  }
+
+  // Group widget -- a native <details> collapsible wrapping child widgets.
+  // Used by the Videos panel to fold each collection (money ideas, harness
+  // improvement, ...) into its own section. Native HTML: no JS, no click
+  // wiring, keyboard-accessible for free. ``open`` starts it expanded.
+  function _renderGroup(w) {
+    var label = escHtml(w.label || '');
+    var count = (w.count != null)
+      ? ' <span class="ps-group-count">' + escHtml(w.count) + '</span>'
+      : '';
+    var open  = w.open ? ' open' : '';
+    var children = Array.isArray(w.widgets) ? w.widgets.map(renderWidget).join('') : '';
+    return (
+      '<details class="ps-group"' + open + '>' +
+        '<summary class="ps-group-summary">' + label + count + '</summary>' +
+        '<div class="ps-group-body">' + children + '</div>' +
+      '</details>'
     );
   }
 
@@ -182,6 +210,7 @@
     action: _renderAction,
     toggle: _renderToggle,
     table:  _renderTable,
+    group:  _renderGroup,
   };
 
   // Renders one widget. Unknown or malformed types return '' -- inert.

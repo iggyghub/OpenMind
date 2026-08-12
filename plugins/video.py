@@ -672,6 +672,8 @@ class VideoPlugin:
             "tool_args": {},
             "input_arg": "url",
             "input_placeholder": "https://tiktok.com/@channel or YouTube channel URL",
+            "input_arg2": "category",
+            "input_placeholder2": "category (e.g. harness improvement)",
         })
 
         # ── Batch status (compact): Status + meaningful counts only. S11 #659 ──
@@ -749,50 +751,50 @@ class VideoPlugin:
                 "tool_args": {},
             })
 
-        # ── Results: clusters table is the single view (no per-cluster wall) ──
+        # ── Results: clusters folded into a collapsible group per collection ──
+        # (#686 follow-up) so money ideas and harness tips never mix. Each group
+        # is a native <details>; the most-populous collection starts open.
         if clusters:
-            widgets.append({
-                "type": "table",
-                "columns": ["Idea cluster", "Videos", "People", "Verdict", "Confidence", "In Memory"],
-                "rows": [
-                    [
-                        c["label"],
-                        str(c["member_count"]),
-                        str(c.get("people_required") or 1),
-                        c["verdict"] or "pending",
-                        f"{c['confidence']:.0%}" if c["confidence"] is not None else "—",
-                        "✓" if c.get("memory_id") else "",
-                    ]
-                    for c in clusters
-                ],
-            })
-
-            # S8 #653: two-person ideas grouped together (kept).
-            two_person = [c for c in clusters if (c.get("people_required") or 1) == 2]
-            if two_person:
-                widgets.append({
-                    "type": "detail",
-                    "fields": [{"label": "Group", "value": "Requires two people"}],
-                })
-                widgets.append({
-                    "type": "table",
-                    "columns": ["Idea cluster", "Videos", "Verdict"],
-                    "rows": [
-                        [c["label"], str(c["member_count"]), c["verdict"] or "pending"]
-                        for c in two_person
-                    ],
-                })
-
-            # Consolidated commit: one button per verified-and-uncommitted cluster.
+            by_collection: dict[str, list[dict]] = {}
             for c in clusters:
-                if c["verdict"] and not c.get("memory_id"):
-                    widgets.append({
-                        "type": "action",
-                        "id": f"video-commit-{c['id']}",
-                        "label": f"Commit “{c['label']}” to Memory",
-                        "tool": "video_commit",
-                        "tool_args": {"cluster_id": c["id"]},
-                    })
+                by_collection.setdefault(c.get("collection") or "Uncategorised", []).append(c)
+            # Most clusters first; open only the first group.
+            ordered = sorted(by_collection.items(), key=lambda kv: len(kv[1]), reverse=True)
+            for gi, (collection, members) in enumerate(ordered):
+                children: list[dict] = [{
+                    "type": "table",
+                    "columns": ["Idea cluster", "Videos", "People", "Verdict", "Confidence", "In Memory"],
+                    "rows": [
+                        [
+                            c["label"],
+                            str(c["member_count"]),
+                            str(c.get("people_required") or 1),
+                            c["verdict"] or "pending",
+                            f"{c['confidence']:.0%}" if c["confidence"] is not None else "—",
+                            "✓" if c.get("memory_id") else "",
+                        ]
+                        for c in members
+                    ],
+                }]
+                # One commit button per verified-and-uncommitted cluster in this group.
+                for c in members:
+                    if c["verdict"] and not c.get("memory_id"):
+                        children.append({
+                            "type": "action",
+                            "id": f"video-commit-{c['id']}",
+                            "label": f"Commit “{c['label']}” to Memory",
+                            "tool": "video_commit",
+                            "tool_args": {"cluster_id": c["id"]},
+                        })
+                label = collection[:1].upper() + collection[1:]
+                n = len(members)
+                widgets.append({
+                    "type": "group",
+                    "label": label,
+                    "count": f"{n} cluster{'s' if n != 1 else ''}",
+                    "open": gi == 0,
+                    "widgets": children,
+                })
         else:
             widgets.append({"type": "list", "items": []})
 

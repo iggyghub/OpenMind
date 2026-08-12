@@ -46,6 +46,22 @@ describe('buildActionMessage', () => {
     const msg = ActionWidget.buildActionMessage('', { name: 'x' }, '', '');
     expect(msg.data.name).toBe('');
   });
+
+  // Second optional field (#686): url + category on one action (batch-start).
+  test('merges a second field under input_arg2', () => {
+    const msg = ActionWidget.buildActionMessage(
+      'video_batch_start', {}, 'url', 'https://yt/@indydevdan', 'category', 'harness improvement'
+    );
+    expect(msg.data.args).toEqual({
+      url: 'https://yt/@indydevdan',
+      category: 'harness improvement',
+    });
+  });
+
+  test('omits the second field when input_arg2 is empty (backward-compatible)', () => {
+    const msg = ActionWidget.buildActionMessage('t', {}, 'url', 'u', '', '');
+    expect(msg.data.args).toEqual({ url: 'u' });
+  });
 });
 
 // initActionWidgets itself is DOM-wiring glue (querySelectorAll/addEventListener)

@@ -409,6 +409,41 @@ describe('renderPanel', () => {
   });
 
   test('WIDGET_TYPES reports the whitelist', () => {
-    expect(PanelSpec.WIDGET_TYPES.sort()).toEqual(['action', 'detail', 'list', 'table', 'text', 'toggle']);
+    expect(PanelSpec.WIDGET_TYPES.sort())
+      .toEqual(['action', 'detail', 'group', 'list', 'table', 'text', 'toggle']);
+  });
+});
+
+// ── renderWidget: group (native <details> collapsible) ───────────────────────
+
+describe('renderWidget group', () => {
+  test('renders a <details> with summary + escaped label and count', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'group',
+      label: 'Harness improvement',
+      count: '3 clusters',
+      widgets: [{ type: 'list', items: [{ title: 'inside' }] }],
+    });
+    expect(html).toContain('<details class="ps-group"');
+    expect(html).toContain('Harness improvement');
+    expect(html).toContain('3 clusters');
+    expect(html).toContain('inside');            // child widget rendered
+  });
+
+  test('open:true adds the open attribute; falsy omits it', () => {
+    expect(PanelSpec.renderWidget({ type: 'group', label: 'a', open: true }))
+      .toContain('<details class="ps-group" open>');
+    expect(PanelSpec.renderWidget({ type: 'group', label: 'a' }))
+      .toContain('<details class="ps-group">');
+  });
+
+  test('escapes a malicious label and drops unknown child widgets', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'group',
+      label: '<img src=x onerror=alert(1)>',
+      widgets: [{ type: 'script', code: 'alert(1)' }],
+    });
+    expect(html).not.toContain('<img');      // tag is escaped, never live markup
+    expect(html).toContain('&lt;img');
   });
 });
