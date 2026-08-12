@@ -62,6 +62,24 @@ describe('buildActionMessage', () => {
     const msg = ActionWidget.buildActionMessage('t', {}, 'url', 'u', '', '');
     expect(msg.data.args).toEqual({ url: 'u' });
   });
+
+  // Boolean checkbox field (#688): verify toggle on batch-start.
+  test('sends the checkbox arg as a real boolean (checked)', () => {
+    const msg = ActionWidget.buildActionMessage(
+      'video_batch_start', {}, 'url', 'u', 'category', 'harness improvement', 'verify', true
+    );
+    expect(msg.data.args).toEqual({ url: 'u', category: 'harness improvement', verify: true });
+  });
+
+  test('unchecked checkbox sends false, not a string', () => {
+    const msg = ActionWidget.buildActionMessage('t', {}, 'url', 'u', '', '', 'verify', false);
+    expect(msg.data.args.verify).toBe(false);
+  });
+
+  test('omits the checkbox when checkbox_arg is empty (backward-compatible)', () => {
+    const msg = ActionWidget.buildActionMessage('t', {}, 'url', 'u', '', '', '', false);
+    expect(msg.data.args).toEqual({ url: 'u' });
+  });
 });
 
 // initActionWidgets itself is DOM-wiring glue (querySelectorAll/addEventListener)

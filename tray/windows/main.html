@@ -4825,6 +4825,17 @@
     }
     /* Second field (e.g. category) is narrower than the primary URL input. */
     .ps-action-input2 { flex: 0 1 40%; }
+    /* Boolean field (e.g. a verify toggle) alongside the inputs. */
+    .ps-action-check-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      color: var(--text-dim);
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .ps-action-check { accent-color: var(--accent); cursor: pointer; }
     .ps-action-btn {
       background: var(--bg-elev);
       border: 1px solid var(--border);

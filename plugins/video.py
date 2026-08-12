@@ -120,9 +120,10 @@ class VideoPlugin:
             Tool(
                 name="video_ingest",
                 description=(
-                    "Download and transcribe a video from a URL (YouTube, TikTok, etc.). "
+                    "Download and transcribe a SINGLE video from a URL (YouTube, TikTok, "
+                    "etc.). For a whole channel use video_batch_start instead. "
                     "Stores the transcript (and optional visual layers) in the video store "
-                    "and returns the video id. "
+                    "and returns the video id. Uses yt-dlp -- no API key required. "
                     "Idempotent: re-running on the same URL skips completed stages. "
                     "Set visual=true to force OCR + vision even on rich-audio videos."
                 ),
@@ -181,10 +182,15 @@ class VideoPlugin:
             Tool(
                 name="video_batch_start",
                 description=(
-                    "Enumerate all videos from a channel URL and start processing them "
-                    "sequentially in the background (download + transcribe + optional escalation). "
-                    "Idempotent per video: already-processed rows are skipped on resume. "
-                    "Returns immediately; use video_batch_status to track progress."
+                    "Watch/go through an ENTIRE YouTube or TikTok channel: enumerate all "
+                    "its videos and download + transcribe + extract an idea from each one, "
+                    "sequentially in the background. This is the tool for requests like "
+                    "\"watch this channel\", \"go through @handle's videos\", or "
+                    "\"learn from this channel\". Uses yt-dlp -- NO API key required "
+                    "(do not use youtube_channel/youtube_search, which need a Data API key "
+                    "and only fetch metadata). Idempotent per video; already-processed rows "
+                    "are skipped on resume. Returns immediately; use video_batch_status to "
+                    "track progress."
                 ),
                 plugin=PLUGIN_NAME,
                 required_capabilities=REQUIRED_CAPABILITIES,
@@ -654,26 +660,31 @@ class VideoPlugin:
 
         widgets: list[dict] = []
 
-        # Ingest and batch-start action forms.
+        # Two distinct actions: ONE video vs a WHOLE channel.
         widgets.append({
             "type": "action",
             "id": "video-ingest",
-            "label": "Ingest video",
+            "label": "Watch one video",
             "tool": "video_ingest",
             "tool_args": {},
             "input_arg": "url",
-            "input_placeholder": "https://tiktok.com/... or YouTube URL",
+            "input_placeholder": "single video URL (TikTok or YouTube)",
         })
         widgets.append({
             "type": "action",
             "id": "video-batch-start",
-            "label": "Start channel batch",
+            "label": "Watch a whole channel",
             "tool": "video_batch_start",
             "tool_args": {},
             "input_arg": "url",
-            "input_placeholder": "https://tiktok.com/@channel or YouTube channel URL",
+            "input_placeholder": "channel URL (e.g. youtube.com/@indydevdan/videos)",
             "input_arg2": "category",
             "input_placeholder2": "category (e.g. harness improvement)",
+            # Verify defaults ON (money-fraud/soundness check). Uncheck for
+            # trusted how-to channels where the check adds no value (#688).
+            "checkbox_arg": "verify",
+            "checkbox_label": "Verify ideas",
+            "checkbox_checked": True,
         })
 
         # ── Batch status (compact): Status + meaningful counts only. S11 #659 ──
