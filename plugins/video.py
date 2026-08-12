@@ -199,6 +199,23 @@ class VideoPlugin:
                             "type": "string",
                             "description": "Human-readable channel name for grouping (defaults to url).",
                         },
+                        "category": {
+                            "type": "string",
+                            "description": (
+                                "Category this channel's ideas file under, e.g. "
+                                "'money-making idea' or 'harness improvement'. Scopes the "
+                                "clusters and becomes the Memory category on commit. "
+                                "Defaults to 'money-making idea'."
+                            ),
+                        },
+                        "verify": {
+                            "type": "boolean",
+                            "description": (
+                                "Run a validity/soundness check on each idea before it can "
+                                "be committed (default true). Turn off for trusted how-to "
+                                "channels where a fraud/soundness verdict adds no value."
+                            ),
+                        },
                         "escalation_cap": {
                             "type": "integer",
                             "description": "Max videos that may trigger visual escalation in this run.",
@@ -284,6 +301,13 @@ class VideoPlugin:
                         "cluster_id": {
                             "type": "integer",
                             "description": "Drill in: return this cluster's member videos instead of the list.",
+                        },
+                        "collection": {
+                            "type": "string",
+                            "description": (
+                                "Keep only clusters in this collection/category "
+                                "(e.g. 'money-making idea', 'harness improvement')."
+                            ),
                         },
                         "verdict": {
                             "type": "string",
@@ -476,6 +500,8 @@ class VideoPlugin:
         if not url:
             return ToolResult(content="url is required", is_error=True)
         channel: str | None = args.get("channel")
+        category: str = (args.get("category") or "money-making idea").strip()
+        verify: bool = bool(args.get("verify", True))
         escalation_cap: int = int(args.get("escalation_cap", 10))
         sleep_secs: float = float(args.get("sleep_secs", 2.0))
         try:
@@ -483,6 +509,8 @@ class VideoPlugin:
                 url,
                 _get_store(),
                 channel=channel,
+                collection=category,
+                verify=verify,
                 escalation_cap=escalation_cap,
                 sleep_secs=sleep_secs,
             )
@@ -532,7 +560,7 @@ class VideoPlugin:
             return ToolResult(content=json.dumps(cluster))
 
         # List mode: filter + sort.
-        clusters = store.list_clusters()
+        clusters = store.list_clusters(collection=args.get("collection"))
         verdict = args.get("verdict")
         if verdict:
             clusters = [c for c in clusters if c["verdict"] == verdict]

@@ -70,6 +70,8 @@ class _BatchState:
         self.task: Optional[asyncio.Task] = None
         self.stop_flag: bool = False
         self.channel_url: Optional[str] = None
+        self.collection: str = ""
+        self.verify: bool = True
         self.timings: list[float] = []  # per-video wall-clock seconds
 
     def is_running(self) -> bool:
@@ -78,9 +80,11 @@ class _BatchState:
     def request_stop(self) -> None:
         self.stop_flag = True
 
-    def reset(self, channel_url: str) -> None:
+    def reset(self, channel_url: str, collection: str = "", verify: bool = True) -> None:
         self.stop_flag = False
         self.channel_url = channel_url
+        self.collection = collection
+        self.verify = verify
         self.timings = []
 
 
@@ -94,8 +98,15 @@ async def _run_batch(
     channel: str,
     budget: EscalationBudget,
     sleep_secs: float,
+    collection: str = "",
+    verify: bool = True,
 ) -> None:
-    """Process enumerated rows one at a time; commit per video."""
+    """Process enumerated rows one at a time; commit per video.
+
+    ``collection`` scopes clustering + the extraction/verdict category.
+    ``verify`` gates the validity check: when False, clusters get a "skipped"
+    verdict sentinel so they're committable without a fact-check.
+    """
     loop = asyncio.get_event_loop()
     while not _state.stop_flag:
         row = store.next_enumerated(channel=channel)
@@ -118,29 +129,37 @@ async def _run_batch(
             )
             # S5 #642: extract idea + assign cluster; stage advances to 'extracted'
             try:
-                labels = store.get_cluster_labels()
+                labels = store.get_cluster_labels(collection)
                 extracted = await _extraction.extract_idea(
                     meta["transcript"] or "",
                     meta["ocr_text"] or "",
                     meta["visual_summary"] or "",
                     labels,
+                    category=collection,
                 )
                 cluster_id = store.get_or_create_cluster(
                     extracted["cluster_label"],
+                    collection,
                     extracted.get("people_required", 1),
                 )
                 store.upsert_idea(row.id, extracted["idea"], cluster_id)
                 store.upsert(row.url, stage="extracted")
-                # S6 #644: verdict per cluster -- verify once, inherit on later videos
+                # S6 #644: verdict per cluster -- verify once, inherit on later videos.
+                # verify=False (trusted how-to channel): write a "skipped" sentinel
+                # so the cluster is still committable, but run no fact-check.
                 try:
                     existing_verdict = store.get_cluster_verdict(cluster_id)
                     if existing_verdict is None:
-                        v = await _verdict.verify_cluster(
-                            extracted["cluster_label"], extracted["idea"]
-                        )
-                        store.set_cluster_verdict(
-                            cluster_id, v["verdict"], v["confidence"], v["evidence"]
-                        )
+                        if verify:
+                            v = await _verdict.verify_cluster(
+                                extracted["cluster_label"], extracted["idea"],
+                                category=collection,
+                            )
+                            store.set_cluster_verdict(
+                                cluster_id, v["verdict"], v["confidence"], v["evidence"]
+                            )
+                        else:
+                            store.set_cluster_verdict(cluster_id, "skipped", None, [])
                     store.upsert(row.url, stage="verified")
                 except Exception as exc:
                     logger.error("[video/channel] verdict failed %s: %s", row.url, exc)
@@ -165,11 +184,15 @@ async def batch_start(
     store: VideoStore,
     *,
     channel: str | None = None,
+    collection: str = "",
+    verify: bool = True,
     escalation_cap: int = 10,
     sleep_secs: float = 2.0,
 ) -> dict:
     """Enumerate channel, insert enumerated rows, spawn the batch task.
 
+    ``collection`` is the category the channel's ideas file under (scopes
+    clusters + steers extraction/verdict).  ``verify`` toggles the validity check.
     Returns immediately; processing runs as a background asyncio task.
     """
     if _state.is_running():
@@ -186,17 +209,20 @@ async def batch_start(
             entry["url"],
             channel=channel_name,
             title=entry.get("title") or None,
+            collection=collection,
         )
 
-    _state.reset(channel_name)
+    _state.reset(channel_name, collection, verify)
     budget = EscalationBudget(escalation_cap)
     _state.task = asyncio.create_task(
-        _run_batch(store, channel_name, budget, sleep_secs)
+        _run_batch(store, channel_name, budget, sleep_secs, collection, verify)
     )
 
     return {
         "status": "started",
         "channel": channel_url,
+        "collection": collection,
+        "verify": verify,
         "enumerated": len(entries),
         "escalation_cap": escalation_cap,
     }
@@ -227,12 +253,19 @@ def batch_resume(
     if not channel:
         return {"status": "no_channel"}
     _state.channel_url = channel  # re-establish for subsequent toggles/hotkey
+    # Recover the collection from a pending row so a resumed batch keeps scoping.
+    # ponytail: verify=off is not persisted across a full restart -- resume
+    # defaults verify=on (safe: worst case is a fact-check that wasn't needed);
+    # add a videos.verify column if that ceiling ever bites.
+    pending = store.next_enumerated(channel=channel)
+    if pending is not None and pending.collection is not None:
+        _state.collection = pending.collection
     _state.stop_flag = False
     budget = EscalationBudget(escalation_cap)
     _state.task = asyncio.create_task(
-        _run_batch(store, channel, budget, sleep_secs)
+        _run_batch(store, channel, budget, sleep_secs, _state.collection, _state.verify)
     )
-    return {"status": "resumed", "channel": channel}
+    return {"status": "resumed", "channel": channel, "collection": _state.collection}
 
 
 def batch_toggle(store: VideoStore, **kwargs) -> dict:
@@ -264,6 +297,7 @@ def batch_status(store: VideoStore) -> dict:
     return {
         "running": running,
         "channel": _state.channel_url,
+        "collection": _state.collection,
         "stage_counts": counts,
         "eta_seconds": eta_secs,
     }
