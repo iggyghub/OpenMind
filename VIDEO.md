@@ -11,9 +11,17 @@ framework (build the second kind's abstraction when it exists).
 
 ## Next slice -- start here
 
-- **Active:** S22 (channel-scoped clusters + keyword). Then S23 (in-Felix review
-  board). Then kick off the new-channel batch. Full brief in VIDEO-HANDOFF.md
-  section 9 ("NEXT SESSION").
+- **Active:** merge the collection PRs (#687 backend, #689 UI -- stacked),
+  restart Felix, then start the IndyDevDan batch under category
+  "harness improvement" (verify=off). Then S23 (in-Felix review board).
+- **Landed (open PRs):** collection-scoped clusters + category-driven watch +
+  verify toggle (#686 / PR #687); collapsible per-collection Videos panel +
+  category input (#688 / PR #689). This is S22's *scoping* half.
+- **Still open from S22:** the "keyword jump-back" part (jump to a cluster by
+  keyword) was NOT built -- collection scoping shipped, keyword search did not.
+- **Follow-up:** relocate _video_extract/_video_verify/_video_commit out of
+  cerebral/main.py into cerebral/video/ so future video edits stop tripping the
+  self-dev guardrail gate (#690).
 - **Model:** sonnet
 
 ## Queue
