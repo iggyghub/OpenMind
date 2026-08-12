@@ -11,12 +11,13 @@ framework (build the second kind's abstraction when it exists).
 
 ## Next slice -- start here
 
-- **Active:** merge the collection PRs (#687 backend, #689 UI -- stacked),
-  restart Felix, then start the IndyDevDan batch under category
-  "harness improvement" (verify=off). Then S23 (in-Felix review board).
-- **Landed (open PRs):** collection-scoped clusters + category-driven watch +
-  verify toggle (#686 / PR #687); collapsible per-collection Videos panel +
-  category input (#688 / PR #689). This is S22's *scoping* half.
+- **Active:** collection PRs are MERGED to master. Restart Felix to load them,
+  then start the IndyDevDan batch under category "harness improvement"
+  (verify=off). Then S23 (in-Felix review board).
+- **Landed (MERGED 2026-08-12):** collection-scoped clusters + category-driven
+  watch + verify toggle (#686 / PR #687); collapsible per-collection Videos
+  panel + category input (#688 / PR #689). This is S22's *scoping* half.
+  Merged master green: 210 video/seam pytest + 636 tray jest.
 - **Still open from S22:** the "keyword jump-back" part (jump to a cluster by
   keyword) was NOT built -- collection scoping shipped, keyword search did not.
 - **Follow-up:** relocate _video_extract/_video_verify/_video_commit out of
@@ -47,7 +48,7 @@ framework (build the second kind's abstraction when it exists).
 - [x] S19 -- #677 -- video_query: filter/sort clusters by talking to Felix + cluster drill-in (PR #678, merged)
 - [x] S20 -- #679 -- Memory categories: remember(category), video_commit tags "money-making idea", collapsible category groups on Memory page (PR #680, merged)
 - [x] S21 -- #681 -- video_batch_clear: clear the unwatched queue + Videos-tab button (PR #682, open)
-- [ ] S22 -- channel-scoped clusters + keyword: video_clusters gets a `collection` tag, clustering keyed on (collection,label), video_query/panel filter by it, backfill existing 40 as `lesko`. Enables separate cluster sets per channel + jump-back-by-keyword.
+- [~] S22 -- channel-scoped clusters: `collection` tag + UNIQUE(collection,label), category-driven extraction/verdict/commit, verify toggle, collapsible per-collection panel, URL+category input. MERGED (PR #687 backend + #689 UI). NOTE: existing money clusters backfill to "money-making idea" (not "lesko"). NOT DONE: the keyword jump-back half.
 - [ ] S23 -- in-Felix review board: verdict step emits per-cluster contact_level + mode (passive/active) + setup + profit_estimate, stored on video_clusters; Videos-tab panel renders + sorts by them (passive-first, least-contact). Backfill the current 40. Mirrors the Claude artifact review board.
 
 Order note: S4 depends on S3; S5 depends on S1 (runs in parallel with S2/S3);
@@ -69,6 +70,8 @@ slice, set the next entry's model on the `Model:` line above.
 - PR #656 — S9 #655 -- no API key: Budd + real OpenClaw web_search grounding
 - PR #660 — S11 #659 -- declutter Videos tab (kill per-cluster wall + fix batch status)
 - PR #661 — S10 #658 -- screen-watch capture fallback (open browser, play, record)
+- PR #687 — S22 #686 -- collection-scoped clusters + category-driven watch + verify toggle
+- PR #689 — S22 #688 -- collapsible per-collection Videos panel + category input
 
 ## SAFETY
 
