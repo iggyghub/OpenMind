@@ -112,6 +112,20 @@ government-money analysis run. Deep design context is in auto-memory
       sweet spot is YouTube spoken-word (regular or shorts), NOT TikTok (S12 open).
       Confirm the URL + a short keyword before `video_batch_start(url, channel=<kw>)`.
 
+   Chat-log incident (2026-08-12, RESOLVED): the Main-window chat was flooded
+   with `-> video_batch_status / <- result` -- ~12,660 turns. Root cause was NOT
+   Felix: a `/loop` in ANOTHER Claude session (`a0d6d71e`) ran `vdrive.py status`
+   (a `plugins:test_call video_batch_status` poller) every ~7s for ~13h. Fixes:
+   S24 (PR #685, merged) makes `plugins:test_call` a true debug hook -- it no
+   longer records transcript turns or emits the transient tool_result broadcast
+   (`record=False` in `_dispatch_tray_call_tool`); and the transcript now only
+   sticks to the bottom on a new turn if you're already near it (`isNearBottom`).
+   The 12,660 junk turns were purged; `vdrive.py` was neutralised to a no-op. USER
+   STILL NEEDS to stop the `/loop` in session a0d6d71e (it keeps firing a no-op).
+   Also filed: Felix wrongly told the user `self_dev` can't touch the frontend --
+   but `self_dev` clones the whole repo incl. `tray/windows/main.html`, so UI fixes
+   (like this auto-scroll one) ARE in scope; the model just doesn't realise it.
+
    Harness-improvement backlog surfaced this session (candidate slices; user is
    interested in these):
    1. `video_uncommit` -- prune a committed cluster from Memory (memory `forget()`
