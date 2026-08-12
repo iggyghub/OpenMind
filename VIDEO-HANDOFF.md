@@ -44,10 +44,17 @@ government-money analysis run. Deep design context is in auto-memory
    -- it continues from the DB. Candidate hardening: make `_run_batch` catch +
    continue on any per-video exception so one bad call can't end the run.
 
-8. **Next wants (from the user):** a **`video_query`** tool (filter/sort clusters by
-   talking to Felix -- "show me the legit ones a solo person can do") + **cluster
-   drill-in** (pick a representative video to watch). Also: scrub the 6 junk rows;
-   commit the good government ideas.
+8. **Next wants (from the user):**
+   1. DONE -- **`video_query`** tool (filter/sort clusters by talking to Felix --
+      "show me the legit ones a solo person can do") + **cluster drill-in**
+      (cluster_id -> member videos). Shipped in PR #678 (#677, S19); each listed
+      cluster carries a `representative` video to watch. Awaiting merge.
+   2. DONE -- committed the 18 government-money clusters to Felix's Memory
+      (all legit, all solo/p=1, none require buying-first). Filters applied per
+      the user: government-only, drop 2-person and buy-first. `video_clusters`
+      now has 18 rows with a `memory_id`.
+   3. TODO -- scrub the ~6 junk rows from the pre-S18 capture bug.
+   4. Non-government legit clusters (17) were left uncommitted by design.
 
 9. **Fresh-session note:** the prior session's `scratchpad/*.py` helpers won't
    exist. Check status by querying `cerebral/data/openmind.db` (tables `videos`,
