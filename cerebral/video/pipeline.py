@@ -132,21 +132,17 @@ async def run(
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
 
-        # Acquisition: yt-dlp first, screen-watch capture as fallback (or forced).
+        # Acquisition: yt-dlp download, UNLESS screen-watch capture is explicitly
+        # forced. S18 #675: capture is opt-in only -- it opens a browser and grabs
+        # the screen, so it must NEVER auto-fire on a download failure during a
+        # headless batch (that spawned ~33 browser tabs overnight on YouTube 403s).
+        # A download failure now propagates so the batch marks the video 'failed'.
         captured_frames: list[Path] | None = None
         if force_capture:
             meta = await loop.run_in_executor(None, capture, url, out_dir)
             captured_frames = meta.get("frames") or []
         else:
-            try:
-                meta = await loop.run_in_executor(None, download, url, out_dir)
-            except Exception as exc:  # noqa: BLE001 -- any download failure is a fallback trigger
-                logger.warning(
-                    "[video] yt-dlp download failed for %s (%s); falling back to screen-watch capture",
-                    url, exc,
-                )
-                meta = await loop.run_in_executor(None, capture, url, out_dir)
-                captured_frames = meta.get("frames") or []
+            meta = await loop.run_in_executor(None, download, url, out_dir)
 
         audio_path: Path = meta["audio_path"]
         transcript = await loop.run_in_executor(None, transcribe, audio_path)
