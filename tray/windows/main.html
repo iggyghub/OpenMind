@@ -6324,8 +6324,11 @@
         case 'conversation_turn_emitted': {
           const turn = event.data && event.data.turn;
           if (turn) {
+            // Only follow new turns to the bottom if we were already there;
+            // otherwise leave the scroll position so the user can read up.
+            const stick = isNearBottom();
             appendTurn(turn);
-            scrollToBottom();
+            if (stick) scrollToBottom();
           }
           break;
         }
@@ -6761,6 +6764,14 @@
 
     function scrollToBottom() {
       transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    // True when the transcript is scrolled to (or within 80px of) the bottom.
+    // Used to "stick" to the bottom for new turns only if the user is already
+    // there -- so reading older messages isn't yanked down by incoming turns.
+    function isNearBottom() {
+      return transcript.scrollHeight - transcript.scrollTop
+        - transcript.clientHeight < 80;
     }
 
     // ── quick ask (S12 / #295) ────────────────────────────────────────────

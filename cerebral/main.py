@@ -3424,17 +3424,24 @@ async def _speak(text: str) -> None:
 
 # ── Shared tray-IPC direct-call path (call_tool + plugins:test_call) ─────────
 
-async def _dispatch_tray_call_tool(tool_name: str, tool_args: dict) -> ToolResult:
+async def _dispatch_tray_call_tool(
+    tool_name: str, tool_args: dict, *, record: bool = True
+) -> ToolResult:
     """Shared body for tray-IPC direct tool calls (issues #238, #472).
 
     Applies the ACL/consent gate ladder, dispatches through
     ``_orc.call_tool`` (never-raise), broadcasts ``tool_result``, and records
     the KIND_TOOL_CALL/KIND_TOOL_RESULT turn pair. Both the ``call_tool``
     handler and the harness ``plugins:test_call`` handler go through here so
-    the permissions layer and transcript recording apply identically -- no
-    parallel entry point (spec section 5.3).
+    the permissions layer applies identically -- no parallel entry point
+    (spec section 5.3).
+
+    ``record=False`` skips the transcript turns AND the transient tool_result
+    broadcast. Used by ``plugins:test_call``, which is a debug hook -- a poller
+    hammering it (e.g. a stray status loop) must not flood the user's chat log.
     """
-    await _record_turn(KIND_TOOL_CALL, {"name": tool_name, "args": tool_args})
+    if record:
+        await _record_turn(KIND_TOOL_CALL, {"name": tool_name, "args": tool_args})
     plugin_name = _orc.plugin_for_tool(tool_name)
     caps = (
         _orc.required_capabilities_for(plugin_name)
@@ -3462,11 +3469,12 @@ async def _dispatch_tray_call_tool(tool_name: str, tool_args: dict) -> ToolResul
             ),
             is_error=True,
         )
-    await _broadcast({
-        "type": "tool_result",
-        "data": {"name": tool_name, "content": result.content, "is_error": result.is_error},
-    })
-    await _record_turn(KIND_TOOL_RESULT, {"name": tool_name, "is_error": result.is_error})
+    if record:
+        await _broadcast({
+            "type": "tool_result",
+            "data": {"name": tool_name, "content": result.content, "is_error": result.is_error},
+        })
+        await _record_turn(KIND_TOOL_RESULT, {"name": tool_name, "is_error": result.is_error})
     return result
 
 
@@ -3486,7 +3494,9 @@ async def _handle_plugins_test_call(msg: dict) -> None:
     if not tool_name:
         logger.warning("[cerebral] plugins:test_call missing tool_name")
         return
-    result = await _dispatch_tray_call_tool(tool_name, tool_args)
+    # Debug hook -- never record to the transcript (a stray poller must not
+    # flood the user's chat log; see _dispatch_tray_call_tool docstring).
+    result = await _dispatch_tray_call_tool(tool_name, tool_args, record=False)
     preview = (result.content or "")[:500]
     await _broadcast({
         "type": "plugins:test_call",
