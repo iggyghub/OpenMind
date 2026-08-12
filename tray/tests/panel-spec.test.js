@@ -447,3 +447,33 @@ describe('renderWidget group', () => {
     expect(html).toContain('&lt;img');
   });
 });
+
+// ── renderWidget: action checkbox field (#688 verify toggle) ─────────────────
+
+describe('renderWidget action checkbox', () => {
+  test('renders a checkbox carrying the arg name; checked reflects default', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'action', id: 'video-batch-start', tool: 'video_batch_start',
+      input_arg: 'url', input_arg2: 'category',
+      checkbox_arg: 'verify', checkbox_label: 'Verify ideas', checkbox_checked: true,
+    });
+    expect(html).toContain('data-checkbox-arg="verify"');
+    expect(html).toContain('ps-action-check');
+    expect(html).toContain('type="checkbox" checked');
+    expect(html).toContain('Verify ideas');
+  });
+
+  test('checkbox_checked falsy renders an unchecked box', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'action', tool: 't', checkbox_arg: 'verify', checkbox_label: 'V',
+    });
+    expect(html).toContain('type="checkbox"');
+    expect(html).not.toContain('checked');
+  });
+
+  test('no checkbox_arg -> no checkbox (backward-compatible)', () => {
+    const html = PanelSpec.renderWidget({ type: 'action', tool: 't', input_arg: 'url' });
+    expect(html).not.toContain('ps-action-check');
+    expect(html).not.toContain('data-checkbox-arg');
+  });
+});

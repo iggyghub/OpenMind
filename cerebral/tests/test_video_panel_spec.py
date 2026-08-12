@@ -69,6 +69,17 @@ def test_panel_spec_has_ingest_and_batch_action_forms(plugin, store, monkeypatch
     assert "video-batch-start" in action_ids
 
 
+def test_batch_start_form_has_category_and_verify_checkbox(plugin, store, monkeypatch):
+    """#688: the channel form takes URL + category and a verify toggle."""
+    monkeypatch.setattr(_channel, "batch_status", _idle_status)
+    spec = plugin.panel_spec(None)
+    batch = next(w for w in spec["widgets"] if w.get("id") == "video-batch-start")
+    assert batch["input_arg"] == "url"
+    assert batch["input_arg2"] == "category"
+    assert batch["checkbox_arg"] == "verify"
+    assert batch["checkbox_checked"] is True   # defaults ON; user unchecks for how-to channels
+
+
 def test_panel_spec_has_status_detail(plugin, store, monkeypatch):
     monkeypatch.setattr(_channel, "batch_status", _idle_status)
     spec = plugin.panel_spec(None)

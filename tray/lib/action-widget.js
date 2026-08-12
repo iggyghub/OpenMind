@@ -18,12 +18,16 @@
 (function () {
   // Pure: build the call_tool WS message for an action click.
   // Exported so tests can verify the payload without touching the DOM.
-  function buildActionMessage(tool, toolArgs, inputArg, inputValue, inputArg2, inputValue2) {
+  function buildActionMessage(
+    tool, toolArgs, inputArg, inputValue, inputArg2, inputValue2, checkboxArg, checkboxValue
+  ) {
     var args = Object.assign({}, toolArgs || {});
     if (inputArg) args[inputArg] = inputValue;
     // Optional second field (e.g. category alongside a URL). Omitted when the
     // action has no input_arg2 -- backward-compatible with single-input widgets.
     if (inputArg2) args[inputArg2] = inputValue2;
+    // Optional boolean field (e.g. a verify checkbox) -- sent as a real boolean.
+    if (checkboxArg) args[checkboxArg] = !!checkboxValue;
     return { type: 'call_tool', data: { name: tool || '', args: args } };
   }
 
@@ -37,6 +41,7 @@
         var btn    = el.querySelector('.ps-action-btn');
         var input  = el.querySelector('.ps-action-input');
         var input2 = el.querySelector('.ps-action-input2');
+        var check  = el.querySelector('.ps-action-check');
         var status = el.querySelector('.ps-action-status');
         if (!btn) return;
         var tool = el.getAttribute('data-tool') || '';
@@ -44,13 +49,15 @@
         try { toolArgs = JSON.parse(el.getAttribute('data-tool-args') || '{}'); } catch (_) {}
         var inputArg  = el.getAttribute('data-input-arg') || '';
         var inputArg2 = el.getAttribute('data-input-arg2') || '';
+        var checkArg  = el.getAttribute('data-checkbox-arg') || '';
         btn.addEventListener('click', function () {
           if (status) { status.textContent = 'Working…'; }
           btn.disabled = true;
           sendFn(buildActionMessage(
             tool, toolArgs,
             inputArg, input ? input.value : '',
-            inputArg2, input2 ? input2.value : ''
+            inputArg2, input2 ? input2.value : '',
+            checkArg, check ? check.checked : false
           ));
         });
       })(widgets[i]);

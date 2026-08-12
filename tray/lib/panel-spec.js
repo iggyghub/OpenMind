@@ -115,6 +115,16 @@
       ? '<input class="ps-action-input2" type="text" placeholder="' +
           escHtml(w.input_placeholder2 || '') + '">'
       : '';
+    // Optional boolean field (e.g. a verify toggle). checkbox_arg names the
+    // tool arg; checkbox_checked is its default state. Sends a real boolean.
+    var checkArg  = w.checkbox_arg ? escHtml(w.checkbox_arg) : '';
+    var checkbox  = checkArg
+      ? '<label class="ps-action-check-wrap">' +
+          '<input class="ps-action-check" type="checkbox"' +
+            (w.checkbox_checked ? ' checked' : '') + '>' +
+          escHtml(w.checkbox_label || '') +
+        '</label>'
+      : '';
     return (
       '<div class="ps-action"' +
         ' data-widget-id="' + id + '"' +
@@ -122,9 +132,11 @@
         ' data-tool-args="' + toolArgs + '"' +
         (inputArg ? ' data-input-arg="' + inputArg + '"' : '') +
         (inputArg2 ? ' data-input-arg2="' + inputArg2 + '"' : '') +
+        (checkArg ? ' data-checkbox-arg="' + checkArg + '"' : '') +
         '>' +
         input +
         input2 +
+        checkbox +
         '<button class="ps-action-btn" type="button">' + label + '</button>' +
         '<span class="ps-action-status"></span>' +
       '</div>'
