@@ -6,9 +6,11 @@ incremental: existing labels are passed to the LLM so it can reuse one or
 propose a new one.  No vector math; ChromaDB is the documented upgrade path.
 
 Injectable seam:
-  set_extract_fn(async fn(transcript, ocr_text, visual_summary, labels) -> dict)
+  set_extract_fn(async fn(transcript, ocr_text, visual_summary, labels, category) -> dict)
   fn must return {"idea": str, "cluster_label": str, "people_required": int}.
   (people_required is lenient — a missing value defaults to 1.)
+  ``category`` is the batch's collection (e.g. "money-making idea",
+  "harness improvement") -- it steers what the model extracts.
 
 Tests always set the seam to a stub; the seam is never None in the loop.
 """
@@ -38,6 +40,7 @@ async def _prod_extract(
     ocr_text: str,
     visual_summary: str,
     existing_labels: list[str],
+    category: str = "",
 ) -> dict:
     # ponytail: live-verify only -- in production, injected from main.py via _wire_plugin_seams
     logger.warning("[video/extraction] _prod_extract fallback -- wire set_extract_fn via main.py")
@@ -74,10 +77,12 @@ async def extract_idea(
     visual_summary: str,
     existing_labels: list[str],
     *,
+    category: str = "",
     max_retries: int = 3,
 ) -> dict:
     """Extract idea + cluster label with validate-and-retry.
 
+    ``category`` is the batch's collection; it steers the extraction prompt.
     Raises on all-retry failure (caller must not write a null/partial row).
     Returns {"idea": str, "cluster_label": str}.
     """
@@ -85,7 +90,7 @@ async def extract_idea(
     last_exc: Exception = ValueError("no attempts made")
     for attempt in range(max_retries):
         try:
-            result = fn(transcript, ocr_text, visual_summary, existing_labels)
+            result = fn(transcript, ocr_text, visual_summary, existing_labels, category)
             if asyncio.iscoroutine(result):
                 result = await result
             _validate(result)

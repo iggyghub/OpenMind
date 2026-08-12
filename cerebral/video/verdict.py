@@ -11,7 +11,7 @@ S9 #655: the model is Budd (or local), grounded on Felix's own web_search
 prod seam uses so the RAG prompt is unit-testable without any network.
 
 Injectable seam:
-  set_verify_fn(async fn(cluster_label, idea_text) -> dict)
+  set_verify_fn(async fn(cluster_label, idea_text, category) -> dict)
   fn must return {"verdict": str, "confidence": float, "evidence": list[str]}.
 
 Tests always set the seam to a stub; no network/API key required.
@@ -39,14 +39,14 @@ def get_verify_fn() -> Callable:
     return _verify_fn or _prod_verify
 
 
-async def _prod_verify(cluster_label: str, idea_text: str) -> dict:
+async def _prod_verify(cluster_label: str, idea_text: str, category: str = "money-making idea") -> dict:
     # ponytail: live-verify only -- injected from main.py via _wire_plugin_seams
     logger.warning("[video/verdict] _prod_verify fallback -- wire set_verify_fn via main.py")
     raise NotImplementedError("verify_fn not wired; ensure _wire_plugin_seams ran")
 
 
 def build_verdict_prompt(
-    cluster_label: str, idea_text: str, search_results: str = ""
+    cluster_label: str, idea_text: str, search_results: str = "", category: str = "money-making idea"
 ) -> str:
     """Build the validity-verdict prompt (S8 de-bias + S9 web grounding).
 
@@ -54,16 +54,31 @@ def build_verdict_prompt(
     cites their URLs; otherwise it judges from its own knowledge and says so.
     The de-bias clause ensures the channel's sensational framing (e.g. a channel
     calling its ideas "unethical") never drives the verdict on its own.
+
+    ``category`` swaps the framing: a money collection gets the financial
+    fraud-check; any other collection gets a generic "is this sound and does it
+    actually work" soundness check (the verdict enum is shared).
     """
-    debias = (
-        "You are a financial-idea fact-checker. Judge the METHOD below on its own "
-        "merits -- its actual legality and whether it really works. Ignore any "
-        "sensational or clickbait framing from the source video (e.g. a channel "
-        "calling its ideas 'unethical' or 'secret'): many such videos describe "
-        "legitimate programs such as government grants, benefits, tax credits, or "
-        "incentives paid for doing something. Do NOT mark an idea 'scam' or 'dubious' "
-        "merely because of framing; base the verdict on what the method itself is.\n"
-    )
+    if "money" in category.lower() or "financial" in category.lower():
+        debias = (
+            "You are a financial-idea fact-checker. Judge the METHOD below on its own "
+            "merits -- its actual legality and whether it really works. Ignore any "
+            "sensational or clickbait framing from the source video (e.g. a channel "
+            "calling its ideas 'unethical' or 'secret'): many such videos describe "
+            "legitimate programs such as government grants, benefits, tax credits, or "
+            "incentives paid for doing something. Do NOT mark an idea 'scam' or 'dubious' "
+            "merely because of framing; base the verdict on what the method itself is.\n"
+        )
+    else:
+        debias = (
+            f"You are a fact-checker assessing a {category} technique. Judge the IDEA "
+            "below on its own merits -- whether it is sound, accurate, and actually "
+            "works in practice. Ignore any sensational or clickbait framing from the "
+            "source video. Use the verdict scale as: 'legit' = sound and worth "
+            "adopting, 'dubious' = questionable or situational, 'scam' = wrong or "
+            "harmful advice, 'unverifiable' = can't tell. Base the verdict on the "
+            "substance of the idea, not its framing.\n"
+        )
     if search_results.strip():
         grounding = (
             "Base your verdict on these web search results:\n"
@@ -105,18 +120,20 @@ async def verify_cluster(
     cluster_label: str,
     idea_text: str,
     *,
+    category: str = "money-making idea",
     max_retries: int = 3,
 ) -> dict:
     """Run validity verdict with validate-and-retry.
 
-    Raises on all-retry failure (caller must not write a null verdict).
-    Returns {"verdict": str, "confidence": float, "evidence": list[str]}.
+    ``category`` steers the prompt framing (money fraud-check vs generic
+    soundness check).  Raises on all-retry failure (caller must not write a null
+    verdict).  Returns {"verdict": str, "confidence": float, "evidence": list[str]}.
     """
     fn = get_verify_fn()
     last_exc: Exception = ValueError("no attempts made")
     for attempt in range(max_retries):
         try:
-            result = fn(cluster_label, idea_text)
+            result = fn(cluster_label, idea_text, category)
             if asyncio.iscoroutine(result):
                 result = await result
             _validate(result)

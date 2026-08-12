@@ -6171,11 +6171,17 @@ async def _video_extract(                                                    # S
     ocr_text: str,
     visual_summary: str,
     existing_labels: list,
+    category: str = "money-making idea",                                      # S22: collection-driven
 ) -> dict:
-    """Production idea extraction + cluster assignment.  Live-verify only; stubs cover tests."""
+    """Production idea extraction + cluster assignment.  Live-verify only; stubs cover tests.
+
+    ``category`` is the batch's collection -- it steers what the model extracts
+    (a money idea, a harness technique, etc.).
+    """
     import json as _json
     import re as _re
 
+    topic = (category or "key idea").strip()
     labels_block = ""
     if existing_labels:
         labels_block = (
@@ -6188,9 +6194,9 @@ async def _video_extract(                                                    # S
     if visual_summary:
         content += f"\n[Visual summary: {visual_summary.strip()}]"
     prompt = (
-        "Extract the money-making idea from the TikTok video content below.\n"
+        f"Extract the main {topic} taught in the video content below.\n"
         "Return ONLY valid JSON with exactly three keys:\n"
-        '  "idea": one clear sentence describing the money-making idea\n'
+        f'  "idea": one clear sentence describing the {topic}\n'
         '  "cluster_label": a short 2-4 word category label\n'
         '  "people_required": integer, how many people the method needs to run'
         " (1 if one person can do it alone, 2 if it requires a second person/partner, etc.)"
@@ -6207,22 +6213,25 @@ async def _video_extract(                                                    # S
 async def _video_commit(cluster_id: int, idea_text: str, cluster: dict) -> str:  # S7 #645 (ADR-0017)
     """Write a verified idea cluster to Memory as a durable fact.  Live-verify only; stubs cover tests."""
     verdict = cluster.get("verdict", "unverifiable")
-    confidence = cluster.get("confidence") or 0.0
+    confidence = cluster.get("confidence")
     evidence = cluster.get("evidence") or []
     label = cluster.get("label", "")
-    evidence_str = "; ".join(str(e) for e in evidence)
-    fact = (
-        f"Money-making idea — {label}: {idea_text}. "
-        f"Validity verdict: {verdict} (confidence {confidence:.0%}). "
-        f"Evidence: {evidence_str or 'none'}."
-    )
+    collection = (cluster.get("collection") or "money-making idea").strip()
+    prefix = collection[:1].upper() + collection[1:]  # "Harness improvement — ..."
+    fact = f"{prefix} — {label}: {idea_text}."
+    # Only attach a validity clause when the batch actually ran a check.
+    # verify=off writes a "skipped" sentinel -- omit it rather than print "0%".
+    if verdict and verdict != "skipped":
+        evidence_str = "; ".join(str(e) for e in evidence)
+        conf = f" (confidence {confidence:.0%})" if confidence is not None else ""
+        fact += f" Validity verdict: {verdict}{conf}. Evidence: {evidence_str or 'none'}."
     mgr = _get_memory()
     if mgr is None:
         raise RuntimeError("No active profile — load a profile before committing to Memory")
-    return await mgr.remember(fact, category="money-making idea")
+    return await mgr.remember(fact, category=collection)
 
 
-async def _video_verify(cluster_label: str, idea_text: str) -> dict:  # S6 #644 / S9 #655 (ADR-0017)
+async def _video_verify(cluster_label: str, idea_text: str, category: str = "money-making idea") -> dict:  # S6 #644 / S9 #655 (ADR-0017)
     """Production validity verdict: Budd (or local) grounded on Felix's web_search.
 
     No Anthropic key — search runs via OpenClaw (web_search tool), the model runs
@@ -6243,7 +6252,7 @@ async def _video_verify(cluster_label: str, idea_text: str) -> dict:  # S6 #644 
     except Exception as exc:
         logger.warning("[video/verdict] web_search unavailable, judging from knowledge: %s", exc)
 
-    prompt = build_verdict_prompt(cluster_label, idea_text, search_results)
+    prompt = build_verdict_prompt(cluster_label, idea_text, search_results, category)
     raw = await _router.complete(prompt, task_type="video")
     m = _re.search(r"\{[\s\S]*?\}", raw)
     if not m:

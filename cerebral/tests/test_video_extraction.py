@@ -44,11 +44,11 @@ def reset_seams():
     channel._state.timings = []
 
 
-def _sync_stub(transcript, ocr_text, visual_summary, labels):
+def _sync_stub(transcript, ocr_text, visual_summary, labels, category=""):
     return {"idea": "Sell stuff online", "cluster_label": "dropshipping"}
 
 
-async def _async_stub(transcript, ocr_text, visual_summary, labels):
+async def _async_stub(transcript, ocr_text, visual_summary, labels, category=""):
     return {"idea": "Sell stuff online", "cluster_label": "dropshipping"}
 
 
@@ -80,10 +80,10 @@ def test_extract_idea_people_required_defaults_to_one_when_missing():
 
 def test_extract_idea_people_required_honored_and_coerced():
     # S8 #653: a provided count is carried through; junk/<1 coerces to 1.
-    async def _two(transcript, ocr, vis, labels):
+    async def _two(transcript, ocr, vis, labels, category=""):
         return {"idea": "Referral bonus with a friend", "cluster_label": "referral", "people_required": "2"}
 
-    async def _junk(transcript, ocr, vis, labels):
+    async def _junk(transcript, ocr, vis, labels, category=""):
         return {"idea": "x", "cluster_label": "y", "people_required": "lots"}
 
     extraction.set_extract_fn(_two)
@@ -97,7 +97,7 @@ def test_extract_idea_people_required_honored_and_coerced():
 def test_extract_idea_retries_on_bad_output():
     calls = []
 
-    def flaky(transcript, ocr_text, visual_summary, labels):
+    def flaky(transcript, ocr_text, visual_summary, labels, category=""):
         calls.append(len(calls))
         if len(calls) < 3:
             return {"idea": "", "cluster_label": "ok"}  # empty idea -> invalid
@@ -110,7 +110,7 @@ def test_extract_idea_retries_on_bad_output():
 
 
 def test_extract_idea_raises_after_all_retries():
-    def always_bad(transcript, ocr_text, visual_summary, labels):
+    def always_bad(transcript, ocr_text, visual_summary, labels, category=""):
         return {"idea": "", "cluster_label": "x"}
 
     extraction.set_extract_fn(always_bad)
@@ -189,7 +189,7 @@ def test_get_idea_for_video_none_when_missing(db):
 def test_existing_labels_passed_to_extract_fn(db):
     received_labels = []
 
-    def capturing_stub(transcript, ocr_text, visual_summary, labels):
+    def capturing_stub(transcript, ocr_text, visual_summary, labels, category=""):
         received_labels.extend(labels)
         return {"idea": "Buy low sell high", "cluster_label": "trading"}
 
@@ -216,7 +216,7 @@ def test_batch_processes_to_extracted_stage(db):
     """Full happy-path: batch + extraction seam -> stage='extracted' + idea row."""
     call_count = [0]
 
-    def extract_stub(transcript, ocr_text, visual_summary, labels):
+    def extract_stub(transcript, ocr_text, visual_summary, labels, category=""):
         call_count[0] += 1
         return {"idea": f"Idea for video {call_count[0]}", "cluster_label": "testing"}
 
@@ -257,7 +257,7 @@ def test_batch_continues_if_extraction_fails(db):
     """Extraction failure leaves stage at transcribed but doesn't abort batch."""
     calls = [0]
 
-    def failing_extract(transcript, ocr_text, visual_summary, labels):
+    def failing_extract(transcript, ocr_text, visual_summary, labels, category=""):
         calls[0] += 1
         raise ValueError("LLM unavailable")
 

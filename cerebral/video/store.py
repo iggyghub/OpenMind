@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS videos (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     url           TEXT    NOT NULL UNIQUE,
     channel       TEXT,
+    collection    TEXT,
     title         TEXT,
     duration      REAL,
     transcript    TEXT,
@@ -38,14 +39,18 @@ CREATE TABLE IF NOT EXISTS videos (
     updated_at    TEXT    NOT NULL
 );
 
+-- Clusters are scoped to a collection (the batch's category): the same label
+-- may exist in two collections without merging.  S22: UNIQUE(collection, label).
 CREATE TABLE IF NOT EXISTS video_clusters (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    label          TEXT    NOT NULL UNIQUE,
+    label          TEXT    NOT NULL,
+    collection     TEXT    NOT NULL DEFAULT '',
     member_count   INTEGER NOT NULL DEFAULT 0,
     verdict        TEXT,
     confidence     REAL,
     evidence_links TEXT,
-    memory_id      TEXT
+    memory_id      TEXT,
+    UNIQUE(collection, label)
 );
 
 CREATE TABLE IF NOT EXISTS video_ideas (
@@ -86,12 +91,14 @@ class Video:
     stage: str
     created_at: str
     updated_at: str
+    collection: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "url": self.url,
             "channel": self.channel,
+            "collection": self.collection,
             "title": self.title,
             "duration": self.duration,
             "transcript": self.transcript,
@@ -112,6 +119,7 @@ class VideoStore:
         self._con.row_factory = sqlite3.Row
         self._con.executescript(_DDL)
         self._run_migrations()
+        self._migrate_collections()
 
     def _run_migrations(self) -> None:
         for sql in _MIGRATIONS:
@@ -120,6 +128,61 @@ class VideoStore:
                 self._con.commit()
             except sqlite3.OperationalError:
                 pass  # column already exists
+
+    def _migrate_collections(self) -> None:
+        """S22: add `collection` scoping to videos + clusters on pre-collection DBs.
+
+        Videos get a nullable collection column; existing rows (all from the first
+        money-ideas channel) are backfilled once to 'money-making idea'.  Clusters
+        need their UNIQUE(label) constraint replaced with UNIQUE(collection, label),
+        which SQLite can only do via a table rebuild -- ids are preserved so the
+        video_ideas.cluster_id references stay valid.
+        """
+        con = self._con
+        added_videos_col = False
+        try:
+            con.execute("ALTER TABLE videos ADD COLUMN collection TEXT")
+            con.commit()
+            added_videos_col = True
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        if added_videos_col:
+            # One-shot backfill: every pre-collection video is from the money channel.
+            con.execute(
+                "UPDATE videos SET collection = 'money-making idea' WHERE collection IS NULL"
+            )
+            con.commit()
+
+        cols = [r[1] for r in con.execute("PRAGMA table_info(video_clusters)").fetchall()]
+        if "collection" not in cols:
+            # Rebuild: the old table's UNIQUE(label) can't be dropped in place.
+            # _run_migrations already added memory_id + people_required, so every
+            # column below exists on the source table.
+            con.executescript(
+                """
+                CREATE TABLE video_clusters_new (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    label          TEXT    NOT NULL,
+                    collection     TEXT    NOT NULL DEFAULT '',
+                    member_count   INTEGER NOT NULL DEFAULT 0,
+                    verdict        TEXT,
+                    confidence     REAL,
+                    evidence_links TEXT,
+                    memory_id      TEXT,
+                    people_required INTEGER DEFAULT 1,
+                    UNIQUE(collection, label)
+                );
+                INSERT INTO video_clusters_new
+                    (id, label, collection, member_count, verdict, confidence,
+                     evidence_links, memory_id, people_required)
+                SELECT id, label, 'money-making idea', member_count, verdict, confidence,
+                       evidence_links, memory_id, COALESCE(people_required, 1)
+                FROM video_clusters;
+                DROP TABLE video_clusters;
+                ALTER TABLE video_clusters_new RENAME TO video_clusters;
+                """
+            )
+            con.commit()
 
     def _conn(self) -> sqlite3.Connection:
         return self._con
@@ -133,6 +196,7 @@ class VideoStore:
         url: str,
         *,
         channel: str | None = None,
+        collection: str | None = None,
         title: str | None = None,
         duration: float | None = None,
         transcript: str | None = None,
@@ -147,12 +211,13 @@ class VideoStore:
             cur = con.execute(
                 """
                 INSERT INTO videos
-                    (url, channel, title, duration, transcript,
+                    (url, channel, collection, title, duration, transcript,
                      ocr_text, visual_summary, escalated,
                      stage, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(url) DO UPDATE SET
                     channel        = COALESCE(excluded.channel,        channel),
+                    collection     = COALESCE(excluded.collection,     collection),
                     title          = COALESCE(excluded.title,          title),
                     duration       = COALESCE(excluded.duration,       duration),
                     transcript     = COALESCE(excluded.transcript,     transcript),
@@ -163,7 +228,7 @@ class VideoStore:
                     updated_at     = excluded.updated_at
                 """,
                 (
-                    url, channel, title, duration, transcript,
+                    url, channel, collection, title, duration, transcript,
                     ocr_text, visual_summary,
                     int(escalated) if escalated is not None else None,
                     stage, now, now,
@@ -189,6 +254,7 @@ class VideoStore:
         url: str,
         channel: str,
         title: str | None = None,
+        collection: str | None = None,
     ) -> None:
         """Insert a new video at stage=enumerated; skip if it already exists."""
         now = self._now()
@@ -196,10 +262,10 @@ class VideoStore:
             con.execute(
                 """
                 INSERT OR IGNORE INTO videos
-                    (url, channel, title, stage, created_at, updated_at)
-                VALUES (?, ?, ?, 'enumerated', ?, ?)
+                    (url, channel, collection, title, stage, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'enumerated', ?, ?)
                 """,
-                (url, channel, title, now, now),
+                (url, channel, collection, title, now, now),
             )
 
     def next_enumerated(self, channel: str | None = None) -> Video | None:
@@ -263,30 +329,44 @@ class VideoStore:
 
     # ── S5 #642: idea extraction + incremental clustering ─────────────────────
 
-    def get_cluster_labels(self) -> list[str]:
-        """Return all existing cluster labels (passed to the LLM for reuse)."""
+    def get_cluster_labels(self, collection: str | None = None) -> list[str]:
+        """Return existing cluster labels (passed to the LLM for reuse).
+
+        Scoped to ``collection`` when given so a new channel's extraction only
+        sees its own labels -- money clusters never leak into a harness batch.
+        """
+        sql = "SELECT label FROM video_clusters"
+        params: list = []
+        if collection is not None:
+            sql += " WHERE collection = ?"
+            params.append(collection)
+        sql += " ORDER BY id"
         with self._conn() as con:
-            rows = con.execute("SELECT label FROM video_clusters ORDER BY id").fetchall()
+            rows = con.execute(sql, params).fetchall()
         return [row["label"] for row in rows]
 
-    def get_or_create_cluster(self, label: str, people_required: int = 1) -> int:
-        """Return cluster id for label, creating it and incrementing member_count.
+    def get_or_create_cluster(
+        self, label: str, collection: str = "", people_required: int = 1
+    ) -> int:
+        """Return cluster id for (collection, label), creating + bumping member_count.
 
         people_required is a property of the method, set once when the cluster is
         first created (like the verdict); later videos in the cluster keep it.
         """
         with self._conn() as con:
             con.execute(
-                "INSERT OR IGNORE INTO video_clusters (label, member_count, people_required)"
-                " VALUES (?, 0, ?)",
-                (label, people_required),
+                "INSERT OR IGNORE INTO video_clusters (label, collection, member_count,"
+                " people_required) VALUES (?, ?, 0, ?)",
+                (label, collection, people_required),
             )
             con.execute(
-                "UPDATE video_clusters SET member_count = member_count + 1 WHERE label = ?",
-                (label,),
+                "UPDATE video_clusters SET member_count = member_count + 1"
+                " WHERE label = ? AND collection = ?",
+                (label, collection),
             )
             row = con.execute(
-                "SELECT id FROM video_clusters WHERE label = ?", (label,)
+                "SELECT id FROM video_clusters WHERE label = ? AND collection = ?",
+                (label, collection),
             ).fetchone()
         return row["id"]
 
@@ -304,14 +384,23 @@ class VideoStore:
                 (video_id, idea_text, cluster_id),
             )
 
-    def list_clusters(self) -> list[dict]:
-        """Return all clusters ordered by member_count desc, including verdict and memory_id."""
+    def list_clusters(self, collection: str | None = None) -> list[dict]:
+        """Return clusters ordered by member_count desc, including verdict + memory_id.
+
+        Filtered to ``collection`` when given (the Videos panel / video_query use
+        this to keep each collection's clusters separate).
+        """
+        sql = (
+            "SELECT id, label, collection, member_count, verdict, confidence,"
+            " evidence_links, memory_id, people_required FROM video_clusters"
+        )
+        params: list = []
+        if collection is not None:
+            sql += " WHERE collection = ?"
+            params.append(collection)
+        sql += " ORDER BY member_count DESC"
         with self._conn() as con:
-            rows = con.execute(
-                "SELECT id, label, member_count, verdict, confidence, evidence_links, memory_id,"
-                " people_required"
-                " FROM video_clusters ORDER BY member_count DESC"
-            ).fetchall()
+            rows = con.execute(sql, params).fetchall()
         import json as _json
         result = []
         for row in rows:
@@ -324,6 +413,7 @@ class VideoStore:
             result.append({
                 "id": row["id"],
                 "label": row["label"],
+                "collection": row["collection"],
                 "member_count": row["member_count"],
                 "verdict": row["verdict"],
                 "confidence": row["confidence"],
@@ -338,8 +428,8 @@ class VideoStore:
         import json as _json
         with self._conn() as con:
             row = con.execute(
-                "SELECT id, label, member_count, verdict, confidence, evidence_links, memory_id,"
-                " people_required"
+                "SELECT id, label, collection, member_count, verdict, confidence,"
+                " evidence_links, memory_id, people_required"
                 " FROM video_clusters WHERE id = ?",
                 (cluster_id,),
             ).fetchone()
@@ -354,6 +444,7 @@ class VideoStore:
         return {
             "id": row["id"],
             "label": row["label"],
+            "collection": row["collection"],
             "member_count": row["member_count"],
             "verdict": row["verdict"],
             "confidence": row["confidence"],
@@ -406,10 +497,14 @@ class VideoStore:
         self,
         cluster_id: int,
         verdict: str,
-        confidence: float,
+        confidence: float | None,
         evidence: list[str],
     ) -> None:
-        """Store the validity verdict on a cluster."""
+        """Store the validity verdict on a cluster.
+
+        confidence is None for the "skipped" sentinel written when a batch runs
+        with verify=off -- the cluster is committable but was never fact-checked.
+        """
         import json as _json
         with self._conn() as con:
             con.execute(
@@ -507,4 +602,5 @@ def _row_to_video(row: sqlite3.Row) -> Video:
         stage=row["stage"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        collection=row["collection"] if "collection" in row.keys() else None,
     )

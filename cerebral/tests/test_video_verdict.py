@@ -62,11 +62,11 @@ def reset_seams():
     channel._state.timings = []
 
 
-def _stub_verdict(cluster_label, idea_text):
+def _stub_verdict(cluster_label, idea_text, category=""):
     return {"verdict": "legit", "confidence": 0.85, "evidence": ["https://example.com/source1"]}
 
 
-def _stub_extract(transcript, ocr_text, visual_summary, labels):
+def _stub_extract(transcript, ocr_text, visual_summary, labels, category=""):
     return {"idea": "Sell trending products online", "cluster_label": "dropshipping"}
 
 
@@ -80,7 +80,7 @@ def test_verify_cluster_sync_seam():
     assert result["evidence"] == ["https://example.com/source1"]
 
 
-async def _async_stub_verdict(cluster_label, idea_text):
+async def _async_stub_verdict(cluster_label, idea_text, category=""):
     return {"verdict": "dubious", "confidence": 0.4, "evidence": ["https://example.com/s"]}
 
 
@@ -96,7 +96,7 @@ def test_verify_cluster_async_seam():
 def test_verify_cluster_retries_on_invalid_verdict():
     calls = []
 
-    def flaky(cluster_label, idea_text):
+    def flaky(cluster_label, idea_text, category=""):
         calls.append(len(calls))
         if len(calls) < 3:
             return {"verdict": "INVALID", "confidence": 0.5, "evidence": ["x"]}
@@ -109,7 +109,7 @@ def test_verify_cluster_retries_on_invalid_verdict():
 
 
 def test_verify_cluster_raises_after_all_retries():
-    def always_bad(cluster_label, idea_text):
+    def always_bad(cluster_label, idea_text, category=""):
         return {"verdict": "legit", "confidence": 2.0, "evidence": ["x"]}  # confidence out of range
 
     verdict.set_verify_fn(always_bad)
@@ -187,7 +187,7 @@ def test_batch_first_video_verifies_second_inherits(db):
     """First video in a cluster calls verify_fn once; second inherits."""
     verify_calls = [0]
 
-    def counting_verify(cluster_label, idea_text):
+    def counting_verify(cluster_label, idea_text, category=""):
         verify_calls[0] += 1
         return {"verdict": "legit", "confidence": 0.8, "evidence": ["https://example.com"]}
 
@@ -252,13 +252,13 @@ def test_batch_different_clusters_each_verified_once(db):
     """Two distinct clusters each trigger their own verify call."""
     verify_calls = []
 
-    def tracking_verify(cluster_label, idea_text):
+    def tracking_verify(cluster_label, idea_text, category=""):
         verify_calls.append(cluster_label)
         return {"verdict": "dubious", "confidence": 0.5, "evidence": ["https://example.com"]}
 
     call_count = [0]
 
-    def two_cluster_extract(transcript, ocr_text, visual_summary, labels):
+    def two_cluster_extract(transcript, ocr_text, visual_summary, labels, category=""):
         call_count[0] += 1
         if call_count[0] == 1:
             return {"idea": "Idea A", "cluster_label": "cluster-a"}
