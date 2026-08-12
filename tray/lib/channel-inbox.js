@@ -95,11 +95,20 @@
     return hh + ':' + mm;
   }
 
+  /* Prevents jarring scroll jumps on new messages. Call this in the render
+   * loop with the chat container element; returns true if near the bottom,
+   * indicating new messages should trigger auto-scroll. */
+  function isNearBottom(el) {
+    if (!el) return true;
+    return el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+  }
+
   return {
     channelOf:       channelOf,
     channelLabel:    channelLabel,
     groupBySession:  groupBySession,
     formatTimestamp: formatTimestamp,
     CHANNEL_LABELS:  CHANNEL_LABELS,
+    scrollBehavior:  { isNearBottom: isNearBottom },
   };
 }));
