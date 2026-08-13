@@ -281,6 +281,31 @@ class VideoPlugin:
                 },
             ),
             Tool(
+                name="video_batch_retry",
+                description=(
+                    "Retry failed videos: reset 'failed' rows back to 'enumerated' so the "
+                    "next resume re-attempts them. Failures are usually transient (YouTube "
+                    "rate-blocks a burst mid-run), so they are recoverable. Optional channel "
+                    "and/or category scope it. Does NOT start the batch -- call "
+                    "video_batch_resume after."
+                ),
+                plugin=PLUGIN_NAME,
+                required_capabilities=frozenset(),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "channel": {
+                            "type": "string",
+                            "description": "Only retry this channel's failed rows (default: all).",
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Only retry this collection/category's failed rows.",
+                        },
+                    },
+                },
+            ),
+            Tool(
                 name="video_batch_status",
                 description=(
                     "Return the batch runner status: stage counts per stage and an ETA in seconds "
@@ -386,6 +411,8 @@ class VideoPlugin:
             return self._video_batch_status()
         if tool_name == "video_batch_clear":
             return self._video_batch_clear(args)
+        if tool_name == "video_batch_retry":
+            return self._video_batch_retry(args)
         if tool_name == "video_query":
             return self._video_query(args)
         if tool_name == "video_commit":
@@ -537,6 +564,16 @@ class VideoPlugin:
         channel = args.get("channel") or None
         cleared = _get_store().clear_pending(channel=channel)
         return ToolResult(content=json.dumps({"cleared": cleared, "channel": channel}))
+
+    def _video_batch_retry(self, args: dict) -> ToolResult:
+        # Stop first so the reset doesn't race the runner, then flip failed->enumerated.
+        _channel.batch_stop()
+        channel = args.get("channel") or None
+        collection = args.get("category") or None
+        reset = _get_store().reset_failed(channel=channel, collection=collection)
+        return ToolResult(content=json.dumps({
+            "reset": reset, "channel": channel, "category": collection,
+        }))
 
     def _video_get(self, args: dict) -> ToolResult:
         try:
@@ -759,6 +796,18 @@ class VideoPlugin:
                 "id": "video-batch-clear",
                 "label": f"Clear queue ({pending_total} unwatched)",
                 "tool": "video_batch_clear",
+                "tool_args": {},
+            })
+
+        # Retry transient failures (YouTube rate-blocks a burst mid-run): reset
+        # failed -> enumerated so a resume re-attempts them (now authenticated).
+        failed_total = all_counts.get("failed", 0)
+        if not running and failed_total:
+            widgets.append({
+                "type": "action",
+                "id": "video-batch-retry",
+                "label": f"Retry failed ({failed_total})",
+                "tool": "video_batch_retry",
                 "tool_args": {},
             })
 

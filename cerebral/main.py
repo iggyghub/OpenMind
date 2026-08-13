@@ -5948,6 +5948,25 @@ async def _apply_settings_control(key: str, value: Any) -> None:
 
 # ── Video seams (ADR-0017 S1 #639 / S2 #640) ────────────────────────────────
 
+def _video_cookiesfrombrowser() -> "tuple | None":
+    """yt-dlp cookiesfrombrowser tuple for Felix's logged-in web profile, or None.
+
+    YouTube rate-blocks anonymous yt-dlp hard (a channel batch dies after ~20
+    downloads; #691 follow-up). Authenticated requests via Felix's dedicated
+    google_web session (the same profile the browser harness signs in) get much
+    higher limits and reach age-restricted videos. Best-effort: returns None if
+    no such profile with a cookie DB exists, so the pipeline still runs anon.
+    """
+    try:
+        root = _data_dir() / "browser"
+        for prof in sorted(root.glob("profile_*/google_web")):
+            if (prof / "Default" / "Network" / "Cookies").exists():
+                return ("chrome", str(prof), None, None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[video] cookie lookup failed, downloading anon: %s", exc)
+    return None
+
+
 def _video_download(url: str, out_dir) -> dict:
     """Production yt-dlp audio pull.  Live-verify only; stubs cover tests."""
     import yt_dlp  # type: ignore[import]
@@ -5961,6 +5980,9 @@ def _video_download(url: str, out_dir) -> dict:
         "no_warnings": True,
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
     }
+    cookies = _video_cookiesfrombrowser()
+    if cookies is not None:
+        opts["cookiesfrombrowser"] = cookies
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
     title = info.get("title", "")
