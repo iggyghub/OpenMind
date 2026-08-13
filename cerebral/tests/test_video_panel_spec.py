@@ -188,6 +188,20 @@ def test_panel_spec_committed_cluster_shows_in_memory_and_no_commit(plugin, stor
     assert not [w for w in widgets if str(w.get("id", "")).startswith("video-commit-")]
 
 
+def test_panel_spec_shows_retry_when_idle_with_failures(plugin, store, monkeypatch):
+    # Transient failures (YouTube rate-block) -> a "Retry failed (N)" button.
+    monkeypatch.setattr(_channel, "batch_status", _idle_status)
+    monkeypatch.setattr(_video_plugin, "_store", store)
+    store.upsert("http://x/1", collection="harness improvement", stage="failed")
+    store.upsert("http://x/2", collection="harness improvement", stage="failed")
+
+    spec = plugin.panel_spec(None)
+    retry = next((w for w in spec["widgets"] if w.get("id") == "video-batch-retry"), None)
+    assert retry is not None
+    assert retry["tool"] == "video_batch_retry"
+    assert "2" in retry["label"]
+
+
 def test_panel_spec_shows_resume_when_idle_with_pending(plugin, store, monkeypatch):
     # S16 #671: idle + pending 'enumerated' rows -> a Resume button appears.
     monkeypatch.setattr(_channel, "batch_status", _idle_status)

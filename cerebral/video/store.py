@@ -327,6 +327,27 @@ class VideoStore:
             cur = con.execute(sql, params)
             return cur.rowcount
 
+    def reset_failed(
+        self, channel: str | None = None, collection: str | None = None
+    ) -> int:
+        """Reset failed videos back to 'enumerated' so a resume re-attempts them.
+
+        Failures are usually transient (YouTube rate-blocks a burst mid-run), so
+        the rows are recoverable, not broken. Returns the number reset. Scope by
+        channel and/or collection; unscoped resets every failed row.
+        """
+        sql = "UPDATE videos SET stage = 'enumerated' WHERE stage = 'failed'"
+        params: list = []
+        if channel is not None:
+            sql += " AND channel = ?"
+            params.append(channel)
+        if collection is not None:
+            sql += " AND collection = ?"
+            params.append(collection)
+        with self._conn() as con:
+            cur = con.execute(sql, params)
+            return cur.rowcount
+
     # ── S5 #642: idea extraction + incremental clustering ─────────────────────
 
     def get_cluster_labels(self, collection: str | None = None) -> list[str]:
