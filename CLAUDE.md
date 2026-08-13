@@ -6,7 +6,7 @@ OpenMind is a local-first personal AI agent platform. The user speaks to **Felix
 
 - **Backend:** Python (AI pipeline, memory, MCP execution)
 - **Frontend:** Node.js + web (system tray, dark UI, animated visualiser)
-- **Local LLM:** Ollama / Gemma 4
+- **Local LLM:** Ollama / Qwen (`qwen3:8b` on the 8GB GTX 1080; the sole kept local model)
 - **Cloud LLM:** Claude (Anthropic) via OpenClaw
 - **STT:** Vosk (always-on) + faster-whisper (active)
 - **TTS:** Kokoro (local)
