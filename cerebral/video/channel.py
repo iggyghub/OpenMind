@@ -43,8 +43,11 @@ def _prod_enumerate(channel_url: str) -> list[dict]:
     import json
     import subprocess
 
+    from cerebral.video.ytdlp_cookies import cookies_cli_args
+
     result = subprocess.run(
-        ["yt-dlp", "--flat-playlist", "--dump-json", "--no-warnings", channel_url],
+        ["yt-dlp", "--flat-playlist", "--dump-json", "--no-warnings",
+         *cookies_cli_args(), channel_url],
         capture_output=True,
         text=True,
         check=True,

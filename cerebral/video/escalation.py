@@ -104,12 +104,15 @@ def _prod_keyframe(url: str, out_dir: Path) -> list[Path]:
     # ponytail: live-verify only -- downloads video, extracts scene-change frames, deletes video
     import subprocess  # noqa: PLC0415
 
+    from cerebral.video.ytdlp_cookies import cookies_cli_args  # noqa: PLC0415
+
     vid_path = out_dir / "video.mp4"
     subprocess.run(
         [
             "yt-dlp",
             "-f", "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best",
             "--merge-output-format", "mp4",
+            *cookies_cli_args(),  # authenticate -- YouTube 403s anonymous video pulls
             url, "-o", str(vid_path), "-q",
         ],
         check=True,
