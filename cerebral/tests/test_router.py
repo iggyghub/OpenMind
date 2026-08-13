@@ -321,6 +321,29 @@ def test_seed_quality_default_none_when_nothing_preferred():
     assert router.get_task_model("quality") == "ollama/qwen2.5:7b"
 
 
+def test_seed_video_default_prefers_local_qwen3():
+    router = ModelRouter(backends={
+        "ollama/qwen2.5:7b": AsyncMock(),
+        "ollama/qwen3:8b": AsyncMock(),
+        "custom/budd": AsyncMock(),
+    })
+    assert router.seed_video_default() == "ollama/qwen3:8b"
+    assert router.get_task_model("video") == "ollama/qwen3:8b"
+
+
+def test_seed_video_default_falls_back_to_qwen25():
+    router = ModelRouter(backends={"ollama/qwen2.5:7b": AsyncMock(), "custom/budd": AsyncMock()})
+    assert router.seed_video_default() == "ollama/qwen2.5:7b"
+
+
+def test_seed_video_default_is_local_only_no_cloud():
+    # No local model installed -> None (never seeds a cloud model for video),
+    # so "video" falls through to the active model rather than routing to Budd.
+    router = ModelRouter(backends={"custom/budd": AsyncMock()})
+    assert router.seed_video_default() is None
+    assert router.get_task_model("video") == "custom/budd"  # active fallback
+
+
 # ---------------------------------------------------------------------------
 # Slice 7 — Ollama auto-discovery (Issue #37)
 # ---------------------------------------------------------------------------

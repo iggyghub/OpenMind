@@ -121,6 +121,15 @@ VISION_TASK = "computer_use_vision"
 QUALITY_TASK = "quality"
 QUALITY_PREFERRED = ("ollama/qwen3:8b", "claude/sonnet")
 
+# The video pipeline (idea extraction + validity verdict, task_type="video")
+# runs a long unattended batch, so it routes LOCAL-ONLY: no dependency on Budd/
+# OpenClaw being up + scope-approved, and no cloud 504s stalling a 200-video run.
+# qwen3:8b handles the JSON extraction and fits the 8GB card once Whisper unloads;
+# qwen2.5:7b is the smaller fallback. No cloud entry on purpose -- if neither is
+# installed, "video" falls through to the active model.
+VIDEO_TASK = "video"
+VIDEO_PREFERRED = ("ollama/qwen3:8b", "ollama/qwen2.5:7b")
+
 # Cloud entries are constants; local entries are discovered at runtime.
 CLOUD_MODELS = {
     "claude/haiku":  {"label": "Claude Haiku 4.5",  "is_cloud": True,
@@ -316,18 +325,32 @@ class ModelRouter:
     def task_models(self) -> dict[str, str]:
         return dict(self._task_models)
 
-    def seed_quality_default(self) -> str | None:
-        """Seed the default "quality" mapping (issue #349): first installed
-        model from QUALITY_PREFERRED wins. Returns the chosen id, or None
-        when none is installed — "quality" then resolves to the active model.
+    def _seed_task_default(self, task: str, preferred: "tuple[str, ...]") -> str | None:
+        """Pin ``task`` to the first installed model in ``preferred``, best first.
+
+        Skips cloud entries under local-only. Returns the chosen id, or None when
+        none is installed — the task then resolves to the active model.
         """
-        for mid in QUALITY_PREFERRED:
+        for mid in preferred:
             if mid in self._backends:
                 if self._local_only and self._models.get(mid, {}).get("is_cloud"):
-                    continue  # local-only: never seed a cloud quality model
-                self.set_task_model(QUALITY_TASK, mid)
+                    continue
+                self.set_task_model(task, mid)
                 return mid
         return None
+
+    def seed_quality_default(self) -> str | None:
+        """Seed the default "quality" mapping (issue #349): first installed
+        model from QUALITY_PREFERRED wins.
+        """
+        return self._seed_task_default(QUALITY_TASK, QUALITY_PREFERRED)
+
+    def seed_video_default(self) -> str | None:
+        """Seed the "video" task to a local model (idea extraction + verdict).
+
+        Local-only by design so the video batch never depends on Budd/OpenClaw.
+        """
+        return self._seed_task_default(VIDEO_TASK, VIDEO_PREFERRED)
 
     def set_local_only(self, enabled: bool) -> None:
         """Cloud kill-switch (privacy). When on, cloud backends are hidden from
