@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import tempfile
 from pathlib import Path
 
@@ -32,6 +33,23 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"external_data_read", "fs_wri
 
 def _repo_name(repo_url: str) -> str:
     return repo_url.rstrip("/").split("/")[-1]
+
+
+# A GitHub repo URL: github.com/<owner>/<repo>, tolerating .git and deeper paths
+# (tree/blob/...). Non-github hosts (a blog article, say) are rejected up front so
+# the user gets a clear message instead of git's cryptic "exit 128".
+_GH_URL = re.compile(
+    r"^https?://(?:www\.)?github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s#]+?)(?:\.git)?(?:[/#].*)?$",
+    re.I,
+)
+
+
+def _normalize_repo_url(url: str) -> "str | None":
+    """Canonical https://github.com/owner/repo, or None if it isn't a repo URL."""
+    m = _GH_URL.match((url or "").strip())
+    if not m:
+        return None
+    return f"https://github.com/{m.group('owner')}/{m.group('repo')}"
 
 
 def _grounding(repo_url: str, meta: dict) -> str:
@@ -284,18 +302,24 @@ class GithubIngestPlugin:
         return {"title": "GitHub", "widgets": widgets}
 
     async def _github_ingest(self, args: dict) -> ToolResult:
-        repo_url: str = (args.get("repo_url") or "").strip()
+        raw: str = (args.get("repo_url") or "").strip()
         category: str = (args.get("category") or "").strip() or "Uncategorised"
-        if not repo_url:
+        if not raw:
             return ToolResult(content="repo_url is required", is_error=True)
+        repo_url = _normalize_repo_url(raw)
+        if repo_url is None:
+            return ToolResult(
+                content=f"Not a GitHub repo URL (expected github.com/owner/repo): {raw}",
+                is_error=True,
+            )
         return await _ingest_repo(_video._get_store(), repo_url, category)
 
     async def _github_reingest(self, args: dict) -> ToolResult:
         """Re-ingest a repo (up-arrow click): re-clone, extract changed docs, clear
         the update flag. Category = whatever the repo's docs were filed under."""
-        repo_url: str = (args.get("repo_url") or "").strip()
-        if not repo_url:
-            return ToolResult(content="repo_url is required", is_error=True)
+        repo_url = _normalize_repo_url((args.get("repo_url") or "").strip())
+        if repo_url is None:
+            return ToolResult(content="repo_url must be a github.com/owner/repo URL", is_error=True)
         store = _video._get_store()
         category = store.get_repo_collection(repo_url) or "Uncategorised"
         result = await _ingest_repo(store, repo_url, category)
