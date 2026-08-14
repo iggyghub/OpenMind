@@ -276,7 +276,7 @@ class GithubIngestPlugin:
                 children: list[dict] = []
                 for c in members:
                     n = c["member_count"]
-                    parts = [f"{n} doc{'s' if n != 1 else ''}", c["verdict"] or "pending"]
+                    parts = [f"{n} doc{'s' if n != 1 else ''}", _video.verdict_label(c["verdict"])]
                     if c["confidence"] is not None:
                         parts.append(f"{c['confidence']:.0%}")
                     if c.get("memory_id"):

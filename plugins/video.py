@@ -39,6 +39,14 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "video"
 
+
+def verdict_label(v: "str | None") -> str:
+    """Panel label for a cluster verdict. The 'skipped' sentinel (written when a
+    batch runs with verify=off) reads as 'ignored' in the stats line -- show
+    'not checked' so it's clearly "valid, just not fact-checked". Shared by the
+    Videos and GitHub panels."""
+    return "not checked" if v == "skipped" else (v or "pending")
+
 # ADR-0005 capabilities: video download is external_data_read + fs_write (audio cache).
 # Transcription is local compute only.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
@@ -879,7 +887,7 @@ class VideoPlugin:
                 for c in members:
                     n_vid = c["member_count"]
                     people = c.get("people_required") or 1
-                    parts = [f"{n_vid} video{'s' if n_vid != 1 else ''}", c["verdict"] or "pending"]
+                    parts = [f"{n_vid} video{'s' if n_vid != 1 else ''}", verdict_label(c["verdict"])]
                     if c["confidence"] is not None:
                         parts.append(f"{c['confidence']:.0%}")
                     if people > 1:
