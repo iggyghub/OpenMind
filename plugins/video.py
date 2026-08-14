@@ -124,7 +124,10 @@ class VideoPlugin:
                     "etc.). For a whole channel use video_batch_start instead. "
                     "Stores the transcript (and optional visual layers) in the video store "
                     "and returns the video id. Uses yt-dlp -- no API key required. "
-                    "Idempotent: re-running on the same URL skips completed stages. "
+                    "Extracts the idea and files it under a collection (category); "
+                    "blank category -> 'Uncategorised', re-file later with video_move_cluster. "
+                    "Idempotent: re-running on the same URL skips already-clustered videos "
+                    "and re-attempts extraction on ones stuck at transcribed. "
                     "Set visual=true to force OCR + vision even on rich-audio videos."
                 ),
                 plugin=PLUGIN_NAME,
@@ -139,6 +142,14 @@ class VideoPlugin:
                         "channel": {
                             "type": "string",
                             "description": "Optional channel name for grouping.",
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": (
+                                "Collection to file the extracted idea under "
+                                "(e.g. 'harness improvement', 'money-making idea'). "
+                                "Blank -> 'Uncategorised'."
+                            ),
                         },
                         "visual": {
                             "type": "boolean",
@@ -392,6 +403,32 @@ class VideoPlugin:
                     "required": ["cluster_id"],
                 },
             ),
+            Tool(
+                name="video_move_cluster",
+                description=(
+                    "Move an idea cluster (and its videos) to another collection -- "
+                    "e.g. re-file an 'Uncategorised' single-video idea under "
+                    "'harness improvement'. If the target collection already has a "
+                    "cluster with the same label, they merge. Returns the surviving "
+                    "cluster id and collection."
+                ),
+                plugin=PLUGIN_NAME,
+                required_capabilities=frozenset({"external_data_read"}),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "cluster_id": {
+                            "type": "integer",
+                            "description": "The cluster id to move.",
+                        },
+                        "collection": {
+                            "type": "string",
+                            "description": "Target collection name to move the cluster into.",
+                        },
+                    },
+                    "required": ["cluster_id", "collection"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -417,51 +454,78 @@ class VideoPlugin:
             return self._video_query(args)
         if tool_name == "video_commit":
             return await self._video_commit(args)
+        if tool_name == "video_move_cluster":
+            return self._video_move_cluster(args)
         return ToolResult(content=f"Unknown tool: {tool_name}", is_error=True)
+
+    def _video_move_cluster(self, args: dict) -> ToolResult:
+        cluster_id = args.get("cluster_id")
+        collection = (args.get("collection") or "").strip()
+        if not isinstance(cluster_id, int) or not collection:
+            return ToolResult(content="cluster_id (int) and collection are required", is_error=True)
+        store = _get_store()
+        survivor = store.move_cluster(cluster_id, collection)
+        if survivor is None:
+            return ToolResult(content=f"No cluster with id {cluster_id}", is_error=True)
+        return ToolResult(content=json.dumps({
+            "cluster_id": survivor,
+            "collection": collection,
+            "merged": survivor != cluster_id,
+        }))
 
     async def _video_ingest(self, args: dict) -> ToolResult:
         url: str = args.get("url", "").strip()
         channel: str | None = args.get("channel")
         visual: bool = bool(args.get("visual", False))
         capture: bool = bool(args.get("capture", False))  # S10 #658: force screen-watch
+        # Collection to file this video's idea under. Blank -> "Uncategorised";
+        # the user re-files it later via video_move_cluster (manual move).
+        category: str = (args.get("category") or "").strip() or "Uncategorised"
         if not url:
             return ToolResult(content="url is required", is_error=True)
 
         store = _get_store()
-
         existing = store.get_by_url(url)
 
-        # Already escalated (or further) -- skip entirely.
-        if existing and existing.stage in ("escalated", "extracted", "verified"):
+        # Already clustered -- nothing to do. Recategorise via video_move_cluster.
+        if existing and existing.stage in ("extracted", "verified"):
             return ToolResult(
                 content=json.dumps({
                     "id": existing.id,
                     "stage": existing.stage,
                     "title": existing.title,
                     "transcript_length": len(existing.transcript or ""),
-                    "ocr_text_length": len(existing.ocr_text or ""),
                     "skipped": True,
                 })
             )
 
-        # Already transcribed: run escalation only if needed, skip otherwise.
-        if existing and existing.stage == "transcribed":
-            transcript = existing.transcript or ""
-            if not _escalation.needs_escalation(transcript, visual=visual):
-                return ToolResult(
-                    content=json.dumps({
-                        "id": existing.id,
-                        "stage": "transcribed",
-                        "title": existing.title,
-                        "transcript_length": len(transcript),
-                        "skipped": True,
-                    })
-                )
-            # Escalate without re-downloading/transcribing.
-            return await self._escalate_existing(existing.id, url, transcript, store)
+        # Already transcribed/escalated (a prior run or a batch left a transcript):
+        # extract into the chosen collection without re-downloading. This is also
+        # how a transcribed-but-uncategorised video gets finished.
+        if existing and existing.stage in ("transcribed", "escalated"):
+            store.upsert(url, collection=category)
+            final = await _channel.extract_and_cluster(
+                store,
+                video_id=existing.id,
+                url=url,
+                transcript=existing.transcript or "",
+                ocr_text=existing.ocr_text or "",
+                visual_summary=existing.visual_summary or "",
+                collection=category,
+                verify=False,
+            )
+            return ToolResult(
+                content=json.dumps({
+                    "id": existing.id,
+                    "stage": final,
+                    "collection": category,
+                    "title": existing.title,
+                    "transcript_length": len(existing.transcript or ""),
+                })
+            )
 
-        # Fresh ingest (enumerated or earlier).
-        video_id = store.upsert(url, channel=channel, stage="enumerated")
+        # Fresh ingest (enumerated or earlier): download + transcribe, then extract.
+        store.upsert(url, channel=channel, collection=category, stage="enumerated")
 
         try:
             meta = await _pipeline.run(url, visual=visual, force_capture=capture)
@@ -477,6 +541,7 @@ class VideoPlugin:
         store.upsert(
             url,
             channel=channel,
+            collection=category,
             title=meta["title"],
             duration=meta["duration"],
             transcript=meta["transcript"],
@@ -487,48 +552,28 @@ class VideoPlugin:
         )
 
         video = store.get_by_url(url)
+        # Extract + cluster into the collection (best-effort; leaves the video at
+        # transcribed/escalated if extraction isn't wired or fails).
+        final = await _channel.extract_and_cluster(
+            store,
+            video_id=video.id if video else 0,
+            url=url,
+            transcript=meta["transcript"] or "",
+            ocr_text=meta["ocr_text"] or "",
+            visual_summary=meta["visual_summary"] or "",
+            collection=category,
+            verify=False,
+        )
         return ToolResult(
             content=json.dumps({
-                "id": video.id if video else video_id,
-                "stage": final_stage,
+                "id": video.id if video else 0,
+                "stage": final,
+                "collection": category,
                 "title": meta["title"],
                 "duration": meta["duration"],
                 "transcript_length": len(meta["transcript"]),
                 "ocr_text_length": len(meta["ocr_text"]),
                 "escalated": meta["escalated"],
-            })
-        )
-
-    async def _escalate_existing(
-        self, video_id: int, url: str, transcript: str, store: VideoStore
-    ) -> ToolResult:
-        """Run escalation on a video that was already transcribed."""
-        import tempfile
-        from pathlib import Path as _Path
-
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                vis = await _escalation.run(url, _Path(tmp))
-        except Exception as exc:
-            logger.error("[video] escalation failed for %s: %s", url, exc)
-            return ToolResult(content=f"Escalation failed: {exc}", is_error=True)
-
-        store.upsert(
-            url,
-            ocr_text=vis["ocr_text"] or None,
-            visual_summary=vis["visual_summary"] or None,
-            escalated=True,
-            stage="escalated",
-        )
-        video = store.get_by_id(video_id)
-        return ToolResult(
-            content=json.dumps({
-                "id": video_id,
-                "stage": "escalated",
-                "title": video.title if video else None,
-                "transcript_length": len(transcript),
-                "ocr_text_length": len(vis["ocr_text"]),
-                "escalated": True,
             })
         )
 
@@ -822,26 +867,34 @@ class VideoPlugin:
             by_collection: dict[str, list[dict]] = {}
             for c in clusters:
                 by_collection.setdefault(c.get("collection") or "Uncategorised", []).append(c)
-            # Most clusters first; open only the first group.
+            # Most clusters first; open only the first group. All collection
+            # names are the move-dropdown targets on every cluster row.
             ordered = sorted(by_collection.items(), key=lambda kv: len(kv[1]), reverse=True)
+            all_collections = sorted(by_collection.keys())
             for gi, (collection, members) in enumerate(ordered):
-                children: list[dict] = [{
-                    "type": "table",
-                    "columns": ["Idea cluster", "Videos", "People", "Verdict", "Confidence", "In Memory"],
-                    "rows": [
-                        [
-                            c["label"],
-                            str(c["member_count"]),
-                            str(c.get("people_required") or 1),
-                            c["verdict"] or "pending",
-                            f"{c['confidence']:.0%}" if c["confidence"] is not None else "—",
-                            "✓" if c.get("memory_id") else "",
-                        ]
-                        for c in members
-                    ],
-                }]
-                # One commit button per verified-and-uncommitted cluster in this group.
+                # Each cluster is a draggable row (with a "Move to…" select) plus,
+                # when verified-and-uncommitted, its commit button. Replaces the
+                # read-only table so clusters can be re-filed between collections.
+                children: list[dict] = []
                 for c in members:
+                    n_vid = c["member_count"]
+                    people = c.get("people_required") or 1
+                    parts = [f"{n_vid} video{'s' if n_vid != 1 else ''}", c["verdict"] or "pending"]
+                    if c["confidence"] is not None:
+                        parts.append(f"{c['confidence']:.0%}")
+                    if people > 1:
+                        parts.append(f"{people} people")
+                    if c.get("memory_id"):
+                        parts.append("✓ Memory")
+                    children.append({
+                        "type": "cluster",
+                        "cluster_id": c["id"],
+                        "label": c["label"],
+                        "stats": " · ".join(parts),
+                        "collection": collection,
+                        "collections": all_collections,
+                        "move_tool": "video_move_cluster",
+                    })
                     if c["verdict"] and not c.get("memory_id"):
                         children.append({
                             "type": "action",
@@ -855,6 +908,7 @@ class VideoPlugin:
                 widgets.append({
                     "type": "group",
                     "label": label,
+                    "collection": collection,
                     "count": f"{n} cluster{'s' if n != 1 else ''}",
                     "open": gi == 0,
                     "widgets": children,

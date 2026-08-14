@@ -98,10 +98,85 @@
     }
   }
 
+  // Pure: build the call_tool message that moves a cluster to a collection.
+  function buildMoveMessage(tool, clusterId, collection) {
+    return {
+      type: 'call_tool',
+      data: {
+        name: tool || 'video_move_cluster',
+        args: { cluster_id: Number(clusterId), collection: collection || '' },
+      },
+    };
+  }
+
+  // Wire the manual-move UI: the "Move to…" <select> on each .ps-cluster row,
+  // AND drag-and-drop of a cluster row onto another collection's .ps-group.
+  // Both fire the same move tool. Panel re-render reflects the real state.
+  function initMoveWidgets(container, sendFn) {
+    if (!container || typeof container.querySelectorAll !== 'function') return;
+
+    // 1. Move-to dropdowns.
+    var selects = container.querySelectorAll('.ps-cluster-move');
+    for (var i = 0; i < selects.length; i++) {
+      (function (sel) {
+        var row = sel.closest ? sel.closest('.ps-cluster') : null;
+        if (!row) return;
+        sel.addEventListener('change', function () {
+          var target = sel.value;
+          if (!target) return;
+          sendFn(buildMoveMessage(
+            row.getAttribute('data-move-tool'),
+            row.getAttribute('data-cluster-id'),
+            target
+          ));
+          sel.value = '';  // reset; the re-render will move the row
+        });
+      })(selects[i]);
+    }
+
+    // 2. Drag a cluster row onto a collection group.
+    var rows = container.querySelectorAll('.ps-cluster');
+    for (var r = 0; r < rows.length; r++) {
+      (function (row) {
+        row.addEventListener('dragstart', function (e) {
+          if (e.dataTransfer) {
+            e.dataTransfer.setData('text/cluster-id', row.getAttribute('data-cluster-id') || '');
+            e.dataTransfer.setData('text/move-tool', row.getAttribute('data-move-tool') || '');
+            e.dataTransfer.effectAllowed = 'move';
+          }
+        });
+      })(rows[r]);
+    }
+    var groups = container.querySelectorAll('.ps-group[data-collection]');
+    for (var g = 0; g < groups.length; g++) {
+      (function (grp) {
+        grp.addEventListener('dragover', function (e) {
+          e.preventDefault();  // allow drop
+          grp.classList.add('ps-group--drop');
+        });
+        grp.addEventListener('dragleave', function () {
+          grp.classList.remove('ps-group--drop');
+        });
+        grp.addEventListener('drop', function (e) {
+          e.preventDefault();
+          grp.classList.remove('ps-group--drop');
+          if (!e.dataTransfer) return;
+          var cid = e.dataTransfer.getData('text/cluster-id');
+          var tool = e.dataTransfer.getData('text/move-tool');
+          var target = grp.getAttribute('data-collection');
+          if (!cid || !target) return;
+          sendFn(buildMoveMessage(tool, cid, target));
+        });
+      })(groups[g]);
+    }
+  }
+
   var _exports = {
     buildActionMessage: buildActionMessage,
+    buildMoveMessage:   buildMoveMessage,
     initActionWidgets:  initActionWidgets,
     initToggleWidgets:  initToggleWidgets,
+    initMoveWidgets:    initMoveWidgets,
   };
 
   if (typeof module === 'object' && module && module.exports) {

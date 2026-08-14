@@ -492,6 +492,59 @@ class VideoStore:
                 (memory_id, cluster_id),
             )
 
+    def list_collections(self) -> list[str]:
+        """Distinct collection names that have at least one cluster, sorted."""
+        with self._conn() as con:
+            rows = con.execute(
+                "SELECT DISTINCT collection FROM video_clusters ORDER BY collection"
+            ).fetchall()
+        return [r["collection"] for r in rows if r["collection"]]
+
+    def move_cluster(self, cluster_id: int, new_collection: str) -> int | None:
+        """Move a cluster (and its videos) to another collection.
+
+        If the target collection already has a cluster with the same label,
+        merge into it: reparent the ideas, sum member_count, drop the source
+        (UNIQUE(collection, label) forbids two same-label clusters in one
+        collection). Returns the surviving cluster id, or None if not found.
+        """
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT label, collection, member_count FROM video_clusters WHERE id = ?",
+                (cluster_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["collection"] == new_collection:
+                return cluster_id
+            # Videos in this cluster follow it into the new collection.
+            con.execute(
+                "UPDATE videos SET collection = ? WHERE id IN"
+                " (SELECT video_id FROM video_ideas WHERE cluster_id = ?)",
+                (new_collection, cluster_id),
+            )
+            existing = con.execute(
+                "SELECT id FROM video_clusters WHERE collection = ? AND label = ?",
+                (new_collection, row["label"]),
+            ).fetchone()
+            if existing is None:
+                con.execute(
+                    "UPDATE video_clusters SET collection = ? WHERE id = ?",
+                    (new_collection, cluster_id),
+                )
+                return cluster_id
+            # Label collision -> merge into the existing target cluster.
+            con.execute(
+                "UPDATE video_ideas SET cluster_id = ? WHERE cluster_id = ?",
+                (existing["id"], cluster_id),
+            )
+            con.execute(
+                "UPDATE video_clusters SET member_count = member_count + ? WHERE id = ?",
+                (row["member_count"], existing["id"]),
+            )
+            con.execute("DELETE FROM video_clusters WHERE id = ?", (cluster_id,))
+            return existing["id"]
+
     def get_cluster_verdict(self, cluster_id: int) -> dict | None:
         """Return the verdict dict for a cluster, or None if not yet verified."""
         import json as _json

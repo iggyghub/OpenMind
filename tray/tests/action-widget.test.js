@@ -101,3 +101,26 @@ describe('initToggleWidgets guards', () => {
     expect(() => ActionWidget.initToggleWidgets({}, () => {})).not.toThrow();
   });
 });
+
+describe('buildMoveMessage', () => {
+  test('assembles a video_move_cluster call with numeric cluster_id', () => {
+    const msg = ActionWidget.buildMoveMessage('video_move_cluster', '1238', 'harness improvements');
+    expect(msg).toEqual({
+      type: 'call_tool',
+      data: { name: 'video_move_cluster', args: { cluster_id: 1238, collection: 'harness improvements' } },
+    });
+  });
+
+  test('defaults the tool name and coerces id', () => {
+    const msg = ActionWidget.buildMoveMessage('', 7, 'money-making idea');
+    expect(msg.data.name).toBe('video_move_cluster');
+    expect(msg.data.args.cluster_id).toBe(7);
+  });
+});
+
+describe('initMoveWidgets', () => {
+  test('does not throw on missing / bad containers', () => {
+    expect(() => ActionWidget.initMoveWidgets(null, () => {})).not.toThrow();
+    expect(() => ActionWidget.initMoveWidgets({}, () => {})).not.toThrow();
+  });
+});

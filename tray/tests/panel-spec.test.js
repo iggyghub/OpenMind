@@ -410,7 +410,7 @@ describe('renderPanel', () => {
 
   test('WIDGET_TYPES reports the whitelist', () => {
     expect(PanelSpec.WIDGET_TYPES.sort())
-      .toEqual(['action', 'detail', 'group', 'list', 'table', 'text', 'toggle']);
+      .toEqual(['action', 'cluster', 'detail', 'group', 'list', 'table', 'text', 'toggle']);
   });
 });
 
@@ -445,6 +445,48 @@ describe('renderWidget group', () => {
     });
     expect(html).not.toContain('<img');      // tag is escaped, never live markup
     expect(html).toContain('&lt;img');
+  });
+
+  test('collection tags the group as a drop target', () => {
+    const html = PanelSpec.renderWidget({ type: 'group', label: 'a', collection: 'money-making idea' });
+    expect(html).toContain('data-collection="money-making idea"');
+  });
+});
+
+// ── renderWidget: cluster (draggable row + move-to select) ────────────────────
+
+describe('renderWidget cluster', () => {
+  test('renders a draggable row carrying id + move tool, with stats', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'cluster', cluster_id: 42, label: 'Custom Harnesses',
+      stats: '15 videos · skipped', collection: 'harness improvements',
+      collections: ['harness improvements', 'money-making idea'],
+      move_tool: 'video_move_cluster',
+    });
+    expect(html).toContain('draggable="true"');
+    expect(html).toContain('data-cluster-id="42"');
+    expect(html).toContain('data-move-tool="video_move_cluster"');
+    expect(html).toContain('Custom Harnesses');
+    expect(html).toContain('15 videos · skipped');
+  });
+
+  test('move-to options exclude the current collection', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'cluster', cluster_id: 1, label: 'x', collection: 'A',
+      collections: ['A', 'B'],
+    });
+    expect(html).toContain('<option value="B">B</option>');
+    expect(html).not.toContain('<option value="A">A</option>');  // can't move to itself
+  });
+
+  test('escapes label and collection values', () => {
+    const html = PanelSpec.renderWidget({
+      type: 'cluster', cluster_id: 1, label: '<b>x</b>', collection: 'c',
+      collections: ['"><img>'],
+    });
+    expect(html).not.toContain('<b>x</b>');
+    expect(html).not.toContain('<img>');
+    expect(html).toContain('&lt;b&gt;');
   });
 });
 
