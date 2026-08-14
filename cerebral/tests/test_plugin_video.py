@@ -185,6 +185,24 @@ async def test_video_ingest_error_returns_error_result():
     assert "network down" in result.content or "Ingest failed" in result.content
 
 
+async def test_video_ingest_escalation_failure_keeps_transcript():
+    # A thin transcript (< THIN_MIN_WORDS) triggers visual escalation, which
+    # re-downloads the full video for keyframes. That download can 403 (the #17013
+    # case). Escalation is an enhancement: its failure must degrade to a stored
+    # 'transcribed', not nuke the whole ingest and leave the video stuck.
+    store = _make_store()
+    plugin = _wire(store, transcript="look at this")  # thin + deictic -> escalates
+    def boom(url, out):
+        raise RuntimeError("HTTP 403 Forbidden")
+    video_mod.set_keyframe_fn(boom)
+    result = await plugin.call_tool("video_ingest", {"url": "https://yt/thin"})
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["stage"] == "transcribed"
+    assert data["escalated"] is False
+    assert store.get_by_url("https://yt/thin").stage == "transcribed"
+
+
 # ── missing url ───────────────────────────────────────────────────────────────
 
 async def test_video_ingest_missing_url_returns_error():
