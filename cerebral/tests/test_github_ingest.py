@@ -116,6 +116,40 @@ async def test_github_ingest_requires_repo_url():
     assert r.is_error
 
 
+def test_normalize_repo_url():
+    from plugins.github_ingest import _normalize_repo_url
+    ok = "https://github.com/acme/harness"
+    assert _normalize_repo_url("https://github.com/acme/harness") == ok
+    assert _normalize_repo_url("https://github.com/acme/harness.git") == ok
+    assert _normalize_repo_url("http://www.github.com/acme/harness/") == ok
+    assert _normalize_repo_url("https://github.com/acme/harness/tree/main/docs") == ok
+    # Non-repo URLs -> None (a blog article, a bare host, gists elsewhere).
+    assert _normalize_repo_url("https://cursor.com/blog/continually-improving-agent-harness") is None
+    assert _normalize_repo_url("https://github.com/acme") is None
+    assert _normalize_repo_url("not a url") is None
+
+
+async def test_github_ingest_rejects_non_repo_url():
+    store = _store()
+    video_mod.set_store(store)
+    r = await GithubIngestPlugin().call_tool(
+        "github_ingest", {"repo_url": "https://cursor.com/blog/some-post"}
+    )
+    assert r.is_error
+    assert "Not a GitHub repo URL" in r.content
+
+
+async def test_github_ingest_normalizes_tree_url():
+    store = _store()
+    _wire(store, {"README.md": " ".join(["word"] * 300)})
+    r = await GithubIngestPlugin().call_tool(
+        "github_ingest",
+        {"repo_url": "https://github.com/acme/harness/tree/main", "category": "c"},
+    )
+    data = json.loads(r.content)
+    assert data["repo"] == "https://github.com/acme/harness"   # normalized
+
+
 async def test_github_ingest_clone_failure_errors():
     store = _store()
     video_mod.set_store(store)
