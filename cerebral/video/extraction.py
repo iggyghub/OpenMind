@@ -75,13 +75,17 @@ async def extract_idea(
     transcript: str,
     ocr_text: str,
     visual_summary: str,
-    existing_labels: list[str],
+    existing_clusters: list,
     *,
     category: str = "",
     max_retries: int = 3,
 ) -> dict:
     """Extract idea + cluster label with validate-and-retry.
 
+    ``existing_clusters`` (ADR-0018 S4) is ``[{label, sample_idea}]`` for the
+    collection's clusters -- the extract fn offers them as merge targets so the
+    model reuses a cluster when the idea *means* the same, not just when labels
+    match. (Legacy list[str] labels are still tolerated by the prod fn.)
     ``category`` is the batch's collection; it steers the extraction prompt.
     Raises on all-retry failure (caller must not write a null/partial row).
     Returns {"idea": str, "cluster_label": str}.
@@ -90,7 +94,7 @@ async def extract_idea(
     last_exc: Exception = ValueError("no attempts made")
     for attempt in range(max_retries):
         try:
-            result = fn(transcript, ocr_text, visual_summary, existing_labels, category)
+            result = fn(transcript, ocr_text, visual_summary, existing_clusters, category)
             if asyncio.iscoroutine(result):
                 result = await result
             _validate(result)

@@ -6175,23 +6175,34 @@ async def _video_extract(                                                    # S
     transcript: str,
     ocr_text: str,
     visual_summary: str,
-    existing_labels: list,
+    existing_clusters: list,
     category: str = "money-making idea",                                      # S22: collection-driven
 ) -> dict:
     """Production idea extraction + cluster assignment.  Live-verify only; stubs cover tests.
 
     ``category`` is the batch's collection -- it steers what the model extracts
-    (a money idea, a harness technique, etc.).
+    (a money idea, a harness technique, etc.). ``existing_clusters`` (ADR-0018 S4)
+    is ``[{label, sample_idea}]`` so the model merges on meaning; legacy list[str]
+    labels are still accepted.
     """
     import json as _json
     import re as _re
 
     topic = (category or "key idea").strip()
     labels_block = ""
-    if existing_labels:
+    if existing_clusters:
+        lines = []
+        for c in existing_clusters:
+            if isinstance(c, dict):
+                lbl = (c.get("label") or "").strip()
+                samp = (c.get("sample_idea") or "").strip()
+                lines.append(f"- {lbl}: {samp}" if samp else f"- {lbl}")
+            else:
+                lines.append(f"- {c}")  # legacy list[str]
         labels_block = (
-            "\n\nExisting cluster labels (reuse one if it fits; otherwise invent a short new label):\n"
-            + "\n".join(f"- {lbl}" for lbl in existing_labels)
+            "\n\nExisting idea clusters (label: representative idea). Reuse a label"
+            " if your idea MEANS the same as one below; otherwise invent a short new label:\n"
+            + "\n".join(lines)
         )
     content = (transcript or "").strip()[:4000]
     if ocr_text:

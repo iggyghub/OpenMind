@@ -115,10 +115,14 @@ async def extract_and_cluster(
     where it got to (matching the batch's per-video best-effort behaviour).
     """
     try:
-        labels = store.get_cluster_labels(collection)
+        # ADR-0018 S4: hand the extractor each existing cluster's label AND a
+        # representative idea, so it merges on meaning across sources, not label
+        # wording. Collection-scoped so github docs fold into existing video
+        # clusters in the same collection.
+        clusters = store.get_cluster_summaries(collection)
         extracted = await _extraction.extract_idea(
             transcript or "", ocr_text or "", visual_summary or "",
-            labels, category=collection,
+            clusters, category=collection,
         )
         cluster_id = store.get_or_create_cluster(
             extracted["cluster_label"], collection, extracted.get("people_required", 1),

@@ -390,6 +390,36 @@ class VideoStore:
             rows = con.execute(sql, params).fetchall()
         return [row["label"] for row in rows]
 
+    def get_cluster_summaries(self, collection: str | None = None) -> list[dict]:
+        """[{label, sample_idea}] per cluster (ADR-0018 S4, content-aware merge).
+
+        Like get_cluster_labels but each label carries its representative (longest)
+        idea, so the extractor can merge on meaning -- e.g. fold "Custom Agent
+        Frameworks" into an existing "Custom Agent Harnesses" -- instead of on
+        label wording alone. Collection-scoped, so cross-source clusters in the
+        same collection are all offered as merge targets.
+        """
+        sql = "SELECT id, label FROM video_clusters"
+        params: list = []
+        if collection is not None:
+            sql += " WHERE collection = ?"
+            params.append(collection)
+        sql += " ORDER BY id"
+        out: list[dict] = []
+        with self._conn() as con:
+            rows = con.execute(sql, params).fetchall()
+            for r in rows:
+                idea = con.execute(
+                    "SELECT idea_text FROM video_ideas WHERE cluster_id = ?"
+                    " ORDER BY LENGTH(idea_text) DESC LIMIT 1",
+                    (r["id"],),
+                ).fetchone()
+                out.append({
+                    "label": r["label"],
+                    "sample_idea": idea["idea_text"] if idea else "",
+                })
+        return out
+
     def get_or_create_cluster(
         self, label: str, collection: str = "", people_required: int = 1
     ) -> int:
