@@ -42,10 +42,10 @@ PLUGIN_NAME = "video"
 
 def verdict_label(v: "str | None") -> str:
     """Panel label for a cluster verdict. The 'skipped' sentinel (written when a
-    batch runs with verify=off) reads as 'ignored' in the stats line -- show
-    'not checked' so it's clearly "valid, just not fact-checked". Shared by the
-    Videos and GitHub panels."""
-    return "not checked" if v == "skipped" else (v or "pending")
+    batch runs with verify=off) reads as 'the doc was ignored' in the stats line
+    -- show 'skipped check' so it's clearly "valid, the fact-check was skipped".
+    Shared by the Videos and GitHub panels."""
+    return "skipped check" if v == "skipped" else (v or "pending")
 
 # ADR-0005 capabilities: video download is external_data_read + fs_write (audio cache).
 # Transcription is local compute only.

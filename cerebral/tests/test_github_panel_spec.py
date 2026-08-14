@@ -67,10 +67,10 @@ def test_panel_spec_shows_only_github_clusters():
 
 def test_skipped_verdict_renders_as_not_checked():
     from plugins.video import verdict_label
-    assert verdict_label("skipped") == "not checked"
+    assert verdict_label("skipped") == "skipped check"
     assert verdict_label("legit") == "legit"
     assert verdict_label(None) == "pending"
-    # End-to-end: a verify-off github cluster shows "not checked", not "skipped".
+    # End-to-end: a verify-off github cluster shows "skipped check", not a bare "skipped".
     store = _wire()
     g = store.upsert("https://gh/r#a.md", collection="c", stage="verified", source_type="github")
     gc = store.get_or_create_cluster("Idea", "c")
@@ -78,8 +78,7 @@ def test_skipped_verdict_renders_as_not_checked():
     store.set_cluster_verdict(gc, "skipped", None, [])
     spec = GithubIngestPlugin().panel_spec(None)
     cluster = next(w for w in _all_widgets(spec) if w.get("type") == "cluster")
-    assert "not checked" in cluster["stats"]
-    assert "skipped" not in cluster["stats"]
+    assert "skipped check" in cluster["stats"]
 
 
 def test_panel_spec_empty_when_no_github_clusters():
