@@ -344,6 +344,25 @@ def test_seed_video_default_is_local_only_no_cloud():
     assert router.get_task_model("video") == "custom/budd"  # active fallback
 
 
+def test_seed_extraction_default_prefers_budd():
+    router = ModelRouter(backends={
+        "ollama/qwen2.5:7b": AsyncMock(),
+        "ollama/qwen3:8b": AsyncMock(),
+        "custom/budd": AsyncMock(),
+    })
+    assert router.seed_extraction_default() == "custom/budd"
+    assert router.get_task_model("extraction") == "custom/budd"
+
+
+def test_seed_extraction_default_falls_back_to_local_ollama():
+    router = ModelRouter(backends={
+        "ollama/qwen2.5:7b": AsyncMock(),
+        "ollama/qwen3:8b": AsyncMock(),
+    })
+    assert router.seed_extraction_default() == "ollama/qwen3:8b"
+    assert router.get_task_model("extraction") == "ollama/qwen3:8b"
+
+
 # ---------------------------------------------------------------------------
 # Slice 7 — Ollama auto-discovery (Issue #37)
 # ---------------------------------------------------------------------------
