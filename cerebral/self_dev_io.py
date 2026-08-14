@@ -154,11 +154,15 @@ def pr_fn(
     )
     badge = "Tests: PASS" if test_passed else "Tests: FAIL"
     body = f"{description}\n\n{badge}\n\n```\n{test_output[:2000]}\n```"
+    # GitHub caps PR titles at 256 chars; a long change_description used as-is
+    # makes `gh pr create` fail. Use the first line, truncated; the full text
+    # stays in the body.
+    title = (description.strip().splitlines() or ["self-dev change"])[0][:256]
     # --head names the branch explicitly so gh does not depend on upstream
     # tracking refs (which a single-branch clone may not have).
     result = subprocess.run(
         ["gh", "pr", "create", "--head", branch,
-         "--title", description, "--body", body],
+         "--title", title, "--body", body],
         capture_output=True, text=True, cwd=str(clone_dir),
     )
     if result.returncode != 0:

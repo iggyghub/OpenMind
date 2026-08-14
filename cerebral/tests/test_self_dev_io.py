@@ -60,6 +60,28 @@ def test_create_branch_and_commit_false_when_nothing_to_commit(monkeypatch):
     assert io.create_branch_and_commit("/clone", "selfdev/abc", "msg") is False
 
 
+def test_pr_fn_caps_title_at_256_and_uses_first_line(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        class R:
+            returncode = 0
+            stdout = "https://example/pr/1"
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    long_desc = "First line " + "x" * 400 + "\nsecond line dropped from title"
+    io.pr_fn("/clone", "selfdev/abc", long_desc, True, "ok")
+    gh = next(c for c in calls if c[:3] == ["gh", "pr", "create"])
+    title = gh[gh.index("--title") + 1]
+    body = gh[gh.index("--body") + 1]
+    assert len(title) <= 256
+    assert title == ("First line " + "x" * 400)[:256]  # first line, truncated
+    assert long_desc in body  # full description preserved in the body
+
+
 # ── apply_search_replace: parse + apply model edit blocks ────────────────────
 
 def _write(tmp_path, rel, body):
