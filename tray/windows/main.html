@@ -11242,6 +11242,9 @@
       // ADR-0018 S5: same for the GitHub sub-tab, plus an immediate spec request
       // so the panel renders on switch rather than after the first poll tick.
       if (target === 'github') {
+        // ADR-0018 S6: cheap ls-remote check on open flags repos with a newer
+        // remote HEAD; the poll then renders their up-arrows.
+        sendEvent({ type: 'call_tool', data: { name: 'github_check_updates', args: {} } });
         sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: 'github_ingest' } });
         startGithubPoll();
       } else {

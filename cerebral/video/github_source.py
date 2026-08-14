@@ -69,12 +69,35 @@ def _prod_head_sha(clone_dir: Path) -> str:
     return r.stdout.strip()
 
 
+_ls_remote_fn: Optional[Callable[[str], str]] = None
+
+
+def set_ls_remote_fn(fn: "Callable[[str], str] | None") -> None:
+    global _ls_remote_fn
+    _ls_remote_fn = fn
+
+
+def _prod_ls_remote(repo_url: str) -> str:
+    # ponytail: live-verify only. Remote HEAD sha WITHOUT cloning -- the cheap
+    # no-API check that drives the up-arrow (ADR-0018 S6).
+    r = subprocess.run(
+        ["git", "ls-remote", repo_url, "HEAD"],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    # Output: "<sha>\tHEAD"
+    return r.stdout.split()[0] if r.stdout.strip() else ""
+
+
 def get_clone_fn() -> "Callable[[str, Path], None]":
     return _clone_fn or _prod_clone
 
 
 def get_head_sha_fn() -> "Callable[[Path], str]":
     return _head_sha_fn or _prod_head_sha
+
+
+def get_ls_remote_fn() -> "Callable[[str], str]":
+    return _ls_remote_fn or _prod_ls_remote
 
 
 def get_fetch_page_fn() -> "Callable[[str], str]":

@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS github_repos (
     repo_url   TEXT PRIMARY KEY,
     head_sha   TEXT,
     description TEXT,
+    -- ADR-0018 S6: set when git ls-remote HEAD != head_sha; drives the up-arrow.
+    update_available INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
 """
@@ -90,6 +92,8 @@ _MIGRATIONS = [
     "ALTER TABLE video_clusters ADD COLUMN people_required INTEGER DEFAULT 1",
     # ADR-0018 S1: source_type on pre-github DBs (existing rows backfill to 'video').
     "ALTER TABLE videos ADD COLUMN source_type TEXT NOT NULL DEFAULT 'video'",
+    # ADR-0018 S6: update_available on pre-S6 github_repos rows.
+    "ALTER TABLE github_repos ADD COLUMN update_available INTEGER NOT NULL DEFAULT 0",
 ]
 
 
@@ -539,7 +543,7 @@ class VideoStore:
         """All ingested repos, most-recently-touched first (GitHub panel list)."""
         with self._conn() as con:
             rows = con.execute(
-                "SELECT repo_url, head_sha, description, updated_at"
+                "SELECT repo_url, head_sha, description, update_available, updated_at"
                 " FROM github_repos ORDER BY updated_at DESC"
             ).fetchall()
         return [
@@ -547,16 +551,36 @@ class VideoStore:
                 "repo_url": r["repo_url"],
                 "head_sha": r["head_sha"],
                 "description": r["description"],
+                "update_available": bool(r["update_available"]),
                 "updated_at": r["updated_at"],
             }
             for r in rows
         ]
 
-    def get_github_repo(self, repo_url: str) -> dict | None:
-        """Return {repo_url, head_sha, description, updated_at} or None."""
+    def set_update_available(self, repo_url: str, available: bool) -> None:
+        """Flag/unflag a repo as having a newer remote HEAD (ADR-0018 S6)."""
+        with self._conn() as con:
+            con.execute(
+                "UPDATE github_repos SET update_available = ? WHERE repo_url = ?",
+                (1 if available else 0, repo_url),
+            )
+
+    def get_repo_collection(self, repo_url: str) -> str | None:
+        """The collection the repo's docs were last filed under -- used to re-ingest
+        with the same category. None if the repo has no docs yet."""
         with self._conn() as con:
             row = con.execute(
-                "SELECT repo_url, head_sha, description, updated_at"
+                "SELECT collection FROM videos WHERE channel = ? AND source_type = 'github'"
+                " ORDER BY updated_at DESC LIMIT 1",
+                (repo_url,),
+            ).fetchone()
+        return row["collection"] if row else None
+
+    def get_github_repo(self, repo_url: str) -> dict | None:
+        """Return {repo_url, head_sha, description, update_available, updated_at} or None."""
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT repo_url, head_sha, description, update_available, updated_at"
                 " FROM github_repos WHERE repo_url = ?",
                 (repo_url,),
             ).fetchone()
@@ -566,6 +590,7 @@ class VideoStore:
             "repo_url": row["repo_url"],
             "head_sha": row["head_sha"],
             "description": row["description"],
+            "update_available": bool(row["update_available"]),
             "updated_at": row["updated_at"],
         }
 
