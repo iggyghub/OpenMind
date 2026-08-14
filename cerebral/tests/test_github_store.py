@@ -111,3 +111,31 @@ def test_github_repo_sha_refresh_keeps_description():
 
 def test_github_repo_missing_returns_none():
     assert _store().get_github_repo("https://gh/none") is None
+
+
+# ── ADR-0019 S2: Budd-requeue counter ─────────────────────────────────────────
+
+def test_budd_requeues_default_zero():
+    s = _store()
+    assert s.get_budd_requeues("https://gh/none") == 0  # unknown repo
+    s.upsert_github_repo("https://gh/r", head_sha="abc")
+    assert s.get_budd_requeues("https://gh/r") == 0     # fresh row
+
+
+def test_budd_requeues_bump_and_reset():
+    s = _store()
+    s.upsert_github_repo("https://gh/r", head_sha="abc", description="a tool")
+    assert s.bump_budd_requeues("https://gh/r") == 1
+    assert s.bump_budd_requeues("https://gh/r") == 2
+    assert s.get_budd_requeues("https://gh/r") == 2
+    # Bumping must not clobber other columns.
+    assert s.get_github_repo("https://gh/r")["description"] == "a tool"
+    s.reset_budd_requeues("https://gh/r")
+    assert s.get_budd_requeues("https://gh/r") == 0
+
+
+def test_budd_requeues_bump_creates_row():
+    # A bump on a not-yet-seen repo creates the row (defensive; ingest upserts first).
+    s = _store()
+    assert s.bump_budd_requeues("https://gh/new") == 1
+    assert s.get_budd_requeues("https://gh/new") == 1

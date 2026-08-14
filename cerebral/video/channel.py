@@ -94,6 +94,13 @@ class _BatchState:
 _state = _BatchState()
 
 
+def _is_model_unavailable(exc: Exception) -> bool:
+    """True for a routed-model-unreachable error (Budd 504 / all models down).
+    Lazy import keeps channel.py free of an import-time router dependency."""
+    from cerebral.llm.router import ModelUnavailableError
+    return isinstance(exc, (ModelUnavailableError, ConnectionError))
+
+
 async def extract_and_cluster(
     store: VideoStore,
     *,
@@ -104,6 +111,7 @@ async def extract_and_cluster(
     visual_summary: str = "",
     collection: str = "",
     verify: bool = False,
+    raise_on_model_error: bool = False,
 ) -> str:
     """Extract an idea, assign it to a cluster, and run a verdict -- shared by the
     channel batch AND single-video ingest so single videos can be categorised too.
@@ -111,8 +119,13 @@ async def extract_and_cluster(
     ``collection`` scopes clustering + the extraction/verdict category. Advances
     the video stage enumerated/transcribed -> extracted -> verified. Returns the
     final stage reached ('verified', 'extracted', or the caller's stage on failure).
-    Never raises: extraction/verdict failures are logged and the stage is left
-    where it got to (matching the batch's per-video best-effort behaviour).
+    Normally never raises: extraction/verdict failures are logged and the stage is
+    left where it got to (matching the batch's per-video best-effort behaviour).
+
+    ADR-0019 S2: with ``raise_on_model_error=True`` a ``ModelUnavailableError``
+    (Budd down / all routed models unreachable) is re-raised instead of swallowed,
+    so the github repo loop can requeue the whole repo rather than silently
+    dropping the doc.
     """
     try:
         # ADR-0018 S4: hand the extractor each existing cluster's label AND a
@@ -130,6 +143,8 @@ async def extract_and_cluster(
         store.upsert_idea(video_id, extracted["idea"], cluster_id)
         store.upsert(url, stage="extracted")
     except Exception as exc:  # noqa: BLE001
+        if raise_on_model_error and _is_model_unavailable(exc):
+            raise
         logger.error("[video] extraction failed %s: %s", url, exc)
         return "transcribed"
     try:
@@ -146,6 +161,8 @@ async def extract_and_cluster(
         store.upsert(url, stage="verified")
         return "verified"
     except Exception as exc:  # noqa: BLE001
+        if raise_on_model_error and _is_model_unavailable(exc):
+            raise
         logger.error("[video] verdict failed %s: %s", url, exc)
         return "extracted"
 

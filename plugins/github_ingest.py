@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 import plugins.video as _video  # reuse the shared VideoStore singleton
+from cerebral.llm.router import ModelUnavailableError
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.video import channel as _channel
 from cerebral.video import github_source as _gh
@@ -29,6 +30,24 @@ PLUGIN_NAME = "github_ingest"
 
 # Same posture as the video plugin: clone is external_data_read + fs_write.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"external_data_read", "fs_write"})
+
+# ADR-0019 S3: after this many Budd requeues, a repo drains to a local model.
+DRAIN_AT_REQUEUES = 3
+
+# Injected by main.py: fn(local: bool) re-pins the "extraction" task to a local
+# model (True) or restores Budd-first (False). No-op until wired (tests stub the
+# extract seam directly, so they never need it).
+_route_extraction_local_fn = None
+
+
+def set_route_extraction_local_fn(fn) -> None:
+    global _route_extraction_local_fn
+    _route_extraction_local_fn = fn
+
+
+def _route_extraction_local(local: bool) -> None:
+    if _route_extraction_local_fn is not None:
+        _route_extraction_local_fn(local)
 
 
 def _repo_name(repo_url: str) -> str:
@@ -104,31 +123,69 @@ async def _ingest_repo(store, repo_url: str, category: str) -> dict:
     )
 
     grounding = _grounding(repo_url, meta)
+    # ADR-0019 S3: a repo that has failed Budd DRAIN_AT_REQUEUES times drains to a
+    # local model so a persistently-down Budd can't wedge it forever.
+    draining = store.get_budd_requeues(repo_url) >= DRAIN_AT_REQUEUES
+    if draining:
+        logger.warning(
+            "[github] %s draining to local (%d Budd requeues)", repo_url,
+            store.get_budd_requeues(repo_url),
+        )
+        _route_extraction_local(True)
     results = []
     skipped = 0
-    for d in docs:
-        doc_url = repo_url + "#" + d["relpath"]
-        existing = store.get_by_url(doc_url)
-        if (
-            existing is not None
-            and (existing.transcript or "") == d["text"]
-            and existing.stage in ("extracted", "verified")
-        ):
-            skipped += 1
-            continue  # unchanged + already clustered -> idempotent skip
-        vid = store.upsert(
-            doc_url, channel=repo_url, collection=category, title=d["relpath"],
-            transcript=d["text"], stage="transcribed", source_type="github",
-        )
-        # Grounding is prepended for extraction only; the row stores raw text so
-        # the dedup content-compare above stays stable.
-        text = (grounding + "\n\n" + d["text"]) if grounding else d["text"]
-        final = await _channel.extract_and_cluster(
-            store, video_id=vid, url=doc_url, transcript=text,
-            collection=category, verify=False,
-        )
-        results.append({"doc": d["relpath"], "stage": final})
+    try:
+        for d in docs:
+            doc_url = repo_url + "#" + d["relpath"]
+            existing = store.get_by_url(doc_url)
+            if (
+                existing is not None
+                and (existing.transcript or "") == d["text"]
+                and existing.stage in ("extracted", "verified")
+            ):
+                skipped += 1
+                continue  # unchanged + already clustered -> idempotent skip
+            vid = store.upsert(
+                doc_url, channel=repo_url, collection=category, title=d["relpath"],
+                transcript=d["text"], stage="transcribed", source_type="github",
+            )
+            # Grounding is prepended for extraction only; the row stores raw text
+            # so the dedup content-compare above stays stable.
+            text = (grounding + "\n\n" + d["text"]) if grounding else d["text"]
+            try:
+                # ADR-0019 S2: while on Budd, a model-down error requeues the whole
+                # repo (below). When draining locally, swallow per-doc as before.
+                final = await _channel.extract_and_cluster(
+                    store, video_id=vid, url=doc_url, transcript=text,
+                    collection=category, verify=False,
+                    raise_on_model_error=not draining,
+                )
+            except (ModelUnavailableError, ConnectionError):
+                n = store.bump_budd_requeues(repo_url)
+                remaining = len(docs) - skipped - len(results)
+                logger.warning(
+                    "[github] %s requeued -- Budd unavailable (attempt %d); "
+                    "%d done, %d remaining", repo_url, n, len(results), remaining,
+                )
+                return {
+                    "repo": repo_url,
+                    "collection": category,
+                    "already_ingested": already,
+                    "requeued": "budd_unavailable",
+                    "budd_requeues": n,
+                    "docs": len(docs),
+                    "extracted": len(results),
+                    "skipped": skipped,
+                    "remaining": remaining,
+                    "results": results,
+                }
+            results.append({"doc": d["relpath"], "stage": final})
+    finally:
+        if draining:
+            _route_extraction_local(False)
 
+    # Repo finished cleanly -> clear any prior Budd-requeue debt.
+    store.reset_budd_requeues(repo_url)
     return {
         "repo": repo_url,
         "collection": category,

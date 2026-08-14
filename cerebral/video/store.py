@@ -94,6 +94,8 @@ _MIGRATIONS = [
     "ALTER TABLE videos ADD COLUMN source_type TEXT NOT NULL DEFAULT 'video'",
     # ADR-0018 S6: update_available on pre-S6 github_repos rows.
     "ALTER TABLE github_repos ADD COLUMN update_available INTEGER NOT NULL DEFAULT 0",
+    # ADR-0019 S2: per-repo Budd-requeue counter (drain to local at 3).
+    "ALTER TABLE github_repos ADD COLUMN budd_requeues INTEGER NOT NULL DEFAULT 0",
 ]
 
 
@@ -563,6 +565,37 @@ class VideoStore:
             con.execute(
                 "UPDATE github_repos SET update_available = ? WHERE repo_url = ?",
                 (1 if available else 0, repo_url),
+            )
+
+    # ── ADR-0019 S2: Budd-requeue counter (repo-grain requeue, drain at 3) ──
+    def get_budd_requeues(self, repo_url: str) -> int:
+        """How many times this repo has been requeued off a Budd failure."""
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT budd_requeues FROM github_repos WHERE repo_url = ?", (repo_url,)
+            ).fetchone()
+        return int(row["budd_requeues"]) if row else 0
+
+    def bump_budd_requeues(self, repo_url: str) -> int:
+        """Increment the repo's Budd-requeue counter (creating the row if absent);
+        return the new count."""
+        with self._conn() as con:
+            con.execute(
+                "INSERT INTO github_repos (repo_url, updated_at, budd_requeues) "
+                "VALUES (?, ?, 1) "
+                "ON CONFLICT(repo_url) DO UPDATE SET budd_requeues = budd_requeues + 1",
+                (repo_url, self._now()),
+            )
+            row = con.execute(
+                "SELECT budd_requeues FROM github_repos WHERE repo_url = ?", (repo_url,)
+            ).fetchone()
+        return int(row["budd_requeues"])
+
+    def reset_budd_requeues(self, repo_url: str) -> None:
+        """Clear the counter after a repo finishes cleanly."""
+        with self._conn() as con:
+            con.execute(
+                "UPDATE github_repos SET budd_requeues = 0 WHERE repo_url = ?", (repo_url,)
             )
 
     def get_repo_collection(self, repo_url: str) -> str | None:
