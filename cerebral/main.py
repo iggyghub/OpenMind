@@ -220,6 +220,7 @@ _quality_default = _router.seed_quality_default()
 # Video pipeline routes local-only (no Budd/OpenClaw dependency for a long
 # unattended batch); falls through to the active model if no local model exists.
 _video_default = _router.seed_video_default()
+_extraction_default = _router.seed_extraction_default()
 if _quality_default:
     logger.info("[cerebral] Quality tasks default to %s", _quality_default)
 _orc = MCPOrchestrator()
@@ -6219,7 +6220,7 @@ async def _video_extract(                                                    # S
         + labels_block
         + f"\n\nVideo content:\n{content}"
     )
-    raw = await _router.complete(prompt, task_type="video")  # S9 #655: Budd/local, no API key
+    raw = await _router.complete(prompt, task_type="extraction")  # S9 #655: Budd/local, no API key
     m = _re.search(r"\{[^{}]*\}", raw, _re.DOTALL)
     if not m:
         raise ValueError(f"No JSON in extraction response: {raw[:200]!r}")
@@ -6269,7 +6270,7 @@ async def _video_verify(cluster_label: str, idea_text: str, category: str = "mon
         logger.warning("[video/verdict] web_search unavailable, judging from knowledge: %s", exc)
 
     prompt = build_verdict_prompt(cluster_label, idea_text, search_results, category)
-    raw = await _router.complete(prompt, task_type="video")
+    raw = await _router.complete(prompt, task_type="extraction")
     m = _re.search(r"\{[\s\S]*?\}", raw)
     if not m:
         raise ValueError(f"No JSON in verdict response: {raw[:200]!r}")

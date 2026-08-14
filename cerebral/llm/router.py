@@ -130,6 +130,10 @@ QUALITY_PREFERRED = ("ollama/qwen3:8b", "claude/sonnet")
 VIDEO_TASK = "video"
 VIDEO_PREFERRED = ("ollama/qwen3:8b", "ollama/qwen2.5:7b")
 
+# Idea extraction + validity verdict route to Budd first, then local LLMs.
+EXTRACTION_TASK = "extraction"
+EXTRACTION_PREFERRED = ("custom/budd", "ollama/qwen3:8b", "ollama/qwen2.5:7b")
+
 # Cloud entries are constants; local entries are discovered at runtime.
 CLOUD_MODELS = {
     "claude/haiku":  {"label": "Claude Haiku 4.5",  "is_cloud": True,
@@ -351,6 +355,10 @@ class ModelRouter:
         Local-only by design so the video batch never depends on Budd/OpenClaw.
         """
         return self._seed_task_default(VIDEO_TASK, VIDEO_PREFERRED)
+
+    def seed_extraction_default(self) -> str | None:
+        """Seed the "extraction" task to Budd first, then local fallbacks."""
+        return self._seed_task_default(EXTRACTION_TASK, EXTRACTION_PREFERRED)
 
     def set_local_only(self, enabled: bool) -> None:
         """Cloud kill-switch (privacy). When on, cloud backends are hidden from
