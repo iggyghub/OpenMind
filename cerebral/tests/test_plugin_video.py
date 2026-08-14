@@ -40,6 +40,23 @@ def _wire(store: VideoStore, *, title="Test Video", duration=60.0, transcript="h
     return plugin
 
 
+@pytest.fixture(autouse=True)
+def _reset_seams():
+    # Seams are module-level globals; reset to None (prod fallback) before each
+    # test so a stub set in one test can't leak into the next (e.g. an extract
+    # stub silently clustering a video another test expects to stay 'transcribed').
+    setters = (
+        video_mod.set_download_fn, video_mod.set_transcribe_fn,
+        video_mod.set_keyframe_fn, video_mod.set_ocr_fn, video_mod.set_vision_fn,
+        video_mod.set_extract_fn, video_mod.set_verify_fn,
+    )
+    for s in setters:
+        s(None)
+    yield
+    for s in setters:
+        s(None)
+
+
 # ── store unit tests ──────────────────────────────────────────────────────────
 
 def test_store_upsert_and_get_by_id():
@@ -118,6 +135,11 @@ async def test_video_ingest_idempotent():
     video_mod.set_keyframe_fn(lambda url, out: [])
     video_mod.set_ocr_fn(lambda f: "")
     video_mod.set_vision_fn(lambda frames: "")
+    # Stub extraction so the first ingest fully clusters (-> 'verified'); the
+    # second call must then hit the already-clustered skip path.
+    async def fake_extract(t, o, v, labels, category=""):
+        return {"idea": "an idea", "cluster_label": "Ideas", "people_required": 1}
+    video_mod.set_extract_fn(fake_extract)
 
     await plugin.call_tool("video_ingest", {"url": "https://tiktok.com/v/2"})
     result2 = await plugin.call_tool("video_ingest", {"url": "https://tiktok.com/v/2"})
@@ -201,6 +223,106 @@ async def test_video_ingest_escalation_failure_keeps_transcript():
     assert data["stage"] == "transcribed"
     assert data["escalated"] is False
     assert store.get_by_url("https://yt/thin").stage == "transcribed"
+
+
+async def test_video_ingest_categorizes_into_collection():
+    # Single ingest with a category extracts the idea into that collection so the
+    # cluster shows under it in the panel (the "categorize single videos" gap).
+    store = _make_store()
+    plugin = _wire(store, transcript=" ".join(["word"] * 30))  # rich -> no escalation
+    async def fake_extract(t, o, v, labels, category=""):
+        return {"idea": "make a harness", "cluster_label": "Harness tips", "people_required": 1}
+    video_mod.set_extract_fn(fake_extract)
+
+    result = await plugin.call_tool(
+        "video_ingest", {"url": "https://yt/h", "category": "harness improvement"}
+    )
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["stage"] == "verified"
+    assert data["collection"] == "harness improvement"
+    clusters = store.list_clusters("harness improvement")
+    assert [c["label"] for c in clusters] == ["Harness tips"]
+    assert store.get_by_url("https://yt/h").collection == "harness improvement"
+
+
+async def test_video_ingest_blank_category_defaults_uncategorised():
+    store = _make_store()
+    plugin = _wire(store, transcript=" ".join(["word"] * 30))
+    async def fake_extract(t, o, v, labels, category=""):
+        return {"idea": "some idea", "cluster_label": "Misc", "people_required": 1}
+    video_mod.set_extract_fn(fake_extract)
+
+    result = await plugin.call_tool("video_ingest", {"url": "https://yt/u"})
+    data = json.loads(result.content)
+    assert data["collection"] == "Uncategorised"
+    assert [c["label"] for c in store.list_clusters("Uncategorised")] == ["Misc"]
+
+
+# ── manual move: store.move_cluster + list_collections ────────────────────────
+
+def test_move_cluster_simple():
+    s = _make_store()
+    vid = s.upsert("https://v/1", collection="Uncategorised", stage="transcribed")
+    cid = s.get_or_create_cluster("Idea A", "Uncategorised")
+    s.upsert_idea(vid, "an idea", cid)
+    survivor = s.move_cluster(cid, "harness improvement")
+    assert survivor == cid
+    assert [c["label"] for c in s.list_clusters("harness improvement")] == ["Idea A"]
+    assert s.list_clusters("Uncategorised") == []
+    # The video followed the cluster.
+    assert s.get_by_url("https://v/1").collection == "harness improvement"
+
+
+def test_move_cluster_merges_on_label_collision():
+    s = _make_store()
+    v1 = s.upsert("https://v/1", stage="transcribed")
+    src = s.get_or_create_cluster("Shared", "Uncategorised")
+    s.upsert_idea(v1, "idea one", src)
+    v2 = s.upsert("https://v/2", stage="transcribed")
+    dst = s.get_or_create_cluster("Shared", "harness improvement")
+    s.upsert_idea(v2, "idea two", dst)
+    survivor = s.move_cluster(src, "harness improvement")
+    assert survivor == dst  # merged into the existing target
+    labels = [c["label"] for c in s.list_clusters("harness improvement")]
+    assert labels == ["Shared"]
+    assert s.list_clusters("Uncategorised") == []
+
+
+def test_move_cluster_missing_returns_none():
+    assert _make_store().move_cluster(9999, "x") is None
+
+
+def test_list_collections():
+    s = _make_store()
+    s.get_or_create_cluster("A", "money-making idea")
+    s.get_or_create_cluster("B", "harness improvement")
+    assert s.list_collections() == ["harness improvement", "money-making idea"]
+
+
+async def test_video_move_cluster_tool():
+    store = _make_store()
+    video_mod.set_store(store)
+    plugin = VideoPlugin()
+    vid = store.upsert("https://v/1", collection="Uncategorised", stage="transcribed")
+    cid = store.get_or_create_cluster("Idea A", "Uncategorised")
+    store.upsert_idea(vid, "an idea", cid)
+    result = await plugin.call_tool(
+        "video_move_cluster", {"cluster_id": cid, "collection": "harness improvement"}
+    )
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["collection"] == "harness improvement"
+    assert data["merged"] is False
+    assert [c["label"] for c in store.list_clusters("harness improvement")] == ["Idea A"]
+
+
+async def test_video_move_cluster_missing_args():
+    store = _make_store()
+    video_mod.set_store(store)
+    plugin = VideoPlugin()
+    r = await plugin.call_tool("video_move_cluster", {"cluster_id": 1})
+    assert r.is_error
 
 
 # ── missing url ───────────────────────────────────────────────────────────────

@@ -94,6 +94,58 @@ class _BatchState:
 _state = _BatchState()
 
 
+async def extract_and_cluster(
+    store: VideoStore,
+    *,
+    video_id: int,
+    url: str,
+    transcript: str,
+    ocr_text: str = "",
+    visual_summary: str = "",
+    collection: str = "",
+    verify: bool = False,
+) -> str:
+    """Extract an idea, assign it to a cluster, and run a verdict -- shared by the
+    channel batch AND single-video ingest so single videos can be categorised too.
+
+    ``collection`` scopes clustering + the extraction/verdict category. Advances
+    the video stage enumerated/transcribed -> extracted -> verified. Returns the
+    final stage reached ('verified', 'extracted', or the caller's stage on failure).
+    Never raises: extraction/verdict failures are logged and the stage is left
+    where it got to (matching the batch's per-video best-effort behaviour).
+    """
+    try:
+        labels = store.get_cluster_labels(collection)
+        extracted = await _extraction.extract_idea(
+            transcript or "", ocr_text or "", visual_summary or "",
+            labels, category=collection,
+        )
+        cluster_id = store.get_or_create_cluster(
+            extracted["cluster_label"], collection, extracted.get("people_required", 1),
+        )
+        store.upsert_idea(video_id, extracted["idea"], cluster_id)
+        store.upsert(url, stage="extracted")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[video] extraction failed %s: %s", url, exc)
+        return "transcribed"
+    try:
+        if store.get_cluster_verdict(cluster_id) is None:
+            if verify:
+                v = await _verdict.verify_cluster(
+                    extracted["cluster_label"], extracted["idea"], category=collection,
+                )
+                store.set_cluster_verdict(
+                    cluster_id, v["verdict"], v["confidence"], v["evidence"]
+                )
+            else:
+                store.set_cluster_verdict(cluster_id, "skipped", None, [])
+        store.upsert(url, stage="verified")
+        return "verified"
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[video] verdict failed %s: %s", url, exc)
+        return "extracted"
+
+
 # ── inner batch coroutine ─────────────────────────────────────────────────────
 
 async def _run_batch(
@@ -130,46 +182,18 @@ async def _run_batch(
                 escalated=meta["escalated"],
                 stage=final_stage,
             )
-            # S5 #642: extract idea + assign cluster; stage advances to 'extracted'
-            try:
-                labels = store.get_cluster_labels(collection)
-                extracted = await _extraction.extract_idea(
-                    meta["transcript"] or "",
-                    meta["ocr_text"] or "",
-                    meta["visual_summary"] or "",
-                    labels,
-                    category=collection,
-                )
-                cluster_id = store.get_or_create_cluster(
-                    extracted["cluster_label"],
-                    collection,
-                    extracted.get("people_required", 1),
-                )
-                store.upsert_idea(row.id, extracted["idea"], cluster_id)
-                store.upsert(row.url, stage="extracted")
-                # S6 #644: verdict per cluster -- verify once, inherit on later videos.
-                # verify=False (trusted how-to channel): write a "skipped" sentinel
-                # so the cluster is still committable, but run no fact-check.
-                try:
-                    existing_verdict = store.get_cluster_verdict(cluster_id)
-                    if existing_verdict is None:
-                        if verify:
-                            v = await _verdict.verify_cluster(
-                                extracted["cluster_label"], extracted["idea"],
-                                category=collection,
-                            )
-                            store.set_cluster_verdict(
-                                cluster_id, v["verdict"], v["confidence"], v["evidence"]
-                            )
-                        else:
-                            store.set_cluster_verdict(cluster_id, "skipped", None, [])
-                    store.upsert(row.url, stage="verified")
-                except Exception as exc:
-                    logger.error("[video/channel] verdict failed %s: %s", row.url, exc)
-                    # stage stays at extracted; batch continues
-            except Exception as exc:
-                logger.error("[video/channel] extraction failed %s: %s", row.url, exc)
-                # stage stays at transcribed/escalated; batch continues
+            # S5 #642 / S6 #644: extract idea + cluster + verdict (shared with
+            # single-video ingest). Best-effort: failures leave the stage as-is.
+            await extract_and_cluster(
+                store,
+                video_id=row.id,
+                url=row.url,
+                transcript=meta["transcript"] or "",
+                ocr_text=meta["ocr_text"] or "",
+                visual_summary=meta["visual_summary"] or "",
+                collection=collection,
+                verify=verify,
+            )
         except Exception as exc:
             logger.error("[video/channel] failed %s: %s", row.url, exc)
             store.upsert(row.url, stage="failed")
