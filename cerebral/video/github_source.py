@@ -51,8 +51,30 @@ def _prod_fetch_page(url: str) -> str:
         return r.read().decode("utf-8", "replace")
 
 
+_head_sha_fn: Optional[Callable[[Path], str]] = None
+
+
+def set_head_sha_fn(fn: "Callable[[Path], str] | None") -> None:
+    global _head_sha_fn
+    _head_sha_fn = fn
+
+
+def _prod_head_sha(clone_dir: Path) -> str:
+    # ponytail: live-verify only. HEAD of the shallow clone -- stored for S6's
+    # ls-remote re-check.
+    r = subprocess.run(
+        ["git", "-C", str(clone_dir), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    return r.stdout.strip()
+
+
 def get_clone_fn() -> "Callable[[str, Path], None]":
     return _clone_fn or _prod_clone
+
+
+def get_head_sha_fn() -> "Callable[[Path], str]":
+    return _head_sha_fn or _prod_head_sha
 
 
 def get_fetch_page_fn() -> "Callable[[str], str]":
