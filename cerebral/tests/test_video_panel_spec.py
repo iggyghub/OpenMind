@@ -239,10 +239,14 @@ def test_panel_spec_groups_clusters_by_collection(plugin, store, monkeypatch):
     store.upsert_idea(store.upsert("https://ex/h", stage="verified"), "harness idea", h)
 
     spec = plugin.panel_spec(None)
-    groups = [w for w in spec["widgets"] if w.get("type") == "group"]
+    # "Recent videos" is also a group; scope this test to the collection groups.
+    groups = [
+        w for w in spec["widgets"]
+        if w.get("type") == "group" and w.get("label") != "Recent videos"
+    ]
     labels = {g["label"] for g in groups}
     assert labels == {"Money-making idea", "Harness improvement"}
-    # Exactly one group is open (the first / most-populous).
+    # Exactly one collection group is open (the first / most-populous).
     assert sum(1 for g in groups if g.get("open")) == 1
     # Each group's table lists only its own collection's clusters.
     for g in groups:

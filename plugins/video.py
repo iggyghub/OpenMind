@@ -467,6 +467,10 @@ class VideoPlugin:
             meta = await _pipeline.run(url, visual=visual, force_capture=capture)
         except Exception as exc:
             logger.error("[video] ingest failed for %s: %s", url, exc)
+            # Mark failed (not left at 'enumerated') so a dead download is visible
+            # in the panel instead of looking like it's still pending. Matches the
+            # channel batch's failure handling (channel.py).
+            store.upsert(url, channel=channel, stage="failed")
             return ToolResult(content=f"Ingest failed: {exc}", is_error=True)
 
         final_stage = "escalated" if meta["escalated"] else "transcribed"
@@ -867,7 +871,15 @@ class VideoPlugin:
                 idea_preview = (idea[:70] + "…") if len(idea) > 70 else idea
                 sub = " · ".join(p for p in (v["stage"], idea_preview) if p)
                 items.append({"title": v["title"] or v["url"], "subtitle": sub})
-            widgets.append({"type": "list", "items": items})
+            # Wrap in a labelled group so the bare list reads as "Recent videos"
+            # and folds like the collection groups above (no new widget type).
+            widgets.append({
+                "type": "group",
+                "label": "Recent videos",
+                "count": f"{len(items)}",
+                "open": True,
+                "widgets": [{"type": "list", "items": items}],
+            })
 
         return {"title": "Videos", "widgets": widgets}
 

@@ -53,6 +53,8 @@ def _prod_download(url: str, out_dir: Path) -> dict:
     # ponytail: live-verify only -- never called in the loop's tests
     import yt_dlp  # type: ignore[import]
 
+    from cerebral.video.ytdlp_cookies import apply_auth
+
     opts = {
         "format": "bestaudio/best",
         "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
@@ -60,6 +62,7 @@ def _prod_download(url: str, out_dir: Path) -> dict:
         "no_warnings": True,
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
     }
+    apply_auth(opts)  # cookies + player_client -- keep this fallback in sync with _video_download
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
     title = info.get("title", "")
@@ -160,9 +163,18 @@ async def run(
             if budget is None or budget.consume():
                 # Reuse frames from screen-watch capture when present; a captured
                 # source can't be re-fetched by yt-dlp for keyframes anyway.
-                vis = await _escalation.run(url, out_dir, frames=captured_frames)
-                result.update(vis)
-                result["escalated"] = True
+                # Escalation is an ENHANCEMENT (OCR + vision). If it fails -- e.g.
+                # the full-video re-download 403s -- keep the transcript we already
+                # have rather than nuking the whole ingest. Degrade to 'transcribed'.
+                try:
+                    vis = await _escalation.run(url, out_dir, frames=captured_frames)
+                    result.update(vis)
+                    result["escalated"] = True
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[video] visual escalation failed for %s, keeping transcript: %s",
+                        url, exc,
+                    )
             else:
                 logger.info(
                     "[video] escalation cap reached, skipping visual for %s", url

@@ -5964,10 +5964,8 @@ def _video_download(url: str, out_dir) -> dict:
         "no_warnings": True,
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
     }
-    from cerebral.video.ytdlp_cookies import cookiesfrombrowser_tuple
-    cookies = cookiesfrombrowser_tuple()
-    if cookies is not None:
-        opts["cookiesfrombrowser"] = cookies
+    from cerebral.video.ytdlp_cookies import apply_auth
+    apply_auth(opts)  # cookies + player_client (android first; web 403s some media)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
     title = info.get("title", "")

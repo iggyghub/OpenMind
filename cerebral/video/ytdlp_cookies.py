@@ -35,3 +35,27 @@ def cookies_cli_args() -> "list[str]":
     """yt-dlp CLI args for the subprocess paths: ['--cookies-from-browser', 'chrome:<dir>']."""
     d = browser_profile_dir()
     return ["--cookies-from-browser", f"chrome:{d}"] if d else []
+
+
+# YouTube 403s the default 'web' client's media URL for some videos (player
+# signature / nsig churn) even with valid cookies -- info extraction succeeds
+# but the audio fragment download is Forbidden. The 'android' client serves a
+# directly downloadable audio format; the rest are fallbacks yt-dlp tries in
+# order when android is unavailable (e.g. PO-token-gated). This bit us on the
+# single-video path (#17013, "Rethinking AI Harnesses" 403'd stuck at enumerated).
+_PLAYER_CLIENTS = ["android", "web_safari", "web"]
+
+
+def apply_auth(opts: dict) -> dict:
+    """Add cookies + a resilient player_client preference to a yt-dlp opts dict.
+
+    Mutates and returns ``opts``. EVERY Python-API download path must funnel its
+    opts through here so a single YouTube-side change is fixed in one place
+    (previously each path hand-rolled cookies and none set player_client).
+    """
+    ck = cookiesfrombrowser_tuple()
+    if ck is not None:
+        opts["cookiesfrombrowser"] = ck
+    yt = opts.setdefault("extractor_args", {}).setdefault("youtube", {})
+    yt.setdefault("player_client", _PLAYER_CLIENTS)
+    return opts

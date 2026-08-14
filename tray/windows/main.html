@@ -9753,7 +9753,27 @@
       const json = JSON.stringify(spec);
       if (json === _lastVideosSpecJson) return;
       _lastVideosSpecJson = json;
+      // Collapse state lives in the DOM's native <details>, but re-render rebuilds
+      // it from the server default ("open": gi==0) -- wiping the user's manual
+      // toggle every poll. Capture open/closed per collection, reapply after.
+      // Key on the summary's label text node only (firstChild), NOT its full text:
+      // the trailing count span ("3 clusters") changes when a cluster lands, so
+      // keying on textContent would drop the state on that exact tick.
+      const _groupKey = function (d) {
+        const s = d.querySelector('.ps-group-summary');
+        const t = s && s.firstChild && s.firstChild.textContent;
+        return t ? t.trim() : '';
+      };
+      const openState = {};
+      videosPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
+        const k = _groupKey(d);
+        if (k) openState[k] = d.open;
+      });
       videosPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
+      videosPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
+        const k = _groupKey(d);
+        if (k && (k in openState)) d.open = openState[k];
+      });
       if (window.ActionWidget) {
         window.ActionWidget.initActionWidgets(videosPanelBodyEl, sendEvent);
       }
