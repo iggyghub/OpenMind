@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS videos (
     visual_summary TEXT,
     escalated     INTEGER DEFAULT 0,
     stage         TEXT    NOT NULL DEFAULT 'enumerated',
+    -- ADR-0018 S1: the acquisition source of this item. 'video' (yt-dlp) or
+    -- 'github' (a markdown doc from a cloned repo). Lets the panel show a
+    -- source-scoped view while clusters/collections stay shared.
+    source_type   TEXT    NOT NULL DEFAULT 'video',
     created_at    TEXT    NOT NULL,
     updated_at    TEXT    NOT NULL
 );
@@ -59,6 +63,16 @@ CREATE TABLE IF NOT EXISTS video_ideas (
     idea_text  TEXT    NOT NULL,
     cluster_id INTEGER NOT NULL
 );
+
+-- ADR-0018 S1: per-repo git/page state that doesn't belong on the shared item
+-- rows. head_sha is the HEAD commit at last ingest (for the ls-remote re-check);
+-- description is the front-page og:description used as grounding + panel subtitle.
+CREATE TABLE IF NOT EXISTS github_repos (
+    repo_url   TEXT PRIMARY KEY,
+    head_sha   TEXT,
+    description TEXT,
+    updated_at TEXT NOT NULL
+);
 """
 
 # Migration: add columns to tables created before this slice.
@@ -74,6 +88,8 @@ _MIGRATIONS = [
     "ALTER TABLE video_clusters ADD COLUMN memory_id TEXT",
     # S8 #653
     "ALTER TABLE video_clusters ADD COLUMN people_required INTEGER DEFAULT 1",
+    # ADR-0018 S1: source_type on pre-github DBs (existing rows backfill to 'video').
+    "ALTER TABLE videos ADD COLUMN source_type TEXT NOT NULL DEFAULT 'video'",
 ]
 
 
@@ -92,6 +108,7 @@ class Video:
     created_at: str
     updated_at: str
     collection: Optional[str] = None
+    source_type: str = "video"
 
     def to_dict(self) -> dict:
         return {
@@ -99,6 +116,7 @@ class Video:
             "url": self.url,
             "channel": self.channel,
             "collection": self.collection,
+            "source_type": self.source_type,
             "title": self.title,
             "duration": self.duration,
             "transcript": self.transcript,
@@ -204,8 +222,14 @@ class VideoStore:
         visual_summary: str | None = None,
         escalated: bool | None = None,
         stage: str = "enumerated",
+        source_type: str = "video",
     ) -> int:
-        """Insert or update a video row.  Returns the video id."""
+        """Insert or update a video row.  Returns the video id.
+
+        ``source_type`` ('video' | 'github', ADR-0018 S1) is set on INSERT only --
+        it is never changed on a later upsert, so a github doc stays 'github'
+        across re-ingests without the caller having to re-pass it.
+        """
         now = self._now()
         with self._conn() as con:
             cur = con.execute(
@@ -213,8 +237,8 @@ class VideoStore:
                 INSERT INTO videos
                     (url, channel, collection, title, duration, transcript,
                      ocr_text, visual_summary, escalated,
-                     stage, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     stage, source_type, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(url) DO UPDATE SET
                     channel        = COALESCE(excluded.channel,        channel),
                     collection     = COALESCE(excluded.collection,     collection),
@@ -231,7 +255,7 @@ class VideoStore:
                     url, channel, collection, title, duration, transcript,
                     ocr_text, visual_summary,
                     int(escalated) if escalated is not None else None,
-                    stage, now, now,
+                    stage, source_type, now, now,
                 ),
             )
             if cur.lastrowid and cur.lastrowid != 0:
@@ -405,20 +429,35 @@ class VideoStore:
                 (video_id, idea_text, cluster_id),
             )
 
-    def list_clusters(self, collection: str | None = None) -> list[dict]:
+    def list_clusters(
+        self, collection: str | None = None, source_type: str | None = None
+    ) -> list[dict]:
         """Return clusters ordered by member_count desc, including verdict + memory_id.
 
         Filtered to ``collection`` when given (the Videos panel / video_query use
-        this to keep each collection's clusters separate).
+        this to keep each collection's clusters separate). ADR-0018 S1: when
+        ``source_type`` is given, return only clusters that have >=1 idea whose
+        source item is of that type -- so the GitHub tab shows github-touching
+        clusters and the Videos tab video-touching ones. A cluster with ideas from
+        both sources appears under both.
         """
         sql = (
             "SELECT id, label, collection, member_count, verdict, confidence,"
             " evidence_links, memory_id, people_required FROM video_clusters"
         )
+        clauses: list[str] = []
         params: list = []
         if collection is not None:
-            sql += " WHERE collection = ?"
+            clauses.append("collection = ?")
             params.append(collection)
+        if source_type is not None:
+            clauses.append(
+                "id IN (SELECT vi.cluster_id FROM video_ideas vi"
+                " JOIN videos v ON v.id = vi.video_id WHERE v.source_type = ?)"
+            )
+            params.append(source_type)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY member_count DESC"
         with self._conn() as con:
             rows = con.execute(sql, params).fetchall()
@@ -443,6 +482,45 @@ class VideoStore:
                 "people_required": row["people_required"],
             })
         return result
+
+    def upsert_github_repo(
+        self, repo_url: str, head_sha: str | None = None, description: str | None = None
+    ) -> None:
+        """Insert/update a repo's git+page state (ADR-0018 S1).
+
+        head_sha / description are COALESCEd so a call that only refreshes the SHA
+        (the ls-remote re-check) doesn't wipe a previously-fetched description.
+        """
+        now = self._now()
+        with self._conn() as con:
+            con.execute(
+                """
+                INSERT INTO github_repos (repo_url, head_sha, description, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(repo_url) DO UPDATE SET
+                    head_sha    = COALESCE(excluded.head_sha,    head_sha),
+                    description = COALESCE(excluded.description, description),
+                    updated_at  = excluded.updated_at
+                """,
+                (repo_url, head_sha, description, now),
+            )
+
+    def get_github_repo(self, repo_url: str) -> dict | None:
+        """Return {repo_url, head_sha, description, updated_at} or None."""
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT repo_url, head_sha, description, updated_at"
+                " FROM github_repos WHERE repo_url = ?",
+                (repo_url,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "repo_url": row["repo_url"],
+            "head_sha": row["head_sha"],
+            "description": row["description"],
+            "updated_at": row["updated_at"],
+        }
 
     def get_cluster_by_id(self, cluster_id: int) -> dict | None:
         """Return a single cluster dict by id, or None if not found."""
@@ -677,4 +755,5 @@ def _row_to_video(row: sqlite3.Row) -> Video:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         collection=row["collection"] if "collection" in row.keys() else None,
+        source_type=row["source_type"] if "source_type" in row.keys() else "video",
     )
