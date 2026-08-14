@@ -535,6 +535,23 @@ class VideoStore:
                 (repo_url, head_sha, description, now),
             )
 
+    def list_github_repos(self) -> list[dict]:
+        """All ingested repos, most-recently-touched first (GitHub panel list)."""
+        with self._conn() as con:
+            rows = con.execute(
+                "SELECT repo_url, head_sha, description, updated_at"
+                " FROM github_repos ORDER BY updated_at DESC"
+            ).fetchall()
+        return [
+            {
+                "repo_url": r["repo_url"],
+                "head_sha": r["head_sha"],
+                "description": r["description"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+
     def get_github_repo(self, repo_url: str) -> dict | None:
         """Return {repo_url, head_sha, description, updated_at} or None."""
         with self._conn() as con:

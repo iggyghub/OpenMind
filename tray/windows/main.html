@@ -5767,6 +5767,7 @@
         <button class="lib-tab" data-lib="documents" type="button">Documents</button>
         <button class="lib-tab" data-lib="job-search" type="button">Job Search</button>
         <button class="lib-tab" data-lib="videos" type="button">Videos</button>
+        <button class="lib-tab" data-lib="github" type="button">GitHub</button>
       </div>
 
       <div class="lib-sub is-active" data-lib="memory">
@@ -5891,6 +5892,14 @@
       <div class="lib-sub" data-lib="videos">
         <div class="vid-body" id="videos-panel-body">
           <div class="ps-empty">Loading Videos panel...</div>
+        </div>
+      </div>
+
+      <!-- GitHub panel (ADR-0018 S5) -- same declarative panel_spec pipeline as
+           Videos; shares clusters/collections/move widgets, source-scoped view. -->
+      <div class="lib-sub" data-lib="github">
+        <div class="vid-body" id="github-panel-body">
+          <div class="ps-empty">Loading GitHub panel...</div>
         </div>
       </div>
 
@@ -6609,6 +6618,9 @@
           }
           if (event.data && event.data.plugin_name === 'video') {
             renderVideosPanel(event.data.spec);
+          }
+          if (event.data && event.data.plugin_name === 'github_ingest') {
+            renderGithubPanel(event.data.spec);
           }
           break;
         case 'recipe_run_result':
@@ -9820,6 +9832,50 @@
       if (_videosPollTimer) { clearInterval(_videosPollTimer); _videosPollTimer = null; }
     }
 
+    // ── GitHub sub-tab (ADR-0018 S5) ────────────────────────────────────────
+    // Same declarative panel_spec pipeline as Videos; the github_ingest plugin's
+    // panel_spec shares the cluster/group/move widgets and the shared clusters.
+    const githubPanelBodyEl = document.getElementById('github-panel-body');
+    let _lastGithubSpecJson = null;
+    function renderGithubPanel(spec) {
+      if (!githubPanelBodyEl || typeof window.PanelSpec === 'undefined') return;
+      const json = JSON.stringify(spec);
+      if (json === _lastGithubSpecJson) return;
+      _lastGithubSpecJson = json;
+      const _groupKey = function (d) {
+        const s = d.querySelector('.ps-group-summary');
+        const t = s && s.firstChild && s.firstChild.textContent;
+        return t ? t.trim() : '';
+      };
+      const openState = {};
+      githubPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
+        const k = _groupKey(d);
+        if (k) openState[k] = d.open;
+      });
+      githubPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
+      githubPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
+        const k = _groupKey(d);
+        if (k && (k in openState)) d.open = openState[k];
+      });
+      if (window.ActionWidget) {
+        window.ActionWidget.initActionWidgets(githubPanelBodyEl, sendEvent);
+        window.ActionWidget.initMoveWidgets(githubPanelBodyEl, sendEvent);
+      }
+    }
+    let _githubPollTimer = null;
+    function startGithubPoll() {
+      stopGithubPoll();
+      _githubPollTimer = setInterval(function () {
+        const a = document.activeElement;
+        if (a && githubPanelBodyEl && githubPanelBodyEl.contains(a) &&
+            (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return;
+        sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: 'github_ingest' } });
+      }, 4000);
+    }
+    function stopGithubPoll() {
+      if (_githubPollTimer) { clearInterval(_githubPollTimer); _githubPollTimer = null; }
+    }
+
     // ── plugins pane (Issues #206, #187) ────────────────────────────────────
     // Consumes plugins_list (status + tool_count added in #187) and
     // plugin_settings (new in #187 for the Discord allowlist sub-pane).
@@ -11183,6 +11239,14 @@
       });
       // S15 #669: live-refresh only while the Videos sub-tab is the active one.
       if (target === 'videos') { startVideosPoll(); } else { stopVideosPoll(); }
+      // ADR-0018 S5: same for the GitHub sub-tab, plus an immediate spec request
+      // so the panel renders on switch rather than after the first poll tick.
+      if (target === 'github') {
+        sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: 'github_ingest' } });
+        startGithubPoll();
+      } else {
+        stopGithubPoll();
+      }
     }
 
     // Settings sub-tab activation (General / AI models). Mirrors libActivateSub.

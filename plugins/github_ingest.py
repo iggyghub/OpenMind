@@ -88,6 +88,88 @@ class GithubIngestPlugin:
             return await self._github_ingest(args)
         return ToolResult(content=f"Unknown tool: {tool_name}", is_error=True)
 
+    def panel_spec(self, profile_id: "int | None" = None) -> dict:  # noqa: ARG002
+        """Declarative GitHub panel (ADR-0018 S5, ADR-0012).
+
+        A repo ingest form, the ingested repos, and the source-scoped clusters --
+        the last reuses the same cluster/group/move/commit widgets as the Videos
+        panel (move_tool / commit are source-agnostic), and shows the SHARED
+        clusters that contain >=1 github-sourced idea.
+        """
+        store = _video._get_store()
+        widgets: list[dict] = [{
+            "type": "action",
+            "id": "github-ingest",
+            "label": "Ingest repo",
+            "tool": "github_ingest",
+            "tool_args": {},
+            "input_arg": "repo_url",
+            "input_placeholder": "https://github.com/owner/repo",
+            "input_arg2": "category",
+            "input_placeholder2": "collection (blank = Uncategorised)",
+        }]
+
+        repos = store.list_github_repos()
+        if repos:
+            items = [{
+                "title": _repo_name(r["repo_url"]),
+                "subtitle": (r.get("description") or r["repo_url"]),
+            } for r in repos]
+            widgets.append({
+                "type": "group",
+                "label": "Repositories",
+                "count": str(len(repos)),
+                "open": True,
+                "widgets": [{"type": "list", "items": items}],
+            })
+
+        clusters = store.list_clusters(source_type="github")
+        if clusters:
+            all_collections = sorted(store.list_collections())
+            by_collection: dict[str, list[dict]] = {}
+            for c in clusters:
+                by_collection.setdefault(c.get("collection") or "Uncategorised", []).append(c)
+            ordered = sorted(by_collection.items(), key=lambda kv: len(kv[1]), reverse=True)
+            for gi, (collection, members) in enumerate(ordered):
+                children: list[dict] = []
+                for c in members:
+                    n = c["member_count"]
+                    parts = [f"{n} doc{'s' if n != 1 else ''}", c["verdict"] or "pending"]
+                    if c["confidence"] is not None:
+                        parts.append(f"{c['confidence']:.0%}")
+                    if c.get("memory_id"):
+                        parts.append("✓ Memory")
+                    children.append({
+                        "type": "cluster",
+                        "cluster_id": c["id"],
+                        "label": c["label"],
+                        "stats": " · ".join(parts),
+                        "collection": collection,
+                        "collections": all_collections,
+                        "move_tool": "video_move_cluster",
+                    })
+                    if c["verdict"] and not c.get("memory_id"):
+                        children.append({
+                            "type": "action",
+                            "id": f"github-commit-{c['id']}",
+                            "label": f"Commit {c['label']} to Memory",
+                            "tool": "video_commit",
+                            "tool_args": {"cluster_id": c["id"]},
+                        })
+                label = collection[:1].upper() + collection[1:]
+                widgets.append({
+                    "type": "group",
+                    "label": label,
+                    "collection": collection,
+                    "count": f"{len(members)} cluster{'s' if len(members) != 1 else ''}",
+                    "open": gi == 0,
+                    "widgets": children,
+                })
+        else:
+            widgets.append({"type": "list", "items": []})
+
+        return {"title": "GitHub", "widgets": widgets}
+
     async def _github_ingest(self, args: dict) -> ToolResult:
         repo_url: str = (args.get("repo_url") or "").strip()
         category: str = (args.get("category") or "").strip() or "Uncategorised"
