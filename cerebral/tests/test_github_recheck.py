@@ -75,14 +75,15 @@ async def test_reingest_uses_repo_collection_and_clears_flag():
     gs.set_head_sha_fn(lambda d: "sha1")
     gs.set_fetch_page_fn(lambda url: "")
     plugin = GithubIngestPlugin()
-    await plugin.call_tool("github_ingest", {"repo_url": "https://gh/r", "category": "harness improvement"})
-    s.set_update_available("https://gh/r", True)
+    url = "https://github.com/acme/r"
+    await plugin.call_tool("github_ingest", {"repo_url": url, "category": "harness improvement"})
+    s.set_update_available(url, True)
 
     # Re-ingest: no category passed -> inferred from the repo's docs.
-    r = await plugin.call_tool("github_reingest", {"repo_url": "https://gh/r"})
+    r = await plugin.call_tool("github_reingest", {"repo_url": url})
     data = json.loads(r.content)
     assert data["collection"] == "harness improvement"
-    assert s.get_github_repo("https://gh/r")["update_available"] is False
+    assert s.get_github_repo(url)["update_available"] is False
 
 
 # ── panel: up-arrow appears only when flagged ─────────────────────────────────

@@ -64,19 +64,26 @@ def _grounding(repo_url: str, meta: dict) -> str:
     return " ".join(parts)
 
 
-async def _ingest_repo(store, repo_url: str, category: str) -> ToolResult:
+def _split_urls(raw: str) -> list[str]:
+    """One or many repo URLs from a field -- split on whitespace/commas/newlines."""
+    return [u for u in re.split(r"[\s,]+", (raw or "").strip()) if u]
+
+
+async def _ingest_repo(store, repo_url: str, category: str) -> dict:
     """Clone -> enumerate curated docs -> extract each into the shared clusters.
 
     Shared by github_ingest and github_reingest. Idempotent: unchanged +
     already-clustered docs are skipped. All acquisition is seam-injected.
+    Returns a result dict; a clone failure yields {"repo", "error"}.
     """
+    already = store.get_github_repo(repo_url) is not None
     with tempfile.TemporaryDirectory() as tmp:
         clone_dir = Path(tmp) / "repo"
         try:
             _gh.get_clone_fn()(repo_url, clone_dir)
         except Exception as exc:  # noqa: BLE001
             logger.error("[github] clone failed for %s: %s", repo_url, exc)
-            return ToolResult(content=f"Clone failed: {exc}", is_error=True)
+            return {"repo": repo_url, "error": f"Clone failed: {exc}"}
 
         head_sha = None
         try:
@@ -122,14 +129,15 @@ async def _ingest_repo(store, repo_url: str, category: str) -> ToolResult:
         )
         results.append({"doc": d["relpath"], "stage": final})
 
-    return ToolResult(content=json.dumps({
+    return {
         "repo": repo_url,
         "collection": category,
+        "already_ingested": already,
         "docs": len(docs),
         "extracted": len(results),
         "skipped": skipped,
         "results": results,
-    }))
+    }
 
 
 class GithubIngestPlugin:
@@ -154,7 +162,10 @@ class GithubIngestPlugin:
                     "properties": {
                         "repo_url": {
                             "type": "string",
-                            "description": "GitHub repo URL, e.g. https://github.com/owner/repo",
+                            "description": (
+                                "One or more GitHub repo URLs (space/comma/newline "
+                                "separated), e.g. https://github.com/owner/repo"
+                            ),
                         },
                         "category": {
                             "type": "string",
@@ -222,7 +233,7 @@ class GithubIngestPlugin:
             "tool": "github_ingest",
             "tool_args": {},
             "input_arg": "repo_url",
-            "input_placeholder": "https://github.com/owner/repo",
+            "input_placeholder": "repo URL(s), space or comma separated",
             "input_arg2": "category",
             "input_placeholder2": "collection (blank = Uncategorised)",
         }]
@@ -306,13 +317,20 @@ class GithubIngestPlugin:
         category: str = (args.get("category") or "").strip() or "Uncategorised"
         if not raw:
             return ToolResult(content="repo_url is required", is_error=True)
-        repo_url = _normalize_repo_url(raw)
-        if repo_url is None:
-            return ToolResult(
-                content=f"Not a GitHub repo URL (expected github.com/owner/repo): {raw}",
-                is_error=True,
-            )
-        return await _ingest_repo(_video._get_store(), repo_url, category)
+        urls = _split_urls(raw)
+        store = _video._get_store()
+        out: list[dict] = []
+        for u in urls:
+            norm = _normalize_repo_url(u)
+            if norm is None:
+                out.append({"repo": u, "error": "Not a GitHub repo URL (expected github.com/owner/repo)"})
+                continue
+            out.append(await _ingest_repo(store, norm, category))
+        # Single URL -> flat result (back-compat); many -> a list.
+        if len(out) == 1:
+            r = out[0]
+            return ToolResult(content=json.dumps(r), is_error=("error" in r))
+        return ToolResult(content=json.dumps({"repos": out, "count": len(out)}))
 
     async def _github_reingest(self, args: dict) -> ToolResult:
         """Re-ingest a repo (up-arrow click): re-clone, extract changed docs, clear
@@ -323,9 +341,9 @@ class GithubIngestPlugin:
         store = _video._get_store()
         category = store.get_repo_collection(repo_url) or "Uncategorised"
         result = await _ingest_repo(store, repo_url, category)
-        if not result.is_error:
+        if "error" not in result:
             store.set_update_available(repo_url, False)
-        return result
+        return ToolResult(content=json.dumps(result), is_error=("error" in result))
 
     def _github_check_updates(self, args: dict) -> ToolResult:  # noqa: ARG002
         """For each ingested repo, compare the remote HEAD (git ls-remote, no
