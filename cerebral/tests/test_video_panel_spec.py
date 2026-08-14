@@ -97,7 +97,7 @@ def test_panel_spec_no_clusters_yields_empty_list(plugin, store, monkeypatch):
         "expected an empty list widget when no clusters"
 
 
-def test_panel_spec_cluster_table_when_clusters_exist(plugin, store, monkeypatch):
+def test_panel_spec_cluster_rows_when_clusters_exist(plugin, store, monkeypatch):
     monkeypatch.setattr(_channel, "batch_status", _idle_status)
     monkeypatch.setattr(_video_plugin, "_store", store)
 
@@ -107,12 +107,15 @@ def test_panel_spec_cluster_table_when_clusters_exist(plugin, store, monkeypatch
     store.upsert_idea(video_id, "Sell goods without holding inventory", cluster_id)
 
     spec = plugin.panel_spec(None)
-    table_widgets = [w for w in _all_widgets(spec) if w.get("type") == "table"]
-    assert table_widgets, "expected a table widget listing clusters"
-    tbl = table_widgets[0]
-    assert "Idea cluster" in tbl["columns"]
-    labels = [row[0] for row in tbl["rows"]]
+    cluster_widgets = [w for w in _all_widgets(spec) if w.get("type") == "cluster"]
+    assert cluster_widgets, "expected a cluster widget per idea cluster"
+    labels = [w["label"] for w in cluster_widgets]
     assert "dropshipping" in labels
+    # Each cluster carries move affordances: its id, source collection, targets.
+    dc = next(w for w in cluster_widgets if w["label"] == "dropshipping")
+    assert dc["cluster_id"] == cluster_id
+    assert dc["move_tool"] == "video_move_cluster"
+    assert isinstance(dc["collections"], list)
 
 
 def test_panel_spec_running_batch_includes_stop_action(plugin, store, monkeypatch):
@@ -152,10 +155,9 @@ def test_panel_spec_no_per_cluster_detail_wall(plugin, store, monkeypatch):
     spec = plugin.panel_spec(None)
     widgets = _all_widgets(spec)
 
-    # All 4 same-collection clusters appear once, in one grouped clusters table.
-    tables = [w for w in widgets if w.get("type") == "table" and "Idea cluster" in w.get("columns", [])]
-    assert len(tables) == 1
-    assert len(tables[0]["rows"]) == 4
+    # All 4 same-collection clusters appear once, as 4 cluster rows in one group.
+    cluster_ws = [w for w in widgets if w.get("type") == "cluster"]
+    assert len(cluster_ws) == 4
 
     # No per-cluster detail wall: the only detail is the batch status (a "Status" field).
     details = [w for w in widgets if w.get("type") == "detail"]
@@ -182,9 +184,8 @@ def test_panel_spec_committed_cluster_shows_in_memory_and_no_commit(plugin, stor
 
     spec = plugin.panel_spec(None)
     widgets = _all_widgets(spec)
-    tbl = next(w for w in widgets if w.get("type") == "table" and "In Memory" in w.get("columns", []))
-    in_mem_idx = tbl["columns"].index("In Memory")
-    assert tbl["rows"][0][in_mem_idx] == "✓"
+    cw = next(w for w in widgets if w.get("type") == "cluster" and w["label"] == "committed-idea")
+    assert "✓ Memory" in cw["stats"]
     assert not [w for w in widgets if str(w.get("id", "")).startswith("video-commit-")]
 
 
@@ -248,7 +249,9 @@ def test_panel_spec_groups_clusters_by_collection(plugin, store, monkeypatch):
     assert labels == {"Money-making idea", "Harness improvement"}
     # Exactly one collection group is open (the first / most-populous).
     assert sum(1 for g in groups if g.get("open")) == 1
-    # Each group's table lists only its own collection's clusters.
+    # Each group lists only its own collection's clusters (one cluster widget each),
+    # and is tagged with its collection so it can be a drag-drop target.
     for g in groups:
-        tbl = next(w for w in g["widgets"] if w.get("type") == "table")
-        assert len(tbl["rows"]) == 1
+        cluster_ws = [w for w in g["widgets"] if w.get("type") == "cluster"]
+        assert len(cluster_ws) == 1
+        assert g.get("collection") == cluster_ws[0]["collection"]

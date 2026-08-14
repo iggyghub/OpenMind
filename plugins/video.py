@@ -867,26 +867,34 @@ class VideoPlugin:
             by_collection: dict[str, list[dict]] = {}
             for c in clusters:
                 by_collection.setdefault(c.get("collection") or "Uncategorised", []).append(c)
-            # Most clusters first; open only the first group.
+            # Most clusters first; open only the first group. All collection
+            # names are the move-dropdown targets on every cluster row.
             ordered = sorted(by_collection.items(), key=lambda kv: len(kv[1]), reverse=True)
+            all_collections = sorted(by_collection.keys())
             for gi, (collection, members) in enumerate(ordered):
-                children: list[dict] = [{
-                    "type": "table",
-                    "columns": ["Idea cluster", "Videos", "People", "Verdict", "Confidence", "In Memory"],
-                    "rows": [
-                        [
-                            c["label"],
-                            str(c["member_count"]),
-                            str(c.get("people_required") or 1),
-                            c["verdict"] or "pending",
-                            f"{c['confidence']:.0%}" if c["confidence"] is not None else "—",
-                            "✓" if c.get("memory_id") else "",
-                        ]
-                        for c in members
-                    ],
-                }]
-                # One commit button per verified-and-uncommitted cluster in this group.
+                # Each cluster is a draggable row (with a "Move to…" select) plus,
+                # when verified-and-uncommitted, its commit button. Replaces the
+                # read-only table so clusters can be re-filed between collections.
+                children: list[dict] = []
                 for c in members:
+                    n_vid = c["member_count"]
+                    people = c.get("people_required") or 1
+                    parts = [f"{n_vid} video{'s' if n_vid != 1 else ''}", c["verdict"] or "pending"]
+                    if c["confidence"] is not None:
+                        parts.append(f"{c['confidence']:.0%}")
+                    if people > 1:
+                        parts.append(f"{people} people")
+                    if c.get("memory_id"):
+                        parts.append("✓ Memory")
+                    children.append({
+                        "type": "cluster",
+                        "cluster_id": c["id"],
+                        "label": c["label"],
+                        "stats": " · ".join(parts),
+                        "collection": collection,
+                        "collections": all_collections,
+                        "move_tool": "video_move_cluster",
+                    })
                     if c["verdict"] and not c.get("memory_id"):
                         children.append({
                             "type": "action",
@@ -900,6 +908,7 @@ class VideoPlugin:
                 widgets.append({
                     "type": "group",
                     "label": label,
+                    "collection": collection,
                     "count": f"{n} cluster{'s' if n != 1 else ''}",
                     "open": gi == 0,
                     "widgets": children,

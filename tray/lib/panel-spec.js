@@ -153,12 +153,46 @@
       ? ' <span class="ps-group-count">' + escHtml(w.count) + '</span>'
       : '';
     var open  = w.open ? ' open' : '';
+    // data-collection marks this group as a drop target for cluster rows dragged
+    // from another collection (manual move). Empty for non-collection groups.
+    var coll  = w.collection ? ' data-collection="' + escHtml(w.collection) + '"' : '';
     var children = Array.isArray(w.widgets) ? w.widgets.map(renderWidget).join('') : '';
     return (
-      '<details class="ps-group"' + open + '>' +
+      '<details class="ps-group"' + open + coll + '>' +
         '<summary class="ps-group-summary">' + label + count + '</summary>' +
         '<div class="ps-group-body">' + children + '</div>' +
       '</details>'
+    );
+  }
+
+  // Cluster widget -- one idea cluster as a draggable row with a "Move to…"
+  // <select>. Both the select and dragging the row onto another collection group
+  // fire the move_tool (video_move_cluster) via action-widget.js. Replaces the
+  // per-collection table so each cluster can carry its own move control.
+  function _renderCluster(w) {
+    var cid   = escHtml(String(w.cluster_id == null ? '' : w.cluster_id));
+    var label = escHtml(w.label || '');
+    var stats = w.stats
+      ? '<span class="ps-cluster-stats">' + escHtml(w.stats) + '</span>'
+      : '';
+    var tool  = escHtml(w.move_tool || 'video_move_cluster');
+    var cur   = w.collection || '';
+    var opts  = Array.isArray(w.collections) ? w.collections : [];
+    var options = '<option value="" selected>Move to…</option>';
+    for (var i = 0; i < opts.length; i++) {
+      if (opts[i] === cur) continue;  // can't move to its own collection
+      options += '<option value="' + escHtml(opts[i]) + '">' + escHtml(opts[i]) + '</option>';
+    }
+    return (
+      '<div class="ps-cluster" draggable="true" data-cluster-id="' + cid + '"' +
+        ' data-move-tool="' + tool + '">' +
+        '<div class="ps-cluster-main">' +
+          '<span class="ps-cluster-label">' + label + '</span>' + stats +
+        '</div>' +
+        '<select class="ps-cluster-move" aria-label="Move to another collection">' +
+          options +
+        '</select>' +
+      '</div>'
     );
   }
 
@@ -221,8 +255,9 @@
     text:   _renderText,
     action: _renderAction,
     toggle: _renderToggle,
-    table:  _renderTable,
-    group:  _renderGroup,
+    table:   _renderTable,
+    group:   _renderGroup,
+    cluster: _renderCluster,
   };
 
   // Renders one widget. Unknown or malformed types return '' -- inert.
