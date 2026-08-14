@@ -9,8 +9,10 @@ from pathlib import Path
 import pytest
 
 import plugins.video as video_mod
+from cerebral.llm.router import ModelUnavailableError
 from cerebral.video import github_source as gs
 from cerebral.video.store import VideoStore
+from plugins import github_ingest as gi_mod
 from plugins.github_ingest import GithubIngestPlugin
 
 
@@ -46,6 +48,7 @@ def _reset():
     gs.set_clone_fn(None)
     gs.set_head_sha_fn(None)
     gs.set_fetch_page_fn(None)
+    gi_mod.set_route_extraction_local_fn(None)
 
 
 def _wire(store, files):
@@ -177,6 +180,59 @@ async def test_github_ingest_reports_already_ingested():
         "github_ingest", {"repo_url": "https://github.com/a/b"})).content)
     assert r2["already_ingested"] is True
     assert r2["skipped"] == 1 and r2["extracted"] == 0
+
+
+def _extract_failing_after(n_ok: int):
+    """Async extract stub that succeeds n_ok times, then raises Budd-down."""
+    calls = {"n": 0}
+
+    async def _fx(transcript, ocr, vis, labels, category=""):
+        calls["n"] += 1
+        if calls["n"] > n_ok:
+            raise ModelUnavailableError("model 'custom/budd' unavailable")
+        return {"idea": "an idea", "cluster_label": "Doc Ideas", "people_required": 1}
+
+    return _fx
+
+
+async def test_github_ingest_requeues_repo_when_budd_down():
+    # ADR-0019 S2: a Budd failure mid-repo abandons the rest and requeues the repo.
+    store = _store()
+    _wire(store, {
+        "README.md": " ".join(["word"] * 300),
+        "docs/guide.md": " ".join(["word"] * 300),
+    })
+    video_mod.set_extract_fn(_extract_failing_after(1))  # 1st doc ok, 2nd fails
+    r = await GithubIngestPlugin().call_tool(
+        "github_ingest", {"repo_url": "https://github.com/a/b", "category": "c"},
+    )
+    data = json.loads(r.content)
+    assert data["requeued"] == "budd_unavailable"
+    assert data["extracted"] == 1 and data["remaining"] == 1
+    assert data["budd_requeues"] == 1
+    assert store.get_budd_requeues("https://github.com/a/b") == 1
+
+
+async def test_github_ingest_drains_to_local_after_three_requeues():
+    # ADR-0019 S3: once a repo has 3 Budd requeues, ingest routes local + finishes.
+    store = _store()
+    _wire(store, {"README.md": " ".join(["word"] * 300)})
+    url = "https://github.com/a/b"
+    store.upsert_github_repo(url)
+    for _ in range(3):
+        store.bump_budd_requeues(url)
+
+    route_calls = []
+    gi_mod.set_route_extraction_local_fn(lambda local: route_calls.append(local))
+
+    r = await GithubIngestPlugin().call_tool(
+        "github_ingest", {"repo_url": url, "category": "c"},
+    )
+    data = json.loads(r.content)
+    assert "requeued" not in data              # completed, not requeued
+    assert data["extracted"] == 1
+    assert route_calls == [True, False]        # drained local, then restored
+    assert store.get_budd_requeues(url) == 0   # cleared on clean finish
 
 
 async def test_github_ingest_clone_failure_errors():

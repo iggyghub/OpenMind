@@ -95,6 +95,21 @@ purpose.
   the batch layer per the design above — "loop system" here means how the code
   gets written, not how requeue runs.)
 
+## Build status
+
+- **S1 — shipped** (#716, via Felix self-dev on Budd): router `task_type="extraction"`,
+  Budd-first, wired into both extraction + verdict calls.
+- **S2/S3/S4 — shipped together** (built directly — multi-file control-flow refactor
+  beyond self-dev's search/replace edits; the user's "you do it with yours" fallback).
+  Requeue counter + repo-grain requeue + drain-at-3 + retry nudge.
+- **Video coverage:** video extraction is already Budd-first (S1 changed the shared
+  `_video_extract`/`_video_verify`). On a Budd failure mid-batch it rides its existing
+  `failed → video_batch_retry → resume` loop (per-video = per-part requeue). The
+  repo-grain requeue counter + drain-at-3 are github-specific (a repo is a multi-doc
+  "part"); a video is a single-doc part, so its existing retry already covers it.
+  ponytail: wire the counter+drain to video too only if a persistently-down Budd is
+  observed wedging video batches.
+
 ## Slices (loop consumes top-down; each is one small, tested, mergeable PR)
 
 **S1 — Router `extraction` task_type (budd-first).**

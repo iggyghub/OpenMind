@@ -6277,6 +6277,27 @@ async def _video_verify(cluster_label: str, idea_text: str, category: str = "mon
     return _json.loads(m.group(0))
 
 
+def _route_extraction_local(local: bool) -> None:
+    """ADR-0019 S3 drain seam: pin the "extraction" task to a local model (a repo
+    that has failed Budd 3x finishes locally), or restore Budd-first afterwards.
+    ponytail: a global re-pin -- ingests run one repo at a time, so a concurrent
+    video extract would briefly share the local route; add a per-call route if
+    that ever overlaps."""
+    if local:
+        chosen = next(
+            (m["id"] for m in _router.list_models()
+             if not m["is_cloud"] and m["id"].startswith("ollama/")),
+            None,
+        )
+        if chosen:
+            _router.set_task_model("extraction", chosen)
+            logger.info("[cerebral] extraction drained to local %s", chosen)
+        else:
+            logger.warning("[cerebral] drain requested but no local model installed")
+    else:
+        _router.seed_extraction_default()  # back to Budd-first
+
+
 def _wire_plugin_seams() -> None:
     """Inject per-plugin factories into the orchestrator-loaded modules.
 
@@ -6368,6 +6389,7 @@ def _wire_plugin_seams() -> None:
         ("video", "set_extract_fn", _video_extract),                                 # S5 #642 (ADR-0017)
         ("video", "set_verify_fn", _video_verify),                                   # S6 #644 (ADR-0017)
         ("video", "set_commit_fn", _video_commit),                                    # S7 #645 (ADR-0017)
+        ("github_ingest", "set_route_extraction_local_fn", _route_extraction_local),  # ADR-0019 S3 drain
     ]
     for name, seam, factory in seams:
         try:
