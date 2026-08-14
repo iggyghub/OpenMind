@@ -150,6 +150,35 @@ async def test_github_ingest_normalizes_tree_url():
     assert data["repo"] == "https://github.com/acme/harness"   # normalized
 
 
+async def test_github_ingest_multiple_urls():
+    store = _store()
+    _wire(store, {"README.md": " ".join(["word"] * 300)})
+    r = await GithubIngestPlugin().call_tool("github_ingest", {
+        "repo_url": "https://github.com/a/one, https://github.com/b/two\nhttps://cursor.com/blog/x",
+        "category": "c",
+    })
+    data = json.loads(r.content)
+    assert data["count"] == 3
+    repos = {x["repo"]: x for x in data["repos"]}
+    assert repos["https://github.com/a/one"]["extracted"] == 1
+    assert repos["https://github.com/b/two"]["extracted"] == 1
+    # The blog URL is rejected per-item without aborting the others.
+    assert "error" in repos["https://cursor.com/blog/x"]
+
+
+async def test_github_ingest_reports_already_ingested():
+    store = _store()
+    _wire(store, {"README.md": " ".join(["word"] * 300)})
+    plugin = GithubIngestPlugin()
+    r1 = json.loads((await plugin.call_tool(
+        "github_ingest", {"repo_url": "https://github.com/a/b"})).content)
+    assert r1["already_ingested"] is False
+    r2 = json.loads((await plugin.call_tool(
+        "github_ingest", {"repo_url": "https://github.com/a/b"})).content)
+    assert r2["already_ingested"] is True
+    assert r2["skipped"] == 1 and r2["extracted"] == 0
+
+
 async def test_github_ingest_clone_failure_errors():
     store = _store()
     video_mod.set_store(store)
