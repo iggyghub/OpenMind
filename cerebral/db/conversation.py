@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cerebral.paths import data_dir
+from cerebral.db import crypto
 
 DB_PATH = data_dir() / "openmind.db"
 
@@ -327,6 +328,7 @@ class ConversationStore:
             thread = self.get_or_create_default_thread(profile_id)
             thread_id = thread.id
         payload = json.dumps(content or {}, ensure_ascii=False)
+        payload = crypto.encrypt(payload)
         cur = self._con.execute(
             "INSERT INTO conversation_turns "
             "(profile_id, thread_id, kind, content_json) VALUES (?, ?, ?, ?)",
