@@ -178,6 +178,7 @@ class ModelRouter:
         )
         self._enabled: dict[str, bool] = {mid: True for mid in backends}
         self._fallback_enabled: bool = False
+        self._usage_log: list[dict] = []
 
     @property
     def active_model(self) -> str:
@@ -329,6 +330,16 @@ class ModelRouter:
     def task_models(self) -> dict[str, str]:
         return dict(self._task_models)
 
+    def usage_totals(self) -> dict[str, dict]:
+        totals: dict[str, dict] = {}
+        for entry in self._usage_log:
+            mid = entry["model_id"]
+            if mid not in totals:
+                totals[mid] = {"prompt_tokens": 0, "completion_tokens": 0}
+            totals[mid]["prompt_tokens"] += entry["prompt_tokens"]
+            totals[mid]["completion_tokens"] += entry["completion_tokens"]
+        return totals
+
     def _seed_task_default(self, task: str, preferred: "tuple[str, ...]") -> str | None:
         """Pin ``task`` to the first installed model in ``preferred``, best first.
 
@@ -457,6 +468,15 @@ class ModelRouter:
                     continue
                 self._last_model = mid
                 logger.info("[router] %s handled request", mid)
+                _u = getattr(self._backends[mid], "_last_usage", None)
+                if not isinstance(_u, dict):
+                    _u = {}
+                self._usage_log.append({
+                    "model_id": mid,
+                    "task_type": task_type,
+                    "prompt_tokens": int(_u.get("prompt_tokens", 0)),
+                    "completion_tokens": int(_u.get("completion_tokens", 0)),
+                })
                 return response
             raise ModelUnavailableError(
                 f"all enabled models unavailable: {last_exc}"
@@ -482,6 +502,15 @@ class ModelRouter:
                 ) from exc2
         self._last_model = model_id
         logger.info("[router] %s handled request", model_id)
+        _u = getattr(self._backends[model_id], "_last_usage", None)
+        if not isinstance(_u, dict):
+            _u = {}
+        self._usage_log.append({
+            "model_id": model_id,
+            "task_type": task_type,
+            "prompt_tokens": int(_u.get("prompt_tokens", 0)),
+            "completion_tokens": int(_u.get("completion_tokens", 0)),
+        })
         return response
 
     def _vision_chain(self) -> list[str]:
@@ -727,6 +756,7 @@ class OllamaBackend:
         # qwen2.5vl, ...) advertise this so the router's vision chain picks
         # them; text-only Ollama tiers stay skipped.
         self.supports_vision = supports_vision
+        self._last_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
 
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         import httpx
@@ -741,7 +771,9 @@ class OllamaBackend:
                 resp.raise_for_status()
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 raise ConnectionError(str(exc)) from exc
-        return resp.json()["response"]
+        data = resp.json()
+        self._last_usage = {"prompt_tokens": int(data.get("prompt_eval_count", 0)), "completion_tokens": int(data.get("eval_count", 0))}
+        return data["response"]
 
     async def complete_with_tools(
         self, prompt: str, tools: list[dict]
@@ -908,6 +940,7 @@ class ClawBackend:
         # ADR-0016 sec 5: Budd is the expected VL tier in practice; set True
         # when the configured model at this endpoint is multimodal.
         self.supports_vision = supports_vision
+        self._last_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -932,7 +965,10 @@ class ClawBackend:
                 raise ConnectionError(
                     f"HTTP {exc.response.status_code} from {exc.request.url}"
                 ) from exc
-        return resp.json()["choices"][0]["message"]["content"]
+        data = resp.json()
+        usage = data.get("usage", {}) or {}
+        self._last_usage = {"prompt_tokens": int(usage.get("prompt_tokens", 0)), "completion_tokens": int(usage.get("completion_tokens", 0))}
+        return data["choices"][0]["message"]["content"]
 
     async def complete_with_tools(
         self, prompt: str, tools: list[dict]
@@ -1052,6 +1088,7 @@ class AnthropicBackend:
         # ADR-0016 sec 5: all current Claude models are multimodal; default
         # True. Overridable for a hypothetical text-only future model.
         self.supports_vision = supports_vision
+        self._last_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
 
     def _get_client(self):
         if self._client is None:
@@ -1071,6 +1108,11 @@ class AnthropicBackend:
             )
         except anthropic.APIError as exc:
             raise ConnectionError(str(exc)) from exc
+        _usage = getattr(resp, "usage", None)
+        self._last_usage = {
+            "prompt_tokens": int(getattr(_usage, "input_tokens", 0) or 0),
+            "completion_tokens": int(getattr(_usage, "output_tokens", 0) or 0),
+        }
         return "".join(b.text for b in resp.content if b.type == "text")
 
     async def complete_with_images(
