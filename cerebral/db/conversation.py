@@ -363,7 +363,8 @@ class ConversationStore:
         if row is None:
             return
         try:
-            content = json.loads(row["content_json"]) if row["content_json"] else {}
+            raw = row["content_json"]
+            content = json.loads(crypto.decrypt(raw)) if raw else {}
         except (ValueError, TypeError):
             content = {}
         text = (content.get("text") or "").strip()
@@ -617,7 +618,8 @@ class ConversationStore:
 
 def _row_to_turn(row: sqlite3.Row) -> ConversationTurn:
     try:
-        content = json.loads(row["content_json"]) if row["content_json"] else {}
+        raw = row["content_json"]
+        content = json.loads(crypto.decrypt(raw)) if raw else {}
     except (ValueError, TypeError):
         content = {}
     # ``thread_id`` is nullable in case a legacy migration hasn't run yet.

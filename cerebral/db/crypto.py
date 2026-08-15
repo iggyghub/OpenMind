@@ -26,7 +26,7 @@ def get_or_create_key() -> bytes:
 
 
 def _fernet() -> cryptography.fernet.Fernet:
-    nonlocal _fernet_instance
+    global _fernet_instance
     if _fernet_instance is None:
         _fernet_instance = cryptography.fernet.Fernet(get_or_create_key())
     return _fernet_instance

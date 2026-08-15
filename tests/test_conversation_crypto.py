@@ -35,3 +35,26 @@ def test_passthrough_invalid_token():
     plaintext = "not a real token"
     result = crypto.decrypt(plaintext)
     assert result == plaintext
+
+
+def test_store_roundtrip_encrypts_at_rest_and_decrypts_on_read(tmp_path):
+    """Integration: a turn is ciphertext in the DB but readable via the store.
+
+    This is the check the crypto-only tests miss -- it exercises append()
+    (encrypt) and _row_to_turn (decrypt) together, so a missing decrypt on
+    the read path fails here instead of silently blanking conversations.
+    """
+    from cerebral.db.conversation import ConversationStore, KIND_USER_TEXT
+
+    store = ConversationStore(db_path=tmp_path / "conv.db")
+    turn = store.append(profile_id=1, kind=KIND_USER_TEXT, content={"text": "secret hi"})
+
+    # Stored value is ciphertext -- the plaintext must not be on disk.
+    raw = store._con.execute(
+        "SELECT content_json FROM conversation_turns WHERE id=?", (turn.id,)
+    ).fetchone()[0]
+    assert "secret hi" not in raw
+
+    # Reading back through the store decrypts transparently.
+    recent = store.list_recent(profile_id=1, limit=10)
+    assert recent[-1].content == {"text": "secret hi"}
