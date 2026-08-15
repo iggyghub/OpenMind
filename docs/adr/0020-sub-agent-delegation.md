@@ -151,3 +151,25 @@ the 8B scopes delegations sensibly (doesn't delegate everything / nothing).
 **S5 (deferred, maybe never) — cloud-only parallel fan-out.** `asyncio.gather` over
 cloud-pinned delegations, guarded so local never parallelizes. Only if a real need
 appears.
+
+## Amendment 2026-08-15 — subagent as a provider seam (harness-parity H2, #733)
+
+Reviewing `deepseek-ai/deepseek-harness` (`ctx.subagents`, six providers behind one
+interface, continuable delegation, jobs integration) confirmed this ADR's direction
+and sharpens where it goes. Clear-victor calls:
+
+1. **`run_subagent` becomes the fork-in-process provider of a small seam.** Define a
+   `SubagentProvider` protocol (`run(task, *, tools, context, model, ...) -> ToolResult`);
+   the current function is the local fork provider; a cloud-delegated provider (model
+   pin) is a second; an out-of-process provider (delegate to Claude Code / another
+   agent) is a future third. One interface, providers vary — mirrors dsh.
+2. **Continuable delegation.** Add an optional continuation handle so a caller can send
+   a follow-up to a finished sub-agent (reuse its forked context) instead of a fresh
+   run. Backed by ADR-0022 `fork` for the context snapshot.
+3. **Background-job registration.** A long delegation registers in a job registry so it
+   is listable/killable — the seam for a future `ctx.jobs` equivalent. Sequential-only
+   still holds for local (ADR-0020 decision 5); jobs is about observability, not
+   parallelism.
+
+Sequencing: land delegation S1-S4 first, then this amendment's build slices. The seam
+is the natural home for ADR-0023's workflow tool to fan out through.
