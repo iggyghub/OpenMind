@@ -121,6 +121,46 @@ def test_apply_search_replace_path_escape_guard(tmp_path):
     assert io.apply_search_replace(tmp_path, reply) == []
 
 
+def test_apply_newfile_creates_file(tmp_path):
+    body = "class Profile:\n    pass\n"
+    reply = f"<<<NEWFILE: cerebral/config_profiles.py>>>\n{body}<<<END>>>"
+    applied = io.apply_search_replace(tmp_path, reply)
+    assert applied == ["cerebral/config_profiles.py"]
+    assert (tmp_path / "cerebral/config_profiles.py").read_text(encoding="utf-8") == body
+
+
+def test_apply_newfile_makes_parent_dirs(tmp_path):
+    reply = "<<<NEWFILE: config/profiles.yaml>>>\ncoding: {}\n<<<END>>>"
+    assert io.apply_search_replace(tmp_path, reply) == ["config/profiles.yaml"]
+    assert (tmp_path / "config/profiles.yaml").is_file()
+
+
+def test_apply_newfile_never_clobbers_existing(tmp_path):
+    fp = _write(tmp_path, "cerebral/settings.py", "REAL = 1\n")
+    reply = "<<<NEWFILE: cerebral/settings.py>>>\nWIPED = 0\n<<<END>>>"
+    assert io.apply_search_replace(tmp_path, reply) == []  # refused
+    assert fp.read_text(encoding="utf-8") == "REAL = 1\n"  # untouched
+
+
+def test_apply_newfile_path_escape_guard(tmp_path):
+    reply = "<<<NEWFILE: ../evil.py>>>\npwned = 1\n<<<END>>>"
+    assert io.apply_search_replace(tmp_path, reply) == []
+    assert not (tmp_path.parent / "evil.py").exists()
+
+
+def test_apply_mixed_edit_and_newfile(tmp_path):
+    fp = _write(tmp_path, "cerebral/router.py", "X = 1\n")
+    reply = (
+        "<<<NEWFILE: cerebral/new_mod.py>>>\nVALUE = 2\n<<<END>>>\n"
+        "<<<FILE: cerebral/router.py>>>\n<<<SEARCH>>>\nX = 1\n"
+        "<<<REPLACE>>>\nX = 1\nY = 3\n<<<END>>>"
+    )
+    applied = io.apply_search_replace(tmp_path, reply)
+    assert set(applied) == {"cerebral/new_mod.py", "cerebral/router.py"}
+    assert (tmp_path / "cerebral/new_mod.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert "Y = 3" in fp.read_text(encoding="utf-8")
+
+
 if __name__ == "__main__":
     import sys
     import pytest

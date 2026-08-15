@@ -2693,13 +2693,17 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
     edit_prompt = (
         "You are editing the OpenMind repository. Make this change:\n"
         f"TASK: {description}\n\n"
-        "For each edit, output a block EXACTLY in this format:\n"
+        "To EDIT an existing file, output a block EXACTLY in this format:\n"
         "<<<FILE: relative/path.py>>>\n<<<SEARCH>>>\n"
         "<a short block of EXACT existing lines from the file to locate the edit>\n"
         "<<<REPLACE>>>\n<those same lines plus your additions>\n<<<END>>>\n\n"
+        "To CREATE a new file, output a block EXACTLY in this format:\n"
+        "<<<NEWFILE: relative/path.py>>>\n<the complete file body>\n<<<END>>>\n\n"
         "Rules: SEARCH must be copied verbatim from the file (exact indentation, "
-        "5-15 lines). To ADD code, SEARCH an anchor and REPLACE it with itself "
-        "plus the new code. Output ONLY these blocks, nothing else.\n\n"
+        "5-15 lines). To ADD code to an existing file, SEARCH an anchor and "
+        "REPLACE it with itself plus the new code. For a file marked "
+        "'(new file -- does not exist yet)', use a NEWFILE block with the whole "
+        "body. Output ONLY these blocks, nothing else.\n\n"
         "CURRENT FILES:\n" + "\n\n".join(blocks)
     )
     edit_raw = await _router.complete(edit_prompt, task_type="self_dev")

@@ -25,6 +25,15 @@ _SR_BLOCK = re.compile(
     re.DOTALL,
 )
 
+# New-file block: <<<NEWFILE: path>>>\n<full body>\n<<<END>>>. Search/replace
+# can only touch EXISTING files, so a proposal that needs a new module (the
+# common case) could never commit -- the whole class failed at "no commit".
+# `<<<NEWFILE:` never collides with `<<<FILE:` (different 4th char after `<<<`).
+_NEWFILE_BLOCK = re.compile(
+    r"<<<NEWFILE:\s*(.+?)>>>\r?\n(.*?)\r?\n?<<<END>>>",
+    re.DOTALL,
+)
+
 
 def apply_search_replace(clone_dir: Path, text: str) -> "list[str]":
     """Apply search/replace blocks from a model reply to files under clone_dir.
@@ -44,6 +53,21 @@ def apply_search_replace(clone_dir: Path, text: str) -> "list[str]":
         if search in body:
             fp.write_text(body.replace(search, replace, 1), encoding="utf-8")
             applied.append(rel)
+    # New-file blocks: create-only. Same path-escape guard; refuse to clobber
+    # an existing file (that path is search/replace's job) so a stray NEWFILE
+    # can't blank a real source file.
+    for m in _NEWFILE_BLOCK.finditer(text):
+        rel, content = m.group(1).strip(), m.group(2)
+        fp = (clone_dir / rel).resolve()
+        if not str(fp).startswith(root) or fp.exists():
+            continue  # path-escape guard / never overwrite an existing file
+        # The \n before <<<END>>> is a delimiter, not body -- restore a single
+        # trailing newline so the created source file is POSIX-clean.
+        if content and not content.endswith("\n"):
+            content += "\n"
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(content, encoding="utf-8")
+        applied.append(rel)
     return applied
 
 
