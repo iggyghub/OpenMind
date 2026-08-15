@@ -13,12 +13,12 @@ Status: blocked
 
 ## Next slice -- start here
 
-Active: H5-S1 -- #736
+Active: H4-S1 -- #735
 Model: sonnet
 
 ## Queue (slice-granular; each entry = one tracer PR; read the issue + its ADR)
 
-- [ ] H5-S1 -- #736 -- spill store + post-execute hook + retrieve tool -- Type: AFK -- standalone
+- [x] H5-S1 -- #736 -- spill store + post-execute hook + retrieve tool -- Type: AFK -- standalone
 - [ ] H4-S1 -- #735 -- command registry + no-LLM dispatch (main.py) + 1 example -- Type: HITL
 - [ ] H6-S1 -- #737 -- approval presets over the ADR-0005 gate -- Type: HITL -- confirm preset set first
 - [ ] H1-S1 -- #732 -- model context_window metadata + prompt token estimator (ADR-0021 S1) -- Type: AFK
@@ -31,6 +31,8 @@ Model: sonnet
 - [ ] H8-S0 -- #739 -- Code Mode sandbox spike, cloud-gated (ADR-0024) -- Type: HITL -- LAST
 
 ## Landed PRs
+
+- H5-S1 #736 -- PR #742 (spill store) -- merged to master. Built by Claude Code (Budd was unavailable across 3 self_dev attempts); AFK safe-zone, full suite green (4679 passed).
 
 ## SAFETY
 
