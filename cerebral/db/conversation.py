@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cerebral.paths import data_dir
+from cerebral.db import crypto
 
 DB_PATH = data_dir() / "openmind.db"
 
@@ -327,6 +328,7 @@ class ConversationStore:
             thread = self.get_or_create_default_thread(profile_id)
             thread_id = thread.id
         payload = json.dumps(content or {}, ensure_ascii=False)
+        payload = crypto.encrypt(payload)
         cur = self._con.execute(
             "INSERT INTO conversation_turns "
             "(profile_id, thread_id, kind, content_json) VALUES (?, ?, ?, ?)",
@@ -361,7 +363,8 @@ class ConversationStore:
         if row is None:
             return
         try:
-            content = json.loads(row["content_json"]) if row["content_json"] else {}
+            raw = row["content_json"]
+            content = json.loads(crypto.decrypt(raw)) if raw else {}
         except (ValueError, TypeError):
             content = {}
         text = (content.get("text") or "").strip()
@@ -615,7 +618,8 @@ class ConversationStore:
 
 def _row_to_turn(row: sqlite3.Row) -> ConversationTurn:
     try:
-        content = json.loads(row["content_json"]) if row["content_json"] else {}
+        raw = row["content_json"]
+        content = json.loads(crypto.decrypt(raw)) if raw else {}
     except (ValueError, TypeError):
         content = {}
     # ``thread_id`` is nullable in case a legacy migration hasn't run yet.
