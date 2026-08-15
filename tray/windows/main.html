@@ -4367,6 +4367,7 @@
       font-size: 12px;
       color: #ff7a7a;
     }
+    .set-add-error.is-info { color: #7ad19a; }
 
     .set-task-card {
       margin: 10px 18px;
@@ -6683,10 +6684,12 @@
           if (setAddBtn && setAddBtn.disabled) {
             setAddBtn.disabled = false;
             setAddBtn.textContent = 'Add';
+            setAddErrorEl.classList.remove('is-info');
             setAddErrorEl.hidden = true;
             setAddNameEl.value = '';
             setAddUrlEl.value = '';
             setAddModelEl.value = '';
+            setAddKeyEl.value = '';  // clear the secret only once the Add landed
             // An edit/add succeeded -> leave edit mode.
             editingModelId = null;
             if (setAddCancelEl) setAddCancelEl.hidden = true;
@@ -6709,6 +6712,15 @@
           if (setFetchModelsBtn) {
             setFetchModelsBtn.disabled = false;
             setFetchModelsBtn.textContent = 'Fetch';
+          }
+          // Fetch had no visible result before (silent on empty/401). Tell the
+          // user what happened. Empty == unreachable OR bad key OR no models.
+          const n = suggestions.length;
+          if (n === 0) {
+            showAddError('No models found — check the URL and API key.');
+          } else {
+            showAddInfo(n + ' model' + (n === 1 ? '' : 's') + ' found'
+              + (n === 1 ? ' — filled in above.' : ' — see the Model field.'));
           }
           break;
         }
@@ -10676,21 +10688,30 @@
             // Reference name for the connection; backend falls back
             // model -> URL host when this is blank.
             label: name || model,
-            api_key: setAddKeyEl.value,  // write-only: cleared right after send
+            api_key: setAddKeyEl.value,  // cleared only on success (models_list)
             // One-step designation: pin coding chat + self-dev to this server.
             for_coding: !!(setAddCodingEl && setAddCodingEl.checked),
           },
         });
       }
-      setAddKeyEl.value = '';
+      // Don't wipe the key here: a failed Add/Save would then send blank on
+      // retry and 401 forever. Cleared in the models_list (success) handler.
       if (setAddCodingEl) setAddCodingEl.checked = false;
     });
 
     function showAddError(text) {
+      setAddErrorEl.classList.remove('is-info');
       setAddErrorEl.textContent = text;
       setAddErrorEl.hidden = false;
       setAddBtn.disabled = false;
       setAddBtn.textContent = editingModelId ? 'Save' : 'Add';
+    }
+
+    // Non-error status in the same slot (e.g. Fetch result count).
+    function showAddInfo(text) {
+      setAddErrorEl.classList.add('is-info');
+      setAddErrorEl.textContent = text;
+      setAddErrorEl.hidden = false;
     }
 
     setRefreshBtn.addEventListener('click', () => {
