@@ -154,9 +154,18 @@ def create_branch_and_commit(clone_dir: Path, branch: str, message: str) -> bool
 
 
 def test_fn(clone_dir: Path) -> "tuple[bool, str]":
-    """Run pytest in the clone (inside the sandbox via main.py wiring)."""
+    """Run pytest in the clone (inside the sandbox via main.py wiring).
+
+    Runs BOTH test roots: cerebral/tests/ AND the repo-root tests/. The gate
+    used to run cerebral/tests/ only, so a self-dev change that added a broken
+    test under tests/ (repo root) passed the gate and auto-merged red -- exactly
+    how #723 landed a failing tests/test_router_usage.py on master. Any dir that
+    is absent in the clone is simply skipped by pytest, so this stays safe when
+    a repo has only one test root.
+    """
+    roots = [d for d in ("cerebral/tests/", "tests/") if (clone_dir / d).is_dir()]
     result = subprocess.run(
-        ["python", "-m", "pytest", "cerebral/tests/", "-q", "--tb=short"],
+        ["python", "-m", "pytest", *roots, "-q", "--tb=short"],
         capture_output=True, text=True, cwd=str(clone_dir),
     )
     output = (result.stdout + result.stderr).strip()
