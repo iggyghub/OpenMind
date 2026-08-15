@@ -8,17 +8,19 @@ boundary**, not a parallel swarm. Slices land one at a time via a fresh
 
 ## Next slice -- start here
 
-- **Active:** S1 -- #727
-- **Model:** sonnet
+- **Active:** S2 -- #728
+- **Model:** opus
 
 ## Queue
 
-- [ ] S1 -- #727 -- run_subagent tracer (new files, safe-zone) -- Type: AFK
+- [x] S1 -- #727 -- run_subagent tracer (new files, safe-zone) -- Type: AFK
 - [ ] S2 -- #728 -- first real caller in main.py (guardrail) -- Type: HITL
 - [ ] S3 -- #729 -- resumable delegations via StepLedger -- Type: AFK
 - [ ] S4 -- #730 -- planner-autonomy delegate plugin (gated on eval harness) -- Type: HITL
 
 ## Landed PRs
+
+- S1 -- PR #731 (run_subagent tracer)
 
 ## SAFETY
 
