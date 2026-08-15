@@ -17,6 +17,7 @@ from cerebral.llm.router import ToolCall
 
 if TYPE_CHECKING:
     from cerebral.llm.step_ledger import StepLedger
+    from cerebral.llm.spill_store import SpillStore
 
 _ChainDoneFn = Callable[[list[dict]], Awaitable[None]]
 
@@ -34,6 +35,7 @@ class ChainEngine:
         gate_fn: Callable[[str, dict], Awaitable[object]],
         execute_fn: Callable[[str, dict], Awaitable[object]],
         record_fn: Callable[[str, dict], Awaitable[None]],
+        spill_store: "SpillStore | None" = None,
     ) -> None:
         """
         planner   — Planner instance (S1 engine).
@@ -42,11 +44,16 @@ class ChainEngine:
                     gate can flag a committing computer_use action irreversible.
         execute_fn — async (tool_name: str, args: dict) -> ToolResult.
         record_fn — async (kind: str, content: dict) -> None; persists turns.
+        spill_store — optional SpillStore (H5-S1 / #736). When set, an oversized
+                    successful tool result is stored and replaced in the chain by
+                    a short locator+hint so it never floods the context window.
+                    None => results flow back raw, identical to before.
         """
         self._planner = planner
         self._gate_fn = gate_fn
         self._execute_fn = execute_fn
         self._record_fn = record_fn
+        self._spill_store = spill_store
 
     async def run(
         self,
@@ -149,11 +156,24 @@ class ChainEngine:
                 {"name": result.name, "is_error": tool_result.is_error},
             )
 
+            # Spill oversized successful output (H5-S1 / #736): swap the raw text
+            # for a short locator+hint so a huge result never floods the window.
+            # The full text lives in the store (retrieve_spilled pulls it back).
+            # Errors are never spilled -- the model needs the message to recover.
+            result_content = tool_result.content
+            if (
+                self._spill_store is not None
+                and not tool_result.is_error
+                and self._spill_store.should_spill(result_content)
+            ):
+                locator = self._spill_store.spill(result_content)
+                result_content = self._spill_store.hint(locator, len(tool_result.content))
+
             prior_steps.append(
                 {
                     "name": result.name,
                     "args": result.args,
-                    "result": tool_result.content,
+                    "result": result_content,
                     "is_error": tool_result.is_error,
                 }
             )
