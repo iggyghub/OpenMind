@@ -468,11 +468,14 @@ class ModelRouter:
                     continue
                 self._last_model = mid
                 logger.info("[router] %s handled request", mid)
+                _u = getattr(self._backends[mid], "_last_usage", None)
+                if not isinstance(_u, dict):
+                    _u = {}
                 self._usage_log.append({
                     "model_id": mid,
                     "task_type": task_type,
-                    "prompt_tokens": self._backends[mid]._last_usage["prompt_tokens"],
-                    "completion_tokens": self._backends[mid]._last_usage["completion_tokens"],
+                    "prompt_tokens": int(_u.get("prompt_tokens", 0)),
+                    "completion_tokens": int(_u.get("completion_tokens", 0)),
                 })
                 return response
             raise ModelUnavailableError(
@@ -499,11 +502,14 @@ class ModelRouter:
                 ) from exc2
         self._last_model = model_id
         logger.info("[router] %s handled request", model_id)
+        _u = getattr(self._backends[model_id], "_last_usage", None)
+        if not isinstance(_u, dict):
+            _u = {}
         self._usage_log.append({
             "model_id": model_id,
             "task_type": task_type,
-            "prompt_tokens": self._backends[model_id]._last_usage["prompt_tokens"],
-            "completion_tokens": self._backends[model_id]._last_usage["completion_tokens"],
+            "prompt_tokens": int(_u.get("prompt_tokens", 0)),
+            "completion_tokens": int(_u.get("completion_tokens", 0)),
         })
         return response
 
@@ -1102,9 +1108,10 @@ class AnthropicBackend:
             )
         except anthropic.APIError as exc:
             raise ConnectionError(str(exc)) from exc
+        _usage = getattr(resp, "usage", None)
         self._last_usage = {
-            "prompt_tokens": int(getattr(resp.usage, "input_tokens", 0)),
-            "completion_tokens": int(getattr(resp.usage, "output_tokens", 0)),
+            "prompt_tokens": int(getattr(_usage, "input_tokens", 0) or 0),
+            "completion_tokens": int(getattr(_usage, "output_tokens", 0) or 0),
         }
         return "".join(b.text for b in resp.content if b.type == "text")
 
