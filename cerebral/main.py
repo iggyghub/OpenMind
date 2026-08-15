@@ -39,7 +39,7 @@ from cerebral.llm.router import (
 )
 from cerebral.db.custom_models import CustomModelStore
 from cerebral.db.model_priority import ModelPriorityStore
-from cerebral.llm.planner import Planner, shortlist_tools, validate_tool_args
+from cerebral.llm.planner import Planner, is_coding_turn, shortlist_tools, validate_tool_args
 from cerebral.llm.chain_engine import ChainEngine
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
@@ -202,6 +202,12 @@ def _persist_priority() -> None:
         )
 
 
+def _persist_task_models() -> None:
+    """Save the router's per-task pins (coding/self_dev/...) for the active profile."""
+    if _active_profile:
+        _priority_store.save_task_models(_active_profile.id, _router.task_models())
+
+
 if _active_profile:
     saved_priority = _priority_store.load(_active_profile.id)
     if saved_priority:
@@ -221,6 +227,15 @@ _quality_default = _router.seed_quality_default()
 # unattended batch); falls through to the active model if no local model exists.
 _video_default = _router.seed_video_default()
 _extraction_default = _router.seed_extraction_default()
+# Restore saved per-task pins AFTER the seeds so a user override (e.g. a coding
+# endpoint pinned to "coding"/"self_dev") wins over the boot default. Missing
+# models are skipped -- the pin re-derives to the active model until re-added.
+if _active_profile:
+    for _task, _mid in _priority_store.load_task_models(_active_profile.id).items():
+        try:
+            _router.set_task_model(_task, _mid)
+        except ValueError:
+            logger.warning("[cerebral] saved task pin '%s'->%s unavailable; skipped", _task, _mid)
 if _quality_default:
     logger.info("[cerebral] Quality tasks default to %s", _quality_default)
 _orc = MCPOrchestrator()
@@ -3024,6 +3039,15 @@ async def _ping_custom_model(backend) -> str | None:
 
 
 def _models_list_event() -> dict:
+    # Non-secret config for custom rows so the tray can pre-fill the Edit form.
+    # api_key/secret_ref are never included (the key stays write-only).
+    custom_configs: dict[str, dict] = {}
+    if _active_profile:
+        for row in _custom_models.list(_active_profile.id):
+            custom_configs[row["id"]] = {
+                "kind": row["kind"], "url": row["url"], "model": row["model"],
+                "label": row["label"], "supports_vision": row["supports_vision"],
+            }
     return {
         "type": "models_list",
         "data": {
@@ -3034,6 +3058,7 @@ def _models_list_event() -> dict:
             "task_models": _router.task_models(),
             "local_only": _router.local_only,
             "fallback_enabled": _router.fallback_enabled,
+            "custom_configs": custom_configs,
         },
     }
 
@@ -3812,6 +3837,7 @@ async def _handle_message(msg: dict) -> None:
             return
         try:
             _router.set_task_model(task_type, model_id)
+            _persist_task_models()
             logger.info("[cerebral] Task '%s' mapped to %s", task_type, model_id)
             await _broadcast(_models_list_event())
         except ValueError as exc:
@@ -3939,6 +3965,97 @@ async def _handle_message(msg: dict) -> None:
                 "[cerebral] Custom model added: %s (%s%s)",
                 mid, kind, ", dynamic" if dynamic else "",
             )
+            _persist_priority()
+            # One-step coding designation (turnkey): pin both coding-chat and
+            # self-dev to this connection so "just add the server" is enough.
+            if d.get("for_coding"):
+                for _t in ("coding", "self_dev"):
+                    _router.set_task_model(_t, mid)
+                _persist_task_models()
+                logger.info("[cerebral] %s set as coding model (coding + self_dev)", mid)
+            await _broadcast(_models_list_event())
+
+    elif t == "edit_custom_model":
+        # Update an existing custom/<slug> in place. The id is preserved, so the
+        # connection keeps its priority position, enabled flag, and any per-task
+        # pins (coding/self_dev/...) that point at it -- add_backend on an
+        # existing id replaces the backend + metadata without re-appending.
+        d = msg.get("data", {})
+        mid = (d.get("id") or "").strip()
+        kind = (d.get("kind") or "").strip()
+        url = (d.get("url") or "").strip()
+        model = (d.get("model") or "").strip()
+        label_in = (d.get("label") or "").strip()
+        api_key = (d.get("api_key") or "").strip()  # blank -> keep existing key
+        supports_vision = bool(d.get("supports_vision"))
+        dynamic = (not model) and (kind in DYNAMIC_CUSTOM_KINDS)
+        from urllib.parse import urlparse
+        label = (
+            label_in or model or (urlparse(url).hostname if url else "") or "model"
+        )
+
+        async def _err(reason: str) -> None:
+            await _broadcast({"type": "custom_model_error", "data": {"error": reason}})
+
+        existing = {m["id"] for m in _router.list_models()}
+        if not (mid.startswith("custom/") and _active_profile):
+            await _err("edit requires an existing custom connection")
+        elif mid not in existing:
+            await _err(f"unknown connection '{mid}'")
+        elif kind not in CUSTOM_KINDS:
+            await _err(f"unknown kind '{kind}'")
+        elif kind == "anthropic" and not model:
+            await _err("model name is required for Anthropic")
+        elif kind != "anthropic" and not re.match(r"^https?://", url):
+            await _err("URL must start with http:// or https://")
+        else:
+            secret_ref = f"custom_model/{mid.split('/', 1)[1]}"
+            cred = _get_credential_store()
+            # Blank key on edit means "unchanged" -- reuse the stored one so a
+            # url/model tweak doesn't wipe the credential.
+            effective_key = api_key or (
+                cred.get_secret(_active_profile.id, secret_ref, "api_token") or None
+            )
+            try:
+                if dynamic:
+                    backend = DynamicModelBackend(
+                        kind, url, cached_model="", api_key=effective_key,
+                        supports_vision=supports_vision,
+                    )
+                    is_cloud = dynamic_is_cloud(kind)
+                else:
+                    backend, is_cloud = build_custom_backend(
+                        kind, url, model, effective_key,
+                        supports_vision=supports_vision,
+                    )
+            except ValueError as exc:
+                await _err(str(exc))
+                return
+            ping_err = await _ping_custom_model(backend)
+            if ping_err:
+                await _err(f"endpoint unreachable: {ping_err}")
+                return
+            if api_key:  # only touch the keyring when a new key was supplied
+                try:
+                    cred.set_secret(_active_profile.id, secret_ref, "api_token", api_key)
+                except (RuntimeError, ValueError) as exc:
+                    await _err(f"could not store API key: {exc}")
+                    return
+            stored_ref = secret_ref if effective_key else ""
+            _router.add_backend(mid, backend, label, is_cloud)  # in-place replace
+            stored_model = backend.model if dynamic else model
+            if dynamic:
+                backend.on_resolved = _make_dynamic_persist_cb(
+                    _active_profile.id,
+                    {"id": mid, "kind": kind, "url": url, "label": label,
+                     "secret_ref": stored_ref},
+                )
+            _custom_models.add(
+                _active_profile.id, id=mid, kind=kind, url=url, model=stored_model,
+                label=label, is_cloud=is_cloud, secret_ref=stored_ref,
+                dynamic=dynamic, supports_vision=supports_vision,
+            )
+            logger.info("[cerebral] Custom model edited: %s (%s)", mid, kind)
             _persist_priority()
             await _broadcast(_models_list_event())
 
@@ -5707,7 +5824,11 @@ async def _process_command(
     tools = base_tools + recipe_tools
 
     await _broadcast({"type": "thinking"})
-    planner = Planner(_router)
+    # Route a coding-flavoured turn to the user's "coding" pin (their dedicated
+    # coding server). Only flips when such a pin exists, so with no coding model
+    # configured this is a no-op and routing is identical to before.
+    coding_turn = is_coding_turn(transcript) and "coding" in _router.task_models()
+    planner = Planner(_router, task_type="coding" if coding_turn else None)
 
     async def _gate(tool_name: str, tool_args: dict) -> Decision:
         # Recipe synthetic tools don't have a plugin; treat them as SILENT at

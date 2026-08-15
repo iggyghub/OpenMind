@@ -1006,6 +1006,15 @@ test('custom switch-list rows get a remove control; api key is write-only', () =
   expect(inlineScript).toMatch(/setAddKeyEl\.value\s*=\s*''/);
 });
 
+test('custom rows have an Edit control that sends edit_custom_model', () => {
+  expect(inlineScript).toMatch(/data-edit-model/);
+  expect(inlineScript).toMatch(/['"]edit_custom_model['"]/);
+  // Edit pre-fills from the non-secret custom_configs payload.
+  expect(inlineScript).toMatch(/custom_configs/);
+  // A "Use for coding" toggle drives the one-step coding designation.
+  expect(inlineScript).toMatch(/for_coding/);
+});
+
 // ── S2 model-servers -- model discovery (Fetch button + datalist) ─────────────
 
 test('Add-model form has a Fetch button and datalist for model suggestions (S2 model-servers)', () => {

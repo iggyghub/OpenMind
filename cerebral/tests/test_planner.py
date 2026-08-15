@@ -8,8 +8,30 @@ unless explicitly selected.
 import pytest
 from unittest.mock import AsyncMock
 
-from cerebral.llm.planner import Planner, validate_tool_args
+from cerebral.llm.planner import Planner, is_coding_turn, validate_tool_args
 from cerebral.llm.router import ToolCall
+
+
+@pytest.mark.parametrize("text", [
+    "write a python function that reverses a list",
+    "why does this throw a traceback?",
+    "help me refactor this class",
+    "```\nfor x in y:\n```",
+    "fix the regex in the validator",
+    "git rebase is giving me a merge conflict",
+])
+def test_is_coding_turn_true(text):
+    assert is_coding_turn(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "what's the function of the mitochondria",  # 'function' alone: not enough
+    "remind me to call mom at 6",
+    "what's the weather in Tokyo",
+    "",
+])
+def test_is_coding_turn_false(text):
+    assert is_coding_turn(text) is False
 
 
 _CLOCK_TOOL = {
@@ -58,6 +80,27 @@ async def test_planner_passes_tools_to_backend():
     await Planner(backend).plan("hi", _FAKE_TOOLS)
     _, call_tools = backend.complete_with_tools.call_args[0]
     assert call_tools == _FAKE_TOOLS
+
+
+async def test_planner_default_task_type_omits_kwarg():
+    # No task_type -> today's exact call (positional prompt+tools, no kwarg),
+    # so existing routing ("tool" pin) and fake backends are untouched.
+    backend = AsyncMock()
+    backend.complete_with_tools.return_value = "ok"
+    await Planner(backend).plan("hi", _FAKE_TOOLS)
+    assert "task_type" not in backend.complete_with_tools.call_args.kwargs
+
+
+async def test_planner_coding_task_type_threads_to_both_steps():
+    # A coding-chat Planner routes BOTH plan and finalize with task_type="coding".
+    backend = AsyncMock()
+    backend.complete_with_tools.return_value = "ok"
+    backend.complete.return_value = "answer"
+    p = Planner(backend, task_type="coding")
+    await p.plan("write a regex", _FAKE_TOOLS)
+    assert backend.complete_with_tools.call_args.kwargs["task_type"] == "coding"
+    await p.finalize("write a regex", [])
+    assert backend.complete.call_args.kwargs["task_type"] == "coding"
 
 
 # ---------------------------------------------------------------------------

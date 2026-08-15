@@ -557,10 +557,15 @@ class ModelRouter:
         ) from last_exc
 
     async def complete_with_tools(
-        self, prompt: str, tools: list[dict]
+        self, prompt: str, tools: list[dict], task_type: str = "tool"
     ) -> ToolCall | str:
-        """Route a tool-selection request to the active backend (Issue #274)."""
-        model_id = self._task_models.get("tool", self.active_model)
+        """Route a tool-selection request (Issue #274).
+
+        task_type defaults to "tool" so existing callers are unchanged; a
+        coding-chat turn passes task_type="coding" so the whole turn (planning
+        + finalize) rides the user's per-task pin.
+        """
+        model_id = self._task_models.get(task_type, self.active_model)
         backend = self._backends[model_id]
         try:
             result = await backend.complete_with_tools(prompt, tools)
