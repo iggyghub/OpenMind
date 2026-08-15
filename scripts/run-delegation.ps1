@@ -100,8 +100,12 @@ try {
     }
 
     function Get-DriverField($name, $default) {
+        # Tolerate markdown decoration on the field line: '## Status: ready',
+        # '- **Model:** opus', or a bare 'Status: ready' all parse. (A plain
+        # '^Status:' anchor silently missed the markdown driver and always
+        # returned the default -- which hid Status: blocked and defaulted Model.)
         $m = Select-String -LiteralPath $driver `
-            -Pattern ("^{0}:\s*(\S+)" -f $name) | Select-Object -First 1
+            -Pattern ("^[#\-\*\s]*{0}\**\s*:\s*\**\s*(\S+)" -f $name) | Select-Object -First 1
         if ($null -eq $m) { return $default }
         return $m.Matches[0].Groups[1].Value.ToLower()
     }
