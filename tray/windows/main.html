@@ -4346,6 +4346,23 @@
     .set-priority-badge.is-cloud { background: rgba(255, 140, 105, 0.14); color: #ff8c69; }
     .set-priority-badge.is-custom { background: rgba(100, 180, 255, 0.14); color: #7ac4ff; }
 
+    /* Model status dot: base grey/green(is-connected)/red(is-down) come from
+       .int-status-dot; add the "checking" (probe in flight) amber pulse. */
+    .set-priority-status { flex-shrink: 0; }
+    .set-priority-status.is-checking {
+      background: #e0b755; box-shadow: 0 0 6px #e0b75588;
+      animation: setDotPulse 1s ease-in-out infinite;
+    }
+    @keyframes setDotPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .set-recheck-btn {
+      margin-left: auto; margin-right: 10px;
+      background: none; border: 1px solid #2a2740;
+      color: var(--text-muted); font-size: 11px;
+      padding: 2px 9px; border-radius: 6px; cursor: pointer;
+    }
+    .set-recheck-btn:hover { color: var(--text); border-color: var(--accent, #ff8c69); }
+    .set-recheck-btn:disabled { opacity: 0.5; cursor: default; }
+
     .set-add-model {
       display: flex;
       flex-wrap: wrap;
@@ -5578,6 +5595,8 @@
           </div>
           <div class="set-section set-section-row">
             <span>Model priority</span>
+            <button class="set-recheck-btn" id="set-recheck-btn" type="button"
+                    title="Ping each enabled model and refresh its status dot">&#8635; Recheck</button>
             <label class="set-toggle" title="Ordered fallback chain: try next model on failure">
               <input type="checkbox" id="set-model-fallback-toggle">
               <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
@@ -6130,6 +6149,7 @@
     const setModelFallbackEl     = document.getElementById('set-model-fallback-toggle');
     const setTaskListEl    = document.getElementById('set-task-list');
     const setRefreshBtn    = document.getElementById('set-refresh-btn');
+    const setRecheckBtn    = document.getElementById('set-recheck-btn');
     const setLocalOnlyEl   = document.getElementById('set-local-only-toggle');
     const setAddNameEl       = document.getElementById('set-add-name');
     const setAddKindEl       = document.getElementById('set-add-kind');
@@ -6226,6 +6246,10 @@
       fallback_enabled: false,
       custom_configs:   {},
     };
+    // Model status dots: { model_id: true|false } from the last probe_models
+    // round (true = reachable, false = down). Absent id = not yet probed
+    // (neutral dot). null value = probe in flight (Recheck pending).
+    let modelHealth = {};
     // Id of the custom connection currently being edited (null = add mode).
     let editingModelId = null;
     // 'tool' = planner tool-selection; 'quality' = correctness-critical jobs
@@ -6699,6 +6723,15 @@
         case 'custom_model_error':
           showAddError((event.data && event.data.error) || 'Could not add model.');
           break;
+        case 'models_health': {
+          // Status-dot probe result: merge the up/down map and re-render so the
+          // priority rows show fresh dots. Merge (not replace) so a partial
+          // probe never blanks a known dot.
+          const h = (event.data && event.data.health) || {};
+          modelHealth = Object.assign({}, modelHealth, h);
+          renderSettings();
+          break;
+        }
         case 'models_discovered': {
           const suggestions = (event.data && event.data.models) || [];
           if (setModelSuggestions) {
@@ -10447,11 +10480,21 @@
         setModelPriorityListEl.innerHTML = models.map((m) => {
           const kind   = m.is_cloud ? 'cloud' : (m.is_custom ? 'custom' : 'local');
           const locked = !!(modelsState.local_only && m.is_cloud);
+          // Status dot: reachable (green) / down (red) / checking / unknown.
+          const health = modelHealth[m.id];
+          const dotCls = health === true ? ' is-connected'
+                       : health === false ? ' is-down'
+                       : health === null ? ' is-checking' : '';
+          const dotTitle = health === true ? 'Connected'
+                         : health === false ? 'Down / unreachable'
+                         : health === null ? 'Checking…'
+                         : 'Status unknown — click Recheck';
           return `
             <div class="set-priority-row${locked ? ' is-locked' : ''}"
                  draggable="${locked ? 'false' : 'true'}"
                  data-priority-id="${escHtml(m.id)}">
               <span class="set-priority-drag" aria-hidden="true">&#8942;</span>
+              <span class="int-status-dot set-priority-status${dotCls}" title="${dotTitle}"></span>
               <span class="set-priority-label">${escHtml(m.label || m.id)}</span>
               <span class="set-priority-badge is-${kind}">${kind}</span>
               <input type="checkbox" class="set-priority-toggle"
@@ -10725,6 +10768,20 @@
         setRefreshBtn.textContent = 'Refresh installed models';
       }, 1500);
     });
+
+    if (setRecheckBtn) {
+      setRecheckBtn.addEventListener('click', () => {
+        // Flip every enabled model's dot to "checking" (pulse) while the probe
+        // runs; the models_health broadcast overwrites with real up/down.
+        (modelsState.models || []).forEach((m) => {
+          if (m.enabled) modelHealth[m.id] = null;
+        });
+        renderSettings();
+        setRecheckBtn.disabled = true;
+        sendEvent({ type: 'probe_models' });
+        setTimeout(() => { setRecheckBtn.disabled = false; }, 1500);
+      });
+    }
 
     // First render so the empty state shows before models_list arrives.
     renderSettings();
@@ -11408,6 +11465,7 @@
         libActivateSub(libSub);
       } else if (route === 'settings') {
         sendEvent({ type: 'refresh_models' });
+        sendEvent({ type: 'probe_models' });  // model status dots: ping on open
         sendEvent({ type: 'list_settings' });
         // Sign-in + Permissions sub-tabs live here now (moved from the orphaned
         // #integrations/#credentials/#permissions panes) -- prime their data.

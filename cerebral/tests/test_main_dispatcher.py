@@ -345,3 +345,28 @@ async def test_list_conversation_turns_broadcasts_snapshot(conversation_rig, mon
         "type": "list_conversation_turns", "data": {"limit": 50},
     })
     assert snapshot in conversation_rig.broadcasts
+
+
+async def test_probe_models_broadcasts_health(monkeypatch):
+    """probe_models must probe the router and broadcast a models_health event
+    carrying the {model_id: reachable} map the status dots render from."""
+    import cerebral.main as main_mod
+
+    class _FakeRouter:
+        async def probe_enabled(self):
+            return {"ollama/x": True, "custom/budd": False}
+
+    broadcasts: list[dict] = []
+
+    async def fake_broadcast(event):
+        broadcasts.append(event)
+
+    monkeypatch.setattr(main_mod, "_router", _FakeRouter())
+    monkeypatch.setattr(main_mod, "_broadcast", fake_broadcast)
+
+    await main_mod._handle_message({"type": "probe_models"})
+
+    assert broadcasts == [{
+        "type": "models_health",
+        "data": {"health": {"ollama/x": True, "custom/budd": False}},
+    }]
