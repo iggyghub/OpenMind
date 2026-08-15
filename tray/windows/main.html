@@ -4296,6 +4296,18 @@
       cursor: pointer;
     }
     .set-row-remove:hover { background: rgba(255, 90, 90, 0.15); color: #ff7a7a; }
+    .set-row-edit {
+      flex-shrink: 0;
+      height: 20px;
+      padding: 0 8px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .set-row-edit:hover { background: var(--surface-hover, rgba(255,255,255,0.08)); color: var(--text); }
 
     /* P2 #532 -- Model priority panel */
     .set-section-row {
@@ -5556,7 +5568,11 @@
             <button class="set-btn" id="set-fetch-models-btn" type="button">Fetch</button>
             <input class="set-add-input" id="set-add-key" type="password"
                    placeholder="API key (optional)" autocomplete="off">
+            <label class="set-add-coding" title="Route coding chat and self-dev edits to this connection">
+              <input type="checkbox" id="set-add-coding"> Use for coding
+            </label>
             <button class="set-btn" id="set-add-btn" type="button">Add</button>
+            <button class="set-btn" id="set-add-cancel" type="button" hidden>Cancel</button>
             <div class="set-add-error" id="set-add-error" hidden></div>
           </div>
           <div class="set-section set-section-row">
@@ -6121,7 +6137,9 @@
     const setModelSuggestions = document.getElementById('set-model-suggestions');
     const setFetchModelsBtn  = document.getElementById('set-fetch-models-btn');
     const setAddKeyEl        = document.getElementById('set-add-key');
+    const setAddCodingEl     = document.getElementById('set-add-coding');
     const setAddBtn          = document.getElementById('set-add-btn');
+    const setAddCancelEl     = document.getElementById('set-add-cancel');
     const setAddErrorEl      = document.getElementById('set-add-error');
 
     // Pending action queue (Issue #194 — migrated from queue.html). Held
@@ -6205,11 +6223,15 @@
       task_models:      {},
       local_only:       false,
       fallback_enabled: false,
+      custom_configs:   {},
     };
+    // Id of the custom connection currently being edited (null = add mode).
+    let editingModelId = null;
     // 'tool' = planner tool-selection; 'quality' = correctness-critical jobs
     // reasoning (field-mapping, fit-scoring, dossier extraction) -- #349.
     // 'self_dev' = core self-modification loop (ADR-0015 / #554).
-    const SET_TASK_TYPES = ['chat', 'tool', 'extraction', 'quality', 'self_dev'];
+    // 'coding' = coding-flavoured chat turns (dedicated coding server).
+    const SET_TASK_TYPES = ['chat', 'tool', 'extraction', 'quality', 'self_dev', 'coding'];
 
     // Settings v2 state (Issue #209). Owned by Cerebral; received via
     // settings_updated broadcasts. Defaults match Cerebral's _DEFAULTS.
@@ -6653,6 +6675,7 @@
             task_models:      d.task_models     || {},
             local_only:       !!d.local_only,
             fallback_enabled: !!d.fallback_enabled,
+            custom_configs:   d.custom_configs  || {},
           };
           renderSettings();
           renderThreadModelSelect();  // S13 -- refresh override select with current model list
@@ -6664,6 +6687,9 @@
             setAddNameEl.value = '';
             setAddUrlEl.value = '';
             setAddModelEl.value = '';
+            // An edit/add succeeded -> leave edit mode.
+            editingModelId = null;
+            if (setAddCancelEl) setAddCancelEl.hidden = true;
           }
           break;
         }
@@ -10421,7 +10447,9 @@
                      ${m.enabled && !locked ? 'checked' : ''}
                      ${locked ? 'disabled' : ''}
                      title="${locked ? 'Locked: local-only mode' : (m.enabled ? 'Disable' : 'Enable')}">
-              ${m.is_custom ? `<button class="set-row-remove" type="button"
+              ${m.is_custom ? `<button class="set-row-edit" type="button"
+                 data-edit-model="${escHtml(m.id)}" title="Edit connection">Edit</button>
+              <button class="set-row-remove" type="button"
                  data-remove-model="${escHtml(m.id)}" title="Remove">&times;</button>` : ''}
             </div>`;
         }).join('');
@@ -10469,8 +10497,43 @@
       const rm = e.target.closest('[data-remove-model]');
       if (rm) {
         sendEvent({ type: 'remove_custom_model', data: { id: rm.dataset.removeModel } });
+        return;
       }
+      const ed = e.target.closest('[data-edit-model]');
+      if (ed) enterEditMode(ed.dataset.editModel);
     });
+
+    // Edit an existing custom connection: pre-fill the Add form from the
+    // stored (non-secret) config and flip Add -> Save. The key stays blank
+    // (write-only); a blank key on save means "keep the existing key".
+    function enterEditMode(id) {
+      const cfg = (modelsState.custom_configs || {})[id];
+      if (!cfg) return;
+      editingModelId = id;
+      setAddNameEl.value  = cfg.label || '';
+      setAddKindEl.value  = cfg.kind || 'openai';
+      setAddUrlEl.value   = cfg.url || '';
+      setAddModelEl.value = cfg.model || '';
+      setAddKeyEl.value   = '';
+      if (setAddCodingEl) setAddCodingEl.checked = false;
+      setAddBtn.textContent = 'Save';
+      if (setAddCancelEl) setAddCancelEl.hidden = false;
+      setAddErrorEl.hidden = true;
+      setAddNameEl.focus();
+    }
+
+    function exitEditMode() {
+      editingModelId = null;
+      setAddBtn.textContent = 'Add';
+      setAddBtn.disabled = false;
+      if (setAddCancelEl) setAddCancelEl.hidden = true;
+      setAddNameEl.value = '';
+      setAddUrlEl.value = '';
+      setAddModelEl.value = '';
+      setAddKeyEl.value = '';
+    }
+
+    if (setAddCancelEl) setAddCancelEl.addEventListener('click', exitEditMode);
 
     setModelPriorityListEl.addEventListener('change', (e) => {
       const cb = e.target.closest('.set-priority-toggle[data-priority-id]');
@@ -10587,27 +10650,47 @@
       }
       setAddErrorEl.hidden = true;
       setAddBtn.disabled = true;
-      setAddBtn.textContent = 'Adding…';
-      sendEvent({
-        type: 'add_custom_model',
-        data: {
-          kind,
-          url: setAddUrlEl.value.trim(),
-          model,
-          // Reference name for the connection; backend falls back
-          // model -> URL host when this is blank.
-          label: name || model,
-          api_key: setAddKeyEl.value,  // write-only: cleared right after send
-        },
-      });
+      if (editingModelId) {
+        // Edit an existing connection in place (id preserved -> priority slot
+        // and task pins survive). Blank key = keep the stored one.
+        setAddBtn.textContent = 'Saving…';
+        sendEvent({
+          type: 'edit_custom_model',
+          data: {
+            id: editingModelId,
+            kind,
+            url: setAddUrlEl.value.trim(),
+            model,
+            label: name || model,
+            api_key: setAddKeyEl.value,
+          },
+        });
+      } else {
+        setAddBtn.textContent = 'Adding…';
+        sendEvent({
+          type: 'add_custom_model',
+          data: {
+            kind,
+            url: setAddUrlEl.value.trim(),
+            model,
+            // Reference name for the connection; backend falls back
+            // model -> URL host when this is blank.
+            label: name || model,
+            api_key: setAddKeyEl.value,  // write-only: cleared right after send
+            // One-step designation: pin coding chat + self-dev to this server.
+            for_coding: !!(setAddCodingEl && setAddCodingEl.checked),
+          },
+        });
+      }
       setAddKeyEl.value = '';
+      if (setAddCodingEl) setAddCodingEl.checked = false;
     });
 
     function showAddError(text) {
       setAddErrorEl.textContent = text;
       setAddErrorEl.hidden = false;
       setAddBtn.disabled = false;
-      setAddBtn.textContent = 'Add';
+      setAddBtn.textContent = editingModelId ? 'Save' : 'Add';
     }
 
     setRefreshBtn.addEventListener('click', () => {

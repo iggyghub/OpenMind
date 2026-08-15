@@ -38,6 +38,13 @@ class ModelPriorityStore:
                 PRIMARY KEY (profile_id, model_id),
                 FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS model_task_pin (
+                profile_id INTEGER NOT NULL,
+                task_type  TEXT    NOT NULL,
+                model_id   TEXT    NOT NULL,
+                PRIMARY KEY (profile_id, task_type),
+                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+            );
         """)
         self._con.commit()
 
@@ -70,3 +77,28 @@ class ModelPriorityStore:
              "enabled": bool(r["enabled"])}
             for r in rows
         ]
+
+    def save_task_models(self, profile_id: int, task_models: dict[str, str]) -> None:
+        """Replace the per-task model pins for a profile (e.g. coding, self_dev).
+
+        Unlike the built-in quality/video/extraction seeds (re-derived on every
+        boot), a pin to a custom endpoint has no preferred-list to fall back to,
+        so it must persist or it evaporates on restart.
+        """
+        with self._con:
+            self._con.execute(
+                "DELETE FROM model_task_pin WHERE profile_id=?", (profile_id,)
+            )
+            for task_type, mid in task_models.items():
+                self._con.execute(
+                    """INSERT INTO model_task_pin (profile_id, task_type, model_id)
+                       VALUES (?, ?, ?)""",
+                    (profile_id, task_type, mid),
+                )
+
+    def load_task_models(self, profile_id: int) -> dict[str, str]:
+        rows = self._con.execute(
+            "SELECT task_type, model_id FROM model_task_pin WHERE profile_id=?",
+            (profile_id,),
+        ).fetchall()
+        return {r["task_type"]: r["model_id"] for r in rows}

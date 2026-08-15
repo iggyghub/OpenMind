@@ -227,6 +227,26 @@ async def test_complete_uses_task_specific_model():
     claw.complete.assert_called_once_with("classify this", "extraction")
 
 
+async def test_complete_with_tools_honors_task_type_pin():
+    # A coding-chat turn passes task_type="coding" so tool-selection lands on
+    # the coding-pinned backend instead of the active model.
+    router, ollama, claw = _two_model_router()
+    ollama.complete_with_tools = AsyncMock(return_value="from ollama")
+    claw.complete_with_tools = AsyncMock(return_value="from claude")
+    router.set_task_model("coding", "claude/haiku")
+    result = await router.complete_with_tools("write a regex", [], task_type="coding")
+    assert result == "from claude"
+    ollama.complete_with_tools.assert_not_called()
+
+
+async def test_complete_with_tools_defaults_to_tool_pin():
+    # No task_type arg -> unchanged behaviour (resolves the "tool" pin/active).
+    router, ollama, claw = _two_model_router()
+    ollama.complete_with_tools = AsyncMock(return_value="from ollama")
+    result = await router.complete_with_tools("hi", [])
+    assert result == "from ollama"
+
+
 async def test_complete_falls_back_to_active_when_no_task_mapping():
     router, ollama, claw = _two_model_router()
     # No mapping set — chat should go to active (ollama)
@@ -1516,6 +1536,21 @@ def test_priority_store_save_load_round_trip(tmp_path):
     assert rows[0]["enabled"] is False
     assert rows[1]["enabled"] is True
     assert [r["position"] for r in rows] == [0, 1]
+
+
+def test_task_model_pins_round_trip(tmp_path):
+    from cerebral.db.model_priority import ModelPriorityStore
+    from cerebral.db.profiles import ProfileManager
+
+    db = tmp_path / "persist.db"
+    pm = ProfileManager(db_path=db)
+    p = pm.create(name="U")
+    store = ModelPriorityStore(db_path=db)
+    store.save_task_models(p.id, {"coding": "custom/box", "self_dev": "custom/box"})
+    assert store.load_task_models(p.id) == {"coding": "custom/box", "self_dev": "custom/box"}
+    # Re-save replaces the whole snapshot (cleared pin drops out).
+    store.save_task_models(p.id, {"coding": "custom/box"})
+    assert store.load_task_models(p.id) == {"coding": "custom/box"}
 
 
 def test_priority_store_save_replaces_prior_snapshot(tmp_path):

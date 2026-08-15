@@ -37,6 +37,32 @@ _SYSTEM_PROMPT = (
 _SLASH_SKILL_RE = re.compile(r"^/([\w-]+)\s*$")
 _NL_SKILL_RE = re.compile(r"\buse (?:the )?(['\"]?)([\w-]+)\1 skill\b", re.IGNORECASE)
 
+# ponytail: keyword heuristic, not a real classifier -- cheap, no extra model
+# call, but blind to context ("the function of this meeting" false-positives).
+# Named the ceiling on purpose: swap in a one-shot local yes/no classify if it
+# misfires once the real coding endpoint is in and can be A/B'd against it.
+_CODING_HINTS = re.compile(
+    r"```"                                   # a fenced code block
+    r"|\bdef\s+\w+\("                         # python def
+    r"|\bclass\s+\w+"                         # class decl
+    r"|=>|::|\bimport\s+\w"                    # arrow/scope-res/import
+    r"|\b(code|coding|refactor|debug(?:ging)?|traceback|stack ?trace|"
+    r"regex|compiler?|syntax|recursion|async|"
+    r"pytest|unittest|npm|pip install|git (?:commit|push|rebase|merge)|"
+    r"python|javascript|typescript|golang|c\+\+|bash|powershell|sql)\b",
+    re.IGNORECASE,
+)
+
+
+def is_coding_turn(transcript: str) -> bool:
+    """True when a chat turn looks like coding work (routes task_type='coding').
+
+    Deliberately a lightweight heuristic (see _CODING_HINTS ceiling note): the
+    cost of a miss is routing one turn to the wrong model, not a crash, and the
+    user can always switch manually.
+    """
+    return bool(_CODING_HINTS.search(transcript or ""))
+
 
 def resolve_skill_invocation(transcript: str) -> ToolCall | None:
     """Map an explicit skill invocation to a ``skill_use`` ToolCall, or None.
@@ -164,8 +190,13 @@ def shortlist_tools(
 class Planner:
     """Routes user intent to a ToolCall or text response via native tool-calling."""
 
-    def __init__(self, backend) -> None:
+    def __init__(self, backend, task_type: str | None = None) -> None:
+        # task_type=None keeps today's routing exactly ("tool" for planning,
+        # "chat" for finalize). A coding-chat turn passes task_type="coding" so
+        # both steps route to the user's per-task pin (set_task_model). The
+        # chat loop decides the classification and builds the Planner per-turn.
         self._backend = backend
+        self._task_type = task_type
 
     async def plan(
         self,
@@ -213,6 +244,10 @@ class Planner:
             )
 
         prompt = "\n".join(parts)
+        if self._task_type:
+            return await self._backend.complete_with_tools(
+                prompt, tools, task_type=self._task_type
+            )
         return await self._backend.complete_with_tools(prompt, tools)
 
     async def finalize(self, transcript: str, prior_steps: list[dict]) -> str:
@@ -236,4 +271,4 @@ class Planner:
             + "\n\nAnswer the user now in one or two natural sentences using "
             "those results. Do NOT call a tool."
         )
-        return await self._backend.complete(prompt, task_type="chat")
+        return await self._backend.complete(prompt, task_type=self._task_type or "chat")
