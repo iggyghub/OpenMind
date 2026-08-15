@@ -18,6 +18,7 @@ Public interface:
   router.refresh_local_backends(tags_fetch_fn=None)     # re-query Ollama, update picker
 """
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -59,6 +60,15 @@ def _ollama_timeout_s() -> float:
 # cloud path is fast, but a user's custom server (e.g. a Hermes/Qwen agent) is
 # not guaranteed to be.
 _DEFAULT_CLAW_TIMEOUT_S = 300.0
+
+# Health-probe timeout (probe_model): a status dot must resolve fast, so a slow
+# or hung endpoint (e.g. a down Budd that otherwise blocks for minutes) reads as
+# "down" within a few seconds rather than freezing the Recheck. Deliberately far
+# shorter than the completion timeout above. Override via MODEL_PROBE_TIMEOUT_SEC.
+try:
+    _PROBE_TIMEOUT_SEC = float(os.environ.get("MODEL_PROBE_TIMEOUT_SEC", "3"))
+except ValueError:
+    _PROBE_TIMEOUT_SEC = 3.0
 
 
 def _claw_timeout_s() -> float:
@@ -274,6 +284,37 @@ class ModelRouter:
                 "context_window", _DEFAULT_CONTEXT_WINDOW
             )
         )
+
+    async def probe_model(self, model_id: str) -> bool:
+        """Cheap reachability check: can this model answer within the probe
+        timeout? True = reachable, False = down/unknown-backend/timeout. Never
+        raises -- a health probe must not surface as an error. Calls the backend
+        directly (not self.complete, which would fall back to the active model
+        and mask a down model as up)."""
+        backend = self._backends.get(model_id)
+        if backend is None:
+            return False
+        try:
+            await asyncio.wait_for(
+                backend.complete("ping", task_type="chat"), _PROBE_TIMEOUT_SEC
+            )
+            return True
+        except Exception:
+            return False
+
+    async def probe_enabled(self) -> dict[str, bool]:
+        """Probe every enabled, known-backend model concurrently (respecting the
+        local-only cloud hide). Returns {model_id: reachable} -- the same id set
+        list_models() shows, so the tray can map a dot onto each row."""
+        ids = [
+            mid
+            for mid in self._priority
+            if mid in self._backends
+            and self._enabled.get(mid, True)
+            and not (self._local_only and self._models.get(mid, {}).get("is_cloud"))
+        ]
+        results = await asyncio.gather(*(self.probe_model(mid) for mid in ids))
+        return dict(zip(ids, results))
 
     def set_priority(self, order: list[str]) -> None:
         """Replace the priority ordering. Unknown ids are dropped, known-but-missing

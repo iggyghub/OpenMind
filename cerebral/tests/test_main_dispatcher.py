@@ -586,3 +586,33 @@ async def test_invariant_fires_when_transcript_diverges_from_log(derive_ctx_rig,
     derive_ctx_rig.set_last_logged_text("something else entirely")
     with pytest.raises(AssertionError):
         await derive_ctx_rig.module.derive_model_context(1, "hello there")
+
+
+# ---------------------------------------------------------------------------
+# feat/model-status-dot -- active health probe broadcast
+# ---------------------------------------------------------------------------
+
+
+async def test_probe_models_broadcasts_health(monkeypatch):
+    """probe_models must probe the router and broadcast a models_health event
+    carrying the {model_id: reachable} map the status dots render from."""
+    import cerebral.main as main_mod
+
+    class _FakeRouter:
+        async def probe_enabled(self):
+            return {"ollama/x": True, "custom/budd": False}
+
+    broadcasts: list[dict] = []
+
+    async def fake_broadcast(event):
+        broadcasts.append(event)
+
+    monkeypatch.setattr(main_mod, "_router", _FakeRouter())
+    monkeypatch.setattr(main_mod, "_broadcast", fake_broadcast)
+
+    await main_mod._handle_message({"type": "probe_models"})
+
+    assert broadcasts == [{
+        "type": "models_health",
+        "data": {"health": {"ollama/x": True, "custom/budd": False}},
+    }]

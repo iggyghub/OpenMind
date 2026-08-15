@@ -1094,6 +1094,24 @@ test('old switch_model single-select removed; per-task cards unchanged (P2 model
   expect(inlineScript).toMatch(/set_task_model/);
 });
 
+// ── Model status dots (probe_models) ─────────────────────────────────────────
+
+test('model priority header has a Recheck button (status dots)', () => {
+  const btn = root.querySelector('#set-recheck-btn');
+  expect(btn).not.toBeNull();
+  expect(btn.tagName.toLowerCase()).toBe('button');
+});
+
+test('inline script wires probe_models + models_health for status dots', () => {
+  // Probe fired on settings-pane open and on Recheck.
+  expect(inlineScript).toMatch(/['"]probe_models['"]/);
+  // Health map consumed and re-rendered.
+  expect(inlineScript).toMatch(/['"]models_health['"]/);
+  expect(inlineScript).toMatch(/modelHealth/);
+  // Each priority row carries a status dot span.
+  expect(inlineScript).toMatch(/set-priority-status/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {
