@@ -10,10 +10,13 @@ cap is reached.
 import json
 import logging
 import os
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from cerebral.llm.planner import Planner, validate_tool_args
 from cerebral.llm.router import ToolCall
+
+if TYPE_CHECKING:
+    from cerebral.llm.step_ledger import StepLedger
 
 _ChainDoneFn = Callable[[list[dict]], Awaitable[None]]
 
@@ -52,6 +55,8 @@ class ChainEngine:
         *,
         max_steps: int = MAX_CHAIN_STEPS,
         on_chain_done: "_ChainDoneFn | None" = None,
+        run_id: "str | None" = None,
+        ledger: "StepLedger | None" = None,
     ) -> str:
         """Run the chaining loop. Returns the final text response to speak.
 
@@ -70,11 +75,24 @@ class ChainEngine:
         # break the loop and force a text answer instead of spinning to the cap.
         completed_sigs: set[str] = set()
 
+        # Crash-resume (harness improvement C): steps already recorded for this
+        # run_id are replayed from the ledger instead of re-executed, so a
+        # restart mid-chain never re-fires a side-effectful tool. run_id/ledger
+        # absent => resume is empty and behaviour is identical to before.
+        resume: dict[str, dict] = {}
+        if ledger is not None and run_id:
+            for s in ledger.completed(run_id):
+                resume[s["sig"]] = s
+
         for step_num in range(max_steps):
             result = await self._planner.plan(transcript, tools, prior_steps=prior_steps)
             logger.info("[chain] step %d: planner returned %s", step_num + 1, type(result).__name__)
 
             if isinstance(result, str):
+                # Chain finished cleanly -- the ledger's job is done, drop it so
+                # a later run with the same run_id starts fresh.
+                if ledger is not None and run_id:
+                    ledger.clear(run_id)
                 if on_chain_done is not None and len(prior_steps) >= 2:
                     try:
                         await on_chain_done(prior_steps)
@@ -95,6 +113,21 @@ class ChainEngine:
             # Loop guard: the model re-asked for a tool it already ran with the
             # same args. It isn't going to progress -- answer from what we have.
             sig = f"{result.name}:{json.dumps(result.args, sort_keys=True, default=str)}"
+
+            # Replay a step completed in a prior (crashed) run: reuse the
+            # persisted result and let the planner move on to the next step,
+            # without re-recording the turn, re-gating, or re-executing.
+            if sig in resume and sig not in completed_sigs:
+                done = resume[sig]
+                prior_steps.append({
+                    "name": done["name"],
+                    "args": done["args"],
+                    "result": done["result"],
+                    "is_error": done["is_error"],
+                })
+                completed_sigs.add(sig)
+                continue
+
             if sig in completed_sigs:
                 logger.info("[chain] repeated call %r -- finalizing from results", result.name)
                 return await self._planner.finalize(transcript, prior_steps)
@@ -130,6 +163,10 @@ class ChainEngine:
 
             if not tool_result.is_error:
                 completed_sigs.add(sig)
+                # Persist the completed step so a crash before the chain ends
+                # can replay it instead of re-executing (harness improvement C).
+                if ledger is not None and run_id:
+                    ledger.record(run_id, sig, prior_steps[-1])
 
         # Hit the step cap -- answer from whatever results we gathered rather
         # than the robotic "I completed N steps" summary.
