@@ -967,8 +967,12 @@ class ClawBackend:
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 raise ConnectionError(str(exc)) from exc
             except httpx.HTTPStatusError as exc:
+                # Include the server's response body — a bare status hides the
+                # real reason (e.g. LiteLLM "key not allowed to access model X").
+                body = (getattr(exc.response, "text", "") or "").strip()
+                detail = f": {body[:200]}" if body else ""
                 raise ConnectionError(
-                    f"HTTP {exc.response.status_code} from {exc.request.url}"
+                    f"HTTP {exc.response.status_code} from {exc.request.url}{detail}"
                 ) from exc
         data = resp.json()
         usage = data.get("usage", {}) or {}
@@ -1013,8 +1017,12 @@ class ClawBackend:
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 raise ConnectionError(str(exc)) from exc
             except httpx.HTTPStatusError as exc:
+                # Include the server's response body — a bare status hides the
+                # real reason (e.g. LiteLLM "key not allowed to access model X").
+                body = (getattr(exc.response, "text", "") or "").strip()
+                detail = f": {body[:200]}" if body else ""
                 raise ConnectionError(
-                    f"HTTP {exc.response.status_code} from {exc.request.url}"
+                    f"HTTP {exc.response.status_code} from {exc.request.url}{detail}"
                 ) from exc
 
         message = resp.json()["choices"][0]["message"]
@@ -1064,8 +1072,12 @@ class ClawBackend:
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 raise ConnectionError(str(exc)) from exc
             except httpx.HTTPStatusError as exc:
+                # Include the server's response body — a bare status hides the
+                # real reason (e.g. LiteLLM "key not allowed to access model X").
+                body = (getattr(exc.response, "text", "") or "").strip()
+                detail = f": {body[:200]}" if body else ""
                 raise ConnectionError(
-                    f"HTTP {exc.response.status_code} from {exc.request.url}"
+                    f"HTTP {exc.response.status_code} from {exc.request.url}{detail}"
                 ) from exc
         return resp.json()["choices"][0]["message"]["content"]
 
