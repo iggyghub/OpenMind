@@ -420,3 +420,100 @@ async def test_unmatched_transcript_reaches_planner(process_cmd_rig) -> None:
     assert len(process_cmd_rig.shortlist_calls) == 1, (
         "unmatched transcripts must still trigger the planner chain"
     )
+
+
+# ---------------------------------------------------------------------------
+# H1-S3 -- oldest-turn summarization (ADR-0021 decision 2b/5)
+# ---------------------------------------------------------------------------
+
+class _FakeTurn:
+    def __init__(self, kind, text):
+        self.kind = kind
+        self.content = {"text": text}
+
+
+class _FakeConversationStore:
+    def __init__(self, turns):
+        self._turns = turns
+
+    def list_recent_for_thread(self, thread_id, limit):
+        return self._turns[-limit:]
+
+
+class _FakeRouter:
+    def __init__(self, complete_return="a concise summary"):
+        self.active_model = "fake/model"
+        self.complete_calls = []
+        self._complete_return = complete_return
+
+    def context_window_for(self, model_id):
+        return 1000  # small window so a modest transcript trips the threshold
+
+    async def complete(self, prompt, task_type="chat"):
+        self.complete_calls.append((prompt, task_type))
+        return self._complete_return
+
+
+@pytest.fixture
+def convo_ctx_rig(monkeypatch):
+    """Stub the pieces _conversation_context touches: thread resolution, the
+    conversation store, _router, and _record_turn. No real DB/model/net."""
+    import cerebral.main as main_mod
+
+    record_calls: list[tuple[str, dict]] = []
+
+    async def fake_record(kind, content, **_kw):
+        record_calls.append((kind, content))
+
+    monkeypatch.setattr(main_mod, "_resolve_active_thread_id", lambda profile_id: 1)
+    monkeypatch.setattr(main_mod, "_record_turn", fake_record)
+
+    class Rig:
+        module = main_mod
+        records = record_calls
+
+        def set_turns(self, turns):
+            monkeypatch.setattr(main_mod, "_conversation", _FakeConversationStore(turns))
+
+        def set_router(self, router):
+            monkeypatch.setattr(main_mod, "_router", router)
+
+    return Rig()
+
+
+async def test_conversation_context_under_threshold_no_summary(convo_ctx_rig):
+    """Few short turns: normal last-N window, no compaction side effect --
+    the H1-S3 hook must be a no-op on the common case (H4-S1's own safety
+    property, mirrored here: no trigger = zero behaviour change)."""
+    turns = [_FakeTurn("user_text", f"hi {i}") for i in range(3)]
+    convo_ctx_rig.set_turns(turns)
+    convo_ctx_rig.set_router(_FakeRouter())
+
+    out = await convo_ctx_rig.module._conversation_context(profile_id=1, max_turns=8)
+
+    assert convo_ctx_rig.records == []
+    assert "hi 0" in out
+
+
+async def test_conversation_context_over_threshold_summarizes_and_logs(convo_ctx_rig):
+    """More turns than the window, and the dropped-oldest text is over the
+    compaction threshold: summarize via task_type='quality' and log a
+    KIND_SUMMARY turn (ADR-0021 decision 3 + 5)."""
+    from cerebral.db.conversation import KIND_SUMMARY
+
+    # 7, not 6: _conversation_context drops the trailing user turn (the
+    # live request already recorded before this call), which eats one of
+    # these -- 6 survive into `older`, still well over the 1000-token budget.
+    old = [_FakeTurn("user_text", "x" * 500) for _ in range(7)]
+    recent = [_FakeTurn("user_text", f"recent {i}") for i in range(8)]
+    convo_ctx_rig.set_turns(old + recent)
+    router = _FakeRouter()
+    convo_ctx_rig.set_router(router)
+
+    await convo_ctx_rig.module._conversation_context(profile_id=1, max_turns=8)
+
+    assert len(router.complete_calls) == 1
+    assert router.complete_calls[0][1] == "quality"
+    summary_records = [c for c in convo_ctx_rig.records if c[0] == KIND_SUMMARY]
+    assert len(summary_records) == 1
+    assert summary_records[0][1]["text"] == "a concise summary"
