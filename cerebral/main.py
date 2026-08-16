@@ -64,6 +64,7 @@ from cerebral.security import (
     is_valid_choice,
     is_valid_modal_choice,
 )
+from cerebral.commands import Command, CommandRegistry
 from cerebral.db.conversation import (
     KIND_FELIX_SPEECH,
     KIND_SYSTEM_EVENT,
@@ -248,6 +249,21 @@ _attachments  = AttachmentStore()
 _recipe_store    = RecipeStore()
 _job_search_store = _JobSearchStore()  # S1 #334 / S2 #335
 _document_store = _DocumentStore()    # S3 #454
+
+_command_registry = CommandRegistry()
+
+
+async def _handle_restart_felix() -> None:
+    """Direct command handler for restart_felix -- mirrors _self_dev_restart broadcast."""
+    await _broadcast({"type": "restart_felix"})
+
+
+_command_registry.register(Command(
+    name="restart_felix",
+    phrases=("restart felix", "restart openmind"),
+    capability="device_control",
+    handler=_handle_restart_felix,
+))
 
 # ADR-0013 decision 3: track chain repeat counts to raise recipe proposals.
 # In-memory only -- counts reset on restart (acceptable; N more runs re-proposes).
@@ -5802,6 +5818,18 @@ async def _process_command(
     ``speak=False`` (text path -- Issue #185) skips TTS for typed interactions.
     """
     global _active_turn_task
+    # H4-S1: deterministic command registry bypass
+    cmd = _command_registry.match(transcript)
+    if cmd is not None:
+        if cmd.capability is not None:
+            decision = await _orc.check_capabilities(cmd.name, {cmd.capability}, {}, {})
+        else:
+            decision = Decision.SILENT
+        if decision is Decision.SILENT:
+            await cmd.handler()
+            await _record_turn(KIND_SYSTEM_EVENT, {"event": "command_executed", "command_name": cmd.name})
+            return
+        return
     # S13 -- temporarily apply the thread's model pin, if any.
     _prev_model: str | None = None
     if thread_model_override is not None:
