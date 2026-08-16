@@ -517,3 +517,72 @@ async def test_conversation_context_over_threshold_summarizes_and_logs(convo_ctx
     summary_records = [c for c in convo_ctx_rig.records if c[0] == KIND_SUMMARY]
     assert len(summary_records) == 1
     assert summary_records[0][1]["text"] == "a concise summary"
+
+
+# ---------------------------------------------------------------------------
+# H3-S1 -- derive_model_context() single assembly seam (ADR-0022 S1)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def derive_ctx_rig(monkeypatch):
+    """Stub _memory_preamble / _conversation_context (both already covered by
+    their own tests) so derive_model_context's COMPOSITION is what's under
+    test here, plus the conversation-store pieces the invariant re-queries."""
+    import cerebral.main as main_mod
+
+    calls = {"memory": [], "history": []}
+
+    async def fake_preamble(query):
+        calls["memory"].append(query)
+        return "PREAMBLE:"
+
+    async def fake_history(profile_id, **kw):
+        calls["history"].append(profile_id)
+        return "HISTORY:"
+
+    monkeypatch.setattr(main_mod, "_memory_preamble", fake_preamble)
+    monkeypatch.setattr(main_mod, "_conversation_context", fake_history)
+    monkeypatch.setattr(main_mod, "_resolve_active_thread_id", lambda profile_id: 1)
+
+    class Rig:
+        module = main_mod
+        memory_calls = calls["memory"]
+        history_calls = calls["history"]
+
+        def set_last_logged_text(self, text):
+            monkeypatch.setattr(
+                main_mod, "_conversation", _FakeConversationStore([_FakeTurn("user_text", text)])
+            )
+
+    return Rig()
+
+
+async def test_derive_model_context_composes_history_preamble_transcript(derive_ctx_rig):
+    out = await derive_ctx_rig.module.derive_model_context(1, "hello there")
+    assert out == "HISTORY:PREAMBLE:hello there"
+    assert derive_ctx_rig.history_calls == [1]
+    assert derive_ctx_rig.memory_calls == ["hello there"]
+
+
+async def test_derive_model_context_no_profile_skips_history(derive_ctx_rig):
+    out = await derive_ctx_rig.module.derive_model_context(None, "hi")
+    assert out == "PREAMBLE:hi"          # no HISTORY: prefix
+    assert derive_ctx_rig.history_calls == []   # _conversation_context never called
+
+
+async def test_invariant_off_by_default(derive_ctx_rig):
+    assert derive_ctx_rig.module._ASSERT_CONTEXT_INVARIANT is False
+
+
+async def test_invariant_passes_when_transcript_matches_logged_turn(derive_ctx_rig, monkeypatch):
+    monkeypatch.setattr(derive_ctx_rig.module, "_ASSERT_CONTEXT_INVARIANT", True)
+    derive_ctx_rig.set_last_logged_text("hello there")
+    # Must not raise -- the transcript matches what was actually logged.
+    await derive_ctx_rig.module.derive_model_context(1, "hello there")
+
+
+async def test_invariant_fires_when_transcript_diverges_from_log(derive_ctx_rig, monkeypatch):
+    monkeypatch.setattr(derive_ctx_rig.module, "_ASSERT_CONTEXT_INVARIANT", True)
+    derive_ctx_rig.set_last_logged_text("something else entirely")
+    with pytest.raises(AssertionError):
+        await derive_ctx_rig.module.derive_model_context(1, "hello there")
