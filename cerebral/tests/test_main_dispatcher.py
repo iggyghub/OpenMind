@@ -345,3 +345,78 @@ async def test_list_conversation_turns_broadcasts_snapshot(conversation_rig, mon
         "type": "list_conversation_turns", "data": {"limit": 50},
     })
     assert snapshot in conversation_rig.broadcasts
+
+
+# ── H4-S1 command registry integration ────────────────────────────────────────
+
+@pytest.fixture
+def process_cmd_rig(monkeypatch):
+    """Stub _broadcast, _record_turn, shortlist_tools, and the ADR-0005
+    capability gate so we can test _process_command directly without a real
+    router, LLM, or profile/consent state. The gate itself (deny-by-default,
+    no active profile in a bare test process) is not what this test is
+    checking -- H4-S1's own invariant (matched command -> handler runs,
+    router untouched) is; SILENT lets that path execute."""
+    import cerebral.main as main_mod
+    from cerebral.security import Decision
+
+    broadcasts: list[dict] = []
+    record_calls: list[tuple[str, dict]] = []
+    shortlist_calls: list = []
+
+    async def fake_broadcast(ev: dict) -> None:
+        broadcasts.append(ev)
+
+    async def fake_record(kind: str, content: dict, **_kw: object) -> None:
+        record_calls.append((kind, content))
+
+    def fake_shortlist(*args: object, **kwargs: object) -> list:
+        shortlist_calls.append(args)
+        return []
+
+    async def fake_check_capabilities(*args: object, **kwargs: object) -> Decision:
+        return Decision.SILENT
+
+    monkeypatch.setattr(main_mod, "_broadcast", fake_broadcast)
+    monkeypatch.setattr(main_mod, "_record_turn", fake_record)
+    monkeypatch.setattr(main_mod, "shortlist_tools", fake_shortlist)
+    monkeypatch.setattr(main_mod._orc, "check_capabilities", fake_check_capabilities)
+
+    _broadcasts, _record_calls, _shortlist_calls = broadcasts, record_calls, shortlist_calls
+
+    class Rig:
+        module = main_mod
+        broadcasts = _broadcasts
+        record_calls = _record_calls
+        shortlist_calls = _shortlist_calls
+
+    return Rig
+
+
+async def test_command_registry_bypasses_planner(process_cmd_rig) -> None:
+    """H4-S1: matched command must NOT call shortlist_tools / Planner.
+    Instead it should execute the handler and record a system event."""
+    await process_cmd_rig.module._process_command("restart felix", speak=False)
+    await asyncio.sleep(0)  # let scheduled task / handler complete
+
+    assert len(process_cmd_rig.shortlist_calls) == 0, (
+        "shortlist_tools must not be called for matched deterministic commands"
+    )
+    assert any(
+        e.get("type") == "restart_felix" for e in process_cmd_rig.broadcasts
+    )
+    assert any(
+        c[0] == "system_event" and c[1].get("event") == "command_executed"
+        for c in process_cmd_rig.record_calls
+    )
+
+
+async def test_unmatched_transcript_reaches_planner(process_cmd_rig) -> None:
+    """H4-S1 safety invariant: unmatched transcripts must fall through unchanged.
+    This is a regression guard to ensure zero behavior change on no match."""
+    await process_cmd_rig.module._process_command("hello world", speak=False)
+    await asyncio.sleep(0)
+
+    assert len(process_cmd_rig.shortlist_calls) == 1, (
+        "unmatched transcripts must still trigger the planner chain"
+    )
