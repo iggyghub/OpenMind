@@ -137,10 +137,18 @@ EXTRACTION_PREFERRED = ("custom/budd", "ollama/qwen3:8b", "ollama/qwen2.5:7b")
 # Cloud entries are constants; local entries are discovered at runtime.
 CLOUD_MODELS = {
     "claude/haiku":  {"label": "Claude Haiku 4.5",  "is_cloud": True,
-                      "claw_model": "claude-haiku-4-5-20251001"},
+                      "claw_model": "claude-haiku-4-5-20251001",
+                      "context_window": 200000},
     "claude/sonnet": {"label": "Claude Sonnet 4.6", "is_cloud": True,
-                      "claw_model": "claude-sonnet-4-6"},
+                      "claw_model": "claude-sonnet-4-6",
+                      "context_window": 200000},
 }
+
+# Conservative floor for a model whose context window we don't know (an
+# unlabelled local like qwen3:8b). ADR-0021 S1: runtime discovery of local
+# windows is a later refinement; the floor is enough to drive compaction now.
+# ponytail: bump per-model in the metadata as real windows get wired in.
+_DEFAULT_CONTEXT_WINDOW = 8192
 
 
 class ModelRouter:
@@ -243,6 +251,16 @@ class ModelRouter:
             })
             position += 1
         return out
+
+    def context_window_for(self, model_id: str) -> int:
+        """The model's context window (tokens) from its metadata, or a
+        conservative default floor for an unknown/unlabelled model. Feeds the
+        compaction trigger (ADR-0021 S1) via cerebral.llm.context_budget."""
+        return int(
+            self._models.get(model_id, {}).get(
+                "context_window", _DEFAULT_CONTEXT_WINDOW
+            )
+        )
 
     def set_priority(self, order: list[str]) -> None:
         """Replace the priority ordering. Unknown ids are dropped, known-but-missing
@@ -742,7 +760,10 @@ def _real_models(backends: dict[str, Backend]) -> dict[str, dict]:
             models[mid] = {"label": mid.split("/", 1)[1], "is_cloud": False}
     for cid, info in CLOUD_MODELS.items():
         if cid in backends:
-            models[cid] = {"label": info["label"], "is_cloud": True}
+            models[cid] = {
+                "label": info["label"], "is_cloud": True,
+                "context_window": info.get("context_window", _DEFAULT_CONTEXT_WINDOW),
+            }
     return models
 
 
