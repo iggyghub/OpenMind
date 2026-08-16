@@ -4,6 +4,7 @@ Self-dev plugin tests -- ADR-0015 S1 (Issue #554).
 All side effects are injected (clone_fn / edit_fn / test_fn / pr_fn) so
 the suite runs hermetically: no real git, no gh, no network, no Cerebral.
 """
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -313,3 +314,44 @@ def test_default_pr_pushes_with_upstream(monkeypatch, tmp_path):
     assert "--head" in gh and "selfdev/x" in gh, \
         f"gh pr create must name the head branch explicitly: {gh}"
     assert url == "https://github.com/x/y/pull/1"
+
+
+# ---------------------------------------------------------------------------
+# Event-loop freeze fix: test_fn must run off the event loop thread.
+# ---------------------------------------------------------------------------
+
+async def test_test_fn_does_not_block_event_loop(tmp_path):
+    """A slow/blocking test_fn (real code: subprocess.run to pytest) must not
+    freeze Cerebral's event loop -- a concurrent coroutine must still get to
+    run while self_dev's test step is in flight. Regression test for the
+    2026-08-16 incident: a synchronous, unawaited test_fn call froze the whole
+    process (no WS, no heartbeats) for 50+ minutes on a hung sandbox suite."""
+    import threading
+    import time
+
+    test_thread_ident = {}
+
+    def blocking_test_fn(d):
+        test_thread_ident["id"] = threading.get_ident()
+        time.sleep(0.3)  # stands in for a slow pytest run
+        return True, "ok"
+
+    ticked = []
+
+    async def ticker():
+        for _ in range(20):
+            ticked.append(time.monotonic())
+            await asyncio.sleep(0.02)
+
+    plugin = _make(tmp_path, test_fn=blocking_test_fn)
+    tick_task = asyncio.create_task(ticker())
+    result = await plugin.call_tool("self_dev", {"change_description": "x"})
+    await tick_task
+
+    assert not result.is_error, result.content
+    # The blocking call ran on a worker thread, not the event-loop thread.
+    assert test_thread_ident["id"] != threading.get_ident()
+    # The ticker kept making progress DURING the 0.3s "test run" -- proof the
+    # loop was never blocked. A pre-fix direct call would have starved it and
+    # left far fewer than ~15 ticks in that window.
+    assert len(ticked) >= 15, f"event loop starved during test_fn: only {len(ticked)} ticks"

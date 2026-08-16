@@ -165,3 +165,43 @@ if __name__ == "__main__":
     import sys
     import pytest
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# ── test_fn: bounded by a timeout so a hung suite can't freeze Cerebral ──────
+
+def test_test_fn_timeout_returns_failed_not_raises(monkeypatch, tmp_path):
+    """A hung pytest subprocess must be killed and reported as a failed run,
+    not hang test_fn (and therefore its caller) forever. Regression test for
+    the 2026-08-16 incident: an unbounded subprocess.run froze all of Cerebral
+    for 50+ minutes on a stuck sandbox test suite."""
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+
+    def fake_run(cmd, **kw):
+        assert kw.get("timeout") == io._TEST_TIMEOUT_S
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw["timeout"], output="partial out", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is False
+    assert "timed out" in output.lower()
+    assert "partial out" in output
+
+
+def test_test_fn_passes_timeout_to_subprocess(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured.update(kw)
+        class R:
+            returncode = 0
+            stdout = "3 passed"
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert captured["timeout"] == io._TEST_TIMEOUT_S
