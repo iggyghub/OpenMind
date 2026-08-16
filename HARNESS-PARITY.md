@@ -13,7 +13,7 @@ Status: blocked
 
 ## Next slice -- start here
 
-Active: H1-S3 -- #732
+Active: H3-S1 -- #734
 Model: sonnet
 
 ## Queue (slice-granular; each entry = one tracer PR; read the issue + its ADR)
@@ -23,7 +23,7 @@ Model: sonnet
 - [x] H6-S1 -- #737 -- approval presets over the ADR-0005 gate -- Type: HITL -- confirm preset set first
 - [x] H1-S1 -- #732 -- model context_window metadata + prompt token estimator (ADR-0021 S1) -- Type: AFK
 - [x] H1-S2 -- #732 -- tool-result pruning via spill (ADR-0021 S2) -- Type: AFK -- needs H5
-- [ ] H1-S3 -- #732 -- oldest-turn summarization in main.py (ADR-0021 S3) -- Type: HITL
+- [x] H1-S3 -- #732 -- oldest-turn summarization in main.py (ADR-0021 S3) -- Type: HITL
 - [ ] H3-S1 -- #734 -- derive_model_context() + assembly invariant (ADR-0022 S1) -- Type: HITL
 - [ ] H3-S2 -- #734 -- fork(session, boundary) on the conversation store (ADR-0022 S2) -- Type: AFK
 - [ ] H2-S1 -- #733 -- subagent provider seam + continuation + jobs (ADR-0020 amend) -- Type: HITL -- AFTER delegation #727-730
