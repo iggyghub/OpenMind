@@ -41,6 +41,10 @@ KIND_FELIX_SPEECH = "felix_speech"
 KIND_TOOL_CALL    = "tool_call"
 KIND_TOOL_RESULT  = "tool_result"
 KIND_SYSTEM_EVENT = "system_event"
+# ADR-0021 decision 5 (H1-S3): a compaction summary is a logged turn, not a
+# transient log line -- reconstructable history like any other kind, encrypted
+# at rest the same way (the storage layer handles that transparently).
+KIND_SUMMARY      = "summary"
 
 VALID_KINDS = frozenset({
     KIND_USER_VOICE,
@@ -49,6 +53,7 @@ VALID_KINDS = frozenset({
     KIND_TOOL_CALL,
     KIND_TOOL_RESULT,
     KIND_SYSTEM_EVENT,
+    KIND_SUMMARY,
 })
 
 # S9 (#292) -- the back-fill thread for pre-#292 turns. Stable name so a

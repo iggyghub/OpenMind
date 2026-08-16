@@ -41,6 +41,7 @@ from cerebral.db.custom_models import CustomModelStore
 from cerebral.db.model_priority import ModelPriorityStore
 from cerebral.llm.planner import Planner, is_coding_turn, shortlist_tools, validate_tool_args
 from cerebral.llm.chain_engine import ChainEngine
+from cerebral.llm.context_summarizer import should_summarize, summarize_oldest
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
 from cerebral.passive.extractor import FiveW1HExtractor
@@ -67,6 +68,7 @@ from cerebral.security import (
 from cerebral.commands import Command, CommandRegistry
 from cerebral.db.conversation import (
     KIND_FELIX_SPEECH,
+    KIND_SUMMARY,
     KIND_SYSTEM_EVENT,
     KIND_TOOL_CALL,
     KIND_TOOL_RESULT,
@@ -5753,7 +5755,7 @@ async def _on_wake(transcript: str) -> None:
     _active_turn_task = asyncio.create_task(_process_command(transcript, speak=True, thread_model_override=_wake_thread_model))
 
 
-def _conversation_context(profile_id: int, *, max_turns: int = 8) -> str:
+async def _conversation_context(profile_id: int, *, max_turns: int = 8) -> str:
     """Recent user/Felix turns from the active thread, formatted as a
     "Conversation so far" preamble so the planner can reference the ongoing
     chat window -- the main voice/text path was previously stateless (only the
@@ -5765,8 +5767,12 @@ def _conversation_context(profile_id: int, *, max_turns: int = 8) -> str:
     dropped to avoid duplicating the live request. Tool-call/result and
     system-event turns are skipped: the in-chain ``prior_steps`` already carry
     active tool context, and they're noise for conversational recall.
-    ponytail: last-N plain-text window; add summarisation only if transcripts
-    outgrow the model's context window.
+
+    H1-S3 (ADR-0021 decision 2b/5): when there are more turns than fit the
+    window AND the full window is over the compaction threshold, the turns
+    being dropped are folded into one summary (task_type="quality") and
+    logged as a KIND_SUMMARY turn instead of silently discarded. Under
+    threshold (the common case), behaviour is unchanged -- last-N plain text.
     """
     thread_id = _resolve_active_thread_id(profile_id)
     if thread_id is None:
@@ -5774,20 +5780,48 @@ def _conversation_context(profile_id: int, *, max_turns: int = 8) -> str:
     turns = _conversation.list_recent_for_thread(thread_id, limit=max_turns * 3 + 1)
     convo = [
         t for t in turns
-        if t.kind in (KIND_USER_VOICE, KIND_USER_TEXT, KIND_FELIX_SPEECH)
+        if t.kind in (KIND_USER_VOICE, KIND_USER_TEXT, KIND_FELIX_SPEECH, KIND_SUMMARY)
     ]
     # Drop the just-recorded current user turn (the last conversational turn).
     if convo and convo[-1].kind in (KIND_USER_VOICE, KIND_USER_TEXT):
         convo = convo[:-1]
+
+    def _who(kind: str) -> str:
+        if kind == KIND_FELIX_SPEECH:
+            return "Felix"
+        if kind == KIND_SUMMARY:
+            return "Summary"
+        return "User"
+
+    if len(convo) > max_turns:
+        older = convo[:-max_turns]
+        older_pairs = [
+            {"who": _who(t.kind), "text": (t.content.get("text") or "").strip()}
+            for t in older
+        ]
+        full_text = "\n".join(f"{p['who']}: {p['text']}" for p in older_pairs if p["text"])
+        window = _router.context_window_for(_router.active_model)
+        if full_text and should_summarize(full_text, window):
+            summary = await summarize_oldest(older_pairs, _quality_complete)
+            if summary is not None:
+                await _record_turn(KIND_SUMMARY, summary)
+
     lines = []
     for t in convo[-max_turns:]:
-        who = "Felix" if t.kind == KIND_FELIX_SPEECH else "User"
         text = (t.content.get("text") or "").strip()
         if text:
-            lines.append(f"{who}: {text}")
+            lines.append(f"{_who(t.kind)}: {text}")
     if not lines:
         return ""
     return "Conversation so far:\n" + "\n".join(lines) + "\n\n"
+
+
+async def _quality_complete(prompt: str) -> str:
+    """Summarization backend (ADR-0021 decision 3): route through the user's
+    'quality' task pin (cloud-first) so a bad summary doesn't poison
+    downstream context -- falls back per the router's normal task_type
+    resolution when no quality pin is configured or it's unreachable."""
+    return await _router.complete(prompt, task_type="quality")
 
 
 async def _process_command(
@@ -5928,7 +5962,7 @@ async def _process_command(
 
     try:
         preamble = await _memory_preamble(transcript)
-        history = _conversation_context(profile_id) if profile_id is not None else ""
+        history = await _conversation_context(profile_id) if profile_id is not None else ""
         enriched = history + preamble + transcript
         response = await chain.run(enriched, tools, on_chain_done=_on_chain_done)
 
