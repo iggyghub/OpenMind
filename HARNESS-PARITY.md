@@ -13,13 +13,13 @@ Status: blocked
 
 ## Next slice -- start here
 
-Active: H4-S1 -- #735
+Active: H6-S1 -- #737
 Model: sonnet
 
 ## Queue (slice-granular; each entry = one tracer PR; read the issue + its ADR)
 
 - [x] H5-S1 -- #736 -- spill store + post-execute hook + retrieve tool -- Type: AFK -- standalone
-- [ ] H4-S1 -- #735 -- command registry + no-LLM dispatch (main.py) + 1 example -- Type: HITL
+- [x] H4-S1 -- #735 -- command registry + no-LLM dispatch (main.py) + 1 example -- Type: HITL
 - [ ] H6-S1 -- #737 -- approval presets over the ADR-0005 gate -- Type: HITL -- confirm preset set first
 - [x] H1-S1 -- #732 -- model context_window metadata + prompt token estimator (ADR-0021 S1) -- Type: AFK
 - [x] H1-S2 -- #732 -- tool-result pruning via spill (ADR-0021 S2) -- Type: AFK -- needs H5
