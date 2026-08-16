@@ -351,9 +351,14 @@ async def test_list_conversation_turns_broadcasts_snapshot(conversation_rig, mon
 
 @pytest.fixture
 def process_cmd_rig(monkeypatch):
-    """Stub _broadcast, _record_turn, and shortlist_tools so we can test
-    _process_command directly without invoking the real router or LLM."""
+    """Stub _broadcast, _record_turn, shortlist_tools, and the ADR-0005
+    capability gate so we can test _process_command directly without a real
+    router, LLM, or profile/consent state. The gate itself (deny-by-default,
+    no active profile in a bare test process) is not what this test is
+    checking -- H4-S1's own invariant (matched command -> handler runs,
+    router untouched) is; SILENT lets that path execute."""
     import cerebral.main as main_mod
+    from cerebral.security import Decision
 
     broadcasts: list[dict] = []
     record_calls: list[tuple[str, dict]] = []
@@ -369,15 +374,21 @@ def process_cmd_rig(monkeypatch):
         shortlist_calls.append(args)
         return []
 
+    async def fake_check_capabilities(*args: object, **kwargs: object) -> Decision:
+        return Decision.SILENT
+
     monkeypatch.setattr(main_mod, "_broadcast", fake_broadcast)
     monkeypatch.setattr(main_mod, "_record_turn", fake_record)
     monkeypatch.setattr(main_mod, "shortlist_tools", fake_shortlist)
+    monkeypatch.setattr(main_mod._orc, "check_capabilities", fake_check_capabilities)
+
+    _broadcasts, _record_calls, _shortlist_calls = broadcasts, record_calls, shortlist_calls
 
     class Rig:
         module = main_mod
-        broadcasts = broadcasts
-        record_calls = record_calls
-        shortlist_calls = shortlist_calls
+        broadcasts = _broadcasts
+        record_calls = _record_calls
+        shortlist_calls = _shortlist_calls
 
     return Rig
 
