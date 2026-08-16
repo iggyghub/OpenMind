@@ -5816,6 +5816,51 @@ async def _conversation_context(profile_id: int, *, max_turns: int = 8) -> str:
     return "Conversation so far:\n" + "\n".join(lines) + "\n\n"
 
 
+# ADR-0022 S1: cheap debug assertion that the assembled prompt carries no
+# unlogged content, gated behind an env flag (off by default -- a runtime
+# assert on every turn is not a cost worth paying in production).
+_ASSERT_CONTEXT_INVARIANT = os.environ.get("ASSERT_CONTEXT_INVARIANT", "").lower() in (
+    "1", "true", "yes",
+)
+
+
+async def derive_model_context(profile_id: "int | None", transcript: str) -> str:
+    """ADR-0022 S1 -- the single assembly seam (adopts the minimal subset of
+    dsh's SessionEvent log: one derivation function + an invariant, not full
+    event-sourcing). Builds the model-visible prompt ONLY from
+    conversation_turns (_conversation_context) and the memory store
+    (_memory_preamble), plus the live transcript -- which is itself already a
+    logged turn by the time this runs (recorded in _on_wake / user_text_command
+    before _process_command starts). Any new model-visible input must route
+    through one of these two sources; this is the one seam a future caller
+    (e.g. an ADR-0020 subagent) uses instead of reassembling the pieces itself.
+    """
+    preamble = await _memory_preamble(transcript)
+    history = await _conversation_context(profile_id) if profile_id is not None else ""
+    if _ASSERT_CONTEXT_INVARIANT and profile_id is not None:
+        _assert_transcript_is_logged(profile_id, transcript)
+    return history + preamble + transcript
+
+
+def _assert_transcript_is_logged(profile_id: int, transcript: str) -> None:
+    """"Model-visible means logged" (ADR-0022): independently re-query the
+    conversation store's most recent turn and confirm the live transcript IS
+    that logged turn, rather than trusting the concatenation that built it --
+    a real cross-check, not a tautology of the assembly code itself."""
+    thread_id = _resolve_active_thread_id(profile_id)
+    if thread_id is None:
+        return
+    recent = _conversation.list_recent_for_thread(thread_id, limit=1)
+    if not recent:
+        return
+    logged_text = (recent[-1].content.get("text") or "")
+    assert logged_text == transcript or logged_text == "", (
+        "derive_model_context invariant violated: the live transcript is not "
+        f"the most recently logged turn (model-visible means logged) -- "
+        f"logged={logged_text!r} transcript={transcript!r}"
+    )
+
+
 async def _quality_complete(prompt: str) -> str:
     """Summarization backend (ADR-0021 decision 3): route through the user's
     'quality' task pin (cloud-first) so a bad summary doesn't poison
@@ -5961,9 +6006,7 @@ async def _process_command(
     )
 
     try:
-        preamble = await _memory_preamble(transcript)
-        history = await _conversation_context(profile_id) if profile_id is not None else ""
-        enriched = history + preamble + transcript
+        enriched = await derive_model_context(profile_id, transcript)
         response = await chain.run(enriched, tools, on_chain_done=_on_chain_done)
 
     except asyncio.CancelledError:
