@@ -415,6 +415,37 @@ class ConversationStore:
         ).fetchall()
         return [_row_to_turn(r) for r in rows]
 
+    def fork_thread(
+        self, thread_id: int, boundary_turn_id: int, *, title: str | None = None
+    ) -> ConversationThread:
+        """Snapshot ``thread_id``'s turns with id <= ``boundary_turn_id`` into
+        a NEW thread under the same profile (ADR-0022 decision 3, H3-S2).
+
+        Row copy only -- no live "forked session" object. content_json is
+        copied as-is (already the correct ciphertext for this profile; no
+        decrypt/re-encrypt needed). The two threads are fully independent
+        after the copy. Consumers (later slices): ADR-0020 subagents forking
+        a parent's context slice, and self_dev/computer_use crash replay.
+        """
+        source = self.get_thread(thread_id)
+        if source is None:
+            raise ValueError(f"unknown thread_id: {thread_id!r}")
+        rows = self._con.execute(
+            "SELECT profile_id, kind, content_json FROM conversation_turns "
+            "WHERE thread_id=? AND id<=? ORDER BY id ASC",
+            (thread_id, boundary_turn_id),
+        ).fetchall()
+        new_title = title if title is not None else f"Fork of {source.title or 'conversation'}"
+        forked = self.create_thread(source.profile_id, title=new_title)
+        for r in rows:
+            self._con.execute(
+                "INSERT INTO conversation_turns "
+                "(profile_id, thread_id, kind, content_json) VALUES (?, ?, ?, ?)",
+                (r["profile_id"], forked.id, r["kind"], r["content_json"]),
+            )
+        self._con.commit()
+        return forked
+
     def _get(self, turn_id: int) -> ConversationTurn:
         row = self._con.execute(
             "SELECT * FROM conversation_turns WHERE id=?", (turn_id,)
