@@ -13,7 +13,7 @@ Status: blocked
 
 ## Next slice -- start here
 
-Active: H3-S2 -- #734
+Active: H8-S0 -- #739 (H2-S1/#733 still blocked on delegation #727-730; H7-S1/#738 deferred per its own note)
 Model: sonnet
 
 ## Queue (slice-granular; each entry = one tracer PR; read the issue + its ADR)
@@ -25,7 +25,7 @@ Model: sonnet
 - [x] H1-S2 -- #732 -- tool-result pruning via spill (ADR-0021 S2) -- Type: AFK -- needs H5
 - [x] H1-S3 -- #732 -- oldest-turn summarization in main.py (ADR-0021 S3) -- Type: HITL
 - [x] H3-S1 -- #734 -- derive_model_context() + assembly invariant (ADR-0022 S1) -- Type: HITL
-- [ ] H3-S2 -- #734 -- fork(session, boundary) on the conversation store (ADR-0022 S2) -- Type: AFK
+- [x] H3-S2 -- #734 -- fork(session, boundary) on the conversation store (ADR-0022 S2) -- Type: AFK
 - [ ] H2-S1 -- #733 -- subagent provider seam + continuation + jobs (ADR-0020 amend) -- Type: HITL -- AFTER delegation #727-730
 - [ ] H7-S1 -- #738 -- task-workflow over subagents (ADR-0023) -- Type: AFK -- gated on H2; DEFER unless a task needs it
 - [ ] H8-S0 -- #739 -- Code Mode sandbox spike, cloud-gated (ADR-0024) -- Type: HITL -- LAST
