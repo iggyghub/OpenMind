@@ -17,6 +17,7 @@ Injected seams (clone_fn / edit_fn / test_fn / pr_fn / diff_fn / merge_fn /
 pull_fn / restart_fn) make the whole flow hermetic in tests -- no real git /
 gh / network / Cerebral.
 """
+import asyncio
 import inspect
 import json
 import logging
@@ -297,10 +298,15 @@ class SelfDevPlugin:
 
         # 3. Test inside sandbox (failure is recorded, not fatal -- the
         #    blast-radius gate in SD-4 decides whether to auto-merge).
+        #    Off-thread: the default test_fn shells out to pytest and can run
+        #    for minutes (or, pre-fix, hang indefinitely) -- calling it directly
+        #    would block Cerebral's whole event loop (no WS, no heartbeats) for
+        #    the duration. asyncio.to_thread keeps Cerebral responsive while it
+        #    runs; self_dev_io.test_fn's own timeout still bounds a real hang.
         test_passed = False
         test_output = ""
         try:
-            test_passed, test_output = self._test(clone_dir)
+            test_passed, test_output = await asyncio.to_thread(self._test, clone_dir)
         except Exception as exc:
             test_output = f"Test runner error: {exc}"
 

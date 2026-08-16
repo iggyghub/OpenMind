@@ -153,6 +153,9 @@ def create_branch_and_commit(clone_dir: Path, branch: str, message: str) -> bool
     return result.returncode == 0
 
 
+_TEST_TIMEOUT_S = 600.0  # ample for a full suite; bounds a hung/runaway test
+
+
 def test_fn(clone_dir: Path) -> "tuple[bool, str]":
     """Run pytest in the clone (inside the sandbox via main.py wiring).
 
@@ -162,12 +165,26 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
     how #723 landed a failing tests/test_router_usage.py on master. Any dir that
     is absent in the clone is simply skipped by pytest, so this stays safe when
     a repo has only one test root.
+
+    Bounded by _TEST_TIMEOUT_S: a hung/runaway test (e.g. a fixture waiting on
+    a real network call) used to block this subprocess.run forever, and since
+    the caller (plugins/self_dev.py) invokes this synchronously inside an async
+    handler, an unbounded hang froze the whole Cerebral event loop -- no WS, no
+    heartbeats, nothing -- until someone force-killed the process. A timeout
+    turns that into a failed slice instead of a dead app.
     """
     roots = [d for d in ("cerebral/tests/", "tests/") if (clone_dir / d).is_dir()]
-    result = subprocess.run(
-        ["python", "-m", "pytest", *roots, "-q", "--tb=short"],
-        capture_output=True, text=True, cwd=str(clone_dir),
-    )
+    try:
+        result = subprocess.run(
+            ["python", "-m", "pytest", *roots, "-q", "--tb=short"],
+            capture_output=True, text=True, cwd=str(clone_dir),
+            timeout=_TEST_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = ((exc.stdout or "") + (exc.stderr or "")).strip()
+        return False, (
+            f"test run timed out after {_TEST_TIMEOUT_S:.0f}s -- killed\n{partial}"
+        ).strip()
     output = (result.stdout + result.stderr).strip()
     return result.returncode == 0, output
 
