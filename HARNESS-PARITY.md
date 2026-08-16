@@ -21,7 +21,7 @@ Model: sonnet
 - [x] H5-S1 -- #736 -- spill store + post-execute hook + retrieve tool -- Type: AFK -- standalone
 - [ ] H4-S1 -- #735 -- command registry + no-LLM dispatch (main.py) + 1 example -- Type: HITL
 - [ ] H6-S1 -- #737 -- approval presets over the ADR-0005 gate -- Type: HITL -- confirm preset set first
-- [ ] H1-S1 -- #732 -- model context_window metadata + prompt token estimator (ADR-0021 S1) -- Type: AFK
+- [x] H1-S1 -- #732 -- model context_window metadata + prompt token estimator (ADR-0021 S1) -- Type: AFK
 - [ ] H1-S2 -- #732 -- tool-result pruning via spill (ADR-0021 S2) -- Type: AFK -- needs H5
 - [ ] H1-S3 -- #732 -- oldest-turn summarization in main.py (ADR-0021 S3) -- Type: HITL
 - [ ] H3-S1 -- #734 -- derive_model_context() + assembly invariant (ADR-0022 S1) -- Type: HITL
@@ -33,6 +33,7 @@ Model: sonnet
 ## Landed PRs
 
 - H5-S1 #736 -- PR #742 (spill store) -- merged to master. Built by Claude Code (Budd was unavailable across 3 self_dev attempts); AFK safe-zone, full suite green (4679 passed).
+- H1-S1 #732 -- PR #745 (context_window metadata + token estimator) -- merged to master. Module+tests from Felix's self_dev run (hermes); Deliverable 1 + _real_models fix by hand. AFK safe-zone, full suite green (4690 passed).
 
 ## SAFETY
 
