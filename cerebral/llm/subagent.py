@@ -14,6 +14,7 @@ blocking by design: parallel local would thrash the one GPU.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol, runtime_checkable
 
 from cerebral.llm.chain_engine import MAX_CHAIN_STEPS, ChainEngine
@@ -21,6 +22,41 @@ from cerebral.llm.planner import Planner, shortlist_tools
 from cerebral.llm.router import ModelRouter
 from cerebral.llm.step_ledger import StepLedger
 from cerebral.mcp.orchestrator import ToolResult
+
+
+@dataclass(frozen=True)
+class SubagentHandle:
+    """In-memory continuation handle for a finished sub-agent run (H2-S2,
+    ADR-0020 amendment decision 2).
+
+    Deliberately NOT backed by `ConversationStore.fork_thread` (ADR-0022):
+    sub-agent steps never touch the conversation store in the first place
+    (`_no_record`, below) -- that isolation is the point of a sub-agent.
+    Forking a thread would mean *starting* to record a sub-chain just so it
+    could be forked, which fights the boundary this module exists to draw.
+    A handle is just the two strings needed to prime a follow-up transcript;
+    build one with `continuation_from` after a run.
+
+    ponytail: process-memory only, lost on restart / not shareable across
+    processes. Upgrade path if that's ever needed: swap this for a real
+    `fork_thread` snapshot -- deferred, no caller has asked for cross-restart
+    or cross-process resume yet.
+    """
+
+    transcript: str
+    result: str
+
+
+def continuation_from(task: str, context: "str | None", result: ToolResult) -> SubagentHandle:
+    """Build a `SubagentHandle` from a finished run's inputs and result.
+
+    Call with the same `(task, context)` given to `run_subagent` and the
+    `ToolResult` it returned. `run_subagent` itself keeps returning a plain
+    `ToolResult` -- this stays a separate, explicit step so the default
+    (non-continuable) path is untouched.
+    """
+    transcript = f"{context}\n\n{task}" if context else task
+    return SubagentHandle(transcript=transcript, result=result.content)
 
 
 @runtime_checkable
@@ -51,6 +87,7 @@ class SubagentProvider(Protocol):
         max_steps: int = MAX_CHAIN_STEPS,
         run_id: "str | None" = None,
         ledger: "StepLedger | None" = None,
+        continuation: "SubagentHandle | None" = None,
     ) -> ToolResult: ...
 
 
@@ -72,6 +109,7 @@ async def run_subagent(
     max_steps: int = MAX_CHAIN_STEPS,
     run_id: "str | None" = None,
     ledger: "StepLedger | None" = None,
+    continuation: "SubagentHandle | None" = None,
 ) -> ToolResult:
     """Run task as an isolated sub-agent and return its compact result.
 
@@ -90,7 +128,15 @@ async def run_subagent(
         crash replays already-completed steps from the ledger instead of
         re-executing them; the resume behavior is StepLedger's, this is only
         the pass-through. Both absent => byte-identical to S1.
+    continuation -- optional handle from a prior finished run (H2-S2, built
+        via `continuation_from`). Prepends that run's transcript + result
+        ahead of this call's `context`/`task`, so the follow-up sees what the
+        first run did without paying for a fresh run or touching the
+        conversation store. Absent (default) => byte-identical to before.
     """
+    if continuation is not None:
+        prior = f"{continuation.transcript}\n\n{continuation.result}"
+        context = f"{prior}\n\n{context}" if context else prior
     transcript = f"{context}\n\n{task}" if context else task
 
     if tools is None:

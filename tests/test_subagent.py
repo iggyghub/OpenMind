@@ -3,7 +3,13 @@
 import pytest
 from cerebral.llm.router import ModelRouter, ToolCall
 from cerebral.llm.step_ledger import StepLedger
-from cerebral.llm.subagent import SubagentProvider, local_provider, run_subagent
+from cerebral.llm.subagent import (
+    SubagentHandle,
+    SubagentProvider,
+    continuation_from,
+    local_provider,
+    run_subagent,
+)
 from cerebral.mcp.orchestrator import ToolResult
 from cerebral.security import Decision
 
@@ -285,3 +291,114 @@ async def test_provider_no_nesting():
     for call_tools in backend.offered_tools:
         offered_names = {t["name"] for t in call_tools}
         assert "delegate" not in offered_names
+
+
+# --- H2-S2: continuable delegation (ADR-0020 amendment decision 2) --------
+
+
+async def test_continuation_reuses_prior_context():
+    """A follow-up call's transcript carries the first run's result forward."""
+    backend = FakeBackend(["first result", "second result"])
+    router = ModelRouter(backends={"fake/x": backend})
+
+    async def execute(name, args):
+        return ToolResult(content="x", is_error=False)
+
+    first = await run_subagent(
+        "first task",
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=[_tool("echo")],
+    )
+    assert first.content == "first result"
+
+    handle = continuation_from("first task", None, first)
+
+    second = await run_subagent(
+        "second task",
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=[_tool("echo")],
+        continuation=handle,
+    )
+
+    assert second.content == "second result"
+    follow_up_prompt = backend.prompts[-1]
+    assert "first task" in follow_up_prompt
+    assert "first result" in follow_up_prompt
+    assert "second task" in follow_up_prompt
+
+
+async def test_omitting_continuation_runs_fresh():
+    """No continuation kwarg => no leakage from a previous run's transcript."""
+    backend = FakeBackend(["first result", "second result"])
+    router = ModelRouter(backends={"fake/x": backend})
+
+    async def execute(name, args):
+        return ToolResult(content="x", is_error=False)
+
+    await run_subagent(
+        "first task",
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=[_tool("echo")],
+    )
+
+    await run_subagent(
+        "second task",
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=[_tool("echo")],
+    )
+
+    follow_up_prompt = backend.prompts[-1]
+    assert "first result" not in follow_up_prompt
+    assert "first task" not in follow_up_prompt
+
+
+async def test_continuation_still_returns_compact_result():
+    """The parent still gets only the compact ToolResult on a continuation,
+    never the sub-chain's intermediate steps."""
+    backend = FakeBackend(
+        [ToolCall(name="echo", args={"msg": "hi"}), "first result", "second result"]
+    )
+    router = ModelRouter(backends={"fake/x": backend})
+    execute_calls: list[str] = []
+
+    async def execute(name, args):
+        execute_calls.append(name)
+        return ToolResult(content="echo result", is_error=False)
+
+    first = await run_subagent(
+        "first task",
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=[_tool("echo")],
+    )
+    handle = continuation_from("first task", None, first)
+
+    second = await run_subagent(
+        "second task",
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=[_tool("echo")],
+        continuation=handle,
+    )
+
+    assert isinstance(second, ToolResult)
+    assert second.content == "second result"
+    assert not second.is_error
+    assert execute_calls == ["echo"]  # only the first run's tool call fired
+
+
+def test_continuation_kwarg_keeps_provider_protocol_conformance():
+    """The new keyword-only param doesn't break SubagentProvider conformance."""
+    assert isinstance(run_subagent, SubagentProvider)
+    assert isinstance(local_provider, SubagentProvider)
+    assert isinstance(SubagentHandle(transcript="t", result="r"), SubagentHandle)
