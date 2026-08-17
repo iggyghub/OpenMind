@@ -153,6 +153,7 @@ def _make_dynamic_persist_cb(profile_id: int, row: dict):
             model=new_model, label=row["label"],
             is_cloud=dynamic_is_cloud(row["kind"]),
             secret_ref=row["secret_ref"], dynamic=True,
+            context_window=row.get("context_window", 0),
         )
     return _cb
 
@@ -184,7 +185,10 @@ def _restore_custom_models() -> None:
         except ValueError as exc:
             logger.warning("[cerebral] skipping custom model %s: %s", row["id"], exc)
             continue
-        _router.add_backend(row["id"], backend, row["label"], is_cloud)
+        _router.add_backend(
+            row["id"], backend, row["label"], is_cloud,
+            context_window=row.get("context_window") or None,
+        )
         logger.info("[cerebral] Restored custom model %s", row["id"])
 
 
@@ -3184,6 +3188,33 @@ def _slugify(text: str) -> str:
     return slug or "model"
 
 
+def _parse_context_window(raw, kind: str = "") -> int | None:
+    """Parse the optional per-model context-window override (#760).
+
+    Blank/missing, non-integer, or non-positive input all fall back to None
+    (unset) rather than persisting junk -- the caller then leaves the field
+    out and ModelRouter.context_window_for() applies its 8192 floor.
+
+    kind="ollama" always returns None regardless of input: build_custom_backend
+    routes it to OllamaBackend, which hardcodes num_ctx=8192 (router.py
+    ~817/859/896) whether the connection is the local ollama/* discovery path
+    or a remote custom/<slug> of kind "ollama" -- honoring a bigger stored
+    window here would just make context_window_for() lie about what the
+    endpoint actually keeps, the exact silent-truncation failure mode #760
+    exists to avoid.
+    ponytail: hard block, not a warning -- revisit only if num_ctx becomes a
+    configurable per-connection option."""
+    if kind == "ollama":
+        return None
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 async def _ping_custom_model(backend) -> str | None:
     """Health-check a custom backend by asking it to complete. Returns an
     error string on failure, or None when reachable. Any exception means
@@ -3205,6 +3236,7 @@ def _models_list_event() -> dict:
             custom_configs[row["id"]] = {
                 "kind": row["kind"], "url": row["url"], "model": row["model"],
                 "label": row["label"], "supports_vision": row["supports_vision"],
+                "context_window": row["context_window"] or None,
             }
     return {
         "type": "models_list",
@@ -4048,6 +4080,7 @@ async def _handle_message(msg: dict) -> None:
         label_in = (d.get("label") or "").strip()
         api_key = (d.get("api_key") or "").strip()
         supports_vision = bool(d.get("supports_vision"))
+        context_window = _parse_context_window(d.get("context_window"), kind)
         # Server-first (S3 #525): blank model + a kind that can list models
         # -> dynamic. The model is auto-resolved from the server on first use.
         dynamic = (not model) and (kind in DYNAMIC_CUSTOM_KINDS)
@@ -4110,11 +4143,11 @@ async def _handle_message(msg: dict) -> None:
                 except (RuntimeError, ValueError) as exc:
                     await _err(f"could not store API key: {exc}")
                     return
-            _router.add_backend(mid, backend, label, is_cloud)
+            _router.add_backend(mid, backend, label, is_cloud, context_window=context_window)
             stored_model = backend.model if dynamic else model
             row_for_cb = {
                 "id": mid, "kind": kind, "url": url, "label": label,
-                "secret_ref": secret_ref,
+                "secret_ref": secret_ref, "context_window": context_window or 0,
             }
             if dynamic:
                 # Wire persistence for future re-resolves (server swaps its model).
@@ -4125,6 +4158,7 @@ async def _handle_message(msg: dict) -> None:
                 _active_profile.id, id=mid, kind=kind, url=url, model=stored_model,
                 label=label, is_cloud=is_cloud, secret_ref=secret_ref,
                 dynamic=dynamic, supports_vision=supports_vision,
+                context_window=context_window or 0,
             )
             logger.info(
                 "[cerebral] Custom model added: %s (%s%s)",
@@ -4153,6 +4187,7 @@ async def _handle_message(msg: dict) -> None:
         label_in = (d.get("label") or "").strip()
         api_key = (d.get("api_key") or "").strip()  # blank -> keep existing key
         supports_vision = bool(d.get("supports_vision"))
+        context_window = _parse_context_window(d.get("context_window"), kind)
         dynamic = (not model) and (kind in DYNAMIC_CUSTOM_KINDS)
         from urllib.parse import urlparse
         label = (
@@ -4207,18 +4242,21 @@ async def _handle_message(msg: dict) -> None:
                     await _err(f"could not store API key: {exc}")
                     return
             stored_ref = secret_ref if effective_key else ""
-            _router.add_backend(mid, backend, label, is_cloud)  # in-place replace
+            _router.add_backend(
+                mid, backend, label, is_cloud, context_window=context_window
+            )  # in-place replace
             stored_model = backend.model if dynamic else model
             if dynamic:
                 backend.on_resolved = _make_dynamic_persist_cb(
                     _active_profile.id,
                     {"id": mid, "kind": kind, "url": url, "label": label,
-                     "secret_ref": stored_ref},
+                     "secret_ref": stored_ref, "context_window": context_window or 0},
                 )
             _custom_models.add(
                 _active_profile.id, id=mid, kind=kind, url=url, model=stored_model,
                 label=label, is_cloud=is_cloud, secret_ref=stored_ref,
                 dynamic=dynamic, supports_vision=supports_vision,
+                context_window=context_window or 0,
             )
             logger.info("[cerebral] Custom model edited: %s (%s)", mid, kind)
             _persist_priority()

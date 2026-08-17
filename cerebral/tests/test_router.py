@@ -1008,6 +1008,34 @@ def test_local_only_keeps_remote_ollama_but_hides_cloud_custom():
     assert "custom/openai" not in ids     # cloud custom is hidden
 
 
+# ---------------------------------------------------------------------------
+# context_window_for a custom backend (#760)
+# ---------------------------------------------------------------------------
+
+def test_custom_backend_context_window_roundtrips():
+    local, remote = _two_backends()
+    r = ModelRouter(backends={"ollama/gemma4": local})
+    r.add_backend("custom/box", remote, "My Box", is_cloud=True, context_window=128000)
+    assert r.context_window_for("custom/box") == 128000
+
+
+def test_custom_backend_without_context_window_keeps_8192_floor():
+    """No behaviour change for a connection that never sets it."""
+    local, remote = _two_backends()
+    r = ModelRouter(backends={"ollama/gemma4": local})
+    r.add_backend("custom/box", remote, "My Box", is_cloud=True)
+    assert r.context_window_for("custom/box") == 8192
+
+
+def test_custom_backend_context_window_none_keeps_8192_floor():
+    """Explicit None (invalid/absent input already filtered upstream) is the
+    same as omitting the argument."""
+    local, remote = _two_backends()
+    r = ModelRouter(backends={"ollama/gemma4": local})
+    r.add_backend("custom/box", remote, "My Box", is_cloud=True, context_window=None)
+    assert r.context_window_for("custom/box") == 8192
+
+
 def test_build_custom_backend_maps_kinds():
     ob, cloud = build_custom_backend("ollama", "http://h:11434", "qwen")
     assert isinstance(ob, OllamaBackend) and cloud is False

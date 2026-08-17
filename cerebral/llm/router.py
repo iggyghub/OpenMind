@@ -347,14 +347,32 @@ class ModelRouter:
             "[router] master fallback %s", "enabled" if enabled else "disabled"
         )
 
-    def add_backend(self, model_id: str, backend: Backend, label: str, is_cloud: bool) -> None:
+    def add_backend(
+        self, model_id: str, backend: Backend, label: str, is_cloud: bool,
+        context_window: int | None = None,
+    ) -> None:
         """Register a user-added remote backend (custom/<slug>).
 
         Same registry the discovered/cloud backends live in, so it flows
         through list_models / switch_model / complete for free. Appended at
-        the bottom of the priority list, enabled by default."""
+        the bottom of the priority list, enabled by default.
+
+        context_window (#760): optional per-model override so
+        context_window_for() returns the endpoint's real window instead of
+        the 8192 floor. None/falsy leaves the key out of metadata entirely,
+        so context_window_for's dict.get(..., _DEFAULT_CONTEXT_WINDOW) still
+        applies -- unset behaves exactly as before this option existed.
+        Callers (cerebral/main.py's add/edit_custom_model + _restore_custom_models)
+        are responsible for never passing a value for kind="ollama" custom
+        connections: those build an OllamaBackend under the hood too (remote
+        Ollama server, not just the local ollama/* discovery path), which
+        hardcodes num_ctx=8192 -- a bigger declared window there would just
+        make this method lie about what the endpoint actually keeps."""
         self._backends[model_id] = backend
-        self._models[model_id] = {"label": label, "is_cloud": bool(is_cloud)}
+        info = {"label": label, "is_cloud": bool(is_cloud)}
+        if context_window:
+            info["context_window"] = int(context_window)
+        self._models[model_id] = info
         if model_id not in self._priority:
             self._priority.append(model_id)
         self._enabled.setdefault(model_id, True)
