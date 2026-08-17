@@ -3795,6 +3795,13 @@ async def _handle_message(msg: dict) -> None:
         gate_present = bool(CAPABILITY_VOCABULARY)
         await _broadcast({"type": "health_ok", "data": {"gate_present": gate_present}})
 
+    elif t == "probe_models":
+        # Model status dots: probe each enabled model's reachability (bounded
+        # per-model timeout in the router) and broadcast the up/down map. Fired
+        # when the tray opens the model settings pane and on Recheck.
+        health = await _router.probe_enabled()
+        await _broadcast({"type": "models_health", "data": {"health": health}})
+
     elif t == "create_profile":
         d = msg.get("data", {})
         p = _pm.create(
