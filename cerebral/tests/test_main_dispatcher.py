@@ -261,6 +261,98 @@ async def test_broken_greeting_builder_does_not_abort_handshake(dispatcher_rig):
     #  AND the loop would never run; the handler's stub accepts cleanly.)
 
 
+# ── jobs scan lane (#403) ────────────────────────────────────────────────────
+# jobs_score_shortlist previously awaited ~100 inline LLM calls inside
+# _handle_message, so it blocked that connection's entire read loop -- later
+# messages on the SAME connection (model changes, pane fetches, interrupts)
+# queued invisibly until scoring finished. The fix backgrounds the two known-
+# long handlers (jobs_fetch_postings, jobs_score_shortlist) the same way the
+# panel-apply lane (#413/#417) already backgrounds jobs_apply_start/submit --
+# every other one of the ~50 dispatcher branches keeps its prior sequential,
+# await-before-next-frame behavior unchanged.
+
+async def test_slow_jobs_score_does_not_block_next_message(dispatcher_rig, monkeypatch):
+    """The reported #403 symptom, reproduced directly: a parked
+    jobs_score_shortlist tool call must not stop a later message on the same
+    connection from dispatching."""
+    from cerebral.mcp.orchestrator import ToolResult
+
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def slow_call_tool(name, args):
+        calls.append(name)
+        await release.wait()
+        return ToolResult(content="{}")
+
+    main_mod = dispatcher_rig.module
+    monkeypatch.setattr(main_mod._orc, "call_tool", slow_call_tool)
+    monkeypatch.setattr(main_mod, "_jobs_update_event", lambda: {"type": "jobs_update"})
+
+    ws = FakeWebSocket([
+        json.dumps({"type": "jobs_score_shortlist"}),
+        json.dumps({"type": "list_voices"}),
+    ])
+
+    task = asyncio.create_task(main_mod._ws_handler(ws))
+    # Let the scoring branch spawn its background task and park on the tool
+    # call, then let the read loop pick up the second frame.
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert calls == ["jobs_score_shortlist"], "scoring tool call started"
+    assert any(e.get("type") == "voices_list" for e in dispatcher_rig.broadcasts), (
+        "list_voices must have dispatched on the same connection while "
+        "scoring is still parked -- this is the bug the issue reports"
+    )
+    assert not any(e.get("type") == "jobs_update" for e in dispatcher_rig.broadcasts), (
+        "scoring hasn't finished yet, so no jobs_update should exist"
+    )
+
+    release.set()
+    await asyncio.wait_for(task, timeout=1.0)
+    await asyncio.sleep(0)  # let the background task's finally-broadcast land
+    assert any(e.get("type") == "jobs_update" for e in dispatcher_rig.broadcasts)
+
+
+async def test_non_jobs_handlers_still_process_sequentially(dispatcher_rig, monkeypatch):
+    """Ordering guarantee this fix promises: only jobs_fetch_postings /
+    jobs_score_shortlist are exempted from the sequential lane. Every other
+    message type must still block the read loop until it completes, exactly
+    as before -- proven here with probe_models, an unrelated slow handler."""
+    order: list[str] = []
+    gate = asyncio.Event()
+
+    async def slow_probe_enabled():
+        order.append("probe-start")
+        await gate.wait()
+        order.append("probe-end")
+        return {}
+
+    main_mod = dispatcher_rig.module
+    monkeypatch.setattr(main_mod._router, "probe_enabled", slow_probe_enabled)
+
+    ws = FakeWebSocket([
+        json.dumps({"type": "probe_models"}),
+        json.dumps({"type": "list_voices"}),
+    ])
+
+    task = asyncio.create_task(main_mod._ws_handler(ws))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert order == ["probe-start"], "probe_models must still be mid-flight"
+    assert not any(e.get("type") == "voices_list" for e in dispatcher_rig.broadcasts), (
+        "list_voices must wait behind the still-sequential probe_models "
+        "handler -- unlike the jobs lane, this branch was never backgrounded"
+    )
+
+    gate.set()
+    await asyncio.wait_for(task, timeout=1.0)
+    assert order == ["probe-start", "probe-end"]
+    assert any(e.get("type") == "voices_list" for e in dispatcher_rig.broadcasts)
+
+
 # ── conversation IPC (Issue #185 / ADR-0007) ────────────────────────────────
 
 @pytest.fixture

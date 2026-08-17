@@ -271,6 +271,44 @@ async def test_open_felix_broadcasts_to_tray(monkeypatch):
     assert casts == [{"type": "open_felix", "data": {}}]
 
 
+async def test_jobs_score_single_flight(monkeypatch):
+    """#403 — jobs_fetch_postings and jobs_score_shortlist now run in the
+    background, so a fast double-click could otherwise race two scoring
+    runs against the same store. Mirrors test_apply_single_flight's
+    _panel_jobs_lock pattern with the parallel _jobs_scan_lock."""
+    rec = _Recorder({})
+    notes, _casts = _wire(monkeypatch, rec, session_open=True)
+
+    async with main._jobs_scan_lock:  # simulate an in-flight scan
+        await main._run_jobs_score()
+
+    assert rec.calls == []
+    assert notes and "already in progress" in notes[0][1]
+
+
+async def test_jobs_fetch_and_score_runs_when_idle(monkeypatch):
+    """#403 — with no scan in flight, fetch runs then auto-scores when a
+    dossier exists, exactly like the inline behavior it replaces."""
+    import types
+
+    rec = _Recorder({})
+    notes, casts = _wire(monkeypatch, rec, session_open=True)
+    monkeypatch.setattr(main, "_active_profile", types.SimpleNamespace(id=1))
+    monkeypatch.setattr(
+        main, "_job_search_store",
+        type("S", (), {"get_dossier": staticmethod(lambda pid: {"resume": "x"})})(),
+    )
+
+    await main._run_jobs_fetch()
+
+    assert rec.calls == [
+        ("jobs_fetch_postings", {}),
+        ("jobs_score_shortlist", {}),
+    ]
+    assert notes == []
+    assert casts
+
+
 async def test_submit_event_does_not_block_receive_loop(monkeypatch):
     """#417 deadlock regression: the dispatcher branch must return while the
     (modal-gated) submit is still in flight."""
