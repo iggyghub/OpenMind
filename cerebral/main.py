@@ -1129,6 +1129,51 @@ async def _run_panel_submit() -> None:
     await _broadcast(_jobs_update_event())
 
 
+# ── Jobs scan lane (#403) ─────────────────────────────────────────────────────
+# jobs_score_shortlist awaits ~100 LLM calls inline (~40 min on local qwen3:8b).
+# Run it (and the fetch that can auto-trigger it) as a background task so the
+# per-connection IPC read loop stays free for later messages -- same shape as
+# the panel-apply lane above (#413/#417), which already made this exact trade.
+# ponytail: global lock, mirrors _panel_jobs_lock; per-profile lanes if that
+# ever matters.
+_jobs_scan_lock = asyncio.Lock()
+
+
+async def _run_jobs_fetch() -> None:
+    """jobs_fetch_postings (background so the IPC receive loop stays free, #403).
+
+    Also auto-scores the fresh postings when a dossier exists, matching the
+    inline behaviour this replaces.
+    """
+    if _jobs_scan_lock.locked():
+        await _notify_user("Felix", "A job check is already in progress.")
+        return
+    async with _jobs_scan_lock:
+        try:
+            await _orc.call_tool("jobs_fetch_postings", {})
+        except Exception as exc:
+            logger.warning("[cerebral] jobs_fetch_postings failed: %s", exc)
+        if _active_profile and _job_search_store.get_dossier(_active_profile.id):
+            try:
+                await _orc.call_tool("jobs_score_shortlist", {})
+            except Exception as exc:
+                logger.warning("[cerebral] auto-score after fetch failed: %s", exc)
+        await _broadcast(_jobs_update_event())
+
+
+async def _run_jobs_score() -> None:
+    """jobs_score_shortlist (background so the IPC receive loop stays free, #403)."""
+    if _jobs_scan_lock.locked():
+        await _notify_user("Felix", "A job check is already in progress.")
+        return
+    async with _jobs_scan_lock:
+        try:
+            await _orc.call_tool("jobs_score_shortlist", {})
+        except Exception as exc:
+            logger.warning("[cerebral] jobs_score_shortlist failed: %s", exc)
+        await _broadcast(_jobs_update_event())
+
+
 async def _jobs_navigate(url: str) -> str:  # S1 #334 / #380
     """Headless Playwright fetch for the public job board.
 
@@ -5519,27 +5564,16 @@ async def _handle_message(msg: dict) -> None:
         await _broadcast(_jobs_update_event())
 
     elif t == "jobs_fetch_postings":  # S1 #334 — tray "Check for new jobs" button
-        try:
-            await _orc.call_tool("jobs_fetch_postings", {})
-        except Exception as exc:
-            logger.warning("[cerebral] jobs_fetch_postings failed: %s", exc)
-        # S3 #336 — auto-score new postings if dossier exists
-        if _active_profile and _job_search_store.get_dossier(_active_profile.id):
-            try:
-                await _orc.call_tool("jobs_score_shortlist", {})
-            except Exception as exc:
-                logger.warning("[cerebral] auto-score after fetch failed: %s", exc)
-        await _broadcast(_jobs_update_event())
+        # #403 — backgrounded; auto-score (S3 #336) happens inside the task.
+        asyncio.create_task(_run_jobs_fetch())
 
     elif t == "jobs_get_dossier":  # S2 #335 — tray requests current dossier
         await _broadcast(_jobs_update_event())
 
     elif t == "jobs_score_shortlist":  # S3 #336 — score unscored postings
-        try:
-            await _orc.call_tool("jobs_score_shortlist", {})
-        except Exception as exc:
-            logger.warning("[cerebral] jobs_score_shortlist failed: %s", exc)
-        await _broadcast(_jobs_update_event())
+        # #403 — the ~100-LLM-call scoring loop must not block this
+        # connection's IPC read loop; backgrounded like the panel-apply lane.
+        asyncio.create_task(_run_jobs_score())
 
     elif t == "jobs_set_approval":  # S3 #336 — approve/reject a shortlist entry
         d = msg.get("data", {})
