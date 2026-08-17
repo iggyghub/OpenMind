@@ -1156,6 +1156,63 @@ test('inline script handles create_profile_error and shows it in the wizard (#38
   expect(m[0]).not.toMatch(/profCollapseWizard/);
 });
 
+// ── boards S4 (#405) -- ATS badge, appliable filter, ATS-aware search ───────
+
+test('"Appliable now" filter checkbox exists above the postings list', () => {
+  const checkbox = root.querySelector('#jobs-appliable-filter');
+  expect(checkbox).not.toBeNull();
+  expect(checkbox.getAttribute('type')).toBe('checkbox');
+  // Must sit inside the job-search sub-pane, immediately ahead of #jobs-list.
+  const sub = root.querySelector('.lib-sub[data-lib="job-search"]');
+  expect(sub).not.toBeNull();
+  expect(sub.querySelector('#jobs-appliable-filter')).not.toBeNull();
+  expect(sub.querySelector('#jobs-list')).not.toBeNull();
+});
+
+test('checking the filter toggles jobsAppliableOnly and re-renders (#405)', () => {
+  expect(inlineScript).toMatch(/jobsAppliableFilterEl\.addEventListener\('change'/);
+  expect(inlineScript).toMatch(/jobsAppliableOnly = jobsAppliableFilterEl\.checked/);
+});
+
+test('renderJobSearch filters postings to p.appliable when the toggle is on (#405)', () => {
+  const m = inlineScript.match(/function renderJobSearch\(\)[^]*?\n {4}\}/);
+  expect(m).not.toBeNull();
+  expect(m[0]).toMatch(/jobsAppliableOnly[^]*?p\.appliable/);
+});
+
+test('each posting card renders an ATS badge sourced from p.ats_type / p.appliable (#405)', () => {
+  expect(inlineScript).toMatch(/jobs-ats-badge/);
+  expect(inlineScript).toMatch(/jobsAtsBadgeLabel\(p\.ats_type\)/);
+  expect(inlineScript).toMatch(/p\.appliable \? ' is-appliable' : ''/);
+});
+
+test('unsupported/unknown ATS types badge as an em dash, greenhouse/lever get display names (#405)', () => {
+  const m = inlineScript.match(/var _ATS_BADGE_LABEL = \{[^}]*\}/);
+  expect(m).not.toBeNull();
+  expect(m[0]).toMatch(/greenhouse:\s*'Greenhouse'/);
+  expect(m[0]).toMatch(/lever:\s*'Lever'/);
+  expect(inlineScript).toMatch(/return _ATS_BADGE_LABEL\[atsType\] \|\| '—'/);
+});
+
+test('posting detail card shows an ATS host line, or the ats_note when no ATS link was found (#405)', () => {
+  expect(inlineScript).toMatch(/jobs-card-ats/);
+  const m = inlineScript.match(/function jobsAtsDetailLine\(p\)[^]*?\n {4}\}/);
+  expect(m).not.toBeNull();
+  // No-ATS-link case (S3 #404 ats_note) takes priority over the host line.
+  expect(m[0]).toMatch(/if \(p\.ats_note\) return 'No ATS link: '/);
+  expect(m[0]).toMatch(/new URL\(p\.url\)\.host/);
+});
+
+test('pane search for job-search filters the postings list too, not just the shortlist (#405)', () => {
+  const m = inlineScript.match(/_registerInPaneFilter\('job-search'[^]*?\n {4}\}\);/);
+  expect(m).not.toBeNull();
+  expect(m[0]).toMatch(/jobs-shortlist-card/);
+  // No labelSelector on the postings-card filter -- matches the whole card
+  // text (title, company, the rendered "ATS host: <host>" line, and the
+  // badge label), so typing "greenhouse" or a host substring finds it.
+  expect(m[0]).toMatch(/_filterRowsByText\('#jobs-list \.jobs-card', null, q\)/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

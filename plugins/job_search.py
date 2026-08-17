@@ -965,7 +965,15 @@ class JobSearchStore:
         cur = self._con.execute(
             "SELECT * FROM job_postings ORDER BY fetched_at DESC, id DESC"
         )
-        return [dict(row) for row in cur.fetchall()]
+        postings = [dict(row) for row in cur.fetchall()]
+        # S4 #405: derive ats_type/appliable here so every consumer of
+        # list_postings() (jobs_update IPC payload + jobs_fetch_postings tool
+        # response) carries them without a second detection path.
+        for p in postings:
+            ats_type = detect_ats_type(p.get("url") or "")
+            p["ats_type"] = ats_type
+            p["appliable"] = ats_type in SUPPORTED_ATS_TYPES
+        return postings
 
     def count(self) -> int:
         return self._con.execute("SELECT COUNT(*) FROM job_postings").fetchone()[0]
