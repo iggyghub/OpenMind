@@ -149,6 +149,18 @@ if ($Restart) {
 if (-not $SkipCerebral) {
 Log "Starting Cerebral (Python backend)..."
 $cerebralLog = Join-Path $repoRoot "cerebral.log"
+
+# Custom-endpoint HTTP timeout. Measured 2026-08-17: the budd endpoint
+# generates at ~2.5 tokens/sec (708 tok in 297.7s, 638 tok in 252.9s, on
+# uncached prompts). Input is nearly free -- 64k tokens of prompt returned in
+# 47.5s -- so the binding constraint is OUTPUT length. router.py's 300s default
+# therefore caps a reply at roughly 750 tokens, and a self_dev edit emitting
+# SEARCH/REPLACE blocks routinely needs more than that, which is why those runs
+# died with ReadTimeout while a 5-token health probe always looked fine.
+# 1200s allows ~3000 tokens of output. It is a CEILING, not a delay: a fast
+# reply still returns immediately.
+if (-not $env:CLAW_TIMEOUT_S) { $env:CLAW_TIMEOUT_S = "1200" }
+Log ("  CLAW_TIMEOUT_S = {0}s" -f $env:CLAW_TIMEOUT_S)
 $cerebral = Start-Process `
     -FilePath "python" `
     -ArgumentList "-m","cerebral.main" `
