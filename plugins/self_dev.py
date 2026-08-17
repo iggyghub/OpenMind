@@ -53,8 +53,16 @@ PLUGIN_NAME = "self_dev"
 # (network_egress_cloud). shell_exec is DENY by default (ADR-0005) -- self_dev
 # is deny-by-default and unavailable where no sandbox backend exists
 # (fail-closed, same posture as shell_exec / ADR-0010).
+#
+# fs_delete (#780 follow-up): `restart: true` removes the stale clone dir via
+# shutil.rmtree so a poisoned run can start over. The AST-completeness check
+# (#47) caught this as an undeclared capability -- declaring it is the honest
+# fix, since the plugin genuinely deletes from the sandbox workdir now. The
+# effective gate posture is unchanged: check_capabilities takes the WORST
+# decision across the set and shell_exec is already DENY by default, so
+# adding an ASK-default class cannot loosen anything.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset(
-    {"shell_exec", "fs_write", "network_egress_cloud"}
+    {"shell_exec", "fs_write", "fs_delete", "network_egress_cloud"}
 )
 
 # ADR-0015 decision 5 -- ONE authoritative list of guardrail paths.
