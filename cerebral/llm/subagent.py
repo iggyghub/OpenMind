@@ -184,11 +184,19 @@ async def run_subagent(
     try:
         text = await job.task
     except asyncio.CancelledError:
-        # Cancelled via registry.cancel() (or the job's own task cancelled
-        # outright). The gate already ran per-step inside chain.run -- a
-        # cancellation just stops mid-flight, it never bypasses a gate
-        # decision. The parent still gets a well-formed ToolResult, not a
-        # raised exception.
+        # Two very different cancellations arrive here and must NOT be
+        # conflated:
+        #   1. registry.cancel(job_id) killed just this delegation -- the
+        #      caller is alive and wants a well-formed result back.
+        #   2. OUR OWN task was cancelled (interrupt_turn, S20 #303) -- the
+        #      whole turn is being torn down. Swallowing that would leave the
+        #      parent chain running after the user hit interrupt.
+        # current_task().cancelling() is non-zero only in case 2.
+        current = asyncio.current_task()
+        if current is not None and current.cancelling() > 0:
+            raise
+        # The gate already ran per-step inside chain.run -- a cancellation
+        # just stops mid-flight, it never bypasses a gate decision.
         return ToolResult(content="Sub-agent delegation was cancelled.", is_error=True)
     finally:
         if prev_model is not None:

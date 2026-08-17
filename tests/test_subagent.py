@@ -500,3 +500,40 @@ def test_continuation_kwarg_keeps_provider_protocol_conformance():
     assert isinstance(run_subagent, SubagentProvider)
     assert isinstance(local_provider, SubagentProvider)
     assert isinstance(SubagentHandle(transcript="t", result="r"), SubagentHandle)
+
+
+async def test_parent_cancellation_propagates_not_swallowed(monkeypatch):
+    """interrupt_turn (S20 #303) must still tear the turn down.
+
+    H2-S3 wrapped chain.run in a registry Job and caught CancelledError so that
+    registry.cancel() yields a well-formed ToolResult. That must NOT absorb a
+    cancellation aimed at OUR OWN task -- otherwise hitting interrupt during a
+    delegation leaves the parent chain running.
+    """
+    from cerebral.llm import subagent as subagent_mod
+
+    class _SlowChain:
+        def __init__(self, *a, **k):
+            pass
+
+        async def run(self, *a, **k):
+            await asyncio.sleep(30)
+            return "never"
+
+    monkeypatch.setattr(subagent_mod, "ChainEngine", _SlowChain)
+    monkeypatch.setattr(subagent_mod, "Planner", lambda *a, **k: None)
+    monkeypatch.setattr(subagent_mod, "shortlist_tools", lambda task, tools: [])
+
+    backend = FakeBackend([])
+    router = ModelRouter(backends={"fake/x": backend})
+
+    async def _execute(name, args):
+        return ToolResult(content="x", is_error=False)
+
+    task = asyncio.create_task(run_subagent(
+        "t", router=router, gate_fn=_gate_allow, execute_fn=_execute, all_tools=[],
+    ))
+    await asyncio.sleep(0.2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
