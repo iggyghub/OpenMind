@@ -13,8 +13,14 @@ Status: blocked
 
 ## Next slice -- start here
 
-Active: H8-S0 -- #739 (H2-S1/#733 still blocked on delegation #727-730; H7-S1/#738 deferred per its own note)
-Model: sonnet
+Active: H2-S1 -- #733 -- UNBLOCKED 2026-08-16 (delegation #727-730 all landed).
+NOTE: #733's design deliverable is already done -- ADR-0020 carries the
+"subagent as a provider seam" amendment (provider protocol, continuable
+delegation, job registration). The next step is /to-issues to slice that
+amendment into build issues, NOT code. Needs opus + the operator.
+Then: H7-S1/#738 deferred per its own note; H8-S0/#739 still design-first
+(no ADR yet -- needs a grill-with-docs session before any code).
+Model: opus (planning), sonnet (build slices once sliced)
 
 ## Queue (slice-granular; each entry = one tracer PR; read the issue + its ADR)
 
@@ -26,7 +32,7 @@ Model: sonnet
 - [x] H1-S3 -- #732 -- oldest-turn summarization in main.py (ADR-0021 S3) -- Type: HITL
 - [x] H3-S1 -- #734 -- derive_model_context() + assembly invariant (ADR-0022 S1) -- Type: HITL
 - [x] H3-S2 -- #734 -- fork(session, boundary) on the conversation store (ADR-0022 S2) -- Type: AFK
-- [ ] H2-S1 -- #733 -- subagent provider seam + continuation + jobs (ADR-0020 amend) -- Type: HITL -- AFTER delegation #727-730
+- [ ] H2-S1 -- #733 -- subagent provider seam + continuation + jobs (ADR-0020 amend) -- Type: HITL -- UNBLOCKED (delegation S1-S4 landed 2026-08-16); needs /to-issues slicing first
 - [ ] H7-S1 -- #738 -- task-workflow over subagents (ADR-0023) -- Type: AFK -- gated on H2; DEFER unless a task needs it
 - [ ] H8-S0 -- #739 -- Code Mode sandbox spike, cloud-gated (ADR-0024) -- Type: HITL -- LAST
 
