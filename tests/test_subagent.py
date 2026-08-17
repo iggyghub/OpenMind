@@ -3,7 +3,7 @@
 import pytest
 from cerebral.llm.router import ModelRouter, ToolCall
 from cerebral.llm.step_ledger import StepLedger
-from cerebral.llm.subagent import run_subagent
+from cerebral.llm.subagent import SubagentProvider, local_provider, run_subagent
 from cerebral.mcp.orchestrator import ToolResult
 from cerebral.security import Decision
 
@@ -228,3 +228,60 @@ async def test_run_id_and_ledger_passed_through(monkeypatch):
 
     assert captured.get("run_id") == "runY"
     assert captured.get("ledger") is led
+
+
+# --- H2-S1: SubagentProvider seam (ADR-0020 amendment 2026-08-15) ---------
+
+
+def test_run_subagent_satisfies_provider_protocol():
+    """run_subagent already IS the fork-in-process provider -- unchanged."""
+    assert isinstance(run_subagent, SubagentProvider)
+    assert isinstance(local_provider, SubagentProvider)
+    assert local_provider is run_subagent
+
+
+async def test_provider_call_matches_direct_call():
+    """Calling through the provider seam yields the same ToolResult as
+    calling run_subagent directly -- the seam adds no behaviour."""
+
+    async def execute(name, args):
+        return ToolResult(content="echo result", is_error=False)
+
+    def _kwargs():
+        backend = FakeBackend([ToolCall(name="echo", args={"msg": "hi"}), "final answer"])
+        return dict(
+            router=ModelRouter(backends={"fake/x": backend}),
+            gate_fn=_gate_allow,
+            execute_fn=execute,
+            all_tools=[_tool("echo")],
+        )
+
+    direct = await run_subagent("do echo hi", **_kwargs())
+    via_provider = await local_provider("do echo hi", **_kwargs())
+
+    assert via_provider.content == direct.content
+    assert via_provider.is_error == direct.is_error
+
+
+async def test_provider_no_nesting():
+    """No-nesting guarantee holds when invoked through the provider seam too."""
+    backend = FakeBackend(["done"])
+    router = ModelRouter(backends={"fake/x": backend})
+
+    all_tools = [_tool("echo"), _tool("other"), _tool("delegate")]
+
+    async def execute(name, args):
+        return ToolResult(content="x", is_error=False)
+
+    await local_provider(
+        "do something",
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=all_tools,
+        tools=None,  # shortlist path
+    )
+
+    for call_tools in backend.offered_tools:
+        offered_names = {t["name"] for t in call_tools}
+        assert "delegate" not in offered_names
