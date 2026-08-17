@@ -186,3 +186,62 @@ async def test_per_file_cap_leaves_room_for_other_files(tmp_path, monkeypatch):
     from cerebral.llm.context_budget import estimate_tokens
     prompt_budget = int(router.context_window * (1 - main_mod._SELF_DEV_RESPONSE_RESERVE))
     assert estimate_tokens(edit_prompt) <= prompt_budget
+
+
+# ── candidate list reaches prose surfaces (skills / docs / scripts) ──────────
+
+async def test_plan_prompt_offers_skills_docs_and_scripts(tmp_path, monkeypatch):
+    """The planner must SEE non-Python surfaces, not just cerebral/plugins/tray.
+
+    Before this, .claude/skills, docs and scripts were in the clone but never
+    listed, so a slice like "write .claude/skills/<x>/SKILL.md" could only be
+    driven by naming the exact path in the change description and forcing a
+    NEWFILE block (how SK-4 / #363 had to be built).
+    """
+    (tmp_path / "cerebral").mkdir()
+    (tmp_path / "cerebral" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    skill = tmp_path / ".claude" / "skills" / "demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# demo\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "note.md").write_text("# note\n", encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run.ps1").write_text("Write-Host hi\n", encoding="utf-8")
+
+    router = _FakeRouter(
+        context_window=8192,
+        responses=['[".claude/skills/demo/SKILL.md"]',
+                   "<<<NEWFILE: .claude/skills/demo2/SKILL.md>>>\nbody\n<<<END>>>"],
+    )
+    monkeypatch.setattr(main_mod, "_router", router)
+    _patch_sdio(monkeypatch, written=[".claude/skills/demo2/SKILL.md"], committed=True)
+
+    await main_mod._self_dev_edit(str(tmp_path), "write a skill")
+
+    plan_prompt = router.calls[0][0]
+    assert ".claude/skills/demo/SKILL.md" in plan_prompt
+    assert "docs/note.md" in plan_prompt
+    assert "scripts/run.ps1" in plan_prompt
+    # Python surfaces still offered -- this widens, it does not replace.
+    assert "cerebral/a.py" in plan_prompt
+
+
+async def test_candidate_list_skips_node_modules(tmp_path, monkeypatch):
+    """A vendored tree would blow the planner prompt; keep it excluded."""
+    (tmp_path / "cerebral").mkdir()
+    (tmp_path / "cerebral" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    vendored = tmp_path / "docs" / "node_modules" / "pkg"
+    vendored.mkdir(parents=True)
+    (vendored / "README.md").write_text("vendored\n", encoding="utf-8")
+
+    router = _FakeRouter(
+        context_window=8192,
+        responses=['["cerebral/a.py"]',
+                   "<<<FILE: cerebral/a.py>>>\n<<<SEARCH>>>\nx\n<<<REPLACE>>>\ny\n<<<END>>>"],
+    )
+    monkeypatch.setattr(main_mod, "_router", router)
+    _patch_sdio(monkeypatch, written=["cerebral/a.py"], committed=True)
+
+    await main_mod._self_dev_edit(str(tmp_path), "touch a")
+
+    assert "node_modules" not in router.calls[0][0]
