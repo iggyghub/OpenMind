@@ -13,9 +13,22 @@ inspect the diff. Safe-zone + green tests -> auto-merge + self_dev_load.
 Any guardrail file in the diff -> escalate to human review regardless of tests.
 GUARDRAIL_PATHS is the single definition of what counts as a guardrail.
 
+Issue #780 wires cerebral.llm.step_ledger.StepLedger into _run: each completed
+phase (clone / edit / test / pr) is recorded keyed by run_id. Re-invoking with
+the same run_id resumes from the ledger -- already-recorded phases are reused
+instead of re-run (the model-driven edit is the expensive, stochastic one this
+protects). The ledger, not clone-directory existence, is the resume signal:
+clone dirs are deliberately kept after a run (operator preference -- last
+run's tree is reference material), so a bare leftover dir with no ledger
+entries is stale, not resumable, and still gets today's refusal. To
+deliberately abandon a stuck/poisoned run_id: call
+`plugin_instance._ledger.clear(run_id)` (or a fresh `StepLedger(...).clear
+(run_id)` pointed at the same db) -- no new tool arg, this is generic
+StepLedger API already exposed via the injectable `ledger` seam.
+
 Injected seams (clone_fn / edit_fn / test_fn / pr_fn / diff_fn / merge_fn /
-pull_fn / restart_fn) make the whole flow hermetic in tests -- no real git /
-gh / network / Cerebral.
+pull_fn / restart_fn / ledger) make the whole flow hermetic in tests -- no
+real git / gh / network / Cerebral.
 """
 import asyncio
 import inspect
@@ -26,6 +39,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Iterable
 
 from cerebral import self_dev_io as _io
+from cerebral.llm.step_ledger import StepLedger
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.paths import data_dir
 
@@ -162,6 +176,7 @@ class SelfDevPlugin:
         repo_url: str | None = None,
         sandbox_root: Path | None = None,
         live_root: Path | None = None,
+        ledger: "StepLedger | None" = None,
     ) -> None:
         self._sandbox = sandbox
         self._clone = clone_fn or _default_clone_fn
@@ -170,6 +185,12 @@ class SelfDevPlugin:
         self._diff = diff_fn or _default_diff_fn
         self._merge = merge_fn or _default_merge_fn
         self._pull = pull_fn or _default_pull_fn
+        # #780 -- unlike edit_fn/restart_fn, StepLedger needs no main.py
+        # wiring (no model router / tray closure to capture): it's
+        # self-sufficient against the shared openmind.db, so the default
+        # just works. Tests inject a StepLedger(db_path=tmp_path/...) (or any
+        # duck-typed record/completed/clear object) via this seam instead.
+        self._ledger = ledger if ledger is not None else StepLedger()
         # edit_fn/restart_fn resolve lazily (constructor override > module seam
         # wired by main.py > raising default) -- the seams are set after
         # discovery constructs the instance, so we can't collapse them here.
@@ -196,7 +217,9 @@ class SelfDevPlugin:
                     "The PR is the final output -- nothing is merged or loaded "
                     "automatically (that requires a human review or the SD-2..4 "
                     "slices). Deny-by-default per ADR-0005 (shell_exec). "
-                    "Unavailable without a sandbox backend."
+                    "Unavailable without a sandbox backend. Re-calling with the "
+                    "same run_id after an interrupted run resumes from the last "
+                    "completed phase (clone/edit/test/pr) instead of refusing."
                 ),
                 plugin=PLUGIN_NAME,
                 schema={
@@ -264,7 +287,14 @@ class SelfDevPlugin:
         run_id = str((args or {}).get("run_id") or uuid.uuid4()).strip()
         clone_dir = self._sandbox_root / run_id
 
-        if clone_dir.exists():
+        # #780 -- the ledger, not clone-dir existence, is the resume signal.
+        # Clone dirs are deliberately kept after a run, so a bare leftover dir
+        # with nothing recorded for this run_id is stale, not resumable: keep
+        # today's refusal for that case. Non-empty ledger => resume, and the
+        # dir-exists check is skipped on purpose (resuming reuses that dir).
+        resumed = {s["sig"]: s for s in self._ledger.completed(run_id)}
+
+        if not resumed and clone_dir.exists():
             return ToolResult(
                 content=f"Run {run_id!r} already exists -- use a different run_id.",
                 is_error=True,
@@ -273,21 +303,37 @@ class SelfDevPlugin:
         self._sandbox_root.mkdir(parents=True, exist_ok=True)
 
         # 1. Clone into an independent working tree (live .git untouched).
-        try:
-            self._clone(self._repo_url, clone_dir)
-        except Exception as exc:
-            return ToolResult(content=f"Clone failed: {exc}", is_error=True)
+        if "clone" in resumed:
+            logger.info("[self_dev] run %r: resuming -- clone already recorded", run_id)
+        else:
+            try:
+                self._clone(self._repo_url, clone_dir)
+            except Exception as exc:
+                return ToolResult(content=f"Clone failed: {exc}", is_error=True)
+            self._ledger.record(run_id, "clone", {
+                "name": "clone",
+                "args": {"repo_url": self._repo_url},
+                "result": {"clone_dir": str(clone_dir)},
+                "is_error": False,
+            })
 
         # 2. Model edits + commits inside the clone. The prod edit_fn is async
         #    (it awaits the model router); test seams are plain sync callables.
-        try:
-            edit_result = self._resolve_edit()(clone_dir, description)
-            if inspect.isawaitable(edit_result):
-                edit_result = await edit_result
-        except NotImplementedError as exc:
-            return ToolResult(content=str(exc), is_error=True)
-        except Exception as exc:
-            return ToolResult(content=f"Edit failed: {exc}", is_error=True)
+        #    This is the expensive, stochastic step the ledger exists to
+        #    protect -- resuming reuses the recorded result and never calls
+        #    edit_fn again.
+        if "edit" in resumed:
+            logger.info("[self_dev] run %r: resuming -- edit already recorded", run_id)
+            edit_result = resumed["edit"]["result"]
+        else:
+            try:
+                edit_result = self._resolve_edit()(clone_dir, description)
+                if inspect.isawaitable(edit_result):
+                    edit_result = await edit_result
+            except NotImplementedError as exc:
+                return ToolResult(content=str(exc), is_error=True)
+            except Exception as exc:
+                return ToolResult(content=f"Edit failed: {exc}", is_error=True)
 
         branch = str(edit_result.get("branch") or f"selfdev/{run_id[:8]}")
         if not edit_result.get("committed"):
@@ -296,6 +342,14 @@ class SelfDevPlugin:
                 is_error=True,
             )
 
+        if "edit" not in resumed:
+            self._ledger.record(run_id, "edit", {
+                "name": "edit",
+                "args": {"description": description},
+                "result": edit_result,
+                "is_error": False,
+            })
+
         # 3. Test inside sandbox (failure is recorded, not fatal -- the
         #    blast-radius gate in SD-4 decides whether to auto-merge).
         #    Off-thread: the default test_fn shells out to pytest and can run
@@ -303,18 +357,40 @@ class SelfDevPlugin:
         #    would block Cerebral's whole event loop (no WS, no heartbeats) for
         #    the duration. asyncio.to_thread keeps Cerebral responsive while it
         #    runs; self_dev_io.test_fn's own timeout still bounds a real hang.
-        test_passed = False
-        test_output = ""
-        try:
-            test_passed, test_output = await asyncio.to_thread(self._test, clone_dir)
-        except Exception as exc:
-            test_output = f"Test runner error: {exc}"
+        if "test" in resumed:
+            logger.info("[self_dev] run %r: resuming -- test already recorded", run_id)
+            test_result = resumed["test"]["result"] or {}
+            test_passed = bool(test_result.get("passed"))
+            test_output = str(test_result.get("summary") or "")
+        else:
+            test_passed = False
+            test_output = ""
+            try:
+                test_passed, test_output = await asyncio.to_thread(self._test, clone_dir)
+            except Exception as exc:
+                test_output = f"Test runner error: {exc}"
+            self._ledger.record(run_id, "test", {
+                "name": "test",
+                "args": {},
+                "result": {"passed": test_passed, "summary": test_output},
+                "is_error": False,
+            })
 
         # 4. Open PR (regardless of test colour; mergeability is decided below).
-        try:
-            pr_url = self._pr(clone_dir, branch, description, test_passed, test_output)
-        except Exception as exc:
-            return ToolResult(content=f"PR creation failed: {exc}", is_error=True)
+        if "pr" in resumed:
+            logger.info("[self_dev] run %r: resuming -- pr already recorded", run_id)
+            pr_url = resumed["pr"]["result"]["pr_url"]
+        else:
+            try:
+                pr_url = self._pr(clone_dir, branch, description, test_passed, test_output)
+            except Exception as exc:
+                return ToolResult(content=f"PR creation failed: {exc}", is_error=True)
+            self._ledger.record(run_id, "pr", {
+                "name": "pr",
+                "args": {"branch": branch},
+                "result": {"pr_url": pr_url},
+                "is_error": False,
+            })
 
         # 5. Blast-radius gate (SD-4 / ADR-0015 decision 5).
         #    Fail-safe: if we can't inspect the diff, treat as guardrail.

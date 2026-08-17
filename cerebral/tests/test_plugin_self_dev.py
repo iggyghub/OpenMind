@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from plugins.self_dev import SelfDevPlugin, PLUGIN_NAME, REQUIRED_CAPABILITIES
+from cerebral.llm.step_ledger import StepLedger
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,9 @@ def _make(tmp_path: Path, **overrides) -> SelfDevPlugin:
         "test_fn": lambda d: (True, "1 passed in 0.01s"),
         "pr_fn": lambda d, br, desc, ok, out: _PR_URL,
         "sandbox_root": tmp_path / "self_dev",
+        # #780 -- isolated per-test ledger (mirrors tests/test_step_ledger.py),
+        # so resume state never leaks across tests/run_ids.
+        "ledger": StepLedger(db_path=tmp_path / "ledger.db"),
     }
     defaults.update(overrides)
     return SelfDevPlugin(**defaults)
@@ -319,6 +323,136 @@ def test_default_pr_pushes_with_upstream(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # Event-loop freeze fix: test_fn must run off the event loop thread.
 # ---------------------------------------------------------------------------
+
+async def test_fresh_run_records_each_phase_in_order(tmp_path):
+    """#780 -- a fresh run_id with no prior ledger state records clone, edit,
+    test, pr in execution order, and behaves byte-identical to before."""
+    ledger = StepLedger(db_path=tmp_path / "ledger.db")
+    plugin = _make(tmp_path, ledger=ledger)
+    result = await plugin.call_tool("self_dev", {
+        "change_description": "Add a README comment",
+        "run_id": "fresh-run",
+    })
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["test_passed"] is True
+    assert data["pr_url"] == _PR_URL
+
+    sigs = [s["sig"] for s in ledger.completed("fresh-run")]
+    assert sigs == ["clone", "edit", "test", "pr"]
+
+
+async def test_resume_skips_edit_fn_but_reaches_test_and_pr(tmp_path):
+    """#780 -- the whole point: a run interrupted after clone+edit is
+    re-invoked with the same run_id. The recorded edit is reused -- edit_fn
+    is never called -- and the run still proceeds through test and PR."""
+    run_id = "interrupted-run"
+    sandbox_root = tmp_path / "self_dev"
+    clone_dir = sandbox_root / run_id
+    clone_dir.mkdir(parents=True)  # the "kept" clone dir from the dead run
+
+    ledger = StepLedger(db_path=tmp_path / "ledger.db")
+    ledger.record(run_id, "clone", {
+        "name": "clone", "args": {}, "result": {"clone_dir": str(clone_dir)}, "is_error": False,
+    })
+    ledger.record(run_id, "edit", {
+        "name": "edit", "args": {},
+        "result": {"branch": "selfdev/interrupted", "committed": True},
+        "is_error": False,
+    })
+
+    edit_calls = []
+
+    def spy_edit(d, desc):
+        edit_calls.append((d, desc))
+        return {"branch": "should-not-be-used", "committed": True}
+
+    test_calls = []
+    pr_calls = []
+
+    plugin = _make(
+        tmp_path,
+        sandbox_root=sandbox_root,
+        ledger=ledger,
+        edit_fn=spy_edit,
+        test_fn=lambda d: (test_calls.append(d), (True, "1 passed"))[1],
+        pr_fn=lambda d, br, desc, ok, out: (pr_calls.append(br), _PR_URL)[1],
+    )
+    result = await plugin.call_tool("self_dev", {
+        "change_description": "anything",
+        "run_id": run_id,
+    })
+
+    assert not result.is_error, result.content
+    assert edit_calls == [], "edit_fn must not be called -- the edit was already recorded"
+    assert len(test_calls) == 1, "test must still run"
+    assert len(pr_calls) == 1, "pr must still run"
+    data = json.loads(result.content)
+    assert data["branch"] == "selfdev/interrupted"  # from the RECORDED edit, not spy_edit
+    assert data["pr_url"] == _PR_URL
+
+
+async def test_resume_with_no_ledger_entries_still_refused(tmp_path):
+    """#780 -- a bare leftover clone dir with nothing in the ledger is stale,
+    not resumable: today's refusal still applies."""
+    run_id = "stale-run"
+    sandbox_root = tmp_path / "self_dev"
+    (sandbox_root / run_id).mkdir(parents=True)  # leftover dir, no ledger entries
+
+    plugin = _make(tmp_path, sandbox_root=sandbox_root)
+    result = await plugin.call_tool("self_dev", {
+        "change_description": "anything",
+        "run_id": run_id,
+    })
+    assert result.is_error
+    assert run_id in result.content
+
+
+async def test_clear_ledger_makes_run_id_startable_again(tmp_path):
+    """#780 -- clear(run_id) is the documented way to abandon a stuck/poisoned
+    resume: once cleared, the ledger no longer resumes and the seams fire
+    fresh on the next call with that run_id."""
+    run_id = "poisoned-run"
+    ledger = StepLedger(db_path=tmp_path / "ledger.db")
+    # A fully "completed" run recorded end to end (simulates a poisoned edit
+    # that would otherwise resume forever without ever re-running anything).
+    ledger.record(run_id, "clone", {"name": "clone", "args": {}, "result": {}, "is_error": False})
+    ledger.record(run_id, "edit", {
+        "name": "edit", "args": {},
+        "result": {"branch": "selfdev/poisoned", "committed": True},
+        "is_error": False,
+    })
+    ledger.record(run_id, "test", {
+        "name": "test", "args": {}, "result": {"passed": True, "summary": "ok"}, "is_error": False,
+    })
+    ledger.record(run_id, "pr", {
+        "name": "pr", "args": {}, "result": {"pr_url": _PR_URL}, "is_error": False,
+    })
+
+    edit_calls = []
+    plugin = _make(
+        tmp_path,
+        ledger=ledger,
+        edit_fn=lambda d, desc: (edit_calls.append(1), {"branch": "fresh", "committed": True})[1],
+    )
+
+    # Before clearing: fully resumes, edit_fn never fires.
+    result = await plugin.call_tool("self_dev", {"change_description": "x", "run_id": run_id})
+    assert not result.is_error, result.content
+    assert edit_calls == []
+
+    # Clear -- the documented restart mechanism.
+    removed = ledger.clear(run_id)
+    assert removed == 4
+
+    # After clearing: no ledger entries and no clone dir on disk for this
+    # run_id (never physically cloned during the resumed run above) -> the
+    # run is startable again, seams fire fresh.
+    result2 = await plugin.call_tool("self_dev", {"change_description": "x", "run_id": run_id})
+    assert not result2.is_error, result2.content
+    assert edit_calls == [1]
+
 
 async def test_test_fn_does_not_block_event_loop(tmp_path):
     """A slow/blocking test_fn (real code: subprocess.run to pytest) must not
