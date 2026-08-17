@@ -8,19 +8,24 @@ boundary**, not a parallel swarm. Slices land one at a time via a fresh
 
 ## Next slice -- start here
 
-- **Active:** S2 -- #728
-- **Model:** opus
+- **Active:** S3 -- #729
+- **Model:** sonnet
 
 ## Queue
 
 - [x] S1 -- #727 -- run_subagent tracer (new files, safe-zone) -- Type: AFK
-- [ ] S2 -- #728 -- first real caller in main.py (guardrail) -- Type: HITL
+- [x] S2 -- #728 -- first real caller in main.py (guardrail) -- Type: HITL
 - [ ] S3 -- #729 -- resumable delegations via StepLedger -- Type: AFK
 - [ ] S4 -- #730 -- planner-autonomy delegate plugin (gated on eval harness) -- Type: HITL
 
 ## Landed PRs
 
 - S1 -- PR #731 (run_subagent tracer)
+- S2 -- PR #753 (_video_verify grounding via run_subagent) -- merged to master as
+  bf9dba4. HITL slice merged directly on explicit operator authorization, after a
+  full diff review + independent targeted run (67 passed). Also hoists the turn
+  handler's `_gate` closure to module-level `_gate_tool` so sub-agents reuse the
+  same ADR-0005 gate instead of duplicating it.
 
 ## SAFETY
 
