@@ -42,6 +42,7 @@ from cerebral.db.model_priority import ModelPriorityStore
 from cerebral.llm.planner import Planner, is_coding_turn, shortlist_tools, validate_tool_args
 from cerebral.llm.chain_engine import ChainEngine
 from cerebral.llm.context_summarizer import should_summarize, summarize_oldest
+from cerebral.llm.context_budget import estimate_tokens
 from cerebral.llm.subagent import run_subagent
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
@@ -2696,6 +2697,48 @@ async def _broadcast(event: dict) -> None:
 # to a patch format if edits ever span files too large to round-trip.
 _SELF_DEV_MAX_FILES = 8
 
+# ── Edit-prompt budget (issue #758) ─────────────────────────────────────────
+# The edit prompt used to inline every wanted file whole, with no size cap --
+# reliable on small files, structurally incapable on large ones (a 51KB file
+# alone produced a 31.7k-token prompt that timed out every model at 300s).
+# Response headroom: the model must emit SEARCH/REPLACE/NEWFILE blocks back,
+# so the prompt may only use a fraction of the context window, leaving room
+# for that reply within the same window.
+# ponytail: fixed fraction, not measured per-edit-size -- revisit if self_dev
+# edits start needing bigger replies than 30% of window can hold.
+_SELF_DEV_RESPONSE_RESERVE = 0.3
+# One file cannot eat more than this fraction of the prompt budget, so a
+# single huge file can't crowd out the other files the plan step picked.
+_SELF_DEV_PER_FILE_FRACTION = 0.4
+# Floor below which a truncated excerpt stops being worth showing at all --
+# used only to size the fail-fast check (item 3), not to block assembly.
+_SELF_DEV_MIN_EXCERPT_TOKENS = 100
+
+
+def _self_dev_truncate_to_tokens(text: str, max_tokens: int) -> str:
+    """Truncate ``text`` so ``estimate_tokens()`` on the result is <= max_tokens.
+    ponytail: slices at max_tokens*4 chars, mirroring context_budget's char/4
+    estimator -- correct as long as estimate_tokens stays a simple floor(len/4);
+    revisit if that estimator ever stops being monotonic in length."""
+    if max_tokens <= 0:
+        return ""
+    max_chars = max_tokens * 4
+    return text if len(text) <= max_chars else text[:max_chars]
+
+
+def _self_dev_bounded_block(rel: str, content: str | None, max_tokens: int) -> str:
+    """A '=== FILE ===' block for the edit prompt, truncated to fit max_tokens
+    with a visible marker when it doesn't -- never a silent drop (issue #758)."""
+    if content is None:
+        return f"=== FILE: {rel} (new file -- does not exist yet) ==="
+    full = f"=== FILE: {rel} ===\n{content}"
+    if estimate_tokens(full) <= max_tokens:
+        return full
+    header = f"=== FILE: {rel} (TRUNCATED to fit prompt budget) ===\n"
+    footer = "\n=== END TRUNCATED EXCERPT ==="
+    room = max(max_tokens - estimate_tokens(header + footer), 0)
+    return header + _self_dev_truncate_to_tokens(content, room) + footer
+
 
 async def _self_dev_edit(clone_dir, description: str) -> dict:
     """self_dev edit_fn: model-driven scoped edit + commit inside the clone.
@@ -2727,25 +2770,23 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
         "You are editing the OpenMind repository to accomplish a task.\n"
         f"TASK: {description}\n\n"
         "Below is the list of source files. Reply with ONLY a JSON array of the "
-        f"repo-relative paths you must read and edit (at most {_SELF_DEV_MAX_FILES}). "
-        "Include existing test files you need to update.\n\nFILES:\n"
-        + "\n".join(candidates)
+        f"repo-relative paths you will EDIT or CREATE (at most {_SELF_DEV_MAX_FILES}). "
+        "List only files whose contents you will change -- do NOT include a file "
+        "just because the task mentions it as background/context; only list files "
+        "you will actually write to. Include existing test files you need to "
+        "update.\n\nFILES:\n" + "\n".join(candidates)
     )
     plan_raw = await _router.complete(plan_prompt, task_type="self_dev")
     wanted = [w for w in (_sdio.extract_json_value(plan_raw, "[") or []) if isinstance(w, str)]
     wanted = wanted[:_SELF_DEV_MAX_FILES]
 
-    # 2. Show current contents, ask for small search/replace edits. Whole-file
-    #    JSON rewrite is beyond a local 7-8B (truncation + escaping); tiny
-    #    anchor-based blocks are not.
-    blocks: list[str] = []
-    for rel in wanted:
-        fp = clone_dir / rel
-        if fp.is_file():
-            blocks.append(f"=== FILE: {rel} ===\n{fp.read_text(encoding='utf-8')}")
-        else:
-            blocks.append(f"=== FILE: {rel} (new file -- does not exist yet) ===")
-    edit_prompt = (
+    # 2. Resolve the prompt budget from the model that will actually serve the
+    #    edit call (self_dev task pin, falling back to the active model).
+    model_id = _router.get_task_model("self_dev")
+    context_window = _router.context_window_for(model_id)
+    prompt_budget = int(context_window * (1 - _SELF_DEV_RESPONSE_RESERVE))
+
+    edit_instructions = (
         "You are editing the OpenMind repository. Make this change:\n"
         f"TASK: {description}\n\n"
         "To EDIT an existing file, output a block EXACTLY in this format:\n"
@@ -2758,12 +2799,62 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
         "5-15 lines). To ADD code to an existing file, SEARCH an anchor and "
         "REPLACE it with itself plus the new code. For a file marked "
         "'(new file -- does not exist yet)', use a NEWFILE block with the whole "
-        "body. Output ONLY these blocks, nothing else.\n\n"
-        "CURRENT FILES:\n" + "\n\n".join(blocks)
+        "body. A file marked TRUNCATED is only a partial excerpt -- if your edit "
+        "needs a region not shown, pick a SEARCH anchor from what IS shown. "
+        "Output ONLY these blocks, nothing else.\n\n"
+        "CURRENT FILES:\n"
+    )
+    overhead_tokens = estimate_tokens(edit_instructions)
+
+    # 3. Read current contents, ask for small search/replace edits. Whole-file
+    #    JSON rewrite is beyond a local 7-8B (truncation + escaping); tiny
+    #    anchor-based blocks are not.
+    raw_contents: list[tuple[str, "str | None"]] = []
+    for rel in wanted:
+        fp = clone_dir / rel
+        raw_contents.append((rel, fp.read_text(encoding="utf-8") if fp.is_file() else None))
+
+    # Fail fast: if even a minimal excerpt of every wanted file can't fit
+    # alongside the fixed instructions, no assembled prompt ever could --
+    # bail before spending a model call (or the 300s timeout) on it.
+    budget_for_files = prompt_budget - overhead_tokens
+    min_needed = sum(
+        min(estimate_tokens(content), _SELF_DEV_MIN_EXCERPT_TOKENS)
+        for _, content in raw_contents if content is not None
+    )
+    if budget_for_files <= 0 or min_needed > budget_for_files:
+        offending = ", ".join(
+            f"{rel} (~{estimate_tokens(content)} tokens)"
+            for rel, content in raw_contents if content is not None
+        ) or "(fixed instructions alone exceed the budget)"
+        raise RuntimeError(
+            f"self_dev edit prompt cannot fit model '{model_id}'s "
+            f"{context_window}-token context window (budget {prompt_budget} tokens "
+            f"after {int(_SELF_DEV_RESPONSE_RESERVE * 100)}% response headroom, "
+            f"{overhead_tokens} tokens of fixed instructions). "
+            f"Offending files: {offending}. Narrow the change description to "
+            "touch fewer/smaller files."
+        )
+
+    per_file_cap = max(
+        int(prompt_budget * _SELF_DEV_PER_FILE_FRACTION), _SELF_DEV_MIN_EXCERPT_TOKENS
+    )
+    blocks: list[str] = []
+    running = overhead_tokens
+    for rel, content in raw_contents:
+        cap = min(per_file_cap, max(prompt_budget - running, 0))
+        block = _self_dev_bounded_block(rel, content, cap)
+        blocks.append(block)
+        running += estimate_tokens(block)
+
+    edit_prompt = edit_instructions + "\n\n".join(blocks)
+    logger.info(
+        "[self_dev] edit prompt: ~%d tokens (budget %d, window %d, model %s)",
+        estimate_tokens(edit_prompt), prompt_budget, context_window, model_id,
     )
     edit_raw = await _router.complete(edit_prompt, task_type="self_dev")
 
-    # 3. Apply the edits (confined to the clone) and commit on a new branch.
+    # 4. Apply the edits (confined to the clone) and commit on a new branch.
     written = _sdio.apply_search_replace(clone_dir, edit_raw)
 
     branch = f"selfdev/{uuid.uuid4().hex[:8]}"
