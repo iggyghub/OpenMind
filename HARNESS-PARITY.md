@@ -13,7 +13,7 @@ Status: blocked
 
 ## Next slice -- start here
 
-Active: H2-S2 -- #769 (H2-S1/#768 merged 2026-08-17 as 151b9bd).
+Active: H2-S3 -- #770 (H2-S1/#768 merged 151b9bd; H2-S2/#769 merged eb3df93).
 #733's design was already done (ADR-0020's provider-seam amendment); it is now
 sliced into #768 / #769 / #770. #733 stays open as the parent/tracking issue.
 The decomposition was produced by Felix (self_dev planner) reading the ADR --
@@ -37,7 +37,7 @@ Model: sonnet (all three are safe-zone builds)
 - [x] H3-S1 -- #734 -- derive_model_context() + assembly invariant (ADR-0022 S1) -- Type: HITL
 - [x] H3-S2 -- #734 -- fork(session, boundary) on the conversation store (ADR-0022 S2) -- Type: AFK
 - [x] H2-S1 -- #768 -- SubagentProvider seam (run_subagent = fork-in-process provider) -- Type: AFK -- merged 151b9bd (PR #771)
-- [ ] H2-S2 -- #769 -- continuable delegation (follow-up to a finished sub-agent) -- Type: AFK -- needs #768 + H3-S2's fork_thread
+- [x] H2-S2 -- #769 -- continuable delegation (follow-up to a finished sub-agent) -- Type: AFK -- merged eb3df93 (PR #772); chose an in-memory SubagentHandle over fork_thread (recording a sub-chain just to fork it fights the isolation boundary)
 - [ ] H2-S3 -- #770 -- background-job registration (listable/killable delegations) -- Type: AFK -- needs #768; observability only, still sequential
       (parent #733 stays open as the H2 tracking issue until all three land)
 - [ ] H7-S1 -- #738 -- task-workflow over subagents (ADR-0023) -- Type: AFK -- gated on H2; DEFER unless a task needs it
