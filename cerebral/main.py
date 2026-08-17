@@ -42,6 +42,7 @@ from cerebral.db.model_priority import ModelPriorityStore
 from cerebral.llm.planner import Planner, is_coding_turn, shortlist_tools, validate_tool_args
 from cerebral.llm.chain_engine import ChainEngine
 from cerebral.llm.context_summarizer import should_summarize, summarize_oldest
+from cerebral.llm.subagent import run_subagent
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
 from cerebral.passive.extractor import FiveW1HExtractor
@@ -1441,6 +1442,27 @@ def _modal_auto_gate(tool_name: str, args: object) -> bool:
     ADR-0016 computer-use full-autonomy switch. Both are tool-scoped; neither
     loosens the modal for any other tool."""
     return _job_apply_auto_gate(tool_name, args) or _computer_use_full_auto_gate(tool_name, args)
+
+
+# Module-level (not a turn-handler closure) so sub-agents (ADR-0020) reuse the
+# same ADR-0005 capability gate rather than duplicating it.
+async def _gate_tool(tool_name: str, tool_args: dict) -> Decision:
+    # Recipe synthetic tools don't have a plugin; treat them as SILENT at
+    # the gate level -- per-step gates fire inside _replay_recipe.
+    if tool_name.startswith("recipe_"):
+        return Decision.SILENT
+    plugin_name = _orc.plugin_for_tool(tool_name)
+    caps = (
+        _orc.required_capabilities_for(plugin_name)
+        if plugin_name is not None
+        else None
+    )
+    caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
+    if caps:
+        return await _orc.check_capabilities(
+            tool_name, caps, _gate_flags_for(tool_name, tool_args), tool_args
+        )
+    return Decision.SILENT
 
 
 def _computer_use_full_autonomy_event() -> dict:
@@ -5937,24 +5959,6 @@ async def _process_command(
     coding_turn = is_coding_turn(transcript) and "coding" in _router.task_models()
     planner = Planner(_router, task_type="coding" if coding_turn else None)
 
-    async def _gate(tool_name: str, tool_args: dict) -> Decision:
-        # Recipe synthetic tools don't have a plugin; treat them as SILENT at
-        # the gate level -- per-step gates fire inside _replay_recipe.
-        if tool_name.startswith("recipe_"):
-            return Decision.SILENT
-        plugin_name = _orc.plugin_for_tool(tool_name)
-        caps = (
-            _orc.required_capabilities_for(plugin_name)
-            if plugin_name is not None
-            else None
-        )
-        caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
-        if caps:
-            return await _orc.check_capabilities(
-                tool_name, caps, _gate_flags_for(tool_name, tool_args), tool_args
-            )
-        return Decision.SILENT
-
     async def _execute(tool_name: str, tool_args: dict) -> ToolResult:
         if tool_name.startswith("recipe_") and profile_id is not None:
             return await _replay_recipe(tool_name, profile_id)
@@ -6000,7 +6004,7 @@ async def _process_command(
 
     chain = ChainEngine(
         planner=planner,
-        gate_fn=_gate,
+        gate_fn=_gate_tool,
         execute_fn=_execute,
         record_fn=_record_turn,
     )
@@ -6481,23 +6485,35 @@ async def _video_commit(cluster_id: int, idea_text: str, cluster: dict) -> str: 
 async def _video_verify(cluster_label: str, idea_text: str, category: str = "money-making idea") -> dict:  # S6 #644 / S9 #655 (ADR-0017)
     """Production validity verdict: Budd (or local) grounded on Felix's web_search.
 
-    No Anthropic key — search runs via OpenClaw (web_search tool), the model runs
-    on the "video" task route. If search is unavailable the verdict degrades to
-    knowledge-only rather than failing. Live-verify only; stubs cover tests.
+    No Anthropic key — search runs inside a sub-agent context boundary (ADR-0020
+    S2), the model runs on the "video" task route. If search is unavailable the
+    verdict degrades to knowledge-only rather than failing. Live-verify only;
+    stubs cover tests.
     """
     import json as _json
     import re as _re
     from cerebral.video.verdict import build_verdict_prompt
 
-    # Ground on Felix's own web search (OpenClaw, no API key). Best-effort:
-    # a search outage must not block the verdict, only weaken its grounding.
+    # Ground on Felix's own web search, run inside a sub-agent (ADR-0020 S2) so
+    # the sub-chain's raw search dumps stay in the sub-transcript -- this verdict
+    # prompt only ever sees the one compact digest it returns. Best-effort: a
+    # search outage must not block the verdict, only weaken its grounding.
     search_results = ""
     try:
-        res = await _orc.call_tool("web_search", {"query": idea_text, "max_results": 5})
+        res = await run_subagent(
+            "Research the real-world validity of this idea and summarise the "
+            f"evidence you find, briefly: {idea_text}",
+            router=_router,
+            gate_fn=_gate_tool,
+            execute_fn=_orc.call_tool,
+            all_tools=_orc.tools_for_llm,
+            tools=["web_search"],
+            max_steps=3,
+        )
         if res is not None and not getattr(res, "is_error", False):
             search_results = res.content or ""
     except Exception as exc:
-        logger.warning("[video/verdict] web_search unavailable, judging from knowledge: %s", exc)
+        logger.warning("[video/verdict] research sub-agent unavailable, judging from knowledge: %s", exc)
 
     prompt = build_verdict_prompt(cluster_label, idea_text, search_results, category)
     raw = await _router.complete(prompt, task_type="extraction")
