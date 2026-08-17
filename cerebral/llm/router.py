@@ -83,6 +83,19 @@ def _claw_timeout_s() -> float:
     return value
 
 
+def _claw_conn_error_detail(exc: Exception) -> str:
+    """Message for a ClawBackend ConnectionError (issue #756).
+
+    httpx.ReadTimeout / ConnectTimeout usually stringify to "" (no message),
+    so `raise ConnectionError(str(exc))` alone surfaces as an unactionable
+    bare-colon error ("model 'x' unavailable: "). Fall back to the exception
+    type name plus the configured timeout so a timeout is obviously a
+    timeout. An exception that already carries a message (e.g. ConnectError)
+    is returned verbatim.
+    """
+    return str(exc) or f"{type(exc).__name__} (timeout={_claw_timeout_s()}s)"
+
+
 class ModelUnavailableError(Exception):
     """Raised when the active backend cannot be reached. Never silently falls back."""
 
@@ -986,7 +999,7 @@ class ClawBackend:
                 )
                 resp.raise_for_status()
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                raise ConnectionError(str(exc)) from exc
+                raise ConnectionError(_claw_conn_error_detail(exc)) from exc
             except httpx.HTTPStatusError as exc:
                 # Include the server's response body — a bare status hides the
                 # real reason (e.g. LiteLLM "key not allowed to access model X").
@@ -1036,7 +1049,7 @@ class ClawBackend:
                 )
                 resp.raise_for_status()
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                raise ConnectionError(str(exc)) from exc
+                raise ConnectionError(_claw_conn_error_detail(exc)) from exc
             except httpx.HTTPStatusError as exc:
                 # Include the server's response body — a bare status hides the
                 # real reason (e.g. LiteLLM "key not allowed to access model X").
@@ -1091,7 +1104,7 @@ class ClawBackend:
                 )
                 resp.raise_for_status()
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                raise ConnectionError(str(exc)) from exc
+                raise ConnectionError(_claw_conn_error_detail(exc)) from exc
             except httpx.HTTPStatusError as exc:
                 # Include the server's response body — a bare status hides the
                 # real reason (e.g. LiteLLM "key not allowed to access model X").

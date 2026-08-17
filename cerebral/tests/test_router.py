@@ -679,6 +679,104 @@ async def test_claw_complete_uses_configured_timeout(monkeypatch):
     assert captured["timeout"] == 450.0
 
 
+# ── ClawBackend connection-error message clarity (issue #756) ────────────────
+# httpx.ReadTimeout/ConnectTimeout stringify to "" — a bare ConnectionError(str(exc))
+# surfaced as an unactionable "model 'x' unavailable: " with nothing after the colon.
+
+async def test_claw_complete_empty_timeout_message_is_self_diagnosing(monkeypatch):
+    from cerebral.llm.router import ClawBackend, _claw_timeout_s
+    import httpx
+
+    async def fake_post(self, url, json=None, headers=None):
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    backend = ClawBackend(url="https://example.test/v1", model="hermes-agent")
+
+    with pytest.raises(ConnectionError) as exc_info:
+        await backend.complete("hi", "chat")
+
+    message = str(exc_info.value)
+    assert message != ""
+    assert "ReadTimeout" in message
+    assert str(_claw_timeout_s()) in message
+
+
+async def test_claw_complete_with_tools_empty_timeout_message_is_self_diagnosing(monkeypatch):
+    from cerebral.llm.router import ClawBackend
+    import httpx
+
+    async def fake_post(self, url, json=None, headers=None):
+        raise httpx.ConnectTimeout("")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    backend = ClawBackend(url="https://example.test/v1", model="hermes-agent")
+
+    with pytest.raises(ConnectionError) as exc_info:
+        await backend.complete_with_tools("hi", [])
+
+    message = str(exc_info.value)
+    assert message != ""
+    assert "ConnectTimeout" in message
+
+
+async def test_claw_complete_with_images_empty_timeout_message_is_self_diagnosing(monkeypatch):
+    from cerebral.llm.router import ClawBackend
+    import httpx
+
+    async def fake_post(self, url, json=None, headers=None):
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    backend = ClawBackend(url="https://example.test/v1", model="hermes-agent")
+
+    with pytest.raises(ConnectionError) as exc_info:
+        await backend.complete_with_images("hi", [b"png-bytes"], "computer_use_vision")
+
+    message = str(exc_info.value)
+    assert message != ""
+    assert "ReadTimeout" in message
+
+
+async def test_claw_complete_connect_error_message_untouched(monkeypatch):
+    """The non-empty path (e.g. ConnectError with a real message) is unchanged."""
+    from cerebral.llm.router import ClawBackend
+    import httpx
+
+    async def fake_post(self, url, json=None, headers=None):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    backend = ClawBackend(url="https://example.test/v1", model="hermes-agent")
+
+    with pytest.raises(ConnectionError) as exc_info:
+        await backend.complete("hi", "chat")
+
+    assert str(exc_info.value) == "connection refused"
+
+
+async def test_claw_timeout_flows_into_model_unavailable_error_without_bare_colon(monkeypatch):
+    """End-to-end: a router-level ModelUnavailableError for a Claw timeout is
+    no longer just 'model ... unavailable: ' with nothing after the colon."""
+    from cerebral.llm.router import ClawBackend, ModelRouter
+    import httpx
+
+    async def fake_post(self, url, json=None, headers=None):
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    backend = ClawBackend(url="https://example.test/v1", model="budd-quick")
+    router = ModelRouter(backends={"custom/budd-quick": backend})
+
+    with pytest.raises(ModelUnavailableError) as exc_info:
+        await router.complete("hi", "chat")
+
+    message = str(exc_info.value)
+    assert not message.endswith(": ")
+    assert not message.endswith(":")
+    assert "ReadTimeout" in message
+
+
 # ── AnthropicBackend — direct Anthropic API (issue #378) ─────────────────────
 
 class _FakeBlock:
