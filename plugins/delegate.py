@@ -10,16 +10,26 @@ on its own to spin off a sub-agent. That is exactly the "new autonomous
 capability" category that requires human review before merge (see
 DELEGATION-BUILD.md's HITL marking on this slice).
 
-REQUIRED_CAPABILITIES -- declared as the FULL 16-class vocabulary, not a
-narrow guess. `delegate` is a meta-tool: the sub-run it spins up can invoke
-ANY tool the caller's own gate would allow (ADR-0020 decision 7 -- "same
-orchestrator + gate + ACL for every nested step"), scoped only by the
-`tools` argument the caller supplies (or the full shortlist when omitted).
-Each nested tool call is re-gated independently at execution time, so
-under-declaring here would not weaken enforcement -- but it WOULD make the
-Plugins UI's capability badge lie about what this tool can transitively
-reach. Declaring the closed vocabulary in full is the honest answer for a
-tool whose entire purpose is "run more tools."
+REQUIRED_CAPABILITIES -- declared as `frozenset()`. This plugin performs no
+capability-bearing primitive itself: `_delegate` reads its own args, then
+awaits `run_subagent`, which awaits the CALLER's own `gate_fn`/`execute_fn`
+for every nested tool it runs (ADR-0020 decision 7 -- "same orchestrator +
+gate + ACL for every nested step"). The security boundary is that per-step
+re-gating, not a declaration on this wrapper -- there is nothing here for a
+gate to check. `plugins/memory.py` (Issue #79) is the established precedent
+for this shape: "First plugin to declare REQUIRED_CAPABILITIES =
+frozenset(). The plugin source contains no AST-completeness-tracked
+primitives... The orchestrator validator at cerebral/mcp/orchestrator.py:50
+explicitly names this as a supported case." It also matches the posture
+`cerebral.main._gate_tool` already takes for `recipe_*` synthetic tools:
+SILENT at the wrapper, because per-step gates fire inside the replay.
+(An earlier draft of this file declared the full 16-class vocabulary
+instead, reasoning that a meta-tool should honestly advertise its reach.
+That declaration made `delegate` DENY-by-default on any profile without an
+explicit `shell_exec` grant -- `DEFAULT_POLICY[SHELL_EXEC] = Decision.DENY`
+and `MCPOrchestrator.check_capabilities` takes the worst decision across the
+declared set -- which silently killed the tool. `frozenset()` is correct,
+not just simpler.)
 
 No-nesting: `run_subagent` already strips `delegate` out of a sub-agent's
 own tool set (ADR-0020 decision 9, cerebral/llm/subagent.py) -- this plugin
@@ -45,11 +55,10 @@ from typing import Callable
 
 from cerebral.llm.subagent import run_subagent
 from cerebral.mcp.orchestrator import Tool, ToolResult
-from cerebral.security import CAPABILITY_VOCABULARY
 
 PLUGIN_NAME = "delegate"
 
-REQUIRED_CAPABILITIES: frozenset[str] = CAPABILITY_VOCABULARY
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset()
 
 # main.py wires (ADR-0020 S4): set_subagent_context(lambda: {
 #     "router": _router, "gate_fn": _gate_tool,
@@ -113,7 +122,6 @@ class DelegatePlugin:
                     },
                     "required": ["task"],
                 },
-                required_capabilities=REQUIRED_CAPABILITIES,
             ),
         ]
 

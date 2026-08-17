@@ -15,7 +15,7 @@ import pytest
 import plugins.delegate as delegate_mod
 from cerebral.llm.router import ModelRouter, ToolCall
 from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
-from cerebral.security import CAPABILITY_VOCABULARY, Decision
+from cerebral.security import Decision
 from plugins.delegate import DelegatePlugin, create
 
 
@@ -89,17 +89,32 @@ def _wire(backend, all_tools):
 
 def test_plugin_registers_and_tool_appears_in_orchestrator():
     orc = MCPOrchestrator()
-    orc.register(create(), required_capabilities=CAPABILITY_VOCABULARY)
+    orc.register(create(), required_capabilities=delegate_mod.REQUIRED_CAPABILITIES)
     names = {t.name for t in orc.list_tools()}
     assert "delegate" in names
 
 
-def test_required_capabilities_is_the_full_vocabulary():
-    """Declared honestly (module docstring): a delegated sub-run can invoke
-    any tool the caller's own gate would allow, so under-declaring here
-    would mislead the Plugins UI about what this tool can transitively
-    reach even though per-nested-call gating still enforces it."""
-    assert delegate_mod.REQUIRED_CAPABILITIES == CAPABILITY_VOCABULARY
+def test_required_capabilities_is_empty():
+    """delegate performs no capability-bearing primitive itself -- it only
+    awaits run_subagent, which re-gates every nested tool call through the
+    caller's own gate (ADR-0020 decision 7). Precedent: plugins/memory.py
+    (Issue #79) is "First plugin to declare REQUIRED_CAPABILITIES =
+    frozenset()"."""
+    assert delegate_mod.REQUIRED_CAPABILITIES == frozenset()
+
+
+async def test_declared_capabilities_do_not_resolve_to_deny():
+    """The point of the frozenset() fix: SHELL_EXEC defaults to DENY
+    (cerebral/security/gate.py) and check_capabilities takes the worst
+    decision across the declared set -- declaring the full vocabulary would
+    make delegate DENY-by-default on any profile without an explicit
+    shell_exec grant. An empty declaration short-circuits to SILENT."""
+    orc = MCPOrchestrator()
+    orc.register(create(), required_capabilities=delegate_mod.REQUIRED_CAPABILITIES)
+    decision = await orc.check_capabilities(
+        "delegate", delegate_mod.REQUIRED_CAPABILITIES, None,
+    )
+    assert decision == Decision.SILENT
 
 
 # ---------------------------------------------------------------------------

@@ -6636,6 +6636,9 @@ def _wire_plugin_seams() -> None:
         ("video", "set_verify_fn", _video_verify),                                   # S6 #644 (ADR-0017)
         ("video", "set_commit_fn", _video_commit),                                    # S7 #645 (ADR-0017)
         ("github_ingest", "set_route_extraction_local_fn", _route_extraction_local),  # ADR-0019 S3 drain
+        ("delegate", "set_subagent_context",
+         lambda: {"router": _router, "gate_fn": _gate_tool, "execute_fn": _orc.call_tool,
+                  "all_tools": _orc.tools_for_llm}),                                 # S4 #730 (ADR-0020)
     ]
     for name, seam, factory in seams:
         try:
