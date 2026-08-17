@@ -96,6 +96,8 @@ logger = logging.getLogger(__name__)
 PLUGIN_NAME = "job_search"
 RRR_URL = "https://ratracerebellion.com/job-postings"
 OPENCLAW_BASE = "http://localhost:3000"
+_RRR_HOST = "ratracerebellion.com"  # S3 #404 — RRR self-link resolution
+_NO_ATS_LINK_NOTE = "no ATS link found on board"  # S3 #404
 
 # ADR-0005 / Issue #334 — jobs_fetch_postings: network_egress_cloud + external_data_read + fs_write.
 # Issue #335 — jobs_store_resume: fs_read (PDF artifact) + fs_write (dossier).
@@ -695,6 +697,43 @@ BOARD_PROVIDERS: dict[str, "Callable"] = {
 }
 
 
+# ── S3 #404 — RRR self-link resolution ────────────────────────────────────────
+# The live RRR listing page (#380) only ever links to the per-job RRR article,
+# never the employer's ATS page directly — that link lives one click deeper, on
+# the article page. Resolve it here, once, at fetch time.
+
+_HREF_RE = re.compile(r'href="([^"]+)"', re.IGNORECASE)
+
+
+def _is_rrr_host(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse
+        return _RRR_HOST in urlparse(url).netloc.lower()
+    except Exception:
+        return False
+
+
+async def _resolve_rrr_link(
+    url: str, navigate_fn: "Callable[[str], Awaitable[str]]"
+) -> "tuple[str, str]":
+    """Navigate one hop to an RRR post page, return (resolved_url, ats_note).
+
+    ats_note is '' when an external (non-RRR) apply link was found on the post
+    page — that link becomes the posting's new url. Otherwise the original RRR
+    url is kept and ats_note explains why the ATS gate can't drive it. Exactly
+    one navigate call, no retries (cap: #404).
+    """
+    try:
+        html = await navigate_fn(url)
+    except Exception as exc:
+        logger.warning("[job_search] RRR resolve navigate failed for %s: %s", url, exc)
+        return url, _NO_ATS_LINK_NOTE
+    for href in _HREF_RE.findall(html):
+        if href.startswith("http") and _RRR_HOST not in href:
+            return href, ""
+    return url, _NO_ATS_LINK_NOTE
+
+
 # ── SQLite store ──────────────────────────────────────────────────────────────
 
 class JobSearchStore:
@@ -725,6 +764,9 @@ class JobSearchStore:
         for stmt in (
             "ALTER TABLE job_postings ADD COLUMN fit_score REAL",
             "ALTER TABLE job_postings ADD COLUMN status TEXT NOT NULL DEFAULT 'new'",
+            # S3 #404 — set when an RRR post page has no external apply link;
+            # the ATS gate reports this instead of "Unsupported ATS 'unknown'".
+            "ALTER TABLE job_postings ADD COLUMN ats_note TEXT NOT NULL DEFAULT ''",
         ):
             try:
                 self._con.execute(stmt)
@@ -863,20 +905,48 @@ class JobSearchStore:
             "pay":         posting.get("pay") or "",
             "snapshot":    posting.get("snapshot") or "",
             "posted_date": posting.get("posted_date") or "",
+            "ats_note":    posting.get("ats_note") or "",  # S3 #404
             "now":         now,
         }
         self._con.execute("""
-            INSERT INTO job_postings (url, title, company, pay, snapshot, posted_date, fetched_at)
-            VALUES (:url, :title, :company, :pay, :snapshot, :posted_date, :now)
+            INSERT INTO job_postings
+                (url, title, company, pay, snapshot, posted_date, fetched_at, ats_note)
+            VALUES (:url, :title, :company, :pay, :snapshot, :posted_date, :now, :ats_note)
             ON CONFLICT(url) DO UPDATE SET
                 title       = excluded.title,
                 company     = excluded.company,
                 pay         = excluded.pay,
                 snapshot    = excluded.snapshot,
                 posted_date = excluded.posted_date,
-                fetched_at  = excluded.fetched_at
+                fetched_at  = excluded.fetched_at,
+                ats_note    = excluded.ats_note
         """, params)
         self._con.commit()
+
+    def upsert_resolved(self, old_url: str, posting: dict) -> None:
+        """Upsert `posting` under its (possibly newly-resolved) url.
+
+        S3 #404 — dedup care: when RRR self-link resolution moves a posting's
+        url from the RRR post-page url (`old_url`) to the real ATS url, a plain
+        upsert() would INSERT a fresh row under the new url and orphan the old
+        row — silently discarding an existing status/fit_score (e.g. a user's
+        approval). If `old_url` names a different, existing row, migrate its
+        status + fit_score (the only user-decision columns on job_postings)
+        onto the new row and delete the stale one, so re-fetches never leave
+        two rows for the same job.
+        """
+        new_url = posting.get("url") or ""
+        existing_old = None
+        if old_url and old_url != new_url:
+            existing_old = self.get_posting_by_url(old_url)
+        self.upsert(posting)
+        if existing_old is not None:
+            self._con.execute(
+                "UPDATE job_postings SET status = ?, fit_score = ? WHERE url = ?",
+                (existing_old["status"], existing_old["fit_score"], new_url),
+            )
+            self._con.execute("DELETE FROM job_postings WHERE url = ?", (old_url,))
+            self._con.commit()
 
     def clear_postings(self) -> int:
         """#517 — delete postings with no application row.
@@ -1788,10 +1858,16 @@ class JobSearchPlugin:
                 url=url, posting_url=url, ats_type=ats_type,
                 status="failed", fields=[],
             )
+            # S3 #404: a posting stuck on its RRR self-link (no external apply
+            # link found on the post page) gets its explicit ats_note instead
+            # of the generic "unknown" ATS message.
+            reason = posting.get("ats_note") or (
+                f"Unsupported ATS '{ats_type}' — Felix cannot reliably drive this site"
+            )
             return ToolResult(
                 content=json.dumps({
                     "status": "failed",
-                    "reason": f"Unsupported ATS '{ats_type}' — Felix cannot reliably drive this site",
+                    "reason": reason,
                     "url": url,
                 }),
                 is_error=True,
@@ -2279,8 +2355,18 @@ class JobSearchPlugin:
                     p["url"] = p["url_direct"]
                 raw = p.get("url")
                 if raw and str(raw).startswith("http"):
-                    p["url"] = canonicalize_posting_url(raw)  # B3 #510
-                    store.upsert(p)
+                    old_url = canonicalize_posting_url(raw)  # B3 #510
+                    p["url"] = old_url
+                    # S3 #404: RRR listing entries only ever carry the article
+                    # (self) link — resolve one hop deeper to the real ATS url.
+                    # This also repairs pre-existing stuck rows: the listing
+                    # re-emits the same RRR url each fetch, so old_url matches
+                    # the stale row and upsert_resolved migrates it in place.
+                    if _is_rrr_host(p["url"]):
+                        resolved_url, note = await _resolve_rrr_link(p["url"], navigate)
+                        p["url"] = canonicalize_posting_url(resolved_url)
+                        p["ats_note"] = note
+                    store.upsert_resolved(old_url, p)
                     saved += 1
             total_fetched += len(postings)
             total_saved += saved

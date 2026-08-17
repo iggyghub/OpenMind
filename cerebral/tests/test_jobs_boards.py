@@ -942,3 +942,146 @@ def test_clear_postings_deletes_unapplied_keeps_applied():
 def test_clear_postings_empty_store_is_noop():
     s = _mem_store()
     assert s.clear_postings() == 0
+
+
+# ── S3 #404 — RRR self-link resolution ───────────────────────────────────────
+
+_RRR_ARTICLE_URL = "https://ratracerebellion.com/job/acme-writer"
+
+# Live 2026 labeled-listing format (#380): the only link is the RRR article —
+# the employer/ATS link lives one hop deeper, on that article page.
+_RRR_LISTING_HTML = (
+    '<p><strong>Company</strong>: Acme'
+    '<!-- rrr-job-id: RRR-20260810-001 --><br>'
+    '<strong>Job/Gig</strong>: <a href="' + _RRR_ARTICLE_URL + '">Writer</a>'
+    '<br><strong>Pay</strong>: $20/hr</p>'
+    '<p><strong>Snapshot</strong>: Remote writing gig.</p>'
+)
+
+
+async def test_rrr_posting_resolves_one_hop_to_real_ats_url():
+    store = _mem_store()
+    store.add_board("https://example.com/jobs")
+
+    async def fake_nav(url):
+        if url == "https://example.com/jobs":
+            return _RRR_LISTING_HTML
+        if url == _RRR_ARTICLE_URL:
+            return (
+                '<a href="https://ratracerebellion.com/other">Home</a>'
+                '<a href="https://boards.greenhouse.io/acme/jobs/1">Apply Now</a>'
+            )
+        return ""
+
+    plugin = _make_plugin(store, fake_nav)
+    result = await plugin._fetch_postings()
+    assert not result.is_error
+    postings = store.list_postings()
+    assert len(postings) == 1
+    assert postings[0]["url"] == "https://boards.greenhouse.io/acme/jobs/1"
+    assert postings[0]["ats_note"] == ""
+    assert store.get_posting_by_url(_RRR_ARTICLE_URL) is None  # no leftover RRR row
+
+
+async def test_rrr_no_external_link_keeps_rrr_url_with_marker_and_gate_reflects_it():
+    store = _mem_store()
+    store.add_board("https://example.com/jobs")
+
+    async def fake_nav(url):
+        if url == "https://example.com/jobs":
+            return _RRR_LISTING_HTML
+        if url == _RRR_ARTICLE_URL:
+            return '<a href="https://ratracerebellion.com/other">Only internal link</a>'
+        return ""
+
+    plugin = _make_plugin(store, fake_nav)
+    result = await plugin._fetch_postings()
+    assert not result.is_error
+    postings = store.list_postings()
+    assert len(postings) == 1
+    p = postings[0]
+    assert p["url"] == _RRR_ARTICLE_URL
+    assert p["ats_note"] == "no ATS link found on board"
+
+    # The apply gate must surface the marker, not "Unsupported ATS 'unknown'".
+    store.set_score(p["url"], 7.0)
+    store.set_status(p["url"], "shortlisted")
+    store.upsert_dossier(1, {"name": "Jane"})
+    old_pid = _jmod._active_profile_id
+    old_store = _jmod._store
+    set_active_profile_id(1)
+    set_store(store)
+    try:
+        gate_result = await plugin.call_tool("jobs_apply_start", {"url": p["url"]})
+        assert gate_result.is_error
+        data = json.loads(gate_result.content)
+        assert data["reason"] == "no ATS link found on board"
+        assert "Unsupported ATS" not in data["reason"]
+    finally:
+        set_active_profile_id(old_pid)
+        set_store(old_store)
+
+
+async def test_rrr_resolution_preserves_status_and_score_no_duplicate():
+    """Repairing an existing stuck RRR-url row updates it in place: no duplicate
+    row, and status/fit_score (the user-decision columns) survive the url move.
+    """
+    store = _mem_store()
+    store.upsert({"title": "Writer", "company": "Acme", "pay": "", "snapshot": "",
+                  "posted_date": "", "url": _RRR_ARTICLE_URL})
+    store.set_score(_RRR_ARTICLE_URL, 8.5)
+    store.set_status(_RRR_ARTICLE_URL, "shortlisted")
+    store.add_board("https://example.com/jobs")
+
+    async def fake_nav(url):
+        if url == "https://example.com/jobs":
+            return _RRR_LISTING_HTML  # same job, same RRR article url as before
+        if url == _RRR_ARTICLE_URL:
+            return '<a href="https://boards.greenhouse.io/acme/jobs/1">Apply</a>'
+        return ""
+
+    plugin = _make_plugin(store, fake_nav)
+    result = await plugin._fetch_postings()
+    assert not result.is_error
+    postings = store.list_postings()
+    assert len(postings) == 1  # no duplicate row
+    p = postings[0]
+    assert p["url"] == "https://boards.greenhouse.io/acme/jobs/1"
+    assert p["status"] == "shortlisted"
+    assert p["fit_score"] == 8.5
+    assert store.get_posting_by_url(_RRR_ARTICLE_URL) is None  # stale row gone
+
+
+async def test_rrr_resolve_navigate_cap_one_per_posting():
+    """At most one extra navigate call per RRR-linked posting per fetch."""
+    store = _mem_store()
+    store.add_board("https://example.com/jobs")
+    calls: list[str] = []
+
+    async def fake_nav(url):
+        calls.append(url)
+        if url == "https://example.com/jobs":
+            return _RRR_LISTING_HTML
+        return '<a href="https://boards.greenhouse.io/acme/jobs/1">Apply</a>'
+
+    plugin = _make_plugin(store, fake_nav)
+    await plugin._fetch_postings()
+    assert calls.count(_RRR_ARTICLE_URL) == 1
+    assert calls.count("https://example.com/jobs") == 1
+
+
+async def test_non_rrr_posting_untouched_no_extra_navigate():
+    """A posting already on a real ATS host is untouched — no resolve hop at all."""
+    store = _mem_store()
+    store.add_board("https://example.com/jobs")
+    calls: list[str] = []
+
+    async def fake_nav(url):
+        calls.append(url)
+        return _FAKE_HTML  # already carries a direct greenhouse.io link
+
+    plugin = _make_plugin(store, fake_nav)
+    result = await plugin._fetch_postings()
+    assert not result.is_error
+    assert calls == ["https://example.com/jobs"]  # board fetch only, no resolve hop
+    assert store.list_postings()[0]["url"] == "https://greenhouse.io/apply/123"
