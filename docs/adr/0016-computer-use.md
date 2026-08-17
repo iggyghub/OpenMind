@@ -233,9 +233,13 @@ risky, hardest-UIA case. Sequence:
 
 ## Consequences
 
-- `pyautogui` (actuation) and a Windows UIA library (`uiautomation`) become
-  runtime dependencies on Windows; `mss` (present) handles capture. A host
-  without them fails closed for computer use — ADR-0005's fail-closed stance.
+- `pyautogui` (actuation), a Windows UIA library (`uiautomation`), `mss`
+  (capture), and `keyboard` (F11+F12 kill-switch leg) become runtime
+  dependencies on Windows, declared Windows-gated in `pyproject.toml` (#589 /
+  PR #590 — none were declared originally because S1–S7 shipped with fake test
+  backends, so `_make_default_backend()` swallowed the ImportError and every
+  tool reported "not available on this platform"). A host without them fails
+  closed for computer use — ADR-0005's fail-closed stance.
 - The `Backend` protocol gains **image input** (first multimodal use); text-only
   backends are unaffected, and a tier without a VL model simply doesn't ground.
 - ADR-0005's non-bypassable-`irreversible` rule gains **one documented
