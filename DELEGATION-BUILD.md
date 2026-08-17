@@ -8,14 +8,14 @@ boundary**, not a parallel swarm. Slices land one at a time via a fresh
 
 ## Next slice -- start here
 
-- **Active:** S3 -- #729
+- **Active:** S4 -- #730 (last slice; HITL -- PR opens for human review, never self-merged)
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1 -- #727 -- run_subagent tracer (new files, safe-zone) -- Type: AFK
 - [x] S2 -- #728 -- first real caller in main.py (guardrail) -- Type: HITL
-- [ ] S3 -- #729 -- resumable delegations via StepLedger -- Type: AFK
+- [x] S3 -- #729 -- resumable delegations via StepLedger -- Type: AFK
 - [ ] S4 -- #730 -- planner-autonomy delegate plugin (gated on eval harness) -- Type: HITL
 
 ## Landed PRs
@@ -26,6 +26,9 @@ boundary**, not a parallel swarm. Slices land one at a time via a fresh
   full diff review + independent targeted run (67 passed). Also hoists the turn
   handler's `_gate` closure to module-level `_gate_tool` so sub-agents reuse the
   same ADR-0005 gate instead of duplicating it.
+- S3 -- PR #754 (run_id + ledger crash-resume passthrough) -- merged to master as
+  448664e. AFK safe-zone, pure wiring (12 lines in subagent.py); independently
+  re-run after merge: tests/test_subagent.py 7 passed.
 
 ## SAFETY
 
