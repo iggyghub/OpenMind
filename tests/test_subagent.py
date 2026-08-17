@@ -1,5 +1,7 @@
 """Tests for cerebral.llm.subagent -- four isolation guarantees (ADR-0020 S1)."""
 
+import asyncio
+
 import pytest
 from cerebral.llm.router import ModelRouter, ToolCall
 from cerebral.llm.step_ledger import StepLedger
@@ -119,6 +121,102 @@ async def test_no_nesting():
     for call_tools in backend.offered_tools:
         offered_names = {t["name"] for t in call_tools}
         assert "delegate" not in offered_names
+
+
+# --- H2-S3: background-job registration (ADR-0020 amendment, decision 3) --
+
+
+async def test_registry_shows_running_then_done():
+    """A delegation is listed as running while its execute_fn is in flight,
+    and as done once run_subagent returns."""
+    from cerebral.llm.subagent import job_registry
+
+    backend = FakeBackend([ToolCall(name="echo", args={}), "final answer"])
+    router = ModelRouter(backends={"fake/x": backend})
+    observed = {}
+    desc = "registry-running-then-done"
+
+    async def execute(name, args):
+        matches = [j for j in job_registry.list() if j.description == desc]
+        observed["mid_run_status"] = matches[0].status if matches else None
+        return ToolResult(content="ran", is_error=False)
+
+    result = await run_subagent(
+        desc,
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=[_tool("echo")],
+    )
+
+    assert observed["mid_run_status"] == "running"
+    finished = [j for j in job_registry.list() if j.description == desc]
+    assert len(finished) == 1
+    assert finished[0].status == "done"
+    assert result.content == "final answer"
+
+
+async def test_registry_records_failed_run():
+    """A sub-run that raises is recorded as failed, not silently dropped,
+    and the exception still propagates to the caller (unchanged behaviour)."""
+    from cerebral.llm.subagent import job_registry
+
+    backend = FakeBackend([ToolCall(name="boom", args={})])
+    router = ModelRouter(backends={"fake/x": backend})
+    desc = "registry-records-failed"
+
+    async def execute(name, args):
+        raise RuntimeError("tool blew up")
+
+    with pytest.raises(RuntimeError):
+        await run_subagent(
+            desc,
+            router=router,
+            gate_fn=_gate_allow,
+            execute_fn=execute,
+            all_tools=[_tool("boom")],
+        )
+
+    matches = [j for j in job_registry.list() if j.description == desc]
+    assert len(matches) == 1
+    assert matches[0].status == "failed"
+    assert matches[0].error and "tool blew up" in matches[0].error
+
+
+async def test_cancel_registered_delegation_returns_error_result():
+    """Cancelling a registered job stops it and the parent still gets a
+    well-formed error ToolResult -- not a raised exception, not a hang."""
+    from cerebral.llm.subagent import job_registry
+
+    backend = FakeBackend([ToolCall(name="slow", args={})])
+    router = ModelRouter(backends={"fake/x": backend})
+    desc = "registry-cancel-mid-flight"
+    started = asyncio.Event()
+
+    async def execute(name, args):
+        started.set()
+        await asyncio.sleep(10)
+        return ToolResult(content="should not get here", is_error=False)
+
+    task = asyncio.create_task(
+        run_subagent(
+            desc,
+            router=router,
+            gate_fn=_gate_allow,
+            execute_fn=execute,
+            all_tools=[_tool("slow")],
+        )
+    )
+
+    await started.wait()
+    job = next(j for j in job_registry.list() if j.description == desc)
+    assert job_registry.cancel(job.id) is True
+
+    result = await task
+
+    assert isinstance(result, ToolResult)
+    assert result.is_error is True
+    assert job.status == "cancelled"
 
 
 async def test_gate_reuse():
