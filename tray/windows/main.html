@@ -3821,6 +3821,31 @@
       word-break: break-all;
     }
     .jobs-card-link:hover { text-decoration: underline; }
+    /* S4 #405 — ATS badge + host line on each posting's detail card */
+    .jobs-ats-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      margin-left: 6px;
+    }
+    .jobs-ats-badge.is-appliable {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    .jobs-card-ats { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
+    .jobs-filter-row { display: flex; align-items: center; margin-bottom: 10px; }
+    .jobs-filter-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
     .jobs-empty {
       color: var(--text-muted);
       font-size: 13px;
@@ -5922,6 +5947,12 @@
             <div class="jobs-ramp-progress" id="jobs-ramp-progress">
               Complete 5 reviewed submissions to enable.
             </div>
+          </div>
+          <div class="jobs-filter-row">
+            <label class="jobs-filter-toggle">
+              <input type="checkbox" id="jobs-appliable-filter" />
+              Appliable now
+            </label>
           </div>
           <div id="jobs-list">
             <div class="jobs-empty" id="jobs-empty">
@@ -8032,7 +8063,9 @@
     // S1 #396: jobBoards mirrors server-side job_boards table (#390 pairing).
     let jobBoards = [];
     let jobResume = null;      // S7 #448 — {filename, docx_filename, doc_id}
+    let jobsAppliableOnly = false;  // S4 #405 — "Appliable now" filter toggle
     const jobsListEl        = document.getElementById('jobs-list');
+    const jobsAppliableFilterEl = document.getElementById('jobs-appliable-filter'); // S4 #405
     const jobsEmptyEl       = document.getElementById('jobs-empty');
     const jobsCheckBtn      = document.getElementById('jobs-check-btn');
     const jobsStatusEl      = document.getElementById('jobs-status');
@@ -8100,16 +8133,42 @@
       }
     });
 
+    // S4 #405 — ats_type/appliable ride on every posting (plugins/job_search.py
+    // list_postings()); display-name the two ATSes Felix can drive, "—" for
+    // everything else (including unresolved RRR self-links, which detect_ats_type
+    // reports as 'unknown' since the url never left the RRR host).
+    var _ATS_BADGE_LABEL = { greenhouse: 'Greenhouse', lever: 'Lever' };
+    function jobsAtsBadgeLabel(atsType) {
+      return _ATS_BADGE_LABEL[atsType] || '—';
+    }
+    // ATS host line for the posting detail card: a no-ATS-link posting (S3 #404
+    // ats_note set) explains itself instead of showing a bogus RRR host.
+    function jobsAtsDetailLine(p) {
+      if (p.ats_note) return 'No ATS link: ' + escHtml(p.ats_note);
+      if (!p.url) return '';
+      var host = '';
+      try { host = new URL(p.url).host; } catch (e) { return ''; }
+      return host ? 'ATS host: ' + escHtml(host) : '';
+    }
+
+    jobsAppliableFilterEl.addEventListener('change', function () {
+      jobsAppliableOnly = jobsAppliableFilterEl.checked;
+      renderJobSearch();
+    });
+
     function renderJobSearch() {
       jobsListEl.querySelectorAll('.jobs-date-group').forEach(function (el) { el.remove(); });
-      if (jobPostings.length === 0) {
+      var postings = jobsAppliableOnly
+        ? jobPostings.filter(function (p) { return p.appliable; })
+        : jobPostings;
+      if (postings.length === 0) {
         jobsEmptyEl.hidden = false;
         return;
       }
       jobsEmptyEl.hidden = true;
       // Group by fetched_at date (YYYY-MM-DD)
       const byDate = Object.create(null);
-      jobPostings.forEach(function (p) {
+      postings.forEach(function (p) {
         const day = (p.fetched_at || '').slice(0, 10) || 'Unknown date';
         (byDate[day] = byDate[day] || []).push(p);
       });
@@ -8126,9 +8185,13 @@
           const metaParts = [];
           if (p.company) metaParts.push(escHtml(p.company));
           if (p.pay)     metaParts.push(escHtml(p.pay));
+          const atsLine = jobsAtsDetailLine(p);
           card.innerHTML =
-            '<div class="jobs-card-title">' + escHtml(p.title || 'Untitled') + '</div>' +
+            '<div class="jobs-card-title">' + escHtml(p.title || 'Untitled') +
+              '<span class="jobs-ats-badge' + (p.appliable ? ' is-appliable' : '') + '">' +
+                escHtml(jobsAtsBadgeLabel(p.ats_type)) + '</span></div>' +
             (metaParts.length ? '<div class="jobs-card-meta">' + metaParts.join(' \xb7 ') + '</div>' : '') +
+            (atsLine ? '<div class="jobs-card-ats">' + atsLine + '</div>' : '') +
             (p.snapshot ? '<div class="jobs-card-snapshot">' + escHtml(p.snapshot.slice(0, 160)) + '…</div>' : '') +
             (p.url ? '<a class="jobs-card-link" href="' + escHtml(p.url) + '" target="_blank" rel="noopener">' + escHtml(p.url) + '</a>' : '');
           group.appendChild(card);
@@ -12084,6 +12147,10 @@
     // Card title is "Title — Company" (#445), so a company query filters it too.
     _registerInPaneFilter('job-search', function (q) {
       _filterRowsByText('#jobs-shortlist-list .jobs-shortlist-card', '.jobs-shortlist-card-title', q);
+      // S4 #405: no labelSelector -- match the whole postings card (title,
+      // company, the "ATS host: <host>" line, and the ats badge text), so
+      // typing "greenhouse" or a host substring finds a posting.
+      _filterRowsByText('#jobs-list .jobs-card', null, q);
     });
 
     // ── Documents panel search (S6 #457) ─────────────────────────────────────

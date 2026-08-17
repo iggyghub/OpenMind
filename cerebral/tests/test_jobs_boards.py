@@ -1085,3 +1085,39 @@ async def test_non_rrr_posting_untouched_no_extra_navigate():
     assert not result.is_error
     assert calls == ["https://example.com/jobs"]  # board fetch only, no resolve hop
     assert store.list_postings()[0]["url"] == "https://greenhouse.io/apply/123"
+
+
+# ── S4 #405 — ats_type / appliable derived on every list_postings() row ───────
+
+def test_list_postings_derives_ats_type_and_appliable():
+    s = _mem_store()
+    s.upsert({"url": "https://boards.greenhouse.io/acme/jobs/1", "title": "A"})
+    s.upsert({"url": "https://jobs.lever.co/acme/2", "title": "B"})
+    s.upsert({"url": "https://example.com/careers/3", "title": "C"})
+    by_url = {p["url"]: p for p in s.list_postings()}
+    gh = by_url["https://boards.greenhouse.io/acme/jobs/1"]
+    assert gh["ats_type"] == "greenhouse"
+    assert gh["appliable"] is True
+    lever = by_url["https://jobs.lever.co/acme/2"]
+    assert lever["ats_type"] == "lever"
+    assert lever["appliable"] is True
+    other = by_url["https://example.com/careers/3"]
+    assert other["ats_type"] == "unknown"
+    assert other["appliable"] is False
+
+
+def test_list_postings_ats_note_case_not_appliable():
+    """S3 #404 no-ATS-link posting: url stays on the RRR host, so detect_ats_type
+    returns 'unknown' and appliable is False -- no special-casing needed here,
+    the UI layer reads ats_note to render the explanation instead of a host.
+    """
+    s = _mem_store()
+    s.upsert({
+        "url": "https://ratracerebellion.com/job-postings/some-article",
+        "title": "D",
+        "ats_note": "no ATS link found on board",
+    })
+    row = s.list_postings()[0]
+    assert row["ats_type"] == "unknown"
+    assert row["appliable"] is False
+    assert row["ats_note"] == "no ATS link found on board"
