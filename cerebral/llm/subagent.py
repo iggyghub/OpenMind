@@ -19,6 +19,7 @@ from typing import Awaitable, Callable
 from cerebral.llm.chain_engine import MAX_CHAIN_STEPS, ChainEngine
 from cerebral.llm.planner import Planner, shortlist_tools
 from cerebral.llm.router import ModelRouter
+from cerebral.llm.step_ledger import StepLedger
 from cerebral.mcp.orchestrator import ToolResult
 
 
@@ -38,6 +39,8 @@ async def run_subagent(
     context: "str | None" = None,
     model: "str | None" = None,
     max_steps: int = MAX_CHAIN_STEPS,
+    run_id: "str | None" = None,
+    ledger: "StepLedger | None" = None,
 ) -> ToolResult:
     """Run task as an isolated sub-agent and return its compact result.
 
@@ -51,6 +54,11 @@ async def run_subagent(
         (task string only), which is the isolation.
     model -- optional model id to pin for this run (e.g. route to cloud);
         None uses the router's active model.
+    run_id / ledger -- crash-resume passthrough (harness improvement C). When
+        both are given, a sub-agent re-invoked with the same run_id after a
+        crash replays already-completed steps from the ledger instead of
+        re-executing them; the resume behavior is StepLedger's, this is only
+        the pass-through. Both absent => byte-identical to S1.
     """
     transcript = f"{context}\n\n{task}" if context else task
 
@@ -85,7 +93,9 @@ async def run_subagent(
 
     try:
         # No on_chain_done: sub-agents don't raise recipe offers (isolation).
-        text = await chain.run(transcript, tool_defs, max_steps=max_steps)
+        text = await chain.run(
+            transcript, tool_defs, max_steps=max_steps, run_id=run_id, ledger=ledger
+        )
     finally:
         if prev_model is not None:
             try:

@@ -2,6 +2,7 @@
 
 import pytest
 from cerebral.llm.router import ModelRouter, ToolCall
+from cerebral.llm.step_ledger import StepLedger
 from cerebral.llm.subagent import run_subagent
 from cerebral.mcp.orchestrator import ToolResult
 from cerebral.security import Decision
@@ -137,3 +138,93 @@ async def test_gate_reuse():
 
     assert execute_calls == []
     assert "permission denied" in result.content
+
+
+async def test_resume_skips_completed_step(tmp_path):
+    """5. Resume passthrough: a step already in the ledger is not re-executed."""
+    led = StepLedger(db_path=tmp_path / "ledger.db")
+    # Pretend "echo" already ran and was persisted before a crash.
+    led.record(
+        "runX", "echo:{}", {"name": "echo", "args": {}, "result": "seeded", "is_error": False}
+    )
+
+    backend = FakeBackend(
+        [ToolCall(name="echo", args={}), ToolCall(name="step2", args={}), "final answer"]
+    )
+    router = ModelRouter(backends={"fake/x": backend})
+    execute_calls: list[str] = []
+
+    async def execute(name, args):
+        execute_calls.append(name)
+        return ToolResult(content="ran", is_error=False)
+
+    result = await run_subagent(
+        "do echo then step2",
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=[_tool("echo"), _tool("step2")],
+        run_id="runX",
+        ledger=led,
+    )
+
+    assert execute_calls == ["step2"]  # echo was replayed from the ledger
+    assert result.content == "final answer"
+
+
+async def test_no_run_id_executes_every_step():
+    """6. Control: with run_id/ledger omitted, every scripted step is executed."""
+    backend = FakeBackend(
+        [ToolCall(name="echo", args={}), ToolCall(name="step2", args={}), "final answer"]
+    )
+    router = ModelRouter(backends={"fake/x": backend})
+    execute_calls: list[str] = []
+
+    async def execute(name, args):
+        execute_calls.append(name)
+        return ToolResult(content="ran", is_error=False)
+
+    result = await run_subagent(
+        "do echo then step2",
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=[_tool("echo"), _tool("step2")],
+    )
+
+    assert execute_calls == ["echo", "step2"]
+    assert result.content == "final answer"
+
+
+async def test_run_id_and_ledger_passed_through(monkeypatch):
+    """7. Pass-through: chain.run actually receives run_id and ledger."""
+    from cerebral.llm.chain_engine import ChainEngine
+
+    captured = {}
+    orig_run = ChainEngine.run
+
+    async def spy_run(self, transcript, tools, **kwargs):
+        captured.update(kwargs)
+        return "final answer"
+
+    monkeypatch.setattr(ChainEngine, "run", spy_run)
+
+    backend = FakeBackend(["unused"])
+    router = ModelRouter(backends={"fake/x": backend})
+    led = StepLedger(db_path=":memory:")
+
+    async def execute(name, args):
+        return ToolResult(content="ran", is_error=False)
+
+    await run_subagent(
+        "do echo",
+        router=router,
+        gate_fn=_gate_allow,
+        execute_fn=execute,
+        all_tools=[_tool("echo")],
+        run_id="runY",
+        ledger=led,
+    )
+
+    assert captured.get("run_id") == "runY"
+    assert captured.get("ledger") is led
