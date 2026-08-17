@@ -13,7 +13,9 @@ Status: blocked
 
 ## Next slice -- start here
 
-Active: H2-S3 -- #770 (H2-S1/#768 merged 151b9bd; H2-S2/#769 merged eb3df93).
+Active: H7-S1 -- #738 (DEFERRED per its own note) / H8-S0 -- #739 (design-first, needs a grill).
+H2 is COMPLETE: #768 (151b9bd), #769 (eb3df93), #770 (16b51cb) all merged 2026-08-17.
+10 of 11 harness-parity slices are now landed; only H7 (deferred) and H8 (no ADR yet) remain.
 #733's design was already done (ADR-0020's provider-seam amendment); it is now
 sliced into #768 / #769 / #770. #733 stays open as the parent/tracking issue.
 The decomposition was produced by Felix (self_dev planner) reading the ADR --
@@ -38,8 +40,8 @@ Model: sonnet (all three are safe-zone builds)
 - [x] H3-S2 -- #734 -- fork(session, boundary) on the conversation store (ADR-0022 S2) -- Type: AFK
 - [x] H2-S1 -- #768 -- SubagentProvider seam (run_subagent = fork-in-process provider) -- Type: AFK -- merged 151b9bd (PR #771)
 - [x] H2-S2 -- #769 -- continuable delegation (follow-up to a finished sub-agent) -- Type: AFK -- merged eb3df93 (PR #772); chose an in-memory SubagentHandle over fork_thread (recording a sub-chain just to fork it fights the isolation boundary)
-- [ ] H2-S3 -- #770 -- background-job registration (listable/killable delegations) -- Type: AFK -- needs #768; observability only, still sequential
-      (parent #733 stays open as the H2 tracking issue until all three land)
+- [x] H2-S3 -- #770 -- background-job registration (listable/killable delegations) -- Type: AFK -- merged 16b51cb; registry lives in cerebral/llm/job_registry.py (not a new cerebral/jobs/ package)
+      (H2 COMPLETE -- all three landed 2026-08-17; parent #733 closed)
 - [ ] H7-S1 -- #738 -- task-workflow over subagents (ADR-0023) -- Type: AFK -- gated on H2; DEFER unless a task needs it
 - [ ] H8-S0 -- #739 -- Code Mode sandbox spike, cloud-gated (ADR-0024) -- Type: HITL -- LAST
 
