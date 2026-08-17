@@ -21,10 +21,10 @@ protects). The ledger, not clone-directory existence, is the resume signal:
 clone dirs are deliberately kept after a run (operator preference -- last
 run's tree is reference material), so a bare leftover dir with no ledger
 entries is stale, not resumable, and still gets today's refusal. To
-deliberately abandon a stuck/poisoned run_id: call
-`plugin_instance._ledger.clear(run_id)` (or a fresh `StepLedger(...).clear
-(run_id)` pointed at the same db) -- no new tool arg, this is generic
-StepLedger API already exposed via the injectable `ledger` seam.
+deliberately abandon a stuck/poisoned run_id, pass `restart: true`: it clears
+the recorded phases AND removes the stale clone dir, so the run starts over
+from scratch. (The underlying `StepLedger.clear(run_id)` is still available
+via the injectable `ledger` seam for programmatic use.)
 
 Injected seams (clone_fn / edit_fn / test_fn / pr_fn / diff_fn / merge_fn /
 pull_fn / restart_fn / ledger) make the whole flow hermetic in tests -- no
@@ -34,6 +34,7 @@ import asyncio
 import inspect
 import json
 import logging
+import shutil
 import uuid
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable
@@ -233,7 +234,17 @@ class SelfDevPlugin:
                             "type": "string",
                             "description": (
                                 "Optional run identifier (defaults to a UUID). "
-                                "Used as the clone directory name and branch suffix."
+                                "Used as the clone directory name and branch suffix. "
+                                "Re-calling with the same run_id resumes from the "
+                                "last completed phase."
+                            ),
+                        },
+                        "restart": {
+                            "type": "boolean",
+                            "description": (
+                                "Abandon any recorded progress for this run_id and "
+                                "start over from the clone. Use when a resumed run "
+                                "is stuck on a bad recorded phase."
                             ),
                         },
                     },
@@ -292,6 +303,20 @@ class SelfDevPlugin:
         # with nothing recorded for this run_id is stale, not resumable: keep
         # today's refusal for that case. Non-empty ledger => resume, and the
         # dir-exists check is skipped on purpose (resuming reuses that dir).
+        # restart=true abandons recorded progress so a run stuck on a bad phase
+        # can start over without needing Python access to the ledger. Clearing
+        # BEFORE reading `resumed` is what makes the rest of this function take
+        # the fresh-run path; the stale clone dir is removed too, otherwise the
+        # dir-exists refusal below would immediately block the restart.
+        if (args or {}).get("restart"):
+            cleared = self._ledger.clear(run_id)
+            if clone_dir.exists():
+                shutil.rmtree(clone_dir, ignore_errors=True)
+            logger.info(
+                "[self_dev] run %r: restart requested -- cleared %d recorded phase(s)",
+                run_id, cleared,
+            )
+
         resumed = {s["sig"]: s for s in self._ledger.completed(run_id)}
 
         if not resumed and clone_dir.exists():

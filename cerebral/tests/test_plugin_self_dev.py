@@ -489,3 +489,66 @@ async def test_test_fn_does_not_block_event_loop(tmp_path):
     # loop was never blocked. A pre-fix direct call would have starved it and
     # left far fewer than ~15 ticks in that window.
     assert len(ticked) >= 15, f"event loop starved during test_fn: only {len(ticked)} ticks"
+
+
+async def test_restart_arg_abandons_recorded_progress(tmp_path):
+    """#780 follow-up -- restart:true lets an operator abandon a run stuck on a
+    bad recorded phase without needing Python access to the ledger. It clears
+    the recorded phases AND the stale clone dir, so the run starts fresh:
+    clone_fn and edit_fn both run again."""
+    run_id = "poisoned-run"
+    sandbox_root = tmp_path / "self_dev"
+    clone_dir = sandbox_root / run_id
+    clone_dir.mkdir(parents=True)
+    (clone_dir / "stale.txt").write_text("from the dead run\n", encoding="utf-8")
+
+    ledger = StepLedger(db_path=tmp_path / "ledger.db")
+    ledger.record(run_id, "clone", {
+        "name": "clone", "args": {}, "result": {"clone_dir": str(clone_dir)}, "is_error": False,
+    })
+    ledger.record(run_id, "edit", {
+        "name": "edit", "args": {},
+        "result": {"branch": "selfdev/poisoned", "committed": True},
+        "is_error": False,
+    })
+
+    clone_calls, edit_calls = [], []
+
+    plugin = _make(
+        tmp_path,
+        sandbox_root=sandbox_root,
+        ledger=ledger,
+        clone_fn=lambda url, dest: (clone_calls.append(dest), dest.mkdir(parents=True, exist_ok=True))[1],
+        edit_fn=lambda d, desc: (edit_calls.append(d), {"branch": "selfdev/fresh", "committed": True})[1],
+    )
+    result = await plugin.call_tool("self_dev", {
+        "change_description": "start over",
+        "run_id": run_id,
+        "restart": True,
+    })
+
+    assert not result.is_error, result.content
+    assert len(clone_calls) == 1, "restart must re-clone, not reuse the stale dir"
+    assert len(edit_calls) == 1, "restart must re-run the edit it previously recorded"
+    data = json.loads(result.content)
+    assert data["branch"] == "selfdev/fresh"  # the NEW edit, not the recorded one
+    assert not (clone_dir / "stale.txt").exists(), "stale clone dir must be removed"
+
+
+async def test_restart_on_unknown_run_id_is_harmless(tmp_path):
+    """restart:true on a run_id with nothing recorded is a plain fresh run."""
+    plugin = _make(tmp_path)
+    result = await plugin.call_tool("self_dev", {
+        "change_description": "fresh",
+        "run_id": "never-seen",
+        "restart": True,
+    })
+    assert not result.is_error, result.content
+
+
+async def test_restart_arg_is_declared_in_the_schema(tmp_path):
+    """An operator must be able to discover it from the tool listing."""
+    plugin = _make(tmp_path)
+    tool = next(t for t in plugin.list_tools() if t.name == "self_dev")
+    assert "restart" in tool.schema["properties"]
+    assert "restart" not in tool.schema.get("required", [])
