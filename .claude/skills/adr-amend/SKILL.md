@@ -20,7 +20,7 @@ Append this exact structure to an existing ADR file:
 
 ### New ADR skeleton
 
-When a decision is genuinely new rather than an evolution, create a numbered file `docs/adr/0009-kebab-title.md` (pick NNNN as one higher than the highest existing number in `docs/adr/`). Structure the file as:
+When a decision is genuinely new rather than an evolution, create a numbered file `docs/adr/NNNN-kebab-title.md`. Pick `NNNN` by listing `docs/adr/` and taking one higher than the highest existing number -- never a hardcoded number, and never reuse one (the highest was 0024 as of 2026-08-17, so a new ADR would be 0025). Structure the file as:
 
 - Title line
 - Date
