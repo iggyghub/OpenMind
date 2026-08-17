@@ -14,10 +14,12 @@ blocking by design: parallel local would thrash the one GPU.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol, runtime_checkable
 
 from cerebral.llm.chain_engine import MAX_CHAIN_STEPS, ChainEngine
+from cerebral.llm.job_registry import registry as job_registry
 from cerebral.llm.planner import Planner, shortlist_tools
 from cerebral.llm.router import ModelRouter
 from cerebral.llm.step_ledger import StepLedger
@@ -168,11 +170,26 @@ async def run_subagent(
         except ValueError:
             prev_model = None  # unknown model id; run on active instead
 
-    try:
+    # Background-job registration (ADR-0020 amendment, decision 3): every
+    # delegation registers at this boundary so it is listable/killable while
+    # in flight. This does NOT make the run concurrent -- we still await the
+    # job's task immediately below; it only exposes the one in-flight run to
+    # registry.list()/cancel() for the duration of that await. Observability,
+    # not parallelism (decision 5 stays true).
+    job = job_registry.start(
         # No on_chain_done: sub-agents don't raise recipe offers (isolation).
-        text = await chain.run(
-            transcript, tool_defs, max_steps=max_steps, run_id=run_id, ledger=ledger
-        )
+        chain.run(transcript, tool_defs, max_steps=max_steps, run_id=run_id, ledger=ledger),
+        description=task,
+    )
+    try:
+        text = await job.task
+    except asyncio.CancelledError:
+        # Cancelled via registry.cancel() (or the job's own task cancelled
+        # outright). The gate already ran per-step inside chain.run -- a
+        # cancellation just stops mid-flight, it never bypasses a gate
+        # decision. The parent still gets a well-formed ToolResult, not a
+        # raised exception.
+        return ToolResult(content="Sub-agent delegation was cancelled.", is_error=True)
     finally:
         if prev_model is not None:
             try:
