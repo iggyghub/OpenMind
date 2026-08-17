@@ -192,6 +192,8 @@ def detect_ats_type(url: str) -> str:
         return "greenhouse"
     if "lever.co" in host:
         return "lever"
+    if "ashbyhq.com" in host:
+        return "ashby"
     return "unknown"
 
 

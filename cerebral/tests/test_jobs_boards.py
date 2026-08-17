@@ -1121,3 +1121,28 @@ def test_list_postings_ats_note_case_not_appliable():
     assert row["ats_type"] == "unknown"
     assert row["appliable"] is False
     assert row["ats_note"] == "no ATS link found on board"
+
+
+# ── S6 #406 — Ashby ATS detection ──────────────────────────────────────────────
+
+def test_detect_ats_type_ashby():
+    assert _jmod.detect_ats_type("https://jobs.ashbyhq.com/acme/jobs/123") == "ashby"
+    assert _jmod.detect_ats_type("https://ashbyhq.com/apply/456") == "ashby"
+
+
+def test_list_postings_ashby_is_appliable():
+    s = _mem_store()
+    s.upsert({"url": "https://jobs.ashbyhq.com/acme/jobs/1", "title": "Ashby Job"})
+    postings = s.list_postings()
+    ashby = postings[0]
+    assert ashby["ats_type"] == "ashby"
+    assert ashby["appliable"] is True
+
+
+def test_list_postings_unknown_stays_unknown():
+    s = _mem_store()
+    s.upsert({"url": "https://custom-ats.example.com/jobs/1", "title": "Custom Job"})
+    postings = s.list_postings()
+    custom = postings[0]
+    assert custom["ats_type"] == "unknown"
+    assert custom["appliable"] is False
