@@ -14,13 +14,44 @@ blocking by design: parallel local would thrash the one GPU.
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Protocol, runtime_checkable
 
 from cerebral.llm.chain_engine import MAX_CHAIN_STEPS, ChainEngine
 from cerebral.llm.planner import Planner, shortlist_tools
 from cerebral.llm.router import ModelRouter
 from cerebral.llm.step_ledger import StepLedger
 from cerebral.mcp.orchestrator import ToolResult
+
+
+@runtime_checkable
+class SubagentProvider(Protocol):
+    """A provider that runs a task as an isolated sub-agent (ADR-0020
+    amendment 2026-08-15, "subagent as a provider seam", decision 1).
+
+    One interface, providers vary: this slice ships only the fork-in-process
+    provider (`run_subagent` below, which already satisfies this protocol
+    unchanged -- its signature IS `SubagentProvider.__call__`). A
+    cloud-delegated provider (model pin) and a future out-of-process provider
+    (delegate to another agent) slot in behind the same call shape later,
+    mirroring `Backend` in cerebral/llm/router.py and the plugin chain's
+    `TokenProvider`.
+    """
+
+    async def __call__(
+        self,
+        task: str,
+        *,
+        router: ModelRouter,
+        gate_fn: Callable[[str, dict], Awaitable[object]],
+        execute_fn: Callable[[str, dict], Awaitable[ToolResult]],
+        all_tools: list[dict],
+        tools: "list[str] | None" = None,
+        context: "str | None" = None,
+        model: "str | None" = None,
+        max_steps: int = MAX_CHAIN_STEPS,
+        run_id: "str | None" = None,
+        ledger: "StepLedger | None" = None,
+    ) -> ToolResult: ...
 
 
 async def _no_record(kind: str, content: dict) -> None:
@@ -104,3 +135,13 @@ async def run_subagent(
                 pass
 
     return ToolResult(content=text, is_error=False)
+
+
+# The fork-in-process provider (ADR-0020 amendment, decision 1). run_subagent
+# already IS the local provider -- no wrapper class, no signature change; the
+# binding just gives callers a name typed as SubagentProvider to code against.
+# ponytail: one provider in this slice by design (issue #768). The cloud-pinned
+# variant is already expressible via run_subagent's existing `model=` kwarg --
+# add a second provider class only when an out-of-process target exists to
+# drive (e.g. delegating to another agent), not speculatively.
+local_provider: SubagentProvider = run_subagent
