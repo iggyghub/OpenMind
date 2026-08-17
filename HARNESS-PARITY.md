@@ -6,27 +6,30 @@ Design ADRs 0021-0024 + the ADR-0020 amendment are LANDED (grills done). North
 star: shrink `main.py`'s privileged core toward plugin-everything -- each slice
 chips at it; none is a big-bang rewrite.
 
-## Status: blocked
+## Status: done
 
-<!-- STAGED. Reason: awaiting operator go-ahead. Flip to 'ready' to launch. -->
-Status: blocked
+<!-- Program CLOSED 2026-08-17. 9 slices built; H8 rejected, H7 deferred. -->
+Status: done
 
 ## Next slice -- start here
 
-Active: H7-S1 -- #738 (DEFERRED per its own note) / H8-S0 -- #739 (design-first, needs a grill).
-H2 is COMPLETE: #768 (151b9bd), #769 (eb3df93), #770 (16b51cb) all merged 2026-08-17.
-10 of 11 harness-parity slices are now landed; only H7 (deferred) and H8 (no ADR yet) remain.
-#733's design was already done (ADR-0020's provider-seam amendment); it is now
-sliced into #768 / #769 / #770. #733 stays open as the parent/tracking issue.
-The decomposition was produced by Felix (self_dev planner) reading the ADR --
-its structure and AFK classification were sound; its file paths were wrong in
-three places (invented cerebral/llm/context.py, cerebral/llm/test_subagent.py,
-cerebral/session_worker.py) and were corrected against the real tree before
-filing. Build order: #768 first (the others depend on the seam), then #769
-and #770 in either order.
-Then: H7-S1/#738 deferred per its own note; H8-S0/#739 still design-first
-(no ADR yet -- needs a grill-with-docs session before any code).
-Model: sonnet (all three are safe-zone builds)
+Active: none -- PROGRAM COMPLETE 2026-08-17.
+
+Nine slices built and merged (H5-S1, H4-S1, H6-S1, H1-S1/S2/S3, H3-S1/S2, H2-S1/S2/S3).
+The two DESIGN-FIRST slices were grilled 2026-08-17 and both resolved as "don't build":
+
+- H8-S0 / #739 -- Code Mode: **REJECTED**. ADR-0024 is now Status: Rejected with a
+  "Why not Code Mode" section. Its token-efficiency payoff was absorbed by spill +
+  prune + summarize + subagent, and it is cloud-only, which conflicts with CONTEXT.md
+  principle 3 ("Felix works fully offline"). Revisit only on a measured failure of the
+  native path.
+- H7-S1 / #738 -- task-workflow: **DEFERRED** on its own YAGNI terms. ADR-0023's fork
+  needed H2 done (it is) plus a concrete task demanding it (there isn't one). Revisit
+  when a real multi-step non-code task needs unattended orchestration AND crash-resume.
+
+Known gap, tracked in #776: H1-S2's context_pruner and harness-improvement C's
+StepLedger are ticked complete but have NO production consumer -- both are imported
+only by their own tests. Docs and code disagree; wire them or un-tick them.
 
 ## Queue (slice-granular; each entry = one tracer PR; read the issue + its ADR)
 
@@ -42,8 +45,8 @@ Model: sonnet (all three are safe-zone builds)
 - [x] H2-S2 -- #769 -- continuable delegation (follow-up to a finished sub-agent) -- Type: AFK -- merged eb3df93 (PR #772); chose an in-memory SubagentHandle over fork_thread (recording a sub-chain just to fork it fights the isolation boundary)
 - [x] H2-S3 -- #770 -- background-job registration (listable/killable delegations) -- Type: AFK -- merged 16b51cb; registry lives in cerebral/llm/job_registry.py (not a new cerebral/jobs/ package)
       (H2 COMPLETE -- all three landed 2026-08-17; parent #733 closed)
-- [ ] H7-S1 -- #738 -- task-workflow over subagents (ADR-0023) -- Type: AFK -- gated on H2; DEFER unless a task needs it
-- [ ] H8-S0 -- #739 -- Code Mode sandbox spike, cloud-gated (ADR-0024) -- Type: HITL -- LAST
+- [~] H7-S1 -- #738 -- task-workflow over subagents (ADR-0023) -- DEFERRED 2026-08-17, issue closed not-planned. H2 done, but no concrete task demands it; StepLedger (its crash-resume foundation) is itself unwired (#776).
+- [~] H8-S0 -- #739 -- Code Mode sandbox spike, cloud-gated (ADR-0024) -- REJECTED 2026-08-17, ADR-0024 Status: Rejected, issue closed not-planned.
 
 ## Landed PRs
 

@@ -16,9 +16,37 @@
 3. **The workflow tool cannot touch git/PRs/self_dev.** Enforced by tool scoping: a workflow's subagents get a tool allow-list that excludes `self_dev`, git, and guardrail-adjacent tools. A workflow that needs code changes escalates to the external operator loop, it does not run one.
 4. **Reuse, don't reinvent, the driver/state.** A workflow's plan + per-step state reuse StepLedger (C) for crash-resume; no new state store.
 
-## Open (genuine fork — your call)
+## Resolution (2026-08-17 grill) — deferred, not built
 
-- **Do we even need the in-product task-workflow yet?** It only pays off once there are real multi-step non-code tasks that benefit from Felix orchestrating subagents unattended. Recommend building H2 (subagents) fully first and **deferring this** until a concrete task demands it (YAGNI). Flag if you want it built alongside H2.
+The fork below had two clauses: build H2 first, then wait for a concrete task. **H2 is
+now fully built** (#768 / #769 / #770 merged 2026-08-17), so the first clause is
+satisfied and only the second governs. Grilled and answered: **no concrete task demands
+it yet.** Decisions 1-4 above stand as the design for whenever one does.
+
+> **Open (the fork, now closed):** Do we even need the in-product task-workflow yet?
+> Recommend building H2 fully first and deferring this until a concrete task demands it.
+
+**Evidence considered:**
+
+- The external pattern is not straining. The `scripts/run-*.ps1` runners drove five
+  slices to merge on 2026-08-17 with no friction the in-product engine would have
+  removed. Nothing wanted Felix orchestrating them unattended.
+- The multi-step pipelines that DO exist in `cerebral/main.py` — `_jobs_apply_driver`,
+  `_video_extract`/`_verify`/`_commit`, the RSS poll — work as hand-coded flows, and
+  nobody has asked for them to be resumable. Rewriting working code onto a new engine
+  is bloat-loop, not growth-loop (CONTEXT.md design principle 4).
+- **Decision 4 is weaker than it reads.** "Reuse, don't reinvent, the driver/state
+  (StepLedger)" assumes StepLedger is load-bearing. It is not: as of 2026-08-17
+  `StepLedger` is constructed **nowhere outside its own tests** — `main.py` never
+  passes a `ledger` to `chain.run`, and although `run_subagent` accepts one, no caller
+  supplies it. Building the workflow now would make its crash-resume foundation's
+  *first production use* a speculative one. That is a materially different risk from
+  the "reuse" the decision claims.
+
+**Revisit trigger.** A concrete multi-step, non-code task that (a) genuinely needs
+unattended orchestration, and (b) needs crash-resume badly enough to justify wiring
+StepLedger for real. Wiring StepLedger to an existing pipeline is the cheaper first
+move and is tracked separately — do that before building an engine on top of it.
 
 ## Slices (gated on H2)
 
