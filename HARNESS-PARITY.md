@@ -27,9 +27,12 @@ The two DESIGN-FIRST slices were grilled 2026-08-17 and both resolved as "don't 
   needed H2 done (it is) plus a concrete task demanding it (there isn't one). Revisit
   when a real multi-step non-code task needs unattended orchestration AND crash-resume.
 
-Known gap, tracked in #776: H1-S2's context_pruner and harness-improvement C's
-StepLedger are ticked complete but have NO production consumer -- both are imported
-only by their own tests. Docs and code disagree; wire them or un-tick them.
+#776 (landed-but-unwired) resolved 2026-08-17, differently per module:
+- context_pruner (H1-S2) -- stays unwired by decision; ADR-0021 amended to record
+  summarize-only as the shipped behaviour (H5 spills at produce-time, so the
+  retroactive pruner has little left to find). Available-but-unused infrastructure.
+- StepLedger (harness improvement C) -- being wired to self_dev (#780), where an
+  interrupted run can resume instead of paying for the expensive edit step twice.
 
 ## Queue (slice-granular; each entry = one tracer PR; read the issue + its ADR)
 
@@ -37,7 +40,7 @@ only by their own tests. Docs and code disagree; wire them or un-tick them.
 - [x] H4-S1 -- #735 -- command registry + no-LLM dispatch (main.py) + 1 example -- Type: HITL
 - [x] H6-S1 -- #737 -- approval presets over the ADR-0005 gate -- Type: HITL -- confirm preset set first
 - [x] H1-S1 -- #732 -- model context_window metadata + prompt token estimator (ADR-0021 S1) -- Type: AFK
-- [x] H1-S2 -- #732 -- tool-result pruning via spill (ADR-0021 S2) -- Type: AFK -- needs H5
+- [x] H1-S2 -- #732 -- tool-result pruning via spill (ADR-0021 S2) -- Type: AFK -- MODULE landed, NOT wired: context_pruner has no caller. Deliberate as of the 2026-08-17 ADR-0021 amendment -- H5 spills at produce-time so the retroactive pass has little to do. Available-but-unused.
 - [x] H1-S3 -- #732 -- oldest-turn summarization in main.py (ADR-0021 S3) -- Type: HITL
 - [x] H3-S1 -- #734 -- derive_model_context() + assembly invariant (ADR-0022 S1) -- Type: HITL
 - [x] H3-S2 -- #734 -- fork(session, boundary) on the conversation store (ADR-0022 S2) -- Type: AFK
