@@ -2937,6 +2937,12 @@
       margin: 16px 0;
     }
 
+    .prof-wizard-error {
+      font-size: 12px;
+      color: #ff7a7a;
+      margin-bottom: 8px;
+    }
+
     .prof-submit {
       width: 100%;
       background: #c44b9c;
@@ -5340,6 +5346,7 @@
             </div>
           </div>
 
+          <div class="prof-wizard-error" id="prof-wizard-error" hidden></div>
           <button class="prof-submit" id="prof-submit" type="button">Get started</button>
         </div>
       </div>
@@ -6107,6 +6114,7 @@
     const profSubmitBtn    = document.getElementById('prof-submit');
     const profNameInput    = document.getElementById('prof-name');
     const profWakeInput    = document.getElementById('prof-wake-name');
+    const profWizardErrorEl = document.getElementById('prof-wizard-error');
     // S5 #473 -- header profile switcher refs
     const profSwBtn        = document.getElementById('prof-switcher-btn');
     const profSwDrop       = document.getElementById('prof-switcher-dropdown');
@@ -6527,6 +6535,13 @@
           } else {
             activateRoute('profiles');
           }
+          break;
+        case 'create_profile_error':
+          // Issue #387 -- Cerebral refused a duplicate name+wake_name.
+          // Surface it in the wizard instead of leaving "Setting up..."
+          // spinning forever, and don't touch the active profile / collapse
+          // the wizard (nothing was created).
+          showProfWizardError((event.data && event.data.error) || 'Could not create profile.');
           break;
         case 'heartbeat':
           latestHb = event.data || {};
@@ -9361,10 +9376,24 @@
       });
     }
 
+    function showProfWizardError(text) {
+      if (!profWizardErrorEl) return;
+      profWizardErrorEl.textContent = text;
+      profWizardErrorEl.hidden = false;
+      profSubmitBtn.disabled = false;
+      profSubmitBtn.textContent = 'Get started';
+    }
+
+    function hideProfWizardError() {
+      if (!profWizardErrorEl) return;
+      profWizardErrorEl.hidden = true;
+    }
+
     function profExpandWizard() {
       profWizardEl.classList.add('is-open');
       profNewToggleEl.classList.add('is-open');
       profNewToggleEl.textContent = '\xD7 Cancel new profile';
+      hideProfWizardError();
       setTimeout(() => profNameInput.focus(), 50);
     }
 
@@ -9379,6 +9408,7 @@
       profWakeRecorder && profWakeRecorder.reset();
       profSubmitBtn.disabled = false;
       profSubmitBtn.textContent = 'Get started';
+      hideProfWizardError();
     }
 
     profListEl.addEventListener('click', (e) => {
@@ -9581,6 +9611,7 @@
       const name      = profNameInput.value.trim();
       const wake_name = profWakeInput.value.trim() || 'felix';
       if (!name) { profNameInput.focus(); return; }
+      hideProfWizardError();
       profSubmitBtn.disabled = true;
       profSubmitBtn.textContent = 'Setting up…';
       sendEvent({

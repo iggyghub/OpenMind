@@ -1135,6 +1135,27 @@ test('inline script wires probe_models + models_health for status dots', () => {
   expect(inlineScript).toMatch(/set-priority-status/);
 });
 
+// ── Issue #387 -- duplicate-profile guard error surfaced in the wizard ───────
+
+test('profiles pane wizard has an error slot for create_profile_error (#387)', () => {
+  const pane = root.querySelector('.pane[data-route="profiles"]');
+  expect(pane).not.toBeNull();
+  const errorEl = pane.querySelector('#prof-wizard-error');
+  expect(errorEl).not.toBeNull();
+  expect(errorEl.getAttribute('hidden')).not.toBeNull();
+});
+
+test('inline script handles create_profile_error and shows it in the wizard (#387)', () => {
+  expect(inlineScript).toMatch(/['"]create_profile_error['"]/);
+  expect(inlineScript).toMatch(/showProfWizardError/);
+  // Duplicate refusal must not be treated as a successful profile_loaded --
+  // the case must not fall through into collapsing the wizard / clearing
+  // first-run mode.
+  const m = inlineScript.match(/case 'create_profile_error':[^]*?break;/);
+  expect(m).not.toBeNull();
+  expect(m[0]).not.toMatch(/profCollapseWizard/);
+});
+
 // ── Script syntax ────────────────────────────────────────────────────────────
 
 test('inline script parses without syntax errors', () => {

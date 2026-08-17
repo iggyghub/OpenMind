@@ -3884,9 +3884,37 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "create_profile":
         d = msg.get("data", {})
+        name = d.get("name", "User")
+        wake_name = d.get("wake_name", "felix")
+        # Issue #387 -- defence in depth against the tray re-firing
+        # create_profile for a profile that already exists (e.g. the
+        # onboarding wizard reopened while profiles are loaded). A
+        # first-run create always passes here trivially since list_all()
+        # is empty then, so that path is untouched. `force` is the
+        # explicit escape hatch for a genuinely-intended second profile
+        # with the same name+wake_name (e.g. two "Iggy"s).
+        if not d.get("force"):
+            dup = next(
+                (existing for existing in _pm.list_all()
+                 if existing.name == name and existing.wake_name == wake_name),
+                None,
+            )
+            if dup is not None:
+                logger.warning(
+                    "[cerebral] create_profile refused: %r/%r already exists (id=%d)",
+                    name, wake_name, dup.id,
+                )
+                await _broadcast({
+                    "type": "create_profile_error",
+                    "data": {
+                        "error": f"A profile named {name!r} with wake word {wake_name!r} already exists.",
+                        "existing_profile_id": dup.id,
+                    },
+                })
+                return
         p = _pm.create(
-            name=d.get("name", "User"),
-            wake_name=d.get("wake_name", "felix"),
+            name=name,
+            wake_name=wake_name,
             pronunciation_guide=d.get("pronunciation_guide", ""),
             voice_id=d.get("voice_id", "af_heart"),
             voice_sample=d.get("voice_sample", ""),
