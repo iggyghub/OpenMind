@@ -4,11 +4,14 @@ Design: `docs/adr/0020-sub-agent-delegation.md`. A sub-agent is a **context
 boundary**, not a parallel swarm. Slices land one at a time via a fresh
 `claude -p` session each (scripts/run-delegation.ps1).
 
-## Status: ready
+## Status: blocked
+
+<!-- HITL: S4 (#730) is built and green as PR #755, awaiting human review + merge.
+     It is the last slice -- merging it completes the campaign. -->
 
 ## Next slice -- start here
 
-- **Active:** S4 -- #730 (last slice; HITL -- PR opens for human review, never self-merged)
+- **Active:** S4 -- #730 -- BUILT, awaiting human merge of PR #755
 - **Model:** sonnet
 
 ## Queue
@@ -29,6 +32,18 @@ boundary**, not a parallel swarm. Slices land one at a time via a fresh
 - S3 -- PR #754 (run_id + ledger crash-resume passthrough) -- merged to master as
   448664e. AFK safe-zone, pure wiring (12 lines in subagent.py); independently
   re-run after merge: tests/test_subagent.py 7 passed.
+- S4 -- PR #755 (delegate plugin + eval cases + seam wiring) -- OPEN, HITL, NOT
+  merged. Exposes `delegate` to the planner (first planner-autonomy slice), so a
+  human merges it. Review found and fixed two blockers before it was mergeable:
+  (1) it declared the full 16-class vocabulary, which resolves DENY-by-default --
+  `check_capabilities` takes the worst decision across the set and `shell_exec`
+  defaults to DENY (gate.py:57), so the planner would have seen a permanently
+  denied tool. Now `frozenset()`, per plugins/memory.py's precedent: the wrapper
+  does nothing gate-worthy itself and every nested step is re-gated (ADR-0020
+  decision 7), the same posture `_gate_tool` already uses for `recipe_*`.
+  (2) the `set_subagent_context` seam was never wired, so every call failed
+  closed -- added a 3-line entry to main.py's `_wire_plugin_seams` table (this is
+  why the PR touches a guardrail file). Independently verified: 239 passed.
 
 ## SAFETY
 
