@@ -2768,6 +2768,27 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
     tray_lib = clone_dir / "tray" / "lib"
     if tray_lib.is_dir():
         candidates += [p.relative_to(clone_dir).as_posix() for p in tray_lib.rglob("*.js")]
+    # Prose surfaces: dev-skills and ADRs/docs. Without these the planner never
+    # SEES a skill or doc file, so a slice like "write .claude/skills/<x>/SKILL.md"
+    # could only be driven by naming the exact path in the change description and
+    # forcing a NEWFILE block (how SK-4 #363 had to be built). Markdown only --
+    # the sandbox gate runs pytest, which cannot validate prose, so these are
+    # low-risk to write and a human reads the PR anyway.
+    # ponytail: markdown only, and only these three roots. Widen further only if
+    # a slice actually needs another surface -- the whole point of a candidate
+    # list is to keep the planner prompt small.
+    for base, pattern in (
+        (".claude/skills", "*.md"),
+        ("docs", "*.md"),
+        ("scripts", "*.ps1"),
+    ):
+        root = clone_dir / base
+        if root.is_dir():
+            candidates += [
+                p.relative_to(clone_dir).as_posix()
+                for p in root.rglob(pattern)
+                if "node_modules" not in p.parts
+            ]
     candidates.sort()
 
     plan_prompt = (
