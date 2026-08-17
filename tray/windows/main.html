@@ -5569,6 +5569,9 @@
             <button class="set-btn" id="set-fetch-models-btn" type="button">Fetch</button>
             <input class="set-add-input" id="set-add-key" type="password"
                    placeholder="API key (optional)" autocomplete="off">
+            <input class="set-add-input" id="set-add-context-window" type="number" min="1" step="1"
+                   title="Prompt budgeting (self-dev, compaction). Leave blank for the 8192 floor."
+                   placeholder="Context window, tokens (blank = 8192)">
             <label class="set-add-coding" title="Route coding chat and self-dev edits to this connection">
               <input type="checkbox" id="set-add-coding"> Use for coding
             </label>
@@ -6138,6 +6141,7 @@
     const setModelSuggestions = document.getElementById('set-model-suggestions');
     const setFetchModelsBtn  = document.getElementById('set-fetch-models-btn');
     const setAddKeyEl        = document.getElementById('set-add-key');
+    const setAddContextWindowEl = document.getElementById('set-add-context-window');
     const setAddCodingEl     = document.getElementById('set-add-coding');
     const setAddBtn          = document.getElementById('set-add-btn');
     const setAddCancelEl     = document.getElementById('set-add-cancel');
@@ -6690,6 +6694,7 @@
             setAddUrlEl.value = '';
             setAddModelEl.value = '';
             setAddKeyEl.value = '';  // clear the secret only once the Add landed
+            if (setAddContextWindowEl) setAddContextWindowEl.value = '';
             // An edit/add succeeded -> leave edit mode.
             editingModelId = null;
             if (setAddCancelEl) setAddCancelEl.hidden = true;
@@ -10527,6 +10532,7 @@
       setAddUrlEl.value   = cfg.url || '';
       setAddModelEl.value = cfg.model || '';
       setAddKeyEl.value   = '';
+      if (setAddContextWindowEl) setAddContextWindowEl.value = cfg.context_window || '';
       if (setAddCodingEl) setAddCodingEl.checked = false;
       setAddBtn.textContent = 'Save';
       if (setAddCancelEl) setAddCancelEl.hidden = false;
@@ -10543,6 +10549,7 @@
       setAddUrlEl.value = '';
       setAddModelEl.value = '';
       setAddKeyEl.value = '';
+      if (setAddContextWindowEl) setAddContextWindowEl.value = '';
     }
 
     if (setAddCancelEl) setAddCancelEl.addEventListener('click', exitEditMode);
@@ -10675,6 +10682,7 @@
             model,
             label: name || model,
             api_key: setAddKeyEl.value,
+            context_window: setAddContextWindowEl ? setAddContextWindowEl.value.trim() : '',
           },
         });
       } else {
@@ -10689,6 +10697,8 @@
             // model -> URL host when this is blank.
             label: name || model,
             api_key: setAddKeyEl.value,  // cleared only on success (models_list)
+            // Blank => backend leaves it unset and floors to 8192 (#760).
+            context_window: setAddContextWindowEl ? setAddContextWindowEl.value.trim() : '',
             // One-step designation: pin coding chat + self-dev to this server.
             for_coding: !!(setAddCodingEl && setAddCodingEl.checked),
           },

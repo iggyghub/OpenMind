@@ -1015,6 +1015,29 @@ test('custom rows have an Edit control that sends edit_custom_model', () => {
   expect(inlineScript).toMatch(/for_coding/);
 });
 
+// ── context_window (#760) -- optional per-model window override ─────────────
+
+test('Add-model form has an optional context_window field (#760)', () => {
+  const pane = root.querySelector('.pane[data-route="settings"]');
+  const form = pane.querySelector('#set-add-model-form');
+  expect(form).not.toBeNull();
+
+  const ctxInput = form.querySelector('#set-add-context-window');
+  expect(ctxInput).not.toBeNull();
+  expect(ctxInput.getAttribute('type')).toBe('number');
+  // Placeholder must communicate the 8192 default so leaving it blank reads
+  // as intentional, not broken.
+  expect(ctxInput.getAttribute('placeholder')).toMatch(/8192/);
+});
+
+test('inline script threads context_window into add/edit payloads and edit pre-fill', () => {
+  expect(inlineScript).toMatch(/setAddContextWindowEl/);
+  // Sent on both add_custom_model and edit_custom_model.
+  expect(inlineScript).toMatch(/context_window:\s*setAddContextWindowEl/);
+  // enterEditMode pre-fills it from the non-secret custom_configs payload.
+  expect(inlineScript).toMatch(/setAddContextWindowEl\.value\s*=\s*cfg\.context_window/);
+});
+
 // ── S2 model-servers -- model discovery (Fetch button + datalist) ─────────────
 
 test('Add-model form has a Fetch button and datalist for model suggestions (S2 model-servers)', () => {
