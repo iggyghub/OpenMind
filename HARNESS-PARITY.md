@@ -13,14 +13,18 @@ Status: blocked
 
 ## Next slice -- start here
 
-Active: H2-S1 -- #733 -- UNBLOCKED 2026-08-16 (delegation #727-730 all landed).
-NOTE: #733's design deliverable is already done -- ADR-0020 carries the
-"subagent as a provider seam" amendment (provider protocol, continuable
-delegation, job registration). The next step is /to-issues to slice that
-amendment into build issues, NOT code. Needs opus + the operator.
+Active: H2-S1 -- #768 -- SLICED 2026-08-17, ready to build (all three AFK).
+#733's design was already done (ADR-0020's provider-seam amendment); it is now
+sliced into #768 / #769 / #770. #733 stays open as the parent/tracking issue.
+The decomposition was produced by Felix (self_dev planner) reading the ADR --
+its structure and AFK classification were sound; its file paths were wrong in
+three places (invented cerebral/llm/context.py, cerebral/llm/test_subagent.py,
+cerebral/session_worker.py) and were corrected against the real tree before
+filing. Build order: #768 first (the others depend on the seam), then #769
+and #770 in either order.
 Then: H7-S1/#738 deferred per its own note; H8-S0/#739 still design-first
 (no ADR yet -- needs a grill-with-docs session before any code).
-Model: opus (planning), sonnet (build slices once sliced)
+Model: sonnet (all three are safe-zone builds)
 
 ## Queue (slice-granular; each entry = one tracer PR; read the issue + its ADR)
 
@@ -32,7 +36,10 @@ Model: opus (planning), sonnet (build slices once sliced)
 - [x] H1-S3 -- #732 -- oldest-turn summarization in main.py (ADR-0021 S3) -- Type: HITL
 - [x] H3-S1 -- #734 -- derive_model_context() + assembly invariant (ADR-0022 S1) -- Type: HITL
 - [x] H3-S2 -- #734 -- fork(session, boundary) on the conversation store (ADR-0022 S2) -- Type: AFK
-- [ ] H2-S1 -- #733 -- subagent provider seam + continuation + jobs (ADR-0020 amend) -- Type: HITL -- UNBLOCKED (delegation S1-S4 landed 2026-08-16); needs /to-issues slicing first
+- [ ] H2-S1 -- #768 -- SubagentProvider seam (run_subagent = fork-in-process provider) -- Type: AFK -- FIRST, the other two depend on it
+- [ ] H2-S2 -- #769 -- continuable delegation (follow-up to a finished sub-agent) -- Type: AFK -- needs #768 + H3-S2's fork_thread
+- [ ] H2-S3 -- #770 -- background-job registration (listable/killable delegations) -- Type: AFK -- needs #768; observability only, still sequential
+      (parent #733 stays open as the H2 tracking issue until all three land)
 - [ ] H7-S1 -- #738 -- task-workflow over subagents (ADR-0023) -- Type: AFK -- gated on H2; DEFER unless a task needs it
 - [ ] H8-S0 -- #739 -- Code Mode sandbox spike, cloud-gated (ADR-0024) -- Type: HITL -- LAST
 
