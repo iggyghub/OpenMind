@@ -86,3 +86,32 @@ def test_would_prune_matches_threshold(tmp_path):
 
     assert would_prune(big_steps, context_window) is True
     assert would_prune(small_steps, context_window) is False
+
+
+def test_unprunable_error_does_not_spin(tmp_path):
+    """Regression: an error result that can never be pruned used to keep the
+    loop over threshold forever while the already-spilled step's hint (longer
+    than the spill threshold) re-qualified as a candidate every pass. This
+    hung the whole test suite."""
+    store = _store(tmp_path, threshold=50)
+    steps = [_step("err", "E" * 4000, is_error=True), _step("ok", "O" * 4000)]
+
+    steps, pruned = prune_prior_steps(steps, store, 500)
+
+    # The success result is spilled exactly once; the error stays raw.
+    assert pruned == 1
+    assert steps[0]["result"] == "E" * 4000
+    assert steps[1]["result"].startswith("[Tool output too large")
+
+
+def test_never_spills_when_the_hint_would_be_bigger(tmp_path):
+    """A result just over the spill threshold is still smaller than the ~150-char
+    hint that would replace it -- spilling it would GROW the prompt."""
+    store = _store(tmp_path, threshold=50)
+    small = "x" * 60  # > threshold(50) but far shorter than a hint
+    steps = [_step("small", small)]
+
+    steps, pruned = prune_prior_steps(steps, store, 10)
+
+    assert pruned == 0
+    assert steps[0]["result"] == small
