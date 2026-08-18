@@ -6,11 +6,13 @@ Uses OpenClaw's bundled Playwright + Mozilla Readability + PDF.js via HTTP.
 
 All HTTP side-effects are injectable via fetch_fn for testing.
 """
+import asyncio
 import json
 import logging
 from typing import Callable, Awaitable
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
+from cerebral.browser import health_check
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +137,26 @@ class BrowserPlugin:
         if not query:
             return ToolResult(content="'query' is required", is_error=True)
         max_results = args.get("max_results", 5)
+        
+        # Health check and auto-restart logic
+        service_alive = await health_check.browser_service_is_running()
+        if not service_alive:
+            logger.warning("[browser] Browser service not running. Attempting restart...")
+            restart_ok = health_check.restart_browser_service()
+            if not restart_ok:
+                return ToolResult(
+                    content="Browser service is down and could not be restarted. Please start the browser service manually or check service logs.",
+                    is_error=True
+                )
+            await asyncio.sleep(2)  # Give service time to initialize
+            service_alive = await health_check.browser_service_is_running()
+            if not service_alive:
+                return ToolResult(
+                    content="Browser service failed to start after restart attempt. Please check service logs.",
+                    is_error=True
+                )
+            logger.info("[browser] Browser service recovered. Retrying search...")
+            
         try:
             data = await self._fetch(
                 f"{OPENCLAW_BASE}/browser/search",
@@ -149,6 +171,26 @@ class BrowserPlugin:
         url = args.get("url")
         if not url:
             return ToolResult(content="'url' is required", is_error=True)
+            
+        # Health check and auto-restart logic
+        service_alive = await health_check.browser_service_is_running()
+        if not service_alive:
+            logger.warning("[browser] Browser service not running. Attempting restart...")
+            restart_ok = health_check.restart_browser_service()
+            if not restart_ok:
+                return ToolResult(
+                    content="Browser service is down and could not be restarted. Please start the browser service manually or check service logs.",
+                    is_error=True
+                )
+            await asyncio.sleep(2)  # Give service time to initialize
+            service_alive = await health_check.browser_service_is_running()
+            if not service_alive:
+                return ToolResult(
+                    content="Browser service failed to start after restart attempt. Please check service logs.",
+                    is_error=True
+                )
+            logger.info("[browser] Browser service recovered. Retrying navigate...")
+            
         try:
             data = await self._fetch(
                 f"{OPENCLAW_BASE}/browser/navigate",
