@@ -4,14 +4,12 @@ Felix modifies its own core through clone -> test -> PR -> restart. Driver for
 `scripts/run-self-dev.ps1`. Each slice runs in a fresh headless Claude Code
 session; this file + the issue are the only memory between them.
 
-Status: blocked
+Status: done
 Model: sonnet
 
 ## Next slice -- start here
 
-SD-5 -- #807  self_dev_campaign: driver-file slice-queue mode
-Model: sonnet
-Type: HITL
+- (all slices landed)
 
 ## Queue
 
@@ -19,7 +17,7 @@ Type: HITL
 - [x] SD-2 -- #555  restart-to-load handoff for merged self-dev PRs (AFK, auto-merge on green)
 - [x] SD-3 -- #556  boot self-check + SHA rollback + state snapshot (HITL -- PR #560 open, awaiting human review)
 - [x] SD-4 -- #557  blast-radius auto-merge gate: safe zones vs guardrails (HITL -- landed as PR #561)
-- [ ] SD-5 -- #807  self_dev_campaign: driver-file slice-queue mode (HITL -- PR #808 awaiting human review)
+- [x] SD-5 -- #807  self_dev_campaign: driver-file slice-queue mode (HITL -- landed as PR #808, human-approved merge)
 
 ## Landed PRs
 
@@ -27,6 +25,7 @@ Type: HITL
 - PR #559: SD-2 -- restart-to-load handoff for merged self-dev PRs
 - PR #560: SD-3 -- boot self-check + SHA rollback + state snapshot
 - PR #561: SD-4 -- blast-radius auto-merge gate (safe zones vs guardrails)
+- PR #808: SD-5 -- self_dev_campaign: driver-file slice-queue mode
 
 ## Notes
 
