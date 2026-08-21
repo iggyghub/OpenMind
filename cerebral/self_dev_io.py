@@ -252,3 +252,23 @@ def pull_fn(repo_root: Path) -> "tuple[bool, str]":
         raise RuntimeError(f"git pull failed:\n{output}")
     updated = "already up to date" not in output.lower()
     return updated, output
+
+
+def issue_fn(issue_number: int) -> str:
+    """Fetch GitHub issue title + body via gh CLI.
+
+    Returns: "# Title\n\nBody text"
+    Tests always inject this seam -- never call real gh in tests.
+    """
+    result = subprocess.run(
+        ["gh", "issue", "view", str(issue_number), "--json", "title,body"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh issue view {issue_number} failed:\n{result.stderr.strip()}"
+        )
+    data = json.loads(result.stdout)
+    title = data.get("title") or f"Issue {issue_number}"
+    body = data.get("body") or ""
+    return f"# {title}\n\n{body}"

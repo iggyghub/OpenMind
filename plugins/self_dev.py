@@ -1,5 +1,5 @@
 """
-Self-dev plugin -- ADR-0015 S1/S2/S4 (Issues #554/#555/#557).
+Self-dev plugin -- ADR-0015 S1/S2/S4/S5 (Issues #554/#555/#557/#807).
 
 Felix's self-dev loop: clone the repo, branch, have the model make a scoped
 edit, run the test suite inside the ADR-0010 sandbox, and open a PR.
@@ -26,14 +26,23 @@ the recorded phases AND removes the stale clone dir, so the run starts over
 from scratch. (The underlying `StepLedger.clear(run_id)` is still available
 via the injectable `ledger` seam for programmatic use.)
 
+S5 (#807) adds self_dev_campaign: drives the existing _run() internals in a
+loop against a campaign driver file (Status: / - **Active:** Sx -- #N /
+- **Model:** / ## Queue / ## Landed PRs). Same driver-file format as the
+scripts/run-<campaign>.ps1 external loop. Per-slice issue spec fetched via
+injectable issue_fn seam (never real gh in tests). Stops immediately on any
+escalation or error, setting Status: blocked. Same blast-radius gate applies
+per-slice; campaign mode cannot loosen it.
+
 Injected seams (clone_fn / edit_fn / test_fn / pr_fn / diff_fn / merge_fn /
-pull_fn / restart_fn / ledger) make the whole flow hermetic in tests -- no
-real git / gh / network / Cerebral.
+pull_fn / restart_fn / issue_fn / ledger) make the whole flow hermetic in
+tests -- no real git / gh / network / Cerebral.
 """
 import asyncio
 import inspect
 import json
 import logging
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -61,8 +70,13 @@ PLUGIN_NAME = "self_dev"
 # effective gate posture is unchanged: check_capabilities takes the WORST
 # decision across the set and shell_exec is already DENY by default, so
 # adding an ASK-default class cannot loosen anything.
+#
+# fs_read (#807 follow-up): self_dev_campaign reads the campaign driver file
+# (driver_path.read_text) and rewrites it after each auto-merge. The AST-
+# completeness check (#47) would flag read_text as undeclared; fs_write covers
+# writes, so fs_read is explicitly added here for reads.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset(
-    {"shell_exec", "fs_write", "fs_delete", "network_egress_cloud"}
+    {"shell_exec", "fs_read", "fs_write", "fs_delete", "network_egress_cloud"}
 )
 
 # ADR-0015 decision 5 -- ONE authoritative list of guardrail paths.
@@ -101,6 +115,159 @@ def is_guardrail_diff(changed_files: Iterable[str]) -> "tuple[bool, str]":
     return False, ""
 
 
+# ── Driver-file parsing (SD-5 / #807) ──────────────────────────────────────
+# Module-level for unit-testability with tmp_path fixtures.
+# "Tolerant of markdown framing": both `Status: ready` and `## Status: ready`
+# are accepted; `- **Active:** Sx -- #N` and plain `Active: Sx -- #N` both
+# parse; `Model:` inside a queue checkbox line (`- [ ]` / `- [x]`) is never
+# mistaken for the top-level model field (the 'queue-line Model: trap').
+
+def parse_driver_status(text: str) -> str:
+    """Return the driver Status field ('ready', 'blocked', or 'done').
+
+    Matches 'Status: <val>' or '## Status: <val>'. Default: 'ready'.
+    """
+    for line in text.splitlines():
+        m = re.match(r'^(?:#+\s*)?Status:\s*(\S+)', line, re.IGNORECASE)
+        if m:
+            return m.group(1).lower()
+    return "ready"
+
+
+def parse_driver_active(text: str) -> "tuple[str | None, int | None]":
+    """Return (slice_label, issue_number) from the Active field.
+
+    Accepts '- **Active:** Sx -- #N' and plain 'Active: Sx -- #N'.
+    The trailing '**' after 'Active:' (markdown bold closing) is consumed
+    before capturing the label. Returns (None, None) when not found.
+    """
+    for line in text.splitlines():
+        # \** consumes optional trailing '**' after the colon (bold markdown)
+        m = re.search(r'Active:\**\s*(\S+)\s+--\s+#(\d+)', line, re.IGNORECASE)
+        if m:
+            return m.group(1), int(m.group(2))
+    return None, None
+
+
+def parse_driver_model(text: str) -> str:
+    """Return the driver Model field, skipping queue checkbox lines.
+
+    Accepts '- **Model:** sonnet' and plain 'Model: sonnet'. Skips lines
+    matching '- [ ]' / '- [x]' so an inline 'Model: X' in a queue entry
+    never shadows the top-level field. Default: 'sonnet'.
+    """
+    for line in text.splitlines():
+        if re.match(r'^\s*-\s*\[[ xX]\]', line):
+            continue
+        # Optional markdown prefix (e.g. '- **'), then Model:, optional trailing
+        # '**' (e.g. '- **Model:**'), then the value.
+        m = re.match(r'^[^\S\n]*(?:[#*\-\s]*)Model:\**\s*(\S+)', line, re.IGNORECASE)
+        if m:
+            return m.group(1).lower()
+    return "sonnet"
+
+
+def _set_driver_status(text: str, status: str, reason: str = "") -> str:
+    """Rewrite the Status field in a driver file. Prepends if not found."""
+    val = status if not reason else f"{status} -- {reason}"
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        m = re.match(r'^((?:#+\s*)?Status:)', line, re.IGNORECASE)
+        if m:
+            lines[i] = m.group(1) + " " + val + "\n"
+            return "".join(lines)
+    return f"Status: {val}\n" + text
+
+
+def _advance_driver(text: str, active_label: str, active_issue: int, pr_url: str) -> str:
+    """Rewrite the driver file after a successful auto-merge.
+
+    - Ticks the active queue entry ([ ] -> [x])
+    - Finds the next unticked queue entry; updates Active + Model lines
+    - Appends the PR to the Landed PRs section
+    - Sets Status: done when no more unticked entries remain
+    """
+    lines = text.splitlines(keepends=True)
+
+    # 1. Tick the queue entry for the completed slice (handles '-- #N' separator).
+    tick_re = re.compile(
+        r'^(\s*-\s*)\[ \](\s+' + re.escape(active_label)
+        + r'\s+--\s+#' + str(active_issue) + r'\b)',
+        re.IGNORECASE,
+    )
+    for i, line in enumerate(lines):
+        if tick_re.match(line):
+            lines[i] = tick_re.sub(r'\1[x]\2', line)
+            break
+
+    # 2. Find the next unticked queue entry (only inside ## Queue section).
+    next_label: "str | None" = None
+    next_issue: "int | None" = None
+    next_model_override: "str | None" = None
+    in_queue = False
+    for line in lines:
+        if re.match(r'^#+\s*Queue', line.strip(), re.IGNORECASE):
+            in_queue = True
+            continue
+        if in_queue and re.match(r'^#+\s', line.strip()):
+            in_queue = False
+            continue
+        if not in_queue:
+            continue
+        m = re.match(r'^\s*-\s*\[ \]\s+(\S+)\s+--\s+#(\d+)(.*)', line)
+        if m:
+            next_label, next_issue = m.group(1), int(m.group(2))
+            mm = re.search(r'\bModel:\s*(\S+)', m.group(3), re.IGNORECASE)
+            if mm:
+                next_model_override = mm.group(1).lower()
+            break
+
+    # 3. Update the Active line (tolerant of markdown framing).
+    if next_label is not None:
+        active_line_re = re.compile(
+            r'^([^\S\n]*(?:[#*\-\s]*)\**Active:\**\s*)\S+\s+--\s+#\d+',
+            re.IGNORECASE,
+        )
+        for i, line in enumerate(lines):
+            if active_line_re.match(line):
+                lines[i] = active_line_re.sub(
+                    rf'\g<1>{next_label} -- #{next_issue}', line
+                )
+                break
+
+    # 4. Update the Model line if the next queue entry overrides it.
+    if next_model_override is not None:
+        model_line_re = re.compile(
+            r'^([^\S\n]*(?:[#*\-\s]*)Model:\**\s*)\S+',
+            re.IGNORECASE,
+        )
+        for i, line in enumerate(lines):
+            if re.match(r'^\s*-\s*\[[ xX]\]', line):
+                continue
+            if model_line_re.match(line):
+                lines[i] = model_line_re.sub(rf'\g<1>{next_model_override}', line)
+                break
+
+    # 5. Append the PR to the Landed PRs section (insert before next ## header).
+    pr_num = pr_url.rstrip("/").split("/")[-1]
+    pr_entry = f"- PR #{pr_num} -- {active_label} (auto-merged by self_dev_campaign)\n"
+    in_landed = False
+    insert_pos = len(lines)
+    for i, line in enumerate(lines):
+        if re.match(r'^#+\s*Landed PRs', line.strip(), re.IGNORECASE):
+            in_landed = True
+        elif in_landed and re.match(r'^#+\s', line.strip()):
+            insert_pos = i
+            break
+    lines.insert(insert_pos, pr_entry)
+
+    # 6. If no more unticked entries, mark done.
+    if next_label is None:
+        return _set_driver_status("".join(lines), "done")
+
+    return "".join(lines)
+
+
 # Repo root: plugins/self_dev.py -> parent = plugins/, parent.parent = repo root.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -113,6 +280,7 @@ DiffFn = Callable[[str], "list[str]"]          # (pr_url) -> changed_files
 MergeFn = Callable[[str], None]                # (pr_url) -> None (squash-merges the PR)
 PullFn = Callable[[Path], "tuple[bool, str]"]  # (live_root) -> (updated, output)
 RestartFn = Callable[[], "Awaitable[None]"]    # async -- broadcasts restart_felix to tray
+IssueFn = Callable[[int], str]                 # (issue_number) -> "# Title\n\nBody"
 
 
 # git/gh/pytest I/O lives in cerebral/self_dev_io.py (NOT scanned by the
@@ -127,6 +295,7 @@ _default_pr_fn = _io.pr_fn
 _default_diff_fn = _io.diff_fn
 _default_merge_fn = _io.merge_fn
 _default_pull_fn = _io.pull_fn
+_default_issue_fn = _io.issue_fn
 
 
 def _default_edit_fn(clone_dir: Path, description: str) -> dict:
@@ -182,6 +351,7 @@ class SelfDevPlugin:
         merge_fn: MergeFn | None = None,
         pull_fn: PullFn | None = None,
         restart_fn: RestartFn | None = None,
+        issue_fn: IssueFn | None = None,
         repo_url: str | None = None,
         sandbox_root: Path | None = None,
         live_root: Path | None = None,
@@ -194,6 +364,7 @@ class SelfDevPlugin:
         self._diff = diff_fn or _default_diff_fn
         self._merge = merge_fn or _default_merge_fn
         self._pull = pull_fn or _default_pull_fn
+        self._issue_fn = issue_fn or _default_issue_fn
         # #780 -- unlike edit_fn/restart_fn, StepLedger needs no main.py
         # wiring (no model router / tray closure to capture): it's
         # self-sufficient against the shared openmind.db, so the default
@@ -278,6 +449,39 @@ class SelfDevPlugin:
                     },
                 },
             ),
+            Tool(
+                name="self_dev_campaign",
+                description=(
+                    "Drive a multi-slice self-dev campaign from a driver .md file "
+                    "(ADR-0015 amendment, SD-5/#807). Reads Active/Model from the "
+                    "Next-slice block, fetches each slice's spec from its GitHub "
+                    "issue (injectable issue_fn seam), calls self_dev per slice, "
+                    "and rewrites the driver file after each auto-merge (tick "
+                    "queue entry, advance Active + Model, append to Landed PRs). "
+                    "Stops immediately on escalation or error, setting "
+                    "Status: blocked. Same blast-radius gate as self_dev -- "
+                    "a guardrail diff always escalates regardless of test colour. "
+                    "Deny-by-default per ADR-0005. Requires sandbox."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "driver_file": {
+                            "type": "string",
+                            "description": (
+                                "Absolute path to the campaign driver .md file "
+                                "(e.g. '/path/to/BOOKS.md')."
+                            ),
+                        },
+                        "max_slices": {
+                            "type": "integer",
+                            "description": "Maximum slices to run in one call. Default: 20.",
+                        },
+                    },
+                    "required": ["driver_file"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -285,6 +489,8 @@ class SelfDevPlugin:
             return await self._run(args)
         if tool_name == "self_dev_load":
             return await self._load(args)
+        if tool_name == "self_dev_campaign":
+            return await self._campaign(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     async def _run(self, args: dict) -> ToolResult:
@@ -508,6 +714,135 @@ class SelfDevPlugin:
             "message": "Pulled new commits -- relaunch triggered.",
             "output": output,
             "pr_url": pr_url,
+        }))
+
+    async def _campaign(self, args: dict) -> ToolResult:
+        """Drive a multi-slice campaign from a driver .md file (SD-5/#807).
+
+        Loops around the existing _run() engine (unchanged).  Each iteration:
+          1. Parse Status/Active/Model from the driver file.
+          2. Fetch the active issue's spec via self._issue_fn (injectable seam).
+          3. Call self._run with the issue spec as change_description.
+          4. auto_merge -> tick queue, advance Active+Model, append PR, continue.
+          5. escalate / error -> set Status: blocked in the driver file, stop.
+        """
+        driver_file_str = ((args or {}).get("driver_file") or "").strip()
+        if not driver_file_str:
+            return ToolResult(content="driver_file is required", is_error=True)
+
+        driver_path = Path(driver_file_str)
+        if not driver_path.exists():
+            return ToolResult(
+                content=f"Driver file not found: {driver_path}",
+                is_error=True,
+            )
+
+        max_slices = int((args or {}).get("max_slices") or 20)
+        slug = driver_path.stem.lower()
+        results: list[dict] = []
+
+        for n in range(1, max_slices + 1):
+            text = driver_path.read_text(encoding="utf-8")
+            status = parse_driver_status(text)
+
+            if status in ("done", "blocked"):
+                return ToolResult(content=json.dumps({
+                    "status": status,
+                    "slices_run": len(results),
+                    "results": results,
+                }))
+
+            active_label, active_issue = parse_driver_active(text)
+            if active_label is None or active_issue is None:
+                # No unticked Active entry -- campaign complete.
+                text = _set_driver_status(text, "done")
+                driver_path.write_text(text, encoding="utf-8")
+                return ToolResult(content=json.dumps({
+                    "status": "done",
+                    "slices_run": len(results),
+                    "results": results,
+                }))
+
+            try:
+                issue_text = self._issue_fn(active_issue)
+            except Exception as exc:
+                reason = f"issue_fn({active_issue}) failed: {exc}"
+                text = _set_driver_status(text, "blocked", reason)
+                driver_path.write_text(text, encoding="utf-8")
+                return ToolResult(content=json.dumps({
+                    "status": "blocked",
+                    "reason": reason,
+                    "slices_run": len(results),
+                    "results": results,
+                }))
+
+            change_description = (
+                "Implement ONLY this slice exactly as the issue specifies:\n\n"
+                + issue_text
+            )
+            run_id = f"campaign-{slug}-s{n}"
+
+            run_result = await self._run({
+                "change_description": change_description,
+                "run_id": run_id,
+            })
+
+            if run_result.is_error:
+                reason = f"run error: {run_result.content[:200]}"
+                text = driver_path.read_text(encoding="utf-8")
+                text = _set_driver_status(text, "blocked", reason)
+                driver_path.write_text(text, encoding="utf-8")
+                results.append({
+                    "slice": n,
+                    "label": active_label,
+                    "issue": active_issue,
+                    "is_error": True,
+                    "error": run_result.content,
+                })
+                return ToolResult(content=json.dumps({
+                    "status": "blocked",
+                    "reason": reason,
+                    "slices_run": len(results),
+                    "results": results,
+                }))
+
+            data = json.loads(run_result.content)
+            merge_decision = data.get("merge_decision")
+            pr_url = data.get("pr_url", "")
+
+            results.append({
+                "slice": n,
+                "label": active_label,
+                "issue": active_issue,
+                "merge_decision": merge_decision,
+                "pr_url": pr_url,
+            })
+
+            if merge_decision == "auto_merge":
+                text = driver_path.read_text(encoding="utf-8")
+                text = _advance_driver(text, active_label, active_issue, pr_url)
+                driver_path.write_text(text, encoding="utf-8")
+                # Continue loop to the next slice.
+            else:
+                reason = data.get("escalation_reason", "escalated")
+                text = driver_path.read_text(encoding="utf-8")
+                text = _set_driver_status(
+                    text, "blocked",
+                    f"PR {pr_url} escalated: {reason}",
+                )
+                driver_path.write_text(text, encoding="utf-8")
+                return ToolResult(content=json.dumps({
+                    "status": "blocked",
+                    "reason": reason,
+                    "slices_run": len(results),
+                    "results": results,
+                }))
+
+        # Reached max_slices cap.
+        return ToolResult(content=json.dumps({
+            "status": "max_slices_reached",
+            "slices_run": len(results),
+            "results": results,
         }))
 
 
