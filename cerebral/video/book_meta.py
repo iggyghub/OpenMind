@@ -4,12 +4,35 @@ Keeps title/author/tier/edition/isbn alongside the S1 book identity.
 """
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import sqlite3
 from pathlib import Path
+from typing import Callable, Optional
 
 from cerebral.paths import data_dir
 
+logger = logging.getLogger(__name__)
+
 DB_PATH = data_dir() / "openmind.db"
+
+_claim_extract_fn: Optional[Callable] = None
+
+
+def set_claim_extract_fn(fn: "Callable | None") -> None:
+    global _claim_extract_fn
+    _claim_extract_fn = fn
+
+
+def get_claim_extract_fn() -> Callable:
+    return _claim_extract_fn or _default_claim_extract
+
+
+async def _default_claim_extract(chapter_text: str, chapter_id: int, book_id: str, existing_concepts: list[str]) -> dict:
+    # Ponytail: live-verify only -- in production, injected via main.py
+    logger.warning("[book_meta] claim extraction seam stub -- wire set_claim_extract_fn via main.py")
+    raise NotImplementedError("claim_extract_fn not wired")
 
 
 class BookMetaStore:
@@ -31,6 +54,24 @@ class BookMetaStore:
                 source_tier INTEGER NOT NULL DEFAULT 3 CHECK (source_tier BETWEEN 1 AND 4),
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS book_claims (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id TEXT NOT NULL,
+                chapter_id INTEGER NOT NULL,
+                claim_text TEXT NOT NULL,
+                claim_type TEXT NOT NULL CHECK (claim_type IN ('factual','empirical','theoretical','causal','predictive','methodological','normative','opinion','anecdotal','historical','definitional')),
+                evidence_type TEXT NOT NULL CHECK (evidence_type IN ('empirical_data','statistical_analysis','academic_research','historical_example','case_study','logical_argument','mathematical_derivation','practitioner_experience','anecdote','unsupported_assertion')),
+                confidence REAL,
+                source_chunk_id TEXT NOT NULL,
+                page INTEGER,
+                concept_ids TEXT
+            );
+            CREATE TABLE IF NOT EXISTS book_assumptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                claim_id INTEGER NOT NULL,
+                assumption_text TEXT NOT NULL,
+                FOREIGN KEY (claim_id) REFERENCES book_claims(id) ON DELETE CASCADE
             );
         """)
         self._con.commit()
