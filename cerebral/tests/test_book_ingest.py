@@ -208,6 +208,78 @@ class TestBookIngest:
         data = json.loads(r.content)
         assert data["chapters"] == 2
         assert data["extracted"] == 2
+
+
+# ── S2 metadata + book_list + CSV seed ─────────────────────────────────────────
+
+import sqlite3
+
+class TestBookMetaAndList:
+    def test_upsert_and_list(self):
+        meta = _bm.BookMetaStore(":memory:")
+        meta.upsert("path/to/book.pdf", profile_id=1, title="Test Book", author="A.", source_tier=4)
+        books = meta.list_for_profile(1)
+        assert len(books) == 1
+        assert books[0]["title"] == "Test Book"
+        assert books[0]["source_tier"] == 4
+
+    @pytest.mark.asyncio
+    async def test_book_ingest_stores_metadata(self):
+        store = _store()
+        epub_data = _make_epub([("ch1.xhtml", "<p>text</p>")])
+        _wire(store, lambda path: epub_data)
+        plugin = BookIngestPlugin()
+        r = await plugin.call_tool("book_ingest", {
+            "path": "/books/meta_test.epub", "profile_id": 1,
+            "title": "Meta Test", "author": "Jane Doe", "source_tier": 2
+        })
+        assert not r.is_error
+        data = json.loads(r.content)
+        assert data["title"] == "Meta Test"
+        assert data["author"] == "Jane Doe"
+        assert data["source_tier"] == 2
+
+    @pytest.mark.asyncio
+    async def test_book_list_tool(self):
+        store = _store()
+        video_mod.set_store(store)
+        orig_init = _bm.BookMetaStore.__init__
+        def mock_init(self, db_path=_bm.DB_PATH):
+            sqlite3.Connection(":memory:").close()  # just avoid file creation
+            object.__setattr__(self, '_con', sqlite3.connect(":memory:"))
+            self._con.row_factory = sqlite3.Row
+            self._con.executescript("CREATE TABLE books (id TEXT PRIMARY KEY, profile_id INTEGER, title TEXT, author TEXT, source_tier INTEGER, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP) INSERT INTO books VALUES('/books/listed.pdf', 99, 'Listed', 'Auth', 3, datetime('now'))")
+            self._con.row_factory = sqlite3.Row
+        _bm.BookMetaStore.__init__ = mock_init
+        
+        r = await BookIngestPlugin().call_tool("book_list", {"profile_id": 99})
+        assert not r.is_error
+        books = json.loads(r.content)
+        assert len(books) == 1
+        assert books[0]["title"] == "Listed"
+        _bm.BookMetaStore.__init__ = orig_init
+
+    @pytest.mark.asyncio
+    async def test_books_seed_from_csv_skips_no_path(self, tmp_path):
+        csv = tmp_path / "seed.csv"
+        csv.write_text("title,author,file_path\nBook A,Auth1,\nBook B,Auth2,/fake/path.epub\n")
+        
+        store = _store()
+        video_mod.set_store(store)
+        original_ingest = _ingest_book
+        async def fake_ingest(st, path, cat):
+            return {"chapters": 0, "extracted": 0, "skipped": False}
+        import plugins.book_ingest as pbi
+        pbi._ingest_book = fake_ingest
+        
+        r = await BookIngestPlugin().call_tool("books_seed_from_csv", {"path": str(csv)})
+        assert not r.is_error
+        data = json.loads(r.content)
+        assert data["seeded"] == 1
+        assert data["rows"][0]["skipped"] is True
+        assert data["rows"][1]["skipped"] is False
+        
+        pbi._ingest_book = original_ingest
         assert data["collection"] == "machine learning"
 
         # Rows are source_type='book'
