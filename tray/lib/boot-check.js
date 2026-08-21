@@ -57,6 +57,11 @@ function pinAndSnapshot({
   writeFileFn(`${dataDir}/${STATE_FILE}`, JSON.stringify({
     last_known_good: sha,
     pending_backup:  ts,
+    // #813 -- unlike pending_backup (cleared once the boot self-check
+    // passes), last_backup is never cleared: it's what manualRollback()
+    // targets on demand, any time later, not just right after a self-dev
+    // restart. Always the most recent snapshot taken, pass or fail.
+    last_backup:     ts,
   }));
 
   return { sha, backupTs: ts };
@@ -94,40 +99,90 @@ function runSelfCheck({
   return checkFn()
     .then(({ ok, gate_present }) => {
       if (ok && gate_present) {
-        // Pass: promote -- clear pending_backup, keep last_known_good
+        // Pass: promote -- clear pending_backup, keep last_known_good AND
+        // last_backup (#813 -- last_backup must survive a pass so a later
+        // manualRollback() still has a snapshot to target).
         writeFileFn(`${dataDir}/${STATE_FILE}`, JSON.stringify({
           last_known_good: state.last_known_good,
           pending_backup:  null,
+          last_backup:     state.last_backup,
         }));
         return { pending: true, result: 'pass' };
       }
-      return _doRollback({ dataDir, state, copyFileFn, gitResetFn, notifyFn, relauncher });
+      return _doRollback({
+        dataDir, sha: state.last_known_good, backupTs: state.pending_backup,
+        copyFileFn, gitResetFn, notifyFn, relauncher,
+        message: 'Felix self-dev boot check failed -- reverted to the previous version and relaunching.',
+      });
     })
     .catch(() =>
-      _doRollback({ dataDir, state, copyFileFn, gitResetFn, notifyFn, relauncher }),
+      _doRollback({
+        dataDir, sha: state.last_known_good, backupTs: state.pending_backup,
+        copyFileFn, gitResetFn, notifyFn, relauncher,
+        message: 'Felix self-dev boot check failed -- reverted to the previous version and relaunching.',
+      }),
     );
 }
 
-function _doRollback({ dataDir, state, copyFileFn, gitResetFn, notifyFn, relauncher }) {
-  const backupDir = `${dataDir}/backups/self_dev/${state.pending_backup}`;
+/**
+ * On demand, any time (not gated on a pending boot check): revert to the
+ * last snapshot recorded by pinAndSnapshot, even long after it passed its
+ * boot self-check. #813 -- the compensating control for a self-merge that
+ * boots fine but is later found to be wrong (the gap the 2026-08-21 "full
+ * auto-merge" ADR amendment named as accepted-but-not-covered by SD-3's
+ * automatic rollback).
+ *
+ * Resolves { ok: false, reason } when there's nothing to roll back to yet
+ * (no self-dev restart has ever pinned a state). Otherwise performs the
+ * same restore + reset + relaunch as the automatic path and resolves
+ * { ok: true, sha, backupTs }.
+ */
+function manualRollback({
+  dataDir,
+  readFileFn,   // (path) => string|null
+  copyFileFn,   // (src, dest) => void
+  gitResetFn,   // (sha) => void
+  notifyFn,     // (msg) => void
+  relauncher,   // () => void
+}) {
+  const raw = readFileFn(`${dataDir}/${STATE_FILE}`);
+  if (!raw) return Promise.resolve({ ok: false, reason: 'no self-dev state recorded yet' });
+
+  let state;
+  try { state = JSON.parse(raw); }
+  catch (_) { return Promise.resolve({ ok: false, reason: 'self_dev_state.json is malformed' }); }
+
+  if (!state.last_known_good) {
+    return Promise.resolve({ ok: false, reason: 'no last_known_good SHA recorded yet' });
+  }
+
+  _doRollback({
+    dataDir, sha: state.last_known_good, backupTs: state.last_backup,
+    copyFileFn, gitResetFn, notifyFn, relauncher,
+    message: 'Felix manual rollback -- reverting to the previous version and relaunching.',
+  });
+
+  return Promise.resolve({ ok: true, sha: state.last_known_good, backupTs: state.last_backup });
+}
+
+function _doRollback({ dataDir, sha, backupTs, copyFileFn, gitResetFn, notifyFn, relauncher, message }) {
+  const backupDir = `${dataDir}/backups/self_dev/${backupTs}`;
 
   // Restore structured state from the snapshot
   for (const name of SNAPSHOT_FILES) {
     try { copyFileFn(`${backupDir}/${name}`, `${dataDir}/${name}`); }
-    catch (_) { /* file may not be in backup -- first run */ }
+    catch (_) { /* file may not be in backup -- first run, or no backupTs */ }
   }
 
   // Reset the live repo to the last known good SHA
-  try { gitResetFn(state.last_known_good); }
+  try { gitResetFn(sha); }
   catch (_) { /* best effort -- notify regardless */ }
 
-  notifyFn(
-    'Felix self-dev boot check failed -- reverted to the previous version and relaunching.',
-  );
+  notifyFn(message);
 
   relauncher();
 
   return { pending: true, result: 'rollback' };
 }
 
-module.exports = { pinAndSnapshot, runSelfCheck, BACKUP_KEEP, CHECK_TIMEOUT_MS };
+module.exports = { pinAndSnapshot, runSelfCheck, manualRollback, BACKUP_KEEP, CHECK_TIMEOUT_MS };

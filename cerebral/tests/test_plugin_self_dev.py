@@ -96,6 +96,8 @@ def test_list_tools(tmp_path):
     names = [t.name for t in tools]
     assert "self_dev" in names
     assert "self_dev_load" in names
+    assert "self_dev_rollback" in names
+    assert "self_dev_campaign" in names
     t = next(t for t in tools if t.name == "self_dev")
     assert t.plugin == PLUGIN_NAME
     assert "change_description" in t.schema["properties"]
@@ -567,3 +569,86 @@ async def test_restart_arg_is_declared_in_the_schema(tmp_path):
     tool = next(t for t in plugin.list_tools() if t.name == "self_dev")
     assert "restart" in tool.schema["properties"]
     assert "restart" not in tool.schema.get("required", [])
+
+
+# ---------------------------------------------------------------------------
+# self_dev_rollback (#813) -- chat-reachable companion to the tray button,
+# on-demand revert to the last self-dev snapshot. Unlike self_dev_pr_merge,
+# this IS meant to be LLM/planner-reachable (undo is the safe direction).
+# ---------------------------------------------------------------------------
+
+async def test_rollback_fires_the_injected_rollback_fn(tmp_path):
+    calls = []
+
+    async def fake_rollback():
+        calls.append(True)
+
+    plugin = _make(tmp_path, rollback_fn=fake_rollback)
+    result = await plugin.call_tool("self_dev_rollback", {})
+
+    assert not result.is_error, result.content
+    assert calls == [True]
+    data = json.loads(result.content)
+    assert data["status"] == "rolling_back"
+
+
+async def test_rollback_without_wired_fn_returns_clear_error(tmp_path):
+    """No rollback_fn override and no module-level set_rollback_fn() call ->
+    the _default_rollback_fn's NotImplementedError surfaces as a normal
+    error result, not an unhandled exception."""
+    plugin = _make(tmp_path)  # no rollback_fn override
+    result = await plugin.call_tool("self_dev_rollback", {})
+
+    assert result.is_error
+    assert "rollback_fn" in result.content
+
+
+async def test_rollback_records_system_event(tmp_path):
+    recorded = []
+
+    async def fake_record_turn(kind, content):
+        recorded.append((kind, content))
+
+    async def fake_rollback():
+        pass
+
+    plugin = _make(tmp_path, rollback_fn=fake_rollback, record_turn_fn=fake_record_turn)
+    result = await plugin.call_tool("self_dev_rollback", {})
+
+    assert not result.is_error, result.content
+    assert len(recorded) == 1
+    kind, content = recorded[0]
+    assert kind == "system_event"
+    assert content == {"kind": "self_dev_manual_rollback"}
+
+
+async def test_rollback_survives_record_turn_fn_failure(tmp_path):
+    async def fake_rollback():
+        pass
+
+    async def boom(kind, content):
+        raise RuntimeError("conversation store unavailable")
+
+    plugin = _make(tmp_path, rollback_fn=fake_rollback, record_turn_fn=boom)
+    result = await plugin.call_tool("self_dev_rollback", {})
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["status"] == "rolling_back"
+
+
+async def test_rollback_trigger_exception_returns_error(tmp_path):
+    async def bad_rollback():
+        raise RuntimeError("tray unreachable")
+
+    plugin = _make(tmp_path, rollback_fn=bad_rollback)
+    result = await plugin.call_tool("self_dev_rollback", {})
+
+    assert result.is_error
+    assert "tray unreachable" in result.content
+
+
+def test_rollback_tool_takes_no_required_args(tmp_path):
+    plugin = _make(tmp_path)
+    tool = next(t for t in plugin.list_tools() if t.name == "self_dev_rollback")
+    assert tool.schema.get("required", []) == []

@@ -2939,6 +2939,14 @@ async def _self_dev_restart() -> None:
     await _broadcast({"type": "restart_felix"})
 
 
+async def _self_dev_rollback() -> None:
+    """self_dev rollback_fn -- tell the tray to revert to the last known-good
+    self-dev snapshot and relaunch (#813). The tray does the actual git
+    reset + relaunch (tray/lib/boot-check.js manualRollback); Cerebral only
+    fires the broadcast, same posture as restart_fn above."""
+    await _broadcast({"type": "self_dev_manual_rollback"})
+
+
 async def _send(websocket, event: dict) -> None:
     try:
         await websocket.send(json.dumps(event))
@@ -6895,6 +6903,7 @@ def _wire_plugin_seams() -> None:
         ("job_search", "set_register_doc_fn", _jobs_register_doc),                  # S7 #448
         ("self_dev", "set_edit_fn", _self_dev_edit),                                 # ADR-0015 edit step
         ("self_dev", "set_restart_fn", _self_dev_restart),                           # ADR-0015 SD-2 #555
+        ("self_dev", "set_rollback_fn", _self_dev_rollback),                         # #813 manual rollback
         ("self_dev", "set_record_turn_fn", _record_turn),                           # #810 pending-review card
         ("computer_use", "set_driving_fn", _computer_use_driving),                   # S2 #576 (ADR-0016 (c))
         ("computer_use", "set_vision_ground_fn", _computer_use_vision_ground),       # S5 #578 (ADR-0016 sec 5)

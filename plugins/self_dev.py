@@ -290,6 +290,7 @@ DiffFn = Callable[[str], "list[str]"]          # (pr_url) -> changed_files
 MergeFn = Callable[[str], None]                # (pr_url) -> None (squash-merges the PR)
 PullFn = Callable[[Path], "tuple[bool, str]"]  # (live_root) -> (updated, output)
 RestartFn = Callable[[], "Awaitable[None]"]    # async -- broadcasts restart_felix to tray
+RollbackFn = Callable[[], "Awaitable[None]"]   # async -- broadcasts self_dev_manual_rollback (#813)
 IssueFn = Callable[[int], str]                 # (issue_number) -> "# Title\n\nBody"
 RecordTurnFn = Callable[[str, dict], "Awaitable[None]"]  # (kind, content) -> None
 PrStateFn = Callable[[str], str]               # (pr_url) -> "OPEN"/"MERGED"/"CLOSED"
@@ -331,6 +332,7 @@ def _default_edit_fn(clone_dir: Path, description: str) -> dict:
 _edit_fn = None
 _restart_fn = None
 _record_turn_fn = None
+_rollback_fn = None
 
 
 def set_edit_fn(fn) -> None:
@@ -346,6 +348,11 @@ def set_restart_fn(fn) -> None:
 def set_record_turn_fn(fn) -> None:
     global _record_turn_fn
     _record_turn_fn = fn
+
+
+def set_rollback_fn(fn) -> None:
+    global _rollback_fn
+    _rollback_fn = fn
 
 
 async def _default_record_turn_fn(kind: str, content: dict) -> None:
@@ -370,6 +377,14 @@ async def _default_restart_fn() -> None:
     )
 
 
+async def _default_rollback_fn() -> None:
+    """Broadcast self_dev_manual_rollback to the tray -- main.py must wire this."""
+    raise NotImplementedError(
+        "SelfDevPlugin requires a rollback_fn -- "
+        "main.py must wire the broadcast in via SelfDevPlugin(rollback_fn=...)."
+    )
+
+
 class SelfDevPlugin:
     name = PLUGIN_NAME
 
@@ -385,6 +400,7 @@ class SelfDevPlugin:
         merge_fn: MergeFn | None = None,
         pull_fn: PullFn | None = None,
         restart_fn: RestartFn | None = None,
+        rollback_fn: RollbackFn | None = None,
         issue_fn: IssueFn | None = None,
         record_turn_fn: RecordTurnFn | None = None,
         pr_state_fn: PrStateFn | None = None,
@@ -415,6 +431,7 @@ class SelfDevPlugin:
         # discovery constructs the instance, so we can't collapse them here.
         self._edit_override = edit_fn
         self._restart_override = restart_fn
+        self._rollback_override = rollback_fn
         self._record_turn_override = record_turn_fn
         self._repo_url = repo_url or str(_REPO_ROOT)
         self._sandbox_root = sandbox_root or (data_dir() / "sandbox" / "self_dev")
@@ -425,6 +442,9 @@ class SelfDevPlugin:
 
     def _resolve_restart(self) -> RestartFn:
         return self._restart_override or _restart_fn or _default_restart_fn
+
+    def _resolve_rollback(self) -> RollbackFn:
+        return self._rollback_override or _rollback_fn or _default_rollback_fn
 
     def _resolve_record_turn(self) -> RecordTurnFn:
         return self._record_turn_override or _record_turn_fn or _default_record_turn_fn
@@ -501,6 +521,21 @@ class SelfDevPlugin:
                 },
             ),
             Tool(
+                name="self_dev_rollback",
+                description=(
+                    "Revert Felix to its last known-good self-dev state -- resets the "
+                    "live code to the last verified commit and restores the matching "
+                    "openmind.db/felix-settings.json snapshot, then relaunches (#813). "
+                    "Use when a recent self-merge (yours or a prior one) turns out to "
+                    "be wrong even though it booted fine -- the automatic SD-3 rollback "
+                    "only catches a change that fails to boot at all, not one that boots "
+                    "but behaves badly. No-ops with a clear reason if no self-dev restart "
+                    "has ever run yet. Requires rollback_fn wired by main.py."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
                 name="self_dev_campaign",
                 description=(
                     "Drive a multi-slice self-dev campaign from a driver .md file "
@@ -540,6 +575,8 @@ class SelfDevPlugin:
             return await self._run(args)
         if tool_name == "self_dev_load":
             return await self._load(args)
+        if tool_name == "self_dev_rollback":
+            return await self._rollback(args)
         if tool_name == "self_dev_campaign":
             return await self._campaign(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
@@ -772,6 +809,36 @@ class SelfDevPlugin:
             "message": "Pulled new commits -- relaunch triggered.",
             "output": output,
             "pr_url": pr_url,
+        }))
+
+    async def _rollback(self, args: dict) -> ToolResult:
+        """On-demand revert to the last self-dev snapshot (#813).
+
+        The actual reset+relaunch happens in the tray/Electron layer
+        (tray/lib/boot-check.js manualRollback) -- same reasoning as restart:
+        a broken brain can't rescue itself, so this just fires the broadcast
+        and trusts the tray to do the work, exactly like _load()/restart_fn.
+        """
+        try:
+            await self._resolve_rollback()()
+        except NotImplementedError as exc:
+            return ToolResult(content=str(exc), is_error=True)
+        except Exception as exc:
+            return ToolResult(content=f"Rollback trigger failed: {exc}", is_error=True)
+
+        try:
+            await self._resolve_record_turn()("system_event", {
+                "kind": "self_dev_manual_rollback",
+            })
+        except Exception:
+            logger.exception("[self_dev] record_turn_fn failed for manual rollback")
+
+        return ToolResult(content=json.dumps({
+            "status": "rolling_back",
+            "message": (
+                "Rollback triggered -- reverting to the last known-good state "
+                "and relaunching."
+            ),
         }))
 
     async def _campaign(self, args: dict) -> ToolResult:

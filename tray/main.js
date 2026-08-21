@@ -1,4 +1,4 @@
-const { app, Tray, Menu, BrowserWindow, Notification, nativeImage, ipcMain, screen, shell, globalShortcut } = require('electron');
+const { app, Tray, Menu, BrowserWindow, Notification, nativeImage, ipcMain, screen, shell, globalShortcut, dialog } = require('electron');
 const WebSocket = require('ws');
 const path = require('path');
 const { VisualiserState }      = require('./lib/visualiser-state');
@@ -363,6 +363,14 @@ function handleCerebralEvent(event) {
       // SD-2 (#555): self_dev_load broadcasts this after pulling a merged PR.
       // SD-3 (#556): pin SHA + snapshot state before relaunching.
       restartFelixSelfDev();
+      break;
+
+    case 'self_dev_manual_rollback':
+      // #813 -- Cerebral broadcasts this when the self_dev_rollback tool is
+      // called (chat-reachable: "tell Felix to roll back"). The actual
+      // reset+relaunch still happens here in the tray layer, same reasoning
+      // as the automatic SD-3 rollback ("a broken brain can't rescue itself").
+      manualSelfDevRollback('chat');
       break;
 
     case 'computer_use:driving':
@@ -757,6 +765,22 @@ function buildMenu() {
     ],
   });
   template.push({ label: 'Restart Felix', click: restartFelix });  // #439
+  // #813 -- manual companion to the automatic SD-3 boot-check rollback.
+  // Confirm first: git reset --hard discards anything since last_known_good.
+  template.push({
+    label: 'Roll back last self-dev change',
+    click: () => {
+      const response = dialog.showMessageBoxSync(null, {
+        type: 'warning',
+        buttons: ['Cancel', 'Roll back'],
+        defaultId: 0,
+        cancelId: 0,
+        message: 'Roll back Felix to its last known-good self-dev state?',
+        detail: 'This resets the live code to the last verified-good commit and restores the matching database/settings snapshot, then relaunches.',
+      });
+      if (response === 1) manualSelfDevRollback('tray-menu');
+    },
+  });
   template.push({ label: 'Quit', click: quit });
 
   return Menu.buildFromTemplate(template);
@@ -881,6 +905,41 @@ function runSelfDevCheck() {
     trayLog(`SD-3: self-check result: ${(res && res.result) || 'no-op'}`);
   }).catch(e => {
     trayLog(`SD-3: self-check error: ${e}`);
+  });
+}
+
+// #813 -- on-demand rollback to the last self-dev snapshot, independent of
+// the automatic pending-boot-check path above: reachable from the tray menu
+// (source is unresponsive, or the user just wants it back) and from Felix
+// via a chat-triggered WS message (case 'self_dev_manual_rollback' below).
+// Reuses the exact fs/git wiring runSelfDevCheck() already uses.
+function manualSelfDevRollback(source) {
+  const fs               = require('fs');
+  const { execFileSync } = require('child_process');
+  const gitExe           = 'git';
+  const repoRoot         = path.join(__dirname, '..');
+  const { manualRollback } = require('./lib/boot-check');
+
+  return manualRollback({
+    dataDir:    DATA_DIR,
+    readFileFn: (p) => { try { return fs.readFileSync(p, 'utf8'); } catch (_) { return null; } },
+    copyFileFn: (src, dest) => fs.copyFileSync(src, dest),
+    gitResetFn: (sha) => execFileSync(gitExe, ['reset', '--hard', sha],
+      { cwd: repoRoot, stdio: 'ignore' }),
+    notifyFn: (msg) => {
+      trayLog(`manual rollback (${source}): ${msg}`);
+      electronNotify('Felix — manual rollback', msg);
+    },
+    relauncher: () => {
+      const args = process.argv.slice(1)
+        .filter(a => a !== '--felix-self-dev-boot')
+        .concat(['--felix-restart']);
+      app.relaunch({ args });
+      quit();
+    },
+  }).then(res => {
+    if (!res.ok) trayLog(`manual rollback (${source}): nothing to roll back -- ${res.reason}`);
+    return res;
   });
 }
 
