@@ -155,6 +155,18 @@ PWA serving from Cerebral (a local HTTP server + service-worker shell) is **out 
 
 **Job Search panel** — the Main-window sidebar panel for the pipeline: the date-foldered Application list, a "Check for new jobs" action (on-demand cadence in v1), and a link across to the **Credentials** panel, where the ATS and jobs-email Connected accounts live (not duplicated here). _Avoid_: "Job Search tab" — Main-window surfaces are panels.
 
+### Book knowledge corpus
+
+**Book library** — the profile-scoped store of books Felix has ingested (PDF/EPUB), browsable the way the **Document library** is. `book_ingest(path)` reads a book, chunks it by chapter, and files each chapter through the same clusters/collections spine that **Video ingest** and **GitHub ingest** already use (`source_type="book"` on the shared `videos` table). See ADR-0025. _Avoid_: conflating it with the Document library — books are a read-only ingested corpus, not user-editable documents.
+
+**Source tier** — a book's evidentiary standing (1 Primary .. 4 Opinion/Anecdotal), stored on the book and carried through retrieval as context. Never used to rank or auto-resolve a **contradiction** — it labels a source, it does not decide who is right.
+
+**Concept** (book corpus) — a named idea extracted from a book chapter (canonical name, aliases, definition, related concepts), linked back to its source passage. Distinct from a **Known value** — a concept is something a book *teaches*, not a fact Felix holds about the user.
+
+**Claim** (book corpus) — a substantive assertion extracted from a passage, tagged with a `claim_type` (factual/empirical/theoretical/causal/predictive/methodological/normative/opinion/anecdotal/historical/definitional) and an `evidence_type`, always linked back to its source passage. Presented at answer time as "author X claims Y" — never merged with fact or with Felix's own inference. _Avoid_: treating an extracted claim as something Felix believes; it is something a source said.
+
+**Claim graph** — typed relations (`supports`/`contradicts`/`depends_on`/`supported_by`/`derived_from`) between claims, evidence, and assumptions across the corpus. When two claims contradict, Felix surfaces both with sources — it does not pick a winner. _Avoid_: any "most authoritative author wins" resolution logic; ADR-0025 rules it out explicitly.
+
 ---
 
 ## Architecture
