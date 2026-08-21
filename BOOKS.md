@@ -11,12 +11,12 @@ having real data.
 
 ## Next slice -- start here
 
-- **Active:** S1 -- #797
+- **Active:** S2 -- #798
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] S1 -- #797 -- book_ingest core: PDF/EPUB chapter chunking into the video/github spine
+- [x] S1 -- #797 -- book_ingest core: PDF/EPUB chapter chunking into the video/github spine
 - [ ] S2 -- #798 -- book metadata (author/tier/edition) + Book library panel
 - [ ] S3 -- #799 -- concept extraction per chapter
 - [ ] S4 -- #800 -- claim + assumption extraction
@@ -29,6 +29,8 @@ Per-slice model: sonnet unless the queue entry says otherwise. When ticking a sl
 set the next entry's model on the `Model:` line above.
 
 ## Landed PRs
+
+- PR #806 -- S1 book_ingest core (squash-merged 2026-08-21)
 
 ## SAFETY
 
