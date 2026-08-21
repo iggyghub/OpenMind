@@ -1103,6 +1103,35 @@
       max-width: 100%;
     }
 
+    /* #810 -- self-dev pending-review card. Lives inside a .turn.system
+       wrapper but needs its own non-italic, left-aligned, bordered box. */
+    .self-dev-card {
+      align-self: center;
+      max-width: 78%;
+      font-style: normal;
+      font-size: 13px;
+      text-align: left;
+      background: var(--felix-bubble);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+    }
+    .self-dev-card-title { font-weight: 600; margin-bottom: 6px; }
+    .self-dev-card-row { margin: 2px 0; word-break: break-all; }
+    .self-dev-card-btn {
+      margin-top: 8px;
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--accent, #4a7cff);
+      color: #fff;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .self-dev-card-btn:disabled { opacity: 0.6; cursor: default; }
+    .self-dev-card-status { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+
     .turn-meta {
       display: block;
       font-size: 10px;
@@ -6051,6 +6080,10 @@
        toggle / uninstall button for the Skills panel's action widgets.
        Dual-mode: window.ActionWidget here, module.exports for Node tests. -->
   <script src="../lib/action-widget.js"></script>
+  <!-- Self-dev pending-review card (#810, ADR-0015 amendment) -- renders a
+       self_dev_pr_pending system_event as an "Approve & Merge" card.
+       Dual-mode: window.SelfDevCard here, module.exports for Node tests. -->
+  <script src="../lib/self-dev-card.js"></script>
   <!-- WebSocket bridge (UI2 A5 -- #485) -- shared with detached-panel.html.
        Dual-mode: window.WsBridge here, module.exports for Node tests. -->
   <script src="../lib/ws-bridge.js"></script>
@@ -6330,6 +6363,11 @@
 
     let activeProfileId = null;
     let renderedTurnIds = new Set();
+    // #810 -- self-dev pending-review cards, keyed by pr_url, so the
+    // self_dev_pr_merge_result / self_dev_pr_state_result broadcasts can
+    // find and update the right card in place.
+    const selfDevCardsByPrUrl = new Map();
+    const selfDevStateQueried = new Set();
     // S9 (#292) -- active conversation thread + threads snapshot.
     let activeThreadId = null;
     let threadsList = [];
@@ -6485,6 +6523,8 @@
             activeThreadId = d.thread_id;
           }
           renderedTurnIds = new Set();
+          selfDevCardsByPrUrl.clear();
+          selfDevStateQueried.clear();
           clearTranscript();
           (d.turns || []).forEach(appendTurn);
           scrollToBottom();
@@ -6499,6 +6539,23 @@
             appendTurn(turn);
             if (stick) scrollToBottom();
           }
+          break;
+        }
+        case 'self_dev_pr_merge_result': {
+          // #810 -- update the pending-review card in place; a failure
+          // stays actionable (button re-enabled + error shown) instead of
+          // vanishing (ADR-0015 amendment decision 4).
+          const d = event.data || {};
+          const cardEl = selfDevCardsByPrUrl.get(d.pr_url);
+          if (cardEl && window.SelfDevCard) window.SelfDevCard.applyMergeResult(cardEl, d);
+          break;
+        }
+        case 'self_dev_pr_state_result': {
+          // #810 -- a PR merged/closed directly on GitHub must not leave a
+          // stale button (ADR-0015 amendment decision 4).
+          const d = event.data || {};
+          const cardEl = selfDevCardsByPrUrl.get(d.pr_url);
+          if (cardEl && window.SelfDevCard) window.SelfDevCard.applyStateResult(cardEl, d);
           break;
         }
         case 'quick_ask_turn_emitted': {
@@ -6926,6 +6983,29 @@
       if (!turn || renderedTurnIds.has(turn.id)) return;
       renderedTurnIds.add(turn.id);
       emptyState.style.display = 'none';
+
+      // #810 -- self-dev escalation renders as an actionable card, not a
+      // text line (ADR-0015 amendment "in-chat pending-review card").
+      if (turn.kind === 'system_event' && turn.content && turn.content.kind === 'self_dev_pr_pending'
+          && window.SelfDevCard) {
+        const cardWrap = document.createElement('div');
+        cardWrap.className = 'turn system';
+        cardWrap.innerHTML = window.SelfDevCard.renderCardHtml(turn, 'OPEN');
+        transcript.appendChild(cardWrap);
+        const cardEl = cardWrap.querySelector('.self-dev-card');
+        const prUrl = turn.content.pr_url || '';
+        if (cardEl && prUrl) {
+          selfDevCardsByPrUrl.set(prUrl, cardEl);
+          window.SelfDevCard.attachClickHandler(cardEl, sendEvent);
+          // Check live PR state once per url -- covers a PR merged/closed
+          // directly on GitHub instead of via this card's button.
+          if (!selfDevStateQueried.has(prUrl)) {
+            selfDevStateQueried.add(prUrl);
+            sendEvent(window.SelfDevCard.buildStateMessage(prUrl));
+          }
+        }
+        return;
+      }
 
       const div = document.createElement('div');
       div.className = 'turn ' + roleFor(turn.kind);

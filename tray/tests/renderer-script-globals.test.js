@@ -97,6 +97,11 @@ const DUAL_MODE_LIBS = [
     global: 'WsBridge',
     check: (mod) => expect(typeof mod.create).toBe('function'),
   },
+  {
+    file: 'self-dev-card.js',
+    global: 'SelfDevCard',
+    check: (mod) => expect(typeof mod.renderCardHtml).toBe('function'),
+  },
 ];
 
 const SOURCES = DUAL_MODE_LIBS.map((lib) => ({

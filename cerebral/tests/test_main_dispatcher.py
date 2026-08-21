@@ -685,6 +685,161 @@ async def test_invariant_fires_when_transcript_diverges_from_log(derive_ctx_rig,
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# #810 -- self_dev_pr_merge IPC dispatcher case (ADR-0015 amendment,
+# "in-chat pending-review card, human-click-only merge")
+# ---------------------------------------------------------------------------
+
+class _FakeSelfDevPlugin:
+    """Stubs SelfDevPlugin._merge/_load -- never real git/gh/network."""
+
+    def __init__(self, merge_error=None, load_is_error=False, load_content="{}"):
+        self.merge_calls = []
+        self.load_calls = []
+        self._merge_error = merge_error
+        self._load_is_error = load_is_error
+        self._load_content = load_content
+
+    def _merge(self, pr_url):
+        self.merge_calls.append(pr_url)
+        if self._merge_error is not None:
+            raise self._merge_error
+
+    async def _load(self, args):
+        from cerebral.mcp.orchestrator import ToolResult
+        self.load_calls.append(args)
+        return ToolResult(content=self._load_content, is_error=self._load_is_error)
+
+
+@pytest.fixture
+def self_dev_merge_rig(monkeypatch):
+    import cerebral.main as main_mod
+
+    broadcasts: list[dict] = []
+
+    async def fake_broadcast(event):
+        broadcasts.append(event)
+
+    monkeypatch.setattr(main_mod, "_broadcast", fake_broadcast)
+
+    class Rig:
+        module = main_mod
+        broadcasts_list = broadcasts
+
+        def install_plugin(self, plugin):
+            monkeypatch.setitem(main_mod._orc._plugins, "self_dev", plugin)
+            return plugin
+
+    return Rig()
+
+
+async def test_self_dev_pr_merge_calls_merge_then_load(self_dev_merge_rig):
+    """The dispatcher case reuses SelfDevPlugin's own _merge/_load -- it
+    must not reimplement gh merge/pull itself."""
+    plugin = self_dev_merge_rig.install_plugin(_FakeSelfDevPlugin())
+    pr_url = "https://github.com/iggyghub/OpenMind/pull/810"
+
+    await self_dev_merge_rig.module._handle_message({
+        "type": "self_dev_pr_merge", "data": {"pr_url": pr_url},
+    })
+
+    assert plugin.merge_calls == [pr_url]
+    assert plugin.load_calls == [{"pr_url": pr_url}]
+    results = [e for e in self_dev_merge_rig.broadcasts_list
+               if e.get("type") == "self_dev_pr_merge_result"]
+    assert len(results) == 1
+    assert results[0]["data"] == {"pr_url": pr_url, "status": "merged"}
+
+
+async def test_self_dev_pr_merge_failure_broadcasts_error_and_skips_load(self_dev_merge_rig):
+    plugin = self_dev_merge_rig.install_plugin(
+        _FakeSelfDevPlugin(merge_error=RuntimeError("gh: not mergeable"))
+    )
+    pr_url = "https://github.com/iggyghub/OpenMind/pull/810"
+
+    await self_dev_merge_rig.module._handle_message({
+        "type": "self_dev_pr_merge", "data": {"pr_url": pr_url},
+    })
+
+    assert plugin.merge_calls == [pr_url]
+    assert plugin.load_calls == [], "must not attempt load after a failed merge"
+    results = [e for e in self_dev_merge_rig.broadcasts_list
+               if e.get("type") == "self_dev_pr_merge_result"]
+    assert len(results) == 1
+    assert results[0]["data"]["status"] == "error"
+    assert "not mergeable" in results[0]["data"]["error"]
+
+
+async def test_self_dev_pr_merge_load_failure_still_reports_merged(self_dev_merge_rig):
+    """Merge succeeded; only the post-merge pull/restart failed. The card
+    must not offer to re-merge an already-merged PR, so status stays
+    'merged' with the load failure surfaced separately."""
+    plugin = self_dev_merge_rig.install_plugin(
+        _FakeSelfDevPlugin(load_is_error=True, load_content="git pull failed")
+    )
+    pr_url = "https://github.com/iggyghub/OpenMind/pull/810"
+
+    await self_dev_merge_rig.module._handle_message({
+        "type": "self_dev_pr_merge", "data": {"pr_url": pr_url},
+    })
+
+    results = [e for e in self_dev_merge_rig.broadcasts_list
+               if e.get("type") == "self_dev_pr_merge_result"]
+    assert results[0]["data"]["status"] == "merged"
+    assert results[0]["data"]["load_error"] == "git pull failed"
+
+
+async def test_self_dev_pr_merge_missing_pr_url_broadcasts_error(self_dev_merge_rig):
+    plugin = self_dev_merge_rig.install_plugin(_FakeSelfDevPlugin())
+
+    await self_dev_merge_rig.module._handle_message({
+        "type": "self_dev_pr_merge", "data": {},
+    })
+
+    assert plugin.merge_calls == []
+    results = [e for e in self_dev_merge_rig.broadcasts_list
+               if e.get("type") == "self_dev_pr_merge_result"]
+    assert results[0]["data"]["status"] == "error"
+
+
+async def test_self_dev_pr_state_broadcasts_live_state(self_dev_merge_rig):
+    class _StatePlugin(_FakeSelfDevPlugin):
+        def pr_state(self, pr_url):
+            self.state_calls = getattr(self, "state_calls", [])
+            self.state_calls.append(pr_url)
+            return "MERGED"
+
+    plugin = self_dev_merge_rig.install_plugin(_StatePlugin())
+    pr_url = "https://github.com/iggyghub/OpenMind/pull/810"
+
+    await self_dev_merge_rig.module._handle_message({
+        "type": "self_dev_pr_state", "data": {"pr_url": pr_url},
+    })
+
+    assert plugin.state_calls == [pr_url]
+    results = [e for e in self_dev_merge_rig.broadcasts_list
+               if e.get("type") == "self_dev_pr_state_result"]
+    assert results == [{"type": "self_dev_pr_state_result",
+                         "data": {"pr_url": pr_url, "state": "MERGED"}}]
+
+
+async def test_self_dev_pr_state_failure_is_silent(self_dev_merge_rig):
+    """A transient gh/network failure must fail open -- no broadcast, no
+    exception, so a still-actionable card is never hidden by mistake."""
+    class _BoomPlugin(_FakeSelfDevPlugin):
+        def pr_state(self, pr_url):
+            raise RuntimeError("gh: rate limited")
+
+    self_dev_merge_rig.install_plugin(_BoomPlugin())
+
+    await self_dev_merge_rig.module._handle_message({
+        "type": "self_dev_pr_state", "data": {"pr_url": "https://x/pull/1"},
+    })
+
+    assert not any(e.get("type") == "self_dev_pr_state_result"
+                   for e in self_dev_merge_rig.broadcasts_list)
+
+
 async def test_probe_models_broadcasts_health(monkeypatch):
     """probe_models must probe the router and broadcast a models_health event
     carrying the {model_id: reachable} map the status dots render from."""

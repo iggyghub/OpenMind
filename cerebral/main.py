@@ -5627,6 +5627,62 @@ async def _handle_message(msg: dict) -> None:
             _job_search_store.set_status(u, "shortlisted")
         await _broadcast(_jobs_update_event())
 
+    elif t == "self_dev_pr_merge":  # #810 -- in-chat "Approve & Merge" card button
+        # Direct WS-IPC dispatcher case, no LLM in the path -- ADR-0015
+        # amendment 3 (2026-08-21): merge authority is a structural human-
+        # click-only gate. This branch, the renderer's click handler, and
+        # SelfDevPlugin._merge/_load are the ONLY places self_dev_pr_merge
+        # may appear; it must never be a Tool(...) or planner-reachable.
+        d = msg.get("data", {})
+        pr_url = str(d.get("pr_url", "")).strip()
+        plugin = _orc._plugins.get("self_dev")
+        if not pr_url or plugin is None:
+            await _broadcast({
+                "type": "self_dev_pr_merge_result",
+                "data": {
+                    "pr_url": pr_url,
+                    "status": "error",
+                    "error": "pr_url required" if not pr_url else "self_dev plugin unavailable",
+                },
+            })
+        else:
+            try:
+                await asyncio.to_thread(plugin._merge, pr_url)
+            except Exception as exc:
+                logger.warning("[cerebral] self_dev_pr_merge failed: %s", exc)
+                await _broadcast({
+                    "type": "self_dev_pr_merge_result",
+                    "data": {"pr_url": pr_url, "status": "error", "error": str(exc)},
+                })
+            else:
+                # Merge already succeeded at this point -- a load (pull +
+                # restart) failure is a secondary concern reported alongside
+                # "merged", not an overall failure (the card must not offer
+                # to merge an already-merged PR again).
+                load_result = await plugin._load({"pr_url": pr_url})
+                result_data = {"pr_url": pr_url, "status": "merged"}
+                if load_result.is_error:
+                    result_data["load_error"] = load_result.content
+                await _broadcast({"type": "self_dev_pr_merge_result", "data": result_data})
+
+    elif t == "self_dev_pr_state":  # #810 -- card asks whether its PR is still open
+        d = msg.get("data", {})
+        pr_url = str(d.get("pr_url", "")).strip()
+        plugin = _orc._plugins.get("self_dev")
+        if pr_url and plugin is not None:
+            try:
+                state = await asyncio.to_thread(plugin.pr_state, pr_url)
+            except Exception as exc:
+                # Fail open -- a transient gh/network hiccup must not hide a
+                # still-actionable card. Just skip the broadcast; the button
+                # stays as-is until the next successful check.
+                logger.debug("[cerebral] self_dev_pr_state check failed: %s", exc)
+            else:
+                await _broadcast({
+                    "type": "self_dev_pr_state_result",
+                    "data": {"pr_url": pr_url, "state": state},
+                })
+
     elif t == "jobs_clear_postings":  # #517 — panel "Clear postings" button
         n = _job_search_store.clear_postings()
         logger.info("[cerebral] cleared %d job postings", n)
@@ -6839,6 +6895,7 @@ def _wire_plugin_seams() -> None:
         ("job_search", "set_register_doc_fn", _jobs_register_doc),                  # S7 #448
         ("self_dev", "set_edit_fn", _self_dev_edit),                                 # ADR-0015 edit step
         ("self_dev", "set_restart_fn", _self_dev_restart),                           # ADR-0015 SD-2 #555
+        ("self_dev", "set_record_turn_fn", _record_turn),                           # #810 pending-review card
         ("computer_use", "set_driving_fn", _computer_use_driving),                   # S2 #576 (ADR-0016 (c))
         ("computer_use", "set_vision_ground_fn", _computer_use_vision_ground),       # S5 #578 (ADR-0016 sec 5)
         ("computer_use", "set_attended_handoff_fn", _computer_use_attended_handoff), # S6 #579 (ADR-0016 sec 6)
