@@ -112,3 +112,86 @@ radius, not a variant of the growth loop.
 - The launcher/Electron layer grows a boot-health responsibility it didn't have
   — the first non-trivial logic to live outside Cerebral. It must stay minimal
   (a clone can't depend on the brain to know it's healthy).
+
+## Amendment (2026-08-21) -- campaign/slice-queue mode for self_dev
+
+**Context** -- SD-1..4 gave Felix exactly one shape of self-dev call: a human
+(or the user talking to Felix) invokes `self_dev` once per bounded
+`change_description`, and gets back one PR, auto-merged or escalated. Every
+*multi-slice* build in this repo (Documents, Skills, Video, the original
+self-dev campaign itself, and the Book knowledge corpus campaign, ADR-0025)
+instead uses an external Claude-Code loop (`scripts/run-<campaign>.ps1`)
+reading a driver `.md` file and spawning one headless `claude -p` session per
+slice. The 2026-08-21 Book knowledge corpus campaign surfaced the gap directly:
+the user asked for it to be built by *Felix*, not by that external loop, and
+there was no Felix-native way to walk an unattended multi-slice queue — only
+one bounded call at a time, each requiring a human (or a Felix conversation
+turn) to kick off.
+
+**Decision**
+1. `plugins/self_dev.py` gains a new tool, `self_dev_campaign(driver_file,
+   max_slices=20)`, that drives the *existing* `_run()` internals (clone / edit
+   / test / pr / blast-radius gate — decisions 3-5 above, unchanged) repeatedly
+   against a driver file's slice queue, instead of a human calling `self_dev`
+   once per slice. It is new orchestration around the proven engine, not a
+   second engine.
+2. **Same driver-file format** the Claude-Code loops already use (`Status:` /
+   `Active: Sx -- #N` / `Model:` / `Queue` checklist / `Landed PRs`) — one
+   format, read by either runner. `self_dev_campaign` parses it the same way
+   `Get-DriverField` does in the `.ps1` scripts (tolerant of markdown framing),
+   and rewrites it the same way step 8 of the `$rules` block does: tick the
+   landed slice, advance `Active`, append to `Landed PRs`, set `Status`.
+3. **Per-slice spec comes from the named GitHub issue** (`gh issue view N`),
+   turned into the `change_description` passed to `_run()` — an injectable
+   `issue_fn` seam, never a real `gh` call in tests, matching every other seam
+   in this plugin.
+4. **The loop stops, it does not retry past a human gate.** `_run()`'s existing
+   `merge_decision: "escalate"` (guardrail hit or red tests) halts
+   `self_dev_campaign` immediately: driver file gets `Status: blocked` with the
+   escalation reason, the PR stays open, no further slices start. This is
+   unchanged from decision 5 — campaign mode cannot loosen it, it only adds a
+   loop around calls that individually still obey it. A `run_id` per slice
+   (`campaign-<slug>-sN`) means a resumed campaign reuses the existing
+   ledger-resume behaviour (issue #780) instead of re-editing.
+5. **`self_dev_campaign` itself is a guardrail path.** It lives in
+   `plugins/self_dev.py`, already in `GUARDRAIL_PATHS` — building this feature
+   is itself a HITL slice (opens a PR, stops for human review, never
+   self-merges), same posture as SD-3/SD-4.
+6. **Choosing which runner to use is a human/Felix-conversation decision, not
+   automated.** "Have Felix build X" routes to `self_dev_campaign`; a Claude
+   Code session building Felix's own core (including this feature) still uses
+   the external loop — `self_dev_campaign` cannot bootstrap the capability that
+   doesn't exist yet. Nothing here retires `scripts/run-<campaign>.ps1`.
+
+**Considered and rejected**
+- **Retire the Claude-Code loop scripts, campaign mode replaces them
+  entirely:** rejected — the external loop can drive `claude`'s full coding
+  capability (any model Claude Code has access to, not gated by the ADR-0010
+  sandbox's pytest-only test gate) and remains how Felix's own core gets built,
+  including this feature itself. Two runners, one driver-file format, is
+  simpler than forcing one runner to cover both cases.
+- **A second, campaign-specific engine (its own clone/edit/test/pr):**
+  rejected — `_run()` already is that engine; duplicating it just to add a
+  loop is the second-engine mistake ADR-0011 already rejected once for a
+  different capability.
+- **Auto-resolve an escalation and keep looping:** rejected — decision 5's
+  "Felix may propose changes to its own guardrails but never self-approve them"
+  is the load-bearing safety property; a campaign loop that pushed through an
+  escalation would defeat it silently, exactly where a human is least likely to
+  be watching (an unattended loop).
+
+**Consequences**
+- `self_dev_campaign` is the first Felix-native consumer of the driver-file
+  convention that previously existed only as a `.ps1`-script contract — the
+  format is now shared infrastructure, not one runner's private parsing.
+- A multi-slice campaign can be driven two ways depending on who's building it:
+  ask Felix (`self_dev_campaign`, gated per-slice by the blast-radius rule) or
+  run the external loop (`scripts/run-<campaign>.ps1`, gated only by tests +
+  the loop author's own judgement of what counts as one slice). Both still
+  produce one PR per slice with `Closes #N`.
+- The 16-class capability vocabulary is unchanged; `self_dev_campaign` needs no
+  capability beyond what `plugins/self_dev.py` already declares
+  (`shell_exec`, `fs_write`, `fs_delete`, `network_egress_cloud`) — reading and
+  rewriting a driver `.md` file is `fs_read`/`fs_write` the plugin already has,
+  and `gh issue view` is the same `network_egress_cloud` class the PR step
+  already exercises.

@@ -4,12 +4,12 @@ Felix modifies its own core through clone -> test -> PR -> restart. Driver for
 `scripts/run-self-dev.ps1`. Each slice runs in a fresh headless Claude Code
 session; this file + the issue are the only memory between them.
 
-Status: done
+Status: ready
 Model: sonnet
 
 ## Next slice -- start here
 
-SD-4 -- #557  blast-radius auto-merge gate: safe zones vs guardrails
+SD-5 -- #807  self_dev_campaign: driver-file slice-queue mode
 Model: sonnet
 Type: HITL
 
@@ -19,6 +19,7 @@ Type: HITL
 - [x] SD-2 -- #555  restart-to-load handoff for merged self-dev PRs (AFK, auto-merge on green)
 - [x] SD-3 -- #556  boot self-check + SHA rollback + state snapshot (HITL -- PR #560 open, awaiting human review)
 - [x] SD-4 -- #557  blast-radius auto-merge gate: safe zones vs guardrails (HITL -- landed as PR #561)
+- [ ] SD-5 -- #807  self_dev_campaign: driver-file slice-queue mode (HITL -- touches plugins/self_dev.py, a guardrail path)
 
 ## Landed PRs
 
@@ -37,3 +38,7 @@ Type: HITL
   against the live repo, must not start a real Cerebral, and must not open real
   PRs from inside tests. Every test injects all side effects (`clone_fn` /
   `edit_fn` / `test_fn` / `pr_fn`) -- no real git / gh / network / Cerebral.
+- SD-5 (2026-08-21 ADR-0015 amendment): `self_dev_campaign` reuses `_run()`
+  unchanged -- it is a loop around the existing engine, not a second one. Same
+  seam discipline as above, plus a new injectable `issue_fn` seam for `gh issue
+  view` (never real `gh` in tests).
