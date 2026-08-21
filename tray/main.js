@@ -2,7 +2,7 @@ const { app, Tray, Menu, BrowserWindow, Notification, nativeImage, ipcMain, scre
 const WebSocket = require('ws');
 const path = require('path');
 const { VisualiserState }      = require('./lib/visualiser-state');
-const { PositionStore }        = require('./lib/position-store');
+const { PositionStore, isPointOnAnyDisplay } = require('./lib/position-store');
 const { NotificationManager }  = require('./lib/notification-manager');
 const { ModalManager }         = require('./lib/modal-manager');
 // PermissionsStore is no longer instantiated in main.js (Issue #202).
@@ -14,6 +14,9 @@ const CEREBRAL_URL    = 'ws://localhost:7766';
 const ICON_PATH       = path.join(__dirname, 'assets', 'icon.png');
 const ICO_PATH        = path.join(__dirname, 'assets', 'icon.ico');
 const VIS_POS_PATH    = path.join(__dirname, '..', 'cerebral', 'data', 'visualiser-pos.json');
+// #820 -- Main window had no bounds persistence at all; it reset to the
+// hardcoded 1200x800 default on every restart, unlike the Visualiser orb.
+const MAIN_WIN_POS_PATH = path.join(__dirname, '..', 'cerebral', 'data', 'main-window-pos.json');
 const LAUNCHER_LOG    = path.join(__dirname, '..', 'launcher.log');
 const CEREBRAL_LOG    = path.join(__dirname, '..', 'cerebral.log');
 const RECONNECT_DELAY_MS = 3000;
@@ -55,6 +58,7 @@ const modalWindows = new Map();
 
 const visState   = new VisualiserState();
 const posStore   = new PositionStore(VIS_POS_PATH);
+const mainPosStore = new PositionStore(MAIN_WIN_POS_PATH); // #820
 
 // In-memory cache of the settings_updated snapshot from Cerebral.
 // Starts from defaults; overwritten on first broadcast (sent on every connect).
@@ -484,11 +488,17 @@ function openMainWindow(hash) {
     return;
   }
 
+  // #820 -- restore the last position/size if it's still on a connected
+  // display (e.g. not left stranded on a monitor that's since been
+  // unplugged); otherwise fall back to the hardcoded default like before.
+  const savedBounds = _sanitizedMainWindowBounds();
+
   mainWindow = new BrowserWindow({
     width:           1200,
     height:          800,
     minWidth:        720,
     minHeight:       480,
+    ...savedBounds,
     title:           'Felix',
     icon:            ICO_PATH,
     backgroundColor: '#12101e',
@@ -538,6 +548,32 @@ function openMainWindow(hash) {
     }
   });
   mainWindow.on('closed', () => { mainWindow = null; });
+
+  // #820 -- persist position/size live so a later restart reopens where the
+  // user left it. Mirrors the Visualiser's saveVisualiserPosition pattern
+  // (no debounce there either -- these are tiny sync JSON writes).
+  mainWindow.on('moved', _saveMainWindowBounds);
+  mainWindow.on('resize', _saveMainWindowBounds);
+}
+
+function _saveMainWindowBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainPosStore.save(mainWindow.getBounds());
+}
+
+// #820 -- only trust a saved position if its center point still falls on
+// some connected display; otherwise the window could reopen stranded
+// off-screen (e.g. a monitor it was on got unplugged). Falls back to
+// Electron's own centered-on-primary-display placement (no x/y) when
+// there's no saved bounds or it's no longer valid.
+function _sanitizedMainWindowBounds() {
+  const saved = mainPosStore.load();
+  if (!saved || typeof saved.x !== 'number' || typeof saved.y !== 'number') return {};
+
+  const centerX = saved.x + (saved.width || 0) / 2;
+  const centerY = saved.y + (saved.height || 0) / 2;
+  const onScreen = isPointOnAnyDisplay(centerX, centerY, screen.getAllDisplays());
+  return onScreen ? saved : {};
 }
 
 // Queue popup retired in Issue #194 — the Queue lives in the Main window's
