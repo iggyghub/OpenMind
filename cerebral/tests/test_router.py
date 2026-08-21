@@ -1624,6 +1624,40 @@ async def test_complete_fallback_on_task_override_still_layers():
     assert await r.complete("hi", task_type="quality") == "from a"
 
 
+# ---------------------------------------------------------------------------
+# #791 -- complete_with_tools must fall back through the chain like complete()
+# ---------------------------------------------------------------------------
+
+async def test_complete_with_tools_fallback_off_uses_top_only_and_raises():
+    r, a, b, c = _priority_router()
+    a.complete_with_tools = AsyncMock(side_effect=ConnectionError("gone"))
+    b.complete_with_tools = AsyncMock(return_value="from b")
+    with pytest.raises(ModelUnavailableError, match="ollama/a"):
+        await r.complete_with_tools("hi", [])
+    b.complete_with_tools.assert_not_called()
+
+
+async def test_complete_with_tools_fallback_on_walks_chain_returns_first_success():
+    r, a, b, c = _priority_router()
+    r.set_fallback(True)
+    a.complete_with_tools = AsyncMock(side_effect=ConnectionError("a-down"))
+    b.complete_with_tools = AsyncMock(return_value="from b")
+    c.complete_with_tools = AsyncMock(return_value="from c")
+    assert await r.complete_with_tools("hi", []) == "from b"
+    b.complete_with_tools.assert_called_once()
+    c.complete_with_tools.assert_not_called()
+
+
+async def test_complete_with_tools_fallback_on_raises_only_when_all_fail():
+    r, a, b, c = _priority_router()
+    r.set_fallback(True)
+    a.complete_with_tools = AsyncMock(side_effect=ConnectionError("a-down"))
+    b.complete_with_tools = AsyncMock(side_effect=ConnectionError("b-down"))
+    c.complete_with_tools = AsyncMock(side_effect=ConnectionError("c-down"))
+    with pytest.raises(ModelUnavailableError, match="all enabled models unavailable"):
+        await r.complete_with_tools("hi", [])
+
+
 def test_add_backend_appended_to_priority_end_and_enabled():
     r, _, _, _ = _priority_router()
     remote = AsyncMock()
