@@ -114,7 +114,7 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
 })
 
 # ATSes Felix can drive generically (guest-apply, clean DOM form).
-SUPPORTED_ATS_TYPES: frozenset[str] = frozenset({"greenhouse", "lever"})
+SUPPORTED_ATS_TYPES: frozenset[str] = frozenset({"greenhouse", "lever", "ashby"})
 
 from cerebral.paths import data_dir
 
@@ -192,6 +192,8 @@ def detect_ats_type(url: str) -> str:
         return "greenhouse"
     if "lever.co" in host:
         return "lever"
+    if "ashbyhq.com" in host:
+        return "ashby"
     return "unknown"
 
 

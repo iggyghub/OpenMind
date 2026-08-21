@@ -157,3 +157,13 @@ _(slices append their live-verify items here as they land)_
 - [ ] Repeat with `indeed.com` and `glassdoor.com` boards.
 - [ ] Clear `target_titles` (set to empty) and re-fetch: confirm a per-board error hint appears ("no target titles") and no crash occurs.
 - [ ] Verify re-fetching the same board does not duplicate postings (B3 URL dedup still holds).
+
+## B2 #406 — Ashby ATS detection
+
+- [ ] Add a board whose URL points to `jobs.ashbyhq.com` (e.g. `https://jobs.ashbyhq.com/<company>/jobs`).
+      Confirm the fetch completes without error and postings appear in the panel.
+- [ ] Inspect the stored postings (or the IPC payload from "Check for new jobs"). Confirm each
+      Ashby posting has `ats_type: "ashby"` and `appliable: true`.
+- [ ] Fetch a board on an unsupported ATS (e.g. `https://workday.com/careers`). Confirm those
+      postings come back with `ats_type: "unknown"` and `appliable: false` to verify we do not
+      over-match generic ATS hosts.

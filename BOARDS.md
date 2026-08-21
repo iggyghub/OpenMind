@@ -20,7 +20,7 @@ entry, set the next unticked entry's `#N` + `Model:` as the active slice,
 and set `Status:` (`ready` while slices remain; `done` after S7 lands —
 S8 already landed early by hand).
 
-Active slice: **S4 — #405**
+Active slice: **S5 — #391**
 
 Model: sonnet
 Status: ready
@@ -35,9 +35,9 @@ haiku | sonnet | opus | fable. `Status: ready` = run the active slice;
 1. [x] S1 — #396 Job board list: store + IPC + panel UI + multi-board fetch — Model: sonnet
 2. [x] S2 — #397 Generic LLM posting extractor fallback for non-RRR boards — Model: sonnet
 3. [x] S3 — #404 Resolve RRR self-link postings to the real ATS URL — Model: sonnet (PR #784, 7c9ca07)
-4. [ ] S4 — #405 ATS badge + detail-block host + appliable filter + ATS search — Model: sonnet
+4. [x] S4 — #405 ATS badge + detail-block host + appliable filter + ATS search — Model: sonnet (PR #785, d082b9d)
 5. [ ] S5 — #391 Collapsible panel sections (Credentials, Job Search, etc.) — Model: sonnet
-6. [ ] S6 — #406 Ashby ATS support (detect, gate, fixture-tested mapping) — Model: sonnet
+6. [x] S6 — #406 Ashby ATS detection + live-verify entry — Model: sonnet
 7. [ ] S7 — #412 "Approve all visible" bulk action on the Shortlist — Model: sonnet
 8. [x] S8 — #413 Apply button on approved Shortlist cards (non-blocking) — landed early by hand (PR #416; appliable-gating deferred into S4 #405)
 
