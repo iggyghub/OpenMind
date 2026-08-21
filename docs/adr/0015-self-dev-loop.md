@@ -249,3 +249,76 @@ this to "come up in the chat" instead.
   runner (external Claude Code loop or `self_dev`/`self_dev_campaign`) writes
   it. Its own PR does not get to auto-merge itself.
 - The 16-class capability vocabulary is unchanged.
+
+## Amendment (2026-08-21) -- full auto-merge, decision 5 and the prior
+amendment's "non-negotiable" gate reversed
+
+**Context** -- the human-click-only gate above worked as designed (used
+earlier today to merge PR #808/#809), but surfaced a real cost: when a
+self-dev run fixes a bug in Felix's own tool-use capability (e.g. the
+`shortlist_tools` fix in #809), the fix sits in a pending-review card until
+a human clicks it, so Felix can't pick up and use its own fix in the same
+flow. The user weighed that against the guardrail gate's protection
+(explicitly walked through — this reverses the *same-day* "non-negotiable"
+decision above, including the guardrail-path list: `cerebral/security/`,
+`cerebral/sandbox/`, `cerebral/db/credentials.py`, `cerebral/main.py`,
+`plugins/self_dev.py` itself, `tray/`) and chose full auto-merge, on the
+condition that a real backup/rollback exists. It does, independent of this
+gate: `tray/lib/boot-check.js` (SD-3) pins the last-known-good SHA and
+snapshots `openmind.db`/`felix-settings.json` before every self-dev restart,
+and on a failed boot self-check does a `git reset --hard` + snapshot
+restore + relaunch, automatically, no human action needed.
+
+**Decision**
+1. `SelfDevPlugin._run()` (`plugins/self_dev.py`) no longer branches on
+   `guardrail_hit or not test_passed`. Every run reaches `_merge()` +
+   `_load()` and returns `merge_decision: "auto_merge"` unconditionally
+   (barring a hard error, e.g. the edit step producing no commit, or `_merge`
+   itself raising).
+2. `is_guardrail_diff`/`GUARDRAIL_PATHS` detection is unchanged and still
+   runs on every PR — its result (`guardrail_hit`, `guardrail_reason`) is now
+   purely informational: included in the tool result and, when true or tests
+   failed, recorded as a `system_event` (`kind: "self_dev_pr_auto_merged"`)
+   so it's visible in Conversation history after the fact. It no longer gates
+   anything.
+3. `self_dev_campaign` (SD-5) inherits this automatically — it loops on
+   `_run()`'s `merge_decision`, which is now always `"auto_merge"`, so a
+   campaign runs slice-to-slice unattended until it errors, not until it
+   hits a guardrail file.
+4. The `self_dev_pr_pending` card / "Approve & Merge" button / the
+   `self_dev_pr_merge` IPC dispatcher case in `cerebral/main.py` are left in
+   place (dead code, not removed) — nothing in `_run()` emits
+   `self_dev_pr_pending` anymore, so the card never renders, but the
+   dispatcher path itself is inert rather than deleted, in case a narrower
+   gate is reintroduced later.
+5. `plugins/self_dev.py` is itself in `GUARDRAIL_PATHS` — this change to the
+   gate's own enforcement code was, ironically, made under the *old* regime
+   (a human, not self_dev, wrote and reviewed this PR before merge).
+
+**Considered and rejected**
+- **Narrow carve-out (auto-merge only for tool-visibility/read-only fixes,
+  keep the gate for security/sandbox/credentials/self_dev.py):** offered to
+  the user as the middle option; they chose full removal instead. Revisit if
+  a self-merged change to a guardrail path causes real harm the boot-check
+  rollback doesn't fully undo (e.g. external side effects made before a
+  crash, which a code/DB rollback can't reverse).
+- **Keep the gate, fix the bootstrap problem some other way (e.g. auto-load
+  a merged-but-unapproved branch into a shadow process):** not pursued —
+  substantially more machinery for the same outcome the user was willing to
+  accept directly.
+
+**Consequences**
+- The load-bearing claim in the prior amendment ("the human's own click is
+  the only path to merge, structurally, not by model good behavior") no
+  longer holds. `self_dev`/`self_dev_campaign` can now modify and merge
+  changes to its own security gate, sandbox, credential store, and the
+  self-dev loop itself, unattended, including with failing tests.
+- The compensating control is boot-time, not merge-time: a bad self-merge is
+  caught when Cerebral fails to come up cleanly after the restart `_load()`
+  triggers, at which point SD-3 reverts code + DB/settings to the last known
+  good state automatically. A self-merge that boots fine but is subtly wrong
+  (e.g. quietly weakens a check without crashing) is not caught by either
+  mechanism — this is a real gap, accepted knowingly, not an oversight.
+- `GUARDRAIL_PATHS`/`is_guardrail_diff` are kept (not deleted) specifically
+  so a future re-tightening has the detection logic ready to wire back into
+  a blocking gate without rebuilding it.

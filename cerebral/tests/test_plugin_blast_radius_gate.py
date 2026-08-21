@@ -1,8 +1,11 @@
 """
-Blast-radius gate tests -- ADR-0015 S4 (Issue #557).
+Blast-radius gate tests -- ADR-0015 S4 (Issue #557), amended 2026-08-21
+("full auto-merge").
 
-Tests the is_guardrail_diff pure function and the SelfDevPlugin integration:
-auto-merge on safe-zone + green, escalate on guardrail or test failure.
+Tests the is_guardrail_diff pure function (detection logic, unchanged) and
+the SelfDevPlugin integration: every run now auto-merges regardless of
+guardrail/test status; a guardrail hit or red tests only changes whether an
+informational system_event gets recorded, never whether merge happens.
 
 All side effects are injected -- no real git, gh, network, or Cerebral.
 """
@@ -169,7 +172,9 @@ def test_backslash_path_normalised():
 
 
 # ---------------------------------------------------------------------------
-# SelfDevPlugin integration: gate controls merge_decision
+# SelfDevPlugin integration: every run auto-merges (2026-08-21 amendment);
+# guardrail/test status only affects whether the informational
+# self_dev_pr_auto_merged system_event gets recorded.
 # ---------------------------------------------------------------------------
 
 async def test_safe_green_auto_merges(tmp_path):
@@ -190,12 +195,13 @@ async def test_safe_green_auto_merges(tmp_path):
     assert not result.is_error, result.content
     data = json.loads(result.content)
     assert data["merge_decision"] == "auto_merge"
+    assert data["guardrail_hit"] is False
     assert merge_calls == [_PR_URL]
     # Restart must fire -- S3 boot self-check runs on restart in production.
     assert restart_calls == [True]
 
 
-async def test_safe_fail_escalates(tmp_path):
+async def test_safe_fail_auto_merges(tmp_path):
     merge_calls = []
 
     plugin = _make(
@@ -208,12 +214,12 @@ async def test_safe_fail_escalates(tmp_path):
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
-    assert data["merge_decision"] == "escalate"
-    assert "tests" in data["escalation_reason"].lower()
-    assert not merge_calls
+    assert data["merge_decision"] == "auto_merge"
+    assert data["test_passed"] is False
+    assert merge_calls == [_PR_URL]
 
 
-async def test_guardrail_green_escalates(tmp_path):
+async def test_guardrail_green_auto_merges(tmp_path):
     merge_calls = []
 
     plugin = _make(
@@ -225,12 +231,13 @@ async def test_guardrail_green_escalates(tmp_path):
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
-    assert data["merge_decision"] == "escalate"
-    assert "security" in data["escalation_reason"]
-    assert not merge_calls
+    assert data["merge_decision"] == "auto_merge"
+    assert data["guardrail_hit"] is True
+    assert "security" in data["guardrail_reason"]
+    assert merge_calls == [_PR_URL]
 
 
-async def test_guardrail_fail_escalates(tmp_path):
+async def test_guardrail_fail_auto_merges(tmp_path):
     merge_calls = []
 
     plugin = _make(
@@ -243,12 +250,14 @@ async def test_guardrail_fail_escalates(tmp_path):
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
-    assert data["merge_decision"] == "escalate"
-    assert not merge_calls
+    assert data["merge_decision"] == "auto_merge"
+    assert data["guardrail_hit"] is True
+    assert merge_calls == [_PR_URL]
 
 
-async def test_diff_failure_escalates_fail_safe(tmp_path):
-    """If diff_fn raises, escalate rather than default-auto-merge."""
+async def test_diff_failure_still_auto_merges(tmp_path):
+    """If diff_fn raises, merge proceeds regardless -- diff-check failure
+    only affects the informational guardrail_reason, never blocks merge."""
     merge_calls = []
 
     def bad_diff(url):
@@ -263,9 +272,9 @@ async def test_diff_failure_escalates_fail_safe(tmp_path):
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
-    assert data["merge_decision"] == "escalate"
-    assert "fail-safe" in data["escalation_reason"].lower()
-    assert not merge_calls
+    assert data["merge_decision"] == "auto_merge"
+    assert "diff check failed" in data["guardrail_reason"].lower()
+    assert merge_calls == [_PR_URL]
 
 
 async def test_merge_failure_returns_error(tmp_path):
@@ -303,10 +312,11 @@ async def test_auto_merge_load_status_in_result(tmp_path):
     assert data["load"]["status"] == "restarting"
 
 
-async def test_guardrail_escalation_records_system_event(tmp_path):
-    """#810 -- an escalation must also append a system_event Conversation
-    turn (via the injected record_turn_fn seam, never a real DB write in
-    tests) carrying the exact self_dev_pr_pending card fields."""
+async def test_guardrail_hit_records_informational_system_event(tmp_path):
+    """A guardrail hit still appends a system_event Conversation turn (via
+    the injected record_turn_fn seam, never a real DB write in tests) --
+    now purely informational (self_dev_pr_auto_merged), not an approval
+    card, since merge already happened by the time it's recorded."""
     recorded = []
 
     async def fake_record_turn(kind, content):
@@ -323,24 +333,24 @@ async def test_guardrail_escalation_records_system_event(tmp_path):
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
-    assert data["merge_decision"] == "escalate"
+    assert data["merge_decision"] == "auto_merge"
 
     assert len(recorded) == 1
     kind, content = recorded[0]
     assert kind == "system_event"
     assert content == {
-        "kind": "self_dev_pr_pending",
+        "kind": "self_dev_pr_auto_merged",
         "pr_url": _PR_URL,
         "run_id": "run-810",
         "branch": "selfdev/abc123",
-        "reason": data["escalation_reason"],
+        "reason": data["guardrail_reason"],
         "test_passed": True,
     }
 
 
-async def test_test_failure_escalation_records_system_event(tmp_path):
-    """Same card gets recorded for the red-tests escalation path, not just
-    the guardrail path."""
+async def test_test_failure_records_informational_system_event(tmp_path):
+    """Same informational event gets recorded for the red-tests path, not
+    just the guardrail path."""
     recorded = []
 
     async def fake_record_turn(kind, content):
@@ -358,14 +368,14 @@ async def test_test_failure_escalation_records_system_event(tmp_path):
     assert len(recorded) == 1
     kind, content = recorded[0]
     assert kind == "system_event"
-    assert content["kind"] == "self_dev_pr_pending"
+    assert content["kind"] == "self_dev_pr_auto_merged"
     assert content["test_passed"] is False
 
 
-async def test_escalation_survives_record_turn_fn_failure(tmp_path):
-    """A broken record_turn_fn (e.g. DB hiccup) must not swallow the
-    escalation result itself -- the PR still needs to come back to the
-    caller even if the in-chat card couldn't be written."""
+async def test_auto_merge_survives_record_turn_fn_failure(tmp_path):
+    """A broken record_turn_fn (e.g. DB hiccup) must not block the merge or
+    swallow the result -- the PR still needs to come back to the caller even
+    if the informational card couldn't be written."""
     async def boom(kind, content):
         raise RuntimeError("conversation store unavailable")
 
@@ -378,7 +388,7 @@ async def test_escalation_survives_record_turn_fn_failure(tmp_path):
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
-    assert data["merge_decision"] == "escalate"
+    assert data["merge_decision"] == "auto_merge"
 
 
 async def test_auto_merge_does_not_record_system_event(tmp_path):
@@ -427,8 +437,9 @@ async def test_self_dev_pr_merge_not_dispatchable_via_call_tool(tmp_path):
     assert "Unknown tool" in result.content
 
 
-async def test_mixed_guardrail_and_safe_escalates(tmp_path):
-    """A diff with both safe and guardrail files must escalate."""
+async def test_mixed_guardrail_and_safe_still_auto_merges(tmp_path):
+    """A diff with both safe and guardrail files still auto-merges; the mix
+    is only reflected in guardrail_hit/guardrail_reason."""
     merge_calls = []
 
     plugin = _make(
@@ -440,5 +451,6 @@ async def test_mixed_guardrail_and_safe_escalates(tmp_path):
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
-    assert data["merge_decision"] == "escalate"
-    assert not merge_calls
+    assert data["merge_decision"] == "auto_merge"
+    assert data["guardrail_hit"] is True
+    assert merge_calls == [_PR_URL]
