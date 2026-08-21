@@ -5621,10 +5621,10 @@ async def _handle_message(msg: dict) -> None:
     elif t == "jobs_apply_submit":  # S4 #337 / #417 — submit pending application
         asyncio.create_task(_run_panel_submit())
 
-    elif t == "jobs_approve_all":  # #419 — approve every shortlist entry
-        for p in _job_search_store.list_shortlist():
-            if p.get("status") != "shortlisted":
-                _job_search_store.set_status(p["url"], "shortlisted")
+    elif t == "jobs_approve_all":  # S7 #412 — approve a batch of URLs (visible subset)
+        urls = msg.get("data", {}).get("urls") or []
+        for u in urls:
+            _job_search_store.set_status(u, "shortlisted")
         await _broadcast(_jobs_update_event())
 
     elif t == "jobs_clear_postings":  # #517 — panel "Clear postings" button

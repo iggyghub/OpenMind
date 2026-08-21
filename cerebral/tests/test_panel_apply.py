@@ -144,7 +144,8 @@ async def test_approve_all_approves_only_unapproved(monkeypatch):
     monkeypatch.setattr(main, "_broadcast", broadcast)
     monkeypatch.setattr(main, "_jobs_update_event", lambda: {"type": "jobs_update"})
 
-    await main._handle_message({"type": "jobs_approve_all"})
+    await main._handle_message({"type": "jobs_approve_all",
+                                "data": {"urls": ["u1", "u3"]}})
 
     assert store.status_calls == [("u1", "shortlisted"), ("u3", "shortlisted")]
     assert len(casts) == 1

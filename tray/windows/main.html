@@ -8305,9 +8305,7 @@
     function renderJobShortlist() {
       if (!jobsShortlistEl) return;
       // #419 — every jobs_update re-render re-arms the bulk buttons.
-      var approveAllBtn = document.getElementById('jobs-approve-all-btn');
       var applyAllBtn   = document.getElementById('jobs-apply-all-btn');
-      if (approveAllBtn) { approveAllBtn.disabled = false; approveAllBtn.textContent = 'Approve all'; }
       if (applyAllBtn)   { applyAllBtn.disabled = false;   applyAllBtn.textContent = 'Apply all approved'; }
       jobsShortlistEl.querySelectorAll('.jobs-shortlist-card').forEach(function (el) { el.remove(); });
       if (jobShortlist.length === 0) {
@@ -8339,6 +8337,7 @@
           '</div>';
         jobsShortlistEl.insertBefore(card, jobsShortlistEmpty);
       });
+      _updateApproveAllLabel();
     }
 
     // S4 #337 — render date-foldered Applications list.
@@ -8483,11 +8482,39 @@
       sendEvent({ type: 'jobs_apply_submit', data: {} });
     });
 
-    // #419 — bulk actions. Buttons re-arm on the next jobs_update re-render.
+    // S7 #412 — "Approve all visible" with count + inline confirm.
     var jobsApproveAllBtn = document.getElementById('jobs-approve-all-btn');
+    var _approveConfirming = false;
+    function _visibleUnapprovedUrls() {
+      if (!jobsShortlistEl) return [];
+      var urls = [];
+      jobsShortlistEl.querySelectorAll('.jobs-shortlist-card').forEach(function (c) {
+        if (c.classList.contains('is-shortlisted')) return;
+        if (c.hasAttribute('data-search-hidden')) return;
+        if (c.hasAttribute('data-sec-hidden')) return;
+        if (c.dataset.url) urls.push(c.dataset.url);
+      });
+      return urls;
+    }
+    function _updateApproveAllLabel() {
+      if (!jobsApproveAllBtn) return;
+      _approveConfirming = false;
+      var n = _visibleUnapprovedUrls().length;
+      jobsApproveAllBtn.textContent = n ? 'Approve all (' + n + ')' : 'Approve all';
+      jobsApproveAllBtn.disabled = n === 0;
+    }
     jobsApproveAllBtn && jobsApproveAllBtn.addEventListener('click', function () {
+      var urls = _visibleUnapprovedUrls();
+      if (urls.length === 0) return;
+      if (!_approveConfirming) {
+        _approveConfirming = true;
+        this.textContent = 'Approve ' + urls.length + ' postings?';
+        return;
+      }
+      _approveConfirming = false;
       this.disabled = true;
-      sendEvent({ type: 'jobs_approve_all', data: {} });
+      this.textContent = 'Approving...';
+      sendEvent({ type: 'jobs_approve_all', data: { urls: urls } });
     });
     var jobsApplyAllBtn = document.getElementById('jobs-apply-all-btn');
     jobsApplyAllBtn && jobsApplyAllBtn.addEventListener('click', function () {
@@ -12158,6 +12185,7 @@
       // company, the "ATS host: <host>" line, and the ats badge text), so
       // typing "greenhouse" or a host substring finds a posting.
       _filterRowsByText('#jobs-list .jobs-card', null, q);
+      _updateApproveAllLabel();
     });
 
     // ── Documents panel search (S6 #457) ─────────────────────────────────────
