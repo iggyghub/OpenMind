@@ -15,6 +15,24 @@ const CHECK_TIMEOUT_MS = 120_000;
 const STATE_FILE       = 'self_dev_state.json';
 const SNAPSHOT_FILES   = ['openmind.db', 'felix-settings.json'];
 
+// #817 -- every flag app.relaunch() in tray/main.js ever adds to argv. A
+// relaunched process's own argv already carries whatever flags the PREVIOUS
+// launch added; naively concatenating more onto it without stripping first
+// grows unbounded across repeated restarts (a real incident left
+// '--felix-restart' repeated 6 times after several self-dev restarts fired
+// back to back). cleanFelixArgv() is the fix: always strip every known flag
+// first, then add back exactly what this specific relaunch needs.
+const FELIX_RELAUNCH_FLAGS = ['--felix-restart', '--felix-self-dev-boot'];
+
+/**
+ * Strip every known felix relaunch flag from argv, then append extraFlags.
+ * Idempotent regardless of how many restarts already happened in this
+ * process's ancestry -- the result never contains a duplicate.
+ */
+function cleanFelixArgv(argv, extraFlags) {
+  return argv.filter((a) => !FELIX_RELAUNCH_FLAGS.includes(a)).concat(extraFlags);
+}
+
 /**
  * Pin current master SHA + snapshot structured state before a self-dev
  * restart-to-load. Called in the OLD process just before it quits.
@@ -185,4 +203,62 @@ function _doRollback({ dataDir, sha, backupTs, copyFileFn, gitResetFn, notifyFn,
   return { pending: true, result: 'rollback' };
 }
 
-module.exports = { pinAndSnapshot, runSelfCheck, manualRollback, BACKUP_KEEP, CHECK_TIMEOUT_MS };
+/**
+ * #817 -- decide what to do about a potential master update, e.g. a PR
+ * merged directly on GitHub/gh (not through self_dev's own restart trigger).
+ * Pure decision logic -- callers own catching exceptions from the injected
+ * git functions and own actually acting on the returned action.
+ *
+ *   gitFetchFn()          -- () => void, throws on failure (e.g. offline)
+ *   gitRevParseFn(ref)    -- (ref: string) => string (sha)
+ *   gitMergeFfOnlyFn(sha) -- (sha: string) => void, throws if not ff-able
+ *   bootSha               -- sha this process booted with
+ *   isIdle                -- true when Felix isn't mid-response/mid-chain
+ *
+ * Returns one of:
+ *   { action: 'none' }                 -- nothing new
+ *   { action: 'restart' }              -- new commits, Felix idle -> restart now
+ *   { action: 'defer' }                -- new commits, Felix active -> wait for idle
+ *   { action: 'skip', reason: string } -- fetch/rev-parse/merge failed; try again later
+ */
+function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, bootSha, isIdle }) {
+  try {
+    gitFetchFn();
+  } catch (e) {
+    return { action: 'skip', reason: `git fetch failed: ${e}` };
+  }
+
+  let localSha, upstreamSha;
+  try {
+    localSha    = gitRevParseFn('HEAD');
+    upstreamSha = gitRevParseFn('@{u}');
+  } catch (e) {
+    return { action: 'skip', reason: `git rev-parse failed: ${e}` };
+  }
+
+  if (localSha !== upstreamSha) {
+    try {
+      gitMergeFfOnlyFn(upstreamSha);
+    } catch (e) {
+      // Local has diverged (uncommitted work, or a non-ff history) -- never
+      // force it. Skip; the caller retries next interval.
+      return { action: 'skip', reason: `fast-forward failed (local diverged?): ${e}` };
+    }
+  }
+
+  let currentSha;
+  try {
+    currentSha = gitRevParseFn('HEAD');
+  } catch (e) {
+    return { action: 'skip', reason: `git rev-parse failed: ${e}` };
+  }
+
+  if (currentSha === bootSha) return { action: 'none' };
+
+  return { action: isIdle ? 'restart' : 'defer' };
+}
+
+module.exports = {
+  pinAndSnapshot, runSelfCheck, manualRollback, cleanFelixArgv, checkForUpdate,
+  BACKUP_KEEP, CHECK_TIMEOUT_MS, FELIX_RELAUNCH_FLAGS,
+};
