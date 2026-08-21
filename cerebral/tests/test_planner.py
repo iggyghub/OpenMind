@@ -339,6 +339,23 @@ def test_shortlist_no_usable_words_passes_through():
     assert shortlist_tools("hi do it now", tools, limit=30) == tools
 
 
+def test_shortlist_capability_meta_returns_full_registry():
+    """Capability questions often have zero lexical overlap with tool names/descriptions.
+    They should bypass the lexical shortlist and return the full registry."""
+    from cerebral.llm.planner import shortlist_tools
+
+    registry = _fake_registry()
+    for question in [
+        "what tools do you have?",
+        "what can you do?",
+        "do you have access to a filesystem?",
+        "can you read and create files?",
+    ]:
+        out = shortlist_tools(question, registry, limit=30)
+        assert len(out) == len(registry), f"Failed for: {question}"
+        assert set(t["name"] for t in out) == set(t["name"] for t in registry)
+
+
 # ── ADR-0016 S7 (#580) — stealth-vs-fast web routing heuristic ────────────────
 
 _BROWSER_NAVIGATE_TOOL = {
