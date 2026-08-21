@@ -24,6 +24,20 @@ let tray = null;
 let ws = null;
 let isConnected = false;
 let isQuitting  = false;
+// #817 -- true from the moment a relaunch is requested until this process
+// exits. A second restart/rollback request arriving before app.quit() has
+// actually torn this process down (e.g. two campaign slices auto-merging
+// back to back) must not fire a second app.relaunch() -- that's what left
+// two Cerebral processes fighting over :7766 and a stuck Electron
+// relauncher helper in the same incident.
+let _restartInProgress = false;
+// #813/#812 follow-on -- master advancing via an external merge (e.g. a PR
+// merged directly on GitHub/gh, not through self_dev's own _load()) never
+// notified the running process before; it just kept running the old code
+// until someone manually restarted. See _checkForMasterUpdate below.
+let _bootSha = null;
+let _pendingUpdateRestart = false;
+const AUTO_UPDATE_POLL_MS = 5 * 60 * 1000;
 let reconnectTimer = null;
 // SD-3 (#556) -- set true when --felix-self-dev-boot is in argv; cleared once
 // health_check is sent on the first Cerebral connection after that boot.
@@ -215,6 +229,12 @@ function handleCerebralEvent(event) {
       felixState = 'idle';
       refreshMenu();
       routeToVisualiser(event);
+      // #817 -- an auto-update was waiting for Felix to go idle before
+      // restarting so it didn't cut off an in-progress response.
+      if (_pendingUpdateRestart) {
+        _pendingUpdateRestart = false;
+        restartFelixSelfDev();
+      }
       break;
 
     case 'tts_speaking':
@@ -827,10 +847,24 @@ function trayLog(msg) {
   try { fs.appendFileSync(LAUNCHER_LOG, `[tray] ${msg}\n`); } catch (_) {}
 }
 
-function restartFelix() {
-  trayLog('restart: relaunching tray via app.relaunch()');
-  app.relaunch({ args: process.argv.slice(1).concat(['--felix-restart']) });
+// #817 -- single choke point for every app.relaunch()+quit() in this file.
+// Refuses a second relaunch while one is already in flight (see
+// _restartInProgress above). Returns true if it actually relaunched.
+function _relaunch(extraFlags, source) {
+  if (_restartInProgress) {
+    trayLog(`restart: ignored duplicate relaunch request from '${source}' -- one is already in flight`);
+    return false;
+  }
+  _restartInProgress = true;
+  const { cleanFelixArgv } = require('./lib/boot-check');
+  trayLog(`restart: relaunching (${source}) via app.relaunch() with [${extraFlags.join(', ')}]`);
+  app.relaunch({ args: cleanFelixArgv(process.argv.slice(1), extraFlags) });
   quit(); // sends Cerebral the shutdown event, then app.quit()
+  return true;
+}
+
+function restartFelix() {
+  _relaunch(['--felix-restart'], 'restartFelix');
 }
 
 // SD-3 (#556): self-dev restart -- pin the current master SHA + snapshot
@@ -838,6 +872,14 @@ function restartFelix() {
 // On the relaunched boot, runSelfDevCheck() verifies the new code is healthy
 // before promoting; on failure it auto-reverts and relaunches again.
 function restartFelixSelfDev() {
+  // #817 -- bail before pinning/snapshotting too, not just before the
+  // relaunch call: two campaign slices auto-merging back to back must not
+  // let the second call's pin overwrite the first call's in-flight state.
+  if (_restartInProgress) {
+    trayLog("restart: ignored duplicate self-dev restart request -- one is already in flight");
+    return;
+  }
+
   const fs               = require('fs');
   const { execFileSync } = require('child_process');
   const gitExe           = 'git';
@@ -860,9 +902,7 @@ function restartFelixSelfDev() {
     trayLog(`SD-3: pin/snapshot failed (continuing restart): ${e}`);
   }
 
-  trayLog('restart: self-dev relaunch via app.relaunch()');
-  app.relaunch({ args: process.argv.slice(1).concat(['--felix-restart', '--felix-self-dev-boot']) });
-  quit();
+  _relaunch(['--felix-restart', '--felix-self-dev-boot'], 'restartFelixSelfDev');
 }
 
 // SD-3 (#556): called on boot when --felix-self-dev-boot is in argv.
@@ -887,11 +927,7 @@ function runSelfDevCheck() {
     },
     relauncher: () => {
       // Relaunch without --felix-self-dev-boot so the old code boots normally
-      const args = process.argv.slice(1)
-        .filter(a => a !== '--felix-self-dev-boot')
-        .concat(['--felix-restart']);
-      app.relaunch({ args });
-      quit();
+      _relaunch(['--felix-restart'], 'runSelfDevCheck-rollback');
     },
     checkFn: () => new Promise((resolve, reject) => {
       _healthCheckResolve = resolve;
@@ -931,11 +967,7 @@ function manualSelfDevRollback(source) {
       electronNotify('Felix — manual rollback', msg);
     },
     relauncher: () => {
-      const args = process.argv.slice(1)
-        .filter(a => a !== '--felix-self-dev-boot')
-        .concat(['--felix-restart']);
-      app.relaunch({ args });
-      quit();
+      _relaunch(['--felix-restart'], `manualSelfDevRollback-${source}`);
     },
   }).then(res => {
     if (!res.ok) trayLog(`manual rollback (${source}): nothing to roll back -- ${res.reason}`);
@@ -970,9 +1002,59 @@ function respawnCerebral() {
   }
 }
 
+// #817 -- notice when master has advanced beyond what this process booted
+// with, regardless of *how* it got there (self_dev, a PR merged directly on
+// GitHub, or a manual `git pull` in a terminal), and restart to pick it up.
+// Reuses restartFelixSelfDev()'s pin+snapshot+boot-self-check path -- an
+// externally-merged change deserves the same rollback safety net a
+// self_dev-triggered one gets, not a bare unsafe restart.
+function _gitOut(args, opts) {
+  const { execFileSync } = require('child_process');
+  return execFileSync('git', args, {
+    cwd: path.join(__dirname, '..'), encoding: 'utf8', timeout: 30_000, ...opts,
+  }).trim();
+}
+
+function _checkForMasterUpdate() {
+  if (_restartInProgress || _pendingUpdateRestart) return;
+
+  const { checkForUpdate } = require('./lib/boot-check');
+  const decision = checkForUpdate({
+    gitFetchFn:      () => _gitOut(['fetch', '--quiet'], { stdio: 'ignore' }),
+    gitRevParseFn:   (ref) => _gitOut(['rev-parse', ref]),
+    gitMergeFfOnlyFn: (sha) => _gitOut(['merge', '--ff-only', sha], { stdio: 'ignore' }),
+    bootSha: _bootSha,
+    isIdle:  felixState === 'idle',
+  });
+
+  if (decision.action === 'skip') {
+    trayLog(`auto-update: ${decision.reason}`);
+    return;
+  }
+  if (decision.action === 'none') return;
+
+  if (decision.action === 'restart') {
+    trayLog('auto-update: new commits since boot, Felix idle -- restarting now');
+    restartFelixSelfDev();
+    return;
+  }
+
+  // 'defer' -- don't interrupt an in-progress response/chain; fire on the
+  // next 'passive' transition instead (see the WS message switch above).
+  _pendingUpdateRestart = true;
+  trayLog('auto-update: new commits since boot, Felix is active -- restart deferred until idle');
+}
+
 app.whenReady().then(() => {
   if (app.dock) app.dock.hide();
   app.setName('Felix');
+
+  try {
+    _bootSha = _gitOut(['rev-parse', 'HEAD']);
+  } catch (e) {
+    trayLog(`auto-update: could not capture boot SHA -- auto-update disabled this session: ${e}`);
+  }
+  if (_bootSha) setInterval(_checkForMasterUpdate, AUTO_UPDATE_POLL_MS);
 
   // Second half of "Restart Felix" (#443 rework): this instance was
   // relaunched by restartFelix(); Cerebral is down — bring it back.

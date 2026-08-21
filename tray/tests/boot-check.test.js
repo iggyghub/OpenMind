@@ -3,7 +3,10 @@
 // SD-3 (#556) -- Hermetic tests for tray/lib/boot-check.js.
 // No real FS, git, WS, or Cerebral -- every side effect is injected.
 
-const { pinAndSnapshot, runSelfCheck, manualRollback, BACKUP_KEEP, CHECK_TIMEOUT_MS } = require('../lib/boot-check');
+const {
+  pinAndSnapshot, runSelfCheck, manualRollback, cleanFelixArgv, checkForUpdate,
+  BACKUP_KEEP, CHECK_TIMEOUT_MS, FELIX_RELAUNCH_FLAGS,
+} = require('../lib/boot-check');
 
 // ---------------------------------------------------------------------------
 // pinAndSnapshot
@@ -379,5 +382,139 @@ describe('manualRollback', () => {
     expect(result.ok).toBe(true);
     expect(opts.notifyFn).toHaveBeenCalled();
     expect(opts.relauncher).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cleanFelixArgv -- #817, prevents relaunch flags piling up unbounded
+// across a chain of restarts.
+// ---------------------------------------------------------------------------
+
+describe('cleanFelixArgv', () => {
+  test('appends extraFlags to a clean argv', () => {
+    expect(cleanFelixArgv(['/path/to/app'], ['--felix-restart']))
+      .toEqual(['/path/to/app', '--felix-restart']);
+  });
+
+  test('strips a pre-existing occurrence before re-adding it', () => {
+    const argv = ['/path/to/app', '--felix-restart'];
+    expect(cleanFelixArgv(argv, ['--felix-restart'])).toEqual(['/path/to/app', '--felix-restart']);
+  });
+
+  test('never lets a flag repeat, no matter how many times it already occurs', () => {
+    const argv = ['/path/to/app', '--felix-restart', '--felix-restart', '--felix-restart',
+      '--felix-restart', '--felix-restart', '--felix-restart'];
+    const result = cleanFelixArgv(argv, ['--felix-restart']);
+    expect(result.filter((a) => a === '--felix-restart').length).toBe(1);
+  });
+
+  test('strips --felix-self-dev-boot too, even when only --felix-restart is being re-added', () => {
+    const argv = ['/path/to/app', '--felix-restart', '--felix-self-dev-boot'];
+    expect(cleanFelixArgv(argv, ['--felix-restart'])).toEqual(['/path/to/app', '--felix-restart']);
+  });
+
+  test('leaves non-felix argv entries untouched and in order', () => {
+    const argv = ['/path/to/app', '--some-other-flag', '--felix-restart', '--another-flag'];
+    expect(cleanFelixArgv(argv, ['--felix-restart', '--felix-self-dev-boot'])).toEqual([
+      '/path/to/app', '--some-other-flag', '--another-flag',
+      '--felix-restart', '--felix-self-dev-boot',
+    ]);
+  });
+
+  test('FELIX_RELAUNCH_FLAGS covers both known flags', () => {
+    expect(FELIX_RELAUNCH_FLAGS).toEqual(
+      expect.arrayContaining(['--felix-restart', '--felix-self-dev-boot']),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkForUpdate -- #817, notices master advancing from ANY source (an
+// external PR merge, a manual git pull, self_dev), not just self_dev's own
+// restart trigger.
+// ---------------------------------------------------------------------------
+
+describe('checkForUpdate', () => {
+  function makeOpts(overrides = {}) {
+    return {
+      gitFetchFn:       jest.fn(),
+      gitRevParseFn:    jest.fn().mockReturnValue('sha-boot'),
+      gitMergeFfOnlyFn: jest.fn(),
+      bootSha:          'sha-boot',
+      isIdle:           true,
+      ...overrides,
+    };
+  }
+
+  test('action:none when local HEAD still matches bootSha after fetch', () => {
+    const opts = makeOpts();
+    expect(checkForUpdate(opts)).toEqual({ action: 'none' });
+    expect(opts.gitMergeFfOnlyFn).not.toHaveBeenCalled();
+  });
+
+  test('action:skip when git fetch fails (e.g. offline)', () => {
+    const opts = makeOpts({
+      gitFetchFn: jest.fn().mockImplementation(() => { throw new Error('offline'); }),
+    });
+    const result = checkForUpdate(opts);
+    expect(result.action).toBe('skip');
+    expect(result.reason).toMatch(/fetch failed/i);
+  });
+
+  test('action:skip when git rev-parse fails', () => {
+    const opts = makeOpts({
+      gitRevParseFn: jest.fn().mockImplementation(() => { throw new Error('not a git repo'); }),
+    });
+    const result = checkForUpdate(opts);
+    expect(result.action).toBe('skip');
+    expect(result.reason).toMatch(/rev-parse failed/i);
+  });
+
+  test('fast-forwards when local is behind upstream, then re-checks HEAD', () => {
+    const revParse = jest.fn()
+      .mockReturnValueOnce('sha-boot')   // HEAD (before merge)
+      .mockReturnValueOnce('sha-remote') // @{u}
+      .mockReturnValueOnce('sha-remote'); // HEAD (after merge) -- now matches upstream
+    const opts = makeOpts({ gitRevParseFn: revParse, bootSha: 'sha-boot' });
+    const result = checkForUpdate(opts);
+    expect(opts.gitMergeFfOnlyFn).toHaveBeenCalledWith('sha-remote');
+    expect(result.action).toBe('restart'); // isIdle: true, HEAD moved past bootSha
+  });
+
+  test('action:skip when the fast-forward itself fails (local diverged)', () => {
+    const revParse = jest.fn()
+      .mockReturnValueOnce('sha-boot')
+      .mockReturnValueOnce('sha-remote');
+    const opts = makeOpts({
+      gitRevParseFn: revParse,
+      gitMergeFfOnlyFn: jest.fn().mockImplementation(() => { throw new Error('not a fast-forward'); }),
+    });
+    const result = checkForUpdate(opts);
+    expect(result.action).toBe('skip');
+    expect(result.reason).toMatch(/fast-forward failed/i);
+  });
+
+  test('action:restart when new commits are present and Felix is idle', () => {
+    const opts = makeOpts({
+      gitRevParseFn: jest.fn().mockReturnValue('sha-new'),
+      bootSha: 'sha-boot',
+      isIdle: true,
+    });
+    expect(checkForUpdate(opts)).toEqual({ action: 'restart' });
+  });
+
+  test('action:defer when new commits are present but Felix is active', () => {
+    const opts = makeOpts({
+      gitRevParseFn: jest.fn().mockReturnValue('sha-new'),
+      bootSha: 'sha-boot',
+      isIdle: false,
+    });
+    expect(checkForUpdate(opts)).toEqual({ action: 'defer' });
+  });
+
+  test('never calls gitMergeFfOnlyFn when local already matches upstream', () => {
+    const opts = makeOpts({ gitRevParseFn: jest.fn().mockReturnValue('sha-boot') });
+    checkForUpdate(opts);
+    expect(opts.gitMergeFfOnlyFn).not.toHaveBeenCalled();
   });
 });

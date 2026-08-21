@@ -351,3 +351,71 @@ Still not covered: a bad self-merge whose damage isn't undone by reverting
 code + DB/settings alone (e.g. an external side effect made before anyone
 notices something's wrong). Rollback undoes *state*, not *actions already
 taken*.
+
+## Amendment (2026-08-21, same day) -- restart-storm fix + external-merge auto-restart (#817)
+
+**Context** -- resuming the Book campaign after the full-auto-merge amendment
+landed hit a real incident: S2 (#798) touched `tray/lib/book-panel.js` and
+correctly auto-merged, but the tray got stuck relaunching -- two Cerebral
+processes ended up fighting over `:7766` and an Electron relauncher helper
+process never handed off. Root cause traced to two things:
+
+1. `restartFelix()`/`restartFelixSelfDev()`/the boot-check rollback path/the
+   new manual-rollback path all built their `app.relaunch()` argv as
+   `process.argv.slice(1).concat([...new flags])` -- but a relaunched
+   process's own argv already carries whatever flags the *previous* launch
+   added. Concatenating instead of replacing meant repeated restarts grew
+   the flag list unbounded (`--felix-restart` was observed repeated 6 times
+   in the stuck instance's command line).
+2. Nothing prevented two relaunch requests from firing back to back (e.g.
+   two campaign slices auto-merging close together) -- a second
+   `restartFelixSelfDev()` call could pin+snapshot+relaunch again before the
+   first one's process had actually exited, racing for the same port.
+
+Separately, this session also surfaced the gap the earlier "full auto-merge"
+amendment didn't fully close: merging a PR directly on GitHub (as happened
+for PR #812/#814, merged via `gh pr merge`, not through self_dev's own
+`_load()`) leaves the *running* process on the old code indefinitely -- only
+a manual restart picks it up. That's exactly what made the S2 escalation
+look like a regression when it wasn't: the live process simply hadn't
+reloaded #812's code yet.
+
+**Decision**
+1. `tray/lib/boot-check.js` gains `cleanFelixArgv(argv, extraFlags)` --
+   strips every known felix relaunch flag (`FELIX_RELAUNCH_FLAGS`:
+   `--felix-restart`, `--felix-self-dev-boot`) before re-adding exactly the
+   ones this relaunch needs. `tray/main.js` funnels every
+   `app.relaunch()+quit()` through one function, `_relaunch(extraFlags,
+   source)`, which uses this and also refuses to fire while
+   `_restartInProgress` is already true (set the moment a relaunch starts,
+   never reset -- the process is dying anyway). `restartFelixSelfDev()`
+   checks the same flag before it even pins/snapshots, so a duplicate call
+   can't clobber the in-flight pin with a second one.
+2. `tray/lib/boot-check.js` gains `checkForUpdate(...)` -- pure decision
+   function (git operations injected, same DI style as the rest of this
+   file): `git fetch`, compare local HEAD to `@{u}`, fast-forward
+   (`--ff-only`, never force) if behind, then compare the resulting HEAD to
+   the SHA this process booted with. Returns `restart` (new commits, Felix
+   idle), `defer` (new commits, Felix mid-response/mid-chain -- wait for the
+   next `passive` WS event before restarting so nothing gets cut off),
+   `none`, or `skip` (fetch/rev-parse/merge failed -- e.g. offline, or local
+   has diverged; try again next interval, never force). `tray/main.js` polls
+   this every 5 minutes (`AUTO_UPDATE_POLL_MS`) and, on `restart`/deferred-
+   then-idle, calls the *same* `restartFelixSelfDev()` path a self_dev
+   merge already uses -- an externally-merged change gets the identical
+   SD-3 boot-self-check + rollback safety net, not a bare unprotected
+   restart.
+
+**Consequences**
+- Any future merge to master -- self_dev's own, or a human/Claude-Code
+  session merging via `gh pr merge` -- now takes effect within ~5 minutes
+  without a manual restart, and is boot-checked exactly like a self_dev
+  merge would be.
+- The restart-storm class of bug (unbounded argv growth, overlapping
+  relaunches) is fixed at the one choke point (`_relaunch`) every relaunch
+  path now shares, rather than patched per call site.
+- `tray/main.js` itself still has no dedicated test file (Electron-coupled,
+  consistent with the rest of this codebase) -- the actual decision logic
+  for both fixes lives in `tray/lib/boot-check.js` instead, specifically so
+  it stays hermetically testable; `main.js`'s job is now just wiring real
+  `git`/`app` calls into it.
