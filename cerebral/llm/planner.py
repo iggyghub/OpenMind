@@ -155,6 +155,18 @@ def prefer_web_path(transcript: str, tools: list[dict]) -> list[dict]:
     return sorted(tools, key=category)
 
 
+# A capability meta-question ("what tools do you have", "can you read files")
+# has near-zero lexical overlap with the tool descriptions it's asking about --
+# the lexical shortlist below would otherwise silently drop real tools from
+# the answer and the model wrongly reports it lacks them. Detected up front so
+# these questions skip the cap entirely instead of racing the score function.
+_CAPABILITY_META_RE = re.compile(
+    r"what tools|what can you do|do you have (a|access to)|"
+    r"can you\b.{0,30}\bfiles?\b",
+    re.I,
+)
+
+
 def shortlist_tools(
     transcript: str, tools: list[dict], limit: int = 30
 ) -> list[dict]:
@@ -173,7 +185,14 @@ def shortlist_tools(
 
     ADR-0016 S7 (#580): when the transcript names a URL, tools get pre-biased
     by ``prefer_web_path`` so the stealth-vs-fast family wins ties.
+
+    A capability meta-question bypasses the cap and returns the full registry
+    unranked -- the question is asking what exists, so scoring it against
+    itself is the wrong tool for the job (see _CAPABILITY_META_RE).
     """
+    if _CAPABILITY_META_RE.search(transcript or ""):
+        return list(tools)
+
     tools = prefer_web_path(transcript, list(tools))
     words = {w for w in re.findall(r"[a-z0-9]+", transcript.lower()) if len(w) >= 4}
     if not words or len(tools) <= limit:
