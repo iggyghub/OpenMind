@@ -654,8 +654,36 @@ class ModelRouter:
         task_type defaults to "tool" so existing callers are unchanged; a
         coding-chat turn passes task_type="coding" so the whole turn (planning
         + finalize) rides the user's per-task pin.
+
+        #791: this is called on nearly every chain step (Planner.plan), so a
+        transient outage here must fall through the same priority chain as
+        complete()/complete_with_images() when fallback is enabled -- it
+        previously raised ModelUnavailableError on the very first backend.
         """
         model_id = self._task_models.get(task_type, self.active_model)
+
+        if self._fallback_enabled:
+            chain = self._routable_chain()
+            attempts = [model_id] + [m for m in chain if m != model_id]
+            attempts = [m for m in attempts if m in self._backends]
+            last_exc: Exception | None = None
+            for mid in attempts:
+                try:
+                    result = await self._backends[mid].complete_with_tools(prompt, tools)
+                except (OSError, ConnectionError) as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "[router] tool-selection fallback: '%s' unavailable (%s) — trying next",
+                        mid, exc,
+                    )
+                    continue
+                self._last_model = mid
+                logger.info("[router] %s handled tool-selection request", mid)
+                return result
+            raise ModelUnavailableError(
+                f"all enabled models unavailable: {last_exc}"
+            ) from last_exc
+
         backend = self._backends[model_id]
         try:
             result = await backend.complete_with_tools(prompt, tools)
