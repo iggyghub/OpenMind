@@ -20,6 +20,7 @@ from pathlib import Path
 
 import plugins.video as _video  # reuse the shared VideoStore singleton
 from cerebral.mcp.orchestrator import Tool, ToolResult
+from cerebral.video import book_meta as _bm
 from cerebral.video import book_source as _bs
 from cerebral.video import channel as _channel
 
@@ -122,6 +123,30 @@ class BookIngestPlugin:
                                 "(e.g. 'machine learning'). Blank -> 'Uncategorised'."
                             ),
                         },
+                        "title": {
+                            "type": "string",
+                            "description": "Override book title. Falls back to filename stem when omitted.",
+                        },
+                        "author": {
+                            "type": "string",
+                            "description": "Author name.",
+                        },
+                        "edition": {
+                            "type": "string",
+                            "description": "Edition (e.g. '2nd Ed').",
+                        },
+                        "publication_year": {
+                            "type": "integer",
+                            "description": "Publication year.",
+                        },
+                        "isbn": {
+                            "type": "string",
+                            "description": "ISBN (optional).",
+                        },
+                        "source_tier": {
+                            "type": "integer",
+                            "description": "Knowledge tier 1-4 (default 3/Practitioner).",
+                        },
                     },
                     "required": ["path"],
                 },
@@ -131,11 +156,26 @@ class BookIngestPlugin:
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         if tool_name == "book_ingest":
             return await self._book_ingest(args)
+        if tool_name == "book_list":
+            return await self._book_list(args)
+        if tool_name == "books_seed_from_csv":
+            return await self._books_seed_from_csv(args)
         return ToolResult(content=f"Unknown tool: {tool_name}", is_error=True)
 
     async def _book_ingest(self, args: dict) -> ToolResult:
         path: str = (args.get("path") or "").strip()
         category: str = (args.get("category") or "").strip() or "Uncategorised"
+        title: str = (args.get("title") or "").strip()
+        author: str = (args.get("author") or "").strip()
+        edition: str = (args.get("edition") or "").strip()
+        publication_year = args.get("publication_year")
+        isbn: str = (args.get("isbn") or "").strip()
+        source_tier = args.get("source_tier")
+        if source_tier is None:
+            source_tier = 3
+        else:
+            source_tier = max(1, min(4, int(source_tier)))
+
         if not path:
             return ToolResult(content="path is required", is_error=True)
 
@@ -149,9 +189,70 @@ class BookIngestPlugin:
                 is_error=True,
             )
 
+        if not title:
+            title = Path(path).stem
+
         store = _video._get_store()
+        meta = _bm.BookMetaStore()
+        meta.upsert(
+            book_id=path, profile_id=args.get("profile_id"), title=title,
+            author=author, edition=edition, publication_year=publication_year,
+            isbn=isbn, source_tier=source_tier,
+        )
         result = await _ingest_book(store, path, category)
+        result["title"] = title
+        result["author"] = author
+        result["source_tier"] = source_tier
         return ToolResult(content=json.dumps(result), is_error=("error" in result))
+
+
+    async def _book_list(self, args: dict) -> ToolResult:
+        profile_id = args.get("profile_id")
+        if profile_id is None:
+            return ToolResult(content="profile_id is required", is_error=True)
+        meta = _bm.BookMetaStore()
+        books = meta.list_for_profile(int(profile_id))
+        return ToolResult(content=json.dumps(books))
+
+    async def _books_seed_from_csv(self, args: dict) -> ToolResult:
+        import csv
+        csv_path = (args.get("path") or "").strip()
+        if not csv_path:
+            return ToolResult(content="path is required", is_error=True)
+        from pathlib import Path
+        p = Path(csv_path)
+        if not p.is_file():
+            return ToolResult(content=f"CSV not found: {csv_path}", is_error=True)
+
+        store = _video._get_store()
+        meta = _bm.BookMetaStore()
+        results = []
+        try:
+            with open(csv_path, newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    title = (row.get("title") or "").strip()
+                    author = (row.get("author") or "").strip()
+                    file_path = (row.get("file_path") or "").strip()
+                    if not file_path:
+                        results.append({"title": title, "status": "not_yet_acquired", "skipped": True})
+                        continue
+                    meta.upsert(
+                        book_id=file_path, profile_id=args.get("profile_id"),
+                        title=title or Path(file_path).stem, author=author,
+                        edition=row.get("edition", ""), isbn=row.get("isbn", ""),
+                        source_tier=3, publication_year=row.get("publication_year"),
+                    )
+                    ing = await _ingest_book(store, file_path, title or "Uncategorised")
+                    ing["title"] = title
+                    ing["author"] = author
+                    ing["skipped"] = False
+                    results.append(ing)
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(content=f"CSV read failed: {exc}", is_error=True)
+
+        seeded = sum(1 for r in results if not r.get("skipped"))
+        return ToolResult(content=json.dumps({"seeded": seeded, "rows": results}))
 
 
 def create() -> BookIngestPlugin:
