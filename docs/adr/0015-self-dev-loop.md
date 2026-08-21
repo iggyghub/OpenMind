@@ -322,3 +322,32 @@ restore + relaunch, automatically, no human action needed.
 - `GUARDRAIL_PATHS`/`is_guardrail_diff` are kept (not deleted) specifically
   so a future re-tightening has the detection logic ready to wire back into
   a blocking gate without rebuilding it.
+
+**Update (2026-08-21, same day) -- manual rollback delivered (#813)**
+
+The gap this amendment named above (a self-merge that boots fine but is
+later found wrong) now has a partial answer: an on-demand rollback,
+independent of the automatic SD-3 boot-check path, reachable two ways --
+a "Roll back last self-dev change" tray menu item (with a confirm dialog,
+since it's a `git reset --hard`), and a new `self_dev_rollback` tool Felix
+can invoke from chat. Both call the same new `manualRollback()` in
+`tray/lib/boot-check.js`, which reverts to the `last_known_good` SHA and
+restores the matching `openmind.db`/`felix-settings.json` snapshot -- the
+same restore `_doRollback` already did, just callable any time, not only
+right after a self-dev restart (`pinAndSnapshot` now also writes a
+`last_backup` timestamp that, unlike `pending_backup`, is never cleared on
+a passing boot check).
+
+Deliberately *unlike* the merge gate this ADR spent so many words making
+structurally unreachable from the model: `self_dev_rollback` **is** a
+planner-reachable tool. That's intentional, not an inconsistency --
+decision 5's concern is the model approving forward progress on its own
+guardrails; undo is the safe direction (worst case it reverts a good
+change, self-correctable by running self-dev again), so gating it behind a
+human click the way merge is would defeat the entire point of pairing it
+with full auto-merge.
+
+Still not covered: a bad self-merge whose damage isn't undone by reverting
+code + DB/settings alone (e.g. an external side effect made before anyone
+notices something's wrong). Rollback undoes *state*, not *actions already
+taken*.

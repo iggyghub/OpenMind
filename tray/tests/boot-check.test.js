@@ -3,7 +3,7 @@
 // SD-3 (#556) -- Hermetic tests for tray/lib/boot-check.js.
 // No real FS, git, WS, or Cerebral -- every side effect is injected.
 
-const { pinAndSnapshot, runSelfCheck, BACKUP_KEEP, CHECK_TIMEOUT_MS } = require('../lib/boot-check');
+const { pinAndSnapshot, runSelfCheck, manualRollback, BACKUP_KEEP, CHECK_TIMEOUT_MS } = require('../lib/boot-check');
 
 // ---------------------------------------------------------------------------
 // pinAndSnapshot
@@ -56,6 +56,13 @@ describe('pinAndSnapshot', () => {
     expect(state.last_known_good).toBe('abc123sha');
     expect(typeof state.pending_backup).toBe('string');
     expect(state.pending_backup.length).toBeGreaterThan(0);
+  });
+
+  test('#813 -- also writes last_backup, equal to pending_backup', () => {
+    const opts = makeOpts();
+    pinAndSnapshot(opts);
+    const state = JSON.parse(opts.writeFileFn.mock.calls[0][1]);
+    expect(state.last_backup).toBe(state.pending_backup);
   });
 
   test('returns the sha and backupTs', () => {
@@ -178,6 +185,19 @@ describe('runSelfCheck', () => {
     expect(written.last_known_good).toBe('sha-before');
   });
 
+  test('#813 -- pass keeps last_backup so a later manualRollback still has a snapshot', async () => {
+    const opts = makeOpts({
+      readFileFn: jest.fn().mockReturnValue(JSON.stringify({
+        last_known_good: 'sha-before',
+        pending_backup:  '2026-07-29T12-00-00-000Z',
+        last_backup:     '2026-07-29T12-00-00-000Z',
+      })),
+    });
+    await runSelfCheck(opts);
+    const written = JSON.parse(opts.writeFileFn.mock.calls[0][1]);
+    expect(written.last_backup).toBe('2026-07-29T12-00-00-000Z');
+  });
+
   test('pass: does not call gitResetFn or relauncher', async () => {
     const opts = makeOpts();
     await runSelfCheck(opts);
@@ -270,6 +290,93 @@ describe('runSelfCheck', () => {
     // Should still notify + relaunch, not throw
     const result = await runSelfCheck(opts);
     expect(result).toEqual({ pending: true, result: 'rollback' });
+    expect(opts.notifyFn).toHaveBeenCalled();
+    expect(opts.relauncher).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// manualRollback -- #813, the on-demand companion to the automatic
+// boot-check rollback above. No pending-boot gate: works any time later.
+// ---------------------------------------------------------------------------
+
+describe('manualRollback', () => {
+  const DATA_DIR = '/data';
+
+  function makeOpts(overrides = {}) {
+    return {
+      dataDir:    DATA_DIR,
+      readFileFn: jest.fn().mockReturnValue(JSON.stringify({
+        last_known_good: 'sha-good',
+        pending_backup:  null,
+        last_backup:     '2026-08-21T10-00-00-000Z',
+      })),
+      copyFileFn: jest.fn(),
+      gitResetFn: jest.fn(),
+      notifyFn:   jest.fn(),
+      relauncher: jest.fn(),
+      ...overrides,
+    };
+  }
+
+  test('resolves ok:false when no state file exists yet', async () => {
+    const opts = makeOpts({ readFileFn: jest.fn().mockReturnValue(null) });
+    const result = await manualRollback(opts);
+    expect(result.ok).toBe(false);
+    expect(opts.gitResetFn).not.toHaveBeenCalled();
+    expect(opts.relauncher).not.toHaveBeenCalled();
+  });
+
+  test('resolves ok:false when state file is malformed JSON', async () => {
+    const opts = makeOpts({ readFileFn: jest.fn().mockReturnValue('{bad json') });
+    const result = await manualRollback(opts);
+    expect(result.ok).toBe(false);
+    expect(opts.relauncher).not.toHaveBeenCalled();
+  });
+
+  test('resolves ok:false when last_known_good is absent', async () => {
+    const opts = makeOpts({
+      readFileFn: jest.fn().mockReturnValue(JSON.stringify({ pending_backup: null })),
+    });
+    const result = await manualRollback(opts);
+    expect(result.ok).toBe(false);
+    expect(opts.relauncher).not.toHaveBeenCalled();
+  });
+
+  test('resets git to last_known_good, even though pending_backup is null', async () => {
+    const opts = makeOpts();
+    await manualRollback(opts);
+    expect(opts.gitResetFn).toHaveBeenCalledWith('sha-good');
+  });
+
+  test('restores openmind.db and felix-settings.json from the last_backup snapshot', async () => {
+    const opts = makeOpts();
+    await manualRollback(opts);
+    const srcs = opts.copyFileFn.mock.calls.map(c => c[0]);
+    expect(srcs.some(s => s.includes('2026-08-21T10-00-00-000Z') && s.includes('openmind.db'))).toBe(true);
+    expect(srcs.some(s => s.includes('2026-08-21T10-00-00-000Z') && s.includes('felix-settings.json'))).toBe(true);
+  });
+
+  test('calls relauncher and notifies', async () => {
+    const opts = makeOpts();
+    await manualRollback(opts);
+    expect(opts.relauncher).toHaveBeenCalledTimes(1);
+    expect(opts.notifyFn).toHaveBeenCalledTimes(1);
+    expect(opts.notifyFn.mock.calls[0][0]).toMatch(/manual rollback/i);
+  });
+
+  test('resolves ok:true with the sha and backupTs it rolled back to', async () => {
+    const opts = makeOpts();
+    const result = await manualRollback(opts);
+    expect(result).toEqual({ ok: true, sha: 'sha-good', backupTs: '2026-08-21T10-00-00-000Z' });
+  });
+
+  test('continues even if gitResetFn throws', async () => {
+    const opts = makeOpts({
+      gitResetFn: jest.fn().mockImplementation(() => { throw new Error('git error'); }),
+    });
+    const result = await manualRollback(opts);
+    expect(result.ok).toBe(true);
     expect(opts.notifyFn).toHaveBeenCalled();
     expect(opts.relauncher).toHaveBeenCalled();
   });
