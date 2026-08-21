@@ -116,6 +116,11 @@ async def test_two_step_chain_records_both_tool_calls_and_results():
 
     kinds = [k for k, _ in recorded]
     assert kinds == [KIND_TOOL_CALL, KIND_TOOL_RESULT, KIND_TOOL_CALL, KIND_TOOL_RESULT]
+    # #789: the result content must survive into the persisted turn, not just
+    # is_error -- otherwise a replayed turn can't tell the model e.g. what
+    # path a create_file call resolved to.
+    assert recorded[1][1]["result"] == "Email found."
+    assert recorded[3][1]["result"] == "Email sent."
 
 
 async def test_two_step_chain_passes_prior_steps_to_planner():

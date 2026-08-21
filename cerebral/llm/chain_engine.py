@@ -151,10 +151,6 @@ class ChainEngine:
 
             # Execute
             tool_result = await self._execute_fn(result.name, result.args)
-            await self._record_fn(
-                KIND_TOOL_RESULT,
-                {"name": result.name, "is_error": tool_result.is_error},
-            )
 
             # Spill oversized successful output (H5-S1 / #736): swap the raw text
             # for a short locator+hint so a huge result never floods the window.
@@ -168,6 +164,19 @@ class ChainEngine:
             ):
                 locator = self._spill_store.spill(result_content)
                 result_content = self._spill_store.hint(locator, len(tool_result.content))
+
+            # Persist the (possibly spilled) result content too, not just the
+            # is_error flag -- otherwise a replayed turn on a later chain run
+            # has no way to know e.g. what path a create_file call resolved to
+            # (#789), and the model re-does work it already finished.
+            await self._record_fn(
+                KIND_TOOL_RESULT,
+                {
+                    "name": result.name,
+                    "is_error": tool_result.is_error,
+                    "result": result_content,
+                },
+            )
 
             prior_steps.append(
                 {
