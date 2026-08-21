@@ -6191,12 +6191,14 @@ async def _process_command(
             )
     # Shortlist so the tool payload fits the local model's context window —
     # the full registry is ~19k tokens and Ollama silently truncates past
-    # num_ctx, leaving the model "toolless". Recipes ride along un-ranked
-    # (profile-named; the user refers to them explicitly).
-    base_tools = shortlist_tools(transcript, _orc.tools_for_llm)
+    # num_ctx, leaving the model "toolless". Recipes are ranked alongside
+    # real tools (#790) -- previously they rode along un-ranked and stayed
+    # permanently in every turn's tool list, so a weak/local model could
+    # mis-select an off-topic saved Recipe in a conversation that never
+    # mentioned it.
     profile_id = _active_profile.id if _active_profile else None
     recipe_tools = _recipe_store.get_synthetic_tools(profile_id) if profile_id else []
-    tools = base_tools + recipe_tools
+    tools = shortlist_tools(transcript, _orc.tools_for_llm + recipe_tools)
 
     await _broadcast({"type": "thinking"})
     # Route a coding-flavoured turn to the user's "coding" pin (their dedicated
