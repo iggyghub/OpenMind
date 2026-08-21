@@ -302,6 +302,35 @@ def test_shortlist_small_registry_passes_through():
     assert shortlist_tools("store this as my resume", tools, limit=30) == tools
 
 
+def test_shortlist_drops_offtopic_recipe_tool():
+    """#790: main.py now ranks Recipe synthetic tools through shortlist_tools
+    instead of appending them un-ranked. A recipe named for an unrelated
+    topic must not survive the cut in a large, on-topic-elsewhere transcript."""
+    from cerebral.llm.planner import shortlist_tools
+
+    recipe_tool = {
+        "name": "recipe_video_batch_retry_resume",
+        "description": "Run the 'video batch retry resume' Recipe (2 steps: video_batch_retry, video_batch_resume)",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    }
+    tools = _fake_registry() + [recipe_tool]
+    out = shortlist_tools("please create a csv file listing my books", tools, limit=30)
+    assert all(t["name"] != "recipe_video_batch_retry_resume" for t in out)
+
+
+def test_shortlist_keeps_ontopic_recipe_tool():
+    from cerebral.llm.planner import shortlist_tools
+
+    recipe_tool = {
+        "name": "recipe_video_batch_retry_resume",
+        "description": "Run the 'video batch retry resume' Recipe (2 steps: video_batch_retry, video_batch_resume)",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    }
+    tools = _fake_registry() + [recipe_tool]
+    out = shortlist_tools("please retry the video batch job", tools, limit=30)
+    assert any(t["name"] == "recipe_video_batch_retry_resume" for t in out)
+
+
 def test_shortlist_no_usable_words_passes_through():
     from cerebral.llm.planner import shortlist_tools
 
