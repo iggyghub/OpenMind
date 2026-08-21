@@ -195,3 +195,57 @@ turn) to kick off.
   rewriting a driver `.md` file is `fs_read`/`fs_write` the plugin already has,
   and `gh issue view` is the same `network_egress_cloud` class the PR step
   already exercises.
+
+## Amendment (2026-08-21) -- in-chat pending-review card, human-click-only merge
+
+**Context** -- decisions 4/5 correctly keep merge authority out of the model's
+hands, but today the only way a human *acts* on that authority is out-of-band:
+`_run()` returns `merge_decision: "escalate"` in its tool result, Felix relays
+the PR URL as chat text, and the user goes to GitHub or a terminal to actually
+merge it (both happened today, PR #808 and #809). The user asked directly for
+this to "come up in the chat" instead.
+
+**Decision**
+1. When `_run()` escalates (guardrail hit or red tests), it also appends a
+   `system_event` Conversation turn (`cerebral/db/conversation.py`,
+   `KIND_SYSTEM_EVENT`) with `content = {"kind": "self_dev_pr_pending",
+   "pr_url", "run_id", "branch", "reason", "test_passed"}` — the same
+   structured-card shape `recipe_offer` already uses for an actionable system
+   event, not a second mechanism.
+2. The Main window renders that `content.kind` as a card with an "Approve &
+   Merge" button. The click sends a `self_dev_pr_merge` WS IPC message,
+   handled the same way `cerebral/main.py` already handles `jobs_approve_all`
+   (S7 #412) — a direct dispatcher case, no LLM in the path — which calls
+   `SelfDevPlugin._merge(pr_url)` then `_load(...)`.
+3. **Load-bearing constraint, non-negotiable:** `self_dev_pr_merge` is reachable
+   ONLY from that IPC message, sent only by the button's click handler. It is
+   never registered as an LLM tool and never reachable through the planner's
+   tool-calling loop — nothing in the model's context can trigger a merge,
+   full stop. This is decision 5 restated for this new surface, not a new
+   policy: the model proposes, the human's own click is the only path to
+   merge, structurally, not by model good behavior.
+4. A merge failure updates the card in place with the error (stays actionable,
+   doesn't silently vanish). A merged/closed PR's card is no longer offered as
+   pending on next render (checked against PR state, not just Conversation
+   history, so a PR merged from GitHub directly doesn't leave a stale button).
+
+**Considered and rejected**
+- **A new "Pending Reviews" panel:** rejected for now — the user asked for
+  something in the chat itself, and self-dev escalations are occasional, not
+  frequent enough to justify a fifth nav destination on top of the four
+  ADR-0012 deliberately narrowed to. Revisit if volume grows.
+- **Exposing merge as an LLM tool gated by a model-set "confirmed" flag:**
+  rejected outright — that still puts the model in the approval loop, exactly
+  what decision 5 forbids. The gate must be structural (unreachable from tool-
+  calling), not a policy the model is trusted to honor.
+
+**Consequences**
+- Two additions reuse existing mechanisms unchanged: `system_event` content
+  vocabulary gains one more `kind` (open sub-vocabulary, same as
+  `recipe_offer`); IPC gains one more direct-dispatch case, same shape as
+  `jobs_approve_all`. No new mechanism class.
+- `tray/` and `cerebral/main.py` are both guardrail paths (this ADR's own
+  `GUARDRAIL_PATHS`) — this feature is HITL to build, regardless of which
+  runner (external Claude Code loop or `self_dev`/`self_dev_campaign`) writes
+  it. Its own PR does not get to auto-merge itself.
+- The 16-class capability vocabulary is unchanged.
