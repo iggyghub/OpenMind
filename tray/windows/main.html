@@ -5893,7 +5893,7 @@
             <span class="jobs-status" id="jobs-status"></span>
           </div>
           <div class="jobs-boards-section" id="jobs-boards-section">
-            <div class="jobs-boards-header">Job boards</div>
+            <div class="jobs-boards-header jobs-section">Job boards</div>
             <div id="jobs-boards-list">
               <div class="jobs-boards-empty" id="jobs-boards-empty">
                 No boards added. Add ratracerebellion.com/job-postings to get started.
@@ -5908,7 +5908,7 @@
             </div>
           </div>
           <div class="jobs-dossier" id="jobs-dossier">
-            <div class="jobs-dossier-header">My Resume</div>
+            <div class="jobs-dossier-header jobs-section">My Resume</div>
             <div id="jobs-dossier-body">
               <div class="jobs-dossier-hint">
                 Upload your resume PDF and tell Felix "store this as my resume" to populate your Applicant dossier.
@@ -5916,7 +5916,7 @@
             </div>
           </div>
           <div class="jobs-shortlist-section" id="jobs-shortlist-section">
-            <div class="jobs-shortlist-header">Shortlist
+            <div class="jobs-shortlist-header jobs-section">Shortlist
               <span class="jobs-shortlist-header-actions">
                 <button class="jobs-bulk-btn" id="jobs-approve-all-btn">Approve all</button>
                 <input type="number" class="jobs-bulk-limit" id="jobs-apply-limit"
@@ -5931,7 +5931,7 @@
             </div>
           </div>
           <div class="jobs-applications-section" id="jobs-applications-section">
-            <div class="jobs-applications-header">Applications</div>
+            <div class="jobs-applications-header jobs-section">Applications</div>
             <div id="jobs-applications-list">
               <div class="jobs-applications-empty" id="jobs-applications-empty">
                 No applications yet. Approve a shortlisted job and ask Felix to apply.
@@ -5939,7 +5939,7 @@
             </div>
           </div>
           <div class="jobs-auto-submit-section">
-            <div class="jobs-auto-submit-header">Auto-Submit</div>
+            <div class="jobs-auto-submit-header jobs-section">Auto-Submit</div>
             <div class="jobs-auto-submit-row">
               <input type="checkbox" class="jobs-auto-submit-toggle" id="jobs-auto-submit-toggle" />
               <label class="jobs-auto-submit-label" for="jobs-auto-submit-toggle">Enable auto-submit</label>
@@ -11632,6 +11632,13 @@
     // direct-child *-section headers, so this is safe on all of them.
     document.querySelectorAll('.pane[data-route="settings"] .set-body')
       .forEach((el) => _sc.init(el, 'settings'));
+    // S5 #391 -- Sign-in sections (Harness/Services/Inbox).
+    _sc.init(document.getElementById('int-body'), 'signin');
+    // S5 #391 -- Job Search sub-sections (each wrapper has one jobs-section header).
+    ['jobs-boards-section', 'jobs-shortlist-section', 'jobs-applications-section',
+     'jobs-dossier'].forEach((id) => _sc.init(document.getElementById(id), 'job-search'));
+    document.querySelectorAll('.jobs-auto-submit-section')
+      .forEach((el) => _sc.init(el, 'job-search'));
 
     // S1 -- #480: sidebar collapse + Ctrl+B hotkey
     const _sidebarEl = document.getElementById('sidebar');
