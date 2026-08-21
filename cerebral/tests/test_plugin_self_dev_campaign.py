@@ -324,6 +324,10 @@ def _auto_merge_result(pr_url: str = _PR_URL) -> ToolResult:
 
 
 def _escalate_result(pr_url: str = _PR_URL, reason: str = "guardrail hit") -> ToolResult:
+    """A merge_decision _run() itself no longer produces post-2026-08-21
+    "full auto-merge" -- kept to exercise _campaign's defensive handling of
+    a non-"auto_merge" decision, which is still real code even though the
+    real gate can't trigger it anymore."""
     return ToolResult(content=json.dumps({
         "run_id": "test-run",
         "clone_dir": "/tmp/clone",

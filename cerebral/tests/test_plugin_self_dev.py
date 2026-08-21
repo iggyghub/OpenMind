@@ -32,6 +32,10 @@ class _FakeSandbox:
 _PR_URL = "https://github.com/iggyghub/OpenMind/pull/999"
 
 
+async def _noop_restart() -> None:
+    pass
+
+
 def _make(tmp_path: Path, **overrides) -> SelfDevPlugin:
     """Build a SelfDevPlugin with all side-effects injected as fakes."""
     defaults: dict = {
@@ -45,6 +49,17 @@ def _make(tmp_path: Path, **overrides) -> SelfDevPlugin:
         },
         "test_fn": lambda d: (True, "1 passed in 0.01s"),
         "pr_fn": lambda d, br, desc, ok, out: _PR_URL,
+        # diff_fn/merge_fn/pull_fn/restart_fn: since the 2026-08-21 "full
+        # auto-merge" amendment removed the escalate-before-merge gate,
+        # _run() always reaches _merge()/_load() now -- these must be
+        # hermetic fakes like the rest of this table, not the real
+        # gh/git-shelling defaults (previously masked because a real
+        # _default_diff_fn failure against a fake PR happened to escalate
+        # and stop the run before merge was ever attempted).
+        "diff_fn": lambda url: ["plugins/weather.py"],
+        "merge_fn": lambda url: None,
+        "pull_fn": lambda root: (True, "fast-forward"),
+        "restart_fn": _noop_restart,
         "sandbox_root": tmp_path / "self_dev",
         # #780 -- isolated per-test ledger (mirrors tests/test_step_ledger.py),
         # so resume state never leaks across tests/run_ids.

@@ -8,10 +8,15 @@ S2 adds self_dev_load: after a self-dev PR is merged to master, pull the live
 repo (git pull --ff-only) and broadcast restart_felix to the tray so the
 merged change goes live. No-op if already up-to-date.
 
-S4 adds the blast-radius gate (ADR-0015 decision 5): after opening the PR,
-inspect the diff. Safe-zone + green tests -> auto-merge + self_dev_load.
-Any guardrail file in the diff -> escalate to human review regardless of tests.
-GUARDRAIL_PATHS is the single definition of what counts as a guardrail.
+S4 originally added a blast-radius gate (ADR-0015 decision 5): a guardrail
+file in the diff, or red tests, escalated to human review instead of merging.
+The 2026-08-21 "full auto-merge" amendment removed that block -- every run
+auto-merges + self_dev_loads regardless of guardrail/test status. Detection
+(is_guardrail_diff / GUARDRAIL_PATHS) is unchanged and still runs, purely for
+visibility (recorded as a system_event, included in the tool result); it no
+longer blocks anything. The safety net for a bad self-merge is the launcher's
+boot self-check + SHA/DB rollback (tray/lib/boot-check.js, SD-3), which is
+independent of this gate and still runs on every self-dev restart.
 
 Issue #780 wires cerebral.llm.step_ledger.StepLedger into _run: each completed
 phase (clone / edit / test / pr) is recorded keyed by run_id. Re-invoking with
@@ -30,9 +35,10 @@ S5 (#807) adds self_dev_campaign: drives the existing _run() internals in a
 loop against a campaign driver file (Status: / - **Active:** Sx -- #N /
 - **Model:** / ## Queue / ## Landed PRs). Same driver-file format as the
 scripts/run-<campaign>.ps1 external loop. Per-slice issue spec fetched via
-injectable issue_fn seam (never real gh in tests). Stops immediately on any
-escalation or error, setting Status: blocked. Same blast-radius gate applies
-per-slice; campaign mode cannot loosen it.
+injectable issue_fn seam (never real gh in tests). Stops immediately on error,
+setting Status: blocked; every slice auto-merges per the amended decision 5
+above (_run always returns merge_decision "auto_merge" now), so a campaign
+runs slice-to-slice unattended unless a run itself errors out.
 
 Injected seams (clone_fn / edit_fn / test_fn / pr_fn / diff_fn / merge_fn /
 pull_fn / restart_fn / issue_fn / ledger) make the whole flow hermetic in
@@ -80,8 +86,12 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset(
 )
 
 # ADR-0015 decision 5 -- ONE authoritative list of guardrail paths.
-# Any PR diff touching these paths always escalates to human review,
-# regardless of test colour. Felix may propose changes but never self-approve.
+# Originally: any PR diff touching these paths always escalated to human
+# review. The 2026-08-21 "full auto-merge" amendment removed that block --
+# these paths are still detected (informational system_event + result
+# field) but no longer stop a merge. Kept as the single definition in case
+# the gate is ever re-tightened, and because is_guardrail_diff's detection
+# is still useful signal on its own.
 #
 # Entries ending with '/' are prefix matches (whole subtree).
 # All other entries are exact path matches (relative to repo root, forward slashes).
@@ -93,16 +103,16 @@ GUARDRAIL_PATHS: frozenset[str] = frozenset({
     "plugins/self_dev.py",      # the self-dev loop itself
     "tray/",                    # all Electron/tray UI (prefix) -- the sandbox
                                 # test gate runs pytest only and cannot validate
-                                # JS, so every tray edit escalates to human
-                                # review (incl. tray/lib/boot-check.js, SD-3).
+                                # JS (incl. tray/lib/boot-check.js, SD-3).
 })
 
 
 def is_guardrail_diff(changed_files: Iterable[str]) -> "tuple[bool, str]":
     """Return (True, reason) if any file in the diff touches a guardrail path.
 
-    Pure function -- no side effects. Used by SelfDevPlugin._run to decide
-    whether to auto-merge or escalate to human review (ADR-0015 decision 5).
+    Pure function -- no side effects. Used by SelfDevPlugin._run purely for
+    visibility (informational system_event + result field) since the
+    2026-08-21 "full auto-merge" amendment -- it no longer gates merge.
     """
     for f in changed_files:
         path = f.replace("\\", "/").lstrip("/")
@@ -499,10 +509,10 @@ class SelfDevPlugin:
                     "issue (injectable issue_fn seam), calls self_dev per slice, "
                     "and rewrites the driver file after each auto-merge (tick "
                     "queue entry, advance Active + Model, append to Landed PRs). "
-                    "Stops immediately on escalation or error, setting "
-                    "Status: blocked. Same blast-radius gate as self_dev -- "
-                    "a guardrail diff always escalates regardless of test colour. "
-                    "Deny-by-default per ADR-0005. Requires sandbox."
+                    "Every slice auto-merges regardless of guardrail/test status "
+                    "(2026-08-21 full-auto-merge amendment); stops only on error, "
+                    "setting Status: blocked. Deny-by-default per ADR-0005. "
+                    "Requires sandbox."
                 ),
                 plugin=PLUGIN_NAME,
                 schema={
@@ -672,26 +682,25 @@ class SelfDevPlugin:
                 "is_error": False,
             })
 
-        # 5. Blast-radius gate (SD-4 / ADR-0015 decision 5).
-        #    Fail-safe: if we can't inspect the diff, treat as guardrail.
+        # 5. Blast-radius check -- ADR-0015 decision 5 amendment (2026-08-21,
+        #    "full auto-merge"): guardrail-path hits and red tests are still
+        #    detected and recorded for visibility, but no longer block the
+        #    merge. Safety net for a bad self-merge is the launcher's boot
+        #    self-check + SHA/DB rollback (tray/lib/boot-check.js, SD-3) --
+        #    unrelated to and unaffected by this gate.
         guardrail_hit = False
         escalation_reason = ""
         try:
             changed_files = self._diff(pr_url)
             guardrail_hit, escalation_reason = is_guardrail_diff(changed_files)
         except Exception as exc:
-            guardrail_hit = True
-            escalation_reason = f"diff check failed (fail-safe escalation): {exc}"
+            escalation_reason = f"diff check failed: {exc}"
 
         if guardrail_hit or not test_passed:
             reason = escalation_reason or ("tests did not pass" if not test_passed else "")
-            # ADR-0015 amendment (2026-08-21) -- surface the escalation as an
-            # in-chat pending-review card instead of chat text only. Same
-            # structured-card shape recipe_offer already uses for an
-            # actionable system event (cerebral/main.py _on_chain_done).
             try:
                 await self._resolve_record_turn()("system_event", {
-                    "kind": "self_dev_pr_pending",
+                    "kind": "self_dev_pr_auto_merged",
                     "pr_url": pr_url,
                     "run_id": run_id,
                     "branch": branch,
@@ -701,22 +710,10 @@ class SelfDevPlugin:
             except Exception:
                 logger.exception(
                     "[self_dev] record_turn_fn failed for run %r -- "
-                    "escalation still returned in the tool result", run_id,
+                    "auto-merge proceeding regardless", run_id,
                 )
-            return ToolResult(
-                content=json.dumps({
-                    "run_id": run_id,
-                    "clone_dir": str(clone_dir),
-                    "branch": branch,
-                    "test_passed": test_passed,
-                    "test_summary": test_output[:500],
-                    "pr_url": pr_url,
-                    "merge_decision": "escalate",
-                    "escalation_reason": reason,
-                })
-            )
 
-        # 6. Safe zone + green tests: auto-merge.
+        # 6. Auto-merge (always -- decision 5 amendment, 2026-08-21).
         try:
             self._merge(pr_url)
         except Exception as exc:
@@ -741,6 +738,8 @@ class SelfDevPlugin:
                 "test_summary": test_output[:500],
                 "pr_url": pr_url,
                 "merge_decision": "auto_merge",
+                "guardrail_hit": guardrail_hit,
+                "guardrail_reason": escalation_reason,
                 "load": load_data,
             })
         )
@@ -783,7 +782,9 @@ class SelfDevPlugin:
           2. Fetch the active issue's spec via self._issue_fn (injectable seam).
           3. Call self._run with the issue spec as change_description.
           4. auto_merge -> tick queue, advance Active+Model, append PR, continue.
-          5. escalate / error -> set Status: blocked in the driver file, stop.
+          5. error -> set Status: blocked in the driver file, stop. (A non-
+             "auto_merge" merge_decision is defensive dead code post-2026-08-21
+             "full auto-merge" -- _run() no longer returns "escalate".)
         """
         driver_file_str = ((args or {}).get("driver_file") or "").strip()
         if not driver_file_str:
