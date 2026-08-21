@@ -355,14 +355,17 @@ def _safe_unlink(path: Path) -> None:
 
 def serialise_for_prompt(atts: list[Attachment]) -> str:
     """Render the extracted-text blob the LLM sees in front of the user's
-    typed message. Returns ``""`` when no attachment carried text -- the
-    caller skips the preamble entirely in that case so a pure image/binary
-    upload doesn't waste tokens on an empty header.
+    typed message. Returns ``""`` only when ``atts`` is empty -- every
+    attachment gets at least a one-line stub (#792) so the model always
+    knows a file was sent, even one with no extracted text.
     """
     pieces: list[str] = []
     for att in atts:
-        if not att.extracted_text and att.kind not in (KIND_IMAGE, KIND_BINARY):
-            continue
+        # #792: every attachment gets at least a stub line, even a text/PDF
+        # upload whose extraction was skipped (over MAX_INLINE_BYTES) or
+        # failed (bad PDF, missing pypdf) -- previously only KIND_IMAGE/
+        # KIND_BINARY got the "(no text extracted...)" fallback, so those
+        # files vanished from the prompt with no trace at all.
         header = f"[attachment: {att.filename} ({att.kind}, {att.size} bytes)]"
         if att.extracted_text:
             pieces.append(f"{header}\n{att.extracted_text}")

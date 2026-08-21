@@ -11,7 +11,8 @@ Locks the per-profile attachment contract:
   * bind_to_turn flips ``turn_id`` only on unbound rows.
   * drop_unbound removes file + row for pending uploads only; bound
     rows are immutable.
-  * serialise_for_prompt is empty when no attachment carries text.
+  * serialise_for_prompt always emits at least a stub per attachment
+    (#792), even one whose text extraction was skipped or failed.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from cerebral.db.attachments import (
     KIND_PDF,
     KIND_TEXT,
     MAX_EXTRACTED_CHARS,
+    Attachment,
     AttachmentStore,
     attach_to_turn_content,
     attachments_payload,
@@ -245,6 +247,26 @@ def test_serialise_for_prompt_skips_binary_with_no_text(store):
     # Binary chips DO mention the file path so a Files plugin can act on it.
     out = serialise_for_prompt([a])
     assert "blob.dat" in out
+
+
+def test_serialise_for_prompt_stubs_text_kind_with_failed_extraction(store):
+    """#792: a KIND_TEXT/KIND_PDF attachment whose extraction was skipped
+    (over MAX_INLINE_BYTES) or failed (bad PDF, missing pypdf) previously
+    vanished from the prompt entirely -- only KIND_IMAGE/KIND_BINARY got a
+    stub. It must now surface a "(no text extracted...)" line like any
+    other empty-text attachment, not disappear silently."""
+    a = Attachment(
+        id=1, profile_id=1, turn_id=None, filename="huge.txt", mime="text/plain",
+        size=99_000_000, kind=KIND_TEXT, stored_path="/tmp/huge.txt",
+        extracted_text="", created_at="",
+    )
+    out = serialise_for_prompt([a])
+    assert "huge.txt" in out
+    assert "no text extracted" in out
+
+
+def test_serialise_for_prompt_empty_for_empty_list():
+    assert serialise_for_prompt([]) == ""
 
 
 # -- attach_to_turn_content ----------------------------------------------------
