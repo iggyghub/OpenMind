@@ -17,7 +17,7 @@
     return '';
   }
 
-  function init(container, ws) {
+  function init(container) {
     container.innerHTML = '';
     var feed = document.createElement('div');
     feed.className = 'thinking-feed';
@@ -27,32 +27,25 @@
       display: 'flex', flexDirection: 'column', gap: '4px'
     });
     container.appendChild(feed);
-
-    function append(kind, text) {
-      var row = document.createElement('div');
-      row.className = 'thinking-row ' + kind;
-      row.textContent = text;
-      row.style.color = kind === 'tool_call' ? 'var(--state-active)' : 'var(--text-muted)';
-      feed.appendChild(row);
-      while (feed.children.length > FEED_MAX) feed.removeChild(feed.firstChild);
-      feed.scrollTop = feed.scrollHeight;
-    }
-
-    if (ws) {
-      ws.addEventListener('message', function (evt) {
-        try {
-          var data = JSON.parse(evt.data);
-          if (data.type === 'conversation_turn_emitted') {
-            var turn = data.turn || data;
-            var formatted = formatTurn(turn);
-            if (formatted) append(turn.kind, formatted);
-          }
-        } catch (e) { /* ignore parse errors */ }
-      });
-    }
+    return feed;
   }
 
-  var _exports = { init: init, formatTurn: formatTurn };
+  function appendTurn(container, turn) {
+    var feed = container.querySelector('.thinking-feed');
+    if (!feed) return null;
+    var formatted = formatTurn(turn);
+    if (!formatted) return null;
+    var row = document.createElement('div');
+    row.className = 'thinking-row ' + (turn.kind || '');
+    row.textContent = formatted;
+    row.style.color = (turn.kind === 'tool_call') ? 'var(--state-active)' : 'var(--text-muted)';
+    feed.appendChild(row);
+    while (feed.children.length > FEED_MAX) feed.removeChild(feed.firstChild);
+    feed.scrollTop = feed.scrollHeight;
+    return row;
+  }
+
+  var _exports = { init: init, appendTurn: appendTurn, formatTurn: formatTurn };
 
   if (typeof module === 'object' && module && module.exports) {
     module.exports = _exports;
