@@ -303,6 +303,130 @@ async def test_auto_merge_load_status_in_result(tmp_path):
     assert data["load"]["status"] == "restarting"
 
 
+async def test_guardrail_escalation_records_system_event(tmp_path):
+    """#810 -- an escalation must also append a system_event Conversation
+    turn (via the injected record_turn_fn seam, never a real DB write in
+    tests) carrying the exact self_dev_pr_pending card fields."""
+    recorded = []
+
+    async def fake_record_turn(kind, content):
+        recorded.append((kind, content))
+
+    plugin = _make(
+        tmp_path,
+        diff_fn=lambda url: ["cerebral/security/gate.py"],  # guardrail
+        record_turn_fn=fake_record_turn,
+    )
+    result = await plugin.call_tool("self_dev", {
+        "change_description": "Tighten ACL", "run_id": "run-810",
+    })
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["merge_decision"] == "escalate"
+
+    assert len(recorded) == 1
+    kind, content = recorded[0]
+    assert kind == "system_event"
+    assert content == {
+        "kind": "self_dev_pr_pending",
+        "pr_url": _PR_URL,
+        "run_id": "run-810",
+        "branch": "selfdev/abc123",
+        "reason": data["escalation_reason"],
+        "test_passed": True,
+    }
+
+
+async def test_test_failure_escalation_records_system_event(tmp_path):
+    """Same card gets recorded for the red-tests escalation path, not just
+    the guardrail path."""
+    recorded = []
+
+    async def fake_record_turn(kind, content):
+        recorded.append((kind, content))
+
+    plugin = _make(
+        tmp_path,
+        test_fn=lambda d: (False, "1 failed"),
+        diff_fn=lambda url: ["plugins/weather.py"],  # safe
+        record_turn_fn=fake_record_turn,
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": "Broken change"})
+
+    assert not result.is_error, result.content
+    assert len(recorded) == 1
+    kind, content = recorded[0]
+    assert kind == "system_event"
+    assert content["kind"] == "self_dev_pr_pending"
+    assert content["test_passed"] is False
+
+
+async def test_escalation_survives_record_turn_fn_failure(tmp_path):
+    """A broken record_turn_fn (e.g. DB hiccup) must not swallow the
+    escalation result itself -- the PR still needs to come back to the
+    caller even if the in-chat card couldn't be written."""
+    async def boom(kind, content):
+        raise RuntimeError("conversation store unavailable")
+
+    plugin = _make(
+        tmp_path,
+        diff_fn=lambda url: ["cerebral/security/gate.py"],
+        record_turn_fn=boom,
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": "Tighten ACL"})
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["merge_decision"] == "escalate"
+
+
+async def test_auto_merge_does_not_record_system_event(tmp_path):
+    """Only the escalate path gets the pending-review card -- an auto-merge
+    needs no human action, so no card should appear."""
+    recorded = []
+
+    async def fake_record_turn(kind, content):
+        recorded.append((kind, content))
+
+    plugin = _make(
+        tmp_path,
+        diff_fn=lambda url: ["plugins/weather.py"],
+        record_turn_fn=fake_record_turn,
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": "Safe change"})
+
+    assert not result.is_error, result.content
+    assert json.loads(result.content)["merge_decision"] == "auto_merge"
+    assert recorded == []
+
+
+def test_pr_state_uses_injected_seam(tmp_path):
+    """#810 -- pr_state() is a plain method (not a Tool, not in
+    list_tools/call_tool) that main.py calls directly to keep the
+    pending-review card honest against live PR state."""
+    plugin = _make(tmp_path, pr_state_fn=lambda url: "MERGED")
+    assert plugin.pr_state(_PR_URL) == "MERGED"
+
+
+def test_pr_state_not_exposed_as_tool(tmp_path):
+    plugin = _make(tmp_path)
+    names = [t.name for t in plugin.list_tools()]
+    assert "pr_state" not in names
+    assert "self_dev_pr_merge" not in names
+    assert "self_dev_pr_state" not in names
+
+
+async def test_self_dev_pr_merge_not_dispatchable_via_call_tool(tmp_path):
+    """Hard constraint (ADR-0015 amendment decision 3): self_dev_pr_merge
+    must be unreachable from the LLM tool-calling path. call_tool is the
+    same dispatch surface the planner uses -- it must refuse this name."""
+    plugin = _make(tmp_path)
+    result = await plugin.call_tool("self_dev_pr_merge", {"pr_url": _PR_URL})
+    assert result.is_error
+    assert "Unknown tool" in result.content
+
+
 async def test_mixed_guardrail_and_safe_escalates(tmp_path):
     """A diff with both safe and guardrail files must escalate."""
     merge_calls = []

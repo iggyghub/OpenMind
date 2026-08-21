@@ -241,6 +241,21 @@ def merge_fn(pr_url: str) -> None:
         raise RuntimeError(f"gh pr merge failed:\n{result.stderr.strip()}")
 
 
+def pr_state_fn(pr_url: str) -> str:
+    """Live PR state via gh CLI -- "OPEN", "MERGED", or "CLOSED".
+
+    #810 -- used to keep the in-chat pending-review card honest when a PR
+    is merged/closed directly on GitHub instead of via the card's button.
+    """
+    result = subprocess.run(
+        ["gh", "pr", "view", pr_url, "--json", "state", "--jq", ".state"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"gh pr view state failed:\n{result.stderr.strip()}")
+    return result.stdout.strip()
+
+
 def pull_fn(repo_root: Path) -> "tuple[bool, str]":
     """git pull --ff-only master in the live repo root."""
     result = subprocess.run(

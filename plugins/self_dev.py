@@ -281,6 +281,8 @@ MergeFn = Callable[[str], None]                # (pr_url) -> None (squash-merges
 PullFn = Callable[[Path], "tuple[bool, str]"]  # (live_root) -> (updated, output)
 RestartFn = Callable[[], "Awaitable[None]"]    # async -- broadcasts restart_felix to tray
 IssueFn = Callable[[int], str]                 # (issue_number) -> "# Title\n\nBody"
+RecordTurnFn = Callable[[str, dict], "Awaitable[None]"]  # (kind, content) -> None
+PrStateFn = Callable[[str], str]               # (pr_url) -> "OPEN"/"MERGED"/"CLOSED"
 
 
 # git/gh/pytest I/O lives in cerebral/self_dev_io.py (NOT scanned by the
@@ -296,6 +298,7 @@ _default_diff_fn = _io.diff_fn
 _default_merge_fn = _io.merge_fn
 _default_pull_fn = _io.pull_fn
 _default_issue_fn = _io.issue_fn
+_default_pr_state_fn = _io.pr_state_fn
 
 
 def _default_edit_fn(clone_dir: Path, description: str) -> dict:
@@ -311,11 +314,13 @@ def _default_edit_fn(clone_dir: Path, description: str) -> dict:
 
 
 # ── Module-level seams (wired by cerebral/main.py after discovery) ────────────
-# edit_fn/restart_fn can't be built at discovery time -- they close over the
-# model router and the tray broadcast. Constructor injection still wins (tests
-# pass them directly); prod resolves these globals lazily at call time.
+# edit_fn/restart_fn/record_turn_fn can't be built at discovery time -- they
+# close over the model router, the tray broadcast, and the Conversation
+# store. Constructor injection still wins (tests pass them directly); prod
+# resolves these globals lazily at call time.
 _edit_fn = None
 _restart_fn = None
+_record_turn_fn = None
 
 
 def set_edit_fn(fn) -> None:
@@ -326,6 +331,25 @@ def set_edit_fn(fn) -> None:
 def set_restart_fn(fn) -> None:
     global _restart_fn
     _restart_fn = fn
+
+
+def set_record_turn_fn(fn) -> None:
+    global _record_turn_fn
+    _record_turn_fn = fn
+
+
+async def _default_record_turn_fn(kind: str, content: dict) -> None:
+    """No-op until main.py wires the Conversation store seam via
+    set_record_turn_fn (main.py's own ``_record_turn``, S9/#292).
+
+    Unlike edit_fn/restart_fn, this seam is NOT load-bearing to the run
+    itself -- dropping the in-chat pending-review card is a lesser failure
+    than refusing self-dev entirely, so this defaults to fail-open (log +
+    continue) rather than raising."""
+    logger.warning(
+        "[self_dev] record_turn_fn not wired -- system_event turn dropped (kind=%s)",
+        kind,
+    )
 
 
 async def _default_restart_fn() -> None:
@@ -352,6 +376,8 @@ class SelfDevPlugin:
         pull_fn: PullFn | None = None,
         restart_fn: RestartFn | None = None,
         issue_fn: IssueFn | None = None,
+        record_turn_fn: RecordTurnFn | None = None,
+        pr_state_fn: PrStateFn | None = None,
         repo_url: str | None = None,
         sandbox_root: Path | None = None,
         live_root: Path | None = None,
@@ -365,6 +391,9 @@ class SelfDevPlugin:
         self._merge = merge_fn or _default_merge_fn
         self._pull = pull_fn or _default_pull_fn
         self._issue_fn = issue_fn or _default_issue_fn
+        # pr_state_fn (#810), like merge_fn/diff_fn/pull_fn, needs no main.py
+        # closure -- the default just works standalone.
+        self._pr_state_fn = pr_state_fn or _default_pr_state_fn
         # #780 -- unlike edit_fn/restart_fn, StepLedger needs no main.py
         # wiring (no model router / tray closure to capture): it's
         # self-sufficient against the shared openmind.db, so the default
@@ -376,6 +405,7 @@ class SelfDevPlugin:
         # discovery constructs the instance, so we can't collapse them here.
         self._edit_override = edit_fn
         self._restart_override = restart_fn
+        self._record_turn_override = record_turn_fn
         self._repo_url = repo_url or str(_REPO_ROOT)
         self._sandbox_root = sandbox_root or (data_dir() / "sandbox" / "self_dev")
         self._live_root = live_root or _REPO_ROOT
@@ -385,6 +415,17 @@ class SelfDevPlugin:
 
     def _resolve_restart(self) -> RestartFn:
         return self._restart_override or _restart_fn or _default_restart_fn
+
+    def _resolve_record_turn(self) -> RecordTurnFn:
+        return self._record_turn_override or _record_turn_fn or _default_record_turn_fn
+
+    def pr_state(self, pr_url: str) -> str:
+        """Live PR state (OPEN/MERGED/CLOSED) via the injected pr_state_fn
+        seam (#810). Deliberately NOT a Tool and NOT wired into list_tools /
+        call_tool -- main.py calls this directly (same posture as _merge/
+        _load) so it can never be reached through the planner's tool-calling
+        loop (ADR-0015 amendment 3)."""
+        return self._pr_state_fn(pr_url)
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -644,6 +685,24 @@ class SelfDevPlugin:
 
         if guardrail_hit or not test_passed:
             reason = escalation_reason or ("tests did not pass" if not test_passed else "")
+            # ADR-0015 amendment (2026-08-21) -- surface the escalation as an
+            # in-chat pending-review card instead of chat text only. Same
+            # structured-card shape recipe_offer already uses for an
+            # actionable system event (cerebral/main.py _on_chain_done).
+            try:
+                await self._resolve_record_turn()("system_event", {
+                    "kind": "self_dev_pr_pending",
+                    "pr_url": pr_url,
+                    "run_id": run_id,
+                    "branch": branch,
+                    "reason": reason,
+                    "test_passed": test_passed,
+                })
+            except Exception:
+                logger.exception(
+                    "[self_dev] record_turn_fn failed for run %r -- "
+                    "escalation still returned in the tool result", run_id,
+                )
             return ToolResult(
                 content=json.dumps({
                     "run_id": run_id,
