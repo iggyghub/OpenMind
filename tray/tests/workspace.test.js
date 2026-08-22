@@ -149,3 +149,38 @@ describe('persistence across reload', () => {
     expect(Workspace.isOpen('documents')).toBe(false);
   });
 });
+
+// ── toggleExclusive -- #829, built for the THINKING pill ─────────────────────
+
+describe('toggleExclusive', () => {
+  test('opening from a clean state opens just that panel', () => {
+    const state = Workspace.toggleExclusive('builtin:thinking');
+    expect(state).toEqual({ open: ['builtin:thinking'], active: 'builtin:thinking' });
+  });
+
+  test('closes every other open panel instead of adding a tab beside them', () => {
+    Workspace.open('documents');
+    Workspace.open('job-search');
+    const state = Workspace.toggleExclusive('builtin:thinking');
+    expect(state).toEqual({ open: ['builtin:thinking'], active: 'builtin:thinking' });
+  });
+
+  test('clicking again while it is the shown panel closes it', () => {
+    Workspace.toggleExclusive('builtin:thinking');
+    const state = Workspace.toggleExclusive('builtin:thinking');
+    expect(state).toEqual({ open: [], active: null });
+  });
+
+  test('re-opens exclusively if it was open but not active (another tab took over)', () => {
+    Workspace.open('builtin:thinking');
+    Workspace.open('documents'); // now active, thinking still open-but-inactive
+    const state = Workspace.toggleExclusive('builtin:thinking');
+    expect(state).toEqual({ open: ['builtin:thinking'], active: 'builtin:thinking' });
+  });
+
+  test('does not touch storage for an empty id', () => {
+    Workspace.open('documents');
+    const state = Workspace.toggleExclusive('');
+    expect(state).toEqual({ open: ['documents'], active: 'documents' });
+  });
+});

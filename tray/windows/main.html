@@ -7023,13 +7023,19 @@
       }
     });
 
-    // #816/#824 -- THINKING pill opens the live tool call/result feed as a
-    // library panel in the workspace secondary slot (same mechanism as
-    // Memory/Insights/Recipes/Job Search -- see _WS_BUILTINS/_wsMod.open
-    // further down this script). Closing it uses the tab's own × button,
-    // same as every other builtin panel -- no separate toggle needed.
+    // #816/#824/#829 -- THINKING pill opens the live tool call/result feed
+    // exclusively in the workspace secondary slot (closes every other open
+    // panel first, e.g. Documents, instead of adding a tab alongside it)
+    // and toggles closed if it's already the one showing --
+    // WorkspaceMod.toggleExclusive owns that decision (hermetically
+    // tested). Same _WS_BUILTINS/_wsMod mechanism Memory/Insights/Recipes/
+    // Job Search use, just driven from the pill instead of the +Panel
+    // dropdown. toggleExclusive() only updates state -- _renderWorkspace()
+    // (defined further down this script) is what actually re-draws the tab
+    // strip/body, same as every other caller.
     statePill.addEventListener('click', () => {
-      _wsMod.open('builtin:thinking');
+      _wsMod.toggleExclusive('builtin:thinking');
+      _renderWorkspace();
     });
 
     // Tick once a second so the age string + stale classification stay
