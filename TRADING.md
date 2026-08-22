@@ -3,13 +3,11 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: blocked -- run error: Auto-merge failed (PR stays open for manual review): gh pr merge failed:
-X Pull request iggyghub/OpenMind#842 is not mergeable: the merge commit cannot be cleanly created.
-To have the pull request mer
+## Status: ready
 
 ## Next slice -- start here
 
-- **Active:** S3 -- #834
+- **Active:** S4 -- #835
 - **Model:** sonnet
 
 ## Queue
@@ -17,7 +15,7 @@ To have the pull request mer
 - [x] S1a -- #831 -- OHLCV data module (yfinance)
 - [x] S1b -- #832 -- Backtest engine + reference strategy
 - [x] S2 -- #833 -- Cost/slippage model + OOS + walk-forward gates
-- [ ] S3 -- #834 -- Full gauntlet + strategy card
+- [x] S3 -- #834 -- Full gauntlet + strategy card
 - [ ] S4 -- #835 -- URL/web/book -> strategy spec
 - [ ] S5a -- #836 -- Alpaca broker integration
 - [ ] S5b -- #837 -- Risk limits + failure behaviour
@@ -43,6 +41,20 @@ below is the detailed human-readable reference for the same 9 slices.
   decision #5 in the table above no longer matches what's implemented.
   Worth a real decision before S4 builds strategy generation against
   whichever interface is meant to be canonical.)
+- PR #842 -- S3 -- never cleanly auto-merged (branch was based on a local
+  commit that got superseded before the merge; also independently
+  reinvented cerebral/trading/gauntlet.py from scratch, colliding with
+  PR #841's version). Resolved by hand 2026-08-22: merged run_gauntlet() +
+  StrategyCard into the same gauntlet.py as GauntletGateResult (renamed to
+  avoid the class-name collision with S2's GateResult), then fixed 6 real
+  bugs the merge exposed -- a numpy.bool_ identity bug, a Monte Carlo gate
+  that was statistically meaningless as originally written (permuting a
+  fixed set never changes its mean), a pandas indexing bug, an int-cast
+  bug, a test fixture that ignored which parameter was perturbed, and a
+  wrong expected value in a compound-return test. All 29 trading tests
+  pass. See commit 5a446f9 for the full account. PR #842 itself was never
+  merged on GitHub -- its content now exists directly on local master via
+  this fix instead.
 
 ## Thesis
 
