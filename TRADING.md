@@ -32,6 +32,9 @@ below is the detailed human-readable reference for the same 9 slices.
   because the sandbox never had yfinance installed -- patched by hand 2026-08-22,
   see pyproject.toml + cerebral/trading_data.py + its test)
 
+<!-- 2026-08-22: entries claiming S1b/S2 landed under PR #840 were removed --
+     verified against `gh pr list` and the filesystem that neither was ever
+     built or merged. #840 is S1a's PR only. -->
 ## Thesis
 
 The prompt-to-code step is commoditized; any model can turn "buy when RSI crosses 30"
