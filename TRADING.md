@@ -5,14 +5,11 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Status: S6 landed (lifecycle mechanics only) -- autonomous execution is not
 wired end-to-end yet. See the S6 entry in Landed PRs for the specific gaps.
-Do not risk live capital on this until a follow-up slice closes them.
+Do not risk live capital on this until S7 closes them.
 
 ## Next slice -- start here
 
-- **Active:** none queued -- see S6's Landed PRs note for what a follow-up
-  slice needs to cover (paper-trade consumer, per-strategy forward-record
-  scoping, panel wiring). Not filed as an issue yet -- flag to the user
-  before creating one.
+- **Active:** S7 -- #848
 - **Model:** sonnet
 
 ## Queue
@@ -27,10 +24,14 @@ Do not risk live capital on this until a follow-up slice closes them.
 - [x] S5c -- #838 -- Paper forward record + auto-promotion
 - [x] S6 -- #839 -- Autonomous live execution + retirement + alerting
   (lifecycle mechanics landed; wiring gaps remain -- see Landed PRs note)
+- [ ] S7 -- #848 -- Wire autonomous paper-trade execution end-to-end
+  (real broker-calling consumer, per-strategy forward-record scoping,
+  Trading Panel UI -- see issue #848 for the full spec)
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
-below is the detailed human-readable reference for the same 9 slices.
+below is the detailed human-readable reference for the same 9 slices; S7 is a
+post-hoc follow-up not in that original list.
 
 ## Landed PRs
 
