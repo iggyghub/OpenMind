@@ -178,7 +178,7 @@ async def run_subagent(
     # not parallelism (decision 5 stays true).
     job = job_registry.start(
         # No on_chain_done: sub-agents don't raise recipe offers (isolation).
-        chain.run(transcript, tool_defs, max_steps=max_steps, run_id=run_id, ledger=ledger),
+        chain.run(transcript, tool_defs, all_tools=all_tools, max_steps=max_steps, run_id=run_id, ledger=ledger),
         description=task,
     )
     try:

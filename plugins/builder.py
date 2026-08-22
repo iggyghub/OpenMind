@@ -152,7 +152,12 @@ class BuilderPlugin:
                     "Generate a new MCP plugin from a natural-language description, "
                     "smoke-test it, and register it with the running orchestrator. "
                     "Use this when the user says 'I need you to be able to X' and no "
-                    "existing tool covers X. The LLM payload must include "
+                    "existing tool covers X. Before calling this, search the web for "
+                    "an existing implementation of X from another agent harness or MCP "
+                    "server (other MCP registries, LangChain tools, GitHub) — describe "
+                    "what you found (or that nothing suitable exists) in the 'description' "
+                    "argument so the generated plugin is informed by prior art instead of "
+                    "reinvented from scratch. The LLM payload must include "
                     "'required_capabilities' (list of class names from the 16-class "
                     "vocabulary) — see ADR-0005."
                 ),
