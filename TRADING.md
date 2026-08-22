@@ -3,18 +3,20 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready
+## Status: blocked -- run error: Auto-merge failed (PR stays open for manual review): gh pr merge failed:
+X Pull request iggyghub/OpenMind#842 is not mergeable: the merge commit cannot be cleanly created.
+To have the pull request mer
 
 ## Next slice -- start here
 
-- **Active:** S1b -- #832
+- **Active:** S3 -- #834
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1a -- #831 -- OHLCV data module (yfinance)
-- [ ] S1b -- #832 -- Backtest engine + reference strategy
-- [ ] S2 -- #833 -- Cost/slippage model + OOS + walk-forward gates
+- [x] S1b -- #832 -- Backtest engine + reference strategy
+- [x] S2 -- #833 -- Cost/slippage model + OOS + walk-forward gates
 - [ ] S3 -- #834 -- Full gauntlet + strategy card
 - [ ] S4 -- #835 -- URL/web/book -> strategy spec
 - [ ] S5a -- #836 -- Alpaca broker integration
@@ -31,6 +33,16 @@ below is the detailed human-readable reference for the same 9 slices.
 - PR #840 -- S1a (auto-merged by self_dev_campaign; landed with failing tests
   because the sandbox never had yfinance installed -- patched by hand 2026-08-22,
   see pyproject.toml + cerebral/trading_data.py + its test)
+- PR #841 -- S1b+S2 combined (auto-merged by self_dev_campaign; added
+  cerebral/trading/cost_model.py + gauntlet.py with oos_test()/walk_forward()
+  gates. S1b's own deliverable -- a backtest.run() engine matching
+  `def strategy(data) -> signals`, per issue #832 -- was never built as its
+  own thing; gauntlet.py invented a different strategy_fn interface instead
+  (returns (gross_returns, trades) directly). Queue entry left ticked since
+  redoing S1b now would just produce a second, conflicting engine -- but
+  decision #5 in the table above no longer matches what's implemented.
+  Worth a real decision before S4 builds strategy generation against
+  whichever interface is meant to be canonical.)
 
 ## Thesis
 
