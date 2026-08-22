@@ -1,9 +1,30 @@
-'use strict';
+/* Thinking panel helpers -- #816/#824.
+ * Dual-mode: window.ThinkingPanelMod in the renderer; module.exports for
+ * Node tests. Pure text/HTML-string shapers -- no DOM, no WS -- matching
+ * the documents-panel.js convention so this stays testable without jsdom
+ * (not an installed dependency in this project). The renderer owns
+ * inserting rowHtml() output and pruning the feed to FEED_MAX.
+ */
+(function (root, factory) {
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = factory();
+  } else {
+    root.ThinkingPanelMod = factory();
+  }
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
 
-(function () {
   var FEED_MAX = 300;
 
-  // Mirror labelFor() formatting from main.html for tool kinds
+  function escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // Mirror labelFor() formatting from main.html for tool kinds.
   function formatTurn(turn) {
     if (!turn) return '';
     if (turn.kind === 'tool_call') {
@@ -17,39 +38,21 @@
     return '';
   }
 
-  function init(container) {
-    container.innerHTML = '';
-    var feed = document.createElement('div');
-    feed.className = 'thinking-feed';
-    Object.assign(feed.style, {
-      flex: '1', overflowY: 'auto', padding: '10px',
-      fontFamily: "'Consolas', 'Cascadia Code', monospace", fontSize: '12px', color: 'var(--text-dim)',
-      display: 'flex', flexDirection: 'column', gap: '4px'
-    });
-    container.appendChild(feed);
-    return feed;
+  /* HTML for one feed row, or '' when the turn kind isn't tool_call/
+   * tool_result (caller skips appending in that case). Escapes tool
+   * output text -- it can contain arbitrary content from a web page,
+   * file, or user data a tool touched. */
+  function rowHtml(turn) {
+    var text = formatTurn(turn);
+    if (!text) return '';
+    var kind = (turn && turn.kind) || '';
+    return '<div class="thinking-row ' + kind + '">' + escHtml(text) + '</div>';
   }
 
-  function appendTurn(container, turn) {
-    var feed = container.querySelector('.thinking-feed');
-    if (!feed) return null;
-    var formatted = formatTurn(turn);
-    if (!formatted) return null;
-    var row = document.createElement('div');
-    row.className = 'thinking-row ' + (turn.kind || '');
-    row.textContent = formatted;
-    row.style.color = (turn.kind === 'tool_call') ? 'var(--state-active)' : 'var(--text-muted)';
-    feed.appendChild(row);
-    while (feed.children.length > FEED_MAX) feed.removeChild(feed.firstChild);
-    feed.scrollTop = feed.scrollHeight;
-    return row;
-  }
-
-  var _exports = { init: init, appendTurn: appendTurn, formatTurn: formatTurn };
-
-  if (typeof module === 'object' && module && module.exports) {
-    module.exports = _exports;
-  } else if (typeof window !== 'undefined') {
-    window.ThinkingPanelMod = _exports;
-  }
-})();
+  return {
+    FEED_MAX:   FEED_MAX,
+    escHtml:    escHtml,
+    formatTurn: formatTurn,
+    rowHtml:    rowHtml,
+  };
+}));
