@@ -5,9 +5,10 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Status: ready -- S6 landed lifecycle mechanics only, autonomous execution
 not wired end-to-end yet (see S6's Landed PRs entry). S7 (#848) closes the
-gaps. Do not risk live capital until S7 lands. Previous run blocked on a
-transient bonsai model-server 502 (Bad Gateway), not a code issue -- reset
-to retry.
+gaps. Do not risk live capital until S7 lands. bonsai model server has
+returned 502 Bad Gateway on 3 consecutive S7 attempts today; per user's
+retry policy (feedback_bonsai_outage_retry_policy), waiting 5min and
+retrying, up to 5 attempts total before reporting a real outage.
 
 ## Next slice -- start here
 
