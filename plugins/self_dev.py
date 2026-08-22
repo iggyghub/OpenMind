@@ -205,13 +205,28 @@ def parse_driver_model(text: str) -> str:
 
 
 def _set_driver_status(text: str, status: str, reason: str = "") -> str:
-    """Rewrite the Status field in a driver file. Prepends if not found."""
+    """Rewrite the Status field in a driver file. Prepends if not found.
+
+    `reason` routinely carries multi-line content (a pytest failure summary,
+    a multi-line HTTP error body) -- collapsed to one line here so Status
+    can never itself span multiple lines going forward. Also consumes any
+    pre-existing continuation lines below a prior multi-line Status (from
+    before this fix, or a manual edit) up to the next blank line or `##`
+    header, so replacing an old multi-line block doesn't leave its tail
+    behind as orphaned text -- this is what corrupted TRADING.md when a
+    single-line "blocked" status overwrote just the first line of an
+    earlier multi-line one, twice, in this same campaign.
+    """
+    reason = " ".join(reason.split())  # collapse embedded newlines/whitespace
     val = status if not reason else f"{status} -- {reason}"
     lines = text.splitlines(keepends=True)
     for i, line in enumerate(lines):
         m = re.match(r'^((?:#+\s*)?Status:)', line, re.IGNORECASE)
         if m:
-            lines[i] = m.group(1) + " " + val + "\n"
+            end = i + 1
+            while end < len(lines) and lines[end].strip() and not lines[end].lstrip().startswith("#"):
+                end += 1
+            lines[i:end] = [m.group(1) + " " + val + "\n"]
             return "".join(lines)
     return f"Status: {val}\n" + text
 

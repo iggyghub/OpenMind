@@ -16,7 +16,6 @@ class StrategyState:
     status: str  # "paper", "live", "halted"
     live_trade_count: int = 0
     position_size_pct: float = 0.25
-    worst_backtest_drawdown: float = 0.0
     live_equity_curve: List[float] = field(default_factory=list)
     promoted_at: Optional[datetime] = None
     peak_live_equity: float = 0.0
