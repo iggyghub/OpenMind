@@ -33,3 +33,6 @@ smoke_client*.py
 
 # Machine-local Claude Code config (permissions/hooks) -- not for the public repo
 .claude/settings.local.json
+
+# trading_data (#831) local OHLCV cache -- machine-local, never source data
+cerebral/cache/
