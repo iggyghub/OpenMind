@@ -3,9 +3,11 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: S6 landed (lifecycle mechanics only) -- autonomous execution is not
-wired end-to-end yet. See the S6 entry in Landed PRs for the specific gaps.
-Do not risk live capital on this until S7 closes them.
+## Status: ready -- S6 landed lifecycle mechanics only, autonomous execution
+not wired end-to-end yet (see S6's Landed PRs entry). S7 (#848) closes the
+gaps. Do not risk live capital until S7 lands. Previous run blocked on a
+transient bonsai model-server 502 (Bad Gateway), not a code issue -- reset
+to retry.
 
 ## Next slice -- start here
 
