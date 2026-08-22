@@ -340,8 +340,37 @@ def _escalate_result(pr_url: str = _PR_URL, reason: str = "guardrail hit") -> To
     }))
 
 
+def _tests_failed_result(pr_url: str = _PR_URL, summary: str = "1 failed, 0 passed") -> ToolResult:
+    """The real non-"auto_merge" outcome _run() produces since the
+    2026-08-22 test-status gate: PR opened, not merged."""
+    return ToolResult(content=json.dumps({
+        "run_id": "test-run",
+        "clone_dir": "/tmp/clone",
+        "branch": "selfdev/test",
+        "test_passed": False,
+        "test_summary": summary,
+        "pr_url": pr_url,
+        "merge_decision": "tests_failed",
+        "guardrail_hit": False,
+        "guardrail_reason": "",
+    }))
+
+
 def _error_result(msg: str = "clone failed") -> ToolResult:
     return ToolResult(content=msg, is_error=True)
+
+
+def _conflict_error_result(pr_num: int = 842) -> ToolResult:
+    """A gh pr merge failure shaped like a stale-branch conflict -- what
+    _is_merge_conflict_error looks for to trigger _campaign's retry."""
+    return ToolResult(
+        content=(
+            f"Auto-merge failed (PR stays open for manual review): "
+            f"gh pr merge failed:\nX Pull request iggyghub/OpenMind#{pr_num} "
+            f"is not mergeable: the merge commit cannot be cleanly created."
+        ),
+        is_error=True,
+    )
 
 
 async def test_campaign_done_status_short_circuits(tmp_path):
@@ -410,6 +439,76 @@ async def test_campaign_error_stops_and_sets_blocked(tmp_path):
     assert data["results"][0]["is_error"] is True
     driver_text = driver.read_text(encoding="utf-8")
     assert parse_driver_status(driver_text) == "blocked"
+
+
+async def test_campaign_tests_failed_stops_and_sets_blocked(tmp_path):
+    """2026-08-22: the real (not dead-code) non-"auto_merge" path -- tests
+    failed, PR stayed open, campaign must stop rather than silently
+    advancing past a slice whose code was never actually validated."""
+    driver = tmp_path / "BOOKS.md"
+    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")
+    plugin = _make_plugin(tmp_path, [_tests_failed_result(summary="3 failed, 1 passed")])
+    result = await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver)})
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["status"] == "blocked"
+    assert data["slices_run"] == 1
+    assert data["results"][0]["merge_decision"] == "tests_failed"
+    driver_text = driver.read_text(encoding="utf-8")
+    assert parse_driver_status(driver_text) == "blocked"
+    # The queue entry must NOT be ticked -- the slice never actually landed.
+    assert "[x] S2 -- #798" not in driver_text
+
+
+async def test_campaign_retries_once_on_merge_conflict_then_succeeds(tmp_path):
+    """A conflict-shaped failure (stale branch -- something else merged
+    first) gets one retry with a fresh run_id. If the retry lands cleanly,
+    the campaign advances normally."""
+    driver = tmp_path / "BOOKS.md"
+    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")
+    plugin = _make_plugin(tmp_path, [_conflict_error_result(), _auto_merge_result()])
+    result = await plugin.call_tool(
+        "self_dev_campaign", {"driver_file": str(driver), "max_slices": 1}
+    )
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["slices_run"] == 1
+    assert data["results"][0]["merge_decision"] == "auto_merge"
+    driver_text = driver.read_text(encoding="utf-8")
+    assert "[x] S2 -- #798" in driver_text
+    assert parse_driver_status(driver_text) != "blocked"
+
+
+async def test_campaign_retry_exhausted_still_sets_blocked(tmp_path):
+    """If the retry ALSO fails with a conflict, the campaign gives up --
+    this is a bounded single retry, not a loop."""
+    driver = tmp_path / "BOOKS.md"
+    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")
+    plugin = _make_plugin(tmp_path, [_conflict_error_result(), _conflict_error_result()])
+    result = await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver)})
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["status"] == "blocked"
+    assert data["slices_run"] == 1
+    assert data["results"][0]["is_error"] is True
+    driver_text = driver.read_text(encoding="utf-8")
+    assert parse_driver_status(driver_text) == "blocked"
+
+
+async def test_campaign_non_conflict_error_does_not_retry(tmp_path):
+    """An error that isn't conflict-shaped (e.g. sandbox unavailable) must
+    NOT trigger a retry -- a retry can't fix that class of failure, and
+    retrying anyway would just burn a second sandbox run for nothing."""
+    driver = tmp_path / "BOOKS.md"
+    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")
+    # Only ONE result queued -- if _campaign retried, this would raise
+    # StopIteration and the test would fail with an error, not an assertion.
+    plugin = _make_plugin(tmp_path, [_error_result("sandbox unavailable")])
+    result = await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver)})
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["status"] == "blocked"
+    assert data["slices_run"] == 1
 
 
 async def test_campaign_max_slices_respected(tmp_path):
@@ -491,10 +590,12 @@ async def test_campaign_missing_driver_file_arg(tmp_path):
     assert "driver_file" in result.content
 
 
-async def test_campaign_run_id_uses_slug(tmp_path):
-    """run_id must be 'campaign-<slug>-s<n>' where slug is the driver stem."""
+async def test_campaign_run_id_uses_slice_label(tmp_path):
+    """run_id must be 'campaign-<slug>-<label>' (slice identity), not
+    'campaign-<slug>-s<n>' (loop position) -- see the run_id collision bug
+    this replaced in _campaign()'s docstring."""
     driver = tmp_path / "BOOKS.md"
-    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")
+    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")  # Active: S2 -- #798
     captured_args: list[dict] = []
 
     class _SpyPlugin(SelfDevPlugin):
@@ -509,7 +610,50 @@ async def test_campaign_run_id_uses_slug(tmp_path):
         ledger=StepLedger(db_path=tmp_path / "ledger.db"),
     )
     await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
-    assert captured_args[0]["run_id"] == "campaign-books-s1"
+    assert captured_args[0]["run_id"] == "campaign-books-s2"
+
+
+async def test_campaign_run_id_does_not_collide_across_invocations(tmp_path):
+    """The bug this regression-tests: two SEPARATE self_dev_campaign calls
+    against the same driver, each starting its own loop at n=1, must NOT
+    generate the same run_id when they're actually working on different
+    slices -- loop-position-based ids collided (both got 's1'); label-based
+    ids don't, because each slice keeps its own identity across calls."""
+    driver = tmp_path / "TRADING.md"
+    driver.write_text(
+        "## Status: ready\n\n## Next slice -- start here\n\n"
+        "- **Active:** S1a -- #831\n- **Model:** sonnet\n\n## Queue\n\n"
+        "- [ ] S1a -- #831 -- data\n- [ ] S4 -- #835 -- ideas\n\n## Landed PRs\n",
+        encoding="utf-8",
+    )
+    captured_run_ids: list[str] = []
+    ledger = StepLedger(db_path=tmp_path / "ledger.db")
+
+    class _SpyPlugin(SelfDevPlugin):
+        async def _run(self, args: dict) -> ToolResult:
+            captured_run_ids.append(args["run_id"])
+            return _auto_merge_result()
+
+    plugin = _SpyPlugin(
+        sandbox=_FakeSandbox(),
+        issue_fn=lambda n: f"# Issue {n}\n\nBody",
+        sandbox_root=tmp_path / "self_dev",
+        ledger=ledger,
+    )
+    # Invocation 1: processes S1a (the only unticked slice at this point).
+    await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
+    # Simulate S1a landing and S4 becoming active, same as a real advance.
+    driver.write_text(
+        "## Status: ready\n\n## Next slice -- start here\n\n"
+        "- **Active:** S4 -- #835\n- **Model:** sonnet\n\n## Queue\n\n"
+        "- [x] S1a -- #831 -- data\n- [ ] S4 -- #835 -- ideas\n\n## Landed PRs\n",
+        encoding="utf-8",
+    )
+    # Invocation 2: a fresh call, its own loop starts at n=1 again.
+    await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
+
+    assert captured_run_ids == ["campaign-trading-s1a", "campaign-trading-s4"]
+    assert len(set(captured_run_ids)) == 2, "run_ids must not collide across invocations"
 
 
 # ---------------------------------------------------------------------------

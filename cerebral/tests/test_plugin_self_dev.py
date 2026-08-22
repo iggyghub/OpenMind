@@ -178,11 +178,13 @@ async def test_happy_path_green_pr(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Failing tests still open a PR (blast-radius gate owns merge decisions).
+# Failing tests open a PR but do NOT merge (2026-08-22 test-status gate --
+# see PR #840/#842 in TRADING.md for what merging red tests actually cost).
 # ---------------------------------------------------------------------------
 
-async def test_test_failure_still_opens_pr(tmp_path):
+async def test_test_failure_opens_pr_but_does_not_merge(tmp_path):
     pr_calls = []
+    merge_calls = []
 
     def pr_fn(d, br, desc, ok, out):
         pr_calls.append({"ok": ok, "out": out})
@@ -192,6 +194,7 @@ async def test_test_failure_still_opens_pr(tmp_path):
         tmp_path,
         test_fn=lambda d: (False, "1 failed, 0 passed"),
         pr_fn=pr_fn,
+        merge_fn=lambda url: merge_calls.append(url),
     )
     result = await plugin.call_tool("self_dev", {"change_description": "Broken change"})
 
@@ -199,8 +202,10 @@ async def test_test_failure_still_opens_pr(tmp_path):
     data = json.loads(result.content)
     assert data["test_passed"] is False
     assert data["pr_url"] == _PR_URL
+    assert data["merge_decision"] == "tests_failed"
     assert len(pr_calls) == 1
     assert pr_calls[0]["ok"] is False
+    assert merge_calls == [], "merge_fn must not be called when tests fail"
 
 
 # ---------------------------------------------------------------------------
