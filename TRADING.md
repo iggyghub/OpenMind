@@ -7,19 +7,19 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S1b -- #832
+- **Active:** S6 -- #839
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1a -- #831 -- OHLCV data module (yfinance)
-- [ ] S1b -- #832 -- Backtest engine + reference strategy
-- [ ] S2 -- #833 -- Cost/slippage model + OOS + walk-forward gates
-- [ ] S3 -- #834 -- Full gauntlet + strategy card
-- [ ] S4 -- #835 -- URL/web/book -> strategy spec
-- [ ] S5a -- #836 -- Alpaca broker integration
-- [ ] S5b -- #837 -- Risk limits + failure behaviour
-- [ ] S5c -- #838 -- Paper forward record + auto-promotion
+- [x] S1b -- #832 -- Backtest engine + reference strategy
+- [x] S2 -- #833 -- Cost/slippage model + OOS + walk-forward gates
+- [x] S3 -- #834 -- Full gauntlet + strategy card
+- [x] S4 -- #835 -- URL/web/book -> strategy spec
+- [x] S5a -- #836 -- Alpaca broker integration
+- [x] S5b -- #837 -- Risk limits + failure behaviour
+- [x] S5c -- #838 -- Paper forward record + auto-promotion
 - [ ] S6 -- #839 -- Autonomous live execution + retirement + alerting
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
@@ -31,6 +31,153 @@ below is the detailed human-readable reference for the same 9 slices.
 - PR #840 -- S1a (auto-merged by self_dev_campaign; landed with failing tests
   because the sandbox never had yfinance installed -- patched by hand 2026-08-22,
   see pyproject.toml + cerebral/trading_data.py + its test)
+- PR #841 -- S1b+S2 combined (auto-merged by self_dev_campaign; added
+  cerebral/trading/cost_model.py + gauntlet.py with oos_test()/walk_forward()
+  gates. S1b's own deliverable -- a backtest.run() engine matching
+  `def strategy(data) -> signals`, per issue #832 -- was never built as its
+  own thing; gauntlet.py invented a different strategy_fn interface instead
+  (returns (gross_returns, trades) directly). Queue entry left ticked since
+  redoing S1b now would just produce a second, conflicting engine -- but
+  decision #5 in the table above no longer matches what's implemented.
+  Worth a real decision before S4 builds strategy generation against
+  whichever interface is meant to be canonical.)
+- PR #842 -- S3 -- never cleanly auto-merged (branch was based on a local
+  commit that got superseded before the merge; also independently
+  reinvented cerebral/trading/gauntlet.py from scratch, colliding with
+  PR #841's version). Resolved by hand 2026-08-22: merged run_gauntlet() +
+  StrategyCard into the same gauntlet.py as GauntletGateResult (renamed to
+  avoid the class-name collision with S2's GateResult), then fixed 6 real
+  bugs the merge exposed -- a numpy.bool_ identity bug, a Monte Carlo gate
+  that was statistically meaningless as originally written (permuting a
+  fixed set never changes its mean), a pandas indexing bug, an int-cast
+  bug, a test fixture that ignored which parameter was perturbed, and a
+  wrong expected value in a compound-return test. All 29 trading tests
+  pass. See commit 5a446f9 for the full account. PR #842 itself was never
+  merged on GitHub -- its content now exists directly on local master via
+  this fix instead.
+- No PR -- 2026-08-22, a fresh self_dev_campaign call for S4 got blocked
+  citing PR #840 (S1a's PR, already merged and hand-fixed hours earlier).
+  Root cause: run_id was `campaign-{slug}-s{n}` where n is the loop
+  position WITHIN one campaign() call, not a slice identity -- every fresh
+  invocation's first-processed slice reused run_id "campaign-trading-s1",
+  colliding with S1a's original (persistent, SQLite-backed) ledger entry.
+  _run()'s resume logic replayed that old, already-obsolete failure
+  instead of doing real work on S4. Fixed in commit (see plugins/self_dev.py
+  `_campaign`): run_id now derives from the active slice's label
+  (`campaign-trading-s1a`, `-s4`, etc.), stable and unique per slice
+  regardless of invocation. The three polluted ledger rows
+  (campaign-trading-s1/-s2/-s3) were purged from cerebral/data/openmind.db
+  by hand since S1a-S3's real work is already committed to git and there
+  was nothing legitimate left to resume from them.
+- PR #843 -- S4 -- real fresh work (confirms the run_id fix above worked:
+  its branch descended from current master, not a stale point). Added
+  cerebral/trading_ideas.py (extract_from_url/from_prose/from_book_claim/
+  to_strategy/compile_strategy) + tests. Tests failed on one trivial bug:
+  a stub LLM in the test always returns a hardcoded `[1, 2, 3]` regardless
+  of input, but the assertion checked against the input instead of what
+  the stub actually returns -- fixed by hand, all 6 tests pass.
+  SECURITY (found during hand-verification, not by the auto-merge gate):
+  `compile_strategy` called `exec(code_str, {"__builtins__": __builtins__},
+  ...)` -- unrestricted code execution with full builtins, on code
+  ultimately derived from scraped web content. Hardened with two layers,
+  neither a substitute for real sandboxing: (1) runs the same
+  forbidden-pattern scan builder.py already uses for LLM-generated plugin
+  code (cerebral.security.scan_source -- blocks os/subprocess/exec/eval/
+  pickle/file-write), (2) exec() itself only gets a minimal safe-builtins
+  allowlist (no open/__import__/exec/eval/input), which independently
+  caught an obfuscated `__import__` the regex scan alone missed. Neither
+  layer is a real sandbox -- route this through the ADR-0010 sandbox
+  self_dev already uses for untrusted code before S5+ runs strategy code
+  against a live broker connection.
+- PR #844 -- S5a -- real fresh work (based on current master post-S4, same
+  as #843). Added cerebral/trading/broker.py (BrokerClient Protocol,
+  AlpacaBrokerClient, StubBrokerClient) + tests. One real test failure:
+  `StubBrokerClient.cancel_order` did `Order(**self._orders[order_id],
+  status="CANCELED")` -- tried to ** an Order dataclass instance instead
+  of a dict, always raised TypeError. Order is a plain mutable dataclass;
+  fixed by mutating `.status` in place instead of reconstructing.
+  SECURITY/CORRECTNESS (found during hand-verification, untested by the
+  gate since no test exercised it): `AlpacaBrokerClient.place_order`
+  hardcoded `limit_price="0.01"` for every limit order -- the
+  `BrokerClient` Protocol had no way to pass a real one in the first
+  place. Any live limit order would have silently submitted at one cent.
+  Added `limit_price: Optional[float] = None` to the Protocol and both
+  implementations; both now raise ValueError if a limit order arrives
+  with no price. New test covers the missing-price rejection.
+- PR #845 -- S5b -- real fresh work (based on current master post-S5a).
+  Added cerebral/trading/{risk_limits,failure_handling,alerts}.py + tests.
+  Two real bugs, both in the first two files, both blocking every actual
+  use of the class (not edge cases):
+  (1) `RiskManager.__init__`'s only settings parameter was `settings_store`
+  (expected to be a store object with `.get()`), so tests constructing a
+  manager with an explicit `RiskConfig(max_per_trade_risk_pct=2.0)` passed
+  it positionally into that slot -- `settings_store.get(...)` then failed
+  because a RiskConfig isn't a mapping. Added a distinct `config:
+  Optional[RiskConfig]` parameter that wins over settings_store lookup.
+  (2) `FailureHandler._last_data_timestamp` starts at None (no data has
+  arrived yet on construction), but `update_market_data_timestamp` did
+  `if ts > self._last_data_timestamp` before checking for None -- crashed
+  on the very first tick, i.e. every real use. Guarded the comparison.
+  One test itself was also wrong: asserted the literal string
+  "per_trade_risk" (the machine-readable blocked_by slug) appeared in a
+  log line that actually reads "Per-trade risk 300.00 exceeds..." (the
+  human-readable reason text) -- fixed the assertion to match what's
+  really logged. alerts.py had no issues. 11/11 new tests pass, 55/55
+  across the trading suite.
+- PR #846 -- S5c -- real fresh work (based on current master post-S5b).
+  Added cerebral/trading/forward_record.py, extended gauntlet.py and
+  scheduler.py, plus a Trading panel render function. One real bug
+  blocking every real use: the test's `isolated_db` fixture monkeypatched
+  `_DB_PATH` with `str(tmp_path / ...)`, but forward_record.py calls
+  `_DB_PATH.parent.mkdir(...)` -- a pathlib-only method, not str-compatible
+  (unlike trading_data.py's os.path-based `_CACHE_DIR`, which does accept
+  a plain string -- the two modules use different path conventions).
+  Fixed by keeping the fixture's override as an actual Path.
+
+  Also found reading gauntlet.py's new auto-promote block before landing
+  it (untested by any test -- no test passed scheduler=/paper_broker= at
+  all until the new ones added here): it wrote directly to
+  `scheduler._con` with raw SQL, reaching into the plugin's private
+  connection from cerebral/ when scheduler.py's own diff in this same PR
+  already added a proper public method (`_run_paper_strategy`) for this
+  -- "seam rule respected" is an explicit S5c acceptance criterion this
+  violated. Routed through the public method instead. Worse: it seeded
+  the forward record with a fabricated `("INIT", pnl=0)` fill on every
+  gauntlet pass -- a fake trade that would have silently counted toward
+  the 30-trade honesty-rule minimum without being a real one, undermining
+  exactly what S5c exists to protect. Removed entirely; ForwardRecord's
+  own constructor already creates its table, no seed was ever needed.
+  Also removed `card.forward_record = forward_record` and the
+  `paper_broker.forward_record = ...` assignment -- both set attributes
+  neither StrategyCard nor BrokerClient declare or read; pure dead code.
+  Added 3 new tests covering the fixed auto-promote path (all 3 needed
+  removing -- no test exercised it before). 21/21 gauntlet+forward_record
+  tests pass, 63/63 across the trading suite.
+
+  **Real gap, not fixed here (needs its own slice):** the "auto-promote"
+  feature only *schedules* a recurring paper-trading event via
+  scheduler's run_paper_strategy -- nothing yet *consumes* that scheduled
+  event and actually calls `paper_broker.place_order(...)` to place real
+  paper trades and record real fills. S5c's own acceptance criterion #1
+  ("Gauntlet pass triggers automatic paper trading -- no human step") is
+  only partially met: scheduling happens, trading doesn't yet.
+  `run_gauntlet`'s `paper_broker` parameter is accepted but genuinely
+  unused (marked with a `# ponytail:` comment explaining why) until that
+  consumer exists. Separately, the forward record has no per-strategy
+  identifier in its schema (`forward_fills` has no strategy/hypothesis
+  column) -- once more than one strategy is ever promoted to paper
+  trading simultaneously, their fills would commingle in one table with
+  no way to separate them, corrupting each strategy's own expectancy/CI.
+  And the Trading panel's `renderForwardRecord(record, ...)` expects
+  `record.ci.mean/lower/upper/is_sufficient`, `record.trade_count`,
+  `record.fills`, `record.equity_curve` as plain properties, but
+  ForwardRecord's actual Python API only exposes methods with different
+  names and shapes (`compute_expectancy_ci()`, `get_fills()`,
+  `get_equity_curve()`) -- a serialization layer between the two doesn't
+  exist yet either. None of this blocks S5c's own tests (nothing wires
+  any of it together yet), but S6 cannot autonomously execute live
+  trades on top of "scheduling that never runs" -- resolve all three
+  before S6 lands.
 
 ## Thesis
 
@@ -242,6 +389,13 @@ the same penny stock sector.
 - **Anything needing a real broker connection to verify** -> append to
   `docs/trading-live-verify.md`; do not perform it in a loop session.
 - Seam rule (#153/#385): no `from plugins.<x> import ...` inside `cerebral/`.
+- **`trading_ideas.compile_strategy` is not real sandboxing.** It exec()s
+  code ultimately derived from scraped web content, hardened with a
+  forbidden-pattern scan + a minimal builtins allowlist (2026-08-22, see
+  PR #843 in Landed PRs) -- but that's a partial mitigation, not the
+  ADR-0010 sandbox self_dev uses for untrusted code. Route strategy
+  execution through that sandbox for real before S5+ runs generated
+  strategy code against a live broker connection.
 
 ## Future campaigns (explicitly out of scope for S1-S6)
 
