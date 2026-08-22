@@ -55,6 +55,20 @@ below is the detailed human-readable reference for the same 9 slices.
   pass. See commit 5a446f9 for the full account. PR #842 itself was never
   merged on GitHub -- its content now exists directly on local master via
   this fix instead.
+- No PR -- 2026-08-22, a fresh self_dev_campaign call for S4 got blocked
+  citing PR #840 (S1a's PR, already merged and hand-fixed hours earlier).
+  Root cause: run_id was `campaign-{slug}-s{n}` where n is the loop
+  position WITHIN one campaign() call, not a slice identity -- every fresh
+  invocation's first-processed slice reused run_id "campaign-trading-s1",
+  colliding with S1a's original (persistent, SQLite-backed) ledger entry.
+  _run()'s resume logic replayed that old, already-obsolete failure
+  instead of doing real work on S4. Fixed in commit (see plugins/self_dev.py
+  `_campaign`): run_id now derives from the active slice's label
+  (`campaign-trading-s1a`, `-s4`, etc.), stable and unique per slice
+  regardless of invocation. The three polluted ledger rows
+  (campaign-trading-s1/-s2/-s3) were purged from cerebral/data/openmind.db
+  by hand since S1a-S3's real work is already committed to git and there
+  was nothing legitimate left to resume from them.
 
 ## Thesis
 

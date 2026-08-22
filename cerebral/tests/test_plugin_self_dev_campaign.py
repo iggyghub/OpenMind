@@ -590,10 +590,12 @@ async def test_campaign_missing_driver_file_arg(tmp_path):
     assert "driver_file" in result.content
 
 
-async def test_campaign_run_id_uses_slug(tmp_path):
-    """run_id must be 'campaign-<slug>-s<n>' where slug is the driver stem."""
+async def test_campaign_run_id_uses_slice_label(tmp_path):
+    """run_id must be 'campaign-<slug>-<label>' (slice identity), not
+    'campaign-<slug>-s<n>' (loop position) -- see the run_id collision bug
+    this replaced in _campaign()'s docstring."""
     driver = tmp_path / "BOOKS.md"
-    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")
+    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")  # Active: S2 -- #798
     captured_args: list[dict] = []
 
     class _SpyPlugin(SelfDevPlugin):
@@ -608,7 +610,50 @@ async def test_campaign_run_id_uses_slug(tmp_path):
         ledger=StepLedger(db_path=tmp_path / "ledger.db"),
     )
     await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
-    assert captured_args[0]["run_id"] == "campaign-books-s1"
+    assert captured_args[0]["run_id"] == "campaign-books-s2"
+
+
+async def test_campaign_run_id_does_not_collide_across_invocations(tmp_path):
+    """The bug this regression-tests: two SEPARATE self_dev_campaign calls
+    against the same driver, each starting its own loop at n=1, must NOT
+    generate the same run_id when they're actually working on different
+    slices -- loop-position-based ids collided (both got 's1'); label-based
+    ids don't, because each slice keeps its own identity across calls."""
+    driver = tmp_path / "TRADING.md"
+    driver.write_text(
+        "## Status: ready\n\n## Next slice -- start here\n\n"
+        "- **Active:** S1a -- #831\n- **Model:** sonnet\n\n## Queue\n\n"
+        "- [ ] S1a -- #831 -- data\n- [ ] S4 -- #835 -- ideas\n\n## Landed PRs\n",
+        encoding="utf-8",
+    )
+    captured_run_ids: list[str] = []
+    ledger = StepLedger(db_path=tmp_path / "ledger.db")
+
+    class _SpyPlugin(SelfDevPlugin):
+        async def _run(self, args: dict) -> ToolResult:
+            captured_run_ids.append(args["run_id"])
+            return _auto_merge_result()
+
+    plugin = _SpyPlugin(
+        sandbox=_FakeSandbox(),
+        issue_fn=lambda n: f"# Issue {n}\n\nBody",
+        sandbox_root=tmp_path / "self_dev",
+        ledger=ledger,
+    )
+    # Invocation 1: processes S1a (the only unticked slice at this point).
+    await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
+    # Simulate S1a landing and S4 becoming active, same as a real advance.
+    driver.write_text(
+        "## Status: ready\n\n## Next slice -- start here\n\n"
+        "- **Active:** S4 -- #835\n- **Model:** sonnet\n\n## Queue\n\n"
+        "- [x] S1a -- #831 -- data\n- [ ] S4 -- #835 -- ideas\n\n## Landed PRs\n",
+        encoding="utf-8",
+    )
+    # Invocation 2: a fresh call, its own loop starts at n=1 again.
+    await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
+
+    assert captured_run_ids == ["campaign-trading-s1a", "campaign-trading-s4"]
+    assert len(set(captured_run_ids)) == 2, "run_ids must not collide across invocations"
 
 
 # ---------------------------------------------------------------------------

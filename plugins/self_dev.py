@@ -966,7 +966,20 @@ class SelfDevPlugin:
                 "Implement ONLY this slice exactly as the issue specifies:\n\n"
                 + issue_text
             )
-            run_id = f"campaign-{slug}-s{n}"
+            # run_id keys the step ledger (a persistent SQLite file, not
+            # per-invocation state) -- it must identify the SLICE, not this
+            # call's position in its own loop. `s{n}` collided across
+            # separate campaign() invocations: invocation 1 processed S1a,
+            # S1b+S2, S3 as n=1,2,3; invocation 2 (this one, started fresh
+            # for S4 after those were already done) began its own loop back
+            # at n=1, generating the SAME run_id "campaign-trading-s1" that
+            # S1a used hours earlier. _run()'s resume logic then replayed
+            # that old, already-fixed-by-hand S1a failure instead of doing
+            # any real work on S4. A label-derived id is stable and unique
+            # per slice regardless of which invocation or loop position
+            # processes it.
+            label_slug = re.sub(r"[^a-z0-9]+", "-", active_label.lower()).strip("-")
+            run_id = f"campaign-{slug}-{label_slug}"
 
             run_result = await self._run({
                 "change_description": change_description,
