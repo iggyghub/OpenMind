@@ -7,7 +7,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S5b -- #837
+- **Active:** S5c -- #838
 - **Model:** sonnet
 
 ## Queue
@@ -18,7 +18,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 - [x] S3 -- #834 -- Full gauntlet + strategy card
 - [x] S4 -- #835 -- URL/web/book -> strategy spec
 - [x] S5a -- #836 -- Alpaca broker integration
-- [ ] S5b -- #837 -- Risk limits + failure behaviour
+- [x] S5b -- #837 -- Risk limits + failure behaviour
 - [ ] S5c -- #838 -- Paper forward record + auto-promotion
 - [ ] S6 -- #839 -- Autonomous live execution + retirement + alerting
 
@@ -104,6 +104,26 @@ below is the detailed human-readable reference for the same 9 slices.
   Added `limit_price: Optional[float] = None` to the Protocol and both
   implementations; both now raise ValueError if a limit order arrives
   with no price. New test covers the missing-price rejection.
+- PR #845 -- S5b -- real fresh work (based on current master post-S5a).
+  Added cerebral/trading/{risk_limits,failure_handling,alerts}.py + tests.
+  Two real bugs, both in the first two files, both blocking every actual
+  use of the class (not edge cases):
+  (1) `RiskManager.__init__`'s only settings parameter was `settings_store`
+  (expected to be a store object with `.get()`), so tests constructing a
+  manager with an explicit `RiskConfig(max_per_trade_risk_pct=2.0)` passed
+  it positionally into that slot -- `settings_store.get(...)` then failed
+  because a RiskConfig isn't a mapping. Added a distinct `config:
+  Optional[RiskConfig]` parameter that wins over settings_store lookup.
+  (2) `FailureHandler._last_data_timestamp` starts at None (no data has
+  arrived yet on construction), but `update_market_data_timestamp` did
+  `if ts > self._last_data_timestamp` before checking for None -- crashed
+  on the very first tick, i.e. every real use. Guarded the comparison.
+  One test itself was also wrong: asserted the literal string
+  "per_trade_risk" (the machine-readable blocked_by slug) appeared in a
+  log line that actually reads "Per-trade risk 300.00 exceeds..." (the
+  human-readable reason text) -- fixed the assertion to match what's
+  really logged. alerts.py had no issues. 11/11 new tests pass, 55/55
+  across the trading suite.
 
 ## Thesis
 
