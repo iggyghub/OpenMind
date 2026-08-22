@@ -53,7 +53,7 @@ class _ScriptedPlanner:
         self._script = list(script)
         self._i = 0
 
-    async def plan(self, transcript, tools, *, prior_steps=None, error=None):
+    async def plan(self, transcript, tools, *, all_tools=None, prior_steps=None, error=None):
         r = self._script[self._i]
         self._i += 1
         return r
@@ -89,10 +89,10 @@ async def test_chain_engine_spills_big_tool_result(tmp_path):
     # After the big-result step, the planner's second call sees prior_steps --
     # capture what the chain fed forward as that step's result.
     class _CapturingPlanner(_ScriptedPlanner):
-        async def plan(self, transcript, tools, *, prior_steps=None, error=None):
+        async def plan(self, transcript, tools, *, all_tools=None, prior_steps=None, error=None):
             if prior_steps:
                 captured["result"] = prior_steps[-1]["result"]
-            return await super().plan(transcript, tools, prior_steps=prior_steps, error=error)
+            return await super().plan(transcript, tools, all_tools=all_tools, prior_steps=prior_steps, error=error)
 
     planner = _CapturingPlanner([ToolCall(name="a", args={}), "done"])
     out = await _chain(planner, execute, spill_store=store).run("t", [])
@@ -114,10 +114,10 @@ async def test_chain_engine_no_store_passes_through_raw(tmp_path):
         return ToolResult(content=big, is_error=False)
 
     class _CapturingPlanner(_ScriptedPlanner):
-        async def plan(self, transcript, tools, *, prior_steps=None, error=None):
+        async def plan(self, transcript, tools, *, all_tools=None, prior_steps=None, error=None):
             if prior_steps:
                 captured["result"] = prior_steps[-1]["result"]
-            return await super().plan(transcript, tools, prior_steps=prior_steps, error=error)
+            return await super().plan(transcript, tools, all_tools=all_tools, prior_steps=prior_steps, error=error)
 
     planner = _CapturingPlanner([ToolCall(name="a", args={}), "done"])
     out = await _chain(planner, execute, spill_store=None).run("t", [])
@@ -137,10 +137,10 @@ async def test_chain_engine_does_not_spill_small_or_error(tmp_path):
         return ToolResult(content="E" * 200, is_error=True)
 
     class _CapturingPlanner(_ScriptedPlanner):
-        async def plan(self, transcript, tools, *, prior_steps=None, error=None):
+        async def plan(self, transcript, tools, *, all_tools=None, prior_steps=None, error=None):
             if prior_steps:
                 captured.append(prior_steps[-1]["result"])
-            return await super().plan(transcript, tools, prior_steps=prior_steps, error=error)
+            return await super().plan(transcript, tools, all_tools=all_tools, prior_steps=prior_steps, error=error)
 
     # small success passes through; big error stops the chain (never spilled).
     planner = _CapturingPlanner([ToolCall(name="small", args={}), ToolCall(name="boom", args={})])

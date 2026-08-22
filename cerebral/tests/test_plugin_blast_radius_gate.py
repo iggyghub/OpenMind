@@ -201,7 +201,7 @@ async def test_safe_green_auto_merges(tmp_path):
     assert restart_calls == [True]
 
 
-async def test_safe_fail_auto_merges(tmp_path):
+async def test_safe_fail_blocks_merge(tmp_path):
     merge_calls = []
 
     plugin = _make(
@@ -214,9 +214,9 @@ async def test_safe_fail_auto_merges(tmp_path):
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
-    assert data["merge_decision"] == "auto_merge"
+    assert data["merge_decision"] == "tests_failed"
     assert data["test_passed"] is False
-    assert merge_calls == [_PR_URL]
+    assert merge_calls == []
 
 
 async def test_guardrail_green_auto_merges(tmp_path):
@@ -237,7 +237,7 @@ async def test_guardrail_green_auto_merges(tmp_path):
     assert merge_calls == [_PR_URL]
 
 
-async def test_guardrail_fail_auto_merges(tmp_path):
+async def test_guardrail_fail_blocks_merge(tmp_path):
     merge_calls = []
 
     plugin = _make(
@@ -250,9 +250,9 @@ async def test_guardrail_fail_auto_merges(tmp_path):
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
-    assert data["merge_decision"] == "auto_merge"
+    assert data["merge_decision"] == "tests_failed"
     assert data["guardrail_hit"] is True
-    assert merge_calls == [_PR_URL]
+    assert merge_calls == []
 
 
 async def test_diff_failure_still_auto_merges(tmp_path):
