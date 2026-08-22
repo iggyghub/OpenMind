@@ -29,6 +29,27 @@ _SYSTEM_PROMPT = (
     "skill's description or the user names it directly."
 )
 
+
+def _build_tool_catalog(tools: list[dict]) -> str:
+    """Compact name+one-liner catalog of ALL tools, for the system prompt.
+
+    The full schema list is too large for local models (~19k tokens), so only
+    a shortlist of ~30 gets full schemas. But the model needs to KNOW what
+    exists to pick the right one. This catalog (~15 tokens/tool) always fits.
+    """
+    if not tools:
+        return ""
+    lines = []
+    for t in tools:
+        name = t.get("name", "?")
+        desc = (t.get("description") or "")[:80].split("\n")[0]
+        lines.append(f"  - {name}: {desc}")
+    return (
+        "\n\nYou have access to the following tools (full schemas are provided "
+        "for the most relevant ones; call any tool by name even if its full "
+        "schema isn't shown):\n" + "\n".join(lines)
+    )
+
 # ADR-0014 decision 7 -- explicit skill invocation bypasses the LLM entirely:
 # "/name" (typed or spoken) and the NL phrasing "use the X skill" both map
 # straight to a skill_use ToolCall. Unknown/disabled names are not validated
@@ -198,12 +219,18 @@ def shortlist_tools(
     if not words or len(tools) <= limit:
         return list(tools)
 
+    # ponytail: pin tools whose full name appears verbatim in the transcript
+    transcript_lower = transcript.lower()
+    pinned = [t for t in tools if (t.get("name") or "") in transcript_lower]
+    unpinned = [t for t in tools if t not in pinned]
+
     def score(t: dict) -> int:
         name_words = set((t.get("name") or "").lower().split("_"))
         desc_words = set(re.findall(r"[a-z0-9]+", (t.get("description") or "").lower()))
         return 3 * len(words & name_words) + len(words & desc_words)
 
-    return sorted(tools, key=score, reverse=True)[:limit]
+    ranked = sorted(unpinned, key=score, reverse=True)
+    return pinned + ranked[:limit - len(pinned)]
 
 
 class Planner:
@@ -222,11 +249,15 @@ class Planner:
         transcript: str,
         tools: list[dict],
         *,
+        all_tools: list[dict] | None = None,
         error: str | None = None,
         prior_steps: list[dict] | None = None,
     ) -> ToolCall | str:
         """Return a ToolCall when a tool is selected, or str for text/clarification.
 
+        Pass all_tools= (the full registry before shortlisting) to inject a
+        compact catalog of every tool into the system prompt so the model
+        knows what exists even when the full schema isn't sent.
         Pass error= to feed a prior validation failure back to the model for
         a one-shot self-correction attempt (ADR-0008 bounded self-correction).
         Pass prior_steps= (S2 chaining) to include accumulated tool call history
@@ -243,7 +274,8 @@ class Planner:
             if skill_call is not None:
                 return skill_call
 
-        parts = [_SYSTEM_PROMPT, f"\nUser: {transcript}"]
+        catalog = _build_tool_catalog(all_tools or tools)
+        parts = [_SYSTEM_PROMPT + catalog, f"\nUser: {transcript}"]
 
         if prior_steps:
             lines = []

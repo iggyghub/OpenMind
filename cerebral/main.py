@@ -6262,7 +6262,8 @@ async def _process_command(
     # mentioned it.
     profile_id = _active_profile.id if _active_profile else None
     recipe_tools = _recipe_store.get_synthetic_tools(profile_id) if profile_id else []
-    tools = shortlist_tools(transcript, _orc.tools_for_llm + recipe_tools)
+    all_tools = _orc.tools_for_llm + recipe_tools
+    tools = shortlist_tools(transcript, all_tools)
 
     await _broadcast({"type": "thinking"})
     # Route a coding-flavoured turn to the user's "coding" pin (their dedicated
@@ -6302,7 +6303,7 @@ async def _process_command(
 
     try:
         enriched = await derive_model_context(profile_id, transcript)
-        response = await chain.run(enriched, tools, on_chain_done=_on_chain_done)
+        response = await chain.run(enriched, tools, all_tools=all_tools, on_chain_done=_on_chain_done)
 
     except asyncio.CancelledError:
         # S20 (#303) -- interrupt_turn IPC cancelled this task.

@@ -60,6 +60,7 @@ class ChainEngine:
         transcript: str,
         tools: list[dict],
         *,
+        all_tools: list[dict] | None = None,
         max_steps: int = MAX_CHAIN_STEPS,
         on_chain_done: "_ChainDoneFn | None" = None,
         run_id: "str | None" = None,
@@ -67,6 +68,9 @@ class ChainEngine:
     ) -> str:
         """Run the chaining loop. Returns the final text response to speak.
 
+        all_tools -- full tool registry (before shortlisting) so the planner
+        can inject a compact catalog into the system prompt. The model sees
+        what exists even when only ~30 tools get full schemas.
         on_chain_done -- optional async callback fired when the planner returns
         text naturally (not cap/denial/error) after 2+ successful steps. Receives
         the list of completed step dicts so the caller can offer to save a Recipe.
@@ -92,7 +96,7 @@ class ChainEngine:
                 resume[s["sig"]] = s
 
         for step_num in range(max_steps):
-            result = await self._planner.plan(transcript, tools, prior_steps=prior_steps)
+            result = await self._planner.plan(transcript, tools, all_tools=all_tools, prior_steps=prior_steps)
             logger.info("[chain] step %d: planner returned %s", step_num + 1, type(result).__name__)
 
             if isinstance(result, str):
@@ -112,7 +116,7 @@ class ChainEngine:
             if val_err:
                 logger.warning("[chain] step %d: arg validation failed: %s", step_num + 1, val_err)
                 result = await self._planner.plan(
-                    transcript, tools, error=val_err, prior_steps=prior_steps
+                    transcript, tools, all_tools=all_tools, error=val_err, prior_steps=prior_steps
                 )
                 if not isinstance(result, ToolCall):
                     return result if isinstance(result, str) else "Something went wrong. Please try again."

@@ -7,6 +7,12 @@ description: Scaffold an ADR-0005-compliant hand-authored MCP plugin skeleton un
 
 ## Quick start
 
+0. **Check prior art first.** Before scaffolding, search the web for an existing
+   implementation of this capability from another agent harness or MCP server
+   (MCP registries, LangChain/AutoGPT tools, GitHub). Adapting a proven
+   implementation beats writing one from scratch. Note what you found (or that
+   nothing suitable exists) before proceeding.
+
 1. Pick the plugin shape:
    - Single file: `plugins/<name>.py` (preferred for simple plugins)
    - Package: `plugins/<name>/server.py` (use when the plugin needs sibling modules)

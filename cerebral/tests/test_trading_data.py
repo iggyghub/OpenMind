@@ -12,8 +12,20 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 import yfinance as yf
+from yfinance.exceptions import YFException
 
 from cerebral import trading_data
+
+
+@pytest.fixture(autouse=True)
+def isolated_cache_dir(tmp_path, monkeypatch):
+    """Redirect the module's cache dir to a per-test tmp dir.
+
+    Without this, tests sharing a symbol/date-range key (several use AAPL /
+    2023-01-01 / 2023-01-10) silently read each other's cached CSV instead of
+    exercising their own mocked scenario.
+    """
+    monkeypatch.setattr(trading_data, "_CACHE_DIR", str(tmp_path))
 
 
 @pytest.fixture
@@ -117,11 +129,11 @@ def test_fetch_ohlcv_handles_corrupt_cache(mock_ohlcv_df):
 
 
 def test_fetch_ohlcv_handles_unknown_ticker():
-    """Unknown ticker raises a clear YFError."""
+    """Unknown ticker raises a clear YFException."""
     with patch("cerebral.trading_data.yf.Ticker") as MockTicker:
-        MockTicker.return_value.history.side_effect = yf.YFError("Invalid symbol")
+        MockTicker.return_value.history.side_effect = YFException("Invalid symbol")
 
-        with pytest.raises(yf.YFError, match="Failed to fetch"):
+        with pytest.raises(YFException, match="Failed to fetch"):
             trading_data.fetch_ohlcv("NOPE123", "2023-01-01", "2023-01-10")
 
 
@@ -153,7 +165,7 @@ def test_fetch_ohlcv_reports_missing_columns():
 # ── Cache file tests ──────────────────────────────────────────────
 
 
-def test_fetch_ohlcv_writes_cache_file():
+def test_fetch_ohlcv_writes_cache_file(mock_ohlcv_df):
     """Successful fetch stores data in the cache directory."""
     with patch("cerebral.trading_data.yf.Ticker") as MockTicker:
         MockTicker.return_value.history.return_value = mock_ohlcv_df
@@ -162,9 +174,6 @@ def test_fetch_ohlcv_writes_cache_file():
 
         cache_file = trading_data._cache_path("GOOGL", "2023-01-01", "2023-01-10")
         assert os.path.exists(cache_file)
-
-        # Clean up
-        os.remove(cache_file)
 
 
 def test_cache_path_is_deterministic():
