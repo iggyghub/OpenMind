@@ -7,15 +7,15 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S1b -- #832
+- **Active:** S4 -- #835
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1a -- #831 -- OHLCV data module (yfinance)
-- [ ] S1b -- #832 -- Backtest engine + reference strategy
-- [ ] S2 -- #833 -- Cost/slippage model + OOS + walk-forward gates
-- [ ] S3 -- #834 -- Full gauntlet + strategy card
+- [x] S1b -- #832 -- Backtest engine + reference strategy
+- [x] S2 -- #833 -- Cost/slippage model + OOS + walk-forward gates
+- [x] S3 -- #834 -- Full gauntlet + strategy card
 - [ ] S4 -- #835 -- URL/web/book -> strategy spec
 - [ ] S5a -- #836 -- Alpaca broker integration
 - [ ] S5b -- #837 -- Risk limits + failure behaviour
@@ -31,6 +31,44 @@ below is the detailed human-readable reference for the same 9 slices.
 - PR #840 -- S1a (auto-merged by self_dev_campaign; landed with failing tests
   because the sandbox never had yfinance installed -- patched by hand 2026-08-22,
   see pyproject.toml + cerebral/trading_data.py + its test)
+- PR #841 -- S1b+S2 combined (auto-merged by self_dev_campaign; added
+  cerebral/trading/cost_model.py + gauntlet.py with oos_test()/walk_forward()
+  gates. S1b's own deliverable -- a backtest.run() engine matching
+  `def strategy(data) -> signals`, per issue #832 -- was never built as its
+  own thing; gauntlet.py invented a different strategy_fn interface instead
+  (returns (gross_returns, trades) directly). Queue entry left ticked since
+  redoing S1b now would just produce a second, conflicting engine -- but
+  decision #5 in the table above no longer matches what's implemented.
+  Worth a real decision before S4 builds strategy generation against
+  whichever interface is meant to be canonical.)
+- PR #842 -- S3 -- never cleanly auto-merged (branch was based on a local
+  commit that got superseded before the merge; also independently
+  reinvented cerebral/trading/gauntlet.py from scratch, colliding with
+  PR #841's version). Resolved by hand 2026-08-22: merged run_gauntlet() +
+  StrategyCard into the same gauntlet.py as GauntletGateResult (renamed to
+  avoid the class-name collision with S2's GateResult), then fixed 6 real
+  bugs the merge exposed -- a numpy.bool_ identity bug, a Monte Carlo gate
+  that was statistically meaningless as originally written (permuting a
+  fixed set never changes its mean), a pandas indexing bug, an int-cast
+  bug, a test fixture that ignored which parameter was perturbed, and a
+  wrong expected value in a compound-return test. All 29 trading tests
+  pass. See commit 5a446f9 for the full account. PR #842 itself was never
+  merged on GitHub -- its content now exists directly on local master via
+  this fix instead.
+- No PR -- 2026-08-22, a fresh self_dev_campaign call for S4 got blocked
+  citing PR #840 (S1a's PR, already merged and hand-fixed hours earlier).
+  Root cause: run_id was `campaign-{slug}-s{n}` where n is the loop
+  position WITHIN one campaign() call, not a slice identity -- every fresh
+  invocation's first-processed slice reused run_id "campaign-trading-s1",
+  colliding with S1a's original (persistent, SQLite-backed) ledger entry.
+  _run()'s resume logic replayed that old, already-obsolete failure
+  instead of doing real work on S4. Fixed in commit (see plugins/self_dev.py
+  `_campaign`): run_id now derives from the active slice's label
+  (`campaign-trading-s1a`, `-s4`, etc.), stable and unique per slice
+  regardless of invocation. The three polluted ledger rows
+  (campaign-trading-s1/-s2/-s3) were purged from cerebral/data/openmind.db
+  by hand since S1a-S3's real work is already committed to git and there
+  was nothing legitimate left to resume from them.
 
 ## Thesis
 
