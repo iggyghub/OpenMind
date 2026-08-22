@@ -3784,16 +3784,10 @@
     }
     .docs-version-name { font-family: monospace; }
 
-    /* ── Thinking panel ───────────────────────────────────────────── */
-    .thinking-panel {
-      flex: 1;
-      min-height: 0;
-      display: none;
-      flex-direction: column;
-      background: var(--bg);
-      overflow: hidden;
-    }
-    .thinking-panel.open { display: flex; }
+    /* ── Thinking panel (#816/#824) -- a normal .lib-sub[data-lib="thinking"]
+       library section, opened into .ws-secondary the same way Memory/
+       Insights/Recipes/Job Search already are (see _WS_BUILTINS). No
+       special positioning of its own -- .lib-sub's base rules handle sizing. */
     .thinking-feed {
       flex: 1;
       overflow-y: auto;
@@ -5895,6 +5889,7 @@
         <button class="lib-tab" data-lib="job-search" type="button">Job Search</button>
         <button class="lib-tab" data-lib="videos" type="button">Videos</button>
         <button class="lib-tab" data-lib="github" type="button">GitHub</button>
+        <button class="lib-tab" data-lib="thinking" type="button">Thinking</button>
       </div>
 
       <div class="lib-sub is-active" data-lib="memory">
@@ -6036,6 +6031,15 @@
         </div>
       </div>
 
+      <!-- #816/#824 -- live tool call/result feed, opened via the THINKING
+           pill (builtin:thinking in _WS_BUILTINS). Fed by the existing
+           conversation_turn_emitted handler; no fetch/refresh needed. -->
+      <div class="lib-sub" data-lib="thinking">
+        <div class="thinking-feed" id="thinking-feed">
+          <div class="ps-empty" id="thinking-empty">No tool activity yet.</div>
+        </div>
+      </div>
+
     </section>
 
       </div><!-- /.ws-primary -->
@@ -6093,6 +6097,11 @@
   <script src="../lib/documents-panel.js"></script>
   <!-- Harness panel helpers (S3 #471) -- filters, card grid, detail drawer. -->
   <script src="../lib/harness-panel.js"></script>
+
+  <!-- Thinking panel helpers (#816/#824) -- live tool call/result feed,
+       toggled by the THINKING pill. Dual-mode: window.ThinkingPanelMod
+       here, module.exports for Node tests. -->
+  <script src="../lib/thinking-panel.js"></script>
 
   <!-- Workspace shell (S2 -- #481) -- primary + secondary slot state layer.
        Dual-mode: window.WorkspaceMod here, module.exports for Node tests. -->
@@ -6160,6 +6169,7 @@
     const statePill   = document.getElementById('state-pill');
     const healthDot   = document.getElementById('health-dot');
     const healthPanel = document.getElementById('health-panel');
+    const thinkingFeed  = document.getElementById('thinking-feed'); // #816/#824
     const queueBadge     = document.getElementById('queue-badge');
     const queueBadgeText = document.getElementById('queue-badge-text');
     const queueListEl    = document.getElementById('queue-list');
@@ -6565,6 +6575,20 @@
             const stick = isNearBottom();
             appendTurn(turn);
             if (stick) scrollToBottom();
+
+            // #816/#824 -- same turn also feeds the Thinking library panel.
+            // Pure-string module (no DOM of its own, see lib/thinking-panel.js);
+            // this is the only place that inserts into thinkingFeed.
+            const rowHtml = window.ThinkingPanelMod.rowHtml(turn);
+            if (rowHtml && thinkingFeed) {
+              const emptyEl = document.getElementById('thinking-empty');
+              if (emptyEl) emptyEl.remove();
+              thinkingFeed.insertAdjacentHTML('beforeend', rowHtml);
+              while (thinkingFeed.children.length > window.ThinkingPanelMod.FEED_MAX) {
+                thinkingFeed.removeChild(thinkingFeed.firstChild);
+              }
+              thinkingFeed.scrollTop = thinkingFeed.scrollHeight;
+            }
           }
           break;
         }
@@ -6984,6 +7008,15 @@
       if (!healthPanel.contains(e.target) && e.target !== healthDot) {
         healthPanel.classList.remove('open');
       }
+    });
+
+    // #816/#824 -- THINKING pill opens the live tool call/result feed as a
+    // library panel in the workspace secondary slot (same mechanism as
+    // Memory/Insights/Recipes/Job Search -- see _WS_BUILTINS/_wsMod.open
+    // further down this script). Closing it uses the tab's own × button,
+    // same as every other builtin panel -- no separate toggle needed.
+    statePill.addEventListener('click', () => {
+      _wsMod.open('builtin:thinking');
     });
 
     // Tick once a second so the age string + stale classification stay
@@ -11813,6 +11846,8 @@
       { id: 'builtin:insights',   lib: 'insights',   title: 'Insights',   refresh: 'list_insights' },
       { id: 'builtin:recipes',    lib: 'recipes',    title: 'Recipes',    refresh: 'list_recipes' },
       { id: 'builtin:job-search', lib: 'job-search', title: 'Job Search', refresh: 'list_job_postings' },
+      // #816/#824 -- live-WS-fed (conversation_turn_emitted), no fetch needed.
+      { id: 'builtin:thinking',   lib: 'thinking',   title: 'Thinking',   refresh: null },
     ];
     function _wsBuiltinDef(id) {
       for (var i = 0; i < _WS_BUILTINS.length; i++) {
@@ -11968,7 +12003,7 @@
       // Pull fresh data for the visible panel; stale cache re-renders now.
       if (active) {
         const b = _wsBuiltinDef(active);
-        if (b) sendEvent({ type: b.refresh });
+        if (b && b.refresh) sendEvent({ type: b.refresh }); // #816/#824: null refresh (Thinking) sends nothing
         else _requestPanelSpec(active);
       }
     }

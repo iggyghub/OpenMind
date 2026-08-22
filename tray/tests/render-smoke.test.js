@@ -110,15 +110,16 @@ test('library pane exists with sub-tab bar (S5)', () => {
   expect(pane).not.toBeNull();
   const tabs = pane.querySelector('#lib-tabs');
   expect(tabs).not.toBeNull();
-  // Seven sub-tabs (memory / insights / recipes / documents / job-search / videos / github).
+  // Eight sub-tabs (memory / insights / recipes / documents / job-search /
+  // videos / github / thinking -- #816/#824).
   const tabBtns = pane.querySelectorAll('.lib-tab');
-  expect(tabBtns.length).toBe(7);
+  expect(tabBtns.length).toBe(8);
 });
 
-test('library pane contains memory, insights, recipes, documents, job-search, videos, github sub-sections', () => {
+test('library pane contains memory, insights, recipes, documents, job-search, videos, github, thinking sub-sections', () => {
   const pane = root.querySelector('.pane[data-route="library"]');
   expect(pane).not.toBeNull();
-  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github']) {
+  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github', 'thinking']) {
     const el = pane.querySelector(`.lib-sub[data-lib="${sub}"]`);
     expect(el).not.toBeNull();
   }
@@ -137,6 +138,19 @@ test('section-collapse.js script tag is present (S3)', () => {
   const srcTags = root.querySelectorAll('script[src]');
   const found = srcTags.some(s => (s.getAttribute('src') || '').includes('section-collapse'));
   expect(found).toBe(true);
+});
+
+// ── #816/#824 — Thinking panel wiring present ──────────────────────────────
+
+test('thinking-panel.js script tag is present', () => {
+  const srcTags = root.querySelectorAll('script[src]');
+  const found = srcTags.some(s => (s.getAttribute('src') || '').includes('thinking-panel'));
+  expect(found).toBe(true);
+});
+
+test('THINKING pill and thinking feed element both exist', () => {
+  expect(root.querySelector('#state-pill')).not.toBeNull();
+  expect(root.querySelector('#thinking-feed')).not.toBeNull();
 });
 
 // ── S4 — federated search shell present ──────────────────────────────────────
