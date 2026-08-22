@@ -7,7 +7,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S4 -- #835
+- **Active:** S5a -- #836
 - **Model:** sonnet
 
 ## Queue
@@ -16,7 +16,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 - [x] S1b -- #832 -- Backtest engine + reference strategy
 - [x] S2 -- #833 -- Cost/slippage model + OOS + walk-forward gates
 - [x] S3 -- #834 -- Full gauntlet + strategy card
-- [ ] S4 -- #835 -- URL/web/book -> strategy spec
+- [x] S4 -- #835 -- URL/web/book -> strategy spec
 - [ ] S5a -- #836 -- Alpaca broker integration
 - [ ] S5b -- #837 -- Risk limits + failure behaviour
 - [ ] S5c -- #838 -- Paper forward record + auto-promotion
@@ -69,6 +69,26 @@ below is the detailed human-readable reference for the same 9 slices.
   (campaign-trading-s1/-s2/-s3) were purged from cerebral/data/openmind.db
   by hand since S1a-S3's real work is already committed to git and there
   was nothing legitimate left to resume from them.
+- PR #843 -- S4 -- real fresh work (confirms the run_id fix above worked:
+  its branch descended from current master, not a stale point). Added
+  cerebral/trading_ideas.py (extract_from_url/from_prose/from_book_claim/
+  to_strategy/compile_strategy) + tests. Tests failed on one trivial bug:
+  a stub LLM in the test always returns a hardcoded `[1, 2, 3]` regardless
+  of input, but the assertion checked against the input instead of what
+  the stub actually returns -- fixed by hand, all 6 tests pass.
+  SECURITY (found during hand-verification, not by the auto-merge gate):
+  `compile_strategy` called `exec(code_str, {"__builtins__": __builtins__},
+  ...)` -- unrestricted code execution with full builtins, on code
+  ultimately derived from scraped web content. Hardened with two layers,
+  neither a substitute for real sandboxing: (1) runs the same
+  forbidden-pattern scan builder.py already uses for LLM-generated plugin
+  code (cerebral.security.scan_source -- blocks os/subprocess/exec/eval/
+  pickle/file-write), (2) exec() itself only gets a minimal safe-builtins
+  allowlist (no open/__import__/exec/eval/input), which independently
+  caught an obfuscated `__import__` the regex scan alone missed. Neither
+  layer is a real sandbox -- route this through the ADR-0010 sandbox
+  self_dev already uses for untrusted code before S5+ runs strategy code
+  against a live broker connection.
 
 ## Thesis
 
@@ -280,6 +300,13 @@ the same penny stock sector.
 - **Anything needing a real broker connection to verify** -> append to
   `docs/trading-live-verify.md`; do not perform it in a loop session.
 - Seam rule (#153/#385): no `from plugins.<x> import ...` inside `cerebral/`.
+- **`trading_ideas.compile_strategy` is not real sandboxing.** It exec()s
+  code ultimately derived from scraped web content, hardened with a
+  forbidden-pattern scan + a minimal builtins allowlist (2026-08-22, see
+  PR #843 in Landed PRs) -- but that's a partial mitigation, not the
+  ADR-0010 sandbox self_dev uses for untrusted code. Route strategy
+  execution through that sandbox for real before S5+ runs generated
+  strategy code against a live broker connection.
 
 ## Future campaigns (explicitly out of scope for S1-S6)
 
