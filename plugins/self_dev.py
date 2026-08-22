@@ -10,13 +10,19 @@ merged change goes live. No-op if already up-to-date.
 
 S4 originally added a blast-radius gate (ADR-0015 decision 5): a guardrail
 file in the diff, or red tests, escalated to human review instead of merging.
-The 2026-08-21 "full auto-merge" amendment removed that block -- every run
-auto-merges + self_dev_loads regardless of guardrail/test status. Detection
-(is_guardrail_diff / GUARDRAIL_PATHS) is unchanged and still runs, purely for
-visibility (recorded as a system_event, included in the tool result); it no
-longer blocks anything. The safety net for a bad self-merge is the launcher's
-boot self-check + SHA/DB rollback (tray/lib/boot-check.js, SD-3), which is
-independent of this gate and still runs on every self-dev restart.
+The 2026-08-21 "full auto-merge" amendment removed that block entirely.
+2026-08-22 tightening: test status is gated again -- a run whose tests don't
+pass (including tests that fail to even collect) opens its PR but does not
+merge, returning merge_decision "tests_failed" instead. This reverses only
+the test half of the amendment: it was letting genuinely broken code onto
+master silently (PR #840 merged with an uncollectable test suite -- a missing
+dependency; PR #842 merged with a Monte Carlo gate that was statistically
+meaningless as written). Guardrail-path hits remain informational only, per
+the original amendment -- detection (is_guardrail_diff / GUARDRAIL_PATHS)
+still runs and is recorded as a system_event, but doesn't block merge on its
+own. The safety net for a bad self-merge that DOES land is the launcher's
+boot self-check + SHA/DB rollback (tray/lib/boot-check.js, SD-3), independent
+of this gate and still runs on every self-dev restart.
 
 Issue #780 wires cerebral.llm.step_ledger.StepLedger into _run: each completed
 phase (clone / edit / test / pr) is recorded keyed by run_id. Re-invoking with
@@ -105,6 +111,27 @@ GUARDRAIL_PATHS: frozenset[str] = frozenset({
                                 # test gate runs pytest only and cannot validate
                                 # JS (incl. tray/lib/boot-check.js, SD-3).
 })
+
+
+# Substrings observed in real `gh pr merge` failures when a PR's branch has
+# fallen behind master (another slice merged first) -- as opposed to other
+# merge failures (auth, network, rate limit) that a retry can't fix.
+_MERGE_CONFLICT_MARKERS = (
+    "not mergeable",
+    "cannot be cleanly created",
+    "conflicting",
+)
+
+
+def _is_merge_conflict_error(text: str) -> bool:
+    """True if a failed run's error text looks like a stale-branch conflict.
+
+    Used by _campaign to decide whether a single re-clone-and-retry is worth
+    attempting (PR #842's failure mode) versus an error a retry can't help
+    with. Pure function, case-insensitive substring match -- no side effects.
+    """
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _MERGE_CONFLICT_MARKERS)
 
 
 def is_guardrail_diff(changed_files: Iterable[str]) -> "tuple[bool, str]":
@@ -719,12 +746,16 @@ class SelfDevPlugin:
                 "is_error": False,
             })
 
-        # 5. Blast-radius check -- ADR-0015 decision 5 amendment (2026-08-21,
-        #    "full auto-merge"): guardrail-path hits and red tests are still
-        #    detected and recorded for visibility, but no longer block the
-        #    merge. Safety net for a bad self-merge is the launcher's boot
-        #    self-check + SHA/DB rollback (tray/lib/boot-check.js, SD-3) --
-        #    unrelated to and unaffected by this gate.
+        # 5. Blast-radius check -- guardrail-path hits are detected and
+        #    recorded for visibility but do not block merge on their own
+        #    (ADR-0015 decision 5 amendment, 2026-08-21 "full auto-merge").
+        #    Test status DOES gate merge again (2026-08-22 tightening): the
+        #    original amendment let PR #840 (S1a) and PR #842 (S3) both merge
+        #    with tests that never even ran -- collection errors and a
+        #    statistically meaningless Monte Carlo gate -- because nothing
+        #    checked test_passed before merging. Safety net for a bad
+        #    self-merge is still the launcher's boot self-check + SHA/DB
+        #    rollback (tray/lib/boot-check.js, SD-3), independent of this gate.
         guardrail_hit = False
         escalation_reason = ""
         try:
@@ -747,10 +778,25 @@ class SelfDevPlugin:
             except Exception:
                 logger.exception(
                     "[self_dev] record_turn_fn failed for run %r -- "
-                    "auto-merge proceeding regardless", run_id,
+                    "merge decision proceeding regardless", run_id,
                 )
 
-        # 6. Auto-merge (always -- decision 5 amendment, 2026-08-21).
+        if not test_passed:
+            # PR stays open for review -- this is a normal, non-error outcome
+            # (the run itself succeeded; it just isn't safe to merge red).
+            return ToolResult(content=json.dumps({
+                "run_id": run_id,
+                "clone_dir": str(clone_dir),
+                "branch": branch,
+                "test_passed": test_passed,
+                "test_summary": test_output[:500],
+                "pr_url": pr_url,
+                "merge_decision": "tests_failed",
+                "guardrail_hit": guardrail_hit,
+                "guardrail_reason": escalation_reason,
+            }))
+
+        # 6. Auto-merge (tests passed; guardrail hits remain informational).
         try:
             self._merge(pr_url)
         except Exception as exc:
@@ -844,14 +890,27 @@ class SelfDevPlugin:
     async def _campaign(self, args: dict) -> ToolResult:
         """Drive a multi-slice campaign from a driver .md file (SD-5/#807).
 
-        Loops around the existing _run() engine (unchanged).  Each iteration:
+        Loops around the existing _run() engine. Each iteration:
           1. Parse Status/Active/Model from the driver file.
           2. Fetch the active issue's spec via self._issue_fn (injectable seam).
           3. Call self._run with the issue spec as change_description.
           4. auto_merge -> tick queue, advance Active+Model, append PR, continue.
-          5. error -> set Status: blocked in the driver file, stop. (A non-
-             "auto_merge" merge_decision is defensive dead code post-2026-08-21
-             "full auto-merge" -- _run() no longer returns "escalate".)
+          5. tests_failed / other non-error merge_decision -> set Status: blocked,
+             stop (PR is left open for review; see 2026-08-22 test-status gate
+             in _run()).
+          6. is_error AND the failure looks like a merge conflict (the PR's
+             branch fell behind master -- e.g. another slice merged first) ->
+             retry ONCE with a fresh run_id, forcing a brand-new clone that
+             picks up whatever has since landed on master. This is what would
+             have avoided PR #842 (S3): its branch was cloned before PR #841
+             (S2) merged, so by the time #842 tried to merge, master had moved
+             and the two slices had independently written colliding versions
+             of the same new file. A fresh clone means the retry's edit step
+             sees #841's real code already in the tree instead of reinventing
+             it. If the retry also fails (conflict or otherwise), fall through
+             to the normal blocked-and-stop handling -- this is a bounded
+             single retry, not a loop.
+          7. is_error for any other reason -> set Status: blocked, stop.
         """
         driver_file_str = ((args or {}).get("driver_file") or "").strip()
         if not driver_file_str:
@@ -907,12 +966,37 @@ class SelfDevPlugin:
                 "Implement ONLY this slice exactly as the issue specifies:\n\n"
                 + issue_text
             )
-            run_id = f"campaign-{slug}-s{n}"
+            # run_id keys the step ledger (a persistent SQLite file, not
+            # per-invocation state) -- it must identify the SLICE, not this
+            # call's position in its own loop. `s{n}` collided across
+            # separate campaign() invocations: invocation 1 processed S1a,
+            # S1b+S2, S3 as n=1,2,3; invocation 2 (this one, started fresh
+            # for S4 after those were already done) began its own loop back
+            # at n=1, generating the SAME run_id "campaign-trading-s1" that
+            # S1a used hours earlier. _run()'s resume logic then replayed
+            # that old, already-fixed-by-hand S1a failure instead of doing
+            # any real work on S4. A label-derived id is stable and unique
+            # per slice regardless of which invocation or loop position
+            # processes it.
+            label_slug = re.sub(r"[^a-z0-9]+", "-", active_label.lower()).strip("-")
+            run_id = f"campaign-{slug}-{label_slug}"
 
             run_result = await self._run({
                 "change_description": change_description,
                 "run_id": run_id,
             })
+
+            # Bounded single retry: a conflict-shaped failure means the clone
+            # this slice worked from is stale (something else merged to
+            # master since). A fresh run_id forces _run() to clone again,
+            # picking up whatever landed -- see PR #842 in TRADING.md's
+            # Landed PRs for the failure mode this specifically targets.
+            if run_result.is_error and _is_merge_conflict_error(run_result.content):
+                retry_run_id = f"{run_id}-retry"
+                run_result = await self._run({
+                    "change_description": change_description,
+                    "run_id": retry_run_id,
+                })
 
             if run_result.is_error:
                 reason = f"run error: {run_result.content[:200]}"
@@ -951,11 +1035,14 @@ class SelfDevPlugin:
                 driver_path.write_text(text, encoding="utf-8")
                 # Continue loop to the next slice.
             else:
-                reason = data.get("escalation_reason", "escalated")
+                if merge_decision == "tests_failed":
+                    reason = data.get("test_summary") or "tests did not pass"
+                else:
+                    reason = data.get("guardrail_reason") or data.get("escalation_reason") or "escalated"
                 text = driver_path.read_text(encoding="utf-8")
                 text = _set_driver_status(
                     text, "blocked",
-                    f"PR {pr_url} escalated: {reason}",
+                    f"PR {pr_url} not merged ({merge_decision}): {reason}",
                 )
                 driver_path.write_text(text, encoding="utf-8")
                 return ToolResult(content=json.dumps({

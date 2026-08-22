@@ -60,7 +60,12 @@
     if (!turn) return '';
     var content = turn.content || {};
     if (turn.kind === 'tool_call') {
-      return '<div class="thinking-row tool_call">' + escHtml(humanizeToolName(content.name)) + '</div>';
+      // is-pending: a long-running tool (self_dev_campaign can run for
+      // minutes across clone/edit/test/pr) otherwise sits static with no
+      // sign it's still working. The renderer clears this class once the
+      // matching tool_result turn arrives (main.html, conversation_turn_
+      // emitted handler) -- see the CSS spinner on .tool_call.is-pending.
+      return '<div class="thinking-row tool_call is-pending">' + escHtml(humanizeToolName(content.name)) + '</div>';
     }
     if (turn.kind === 'tool_result') {
       var text = String(content.result || '').replace(/\n/g, ' ').slice(0, RESULT_MAX_CHARS);

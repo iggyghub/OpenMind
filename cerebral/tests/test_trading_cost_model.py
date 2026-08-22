@@ -40,7 +40,9 @@ def test_backtest_result_reports_gross_and_net():
     config = {"min_spread_pct": 0.01, "max_spread_pct": 0.03}
     result = compute_backtest_result(gross, trades, config)
     
-    assert result.cumulative_gross_return == pytest.approx(0.0, abs=1e-6)
+    # Compounding +1% then -1% is 1.01 * 0.99 - 1 = -0.0001, not exactly 0
+    # (multiplicative returns, not additive).
+    assert result.cumulative_gross_return == pytest.approx(-0.0001, abs=1e-6)
     # Net should be lower due to cost deduction
     assert result.cumulative_net_return < result.cumulative_gross_return
     assert isinstance(result.net_returns, list)
