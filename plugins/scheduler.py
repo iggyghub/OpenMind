@@ -110,6 +110,19 @@ class SchedulerPlugin:
                     "required": ["id"],
                 },
             ),
+            Tool(
+                name="run_paper_strategy",
+                description="Schedules a validated strategy for automatic paper trading. Uses broker paper mode and logs fills.",
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "strategy_name": {"type": "string", "description": "Name of the strategy to promote"},
+                        "interval": {"type": "string", "description": "Run interval, e.g., '5m', '1h'", "default": "5m"},
+                    },
+                    "required": ["strategy_name"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -121,6 +134,8 @@ class SchedulerPlugin:
             return self._update_event(args)
         if tool_name == "delete_event":
             return self._delete_event(args)
+        if tool_name == "run_paper_strategy":
+            return self._run_paper_strategy(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -202,6 +217,21 @@ class SchedulerPlugin:
         self._con.execute("DELETE FROM events WHERE id=?", (event_id,))
         self._con.commit()
         return ToolResult(content=json.dumps({"id": event_id, "deleted": True}))
+
+    def _run_paper_strategy(self, args: dict) -> ToolResult:
+        strategy_name = args.get("strategy_name", "").strip()
+        interval = args.get("interval", "5m")
+        if not strategy_name:
+            return ToolResult(content="strategy_name is required", is_error=True)
+        
+        from datetime import datetime
+        start_iso = datetime.now().isoformat()
+        cur = self._con.execute(
+            "INSERT INTO events (title, start_iso, recurrence) VALUES (?, ?, ?)",
+            (f"paper:{strategy_name}", start_iso, interval),
+        )
+        self._con.commit()
+        return ToolResult(content=json.dumps({"id": cur.lastrowid, "status": "scheduled", "type": "paper_trade"}))
 
 
 def _row_to_event(row: sqlite3.Row) -> dict:

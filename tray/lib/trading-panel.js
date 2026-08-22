@@ -73,6 +73,13 @@ export function renderStrategyCard(card, container) {
     ctx.stroke();
   }
 
+  // Append forward record view if strategy was auto-promoted
+  if (card.forward_record) {
+    const forwardContainer = document.createElement("div");
+    container.appendChild(forwardContainer);
+    renderForwardRecord(card.forward_record, forwardContainer);
+  }
+
   // Inject minimal styles
   const styleId = "trading-panel-styles";
   if (!document.getElementById(styleId)) {
@@ -94,5 +101,61 @@ export function renderStrategyCard(card, container) {
       .caveat { background: #f8f9fa; padding: 8px; border-radius: 4px; font-size: 0.85em; color: #666; }
     `;
     document.head.appendChild(style);
+  }
+}
+
+export function renderForwardRecord(record, container) {
+  if (!container || !record) return;
+  const { mean, lower, upper, is_sufficient } = record.ci;
+  const tradeCount = record.trade_count;
+  const label = is_sufficient ? "sufficient sample" : "insufficient sample";
+  const labelClass = is_sufficient ? "pass" : "fail";
+
+  container.innerHTML = `
+    <div class="strategy-card forward-record">
+      <div class="card-header verdict-${labelClass}">
+        <h3>Paper Trading Record</h3>
+        <p class="hypothesis">${label} (${tradeCount} trades)</p>
+      </div>
+      <div class="card-section">
+        <h3>Expectancy & CI</h3>
+        <p>Mean: ${(mean * 100).toFixed(2)}% | 95% CI: [${(lower * 100).toFixed(2)}%, ${(upper * 100).toFixed(2)}%]</p>
+      </div>
+      <div class="card-section">
+        <h3>Trade Log</h3>
+        <ul class="trade-log">
+          ${record.fills.slice(0, 5).map(f => `<li>${f.symbol} ${f.side} ${f.qty} @ ${f.price}</li>`).join("")}
+          ${record.fills.length > 5 ? '<li>... and more</li>' : ''}
+        </ul>
+      </div>
+      <div class="card-section">
+        <h3>Equity Curve</h3>
+        <canvas id="forward-equity-canvas" style="width:100%; height:150px;"></canvas>
+      </div>
+      <div class="card-section caveat">
+        <p><strong>Note:</strong> All metrics are paper-based. Not mixed with backtest figures.</p>
+      </div>
+    </div>
+  `;
+
+  // Plot equity curve
+  const canvas = container.querySelector("#forward-equity-canvas");
+  if (canvas && record.equity_curve.length > 0) {
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width = canvas.clientWidth;
+    const h = canvas.height = canvas.clientHeight;
+    const eq = record.equity_curve;
+    const min = Math.min(...eq);
+    const max = Math.max(...eq);
+    const range = max - min || 1;
+    ctx.beginPath();
+    eq.forEach((val, i) => {
+      const x = (i / (eq.length - 1)) * w;
+      const y = h - ((val - min) / range) * h;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = "#199e70";
+    ctx.lineWidth = 2;
+    ctx.stroke();
   }
 }

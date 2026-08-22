@@ -185,6 +185,9 @@ def run_gauntlet(
     adv_threshold_pct: float = 0.075,
     holding_period: int = 1,
     seed: int = 42,
+    scheduler: Any = None,
+    paper_broker: Any = None,
+    auto_promote: bool = True,
 ) -> StrategyCard:
     rng = np.random.default_rng(seed)
     params = params or {}
@@ -192,6 +195,14 @@ def run_gauntlet(
     daily_returns = np.diff(equity_curve) / equity_curve[:-1] if len(equity_curve) > 1 else np.array([0.0])
     sharpe = metrics.get("sharpe", float(np.mean(daily_returns) / np.std(daily_returns) * np.sqrt(252))) if np.std(daily_returns) > 0 else 0.0
     total_return = (equity_curve[-1] / equity_curve[0]) - 1 if equity_curve[0] != 0 else 0.0
+    
+    forward_record = None
+    if paper_broker:
+        try:
+            from .forward_record import ForwardRecord
+            forward_record = ForwardRecord()
+        except ImportError:
+            pass
 
     gates: List[GauntletGateResult] = []
     verdict = "VALIDATED"
@@ -281,7 +292,20 @@ def run_gauntlet(
     sharpe_ci = _bootstrap_ci(daily_returns, rng=rng)
     total_return_ci = _bootstrap_ci(np.cumprod(1 + daily_returns) - 1, rng=rng)
 
-    return StrategyCard(
+    # Auto-promote to paper trading on gauntlet pass
+    if auto_promote and verdict == "VALIDATED":
+        if scheduler:
+            from datetime import datetime
+            scheduler._con.execute(
+                "INSERT INTO events (title, start_iso, recurrence) VALUES (?, ?, ?)",
+                (f"paper:{hypothesis or provenance}", datetime.now().isoformat(), "5m"),
+            )
+            scheduler._con.commit()
+        if forward_record:
+            paper_broker.forward_record = forward_record
+            forward_record.add_fill("INIT", "N/A", 0, 0, pnl=0) # Seed record
+
+    card = StrategyCard(
         hypothesis=hypothesis,
         provenance=provenance,
         gates=gates,
@@ -292,3 +316,5 @@ def run_gauntlet(
         total_return_ci=total_return_ci,
         verdict=verdict,
     )
+    card.forward_record = forward_record
+    return card
