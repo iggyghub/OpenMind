@@ -136,14 +136,30 @@
     return readState().open.indexOf(String(panelId || '')) !== -1;
   }
 
+  // #829 -- toggle a panel open exclusively (closing every other open
+  // panel first, so it replaces whatever was showing instead of adding a
+  // tab beside it) or closed if it's already the sole shown panel. Built
+  // for the THINKING pill, which should act as a real open/close toggle
+  // rather than an open-only control like the +Panel dropdown.
+  function toggleExclusive(panelId) {
+    var id = String(panelId || '');
+    if (!id) return readState();
+    var state = readState();
+    var isShown = state.active === id && state.open.indexOf(id) !== -1;
+    if (isShown) return close(id);
+    state.open.forEach(function (openId) { if (openId !== id) close(openId); });
+    return open(id);
+  }
+
   var _exports = {
     STORAGE_KEY_OPEN:   STORAGE_KEY_OPEN,
     STORAGE_KEY_ACTIVE: STORAGE_KEY_ACTIVE,
-    readState: readState,
-    open:      open,
-    close:     close,
-    activate:  activate,
-    isOpen:    isOpen,
+    readState:       readState,
+    open:            open,
+    close:           close,
+    activate:        activate,
+    isOpen:          isOpen,
+    toggleExclusive: toggleExclusive,
   };
 
   if (typeof module === 'object' && module && module.exports) {
