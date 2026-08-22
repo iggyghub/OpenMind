@@ -239,3 +239,51 @@ class TestConfigurableThresholds:
         )
         assert card.gates[0].passed is True
         assert card.verdict == "VALIDATED"
+
+
+class TestAutoPromote:
+    """S5c: a VALIDATED verdict schedules paper trading via scheduler's own
+    public API, not by writing to scheduler._con directly (seam rule), and
+    never fabricates a fill to seed the forward record (would silently
+    count toward the 30-trade minimum without being a real trade)."""
+
+    def test_validated_calls_scheduler_public_api(self):
+        calls = []
+
+        class FakeScheduler:
+            def _run_paper_strategy(self, args):
+                calls.append(args)
+
+        card = run_gauntlet(
+            make_backtest, make_prices(), make_params(), make_benchmark_prices(),
+            make_positions(), hypothesis="MA cross test", provenance="internal",
+            scheduler=FakeScheduler(), seed=42,
+        )
+        assert card.verdict == "VALIDATED"
+        assert len(calls) == 1
+        assert calls[0]["strategy_name"] == "MA cross test"
+        assert calls[0]["interval"] == "5m"
+
+    def test_unvalidated_does_not_schedule(self):
+        calls = []
+
+        class FakeScheduler:
+            def _run_paper_strategy(self, args):
+                calls.append(args)
+
+        card = run_gauntlet(
+            lambda p, pr: ([100.0] * len(p), {"sharpe": 0.0, "total_return": 0.0}),
+            make_prices(), make_params(), make_benchmark_prices(), make_positions(),
+            scheduler=FakeScheduler(), seed=42,
+        )
+        assert card.verdict == "UNVALIDATED"
+        assert calls == []
+
+    def test_no_scheduler_does_not_raise(self):
+        # scheduler=None (the default) must be a safe no-op, not an
+        # AttributeError on a None scheduler.
+        card = run_gauntlet(
+            make_backtest, make_prices(), make_params(), make_benchmark_prices(),
+            make_positions(), seed=42,
+        )
+        assert card.verdict == "VALIDATED"

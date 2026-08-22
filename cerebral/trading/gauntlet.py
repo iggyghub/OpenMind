@@ -185,6 +185,14 @@ def run_gauntlet(
     adv_threshold_pct: float = 0.075,
     holding_period: int = 1,
     seed: int = 42,
+    scheduler: Any = None,
+    # ponytail: paper_broker is accepted but not yet used -- scheduling a
+    # paper-trading job (via scheduler) is wired, but nothing consumes that
+    # scheduled event and actually calls paper_broker.place_order yet. That
+    # consumer is a real follow-up piece, not built by this slice; see
+    # TRADING.md's Landed PRs note for S5c.
+    paper_broker: Any = None,
+    auto_promote: bool = True,
 ) -> StrategyCard:
     rng = np.random.default_rng(seed)
     params = params or {}
@@ -281,7 +289,26 @@ def run_gauntlet(
     sharpe_ci = _bootstrap_ci(daily_returns, rng=rng)
     total_return_ci = _bootstrap_ci(np.cumprod(1 + daily_returns) - 1, rng=rng)
 
-    return StrategyCard(
+    # Auto-promote to paper trading on gauntlet pass. Routes through
+    # scheduler's own public _run_paper_strategy (added alongside this
+    # slice) rather than writing to scheduler._con directly -- reaching
+    # into a plugin's private connection from cerebral/ is exactly what
+    # the seam rule (an explicit S5c acceptance criterion) exists to
+    # prevent, and scheduler.py already exposes the real API for this.
+    #
+    # No seed fill: ForwardRecord's own __post_init__ already creates the
+    # table on construction, so there was never a reason to write one. A
+    # fabricated ("INIT", pnl=0) row would have silently counted toward
+    # the 30-trade minimum without being a real trade -- the forward
+    # record only ever gets real broker fills once actual paper trading
+    # (via the scheduled job above) starts placing and recording them.
+    if auto_promote and verdict == "VALIDATED" and scheduler:
+        scheduler._run_paper_strategy({
+            "strategy_name": hypothesis or provenance,
+            "interval": "5m",
+        })
+
+    card = StrategyCard(
         hypothesis=hypothesis,
         provenance=provenance,
         gates=gates,
@@ -292,3 +319,4 @@ def run_gauntlet(
         total_return_ci=total_return_ci,
         verdict=verdict,
     )
+    return card

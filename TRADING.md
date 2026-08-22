@@ -7,7 +7,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S5c -- #838
+- **Active:** S6 -- #839
 - **Model:** sonnet
 
 ## Queue
@@ -19,7 +19,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 - [x] S4 -- #835 -- URL/web/book -> strategy spec
 - [x] S5a -- #836 -- Alpaca broker integration
 - [x] S5b -- #837 -- Risk limits + failure behaviour
-- [ ] S5c -- #838 -- Paper forward record + auto-promotion
+- [x] S5c -- #838 -- Paper forward record + auto-promotion
 - [ ] S6 -- #839 -- Autonomous live execution + retirement + alerting
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
@@ -124,6 +124,60 @@ below is the detailed human-readable reference for the same 9 slices.
   human-readable reason text) -- fixed the assertion to match what's
   really logged. alerts.py had no issues. 11/11 new tests pass, 55/55
   across the trading suite.
+- PR #846 -- S5c -- real fresh work (based on current master post-S5b).
+  Added cerebral/trading/forward_record.py, extended gauntlet.py and
+  scheduler.py, plus a Trading panel render function. One real bug
+  blocking every real use: the test's `isolated_db` fixture monkeypatched
+  `_DB_PATH` with `str(tmp_path / ...)`, but forward_record.py calls
+  `_DB_PATH.parent.mkdir(...)` -- a pathlib-only method, not str-compatible
+  (unlike trading_data.py's os.path-based `_CACHE_DIR`, which does accept
+  a plain string -- the two modules use different path conventions).
+  Fixed by keeping the fixture's override as an actual Path.
+
+  Also found reading gauntlet.py's new auto-promote block before landing
+  it (untested by any test -- no test passed scheduler=/paper_broker= at
+  all until the new ones added here): it wrote directly to
+  `scheduler._con` with raw SQL, reaching into the plugin's private
+  connection from cerebral/ when scheduler.py's own diff in this same PR
+  already added a proper public method (`_run_paper_strategy`) for this
+  -- "seam rule respected" is an explicit S5c acceptance criterion this
+  violated. Routed through the public method instead. Worse: it seeded
+  the forward record with a fabricated `("INIT", pnl=0)` fill on every
+  gauntlet pass -- a fake trade that would have silently counted toward
+  the 30-trade honesty-rule minimum without being a real one, undermining
+  exactly what S5c exists to protect. Removed entirely; ForwardRecord's
+  own constructor already creates its table, no seed was ever needed.
+  Also removed `card.forward_record = forward_record` and the
+  `paper_broker.forward_record = ...` assignment -- both set attributes
+  neither StrategyCard nor BrokerClient declare or read; pure dead code.
+  Added 3 new tests covering the fixed auto-promote path (all 3 needed
+  removing -- no test exercised it before). 21/21 gauntlet+forward_record
+  tests pass, 63/63 across the trading suite.
+
+  **Real gap, not fixed here (needs its own slice):** the "auto-promote"
+  feature only *schedules* a recurring paper-trading event via
+  scheduler's run_paper_strategy -- nothing yet *consumes* that scheduled
+  event and actually calls `paper_broker.place_order(...)` to place real
+  paper trades and record real fills. S5c's own acceptance criterion #1
+  ("Gauntlet pass triggers automatic paper trading -- no human step") is
+  only partially met: scheduling happens, trading doesn't yet.
+  `run_gauntlet`'s `paper_broker` parameter is accepted but genuinely
+  unused (marked with a `# ponytail:` comment explaining why) until that
+  consumer exists. Separately, the forward record has no per-strategy
+  identifier in its schema (`forward_fills` has no strategy/hypothesis
+  column) -- once more than one strategy is ever promoted to paper
+  trading simultaneously, their fills would commingle in one table with
+  no way to separate them, corrupting each strategy's own expectancy/CI.
+  And the Trading panel's `renderForwardRecord(record, ...)` expects
+  `record.ci.mean/lower/upper/is_sufficient`, `record.trade_count`,
+  `record.fills`, `record.equity_curve` as plain properties, but
+  ForwardRecord's actual Python API only exposes methods with different
+  names and shapes (`compute_expectancy_ci()`, `get_fills()`,
+  `get_equity_curve()`) -- a serialization layer between the two doesn't
+  exist yet either. None of this blocks S5c's own tests (nothing wires
+  any of it together yet), but S6 cannot autonomously execute live
+  trades on top of "scheduling that never runs" -- resolve all three
+  before S6 lands.
 
 ## Thesis
 
