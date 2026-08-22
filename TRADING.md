@@ -7,7 +7,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S5a -- #836
+- **Active:** S5b -- #837
 - **Model:** sonnet
 
 ## Queue
@@ -17,7 +17,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 - [x] S2 -- #833 -- Cost/slippage model + OOS + walk-forward gates
 - [x] S3 -- #834 -- Full gauntlet + strategy card
 - [x] S4 -- #835 -- URL/web/book -> strategy spec
-- [ ] S5a -- #836 -- Alpaca broker integration
+- [x] S5a -- #836 -- Alpaca broker integration
 - [ ] S5b -- #837 -- Risk limits + failure behaviour
 - [ ] S5c -- #838 -- Paper forward record + auto-promotion
 - [ ] S6 -- #839 -- Autonomous live execution + retirement + alerting
@@ -89,6 +89,21 @@ below is the detailed human-readable reference for the same 9 slices.
   layer is a real sandbox -- route this through the ADR-0010 sandbox
   self_dev already uses for untrusted code before S5+ runs strategy code
   against a live broker connection.
+- PR #844 -- S5a -- real fresh work (based on current master post-S4, same
+  as #843). Added cerebral/trading/broker.py (BrokerClient Protocol,
+  AlpacaBrokerClient, StubBrokerClient) + tests. One real test failure:
+  `StubBrokerClient.cancel_order` did `Order(**self._orders[order_id],
+  status="CANCELED")` -- tried to ** an Order dataclass instance instead
+  of a dict, always raised TypeError. Order is a plain mutable dataclass;
+  fixed by mutating `.status` in place instead of reconstructing.
+  SECURITY/CORRECTNESS (found during hand-verification, untested by the
+  gate since no test exercised it): `AlpacaBrokerClient.place_order`
+  hardcoded `limit_price="0.01"` for every limit order -- the
+  `BrokerClient` Protocol had no way to pass a real one in the first
+  place. Any live limit order would have silently submitted at one cent.
+  Added `limit_price: Optional[float] = None` to the Protocol and both
+  implementations; both now raise ValueError if a limit order arrives
+  with no price. New test covers the missing-price rejection.
 
 ## Thesis
 
