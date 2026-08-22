@@ -3,11 +3,16 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready
+## Status: S6 landed (lifecycle mechanics only) -- autonomous execution is not
+wired end-to-end yet. See the S6 entry in Landed PRs for the specific gaps.
+Do not risk live capital on this until a follow-up slice closes them.
 
 ## Next slice -- start here
 
-- **Active:** S6 -- #839
+- **Active:** none queued -- see S6's Landed PRs note for what a follow-up
+  slice needs to cover (paper-trade consumer, per-strategy forward-record
+  scoping, panel wiring). Not filed as an issue yet -- flag to the user
+  before creating one.
 - **Model:** sonnet
 
 ## Queue
@@ -20,7 +25,8 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 - [x] S5a -- #836 -- Alpaca broker integration
 - [x] S5b -- #837 -- Risk limits + failure behaviour
 - [x] S5c -- #838 -- Paper forward record + auto-promotion
-- [ ] S6 -- #839 -- Autonomous live execution + retirement + alerting
+- [x] S6 -- #839 -- Autonomous live execution + retirement + alerting
+  (lifecycle mechanics landed; wiring gaps remain -- see Landed PRs note)
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -178,6 +184,84 @@ below is the detailed human-readable reference for the same 9 slices.
   any of it together yet), but S6 cannot autonomously execute live
   trades on top of "scheduling that never runs" -- resolve all three
   before S6 lands.
+- PR #847 -- S6 -- real fresh work (based on current master post-S5c).
+  Added cerebral/trading/lifecycle.py (StrategyLifecycle: paper->live
+  graduation on rolling-CI, position-size ramp 25%/50%/100%, drawdown +
+  rolling-CI retirement, alert emission) and extended forward_record.py
+  (phase column distinguishing paper/live fills, add_live_fill,
+  compute_live_expectancy_ci) and risk_limits.py (check_correlation_limit,
+  the multi-strategy correlation block docs/trading-live-verify.md
+  describes). 5/5 new lifecycle tests + the existing trading suite passed
+  in the sandbox, but the campaign's merge gate reported `tests_failed`
+  anyway -- caused by pre-existing, unrelated breakage in the shared
+  cerebral/tests/ suite it runs as its gate (books-campaign test bugs +
+  two same-day stale-test issues in the self-dev/chain-engine suites; all
+  fixed by hand in separate commits so the global gate is green again).
+
+  One real bug found while hand-verifying lifecycle.py before landing it
+  (untested -- test_trading_lifecycle.py only covered the drawdown-breach
+  retirement path, never the rolling-CI path): `check_retirement`'s
+  rolling-CI check computed each "recent P&L" as
+  `live_equity_curve[-1] - live_equity_curve[i - 1]` -- always relative to
+  the *current* running total, not the consecutive difference between
+  trades. That collapses the true per-trade variance and can produce a
+  false negative: a strategy quietly losing money (true last-30 mean
+  +0.17, correct lower-CI bound -0.16, should retire) computed a buggy
+  mean of +2.39 and lower-CI bound of +1.66, staying live instead of
+  halting -- the exact "genuinely broken code looks fine to the gate"
+  failure mode this whole campaign's hand-verification step exists to
+  catch, just in the money-safety code path this time instead of a
+  test file. Fixed with `np.diff(equity_curve, prepend=0.0)` (correct
+  per-trade P&L in one line) and added a regression test that fails
+  against the old formula and passes against the fix.
+
+  **S6 does NOT resolve the three gaps S5c's note said must be resolved
+  first, and the campaign's stated goal ("autonomous live execution +
+  retirement + alerting") is not actually achieved end-to-end:**
+  1. **No paper-trade consumer, and worse than documented.** S5c's note
+     said gauntlet.py's auto-promote *schedules* via
+     `scheduler._run_paper_strategy(...)` but nothing *consumes* the
+     scheduled event. Checked plugins/scheduler.py directly (its full git
+     history, not just the working tree): `_run_paper_strategy` has never
+     existed there. The real `SchedulerPlugin` only has generic calendar-
+     event CRUD (`_create_event`/`_list_events`/`_update_event`/
+     `_delete_event`) -- there is no execution loop of any kind. The
+     method exists only as a local `FakeScheduler` class inside
+     test_trading_gauntlet.py. In production `run_gauntlet`'s
+     `scheduler` parameter defaults to `None`, so
+     `if auto_promote and verdict == "VALIDATED" and scheduler:` is
+     always false and auto-promotion has never fired for a single real
+     gauntlet pass. "Scheduling happens, trading doesn't yet" (S5c's
+     framing) overstates it -- neither has ever actually run.
+  2. **Still no per-strategy forward-record scoping.** S6 added a `phase`
+     column (paper vs. live) to `forward_fills`, a different axis than
+     the one S5c flagged. There is still no strategy/hypothesis
+     identifier column. `StrategyLifecycle.check_graduation(name,
+     record)` takes a `ForwardRecord` per call, implying the caller is
+     responsible for passing a strategy-scoped record, but no such
+     scoping exists anywhere -- if more than one strategy is ever
+     promoted to paper trading, their fills still commingle in one
+     table with no way to separate them.
+  3. **No panel wiring at all (broader than the "shape mismatch" S5c
+     described).** Searched tray/ for `renderForwardRecord` and any
+     reference to `ForwardRecord`: zero matches. The function S5c's note
+     described a shape mismatch against doesn't currently exist in the
+     tray codebase, so it isn't an active bug -- but it also means there
+     is no Trading Panel UI displaying lifecycle status, live/paper
+     fills, or alerts. `StrategyLifecycle.get_open_positions` and
+     `get_alert_history` are stubs with no consumer either.
+
+  Net: S6 delivers real, tested, now-bug-fixed graduation/ramp/retirement/
+  correlation *logic*, safe to build on. It does not deliver autonomous
+  live execution -- nothing in the current codebase can place a real
+  paper or live trade without a human manually calling the broker client.
+  A follow-up slice needs to: (a) give the scheduler plugin (or some
+  other real event loop) an actual paper-trading consumer that calls
+  `broker.place_order(...)`, (b) add a strategy identifier column to
+  forward_fills and thread it through ForwardRecord/StrategyLifecycle,
+  and (c) build the Trading Panel UI this campaign has deferred
+  incrementally since decision #17 in the grill record. Not filed as a
+  GitHub issue by this pass -- that needs the user's go-ahead first.
 
 ## Thesis
 
