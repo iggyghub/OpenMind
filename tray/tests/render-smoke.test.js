@@ -110,19 +110,27 @@ test('library pane exists with sub-tab bar (S5)', () => {
   expect(pane).not.toBeNull();
   const tabs = pane.querySelector('#lib-tabs');
   expect(tabs).not.toBeNull();
-  // Eight sub-tabs (memory / insights / recipes / documents / job-search /
-  // videos / github / thinking -- #816/#824).
+  // Seven sub-tabs (memory / insights / recipes / documents / job-search /
+  // videos / github). Thinking (#816/#825) deliberately has NO tab button --
+  // pill-only, see the test below.
   const tabBtns = pane.querySelectorAll('.lib-tab');
-  expect(tabBtns.length).toBe(8);
+  expect(tabBtns.length).toBe(7);
 });
 
-test('library pane contains memory, insights, recipes, documents, job-search, videos, github, thinking sub-sections', () => {
+test('library pane contains memory, insights, recipes, documents, job-search, videos, github sub-sections', () => {
   const pane = root.querySelector('.pane[data-route="library"]');
   expect(pane).not.toBeNull();
-  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github', 'thinking']) {
+  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github']) {
     const el = pane.querySelector(`.lib-sub[data-lib="${sub}"]`);
     expect(el).not.toBeNull();
   }
+});
+
+test('thinking lib-sub exists but has NO lib-tab button (#825 -- pill-only, not a sidebar tab)', () => {
+  const pane = root.querySelector('.pane[data-route="library"]');
+  expect(pane).not.toBeNull();
+  expect(pane.querySelector('.lib-sub[data-lib="thinking"]')).not.toBeNull();
+  expect(pane.querySelector('.lib-tab[data-lib="thinking"]')).toBeNull();
 });
 
 // ── S5 -- harness pane (renamed from plugins) ─────────────────────────────────
