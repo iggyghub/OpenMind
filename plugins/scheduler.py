@@ -203,6 +203,37 @@ class SchedulerPlugin:
         self._con.commit()
         return ToolResult(content=json.dumps({"id": event_id, "deleted": True}))
 
+    def _run_paper_strategy(self, strategy_name: str, broker, forward_record: "ForwardRecord", config: dict | None = None) -> dict:
+        """Executes a scheduled paper trade for the given strategy."""
+        if not broker or not forward_record:
+            return {"status": "skipped", "reason": "broker/record not provided"}
+        
+        try:
+            order = broker.place_order(
+                symbol=config.get("symbol", "SYMBOL"),
+                qty=config.get("position_size", 1.0),
+                side=config.get("side", "buy"),
+                price=0.0,
+                order_type="market"
+            )
+            if order.status == "FILLED":
+                forward_record.add_fill(
+                    symbol=order.symbol,
+                    side=order.side,
+                    qty=order.qty,
+                    price=order.price,
+                    fees=order.fees,
+                    pnl=0.0,
+                    phase="paper",
+                    strategy_id=strategy_name
+                )
+                logger.info(f"Paper trade executed for {strategy_name}: {order.id}")
+                return {"status": "executed", "order_id": order.id}
+        except Exception as e:
+            logger.warning(f"Paper trade execution failed for {strategy_name}: {e}")
+            return {"status": "error", "reason": str(e)}
+        return {"status": "skipped", "reason": "no signal"}
+
 
 def _row_to_event(row: sqlite3.Row) -> dict:
     return {

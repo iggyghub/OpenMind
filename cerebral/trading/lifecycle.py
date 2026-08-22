@@ -50,7 +50,7 @@ class StrategyLifecycle:
         if state.status != "paper":
             return False
 
-        mean, lower, upper, is_sufficient = record.compute_expectancy_ci()
+        mean, lower, upper, is_sufficient = record.compute_expectancy_ci(strategy_id=name)
         if is_sufficient and lower > 0:
             state.status = "live"
             state.live_trade_count = 0

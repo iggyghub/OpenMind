@@ -32,43 +32,44 @@ class ForwardRecord:
             self._con.row_factory = sqlite3.Row
             self._con.executescript("""
                 CREATE TABLE IF NOT EXISTS forward_fills (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT    NOT NULL,
-                    phase     TEXT    NOT NULL DEFAULT 'paper',
-                    symbol    TEXT    NOT NULL,
-                    side      TEXT    NOT NULL,
-                    qty       REAL    NOT NULL,
-                    price     REAL    NOT NULL,
-                    fees      REAL    NOT NULL DEFAULT 0.0,
-                    pnl       REAL    NOT NULL DEFAULT 0.0
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp   TEXT    NOT NULL,
+                    phase       TEXT    NOT NULL DEFAULT 'paper',
+                    symbol      TEXT    NOT NULL,
+                    side        TEXT    NOT NULL,
+                    qty         REAL    NOT NULL,
+                    price       REAL    NOT NULL,
+                    fees        REAL    NOT NULL DEFAULT 0.0,
+                    pnl         REAL    NOT NULL DEFAULT 0.0,
+                    strategy_id TEXT    NOT NULL DEFAULT 'global'
                 );
             """)
             self._con.commit()
             self._initialized = True
 
-    def add_fill(self, symbol: str, side: str, qty: float, price: float, fees: float = 0.0, pnl: float = 0.0, phase: str = "paper") -> None:
+    def add_fill(self, symbol: str, side: str, qty: float, price: float, fees: float = 0.0, pnl: float = 0.0, phase: str = "paper", strategy_id: str = "global") -> None:
         """Persist a new broker fill."""
         now = datetime.now(timezone.utc).isoformat()
         self._con.execute(
-            "INSERT INTO forward_fills (timestamp, phase, symbol, side, qty, price, fees, pnl) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (now, phase, symbol, side, qty, price, fees, pnl),
+            "INSERT INTO forward_fills (timestamp, phase, symbol, side, qty, price, fees, pnl, strategy_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (now, phase, symbol, side, qty, price, fees, pnl, strategy_id),
         )
         self._con.commit()
 
-    def add_live_fill(self, symbol: str, side: str, qty: float, price: float, fees: float = 0.0, pnl: float = 0.0) -> None:
+    def add_live_fill(self, symbol: str, side: str, qty: float, price: float, fees: float = 0.0, pnl: float = 0.0, strategy_id: str = "global") -> None:
         """Persist a live trading fill."""
-        self.add_fill(symbol, side, qty, price, fees, pnl, phase="live")
+        self.add_fill(symbol, side, qty, price, fees, pnl, phase="live", strategy_id=strategy_id)
 
-    def get_live_fill_count(self) -> int:
-        return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE phase = 'live'").fetchone()[0]
+    def get_live_fill_count(self, strategy_id: str = "global") -> int:
+        return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE phase = 'live' AND strategy_id = ?", (strategy_id,)).fetchone()[0]
 
-    def get_live_pnls(self) -> list[float]:
-        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE phase = 'live' ORDER BY timestamp ASC").fetchall()
+    def get_live_pnls(self, strategy_id: str = "global") -> list[float]:
+        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE phase = 'live' AND strategy_id = ? ORDER BY timestamp ASC", (strategy_id,)).fetchall()
         return [r["pnl"] for r in rows]
 
-    def compute_live_expectancy_ci(self) -> tuple[float, float, float, bool]:
+    def compute_live_expectancy_ci(self, strategy_id: str = "global") -> tuple[float, float, float, bool]:
         """Same as compute_expectancy_ci but restricted to live trades."""
-        pnls = self.get_live_pnls()
+        pnls = self.get_live_pnls(strategy_id)
         n = len(pnls)
         if n == 0:
             return 0.0, 0.0, 0.0, False
@@ -80,24 +81,24 @@ class ForwardRecord:
         is_sufficient = n >= 30
         return mean, lower, upper, is_sufficient
 
-    def get_fills(self, limit: Optional[int] = None) -> List[sqlite3.Row]:
-        query = "SELECT * FROM forward_fills ORDER BY timestamp DESC"
+    def get_fills(self, limit: Optional[int] = None, strategy_id: str = "global") -> List[sqlite3.Row]:
+        query = "SELECT * FROM forward_fills WHERE strategy_id = ? ORDER BY timestamp DESC"
         if limit:
             query += f" LIMIT {limit}"
-        return self._con.execute(query).fetchall()
+        return self._con.execute(query, (strategy_id,)).fetchall()
 
-    def trade_count(self) -> int:
-        return self._con.execute("SELECT COUNT(*) FROM forward_fills").fetchone()[0]
+    def trade_count(self, strategy_id: str = "global") -> int:
+        return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE strategy_id = ?", (strategy_id,)).fetchone()[0]
 
-    def compute_expectancy_ci(self) -> Tuple[float, float, float, bool]:
+    def compute_expectancy_ci(self, strategy_id: str = "global") -> Tuple[float, float, float, bool]:
         """Returns (mean, lower_ci, upper_ci, is_sufficient) for realized PnL.
         Uses mean +/- 1.96 * SE. Marks insufficient if < 30 trades.
         """
-        n = self.trade_count()
+        n = self.trade_count(strategy_id)
         if n == 0:
             return 0.0, 0.0, 0.0, False
         
-        rows = self._con.execute("SELECT pnl FROM forward_fills").fetchall()
+        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE strategy_id = ?", (strategy_id,)).fetchall()
         pnls = np.array([r["pnl"] for r in rows])
         
         mean = float(np.mean(pnls))
@@ -108,9 +109,9 @@ class ForwardRecord:
         is_sufficient = n >= 30
         return mean, lower, upper, is_sufficient
 
-    def get_equity_curve(self) -> List[float]:
+    def get_equity_curve(self, strategy_id: str = "global") -> List[float]:
         """Returns cumulative PnL equity curve chronologically."""
-        rows = self._con.execute("SELECT pnl FROM forward_fills ORDER BY timestamp ASC").fetchall()
+        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE strategy_id = ? ORDER BY timestamp ASC", (strategy_id,)).fetchall()
         pnls = [r["pnl"] for r in rows]
         equity = []
         cum = 0.0

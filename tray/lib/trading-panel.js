@@ -96,3 +96,75 @@ export function renderStrategyCard(card, container) {
     document.head.appendChild(style);
   }
 }
+
+/**
+ * Renders a live strategy card showing lifecycle status, fills, and alerts.
+ * @param {Object} data - { name, status, live_trades, equity_curve, alerts, fills }
+ * @param {HTMLElement} container
+ */
+export function renderLiveStrategyCard(data, container) {
+  if (!container) return;
+  
+  const statusClass = data.status === 'live' ? 'status-live' : data.status === 'paper' ? 'status-paper' : 'status-halted';
+  
+  container.innerHTML = `
+    <div class="live-strategy-card">
+      <div class="card-header ${statusClass}">
+        <h2>${data.name}</h2>
+        <span class="lifecycle-badge">${data.status.toUpperCase()}</span>
+      </div>
+      <div class="card-section">
+        <h3>Performance</h3>
+        <ul>
+          <li>Live Trades: ${data.live_trades}</li>
+          <li>Equity Curve: ${data.equity_curve ? '📈' : '⏳'}</li>
+        </ul>
+      </div>
+      <div class="card-section">
+        <h3>Recent Fills</h3>
+        <table class="fills-table">
+          <thead><tr><th>Symbol</th><th>Side</th><th>PnL</th></tr></thead>
+          <tbody>
+            ${(data.fills || []).slice(0, 5).map(f => `
+              <tr>
+                <td>${f.symbol}</td>
+                <td>${f.side.toUpperCase()}</td>
+                <td>${f.pnl.toFixed(2)}</td>
+              </tr>
+            `).join("") || '<tr><td colspan="3">No fills yet</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-section">
+        <h3>Alert History</h3>
+        <ul class="alert-list">
+          ${(data.alerts || []).slice(0, 5).map(a => `
+            <li class="alert-${a.severity}">[${a.severity.toUpperCase()}] ${a.event_type}: ${a.message}</li>
+          `).join("") || '<li>No alerts</li>'}
+        </ul>
+      </div>
+    </div>
+  `;
+
+  const styleId = "live-trading-panel-styles";
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      .live-strategy-card { font-family: sans-serif; padding: 16px; border: 1px solid #ddd; border-radius: 6px; background: #fff; margin-top: 20px; }
+      .card-header { border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+      .status-live { border-left: 5px solid #3498db; }
+      .status-paper { border-left: 5px solid #f1c40f; }
+      .status-halted { border-left: 5px solid #e74c3c; }
+      .lifecycle-badge { font-size: 0.75em; padding: 2px 6px; border-radius: 4px; background: #eee; text-transform: uppercase; }
+      .fills-table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-top: 6px; }
+      .fills-table th, .fills-table td { padding: 4px 6px; border: 1px solid #eee; text-align: left; }
+      .alert-list { list-style: none; padding: 0; font-size: 0.85em; }
+      .alert-list li { padding: 4px 0; border-bottom: 1px solid #f0f0f0; }
+      .alert-critical { color: #e74c3c; }
+      .alert-warning { color: #f39c12; }
+      .alert-info { color: #3498db; }
+    `;
+    document.head.appendChild(style);
+  }
+}
