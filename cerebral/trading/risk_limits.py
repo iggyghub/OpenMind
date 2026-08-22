@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from cerebral.trading.alerts import AlertDispatcher, StructuredAlert
 
@@ -88,6 +88,23 @@ class RiskManager:
             self._emit_alert("critical", "order_blocked", reason, {"blocked_by": "daily_loss_limit"})
             return RiskEvaluation(allowed=False, reason=reason, blocked_by="daily_loss_limit")
 
+        return RiskEvaluation(allowed=True)
+
+    def check_correlation_limit(
+        self,
+        new_symbol: str,
+        existing_symbols: List[str],
+        correlation_matrix: Dict[str, Dict[str, float]],
+        max_correlation: float = 0.7,
+    ) -> RiskEvaluation:
+        """Blocks entry if new position correlates > threshold with existing positions."""
+        for existing in existing_symbols:
+            corr = correlation_matrix.get(new_symbol, {}).get(existing, 0.0)
+            if corr > max_correlation:
+                reason = f"Correlation {corr:.2f} between {new_symbol} and {existing} exceeds limit {max_correlation}"
+                logger.warning(f"[risk] Blocked {new_symbol}: {reason}")
+                self._emit_alert("warning", "correlation_block", reason, {"blocked_by": "correlation", "pair": f"{new_symbol}-{existing}"})
+                return RiskEvaluation(allowed=False, reason=reason, blocked_by="correlation")
         return RiskEvaluation(allowed=True)
 
     def record_daily_loss(self, loss: float) -> None:

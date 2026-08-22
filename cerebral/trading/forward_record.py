@@ -34,6 +34,7 @@ class ForwardRecord:
                 CREATE TABLE IF NOT EXISTS forward_fills (
                     id        INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT    NOT NULL,
+                    phase     TEXT    NOT NULL DEFAULT 'paper',
                     symbol    TEXT    NOT NULL,
                     side      TEXT    NOT NULL,
                     qty       REAL    NOT NULL,
@@ -45,14 +46,39 @@ class ForwardRecord:
             self._con.commit()
             self._initialized = True
 
-    def add_fill(self, symbol: str, side: str, qty: float, price: float, fees: float = 0.0, pnl: float = 0.0) -> None:
+    def add_fill(self, symbol: str, side: str, qty: float, price: float, fees: float = 0.0, pnl: float = 0.0, phase: str = "paper") -> None:
         """Persist a new broker fill."""
         now = datetime.now(timezone.utc).isoformat()
         self._con.execute(
-            "INSERT INTO forward_fills (timestamp, symbol, side, qty, price, fees, pnl) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (now, symbol, side, qty, price, fees, pnl),
+            "INSERT INTO forward_fills (timestamp, phase, symbol, side, qty, price, fees, pnl) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (now, phase, symbol, side, qty, price, fees, pnl),
         )
         self._con.commit()
+
+    def add_live_fill(self, symbol: str, side: str, qty: float, price: float, fees: float = 0.0, pnl: float = 0.0) -> None:
+        """Persist a live trading fill."""
+        self.add_fill(symbol, side, qty, price, fees, pnl, phase="live")
+
+    def get_live_fill_count(self) -> int:
+        return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE phase = 'live'").fetchone()[0]
+
+    def get_live_pnls(self) -> list[float]:
+        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE phase = 'live' ORDER BY timestamp ASC").fetchall()
+        return [r["pnl"] for r in rows]
+
+    def compute_live_expectancy_ci(self) -> tuple[float, float, float, bool]:
+        """Same as compute_expectancy_ci but restricted to live trades."""
+        pnls = self.get_live_pnls()
+        n = len(pnls)
+        if n == 0:
+            return 0.0, 0.0, 0.0, False
+        
+        mean = float(np.mean(pnls))
+        se = float(np.std(pnls, ddof=1) / math.sqrt(n)) if n > 1 else 0.0
+        lower = mean - 1.96 * se
+        upper = mean + 1.96 * se
+        is_sufficient = n >= 30
+        return mean, lower, upper, is_sufficient
 
     def get_fills(self, limit: Optional[int] = None) -> List[sqlite3.Row]:
         query = "SELECT * FROM forward_fills ORDER BY timestamp DESC"
