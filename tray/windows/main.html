@@ -3801,7 +3801,19 @@
       line-height: 1.4;
     }
     .thinking-row.tool_call { color: var(--state-active); }
-    .thinking-row.tool_result { color: var(--text-muted); }
+    .thinking-row.tool_result { color: var(--text-muted); padding-left: 14px; }
+    .thinking-row.tool_result.is-error { color: var(--danger, #e05); }
+    /* #827 -- group header: the user message that kicked off the steps
+       under it, so the feed reads as a history grouped by turn. */
+    .thinking-group-header {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      margin-top: 10px;
+      padding-bottom: 2px;
+      border-bottom: 1px solid var(--border);
+    }
+    .thinking-group-header:first-child { margin-top: 0; }
 
     /* ── Job Search panel (Issue #334) ──────────────────────────────── */
     .jobs-body {
@@ -6575,9 +6587,11 @@
             appendTurn(turn);
             if (stick) scrollToBottom();
 
-            // #816/#824 -- same turn also feeds the Thinking library panel.
-            // Pure-string module (no DOM of its own, see lib/thinking-panel.js);
-            // this is the only place that inserts into thinkingFeed.
+            // #816/#824/#827 -- same turn also feeds the Thinking library
+            // panel (user_text/user_voice as group headers, tool_call/
+            // tool_result as steps -- see lib/thinking-panel.js rowHtml()).
+            // Pure-string module, no DOM of its own; this is the only place
+            // that inserts into thinkingFeed.
             const rowHtml = window.ThinkingPanelMod.rowHtml(turn);
             if (rowHtml && thinkingFeed) {
               const emptyEl = document.getElementById('thinking-empty');
