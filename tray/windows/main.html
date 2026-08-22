@@ -3803,6 +3803,24 @@
     .thinking-row.tool_call { color: var(--state-active); }
     .thinking-row.tool_result { color: var(--text-muted); padding-left: 14px; }
     .thinking-row.tool_result.is-error { color: var(--danger, #e05); }
+    /* Working spinner for a tool_call still in flight (e.g. self_dev_campaign,
+       which can run for minutes) -- cleared by the matching tool_result.
+       Reuses the health-swirl rotate keyframe (see .ps-toggle-status--loading). */
+    .thinking-row.tool_call.is-pending::after {
+      content: '';
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      margin-left: 6px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: health-swirl 0.7s linear infinite;
+      vertical-align: middle;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .thinking-row.tool_call.is-pending::after { animation: none; }
+    }
     /* #827 -- group header: the user message that kicked off the steps
        under it, so the feed reads as a history grouped by turn. */
     .thinking-group-header {
@@ -6592,6 +6610,13 @@
             // tool_result as steps -- see lib/thinking-panel.js rowHtml()).
             // Pure-string module, no DOM of its own; this is the only place
             // that inserts into thinkingFeed.
+            if (turn.kind === 'tool_result' && thinkingFeed) {
+              // Clear the working spinner off the call this result answers.
+              // Tool calls execute one at a time (ChainEngine), so the most
+              // recently added still-pending row is always the right one.
+              const pending = thinkingFeed.querySelectorAll('.thinking-row.tool_call.is-pending');
+              if (pending.length) pending[pending.length - 1].classList.remove('is-pending');
+            }
             const rowHtml = window.ThinkingPanelMod.rowHtml(turn);
             if (rowHtml && thinkingFeed) {
               const emptyEl = document.getElementById('thinking-empty');

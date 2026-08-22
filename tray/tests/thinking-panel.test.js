@@ -60,8 +60,13 @@ describe('ThinkingPanelMod', () => {
   describe('stepRowHtml', () => {
     test('renders a tool_call row using content.name (real wire shape)', () => {
       const html = ThinkingPanelMod.stepRowHtml({ kind: 'tool_call', content: { name: 'gmail_search', args: { query: 'invoice' } } });
-      expect(html).toContain('class="thinking-row tool_call"');
+      expect(html).toContain('class="thinking-row tool_call is-pending"');
       expect(html).toContain('Gmail Search');
+    });
+
+    test('a tool_call row is marked is-pending -- a long-running tool (e.g. self_dev_campaign) shows a working spinner until its result arrives', () => {
+      const html = ThinkingPanelMod.stepRowHtml({ kind: 'tool_call', content: { name: 'self_dev_campaign' } });
+      expect(html).toContain('is-pending');
     });
 
     test('renders a tool_result row using content.result (real wire shape)', () => {
