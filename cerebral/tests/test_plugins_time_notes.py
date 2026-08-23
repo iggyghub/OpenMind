@@ -318,10 +318,13 @@ class TestSchedulerPlugin:
     # -----------------------------------------------------------------------
     # Cycle 10 — list_tools exposes all four tools
     # -----------------------------------------------------------------------
-    def test_list_tools_exposes_four_tools(self):
+    def test_list_tools_exposes_five_tools(self):
         from plugins.scheduler import create
         names = {t.name for t in create().list_tools()}
-        assert names == {"create_event", "list_events", "update_event", "delete_event"}
+        assert names == {
+            "create_event", "list_events", "update_event", "delete_event",
+            "run_gauntlet",
+        }
 
     # -----------------------------------------------------------------------
     # Cycle 11 — create() returns named plugin

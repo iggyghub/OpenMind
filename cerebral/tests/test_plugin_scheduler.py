@@ -1,5 +1,7 @@
 """Unit tests for SchedulerPlugin's paper-trade execution + dispatch (issue #848)."""
+import json
 import pytest
+import pandas as pd
 from datetime import datetime, timedelta, timezone
 
 from plugins.scheduler import SchedulerPlugin
@@ -253,3 +255,117 @@ def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, m
     # Paper only: nothing here can graduate on 2 trades, and nothing live fired.
     assert lifecycle.get_state("penny breakout").status == "paper"
     assert all(r["phase"] == "paper" for r in rows)
+
+
+# ── S11 Part 3: run_gauntlet production entry point ─────────────────────────
+# The first attempt at this (PR #855, closed unmerged) called the real
+# run_gauntlet with the wrong parameter names entirely (guaranteed TypeError)
+# behind a test that mocked run_gauntlet out completely, so the mismatch
+# never surfaced. These tests use the REAL run_gauntlet and a REAL compiled
+# strategy against injected (never yfinance, never network) price data.
+
+def _trend_prices(n=200, seed=42):
+    """A clean regime change (strong uptrend, then strong downtrend) -- a
+    trend-following strategy should catch the reversal and keep its gains,
+    clearly beating naive buy-and-hold of the same series through the whole
+    round trip. Deterministic and reliably VALIDATED with MA_CROSS_CODE."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    up = rng.normal(0.004, 0.008, n // 2)
+    down = rng.normal(-0.004, 0.008, n - n // 2)
+    close = 100 * np.cumprod(1 + np.concatenate([up, down]))
+    return pd.DataFrame({
+        "Open": close, "High": close * 1.005, "Low": close * 0.995,
+        "Close": close, "Volume": np.full(n, 2000),
+    })
+
+
+MA_CROSS_CODE = (
+    "def strategy(data):\n"
+    "    fast = data['Close'].rolling(10).mean()\n"
+    "    slow = data['Close'].rolling(30).mean()\n"
+    "    return (fast > slow).astype(int).tolist()\n"
+)
+
+
+def test_run_gauntlet_requires_code_symbol_hypothesis(tmp_path):
+    plugin = _plugin(tmp_path)
+    r = plugin._run_gauntlet({"symbol": "AAPL", "hypothesis": "x"})
+    assert r.is_error
+    assert "code" in r.content
+
+
+def test_run_gauntlet_validated_registers_spec_and_schedules_event(tmp_path):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end):
+        return _trend_prices()
+
+    result = plugin._run_gauntlet(
+        {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "MA cross trend test"},
+        strategy_store=store, fetch=fetch,
+    )
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["verdict"] == "VALIDATED"
+
+    # The real chain this whole slice exists to reach: a spec registered
+    # under the hypothesis, and a due, ready-to-dispatch event.
+    spec = store.get("MA cross trend test")
+    assert spec is not None
+    assert spec.symbol == "AAPL"
+
+    due = plugin.list_due_events()
+    assert len(due) == 1
+    assert due[0]["title"] == "MA cross trend test"
+
+
+def test_run_gauntlet_validated_event_actually_dispatches(tmp_path, monkeypatch):
+    """Beyond "an event got scheduled" -- proves dispatch_due_events can
+    actually pick it up and place a real (paper) trade off the registered
+    spec, the same chain S9/S10 already built."""
+    from cerebral.trading.live_tick import dispatch_due_events
+
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    broker = StubBrokerClient()
+    record = _record(tmp_path, monkeypatch)
+
+    def fetch(symbol, start, end):
+        return _trend_prices()
+
+    result = plugin._run_gauntlet(
+        {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "MA cross trend test"},
+        strategy_store=store, fetch=fetch,
+    )
+    assert json.loads(result.content)["verdict"] == "VALIDATED"
+
+    results = dispatch_due_events(plugin, broker, record, store=store, fetch=fetch)
+
+    assert len(results) == 1
+    assert results[0]["status"] in ("opened", "hold")  # depends on the signal at the last bar
+    assert results[0]["strategy"] == "MA cross trend test"
+
+
+def test_run_gauntlet_unvalidated_schedules_nothing(tmp_path):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def flat_fetch(symbol, start, end):
+        return _trend_prices()
+
+    def never_trades(data):
+        return [0] * len(data)
+
+    result = plugin._run_gauntlet(
+        {"code": "def strategy(data):\n    return [0] * len(data)\n",
+         "symbol": "AAPL", "hypothesis": "always flat"},
+        strategy_store=store, fetch=flat_fetch,
+    )
+
+    assert not result.is_error
+    assert json.loads(result.content)["verdict"] == "UNVALIDATED"
+    assert plugin.list_due_events() == []
+    assert store.get("always flat") is None

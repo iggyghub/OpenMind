@@ -1,7 +1,7 @@
 """
 Scheduler plugin — MCP server for Felix.
 
-Tools: create_event, list_events, update_event, delete_event.
+Tools: create_event, list_events, update_event, delete_event, run_gauntlet.
 SQLite-backed (same openmind.db). No external calendar deps.
 """
 import json
@@ -11,9 +11,13 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pandas as pd
+
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.trading.live_tick import run_strategy_tick
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
+from cerebral.trading.broker import StubBrokerClient
+from cerebral.trading.gauntlet import run_gauntlet
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +154,28 @@ class SchedulerPlugin:
                     "required": ["id"],
                 },
             ),
+            Tool(
+                name="run_gauntlet",
+                description=(
+                    "Validates a trading strategy against the full validation gauntlet "
+                    "(out-of-sample, walk-forward, Monte Carlo, vs-random, vs-benchmark, "
+                    "noise, parameter sensitivity, costs, capacity). A VALIDATED verdict "
+                    "auto-registers the strategy and schedules it for autonomous paper "
+                    "trading -- this is the production entry point S9/S10's dispatch "
+                    "chain has no other way to reach."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string", "description": "Python source: def strategy(data) -> signals"},
+                        "symbol": {"type": "string", "description": "Ticker to backtest and, on VALIDATED, paper-trade"},
+                        "hypothesis": {"type": "string", "description": "Falsifiable claim the strategy is testing"},
+                        "provenance": {"type": "string", "description": "Where the strategy came from (URL, book claim, 'user, verbatim')"},
+                    },
+                    "required": ["code", "symbol", "hypothesis"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -161,6 +187,8 @@ class SchedulerPlugin:
             return self._update_event(args)
         if tool_name == "delete_event":
             return self._delete_event(args)
+        if tool_name == "run_gauntlet":
+            return self._run_gauntlet(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -285,6 +313,78 @@ class SchedulerPlugin:
         self._con.execute("DELETE FROM events WHERE id=?", (event_id,))
         self._con.commit()
         return ToolResult(content=json.dumps({"id": event_id, "deleted": True}))
+
+    def _run_gauntlet(
+        self, args: dict, *, strategy_store=None, fetch=None,
+    ) -> ToolResult:
+        """S11 Part 3: the production entry point for run_gauntlet.
+
+        Builds a real backtest wrapper around the compiled strategy (not a
+        mock, not a hardcoded equity curve -- the two ways the first attempt
+        at this, closed unmerged as PR #855, was broken) and calls the real
+        `cerebral.trading.gauntlet.run_gauntlet`. A VALIDATED verdict flows
+        straight into gauntlet.py's own existing auto-promote block (`self`
+        as `scheduler`, a fresh StubBrokerClient as `paper_broker`), which
+        registers a StrategySpec and schedules a recurring event -- the same
+        chain S9/S10 already built and tested; this call site's only job is
+        making sure that chain is ever reached in production at all.
+
+        `strategy_store`/`fetch` are test-only injection seams (not part of
+        the Tool schema an LLM sees) -- default to the real StrategyStore /
+        yfinance-backed fetch_ohlcv, matching `_run_paper_strategy`'s own
+        `store=None, fetch=None` convention.
+        """
+        code = args.get("code", "").strip()
+        symbol = args.get("symbol", "").strip()
+        hypothesis = args.get("hypothesis", "").strip()
+        provenance = args.get("provenance", "")
+        if not code or not symbol or not hypothesis:
+            return ToolResult(content="code, symbol, and hypothesis are required", is_error=True)
+
+        if fetch is None:
+            from cerebral.trading_data import fetch_ohlcv as fetch
+        from cerebral.trading_ideas import compile_strategy
+
+        end = datetime.now(timezone.utc).date()
+        start = end - timedelta(days=365)
+        try:
+            prices = fetch(symbol, start.isoformat(), end.isoformat())
+        except Exception as e:
+            return ToolResult(content=f"Data fetch failed for {symbol}: {e}", is_error=True)
+
+        def backtest(bars, params):
+            strat_fn = compile_strategy(code)
+            signals = pd.Series(strat_fn(bars), index=bars.index)
+            # Yesterday's decided position earns today's return -- using the
+            # same-bar signal would let the strategy trade on a close it
+            # hasn't seen yet.
+            position = signals.shift(1).fillna(0.0)
+            daily_returns = position * bars["Close"].pct_change().fillna(0.0)
+            equity = 100.0 * (1.0 + daily_returns).cumprod()
+            return list(equity), {}
+
+        try:
+            # ponytail: benchmark is the strategy's own buy-and-hold, not a
+            # real index (SPY) -- run_gauntlet's vs-benchmark gate needs
+            # *some* series; wiring a shared SPY fetch is a separate slice.
+            card = run_gauntlet(
+                backtest, prices, {}, prices.copy(),
+                position_sizes=pd.Series([1.0] * len(prices), index=prices.index),
+                hypothesis=hypothesis, provenance=provenance,
+                scheduler=self, paper_broker=StubBrokerClient(),
+                symbol=symbol, strategy_code=code,
+                strategy_store=strategy_store, position_qty=1.0,
+            )
+        except Exception as e:
+            logger.warning(f"[scheduler] run_gauntlet failed for {symbol}: {e}", exc_info=True)
+            return ToolResult(content=f"Gauntlet run failed: {e}", is_error=True)
+
+        return ToolResult(content=json.dumps({
+            "verdict": card.verdict,
+            "sharpe": card.sharpe,
+            "total_return": card.total_return,
+            "gates": [{"name": g.name, "passed": bool(g.passed)} for g in card.gates],
+        }))
 
     def _run_paper_strategy(
         self, strategy_name: str, broker, forward_record: "ForwardRecord",
