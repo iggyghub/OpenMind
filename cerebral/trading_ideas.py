@@ -91,10 +91,10 @@ def from_book_claim(claim: str, book: str, chapter: str) -> Idea:
     )
 
 
-def to_strategy(idea: Idea, llm: Optional[Any] = None) -> str:
+def to_strategy(idea: Idea, llm: Optional[Any] = None, router=None) -> str:
     """
     Generates a runnable `def strategy(data) -> signals:` Python function.
-    Uses Qwen/Budd (free models only) when llm is provided.
+    Uses Qwen/Budd (free models only) when llm or router is provided.
     Enforces honesty rule: claims are never collapsed to facts.
     """
     claim = idea.author_claim_text or f"Author claims: {idea.claim_text}"
@@ -122,6 +122,13 @@ def to_strategy(idea: Idea, llm: Optional[Any] = None) -> str:
 
     if llm:
         return llm.generate(prompt)
+    
+    if router:
+        try:
+            result = router.complete(prompt, task_type="coding")
+            return result
+        except Exception:
+            pass
 
     return _generate_stub_strategy(claim)
 
