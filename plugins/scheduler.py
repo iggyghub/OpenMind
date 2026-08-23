@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
+from cerebral.trading.live_tick import run_strategy_tick
+from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 
 logger = logging.getLogger(__name__)
 
@@ -284,41 +286,48 @@ class SchedulerPlugin:
         self._con.commit()
         return ToolResult(content=json.dumps({"id": event_id, "deleted": True}))
 
-    def _run_paper_strategy(self, strategy_name: str, broker, forward_record: "ForwardRecord", config: dict | None = None) -> dict:
-        """Executes a paper trade for the given strategy. Pure trade
+    def _run_paper_strategy(
+        self, strategy_name: str, broker, forward_record: "ForwardRecord",
+        config: dict | None = None, store=None, fetch=None,
+    ) -> dict:
+        """Runs one paper-trading tick for the given strategy. Pure trade
         execution -- event bookkeeping (marking a due event as dispatched)
-        is the caller's job; see mark_event_run()."""
+        is the caller's job; see mark_event_run().
+
+        The real decision (fetch data -> evaluate the strategy -> diff against
+        the broker's own position -> open/close/hold -> record realized P&L)
+        lives in cerebral/trading/live_tick.py; this is the plugin-side seam.
+        It used to place a hardcoded `buy 1 "SYMBOL"` on every call -- a
+        literal placeholder ticker, always buy, never sell, no strategy
+        consulted at all.
+
+        `config` may carry an inline spec ({"symbol", "code", "qty"}); with
+        no code, the strategy's registered spec is looked up by name. No
+        spec means no trade -- there is no default symbol to fall back to.
+        """
         if not broker or not forward_record:
             return {"status": "skipped", "reason": "broker/record not provided"}
         config = config or {}
 
         try:
-            # BrokerClient.place_order's real signature (cerebral/trading/broker.py)
-            # is (symbol, qty, side, type, limit_price=None) -- `price`/`order_type`
-            # aren't real kwargs there and would raise TypeError on every call.
-            order = broker.place_order(
-                symbol=config.get("symbol", "SYMBOL"),
-                qty=config.get("position_size", 1.0),
-                side=config.get("side", "buy"),
-                type="market",
-            )
-            if order.status == "FILLED":
-                forward_record.add_fill(
-                    symbol=order.symbol,
-                    side=order.side,
-                    qty=order.qty,
-                    price=order.price,
-                    fees=order.fees,
-                    pnl=0.0,
-                    phase="paper",
-                    strategy_id=strategy_name
+            if config.get("code"):
+                spec = StrategySpec(
+                    strategy_id=strategy_name, symbol=config["symbol"],
+                    code=config["code"], qty=config.get("qty", 1.0),
                 )
-                logger.info(f"Paper trade executed for {strategy_name}: {order.id}")
-                return {"status": "executed", "order_id": order.id}
+            else:
+                spec = (store or StrategyStore()).get(strategy_name)
+            if spec is None:
+                return {"status": "skipped", "reason": "no strategy spec registered"}
+
+            result = run_strategy_tick(
+                strategy_name, spec, broker, forward_record, fetch=fetch
+            )
+            logger.info(f"Paper tick for {strategy_name}: {result}")
+            return result
         except Exception as e:
             logger.warning(f"Paper trade execution failed for {strategy_name}: {e}")
             return {"status": "error", "reason": str(e)}
-        return {"status": "skipped", "reason": "no signal"}
 
 
 def _row_to_event(row: sqlite3.Row) -> dict:

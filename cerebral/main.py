@@ -243,11 +243,17 @@ from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
+from cerebral.trading.live_tick import dispatch_due_events as _dispatch_due_events
+from cerebral.trading.strategy_store import StrategyStore
 
 _scheduler_plugin = _SchedulerPlugin()
+# Paper only, deliberately: a StubBrokerClient can't reach a real market, so
+# no code path from this loop can fire a live order. Live execution waits on
+# an explicit manual arm/disarm toggle that does not exist yet.
 _trading_broker = StubBrokerClient()
 _trading_forward_record = ForwardRecord()
 _trading_lifecycle = StrategyLifecycle()
+_trading_strategy_store = StrategyStore()
 
 # Video pipeline routes local-only (no Budd/OpenClaw dependency for a long
 # unattended batch); falls through to the active model if no local model exists.
@@ -3318,20 +3324,18 @@ async def _scheduler_loop() -> None:
     logger.info("[cerebral] Starting autonomous paper-trade scheduler loop")
     while not _shutdown.is_set():
         try:
-            due_events = _scheduler_plugin.list_due_events()
-            for evt in due_events:
-                logger.info(f"[cerebral] Scheduler dispatching event: {evt['title']} at {evt['start_iso']}")
-                result = _scheduler_plugin._run_paper_strategy(
-                    evt["title"], _trading_broker, _trading_forward_record, {}
-                )
-                logger.info(f"[cerebral] Dispatch result for {evt['title']}: {result}")
-                _scheduler_plugin.mark_event_run(evt["id"])
-                # Registers the strategy in the lifecycle tracker (a no-op if
-                # already tracked) purely so it shows up in _trading_broadcast --
-                # StrategyLifecycle's live-trade counters are untouched here,
-                # this dispatch loop only ever places paper trades.
-                _trading_lifecycle.get_state(evt["title"])
-            if due_events:
+            # The whole pass -- due-event lookup, per-strategy signal
+            # evaluation, position diff, order, realized P&L, then
+            # graduation/ramp/retirement checks -- lives in live_tick so it's
+            # testable without importing main. _trading_broker is a
+            # StubBrokerClient: this loop cannot place a live order.
+            results = _dispatch_due_events(
+                _scheduler_plugin, _trading_broker, _trading_forward_record,
+                lifecycle=_trading_lifecycle, store=_trading_strategy_store,
+            )
+            for result in results:
+                logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")
+            if results:
                 await _trading_broadcast()
         except Exception as e:
             logger.warning(f"[cerebral] Scheduler loop iteration failed (backing off): {e}", exc_info=True)

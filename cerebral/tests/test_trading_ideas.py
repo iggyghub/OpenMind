@@ -86,6 +86,30 @@ class TestTradingIdeas(unittest.TestCase):
         with self.assertRaises(ValueError):
             compile_strategy(bad_code)
 
+    def test_generated_stub_honours_the_live_contract(self):
+        """The stub used to read data.get("close", []) -- lowercase -- which
+        against a real fetch_ohlcv DataFrame silently returns the [] default,
+        so it emitted no signals at all. It must read "Close" and return one
+        target position per bar, each in {1, 0, -1} (live_tick.py's contract).
+        """
+        import pandas as pd
+
+        idea = from_prose("Price above its running mean keeps trending.")
+        strategy_fn = compile_strategy(to_strategy(idea))  # no llm -> the stub
+        bars = pd.DataFrame(
+            {"Open": [1.0, 2.0, 3.0], "High": [1.0, 2.0, 3.0],
+             "Low": [1.0, 2.0, 3.0], "Close": [10.0, 12.0, 8.0],
+             "Volume": [100, 100, 100]},
+            index=pd.date_range("2026-01-01", periods=3, freq="D"),
+        )
+
+        signals = strategy_fn(bars)
+
+        self.assertEqual(len(signals), len(bars))
+        self.assertTrue(all(s in (1, 0, -1) for s in signals))
+        # 12 > mean(10,12)=11 -> long;  8 < mean(10,12,8)=10 -> flat.
+        self.assertEqual(signals, [0, 1, 0])
+
 
 if __name__ == "__main__":
     unittest.main()

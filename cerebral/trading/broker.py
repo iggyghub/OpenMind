@@ -187,6 +187,12 @@ class StubBrokerClient:
     def get_account(self) -> Account:
         return self._account
 
+    def _simulated_price(self, symbol: str) -> float:
+        """Deterministic-per-process pseudo-quote. Its own method so a test
+        can script a price path (needed to exercise a non-zero realized P&L
+        -- the default is constant per symbol, so entry always equals exit)."""
+        return 100.0 + (abs(hash(symbol)) % 500) / 10.0
+
     def list_positions(self) -> List[Position]:
         return list(self._positions.values())
 
@@ -200,7 +206,10 @@ class StubBrokerClient:
             raise ValueError("limit_price is required for a limit order")
 
         order_id = f"stub_{symbol}_{len(self._orders)}"
-        filled_qty = 0.0
+        # A FILLED order whose filled_qty is 0.0 is self-contradictory -- it
+        # used to report exactly that, so every caller reading filled_qty saw
+        # nothing filled on a full fill.
+        filled_qty = float(qty)
         status = "FILLED"
 
         if self._partial_fill_symbol == symbol:
@@ -208,7 +217,7 @@ class StubBrokerClient:
             status = "PARTIALLY_FILLED" if filled_qty < float(qty) else "FILLED"
 
         # Simulated quote/price model for test fills
-        simulated_price = limit_price if limit_price else 100.0 + (abs(hash(symbol)) % 500) / 10.0
+        simulated_price = limit_price if limit_price else self._simulated_price(symbol)
 
         order = Order(
             id=order_id, symbol=symbol, qty=qty,
@@ -218,23 +227,35 @@ class StubBrokerClient:
         )
         self._orders[order_id] = order
 
-        # Update simulated position
-        if symbol in self._positions:
-            pos = self._positions[symbol]
-            net_qty = float(pos.qty) + (float(qty) if side == "buy" else -float(qty))
-            self._positions[symbol] = Position(
-                symbol=symbol, qty=net_qty, avg_entry_price=pos.avg_entry_price,
-                side="buy" if net_qty > 0 else "sell",
-                market_value=net_qty * pos.current_price,
-                unrealized_pl=0.0, current_price=pos.current_price,
-            )
+        # Update the simulated position. This is the only source of truth a
+        # caller has for "am I in this name, and at what entry?" (TRADING.md:
+        # numbers from the broker, never re-derived), so the entry price has
+        # to be the price this stub actually filled at -- it used to be a
+        # hardcoded 100.0 while the fill happened at simulated_price, making
+        # any P&L computed from it wrong by the whole hash-derived offset.
+        prev = self._positions.get(symbol)
+        prev_qty = float(prev.qty) if prev else 0.0
+        net_qty = prev_qty + (float(qty) if side == "buy" else -float(qty))
+
+        if abs(net_qty) < 1e-9:
+            # Flat: drop the row rather than leave a qty=0 ghost every caller
+            # then has to special-case.
+            self._positions.pop(symbol, None)
         else:
+            if prev is None or prev_qty == 0.0 or (prev_qty > 0) != (net_qty > 0):
+                avg_entry = simulated_price          # opening, or flipping through flat
+            elif abs(net_qty) > abs(prev_qty):
+                avg_entry = (                         # adding: size-weighted average
+                    abs(prev_qty) * prev.avg_entry_price + float(qty) * simulated_price
+                ) / abs(net_qty)
+            else:
+                avg_entry = prev.avg_entry_price      # partial reduction keeps the entry
             self._positions[symbol] = Position(
-                symbol=symbol,
-                qty=float(qty) if side == "buy" else -float(qty),
-                avg_entry_price=100.0, side=side,
-                market_value=simulated_price * (float(qty) if side == "buy" else -float(qty)),
-                unrealized_pl=0.0, current_price=simulated_price,
+                symbol=symbol, qty=net_qty, avg_entry_price=avg_entry,
+                side="buy" if net_qty > 0 else "sell",
+                market_value=net_qty * simulated_price,
+                unrealized_pl=(simulated_price - avg_entry) * net_qty,
+                current_price=simulated_price,
             )
         return order
 

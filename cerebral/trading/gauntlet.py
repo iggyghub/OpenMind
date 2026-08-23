@@ -191,6 +191,15 @@ def run_gauntlet(
     # block below); None skips auto-promote entirely (no dry-run mode).
     paper_broker: Any = None,
     auto_promote: bool = True,
+    # What the dispatcher needs to actually evaluate this strategy later:
+    # the ticker to trade and the source of its `def strategy(data) -> signals`
+    # function. Registered in strategy_store on a pass; see the auto-promote
+    # block. backtest_func above stays the batch-validation shape -- these are
+    # the per-tick half, deliberately separate (see live_tick.py's header).
+    symbol: Optional[str] = None,
+    strategy_code: Optional[str] = None,
+    strategy_store: Any = None,
+    position_qty: float = 1.0,
 ) -> StrategyCard:
     rng = np.random.default_rng(seed)
     params = params or {}
@@ -313,6 +322,20 @@ def run_gauntlet(
     if auto_promote and verdict == "VALIDATED" and scheduler and paper_broker:
         strategy_name = hypothesis or provenance
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        # Register WHAT to trade before scheduling WHEN. The event carries only
+        # a title; without a matching spec the dispatcher has no symbol and no
+        # strategy function, and skips the event with "no strategy spec
+        # registered" -- an inert schedule, not a fake trade. (It used to buy a
+        # literal "SYMBOL" ticker instead.) Callers that don't pass
+        # symbol/strategy_code still get their event, still inert; nothing in
+        # production calls run_gauntlet yet, so no caller regresses.
+        if symbol and strategy_code:
+            from cerebral.trading.strategy_store import StrategySpec, StrategyStore
+            store = strategy_store if strategy_store is not None else StrategyStore()
+            store.save(StrategySpec(
+                strategy_id=strategy_name, symbol=symbol,
+                code=strategy_code, qty=position_qty,
+            ))
         scheduler._create_event({
             "title": strategy_name,
             "start_iso": now_iso,
