@@ -3,22 +3,18 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- the icacls grant (decision #23) is applied and the
-spike re-run confirms it fixed the real problem: `WindowsSandbox().
-spawn([sys.executable, "-c", "print(1)"], ...)` and a follow-up `import
-pandas` both now exit 0 with real stdout, where they previously failed
-with `0xC0000135` (STATUS_DLL_NOT_FOUND). S13 is unblocked.
+## Status: ready -- S13 landed (real out-of-process sandboxed evaluation,
+mechanism only, unwired). Found a genuine structural bug in how this
+sandbox has to be used (files the parent pre-writes into a workdir
+before spawn() are NOT readable by the child -- only files the child
+creates itself during its own execution are) -- see Landed PRs. S14
+(wire it into production, retire compile_strategy) is next.
 
 ## Next slice -- start here
 
-- **Active:** S13 -- #858 -- sandboxed strategy evaluation, mechanism
-  only (unwired). See issue #858. Six more slices queued behind it
-  (S14-S19, #859-#864) -- real sandboxing, wiring `to_strategy` to an
-  actual free model (currently every generated strategy silently falls
-  through to a hardcoded stub regardless of source -- #860), strategy
-  lineage/versioning, editing, mixing, and a UI to use all of it. Full
-  plan and the open questions it resolved are in "Strategy building:
-  sandbox, edit, mix (2026-08-23 blueprint)" below.
+- **Active:** S14 -- #859 -- retire in-process compile_strategy exec;
+  route both call sites (live_tick.py, plugins/scheduler.py) through
+  S13's sandboxed_eval.evaluate_signals. See issue #859.
 - **Model:** sonnet
 
 ## Queue
@@ -71,8 +67,10 @@ with `0xC0000135` (STATUS_DLL_NOT_FOUND). S13 is unblocked.
   Landed by hand, not via self_dev's own PR #857 (a test-isolation bug
   -- see Landed PRs). Both gaps the full hand-trace found are closed.
 
-- [ ] S13 -- #858 -- Sandboxed strategy evaluation, mechanism only
-  (unwired). Blocked on the icacls grant -- see Status.
+- [x] S13 -- #858 -- Sandboxed strategy evaluation, mechanism only
+  (unwired). Landed by hand, not via self_dev's own PR #865 (2 real bugs
+  found, including a genuine structural sandbox-usage bug -- see Landed
+  PRs).
 - [ ] S14 -- #859 -- Retire in-process compile_strategy exec; route
   both call sites through S13's sandbox.
 - [ ] S15 -- #860 -- Wire to_strategy to a real free model (currently
@@ -984,6 +982,71 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   capital -- the next real step is operational (run a real strategy
   through paper trading for real, over real time, before ever arming
   it), not another slice.
+
+- PR #865 -- S13 -- opened by self_dev_campaign, closed unmerged (full
+  bug account in the PR's own comment) -- landed by hand instead on top
+  of the real diff (verified via the sandbox's own clone, `campaign-
+  trading-s13`, `git diff 028ea97..selfdev/7fd2fdc3`, 3 new files / 202
+  lines, purely additive as scoped -- nothing existing touched). Two
+  real bugs, both invisible to the PR's own tests because every one of
+  them mocked `WindowsSandbox` out entirely:
+
+  1. `sandbox.spawn([...], timeout=20)` never passed the required
+     `workdir` positional argument and used the wrong keyword name
+     (the real signature is `spawn(cmd, workdir, *, timeout_s=None)`).
+     A mocked sandbox accepts any arguments silently, so this never
+     surfaced.
+  2. **A genuine structural finding about how this sandbox has to be
+     used, not just a coding mistake.** The original design wrote
+     `strategy.py`, `bars.csv`, and a copy of a `_strategy_runner.py`
+     script into the workdir *before* calling `spawn()`. Rewriting the
+     tests to use the real (now-working, post-icacls) sandbox instead
+     of mocking it immediately exposed this: `WindowsSandbox.
+     _ac_grant_workdir` adds a new ACE to the workdir's DACL for a
+     fresh per-spawn AppContainer identity, but that grant only applies
+     to files that exist -- or are created -- *after* it's added.
+     Confirmed empirically with a minimal reproduction: a script file
+     copied into the workdir immediately before `spawn()` fails with
+     `[Errno 13] Permission denied` when the child tries to open it;
+     the identical file, if the child process creates it *itself*
+     during its own execution, opens fine. Windows doesn't retroactively
+     propagate a folder ACL change onto pre-existing children. Every
+     real invocation of the original design would have silently
+     returned an all-flat signal, unconditionally -- exactly why the
+     fully-mocked tests couldn't have caught it, and exactly the same
+     lesson S11c/PR #855 already taught this campaign once (mocking out
+     the exact function whose real signature/behavior matters hides the
+     mismatch instead of testing it).
+
+  Fixed by redesigning `evaluate_signals`: strategy code and bars data
+  now travel as base64-encoded command-line arguments into an inline
+  `python -c` bootstrap -- no file the sandboxed child needs to *read*
+  exists before it runs. `signals.json` is the only file involved,
+  written by the child itself mid-execution, which works correctly per
+  the finding above. Deleted the now-unused `_strategy_runner.py` --
+  keeping an unwired file with the same name as the real mechanism is
+  exactly the kind of leftover this campaign has repeatedly found
+  causing confusion later.
+
+  `test_sandboxed_eval.py` was rewritten to exercise the real,
+  unmocked `WindowsSandbox` (auto-skips via `pytest.mark.skipif` where
+  it's unavailable) -- including a real containment test that attempts
+  a write into the repo itself (not a temp path, deliberately: TEMP is
+  one of the few env vars the sandbox keeps, an ambiguous target that
+  wouldn't distinguish AppContainer confinement from ordinary Windows
+  permissions) and confirms both that the write fails and that
+  `evaluate_signals` degrades to an all-flat signal rather than
+  propagating whatever the attempt produced. Also fixed the test
+  fixture's column casing (`data['close']`, lowercase) to match the
+  established `Open/High/Low/Close/Volume` contract used everywhere
+  else in this campaign (`to_strategy`'s own prompt, `live_tick.py`,
+  every other test fixture) -- a real, if smaller, deviation the first
+  attempt introduced. All 5 tests pass against the real sandbox. Full
+  suite: 5096 passed, 7 skipped, 0 failed.
+
+  **Mechanism only -- nothing existing is wired to this yet.** S14
+  (#859) retires `compile_strategy`'s in-process exec and routes both
+  production call sites through this.
 
 ## Thesis
 
