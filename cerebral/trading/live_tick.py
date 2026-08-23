@@ -37,7 +37,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Callable, List, Optional, Sequence
 
-from cerebral.trading.broker import Position
+from cerebral.trading.broker import AlpacaBrokerClient, Position
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 from cerebral.trading_ideas import compile_strategy
 
@@ -159,8 +159,10 @@ def run_strategy_tick(
 
     Fetch bars -> compile + call the strategy -> read the broker's own
     position -> open / close / hold -> record the fill (with real realized
-    P&L on a close). ``phase`` stays "paper" for every caller that exists
-    today; live execution is deliberately unwired.
+    P&L on a close). ``phase`` is the caller's job to set correctly --
+    "live" only when ``broker`` is actually a live-env AlpacaBrokerClient
+    (see dispatch_due_events's arm/graduation gate); every other caller
+    keeps the "paper" default.
     """
     if fetch is None:
         # Imported lazily: cerebral.trading_data pulls in yfinance, which
@@ -223,6 +225,7 @@ def dispatch_due_events(
     lifecycle: Any = None,
     store: Optional[StrategyStore] = None,
     fetch: Optional[Callable] = None,
+    arm: bool = False,
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
 
@@ -230,6 +233,14 @@ def dispatch_due_events(
     so the whole chain is testable without importing main. ``scheduler`` is
     duck-typed (``list_due_events`` / ``_run_paper_strategy`` /
     ``mark_event_run``) -- cerebral/ must not import plugins/.
+
+    ``arm`` (S11 Part 2/4): the manual arm/disarm toggle. A strategy only
+    trades against a real ``AlpacaBrokerClient(env="live")`` when BOTH
+    ``arm`` is True AND its own lifecycle status is "live" -- graduation
+    alone, or the toggle alone, is never sufficient. Every other strategy
+    (not yet graduated, or graduated but disarmed) keeps trading against
+    the ``broker`` passed in (paper), exactly as before this parameter
+    existed.
     """
     results: List[dict] = []
     for evt in scheduler.list_due_events():
@@ -242,8 +253,12 @@ def dispatch_due_events(
             results.append({"status": "halted", "strategy": name})
             continue
 
+        is_live = arm and lifecycle is not None and lifecycle.get_state(name).status == "live"
+        current_broker = AlpacaBrokerClient(env="live") if is_live else broker
+
         result = scheduler._run_paper_strategy(
-            name, broker, forward_record, {}, store=store, fetch=fetch
+            name, current_broker, forward_record, {}, store=store, fetch=fetch,
+            phase="live" if is_live else "paper",
         )
         # Marked regardless of outcome: a persistently failing strategy should
         # retry at its own interval, not spam every tick.
@@ -259,11 +274,11 @@ def dispatch_due_events(
 def _apply_lifecycle(lifecycle: Any, name: str, forward_record: Any, result: dict) -> None:
     """Graduation / ramp / retirement checks after a dispatch.
 
-    Graduation flips the strategy's lifecycle status to "live" and is the
-    signal a human acts on -- it does NOT start live trading. This dispatcher
-    only ever holds a paper broker and only ever records phase="paper" fills;
-    real-money execution stays unwired behind a manual arm/disarm toggle that
-    does not exist yet.
+    Graduation flips the strategy's lifecycle status to "live" -- it does
+    NOT by itself start live trading. dispatch_due_events only switches to
+    a real AlpacaBrokerClient (and records phase="live") when the manual
+    arm/disarm toggle is also on (S11 Part 2/4); every other combination
+    keeps trading on the paper broker with phase="paper" fills.
     """
     if lifecycle.check_graduation(name, forward_record):
         size_pct = lifecycle.apply_position_ramp(name)

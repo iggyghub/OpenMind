@@ -3,32 +3,24 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- paper trading works end-to-end with real strategy
-signals, real position tracking, and real realized P&L (S9 + S10, both
-hand-verified,
-not just tests passing). Live/real-money trading is the active goal now
-(2026-08-23: user asked to finish it). S11 part 1 (credentials UI) landed
--- see Landed PRs. Parts 2-4 (arm/disarm toggle, a production caller of
-run_gauntlet, live/paper branching in the dispatch loop) are NOT built.
-No code path anywhere in the codebase can place a live order today --
-confirmed by grep, not assumed. Do not risk live capital until all four
-parts of S11 exist and are hand-verified.
+## Status: ready -- S11b (parts 2+4, arm toggle + live/paper branching)
+landed by hand 2026-08-23 after self_dev's own PR #854 had 3 real bugs
+(see Landed PRs). Part 3 (a reachable production caller of run_gauntlet)
+is still the one remaining blocker before live trading can mean anything
+-- continuing as S11c against issue #852, scoped down in place.
 
 ## Next slice -- start here
 
-- **Active:** S11b -- #852 -- live trading, remaining work in order: (2) a
-  manual arm/disarm toggle (default OFF) gating any live order,
-  independent of strategy graduation status -- credentials existing
-  (part 1, landed) must NOT be sufficient on its own to enable live
-  trading, (3) a real production entry point that calls run_gauntlet
-  (S10 found none exists -- right now nothing in the running app ever
-  validates+promotes a strategy; that's step zero for live to mean
-  anything), (4) live/paper branching in the dispatch loop
-  (cerebral/main.py's _scheduler_loop / cerebral/trading/live_tick.py's
-  dispatch_due_events) keyed off StrategyLifecycle status + the arm
-  toggle -- construct an AlpacaBrokerClient(env="live") only when BOTH a
-  strategy has graduated AND the toggle is armed, and record phase="live"
-  fills only through that path.
+- **Active:** S11c -- #852 -- live trading, Part 3 only: a real,
+  reachable production entry point that calls run_gauntlet against a real
+  strategy spec (compiled code + symbol), using an MCP tool (via
+  `_orc.call_tool`, matching SchedulerPlugin's existing create_event/
+  list_events pattern) rather than a CommandRegistry phrase command --
+  the first attempt used a Command, whose dispatcher calls
+  `await cmd.handler()` with zero arguments, guaranteeing a crash on any
+  invocation that needs strategy code/symbol as input. See issue #852
+  (updated in place) for the full account of why the first attempt failed
+  and what the fix needs to do differently.
 - **Model:** sonnet
 
 ## Queue
@@ -64,15 +56,22 @@ parts of S11 exist and are hand-verified.
   tick, track position state from the broker's own book, and record real
   realized P&L on a close (the hard blocker on graduation). See Landed PRs.
 
-- [ ] S11b -- #852 -- Live trading: arm/disarm toggle (part 2), a real
-  production caller of run_gauntlet (part 3), live/paper branching in the
-  dispatch loop (part 4). See issue #852 for full acceptance criteria.
+- [x] S11b -- #852 -- Live trading: arm/disarm toggle (part 2), live/paper
+  branching in the dispatch loop (part 4). Landed by hand, not via
+  self_dev's own PR #854 (3 real bugs found -- see Landed PRs). Part 3
+  (production caller of run_gauntlet) not delivered; continuing as S11c.
+
+- [ ] S11c -- #852 -- Live trading, Part 3 only: a real, reachable
+  production caller of run_gauntlet. See issue #852 (updated in place)
+  for full acceptance criteria and why the first attempt's approach
+  can't work.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
 below is the detailed human-readable reference for the same 9 slices; S7/S8 are
 post-hoc follow-ups not in that original list. S8 reuses issue #848 rather than
 a new issue number -- its body was updated in place to the post-S7 scope.
+S11b/S11c similarly reuse issue #852 across two slice labels.
 
 ## Landed PRs
 
@@ -718,6 +717,72 @@ a new issue number -- its body was updated in place to the post-S7 scope.
   live/paper branching in the dispatch loop) don't exist yet, so there
   is still no code path anywhere that can place a live order. Full suite
   green: 5076 passed, 7 skipped, 0 failed; tray JS 28 suites/746 tests.
+
+- PR #854 -- S11b -- opened by self_dev_campaign, closed unmerged (see the
+  PR's own closing comment for the full account) -- landed by hand instead
+  on top of the real diff (verified via the sandbox's own clone,
+  `cerebral/data/sandbox/self_dev/campaign-trading-s11b`, `git diff
+  2634e9a..selfdev/69f7f8e7`, 4 files / 155 lines, based correctly on
+  current master). Three real bugs found hand-verifying before landing:
+
+  1. **A dead, unused duplicate settings key.** The diff added BOTH
+     `trading_arm_enabled` (never read or written anywhere else in the
+     diff) and `trading_live_arm` (the one actually wired into
+     `dispatch_due_events`'s `arm=` and covered by the new tests) to
+     `_DEFAULTS`/`_TYPES`. The dead key is exactly what made
+     `test_all_returns_all_keys` fail (the reported `tests_failed`) --
+     removed it; kept `trading_live_arm` only.
+  2. **`phase="live"` was never threaded through.** `dispatch_due_events`
+     correctly chose between `broker` and a new `AlpacaBrokerClient(env=
+     "live")` based on `arm` + graduation status, but the call into
+     `scheduler._run_paper_strategy` never passed a `phase` argument at
+     all -- every fill, even one placed through the live broker, would
+     still have been recorded with `phase="paper"` (the default baked
+     into `run_strategy_tick`). That's not a cosmetic label: it's the
+     exact "every surfaced number is labelled backtest/paper/live, mixing
+     them is a bug" rule this campaign's own Honesty rule exists to
+     enforce. Fixed by adding `phase: str = "paper"` to `SchedulerPlugin.
+     _run_paper_strategy` and threading `phase="live" if is_live else
+     "paper"` from `dispatch_due_events` all the way through to
+     `run_strategy_tick`'s existing (previously unused by any caller)
+     `phase` parameter.
+  3. **The registered "production caller" (Part 3) crashes on every
+     invocation, independent of its own logic bugs.** It registered a
+     `CommandRegistry` command (`trading_gauntlet_run`, phrases like "run
+     gauntlet") whose handler is a `lambda data: ...` expecting a `data`
+     dict -- but `cerebral/main.py`'s command dispatcher calls matched
+     handlers as `await cmd.handler()`, zero arguments, always (confirmed
+     by reading the call site directly). `CommandRegistry` is a
+     phrase-matched, zero-argument command system by construction --
+     `match()` doesn't even parse `/name arg1 arg2` into a payload, just
+     the bare command name. No handler shaped this way could ever receive
+     strategy code/symbol as input. Independently, the handler's own
+     `run_gauntlet(...)` call passed `positions=` where the real
+     parameter is `position_sizes` -- a second, unrelated crash had the
+     first one somehow not applied. A second, better implementation
+     (`_handle_gauntlet_run`, correctly async/`data`-dict-shaped, correct
+     kwarg name, a real MA-cross-style backtest wrapper) existed in the
+     same diff but was never registered or called from anywhere --
+     orphaned dead code.
+
+  Landed Parts 2 and 4 only (both real, both now covered by 4 new
+  regression tests in `test_trading_live_tick.py`: disarmed+graduated
+  stays paper, armed+ungraduated stays paper, armed+graduated goes live
+  with `phase="live"` and a real `AlpacaBrokerClient(env="live")`
+  instance -- constructing it is safe, `__init__` never connects, only
+  `place_order`/`get_account`/etc. do via lazy `_connect()`, which no
+  test calls -- and the pre-S11 no-`arm`-passed call shape still defaults
+  to paper). Part 3 not delivered -- PR #854 closed unmerged with the
+  full bug account in its closing comment; issue #852 updated in place
+  (not closed) scoped down to just Part 3, continuing as S11c. Full
+  suite green: 5083 passed, 7 skipped, 0 failed (`cerebral/tests/` +
+  repo-root `tests/`).
+
+  **Live trading is still not possible end-to-end after this slice** --
+  Parts 2 and 4 are real and correctly gated, but Part 3 (the only way to
+  actually reach `run_gauntlet` in the running app) still doesn't exist,
+  so no strategy can ever graduate through real production code today
+  (only through tests). Do not risk live capital.
 
 ## Thesis
 

@@ -8,7 +8,7 @@ Keys: notifications_enabled, reminder_interval_minutes, camera_enabled,
       visualiser_visible, mic_mode, tts_muted, tts_volume,
       mic_input_device, browser_pause_on_verification,
       disabled_plugins, enabled_skills, background_actuation,
-      setvalue_roles, user_idle_ms
+      setvalue_roles, user_idle_ms, trading_live_arm
 """
 from __future__ import annotations
 
@@ -64,6 +64,11 @@ _DEFAULTS: dict[str, Any] = {
     # instead. Ignored while the full-autonomy switch is on. ADR range:
     # 3000-5000ms.
     "user_idle_ms": 4000,
+    # S11 Part 2: master arm/disarm toggle for live trading. Default OFF.
+    # Independently readable/writable. Required alongside strategy
+    # graduation to enable real-money orders; credentials or lifecycle
+    # status alone are insufficient.
+    "trading_live_arm": False,
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -85,6 +90,7 @@ _TYPES: dict[str, type] = {
     "background_actuation":      bool,
     "setvalue_roles":            list,
     "user_idle_ms":              int,
+    "trading_live_arm":          bool,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})

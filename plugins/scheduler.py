@@ -288,7 +288,7 @@ class SchedulerPlugin:
 
     def _run_paper_strategy(
         self, strategy_name: str, broker, forward_record: "ForwardRecord",
-        config: dict | None = None, store=None, fetch=None,
+        config: dict | None = None, store=None, fetch=None, phase: str = "paper",
     ) -> dict:
         """Runs one paper-trading tick for the given strategy. Pure trade
         execution -- event bookkeeping (marking a due event as dispatched)
@@ -321,7 +321,7 @@ class SchedulerPlugin:
                 return {"status": "skipped", "reason": "no strategy spec registered"}
 
             result = run_strategy_tick(
-                strategy_name, spec, broker, forward_record, fetch=fetch
+                strategy_name, spec, broker, forward_record, fetch=fetch, phase=phase
             )
             logger.info(f"Paper tick for {strategy_name}: {result}")
             return result

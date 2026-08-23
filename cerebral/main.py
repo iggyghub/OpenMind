@@ -3403,11 +3403,15 @@ async def _scheduler_loop() -> None:
             # The whole pass -- due-event lookup, per-strategy signal
             # evaluation, position diff, order, realized P&L, then
             # graduation/ramp/retirement checks -- lives in live_tick so it's
-            # testable without importing main. _trading_broker is a
-            # StubBrokerClient: this loop cannot place a live order.
+            # testable without importing main. _trading_broker (a
+            # StubBrokerClient) is only ever used when the S11 Part 2 arm
+            # toggle is off or the strategy hasn't graduated -- dispatch_due_
+            # events swaps in a real AlpacaBrokerClient(env="live") itself
+            # when both conditions hold (Part 4).
             results = _dispatch_due_events(
                 _scheduler_plugin, _trading_broker, _trading_forward_record,
                 lifecycle=_trading_lifecycle, store=_trading_strategy_store,
+                arm=_settings.get("trading_live_arm"),
             )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")

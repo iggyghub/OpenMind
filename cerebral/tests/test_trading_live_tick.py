@@ -270,6 +270,8 @@ class FakeScheduler:
         self.marked = []
         self.tick_result = tick_result or {"status": "opened"}
         self.ran = []
+        self.brokers = []   # the `broker` dispatch_due_events actually passed, per call
+        self.phases = []    # the `phase` dispatch_due_events actually passed, per call
 
     def list_due_events(self):
         return self.events
@@ -277,8 +279,10 @@ class FakeScheduler:
     def mark_event_run(self, event_id):
         self.marked.append(event_id)
 
-    def _run_paper_strategy(self, name, broker, record, config, store=None, fetch=None):
+    def _run_paper_strategy(self, name, broker, record, config, store=None, fetch=None, phase="paper"):
         self.ran.append(name)
+        self.brokers.append(broker)
+        self.phases.append(phase)
         return dict(self.tick_result)
 
 
@@ -333,6 +337,72 @@ def test_dispatch_does_not_graduate_on_all_zero_pnl(tmp_path, monkeypatch):
                         StubBrokerClient(), record, lifecycle=lifecycle)
 
     assert lifecycle.get_state("s1").status == "paper"
+
+
+# ── S11 Part 2/4: arm toggle + live/paper branching ─────────────────────────
+# Money-adjacent: a live AlpacaBrokerClient must only ever be constructed
+# when BOTH the arm toggle is on AND the strategy has graduated. Every other
+# combination must keep using the paper broker that was passed in, with
+# phase="paper". AlpacaBrokerClient's __init__ never connects (that happens
+# lazily in _connect(), called only from methods like place_order/get_account
+# that these tests never call), so isinstance-checking a constructed instance
+# here never touches real Alpaca infrastructure.
+
+def test_dispatch_stays_paper_when_disarmed_even_if_graduated(tmp_path, monkeypatch):
+    paper_broker = StubBrokerClient()
+    record = make_record(tmp_path, monkeypatch)
+    lifecycle = StrategyLifecycle()
+    lifecycle.get_state("s1").status = "live"
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    dispatch_due_events(sched, paper_broker, record, lifecycle=lifecycle, arm=False)
+
+    assert sched.brokers == [paper_broker]
+    assert sched.phases == ["paper"]
+
+
+def test_dispatch_stays_paper_when_armed_but_not_graduated(tmp_path, monkeypatch):
+    paper_broker = StubBrokerClient()
+    record = make_record(tmp_path, monkeypatch)
+    lifecycle = StrategyLifecycle()  # default status is "paper", not "live"
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    dispatch_due_events(sched, paper_broker, record, lifecycle=lifecycle, arm=True)
+
+    assert sched.brokers == [paper_broker]
+    assert sched.phases == ["paper"]
+
+
+def test_dispatch_goes_live_only_when_armed_and_graduated(tmp_path, monkeypatch):
+    from cerebral.trading.broker import AlpacaBrokerClient
+
+    paper_broker = StubBrokerClient()
+    record = make_record(tmp_path, monkeypatch)
+    lifecycle = StrategyLifecycle()
+    lifecycle.get_state("s1").status = "live"
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    dispatch_due_events(sched, paper_broker, record, lifecycle=lifecycle, arm=True)
+
+    assert len(sched.brokers) == 1
+    assert isinstance(sched.brokers[0], AlpacaBrokerClient)
+    assert sched.brokers[0].env == "live"
+    assert sched.phases == ["live"]
+
+
+def test_dispatch_arm_defaults_off(tmp_path, monkeypatch):
+    """No arm= passed at all -- the pre-S11 call shape -- must behave exactly
+    like arm=False, never touching AlpacaBrokerClient."""
+    paper_broker = StubBrokerClient()
+    record = make_record(tmp_path, monkeypatch)
+    lifecycle = StrategyLifecycle()
+    lifecycle.get_state("s1").status = "live"
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    dispatch_due_events(sched, paper_broker, record, lifecycle=lifecycle)
+
+    assert sched.brokers == [paper_broker]
+    assert sched.phases == ["paper"]
 
 
 def test_strategy_store_round_trip(tmp_path):
