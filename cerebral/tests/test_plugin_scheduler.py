@@ -296,21 +296,30 @@ MA_CROSS_CODE = (
 )
 
 
-def test_run_gauntlet_requires_code_symbol_hypothesis(tmp_path):
+async def test_run_gauntlet_requires_symbol_and_hypothesis(tmp_path):
     plugin = _plugin(tmp_path)
-    r = plugin._run_gauntlet({"symbol": "AAPL", "hypothesis": "x"})
+    r = await plugin._run_gauntlet({"code": MA_CROSS_CODE})
+    assert r.is_error
+    assert "symbol" in r.content and "hypothesis" in r.content
+
+
+async def test_run_gauntlet_requires_code_or_an_idea_source(tmp_path):
+    """S15b/#860: code is no longer the only way in -- but at least one
+    of code/claim/book+chapter/url must be given."""
+    plugin = _plugin(tmp_path)
+    r = await plugin._run_gauntlet({"symbol": "AAPL", "hypothesis": "x"})
     assert r.is_error
     assert "code" in r.content
 
 
-def test_run_gauntlet_validated_registers_spec_and_schedules_event(tmp_path):
+async def test_run_gauntlet_validated_registers_spec_and_schedules_event(tmp_path):
     plugin = _plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end):
         return _trend_prices()
 
-    result = plugin._run_gauntlet(
+    result = await plugin._run_gauntlet(
         {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "MA cross trend test"},
         strategy_store=store, fetch=fetch,
     )
@@ -330,7 +339,7 @@ def test_run_gauntlet_validated_registers_spec_and_schedules_event(tmp_path):
     assert due[0]["title"] == "MA cross trend test"
 
 
-def test_run_gauntlet_validated_event_actually_dispatches(tmp_path, monkeypatch):
+async def test_run_gauntlet_validated_event_actually_dispatches(tmp_path, monkeypatch):
     """Beyond "an event got scheduled" -- proves dispatch_due_events can
     actually pick it up and place a real (paper) trade off the registered
     spec, the same chain S9/S10 already built."""
@@ -344,7 +353,7 @@ def test_run_gauntlet_validated_event_actually_dispatches(tmp_path, monkeypatch)
     def fetch(symbol, start, end):
         return _trend_prices()
 
-    result = plugin._run_gauntlet(
+    result = await plugin._run_gauntlet(
         {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "MA cross trend test"},
         strategy_store=store, fetch=fetch,
     )
@@ -357,17 +366,14 @@ def test_run_gauntlet_validated_event_actually_dispatches(tmp_path, monkeypatch)
     assert results[0]["strategy"] == "MA cross trend test"
 
 
-def test_run_gauntlet_unvalidated_schedules_nothing(tmp_path):
+async def test_run_gauntlet_unvalidated_schedules_nothing(tmp_path):
     plugin = _plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def flat_fetch(symbol, start, end):
         return _trend_prices()
 
-    def never_trades(data):
-        return [0] * len(data)
-
-    result = plugin._run_gauntlet(
+    result = await plugin._run_gauntlet(
         {"code": "def strategy(data):\n    return [0] * len(data)\n",
          "symbol": "AAPL", "hypothesis": "always flat"},
         strategy_store=store, fetch=flat_fetch,
@@ -376,4 +382,49 @@ def test_run_gauntlet_unvalidated_schedules_nothing(tmp_path):
     assert not result.is_error
     assert json.loads(result.content)["verdict"] == "UNVALIDATED"
     assert plugin.list_due_events() == []
+
+
+async def test_run_gauntlet_generates_code_from_a_claim_via_the_router(tmp_path):
+    """S15b/#860: the actual point of this slice -- a claim (not code)
+    reaches a real router-backed to_strategy call and the generated code
+    flows into the same gauntlet path code= already used."""
+    class FakeRouter:
+        async def complete(self, prompt: str, task_type: str) -> str:
+            assert task_type == "coding"
+            return MA_CROSS_CODE
+
+    plugin = _plugin(tmp_path)
+    plugin._router = FakeRouter()
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end):
+        return _trend_prices()
+
+    result = await plugin._run_gauntlet(
+        {"claim": "MA cross trend test", "symbol": "AAPL", "hypothesis": "MA cross trend test"},
+        strategy_store=store, fetch=fetch,
+    )
+
+    assert not result.is_error, result.content
+    assert json.loads(result.content)["verdict"] == "VALIDATED"
+    spec = store.get("MA cross trend test")
+    assert spec is not None
+    assert "rolling(10)" in spec.code  # the router's real output, not the stub
+
+
+async def test_run_gauntlet_claim_without_a_router_uses_the_stub(tmp_path):
+    """No router configured (self._router is None, the default) must not
+    crash -- to_strategy's own stub fallback handles it."""
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end):
+        return _trend_prices()
+
+    result = await plugin._run_gauntlet(
+        {"claim": "Buy when RSI < 30", "symbol": "AAPL", "hypothesis": "RSI test"},
+        strategy_store=store, fetch=fetch,
+    )
+
+    assert not result.is_error, result.content  # degrades to the stub, never crashes
     assert store.get("always flat") is None
