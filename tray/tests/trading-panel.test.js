@@ -74,3 +74,82 @@ describe('renderLiveStrategyCard fills table', () => {
     });
   });
 });
+
+// S19 (#864): multi-strategy list, provenance/version rendering, and the
+// edit box's real event shape. renderTradingUpdate itself calls
+// mount.querySelectorAll/querySelector after setting innerHTML (to wire the
+// list-click and Save handlers) -- fakeInteractiveMount below stubs those as
+// no-ops (this suite has no jsdom to make them real) so the function doesn't
+// throw; what actually gets rendered is verified against the innerHTML
+// string itself, matching this file's own established assertion style.
+
+function fakeInteractiveMount() {
+  return {
+    innerHTML: '',
+    querySelectorAll: () => ({ forEach: () => {} }),
+    querySelector: () => null,
+  };
+}
+
+const TWO_STRATEGIES = [
+  {
+    name: 'MA cross A', status: 'paper', version: 2,
+    provenance: 'MA cross trend test, as modified by user (v2)',
+    code: 'def strategy(data):\n    return [1]\n',
+    recent_fills: [], equity_curve: [],
+  },
+  {
+    name: 'MA cross B', status: 'live', version: 1,
+    provenance: 'generated (v1)',
+    code: 'def strategy(data):\n    return [0]\n',
+    recent_fills: [], equity_curve: [],
+  },
+];
+
+describe('renderTradingUpdate (S19 multi-strategy panel)', () => {
+  test('renders every strategy in the list, not just positions[0]', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: TWO_STRATEGIES, alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('MA cross A');
+      expect(mount.innerHTML).toContain('MA cross B');
+    });
+  });
+
+  test('provenance and version are actually rendered, not just present in the data', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: TWO_STRATEGIES, alerts: [] }, mount);
+      // The selected (first) strategy's detail pane is what's visible.
+      expect(mount.innerHTML).toContain('v2');
+      expect(mount.innerHTML).toContain('MA cross trend test, as modified by user');
+      expect(mount.innerHTML).toContain('def strategy(data):');
+    });
+  });
+
+  test('a strategy with no lineage shows a plain fallback, not blank/undefined', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const noLineage = [{ ...TWO_STRATEGIES[0], provenance: '', version: 0, code: '' }];
+      TradingPanel.renderTradingUpdate({ positions: noLineage, alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('No lineage recorded.');
+      expect(mount.innerHTML).not.toContain('undefined');
+    });
+  });
+});
+
+describe('buildStrategyEditEvent (the Save button\'s real event shape)', () => {
+  test('sends strategy_edit with the strategy name, new code, and its version', () => {
+    const event = TradingPanel.buildStrategyEditEvent(
+      { name: 'MA cross A', version: 2 }, 'def strategy(data):\n    return [1, 0]\n'
+    );
+    expect(event).toEqual({
+      type: 'strategy_edit',
+      data: {
+        strategy_name: 'MA cross A',
+        code: 'def strategy(data):\n    return [1, 0]\n',
+        version: 2,
+      },
+    });
+  });
+});

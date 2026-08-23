@@ -3431,17 +3431,29 @@ async def _trading_broadcast() -> None:
     try:
         if _active_profile:
             for name, state in _trading_lifecycle._states.items():
-                # S19: attach version, provenance, and source code for the edit surface
-                provenance = getattr(state, "provenance", "") or ""
-                if callable(getattr(state, "render_provenance", None)):
-                    provenance = state.render_provenance()
+                # S19 (#864): version/provenance/code for the edit surface.
+                # `name` is `_trading_lifecycle`'s own key -- since S17 (#862)
+                # that's the VERSIONED dispatch id ("<strategy_id>@v<n>") for
+                # any strategy with real lineage, not the bare strategy_id
+                # strategy_versions is keyed by. StrategyState (lifecycle.py)
+                # has no provenance/version/code of its own -- that data lives
+                # in StrategyStore (S16), so it has to be looked up there, not
+                # read off state via getattr with a silent default (which
+                # would just mean these fields stay permanently empty).
+                base_id = name.rsplit("@v", 1)[0] if "@v" in name else name
+                spec = _trading_strategy_store.get(base_id)
+                version_row = _trading_strategy_store.get_current_version(base_id)
+                provenance = (
+                    _trading_strategy_store.render_provenance(version_row)
+                    if version_row is not None else ""
+                )
                 p = {
                     "name": name, "status": state.status, "live_trades": state.live_trade_count,
                     "promoted_at": state.promoted_at.isoformat() if state.promoted_at else None,
                     "recent_fills": [], "equity_curve": _trading_forward_record.get_equity_curve(name),
-                    "version": getattr(state, "version", 0),
+                    "version": version_row["version"] if version_row is not None else 0,
                     "provenance": provenance,
-                    "code": getattr(state, "code", ""),
+                    "code": spec.code if spec is not None else "",
                 }
                 fills = _trading_forward_record.get_fills(limit=5, strategy_id=name)
                 p["recent_fills"] = [{"symbol": f["symbol"], "side": f["side"], "pnl": f["pnl"], "phase": f["phase"]} for f in fills]
@@ -6166,6 +6178,24 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "trading_poll":  # S9 -- Trading Panel initial fetch + refresh
         await _handle_trading_poll(msg.get("data", {}))
+
+    elif t == "strategy_edit":  # S19 (#864) -- Trading Panel edit box -> S17's edit_strategy tool
+        d = msg.get("data") or {}
+        strategy_id = (d.get("strategy_name") or d.get("strategy_id") or "").strip()
+        code = d.get("code") or ""
+        if strategy_id and code:
+            result = await _scheduler_plugin.call_tool(
+                "edit_strategy", {"strategy_id": strategy_id, "code": code}
+            )
+            await _broadcast({
+                "type": "strategy_edit_result",
+                "data": {
+                    "strategy_id": strategy_id,
+                    "ok": not result.is_error,
+                    "message": result.content,
+                },
+            })
+            await _trading_broadcast()  # re-fetch so the panel shows the new version/verdict
 
 
 # ── WebSocket handler ─────────────────────────────────────────────────────────

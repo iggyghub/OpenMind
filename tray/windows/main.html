@@ -6915,7 +6915,19 @@
           break;
         case 'trading_update':
           // Issue #848 (S9) -- Trading tab: lifecycle status, fills, alerts.
-          if (window.TradingPanelMod) window.TradingPanelMod.renderTradingUpdate(event.data);
+          // sendEvent passed explicitly (S19/#864's edit box) -- the panel
+          // module never reaches for window.sendEvent itself, the exact S9
+          // bug this file's own header comment warns about.
+          if (window.TradingPanelMod) window.TradingPanelMod.renderTradingUpdate(event.data, null, sendEvent);
+          break;
+        case 'strategy_edit_result':
+          // S19 (#864) -- the panel already re-renders from the
+          // trading_update broadcast _trading_broadcast() sends right after
+          // this; just surface a failure, since a silent one would look
+          // exactly like the edit having done nothing.
+          if (event.data && !event.data.ok) {
+            console.warn('[trading] strategy edit failed:', event.data.message);
+          }
           break;
         case 'plugins:list':
         case 'plugins:changed':

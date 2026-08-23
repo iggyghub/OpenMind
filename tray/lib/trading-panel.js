@@ -38,8 +38,14 @@ function initTradingPanel() {
  * @param {Object} data - { positions: [...], alerts: [...] } from
  *   cerebral/main.py's _trading_broadcast()
  * @param {HTMLElement} [container] - defaults to #trading-panel-mount
+ * @param {Function} [sendEventFn] - the caller's own sendEvent (main.html's
+ *   local function, backed by ws-bridge.js) -- passed in explicitly rather
+ *   than reached for as window.sendEvent, which is the exact S9 bug this
+ *   file's own header comment warns about. Optional so a caller that never
+ *   needs the edit box to actually save (e.g. a render-only test) doesn't
+ *   have to supply one -- the Save button just does nothing without it.
  */
-function renderTradingUpdate(data, container) {
+function renderTradingUpdate(data, container, sendEventFn) {
   const mount = container || document.getElementById('trading-panel-mount');
   if (!mount) return;
   if (!data || !data.positions || data.positions.length === 0) {
@@ -105,7 +111,7 @@ function renderTradingUpdate(data, container) {
   mount.querySelectorAll('.strategy-list li').forEach(li => {
     li.addEventListener('click', () => {
       state.selectedIdx = parseInt(li.dataset.idx, 10);
-      renderTradingUpdate(data, mount);
+      renderTradingUpdate(data, mount, sendEventFn);
     });
   });
 
@@ -114,16 +120,7 @@ function renderTradingUpdate(data, container) {
   const textarea = mount.querySelector('.strategy-code-editor');
   if (saveBtn && textarea && strategy) {
     saveBtn.addEventListener('click', () => {
-      if (window.sendEvent) {
-        window.sendEvent({
-          type: 'strategy_edit',
-          data: {
-            strategy_name: strategy.name,
-            code: textarea.value,
-            version: strategy.version
-          }
-        });
-      }
+      if (sendEventFn) sendEventFn(buildStrategyEditEvent(strategy, textarea.value));
     });
   }
 
@@ -159,6 +156,25 @@ function renderTradingUpdate(data, container) {
     `;
     document.head.appendChild(style);
   }
+}
+
+/**
+ * Builds the `strategy_edit` event the Save button sends (S19/#864),
+ * routed through main.html's real sendEvent -> handleEvent switch to
+ * S17's edit_strategy tool. A pure function, not inlined in the click
+ * handler, so the event shape is directly testable without simulating a
+ * DOM click (this file has no jsdom dependency to do that with -- see
+ * tray/tests/trading-panel.test.js's own header comment).
+ */
+function buildStrategyEditEvent(strategy, code) {
+  return {
+    type: 'strategy_edit',
+    data: {
+      strategy_name: strategy.name,
+      code: code,
+      version: strategy.version,
+    },
+  };
 }
 
 /**
@@ -344,6 +360,7 @@ return {
   renderTradingUpdate: renderTradingUpdate,
   renderStrategyCard:  renderStrategyCard,
   renderLiveStrategyCard: renderLiveStrategyCard,
+  buildStrategyEditEvent: buildStrategyEditEvent,
 };
 
 }));
