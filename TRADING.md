@@ -3,20 +3,16 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S16 landed (auto-merged as PR #869, hand-fixed on
-top -- render_provenance called a method sqlite3.Row doesn't have,
-unreachable/untested, guaranteed to crash on first real use; see Landed
-PRs). Strategy lineage (versions, structured provenance) is real now,
-with a working reader (`get_current_version`) S17/S18 can build on.
-S17 (#862) blocked after 5 consecutive "Edit step produced no commit"
-failures 2026-08-23 -- ledger-verified not a replay bug (see Landed
-PRs). Needs human attention before retrying.
+## Status: ready -- S17 landed (self_dev's 6th attempt produced PR #870
+after a reworded issue #862; tests_failed on 3 pre-existing tests broken
+by the version-scoped dispatch key, zero new tests added -- hand-fixed
+on top, see Landed PRs). `edit_strategy`/`get_strategy_code` are real
+and reachable now; S18 can build on the same lineage/dispatch machinery.
 
 ## Next slice -- start here
 
-- **Active:** S17 -- #862 -- edit a strategy's code (new version, full
-  re-validation, restarts clean on a live strategy -- user-confirmed).
-  See issue #862.
+- **Active:** S18 -- #863 -- mix strategies into a composite
+  (unanimous/majority voting). See issue #863.
 - **Model:** sonnet
 
 ## Queue
@@ -88,7 +84,7 @@ PRs). Needs human attention before retrying.
   see Landed PRs).
 - [x] S16 -- #861 -- Strategy lineage: versions, structured provenance,
   component tracking.
-- [ ] S17 -- #862 -- Edit a strategy's code (new version, full
+- [x] S17 -- #862 -- Edit a strategy's code (new version, full
   re-validation, restarts clean on a live strategy -- user-confirmed).
 - [ ] S18 -- #863 -- Mix strategies into a composite (unanimous/majority
   voting).
@@ -1283,6 +1279,106 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   (just the one `clone` row) is left as-is; a future retry can reuse it
   or pass `restart: true` to force a fresh clone if issue #862's
   description itself turns out to need rewording.
+
+  **User chose the rewording path.** Read issue #862's actual body
+  against the real current code (not assumed) to find out why 5
+  identical model-level failures happened on a slice whose own scope
+  read as no larger than several already-landed ones. Real cause found:
+  `self_dev`'s edit step is pinned to `custom/budd-quick`
+  (`model_task_pin` for `task_type='self_dev'`) -- a real model, not the
+  `Model: sonnet` note on this driver file (that field is parsed by
+  `parse_driver_model` but never wired into the edit step's model
+  selection; it's informational only). budd-quick declares a real
+  131072-token context window, so the #760 context-floor issue didn't
+  apply -- the failure was the model not producing a single coherent
+  SEARCH/REPLACE diff against a 4-file, cross-cutting design problem
+  (thread a version-scoped forward-record key through `dispatch_due_
+  events`, `_run_paper_strategy`, and `run_gauntlet`'s auto-promote
+  block, plus two brand-new tool methods) stated only as prose.
+
+  Rewrote issue #862 from scratch: designed the actual minimal diff by
+  hand first (confirmed `forward_record.py` and `lifecycle.py` need ZERO
+  changes -- both already take an arbitrary string identity; the whole
+  "restarts clean" requirement collapses to computing `f"{id}@v{n}"`
+  once in `dispatch_due_events` and threading it through one new
+  optional, backward-compatible parameter), then wrote the issue body as
+  near-literal before/after code snippets quoted verbatim from the real
+  files, not prose describing the goal. Also explicitly ruled out two
+  things the original wording implied but neither the schema nor the
+  acceptance criteria required (recording a failed edit's verdict in
+  lineage -- no column for it, and `store.save()` already never fires on
+  UNVALIDATED for a first-time submission either; and any change to
+  `forward_record.py`/`lifecycle.py`).
+
+  Attempt 6 (`python scripts/trigger_campaign.py TRADING.md 1`) produced
+  a real commit for the first time -- PR #870, `tests_failed` (left
+  open, not auto-merged). Verified via the sandbox's own clone
+  (`cerebral/data/sandbox/self_dev/campaign-trading-s17`, `git diff
+  8c5c795..6ee91b7`, 4 files / 100 lines, correctly based on current
+  master): the diff matched the reworded issue's prescribed snippets
+  almost character for character in `cerebral/trading/gauntlet.py`,
+  `plugins/scheduler.py`, and `cerebral/trading/live_tick.py` --
+  confirming the diagnosis. Cherry-picked onto local master (f585ac4).
+
+  Two real problems, neither in the design itself:
+  1. **Zero new tests** -- the issue explicitly asked for tests covering
+     `edit_strategy` (validated/unvalidated/missing-strategy),
+     `get_strategy_code`, and a dispatch-level proof of the version
+     scoping; none were added. The same "auto_merge / opened PR with no
+     test changes is maximally suspicious" red flag S15/S16 already
+     established, just manifesting as `tests_failed` instead of a clean
+     auto-merge this time.
+  2. **3 pre-existing tests broke** because they weren't updated for the
+     new scoping: `test_end_to_end_due_event_dispatches_a_real_paper_
+     trade` and `test_end_to_end_scheduled_strategy_buys_then_sells_
+     with_real_pnl` (both in `test_plugin_scheduler.py`) asserted
+     `record.get_fills(strategy_id="<bare name>")` -- now empty, since
+     `store.save()` (S16) always creates a real lineage row, so
+     `dispatch_due_events` always finds a current version and uses the
+     versioned key. And `test_plugins_time_notes.py`'s
+     `test_list_tools_exposes_five_tools` hardcoded the tool count --
+     the exact same trap that broke an S11c test at 4 tools; now 7.
+
+  Fixed by hand (commit ab4e1e6): updated the 3 broken tests to the
+  versioned keys (`"MA cross test@v1"`, `"penny breakout@v1"`/`"@v2"` --
+  the round-trip P&L test's own second `store.save()` call, used to
+  flip the strategy's behavior mid-test, is itself a real edit under the
+  new design, so its open and close fills genuinely land under two
+  different versions now; the live P&L assertion itself is computed from
+  the broker's own position math, not read back from storage, so it was
+  unaffected), renamed the tool-count test to `..._seven_tools`, and
+  added the 7 tests the issue asked for and self_dev's own attempt
+  skipped: `test_edit_strategy_validated_records_a_new_version_and_
+  moves_the_pointer`, `..._unvalidated_does_not_move_the_dispatch_
+  pointer`, `..._requires_an_existing_strategy`,
+  `test_get_strategy_code_returns_real_source_and_provenance`,
+  `..._unknown_strategy_is_an_error` (all in `test_plugin_scheduler.py`,
+  using the real unmocked `run_gauntlet`/`_trend_prices`/`MA_CROSS_CODE`
+  fixtures S11c's own tests already established), and two
+  `dispatch_due_events`-level tests in `test_trading_live_tick.py` --
+  `test_dispatch_scopes_the_forward_record_to_the_current_version`
+  (seeds real v1 history, edits to v2, asserts the dispatcher reads/
+  writes v2's own empty record while v1's stays intact) and `..._falls_
+  back_to_the_bare_id_with_no_lineage` (no `store` passed -> unchanged
+  pre-S17 behavior) -- extended `FakeScheduler` with a `dispatch_ids`
+  list so both tests assert the exact identity string that crossed the
+  scheduler seam, not an inference from side effects.
+
+  Full suite: 5116 passed, 7 skipped, 0 failed (`cerebral/tests/` +
+  repo-root `tests/`). PR #870 closed unmerged in favor of this
+  hand-verified local landing (same pattern as S7/S8/S9/S11b/S11c/S12/
+  S13/S14).
+
+  **Worth naming plainly for future issue-writing on this campaign:**
+  a near-diff-level issue body (exact file, exact before/after snippet,
+  quoted verbatim from the real current code) took a self_dev attempt
+  from 5 straight "no commit" failures to a correct 4-file diff on the
+  very next try -- but it did NOT make the model reliably add the tests
+  the issue asked for, even when those tests were also described in
+  comparable (though less literal) detail. Prescriptive-to-the-line
+  works for "what code changes"; it does not yet reliably work for
+  "and prove it" -- hand-verification (and hand-writing tests when
+  missing) remains load-bearing regardless of how the issue is worded.
 
 ## Thesis
 
