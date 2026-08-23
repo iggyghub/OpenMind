@@ -37,6 +37,8 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Callable, List, Optional, Sequence
 
+import pandas as pd
+
 from cerebral.trading.broker import AlpacaBrokerClient, Position
 from cerebral.trading.alerts import AlertDispatcher, StructuredAlert
 from cerebral.trading.sandboxed_eval import evaluate_signals
@@ -147,6 +149,49 @@ def realized_pnl(
     return gross - fees
 
 
+def _build_correlation_matrix(symbols: List[str], fetch: Callable, days: int = 60) -> "pd.DataFrame":
+    """Trailing-`days`-day close-to-close Pearson correlation for `symbols`.
+    
+    Reuses the injected `fetch(symbol, start, end)` callable. Missing or 
+    short data for a symbol degrades to 0.0 correlation for that pair 
+    rather than raising.
+    """
+    end = date.today()
+    start = end - timedelta(days=days)
+    
+    closes: dict[str, "pd.Series"] = {}
+    for sym in symbols:
+        try:
+            df = fetch(sym, start.isoformat(), end.isoformat())
+            if "Close" in df.columns and len(df) > 1:
+                closes[sym] = df["Close"]
+            else:
+                closes[sym] = pd.Series(dtype=float)
+        except Exception:
+            closes[sym] = pd.Series(dtype=float)
+
+    if not closes:
+        return pd.DataFrame(0.0, index=symbols, columns=symbols)
+
+    df = pd.DataFrame(closes)
+    df = df.dropna(axis=1, thresh=2)
+    
+    if df.empty:
+        return pd.DataFrame(0.0, index=symbols, columns=symbols)
+
+    corr = df.corr()
+    corr = corr.fillna(0.0)
+        
+    for sym in symbols:
+        if sym not in corr.index:
+            corr.loc[sym] = 0.0
+            corr.loc[:, sym] = 0.0
+        if sym not in corr.columns:
+            corr[sym] = 0.0
+            
+    return corr.reindex(symbols, columns=symbols, fill_value=0.0)
+
+
 def run_strategy_tick(
     strategy_id: str,
     spec: StrategySpec,
@@ -198,7 +243,11 @@ def run_strategy_tick(
     entry_price = float(position.avg_entry_price) if is_close else 0.0
     direction = position_direction(position) if is_close else 0
 
-    if risk is not None:
+    # Risk limits gate NEW exposure, never an exit -- a per-trade-risk cap
+    # or daily-loss halt blocking a close would trap a losing position open
+    # exactly when it needs to get out. Correlation is opens-only for the
+    # same reason (see the check below).
+    if risk is not None and not is_close:
         last_close = float(data["Close"].iloc[-1]) if "Close" in data.columns else 0.0
         trade_value = float(qty) * last_close
         # Real accrued loss, not a fabricated 0.0 -- forward_record already
@@ -215,6 +264,14 @@ def run_strategy_tick(
         )
         if not res.allowed:
             return {"status": "blocked", "blocked_by": res.blocked_by}
+
+    if risk is not None and not is_close:
+        existing = [p.symbol for p in broker.list_positions() if p.symbol != spec.symbol]
+        if existing:
+            matrix = _build_correlation_matrix([spec.symbol] + existing, fetch)
+            corr_res = risk.check_correlation_limit(spec.symbol, existing, matrix)
+            if not corr_res.allowed:
+                return {"status": "blocked", "blocked_by": corr_res.blocked_by}
 
     order = broker.place_order(symbol=spec.symbol, qty=qty, side=side, type="market")
     if order.status not in ("FILLED", "PARTIALLY_FILLED"):
