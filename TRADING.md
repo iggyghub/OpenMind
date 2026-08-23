@@ -11,15 +11,18 @@ Plan agent blueprint (`.campaign-scratch/autonomous-discovery-blueprint.md`,
 folded in below) turned this into 9 slices, S20-S28, filed as issues
 #873-#881. The blueprint's own spike found `alpaca-py` isn't even an
 installed dependency -- live trading would silently no-op today, on top
-of decision #47's already-found unwired RiskManager. S20 (risk gate)
-and S21 (alpaca-py + preflight) are P0 gap closure and must land+verify
-before anything else in this queue, and before `trading_live_arm` is
-ever set True.
+of decision #47's already-found unwired RiskManager. **S20 (risk gate)
+and S21 (alpaca-py + preflight), the P0 gap closure this queue was
+gated on, both landed 2026-08-24** (plus S21b, the correlation-limit
+follow-up split off S21) -- `trading_live_arm` is now safe for the user
+to set True whenever they choose. Remaining slices (S22-S28) are the
+autonomous-discovery + intraday-data expansion proper, independent of
+that gate.
 
 ## Next slice -- start here
 
-- **Active:** S21b -- #883 -- wire check_correlation_limit into the live
-  dispatch path. See issue #883.
+- **Active:** S22 -- #875 -- Intraday bars: per-strategy interval, Alpaca
+  Market Data. See issue #875.
 - **Model:** sonnet
 
 ## Queue
@@ -105,8 +108,10 @@ ever set True.
   the original 4-part issue -- correlation-limit wiring split out to
   S21b/#883. Landed by hand, not via self_dev's own PR #884 (no
   test-injection seam for the live broker -- see Landed PRs).
-- [ ] S21b -- #883 -- Wire check_correlation_limit into the live
-  dispatch path (split from #874).
+- [x] S21b -- #883 -- Wire check_correlation_limit into the live
+  dispatch path (split from #874). Landed by hand, not via self_dev's
+  own PR #885 (2 test bugs + 1 real production bug found -- see Landed
+  PRs).
 - [ ] S22 -- #875 -- Intraday bars: per-strategy interval, Alpaca
   Market Data.
 - [ ] S23 -- #876 -- Intraday-aware graduation: distinct trading-days
@@ -1721,6 +1726,63 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   fails loudly instead of silently.** `check_correlation_limit` (S21b/
   #883) and the user's own manual `trading_live_arm` flip (decision #43)
   remain before any real order can ever reach a live account.
+
+- PR #885 -- S21b -- opened by self_dev_campaign against the S21b-scoped
+  issue #883, landed on the **first attempt** -- no reword needed, unlike
+  #874. Real diff verified via the sandbox's own clone
+  (`campaign-trading-s21b`, `git diff c7f8760..584bfb8`, 2 files / 117
+  lines): a new `_build_correlation_matrix` (trailing-60-day close-to-
+  close Pearson correlation, reusing the injected `fetch` callable) wired
+  into `run_strategy_tick` via `RiskManager.check_correlation_limit`,
+  gated on `not is_close` -- matching the issue's own scoping (correlation
+  is about entering new exposure, never about blocking an exit).
+
+  Worth noting: `_build_correlation_matrix` returns a pandas `DataFrame`
+  where `check_correlation_limit`'s real signature expects a
+  `Dict[str, Dict[str, float]]` (`correlation_matrix.get(new_symbol,
+  {}).get(existing, 0.0)`). This works -- verified directly, not assumed
+  -- because both `DataFrame.get()` and `Series.get()` implement the same
+  dict-like key lookup (column then row-label). Fragile but correct;
+  flagged here so a future refactor of either side doesn't break the
+  compatibility by accident.
+
+  The diff included real tests this time (an improvement over S20/S21's
+  zero-test PRs), with 2 real bugs in them: `broker._positions.append(
+  Position(...))` -- `StubBrokerClient._positions` is a
+  `Dict[str, Position]`, not a list, guaranteed `AttributeError`; and
+  `test_tick_blocks_high_correlation_open` asserted `blocked_by ==
+  "correlation_limit"`, but `check_correlation_limit`'s real code returns
+  `blocked_by="correlation"` (checked `risk_limits.py` directly). Fixed
+  both.
+
+  **One real bug in production code, not the tests, that fixing bug #2
+  exposed:** the corrected correlation test was ALSO getting blocked by
+  `per_trade_risk` before ever reaching the correlation check. Traced the
+  cause to S20: `risk.check_order(...)` ran unconditionally for both
+  opens AND closes. That is backwards for a risk gate -- a per-trade-risk
+  cap or daily-loss halt blocking a *close* could trap a losing position
+  open exactly when it most needs to exit. This diff's own correlation
+  check was already correctly scoped to `not is_close`; `check_order`
+  wasn't, and nothing had exercised a close with a large enough
+  qty*price to trigger it until this test's synthetic price data
+  (~$164/share) did. Fixed by gating `check_order` the same way,
+  `if risk is not None and not is_close`, and fixed the test's own
+  `RiskConfig` to isolate what it's testing (a generous
+  `max_per_trade_risk_pct=50.0`, matching the pattern S20's own tests
+  already use).
+
+  Full suite green: 5138 passed, 7 skipped, 0 failed (`cerebral/tests/`
+  + repo-root `tests/`). PR #885 closed unmerged in favor of this
+  hand-verified local landing (commit fac438a).
+
+  **RiskManager's three original gates (per-trade %, daily-loss halt,
+  max concurrent positions) plus correlation are now all wired, all
+  reachable from a real dispatch tick, and all correctly scoped to opens
+  only.** Nothing in TRADING.md decision #47's original scope remains
+  unwired. Per the blueprint's own dependency graph, S20+S21 (both
+  landed) are the only code gaps gating decision #43 -- `trading_live_arm`
+  can safely go True whenever the user chooses to flip it by hand; S22
+  (intraday data) is a separate, independent chain, not a prerequisite.
 
 ## What's next
 
