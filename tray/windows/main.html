@@ -3782,6 +3782,68 @@
       display: flex; align-items: center; justify-content: space-between;
       font-size: 12px; color: var(--text-muted); padding: 4px 0;
     }
+
+    /* ── Documents sub-tabs (Library / Campaign Plans) ─────────────────── */
+    .docs-subtabs {
+      display: flex; gap: 4px; margin-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .docs-subtab {
+      background: transparent; border: none; border-bottom: 2px solid transparent;
+      color: var(--text-muted); cursor: pointer; font-size: 13px;
+      padding: 6px 10px; margin-bottom: -1px;
+    }
+    .docs-subtab:hover { color: var(--text); }
+    .docs-subtab.is-active { color: var(--accent); border-bottom-color: var(--accent); }
+    .docs-subview { display: none; }
+    .docs-subview.is-active { display: block; }
+
+    /* ── Campaign driver viewer ──────────────────────────────────────────
+       Read-only Markdown view of the root-level *.md campaign drivers plus
+       docs/adr/*.md (list on the left, rendered content on the right). */
+    .camp-layout { display: flex; gap: 16px; align-items: flex-start; }
+    .camp-list {
+      flex: 0 0 220px; display: flex; flex-direction: column; gap: 4px;
+      max-height: 70vh; overflow-y: auto;
+    }
+    .camp-empty, .camp-viewer-empty {
+      color: var(--text-muted); font-size: 13px; padding: 12px 0;
+    }
+    .camp-row {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); cursor: pointer; display: flex; flex-direction: column;
+      font-size: 12px; gap: 2px; padding: 8px 10px; text-align: left;
+    }
+    .camp-row:hover { border-color: var(--accent); }
+    .camp-row.is-active { border-color: var(--accent); }
+    .camp-row-name { font-weight: 600; overflow-wrap: anywhere; }
+    .camp-row-status { color: var(--text-muted); font-size: 11px; }
+    .camp-group-label {
+      color: var(--text-muted); font-size: 11px; font-weight: 600;
+      margin: 10px 0 2px; text-transform: uppercase;
+    }
+    .camp-group-label:first-child { margin-top: 0; }
+    .camp-viewer {
+      flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px 20px; max-height: 70vh; overflow-y: auto;
+    }
+    .camp-viewer h1, .camp-viewer h2, .camp-viewer h3,
+    .camp-viewer h4, .camp-viewer h5, .camp-viewer h6 {
+      color: var(--text); margin: 16px 0 8px;
+    }
+    .camp-viewer h1:first-child, .camp-viewer h2:first-child { margin-top: 0; }
+    .camp-viewer p { color: var(--text); font-size: 13px; line-height: 1.6; margin: 8px 0; }
+    .camp-viewer ul { margin: 8px 0; padding-left: 20px; }
+    .camp-viewer li { color: var(--text); font-size: 13px; line-height: 1.6; }
+    .camp-viewer code {
+      background: var(--border); border-radius: 3px; font-size: 12px; padding: 1px 4px;
+    }
+    .camp-viewer pre {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      overflow-x: auto; padding: 10px 12px;
+    }
+    .camp-viewer pre code { background: none; padding: 0; }
+    .camp-viewer a { color: var(--accent); }
     .docs-version-name { font-family: monospace; }
 
     /* ── Thinking panel (#816/#824) -- a normal .lib-sub[data-lib="thinking"]
@@ -5545,6 +5607,27 @@
               </div>
             </div>
 
+            <div class="cred-card" id="cred-card-alpaca">
+              <div class="cred-card-title">
+                Trading (Alpaca live)
+                <span class="cred-token-row-pill" id="cred-alpaca-pill"></span>
+              </div>
+              <div class="cred-token-row-actions">
+                <input type="password" autocomplete="off" id="cred-alpaca-key"
+                       placeholder="Live API key (write-only)" />
+                <input type="password" autocomplete="off" id="cred-alpaca-secret"
+                       placeholder="Live API secret (write-only)" />
+                <button class="cred-btn cred-btn-secondary" id="cred-alpaca-set">Set</button>
+                <button class="cred-btn cred-btn-danger" id="cred-alpaca-clear">Clear</button>
+              </div>
+              <div class="cred-hint">
+                One brokerage account per Felix instance, not per profile --
+                stored in its own OS keyring entry, separate from the API keys
+                above. Setting this does not by itself enable live trading;
+                that also needs an explicit arm/disarm toggle (not built yet).
+              </div>
+            </div>
+
             <div class="cred-card" id="cred-card-browser-logins">
               <div class="cred-card-title">Browser logins</div>
               <div id="cred-browser-logins-list">
@@ -5953,10 +6036,30 @@
 
       <div class="lib-sub" data-lib="documents">
         <div class="docs-body">
-          <div id="docs-list">
-            <div class="docs-empty" id="docs-empty">
-              No documents in the library. Ask Felix to store a document, or use
-              "Felix, store this file as a document" to add one.
+          <div class="docs-subtabs" id="docs-subtabs">
+            <button class="docs-subtab is-active" data-docsub="library" type="button">Library</button>
+            <button class="docs-subtab" data-docsub="campaigns" type="button">Campaign Plans</button>
+          </div>
+
+          <div class="docs-subview is-active" data-docsub="library">
+            <div id="docs-list">
+              <div class="docs-empty" id="docs-empty">
+                No documents in the library. Ask Felix to store a document, or use
+                "Felix, store this file as a document" to add one.
+              </div>
+            </div>
+          </div>
+
+          <!-- Read-only viewer for root-level *.md campaign drivers (TRADING.md,
+               BOOKS.md, UI-OVERHAUL.md, ...) plus docs/adr/*.md. -->
+          <div class="docs-subview" data-docsub="campaigns">
+            <div class="camp-layout">
+              <div class="camp-list" id="camp-list">
+                <div class="camp-empty" id="camp-empty">Loading campaign drivers…</div>
+              </div>
+              <div class="camp-viewer" id="camp-viewer">
+                <div class="camp-viewer-empty">Select a campaign driver to view it.</div>
+              </div>
             </div>
           </div>
         </div>
@@ -6133,6 +6236,11 @@
        Documents sidebar panel. Dual-mode: window.DocumentsPanel here,
        module.exports for Node tests. -->
   <script src="../lib/documents-panel.js"></script>
+
+  <!-- Campaign driver viewer -- pure data shapers (list rows + minimal
+       Markdown renderer) for the Documents "Campaign Plans" sub-view.
+       Dual-mode: window.CampaignPanel here, module.exports for Node tests. -->
+  <script src="../lib/campaign-panel.js"></script>
   <!-- Harness panel helpers (S3 #471) -- filters, card grid, detail drawer. -->
   <script src="../lib/harness-panel.js"></script>
 
@@ -6230,6 +6338,11 @@
     const credBtnConnect    = document.getElementById('cred-btn-connect');
     const credBtnDisconnect = document.getElementById('cred-btn-disconnect');
     const credStaticTokensListEl = document.getElementById('cred-static-tokens-list');
+    const credAlpacaPillEl   = document.getElementById('cred-alpaca-pill');
+    const credAlpacaKeyEl    = document.getElementById('cred-alpaca-key');
+    const credAlpacaSecretEl = document.getElementById('cred-alpaca-secret');
+    const credAlpacaSetBtn   = document.getElementById('cred-alpaca-set');
+    const credAlpacaClearBtn = document.getElementById('cred-alpaca-clear');
     const credBrowserLoginsListEl = document.getElementById('cred-browser-logins-list');
     const credDiscordStatusEl     = document.getElementById('cred-discord-status');
     const credDiscordStatusTextEl = document.getElementById('cred-discord-status-text');
@@ -6859,6 +6972,13 @@
         case 'documents_update':  // S6 #457
           documentsData = (event.data && event.data.docs) || [];
           renderDocuments();
+          break;
+        case 'campaign_drivers_update':  // Campaign driver viewer -- Documents sub-view
+          campaignDriversData = (event.data && event.data.drivers) || [];
+          renderCampaignDrivers();
+          break;
+        case 'campaign_driver_content':  // Campaign driver viewer -- content fetch
+          renderCampaignDriverContent(event.data || {});
           break;
         case 'plugins:panels':
           // UI2 A3 #483 -- registry of plugin-declared workspace panels.
@@ -8256,6 +8376,71 @@
       }
     });
 
+    // ── Documents sub-tabs (Library / Campaign Plans) ──────────────────────────
+    const docsSubtabsEl = document.getElementById('docs-subtabs');
+    if (docsSubtabsEl) {
+      docsSubtabsEl.addEventListener('click', function (e) {
+        var btn = e.target.closest('.docs-subtab');
+        if (!btn) return;
+        var target = btn.dataset.docsub;
+        document.querySelectorAll('#docs-subtabs .docs-subtab').forEach(function (t) {
+          t.classList.toggle('is-active', t === btn);
+        });
+        document.querySelectorAll('.docs-subview').forEach(function (el) {
+          el.classList.toggle('is-active', el.dataset.docsub === target);
+        });
+      });
+    }
+
+    // ── Campaign driver viewer -- read-only Markdown view of root-level
+    //    *.md campaign drivers plus docs/adr/*.md ─────────────────────────────
+    let campaignDriversData = [];
+    let campaignActivePath  = null;
+    const campListEl   = document.getElementById('camp-list');
+    const campEmptyEl  = document.getElementById('camp-empty');
+    const campViewerEl = document.getElementById('camp-viewer');
+    const _campPanel   = window.CampaignPanel;
+
+    function renderCampaignDrivers() {
+      if (!campListEl) return;
+      if (!campaignDriversData || campaignDriversData.length === 0) {
+        campListEl.innerHTML = campEmptyEl ? campEmptyEl.outerHTML : '<div class="camp-empty">No campaign drivers found.</div>';
+        return;
+      }
+      var rootDrivers = campaignDriversData.filter(function (d) { return d.group !== 'adr'; });
+      var adrDrivers  = campaignDriversData.filter(function (d) { return d.group === 'adr'; });
+      var html = '';
+      if (rootDrivers.length) {
+        html += '<div class="camp-group-label">Campaigns</div>' + _campPanel.renderDriverList(rootDrivers);
+      }
+      if (adrDrivers.length) {
+        html += '<div class="camp-group-label">Architecture decisions</div>' + _campPanel.renderDriverList(adrDrivers);
+      }
+      campListEl.innerHTML = html;
+    }
+
+    function renderCampaignDriverContent(data) {
+      if (!campViewerEl) return;
+      if (data.path !== campaignActivePath) return;  // stale response for a since-abandoned selection
+      if (data.error) {
+        campViewerEl.innerHTML = '<div class="camp-viewer-empty">Could not load ' + _campPanel.escHtml(data.name || data.path) + ': ' + _campPanel.escHtml(data.error) + '</div>';
+        return;
+      }
+      campViewerEl.innerHTML = _campPanel.mdToHtml(data.content || '');
+    }
+
+    campListEl && campListEl.addEventListener('click', function (e) {
+      var row = e.target.closest('.camp-row');
+      if (!row) return;
+      var path = row.dataset.path;
+      campaignActivePath = path;
+      document.querySelectorAll('#camp-list .camp-row').forEach(function (r) {
+        r.classList.toggle('is-active', r === row);
+      });
+      campViewerEl.innerHTML = '<div class="camp-viewer-empty">Loading…</div>';
+      sendEvent({ type: 'read_campaign_driver', data: { path: path } });
+    });
+
     // ── Job Search panel (Issue #334 — S1; Issue #335 — S2; Issue #336 — S3) ─
     let jobPostings = [];
     let jobDossier  = null;  // S2 #335
@@ -8983,6 +9168,7 @@
       const payload = credentialsState || {};
       renderCredentialsGoogle(payload.google);
       renderCredentialsStaticTokens(payload.static_tokens);
+      renderCredentialsAlpaca(payload.alpaca);
       renderCredentialsBrowserLogins(payload.browser_logins);
       renderCredentialsDiscord(payload.discord_user);
       renderCredentialsFelixSession(payload.felix_session_login);
@@ -9108,6 +9294,15 @@
       }
     }
 
+    function renderCredentialsAlpaca(alpaca) {
+      if (!credAlpacaPillEl) return;
+      const status = (alpaca || {}).status || 'not configured';
+      const isSet = status === 'connected';
+      credAlpacaPillEl.className = 'cred-token-row-pill' + (isSet ? ' is-token-set-keyring' : '');
+      credAlpacaPillEl.textContent = isSet ? 'Set' : 'Not set';
+      if (credAlpacaClearBtn) credAlpacaClearBtn.disabled = !isSet;
+    }
+
     function renderCredentialsBrowserLogins(browserLogins) {
       const logins = browserLogins || {};
       // Preserve a focused half-typed field across background re-renders.
@@ -9218,6 +9413,20 @@
     // First render of the static-tokens section before any state arrives so
     // the card isn't blank on initial paint.
     renderCredentialsStaticTokens(null);
+    renderCredentialsAlpaca(null);
+
+    credAlpacaSetBtn.addEventListener('click', () => {
+      const key    = credAlpacaKeyEl.value.trim();
+      const secret = credAlpacaSecretEl.value.trim();
+      if (!key || !secret) return;
+      sendEvent({ type: 'set_alpaca_credentials', data: { key, secret } });
+      credAlpacaKeyEl.value = '';
+      credAlpacaSecretEl.value = '';   // never keep either value in the DOM
+    });
+
+    credAlpacaClearBtn.addEventListener('click', () => {
+      sendEvent({ type: 'clear_alpaca_credentials' });
+    });
 
     credBrowserLoginsListEl.addEventListener('click', (ev) => {
       const setBtn   = ev.target.closest('[data-cred-browser-set]');
@@ -11798,6 +12007,7 @@
         sendEvent({ type: 'list_insights' });
         sendEvent({ type: 'list_recipes' });
         sendEvent({ type: 'list_documents' });
+        sendEvent({ type: 'list_campaign_drivers' });
         sendEvent({ type: 'list_job_postings' });
         const libSub = sub || 'memory';
         if (libSub === 'videos') {

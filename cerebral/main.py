@@ -357,6 +357,59 @@ async def _docs_broadcast() -> None:  # S3 #454
     await _broadcast(_plugins_panel_spec_event("documents"))
 
 
+# ── Campaign driver viewer (Documents panel sub-view) ─────────────────────────
+# Read-only listing of the repo's root-level *.md campaign drivers (TRADING.md,
+# BOOKS.md, UI-OVERHAUL.md, ...) plus docs/adr/*.md. These live on the repo
+# filesystem, not in the profile-scoped DocumentStore, so they get their own
+# tiny scan/read pair instead of going through DocumentStore.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_CAMPAIGN_STATUS_RE = re.compile(
+    r'^\s*\*{0,2}(?:Status|Active)\*{0,2}\s*:\s*(.+?)\s*$', re.IGNORECASE | re.MULTILINE
+)
+
+
+def _campaign_driver_files() -> list[Path]:
+    root_mds = sorted(_REPO_ROOT.glob("*.md"))
+    adr_dir = _REPO_ROOT / "docs" / "adr"
+    adr_mds = sorted(adr_dir.glob("*.md")) if adr_dir.is_dir() else []
+    return root_mds + adr_mds
+
+
+def _campaign_drivers_update_event() -> dict:
+    from datetime import datetime, timezone
+    drivers = []
+    for p in _campaign_driver_files():
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+            mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc).isoformat()
+        except OSError:
+            continue
+        m = _CAMPAIGN_STATUS_RE.search(text)
+        drivers.append({
+            "path": p.relative_to(_REPO_ROOT).as_posix(),
+            "name": p.name,
+            "group": "adr" if p.parent.name == "adr" else "root",
+            "status": m.group(1).strip() if m else "",
+            "updated_at": mtime,
+        })
+    return {"type": "campaign_drivers_update", "data": {"drivers": drivers}}
+
+
+def _campaign_driver_content_event(rel_path: str) -> dict:
+    # Only serve paths from the same scan set -- no arbitrary filesystem reads.
+    allowed = {p.relative_to(_REPO_ROOT).as_posix(): p for p in _campaign_driver_files()}
+    target = allowed.get((rel_path or "").strip())
+    if target is None:
+        return {"type": "campaign_driver_content", "data": {"path": rel_path, "error": "not found"}}
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {"type": "campaign_driver_content", "data": {"path": rel_path, "error": str(exc)}}
+    return {"type": "campaign_driver_content", "data": {
+        "path": rel_path, "name": target.name, "content": content,
+    }}
+
+
 async def _skills_broadcast() -> None:  # S5 #542
     """Keep the Skills panel spec live after enable/disable/install/uninstall."""
     await _broadcast(_plugins_panel_spec_event("skills"))
@@ -2642,6 +2695,7 @@ def _credentials_state_event(
                 "google": {"status": "not configured", "email": "",
                            "client_id": "", "detail": ""},
                 "static_tokens": {},
+                "alpaca": _alpaca_credentials_state(),
                 "browser_logins": {},
                 "discord_user": {"status": "not configured", "source": "none"},
                 "felix_session_login": _felix_session_login_state(),
@@ -2670,6 +2724,7 @@ def _credentials_state_event(
                 "detail": detail,
             },
             "static_tokens": _static_tokens_state(),
+            "alpaca": _alpaca_credentials_state(),
             "browser_logins": _browser_logins_state(),
             "discord_user": _discord_user_state(),
             "felix_session_login": _felix_session_login_state(),
@@ -2711,6 +2766,27 @@ def _browser_logins_state() -> dict[str, dict[str, object]]:
             "has_password": has_password,
         }
     return out
+
+
+_ALPACA_KEYRING_SERVICE = "cerebral_alpaca"  # matches cerebral/trading/broker.py exactly
+
+
+def _alpaca_credentials_state() -> dict[str, str]:
+    """{status} for the live Alpaca broker credentials.
+
+    Deliberately NOT part of _static_tokens_state()/CredentialStore: Alpaca
+    trading is one brokerage account per Felix instance, not a per-profile
+    connected account, and cerebral/trading/broker.py already reads these
+    two values from a dedicated, profile-agnostic keyring service
+    ("cerebral_alpaca") independent of the active profile. This mirrors
+    that directly rather than routing through CredentialStore and forcing
+    broker.py to become profile-aware for no real behavioural gain. Never
+    returns the key/secret values -- same write-only contract as the
+    static-token providers."""
+    import keyring
+    key = keyring.get_password(_ALPACA_KEYRING_SERVICE, "alpaca_live_key")
+    secret = keyring.get_password(_ALPACA_KEYRING_SERVICE, "alpaca_live_secret")
+    return {"status": "connected" if (key and secret) else "not configured"}
 
 
 def _static_tokens_state() -> dict[str, dict[str, str]]:
@@ -4808,6 +4884,36 @@ async def _handle_message(msg: dict) -> None:
         )
         await _broadcast(_credentials_state_event())
 
+    elif t == "set_alpaca_credentials":
+        # Live Alpaca API key + secret -- deliberately not set_static_token
+        # (that's one value per provider; Alpaca needs two) and deliberately
+        # not CredentialStore (broker.py's _get_alpaca_credentials already
+        # reads a dedicated, profile-agnostic keyring service directly --
+        # see _alpaca_credentials_state's docstring for why). Written to
+        # EXACTLY the (service, username) pairs broker.py reads. Values are
+        # never logged or echoed back to the renderer.
+        import keyring
+        d = msg.get("data") or {}
+        key = (d.get("key") or "").strip()
+        secret = (d.get("secret") or "").strip()
+        if not key or not secret:
+            logger.warning("[cerebral] set_alpaca_credentials missing key or secret")
+            return
+        keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_live_key", key)
+        keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_live_secret", secret)
+        logger.info("[cerebral] Alpaca live credentials set")
+        await _broadcast(_credentials_state_event())
+
+    elif t == "clear_alpaca_credentials":
+        import keyring
+        for field in ("alpaca_live_key", "alpaca_live_secret"):
+            try:
+                keyring.delete_password(_ALPACA_KEYRING_SERVICE, field)
+            except Exception:
+                pass  # keyring.errors.PasswordDeleteError if already absent -- fine
+        logger.info("[cerebral] Alpaca live credentials cleared")
+        await _broadcast(_credentials_state_event())
+
     elif t == "set_discord_user_token":
         # Dedicated setter for the Discord user-account (self-bot) token.
         # discord_user is deliberately excluded from _STATIC_TOKEN_PROVIDERS
@@ -6021,6 +6127,13 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "list_documents":  # S6 #457 -- Documents panel activation re-pull
         await _broadcast(_documents_update_event())
+
+    elif t == "list_campaign_drivers":  # campaign driver viewer -- Documents sub-view
+        await _broadcast(_campaign_drivers_update_event())
+
+    elif t == "read_campaign_driver":  # campaign driver viewer -- content fetch
+        d = msg.get("data", {})
+        await _broadcast(_campaign_driver_content_event(d.get("path", "")))
 
     elif t == "doc_save_to_disk":  # S6 #457 -- copy library doc to user path
         import shutil as _shutil
