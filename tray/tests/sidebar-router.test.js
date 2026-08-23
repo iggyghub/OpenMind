@@ -12,13 +12,14 @@ test('VALID_ROUTES is a Set', () => {
   expect(VALID_ROUTES).toBeInstanceOf(Set);
 });
 
-// S5: 4 nav sections + profiles (kept accessible for first_run / header switcher)
-test('VALID_ROUTES has 5 entries', () => {
-  expect(VALID_ROUTES.size).toBe(5);
+// S5: 4 nav sections + profiles (kept accessible for first_run / header switcher);
+// Trading promoted to a 5th nav section, #864 follow-up.
+test('VALID_ROUTES has 6 entries', () => {
+  expect(VALID_ROUTES.size).toBe(6);
 });
 
-test('VALID_ROUTES contains the 4 nav sections and profiles', () => {
-  const expected = ['conversation', 'harness', 'library', 'settings', 'profiles'];
+test('VALID_ROUTES contains the 5 nav sections and profiles', () => {
+  const expected = ['conversation', 'harness', 'library', 'trading', 'settings', 'profiles'];
   for (const route of expected) {
     expect(VALID_ROUTES.has(route)).toBe(true);
   }

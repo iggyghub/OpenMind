@@ -153,3 +153,66 @@ describe('buildStrategyEditEvent (the Save button\'s real event shape)', () => {
     });
   });
 });
+
+describe('buildRunGauntletEvent (the create-strategy form\'s real event shape)', () => {
+  const BASE_FIELDS = { symbol: 'AAPL', hypothesis: 'MA cross beats buy-and-hold' };
+
+  test('code source: reuses the generic call_tool WS route with run_gauntlet', () => {
+    const event = TradingPanel.buildRunGauntletEvent({
+      ...BASE_FIELDS, source: 'code', code: 'def strategy(data):\n    return [1]\n',
+    });
+    expect(event).toEqual({
+      type: 'call_tool',
+      data: {
+        name: 'run_gauntlet',
+        args: {
+          symbol: 'AAPL',
+          hypothesis: 'MA cross beats buy-and-hold',
+          code: 'def strategy(data):\n    return [1]\n',
+        },
+      },
+    });
+  });
+
+  test('claim source: sends claim, not code/url/book', () => {
+    const event = TradingPanel.buildRunGauntletEvent({
+      ...BASE_FIELDS, source: 'claim', claim: 'Buy when RSI crosses 30',
+    });
+    expect(event.data.args).toEqual({
+      symbol: 'AAPL', hypothesis: 'MA cross beats buy-and-hold',
+      claim: 'Buy when RSI crosses 30',
+    });
+  });
+
+  test('url source: sends url only', () => {
+    const event = TradingPanel.buildRunGauntletEvent({
+      ...BASE_FIELDS, source: 'url', url: 'https://example.com/strategy',
+    });
+    expect(event.data.args).toEqual({
+      symbol: 'AAPL', hypothesis: 'MA cross beats buy-and-hold',
+      url: 'https://example.com/strategy',
+    });
+  });
+
+  test('book source: sends both book and chapter', () => {
+    const event = TradingPanel.buildRunGauntletEvent({
+      ...BASE_FIELDS, source: 'book', book: 'Market Wizards', chapter: '3',
+    });
+    expect(event.data.args).toEqual({
+      symbol: 'AAPL', hypothesis: 'MA cross beats buy-and-hold',
+      book: 'Market Wizards', chapter: '3',
+    });
+  });
+
+  test('optional provenance is included only when given', () => {
+    const withProv = TradingPanel.buildRunGauntletEvent({
+      ...BASE_FIELDS, source: 'code', code: 'x', provenance: 'user, verbatim',
+    });
+    expect(withProv.data.args.provenance).toBe('user, verbatim');
+
+    const withoutProv = TradingPanel.buildRunGauntletEvent({
+      ...BASE_FIELDS, source: 'code', code: 'x',
+    });
+    expect(withoutProv.data.args.provenance).toBeUndefined();
+  });
+});

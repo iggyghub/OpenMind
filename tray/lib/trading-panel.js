@@ -178,6 +178,35 @@ function buildStrategyEditEvent(strategy, code) {
 }
 
 /**
+ * Builds the `call_tool` event the create-strategy form sends (Trading
+ * pane follow-up, #864). Reuses the existing generic call_tool WS route
+ * (cerebral/main.py's `elif t == "call_tool"`, already ACL/consent-gated
+ * via _dispatch_tray_call_tool) instead of a bespoke IPC route -- the
+ * same mechanism main.html's GitHub panel already uses for
+ * github_check_updates. run_gauntlet accepts exactly one of
+ * code/claim/url/book+chapter as the idea source, alongside required
+ * symbol+hypothesis and an optional provenance string.
+ * @param {Object} fields - { symbol, hypothesis, source, code, claim,
+ *   url, book, chapter, provenance }. `source` selects which of
+ *   code/claim/url/book+chapter to include.
+ */
+function buildRunGauntletEvent(fields) {
+  const args = { symbol: fields.symbol, hypothesis: fields.hypothesis };
+  if (fields.provenance) args.provenance = fields.provenance;
+  if (fields.source === 'claim') {
+    args.claim = fields.claim;
+  } else if (fields.source === 'url') {
+    args.url = fields.url;
+  } else if (fields.source === 'book') {
+    args.book = fields.book;
+    args.chapter = fields.chapter;
+  } else {
+    args.code = fields.code;
+  }
+  return { type: 'call_tool', data: { name: 'run_gauntlet', args: args } };
+}
+
+/**
  * Renders a StrategyCard into the given container element.
  * @param {Object} card - StrategyCard object from gauntlet
  * @param {HTMLElement} container - DOM element to render into
@@ -361,6 +390,7 @@ return {
   renderStrategyCard:  renderStrategyCard,
   renderLiveStrategyCard: renderLiveStrategyCard,
   buildStrategyEditEvent: buildStrategyEditEvent,
+  buildRunGauntletEvent: buildRunGauntletEvent,
 };
 
 }));

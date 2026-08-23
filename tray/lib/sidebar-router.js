@@ -19,10 +19,11 @@
 // that kill the entire renderer script. require() gives each module its own
 // scope, which is why the Node test suite never caught this.
 (function () {
-  // Four primary nav sections + profiles (kept valid so #profiles / first_run
+  // Five primary nav sections (Trading promoted from a Library sub-tab,
+  // #864 follow-up) + profiles (kept valid so #profiles / first_run
   // flow keeps working without a nav button).
   const VALID_ROUTES = new Set([
-    'conversation', 'harness', 'library', 'settings', 'profiles',
+    'conversation', 'harness', 'library', 'trading', 'settings', 'profiles',
   ]);
 
   const DEFAULT_ROUTE = 'conversation';

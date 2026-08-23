@@ -30,8 +30,10 @@ const PANE_ROUTES = [
   'conversations', 'integrations', 'recipes', 'job-search', 'documents',
   // S5 new routes
   'harness', 'library',
+  // Trading promoted from a Library sub-tab to its own route, #864 follow-up
+  'trading',
 ];
-const NAV_ROUTES = ['conversation', 'harness', 'library', 'settings'];
+const NAV_ROUTES = ['conversation', 'harness', 'library', 'trading', 'settings'];
 
 // Legacy alias kept for tests that loop over "routes that need panes".
 const SMOKE_ROUTES = PANE_ROUTES;
@@ -62,14 +64,14 @@ test('every expected pane element exists', () => {
   }
 });
 
-// ── Nav items (S5: 4 sections only) ──────────────────────────────────────────
+// ── Nav items (S5: 4 sections; Trading added as a 5th, #864 follow-up) ───────
 
-test('nav has exactly 4 top-level sections (S5)', () => {
+test('nav has exactly 5 top-level sections (S5 + Trading)', () => {
   const navItems = root.querySelectorAll('.nav-item');
-  expect(navItems.length).toBe(4);
+  expect(navItems.length).toBe(5);
 });
 
-test('every expected nav item exists (S5: 4 sections)', () => {
+test('every expected nav item exists (S5: 4 sections + Trading)', () => {
   for (const route of NAV_ROUTES) {
     const nav = root.querySelector(`.nav-item[data-route="${route}"]`);
     expect(nav).not.toBeNull();
@@ -110,17 +112,39 @@ test('library pane exists with sub-tab bar (S5)', () => {
   expect(pane).not.toBeNull();
   const tabs = pane.querySelector('#lib-tabs');
   expect(tabs).not.toBeNull();
-  // Eight sub-tabs (memory / insights / recipes / documents / job-search /
-  // videos / github / trading -- issue #848 S9). Thinking (#816/#825)
-  // deliberately has NO tab button -- pill-only, see the test below.
+  // Seven sub-tabs (memory / insights / recipes / documents / job-search /
+  // videos / github). Trading moved out to its own top-level route (#864
+  // follow-up) -- see the standalone Trading pane tests below. Thinking
+  // (#816/#825) deliberately has NO tab button -- pill-only, see the test
+  // below.
   const tabBtns = pane.querySelectorAll('.lib-tab');
-  expect(tabBtns.length).toBe(8);
+  expect(tabBtns.length).toBe(7);
 });
 
-test('library pane contains memory, insights, recipes, documents, job-search, videos, github, trading sub-sections', () => {
+test('trading is its own top-level pane, not a Library sub-tab (#864 follow-up)', () => {
+  const libPane = root.querySelector('.pane[data-route="library"]');
+  expect(libPane.querySelector('.lib-tab[data-lib="trading"]')).toBeNull();
+  expect(libPane.querySelector('.lib-sub[data-lib="trading"]')).toBeNull();
+
+  const tradingPane = root.querySelector('.pane[data-route="trading"]');
+  expect(tradingPane).not.toBeNull();
+  expect(tradingPane.querySelector('#trading-panel-mount')).not.toBeNull();
+});
+
+test('trading pane has a create-strategy form with symbol/hypothesis/source fields', () => {
+  const pane = root.querySelector('.pane[data-route="trading"]');
+  expect(pane.querySelector('#trd-create-toggle')).not.toBeNull();
+  expect(pane.querySelector('#trd-create-symbol')).not.toBeNull();
+  expect(pane.querySelector('#trd-create-hypothesis')).not.toBeNull();
+  expect(pane.querySelector('#trd-create-source')).not.toBeNull();
+  expect(pane.querySelector('#trd-create-code')).not.toBeNull();
+});
+
+test('library pane contains memory, insights, recipes, documents, job-search, videos, github sub-sections', () => {
   const pane = root.querySelector('.pane[data-route="library"]');
   expect(pane).not.toBeNull();
-  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github', 'trading']) {
+  // Trading moved out to its own top-level route, #864 follow-up.
+  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github']) {
     const el = pane.querySelector(`.lib-sub[data-lib="${sub}"]`);
     expect(el).not.toBeNull();
   }
@@ -164,13 +188,9 @@ test('trading-panel.js script tag is present', () => {
   expect(found).toBe(true);
 });
 
-test('trading lib-sub has the panel mount point', () => {
-  const pane = root.querySelector('.pane[data-route="library"]');
-  expect(pane).not.toBeNull();
-  const sub = pane.querySelector('.lib-sub[data-lib="trading"]');
-  expect(sub).not.toBeNull();
-  expect(sub.querySelector('#trading-panel-mount')).not.toBeNull();
-});
+// Superseded by 'trading is its own top-level pane, not a Library sub-tab'
+// above (#864 follow-up) -- the panel mount now lives in the standalone
+// Trading route, not a Library lib-sub.
 
 test('THINKING pill and thinking feed element both exist', () => {
   expect(root.querySelector('#state-pill')).not.toBeNull();
