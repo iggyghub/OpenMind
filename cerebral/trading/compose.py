@@ -27,14 +27,14 @@ def _combine(signals_list, mode):
     else:
         combine_logic = """
 def _combine(signals_list, mode):
-    min_len = min(len(s) for s in signals_list]
+    min_len = min(len(s) for s in signals_list)
     aligned = [s[-min_len:] for s in signals_list]
     result = []
     for i in range(min_len):
-        s = sum(s[i] for s in aligned]
-        if s > 0:
+        total = sum(s[i] for s in aligned)
+        if total > 0:
             result.append(1)
-        elif s < 0:
+        elif total < 0:
             result.append(-1)
         else:
             result.append(0)

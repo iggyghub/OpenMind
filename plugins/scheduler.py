@@ -377,6 +377,7 @@ class SchedulerPlugin:
     async def _run_gauntlet(
         self, args: dict, *, strategy_store=None, fetch=None,
         origin: str = "generated", parent_version=None, strategy_id: "str | None" = None,
+        components_json=None,
     ) -> ToolResult:
         """S11 Part 3: the production entry point for run_gauntlet.
 
@@ -473,6 +474,7 @@ class SchedulerPlugin:
                 symbol=symbol, strategy_code=code,
                 strategy_store=strategy_store, position_qty=1.0,
                 origin=origin, parent_version=parent_version, strategy_id=strategy_id,
+                components_json=components_json,
             )
         except Exception as e:
             logger.warning(f"[scheduler] run_gauntlet failed for {symbol}: {e}", exc_info=True)
@@ -534,8 +536,9 @@ class SchedulerPlugin:
         if not component_ids or mode not in ("unanimous", "majority"):
             return ToolResult(content="component_ids (list) and mode (unanimous/majority) are required", is_error=True)
 
-        store = strategy_store if strategy_store is None else strategy_store
-        if store is None:
+        if strategy_store is not None:
+            store = strategy_store
+        else:
             from cerebral.trading.strategy_store import StrategyStore
             store = StrategyStore()
 
@@ -567,10 +570,19 @@ class SchedulerPlugin:
 
         import uuid
         new_id = f"mixed_{uuid.uuid4().hex[:8]}"
-        
-        components_json = json.dumps({"mode": mode, "components": [{"id": cid, "provenance": p} for cid, p in zip(component_ids, provenances)]})
-        provenance_str = f"Mixed strategy ({mode}): {components_json}"
-        
+
+        # A real Python object, not a pre-serialized string: store.save()
+        # does its own json.dumps on whatever components_json is given (see
+        # cerebral/trading/strategy_store.py), and render_provenance's
+        # 'mixed' branch reads this column back to name every component --
+        # the earlier version of this method packed the same information
+        # into the `provenance` string instead, which never reaches
+        # strategy_versions.components_json at all (that column stayed
+        # NULL forever, so render_provenance could never actually name a
+        # component -- a real bug, not just an unused parameter).
+        components = [{"id": cid, "provenance": p} for cid, p in zip(component_ids, provenances)]
+        provenance_str = f"Mixed strategy ({mode}) of {len(component_ids)} components: {', '.join(component_ids)}"
+
         return await self._run_gauntlet(
             {
                 "code": composite_code,
@@ -579,7 +591,7 @@ class SchedulerPlugin:
                 "provenance": provenance_str,
             },
             strategy_store=store, fetch=fetch,
-            origin="mixed", strategy_id=new_id,
+            origin="mixed", strategy_id=new_id, components_json=components,
         )
 
     def _run_paper_strategy(

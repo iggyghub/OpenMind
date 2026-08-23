@@ -203,6 +203,7 @@ def run_gauntlet(
     origin: str = 'generated',
     parent_version: Optional[int] = None,
     strategy_id: Optional[str] = None,
+    components_json: Any = None,
 ) -> StrategyCard:
     rng = np.random.default_rng(seed)
     params = params or {}
@@ -339,7 +340,7 @@ def run_gauntlet(
                 strategy_id=strategy_name, symbol=symbol,
                 code=strategy_code, qty=position_qty,
             ), origin=origin, provenance_json={"source": provenance}, hypothesis=hypothesis,
-               parent_version=parent_version)
+               parent_version=parent_version, components_json=components_json)
         scheduler._create_event({
             "title": strategy_name,
             "start_iso": now_iso,

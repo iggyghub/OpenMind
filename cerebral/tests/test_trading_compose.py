@@ -89,3 +89,84 @@ async def test_mix_strategies_provenance_includes_components():
     assert "Mixed strategy" in gauntlet_called_with.get("provenance", "")
     assert comp1_id in gauntlet_called_with.get("provenance", "")
     assert comp2_id in gauntlet_called_with.get("provenance", "")
+
+
+def _trend_prices(n=200, seed=42):
+    """Same fixture cerebral/tests/test_plugin_scheduler.py's S11c tests use --
+    a clean regime change a trend-following MA-cross strategy reliably clears
+    the full gauntlet against."""
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    up = rng.normal(0.004, 0.008, n // 2)
+    down = rng.normal(-0.004, 0.008, n - n // 2)
+    close = 100 * np.cumprod(1 + np.concatenate([up, down]))
+    return pd.DataFrame({
+        "Open": close, "High": close * 1.005, "Low": close * 0.995,
+        "Close": close, "Volume": np.full(n, 2000),
+    })
+
+
+MA_CROSS_CODE = (
+    "def strategy(data):\n"
+    "    fast = data['Close'].rolling(10).mean()\n"
+    "    slow = data['Close'].rolling(30).mean()\n"
+    "    return (fast > slow).astype(int).tolist()\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_mix_strategies_end_to_end_persists_real_components_json(tmp_path):
+    """The real (unmocked) chain: two strategies registered via the real
+    run_gauntlet, mixed via the real _run_mix_strategies, and the resulting
+    strategy_versions row's real components_json -- not a mocked capture of
+    the provenance argument -- actually names both components. This is the
+    gap the mocked tests above can't see: the original implementation built
+    a components_json string but never passed it into run_gauntlet at all,
+    so strategy_versions.components_json stayed NULL for every real mix and
+    render_provenance could never actually name a component.
+
+    Both components register the SAME code under different strategy_ids
+    (deterministic: unanimous-mode composition of a signal with itself
+    reproduces the exact original signal) so the composite's own gauntlet
+    pass doesn't depend on two different strategies' signals happening to
+    agree often enough -- that risk is irrelevant to what this test proves
+    (the components_json plumbing), so it's deliberately eliminated rather
+    than left to chance."""
+    from plugins.scheduler import SchedulerPlugin
+    from cerebral.trading.strategy_store import StrategyStore
+
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end):
+        return _trend_prices()
+
+    r1 = await plugin._run_gauntlet(
+        {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "MA cross A"},
+        strategy_store=store, fetch=fetch,
+    )
+    r2 = await plugin._run_gauntlet(
+        {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "MA cross B"},
+        strategy_store=store, fetch=fetch,
+    )
+    assert json.loads(r1.content)["verdict"] == "VALIDATED"
+    assert json.loads(r2.content)["verdict"] == "VALIDATED"
+
+    result = await plugin._run_mix_strategies(
+        {"component_ids": ["MA cross A", "MA cross B"], "mode": "unanimous"},
+        strategy_store=store, fetch=fetch,
+    )
+
+    assert not result.is_error, result.content
+    assert json.loads(result.content)["verdict"] == "VALIDATED"
+
+    new_id = next(
+        c.strategy_id for c in store.list_all()
+        if c.strategy_id not in ("MA cross A", "MA cross B")
+    )
+    version_row = store.get_current_version(new_id)
+    assert version_row["origin"] == "mixed"
+    provenance = store.render_provenance(version_row)
+    assert "MA cross A" in provenance
+    assert "MA cross B" in provenance
