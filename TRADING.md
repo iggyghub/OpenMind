@@ -3,19 +3,17 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S15b landed. `run_gauntlet` now has a real,
-reachable production path from a book/URL/user claim to a gauntlet-
-validated, dispatched strategy -- `to_strategy` (router-backed, S15) is
-actually called from the running app for the first time. Issue #860
-closed (both S15 and S15b done). S15b's own PR #868 had the exact same
-missing-await bug class as S15's PR #867 -- two separate instances of
-the same failure mode in one session; see Landed PRs. S16 (strategy
-lineage) is next.
+## Status: ready -- S16 landed (auto-merged as PR #869, hand-fixed on
+top -- render_provenance called a method sqlite3.Row doesn't have,
+unreachable/untested, guaranteed to crash on first real use; see Landed
+PRs). Strategy lineage (versions, structured provenance) is real now,
+with a working reader (`get_current_version`) S17/S18 can build on.
 
 ## Next slice -- start here
 
-- **Active:** S16 -- #861 -- strategy lineage: versions, structured
-  provenance, component tracking. See issue #861.
+- **Active:** S17 -- #862 -- edit a strategy's code (new version, full
+  re-validation, restarts clean on a live strategy -- user-confirmed).
+  See issue #862.
 - **Model:** sonnet
 
 ## Queue
@@ -85,7 +83,7 @@ lineage) is next.
   in place, reused across S15/S15b, now closed. Landed by hand, not via
   self_dev's own PR #868 (same missing-await bug class as S15's #867 --
   see Landed PRs).
-- [ ] S16 -- #861 -- Strategy lineage: versions, structured provenance,
+- [x] S16 -- #861 -- Strategy lineage: versions, structured provenance,
   component tracking.
 - [ ] S17 -- #862 -- Edit a strategy's code (new version, full
   re-validation, restarts clean on a live strategy -- user-confirmed).
@@ -1210,6 +1208,47 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   (unrelated to the new code) caught the second layer of it. Worth
   double-checking `await` explicitly on every `async def` call this
   campaign adds from here on, not just trusting the gate.
+
+- PR #869 -- S16 -- **this session's second `auto_merge`, and like the
+  first (S15/#867), the merge gate passing was not evidence of
+  correctness.** Also, again, zero test changes in the diff -- the same
+  red flag as S15. Auto-merged, so `pull_fn` had already fast-forwarded
+  local master to the merged commit by the time this was reviewed; the
+  fix landed as a normal commit on top, no PR left to close (verified
+  via the sandbox's own clone, `campaign-trading-s16`, `git diff
+  d58f6fd..selfdev/372e62b1`, 2 files / 49 lines).
+
+  The real, structural parts were correct: a new `strategy_versions`
+  table alongside the unchanged `strategy_specs`, genuinely append-only
+  `save()` (a real test now proves two saves produce two version rows,
+  not a silent overwrite -- the exact bug `strategy_specs` has always
+  had, which this table exists to not repeat), and `gauntlet.py`'s
+  auto-promote correctly recording `origin='generated'` with real
+  provenance/hypothesis on every VALIDATED pass.
+
+  One real bug: **`render_provenance` called `row.get("components_
+  json")` on a `sqlite3.Row`** -- confirmed directly, `sqlite3.Row` has
+  no `.get()` method (it supports dict-style `row[...]` access but
+  isn't a real `Mapping`) -- guaranteed `AttributeError` on the very
+  first real call. Nothing caught it because nothing *could* call it:
+  there was also no method anywhere to actually fetch a `strategy_
+  versions` row in the first place, so the function was present but
+  practically unreachable -- the same "real code, zero path to exercise
+  it" shape S15's original PR had.
+
+  Fixed the `.get()` call (`row[...]`, which correctly returns `None`
+  for the column's actual NULL value). Added `StrategyStore.
+  get_current_version(strategy_id)` -- the missing reader; S17 (edit)
+  and S18 (mix) both need to read a strategy's real current version and
+  nothing built that path. New `cerebral/tests/
+  test_trading_strategy_store.py` (7 tests): the append-only proof,
+  `get_current_version` for known/unknown strategies, `render_
+  provenance` for `generated`/`user_edited`/`mixed`/unknown origins --
+  including the exact case that would have crashed. Extended the
+  existing gauntlet auto-promote test (`test_validated_registers_the_
+  spec_the_dispatcher_needs`) to assert a VALIDATED pass records real
+  lineage, not just the dispatch pointer. Full suite: 5109 passed, 7
+  skipped, 0 failed.
 
 ## Thesis
 
