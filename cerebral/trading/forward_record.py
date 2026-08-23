@@ -60,6 +60,18 @@ class ForwardRecord:
         """Persist a live trading fill."""
         self.add_fill(symbol, side, qty, price, fees, pnl, phase="live", strategy_id=strategy_id)
 
+    def get_daily_pnl(self, day_iso: Optional[str] = None) -> float:
+        """Total realized P&L across all strategies for one UTC calendar day
+        (defaults to today) -- feeds RiskManager's account-wide daily-loss
+        halt (S20/#873). Not scoped to one strategy_id: the halt is meant to
+        stop all trading for the day, not just one strategy's."""
+        day = day_iso or datetime.now(timezone.utc).date().isoformat()
+        row = self._con.execute(
+            "SELECT COALESCE(SUM(pnl), 0.0) FROM forward_fills WHERE substr(timestamp, 1, 10) = ?",
+            (day,),
+        ).fetchone()
+        return float(row[0])
+
     def get_live_fill_count(self, strategy_id: str = "global") -> int:
         return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE phase = 'live' AND strategy_id = ?", (strategy_id,)).fetchone()[0]
 

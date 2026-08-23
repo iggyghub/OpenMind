@@ -9,9 +9,11 @@ No network: every test injects `fetch`.
 import pandas as pd
 import pytest
 
+from cerebral.trading.alerts import AlertDispatcher
 from cerebral.trading.broker import Position, StubBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
+from cerebral.trading.risk_limits import RiskConfig, RiskManager
 from cerebral.trading.live_tick import (
     decide_action,
     dispatch_due_events,
@@ -273,6 +275,7 @@ class FakeScheduler:
         self.brokers = []   # the `broker` dispatch_due_events actually passed, per call
         self.phases = []    # the `phase` dispatch_due_events actually passed, per call
         self.dispatch_ids = []  # S17: the `dispatch_id` dispatch_due_events actually passed, per call
+        self.size_pcts = []  # S20: the `size_pct` dispatch_due_events actually passed, per call
 
     def list_due_events(self):
         return self.events
@@ -280,11 +283,13 @@ class FakeScheduler:
     def mark_event_run(self, event_id):
         self.marked.append(event_id)
 
-    def _run_paper_strategy(self, name, broker, record, config, store=None, fetch=None, phase="paper", dispatch_id=None):
+    def _run_paper_strategy(self, name, broker, record, config, store=None, fetch=None, phase="paper",
+                             dispatch_id=None, risk=None, size_pct=1.0):
         self.ran.append(name)
         self.brokers.append(broker)
         self.phases.append(phase)
         self.dispatch_ids.append(dispatch_id)
+        self.size_pcts.append(size_pct)
         return dict(self.tick_result)
 
 
@@ -458,3 +463,133 @@ def test_dispatch_falls_back_to_the_bare_id_with_no_lineage(tmp_path, monkeypatc
 
     assert sched.ran == ["s1"]
     assert sched.dispatch_ids == ["s1"]
+
+
+# ── S20 (#873): risk gate ────────────────────────────────────────────────
+
+def test_tick_blocks_an_over_limit_order_and_places_nothing(tmp_path, monkeypatch):
+    """The acceptance test S20/#873 names: an over-limit order is blocked by
+    the real dispatch path and broker.place_order is never called."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()  # equity 10000; 2% per-trade cap = 200
+    risk = RiskManager(RiskConfig(max_per_trade_risk_pct=2.0))
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=100.0)  # ~100*10 = 1000, way over 200
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result == {"status": "blocked", "blocked_by": "per_trade_risk"}
+    assert broker._orders == {}  # nothing was ever placed
+    assert record.trade_count(strategy_id="s1") == 0
+
+
+def test_tick_allows_a_within_limit_order_with_risk_gate(tmp_path, monkeypatch):
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager(RiskConfig(max_per_trade_risk_pct=50.0))  # generous cap
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=2.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result["status"] == "opened"
+    assert len(broker._orders) == 1
+
+
+def test_tick_daily_loss_halt_reads_real_accrued_pnl_not_a_fabricated_zero(tmp_path, monkeypatch):
+    """The daily-loss halt reads real accrued P&L from forward_record --
+    hardcoding 0.0 (the original wiring) makes the halt permanently inert,
+    the same 'documented rails are decorative' bug #873 exists to fix."""
+    record = make_record(tmp_path, monkeypatch)
+    record.add_fill("MSFT", "sell", 1.0, 100.0, pnl=-700.0, strategy_id="other")  # today, another strategy
+    broker = StubBrokerClient()  # equity 10000; 6% daily cap = 600
+    risk = RiskManager(RiskConfig(max_daily_loss_pct=6.0))
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result == {"status": "blocked", "blocked_by": "daily_loss_limit"}
+    assert broker._orders == {}
+
+
+def test_dispatch_applies_live_ramp_to_the_open_qty(tmp_path, monkeypatch):
+    """apply_position_ramp's returned pct must actually shrink the qty an
+    order opens at -- it used to be computed and logged only, never applied,
+    so a '25% ramp' opened at full size."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    lifecycle.get_state("s1").status = "live"  # fresh graduation: count=0 -> ramp 0.25
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    dispatch_due_events(sched, broker, record, lifecycle=lifecycle, arm=True)
+
+    assert sched.size_pcts == [0.25]
+
+
+def test_tick_ramp_shrinks_the_open_qty_without_mutating_the_frozen_spec(tmp_path, monkeypatch):
+    """StrategySpec is frozen -- ramping must not try to assign spec.qty."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=4.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), size_pct=0.25)
+
+    assert result["status"] == "opened"
+    assert result["qty"] == 1.0  # 4.0 * 0.25
+    assert spec.qty == 4.0  # the registered spec itself is untouched
+
+
+def test_blocked_order_and_graduation_alerts_share_one_dispatcher(tmp_path, monkeypatch):
+    """Both a blocked-order alert (RiskManager) and a graduation alert
+    (StrategyLifecycle) must land in the SAME dispatcher's history -- before
+    #873, no dispatcher was ever constructed in production, so
+    get_alert_history() returned [] forever regardless of what happened."""
+    dispatcher = AlertDispatcher()
+    lifecycle = StrategyLifecycle(alert_dispatcher=dispatcher, db_path=tmp_path / "lifecycle.sqlite")
+    risk = RiskManager(RiskConfig(max_per_trade_risk_pct=2.0), alert_dispatcher=dispatcher)
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+
+    # Trigger a blocked-order alert.
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=100.0),
+                       broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    # Trigger a graduation alert: 30 identical winning fills clears the CI bar.
+    for _ in range(30):
+        record.add_fill("MSFT", "sell", 1.0, 100.0, pnl=10.0, strategy_id="s2")
+    lifecycle.check_graduation("s2", record)
+
+    event_types = {a.event_type for a in lifecycle.get_alert_history()}
+    assert event_types == {"order_blocked", "paper_to_live_graduation"}
+
+
+def test_risk_settings_keys_readable_and_writable(tmp_path):
+    """S20's three new SettingsStore keys must round-trip without raising --
+    they used to not exist at all, so SettingsStore.set() raised ValueError."""
+    from cerebral.settings import SettingsStore
+
+    store = SettingsStore(tmp_path / "s.json")
+    assert store.get("max_per_trade_risk_pct") == 2.0
+    assert store.get("max_daily_loss_pct") == 6.0
+    assert store.get("max_concurrent_positions") == 10
+
+    store.set("max_per_trade_risk_pct", 1.5)
+    store.set("max_daily_loss_pct", 4.0)
+    store.set("max_concurrent_positions", 5)
+    assert store.get("max_per_trade_risk_pct") == 1.5
+    assert store.get("max_daily_loss_pct") == 4.0
+    assert store.get("max_concurrent_positions") == 5
+
+
+def test_risk_manager_reads_live_settings_store_values(tmp_path):
+    """main.py wires RiskManager with settings_store=_settings so a user's
+    Settings-panel change actually changes live risk behavior -- constructing
+    it with only an alert_dispatcher would silently freeze the defaults."""
+    from cerebral.settings import SettingsStore
+
+    store = SettingsStore(tmp_path / "s.json")
+    store.set("max_per_trade_risk_pct", 50.0)  # generous
+    risk = RiskManager(settings_store=store)
+
+    res = risk.check_order(10000.0, 0, 0.0, 4000.0, "AAPL", 40.0)  # 40% of equity
+
+    assert res.allowed  # would be blocked at the 2.0% default

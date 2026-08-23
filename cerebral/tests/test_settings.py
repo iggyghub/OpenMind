@@ -58,6 +58,9 @@ class TestSettingsStore:
             "setvalue_roles",
             "user_idle_ms",
             "trading_live_arm",
+            "max_per_trade_risk_pct",
+            "max_daily_loss_pct",
+            "max_concurrent_positions",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):

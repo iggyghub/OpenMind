@@ -69,6 +69,10 @@ _DEFAULTS: dict[str, Any] = {
     # graduation to enable real-money orders; credentials or lifecycle
     # status alone are insufficient.
     "trading_live_arm": False,
+    # S20: Risk limits for live trading. Readable/writable via SettingsStore.
+    "max_per_trade_risk_pct":    2.0,
+    "max_daily_loss_pct":        6.0,
+    "max_concurrent_positions":  10,
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -91,6 +95,9 @@ _TYPES: dict[str, type] = {
     "setvalue_roles":            list,
     "user_idle_ms":              int,
     "trading_live_arm":          bool,
+    "max_per_trade_risk_pct":    float,
+    "max_daily_loss_pct":        float,
+    "max_concurrent_positions":  int,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})

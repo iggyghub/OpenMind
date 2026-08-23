@@ -243,6 +243,8 @@ from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
+from cerebral.trading.alerts import AlertDispatcher
+from cerebral.trading.risk_limits import RiskManager
 from cerebral.trading.live_tick import dispatch_due_events as _dispatch_due_events
 from cerebral.trading.strategy_store import StrategyStore
 
@@ -252,7 +254,8 @@ _scheduler_plugin = _SchedulerPlugin(router=_router)
 # an explicit manual arm/disarm toggle that does not exist yet.
 _trading_broker = StubBrokerClient()
 _trading_forward_record = ForwardRecord()
-_trading_lifecycle = StrategyLifecycle()
+_alert_dispatcher = AlertDispatcher()
+_trading_lifecycle = StrategyLifecycle(alert_dispatcher=_alert_dispatcher)
 _trading_strategy_store = StrategyStore()
 
 # Video pipeline routes local-only (no Budd/OpenClaw dependency for a long
@@ -275,6 +278,9 @@ _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
 _settings = _SettingsStore()
+# Constructed here, not with the other trading globals above: RiskManager
+# reads live settings via settings_store, which must exist first.
+_risk_mgr = RiskManager(settings_store=_settings, alert_dispatcher=_alert_dispatcher)
 _conversation = ConversationStore()
 _attachments  = AttachmentStore()
 _recipe_store    = RecipeStore()
@@ -3416,6 +3422,7 @@ async def _scheduler_loop() -> None:
                 _scheduler_plugin, _trading_broker, _trading_forward_record,
                 lifecycle=_trading_lifecycle, store=_trading_strategy_store,
                 arm=_settings.get("trading_live_arm"),
+                risk=_risk_mgr,
             )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")
