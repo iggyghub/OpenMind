@@ -284,6 +284,24 @@ class TestSettingsStore:
         store.set("user_idle_ms", -500)
         assert store.get("user_idle_ms") == 0
 
+    def test_trading_live_arm_defaults_off(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("trading_live_arm") is False
+
+    def test_trading_live_arm_roundtrip_and_type(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("trading_live_arm", True)
+        assert store.get("trading_live_arm") is True
+        with pytest.raises(ValueError, match="expects bool"):
+            store.set("trading_live_arm", "yes")
+
+    def test_trading_live_arm_persists_to_disk(self, tmp_path):
+        p = tmp_path / "s.json"
+        s1 = SettingsStore(p)
+        s1.set("trading_live_arm", True)
+        s2 = SettingsStore(p)
+        assert s2.get("trading_live_arm") is True
+
 
 # ── WS IPC tests ──────────────────────────────────────────────────────────────
 

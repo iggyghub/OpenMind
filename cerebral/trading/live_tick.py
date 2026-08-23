@@ -37,7 +37,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Callable, List, Optional, Sequence
 
-from cerebral.trading.broker import Position
+from cerebral.trading.broker import AlpacaBrokerClient, Position
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 from cerebral.trading_ideas import compile_strategy
 
@@ -223,6 +223,7 @@ def dispatch_due_events(
     lifecycle: Any = None,
     store: Optional[StrategyStore] = None,
     fetch: Optional[Callable] = None,
+    arm: bool = False,
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
 
@@ -242,8 +243,14 @@ def dispatch_due_events(
             results.append({"status": "halted", "strategy": name})
             continue
 
+        # S11 Part 4: live/paper branching. Construct live broker ONLY when
+        # the strategy is graduated to "live" AND the arm toggle is on.
+        is_live = lifecycle is not None and lifecycle.get_state(name).status == "live"
+        use_live = arm and is_live
+        current_broker = AlpacaBrokerClient(env="live") if use_live else broker
+
         result = scheduler._run_paper_strategy(
-            name, broker, forward_record, {}, store=store, fetch=fetch
+            name, current_broker, forward_record, {}, store=store, fetch=fetch
         )
         # Marked regardless of outcome: a persistently failing strategy should
         # retry at its own interval, not spam every tick.
