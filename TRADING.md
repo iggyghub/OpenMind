@@ -1309,13 +1309,11 @@ the same penny stock sector.
 - **Anything needing a real broker connection to verify** -> append to
   `docs/trading-live-verify.md`; do not perform it in a loop session.
 - Seam rule (#153/#385): no `from plugins.<x> import ...` inside `cerebral/`.
-- **`trading_ideas.compile_strategy` is not real sandboxing.** It exec()s
-  code ultimately derived from scraped web content, hardened with a
-  forbidden-pattern scan + a minimal builtins allowlist (2026-08-22, see
-  PR #843 in Landed PRs) -- but that's a partial mitigation, not the
-  ADR-0010 sandbox self_dev uses for untrusted code. Route strategy
-  execution through that sandbox for real before S5+ runs generated
-  strategy code against a live broker connection.
+- **`trading_ideas._compile_strategy` is test-only.** Production code no
+  longer uses `exec()`. All strategy execution now routes through
+  `cerebral.trading.sandboxed_eval.evaluate_signals`, which runs code
+  in a real ADR-0010 AppContainer sandbox. Do not call `_compile_strategy`
+  from production code.
 
 ## Future campaigns (explicitly out of scope for S1-S6)
 

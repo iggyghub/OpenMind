@@ -39,7 +39,7 @@ from typing import Any, Callable, List, Optional, Sequence
 
 from cerebral.trading.broker import AlpacaBrokerClient, Position
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
-from cerebral.trading_ideas import compile_strategy
+from cerebral.trading.sandboxed_eval import evaluate_signals
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +175,8 @@ def run_strategy_tick(
 
     # Recompiled per tick rather than cached: compiling is cheap next to a
     # data fetch, and it means a re-registered spec takes effect immediately.
-    signal = evaluate_signal(compile_strategy(spec.code), data)
+    signals = evaluate_signals(spec.code, data)
+    signal = evaluate_signal(lambda d: signals, data)
 
     position = find_position(broker.list_positions(), spec.symbol)
     action = decide_action(signal, position, spec.qty)

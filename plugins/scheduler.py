@@ -343,7 +343,7 @@ class SchedulerPlugin:
 
         if fetch is None:
             from cerebral.trading_data import fetch_ohlcv as fetch
-        from cerebral.trading_ideas import compile_strategy
+        from cerebral.trading.sandboxed_eval import evaluate_signals
 
         end = datetime.now(timezone.utc).date()
         start = end - timedelta(days=365)
@@ -353,8 +353,11 @@ class SchedulerPlugin:
             return ToolResult(content=f"Data fetch failed for {symbol}: {e}", is_error=True)
 
         def backtest(bars, params):
-            strat_fn = compile_strategy(code)
-            signals = pd.Series(strat_fn(bars), index=bars.index)
+            signals = evaluate_signals(code, bars)
+            # Fix warm-up-shortened sequence: right-align and pad with 0.0
+            if len(signals) < len(bars):
+                signals = [0.0] * (len(bars) - len(signals)) + signals
+            signals = pd.Series(signals, index=bars.index)
             # Yesterday's decided position earns today's return -- using the
             # same-bar signal would let the strategy trade on a close it
             # hasn't seen yet.

@@ -169,14 +169,12 @@ _ALL_BUILTINS = __builtins__ if isinstance(__builtins__, dict) else vars(__built
 _SAFE_BUILTINS = {name: _ALL_BUILTINS[name] for name in _SAFE_BUILTIN_NAMES if name in _ALL_BUILTINS}
 
 
-def compile_strategy(code_str: str) -> Callable:
-    """Compiles strategy code for the backtest engine.
+def _compile_strategy(code_str: str) -> Callable:
+    """TEST-ONLY helper. Compiles strategy code for backtests.
 
-    Two layers, neither a substitute for real sandboxing (see the
-    _SAFE_BUILTINS note): the same forbidden-pattern scan builder.py runs
-    on LLM-generated plugin code (os/subprocess/exec/eval/pickle/file-write)
-    refuses anything that trips it, and exec() itself only gets a minimal
-    builtins allowlist -- no open/__import__/exec/eval/input in scope.
+    This is NOT real sandboxing. It exec()s code ultimately derived from
+    scraped web content. Production code must route through
+    cerebral.trading.sandboxed_eval.evaluate_signals instead.
     """
     from cerebral.security import scan_source
 

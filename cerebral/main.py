@@ -3408,7 +3408,8 @@ async def _scheduler_loop() -> None:
             # toggle is off or the strategy hasn't graduated -- dispatch_due_
             # events swaps in a real AlpacaBrokerClient(env="live") itself
             # when both conditions hold (Part 4).
-            results = _dispatch_due_events(
+            results = await asyncio.to_thread(
+                _dispatch_due_events,
                 _scheduler_plugin, _trading_broker, _trading_forward_record,
                 lifecycle=_trading_lifecycle, store=_trading_strategy_store,
                 arm=_settings.get("trading_live_arm"),

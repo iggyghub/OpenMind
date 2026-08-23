@@ -90,7 +90,7 @@ def test_evaluate_signal_rejects_garbage_rather_than_trading_on_it():
 
 
 def test_evaluate_signal_accepts_a_real_compiled_strategy():
-    from cerebral.trading_ideas import compile_strategy
+    from cerebral.trading_ideas import _compile_strategy as compile_strategy
 
     assert evaluate_signal(compile_strategy(ALWAYS_LONG), make_bars()) == 1
 
