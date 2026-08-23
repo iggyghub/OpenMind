@@ -38,8 +38,8 @@ from datetime import date, timedelta
 from typing import Any, Callable, List, Optional, Sequence
 
 from cerebral.trading.broker import AlpacaBrokerClient, Position
+from cerebral.trading.sandboxed_eval import evaluate_signals
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
-from cerebral.trading_ideas import compile_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +173,12 @@ def run_strategy_tick(
     start = end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     data = fetch(spec.symbol, start.isoformat(), end.isoformat())
 
-    # Recompiled per tick rather than cached: compiling is cheap next to a
-    # data fetch, and it means a re-registered spec takes effect immediately.
-    signal = evaluate_signal(compile_strategy(spec.code), data)
+    # Re-evaluated per tick rather than cached: a sandbox spawn is cheap
+    # next to a data fetch, and it means a re-registered spec takes effect
+    # immediately. evaluate_signal's existing None/empty/garbage handling
+    # is reused via a lambda rather than duplicated inline.
+    signals = evaluate_signals(spec.code, data)
+    signal = evaluate_signal(lambda d: signals, data)
 
     position = find_position(broker.list_positions(), spec.symbol)
     action = decide_action(signal, position, spec.qty)

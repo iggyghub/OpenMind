@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import shutil
 import sys
 import uuid
@@ -9,6 +10,8 @@ from typing import List
 import pandas as pd
 
 from cerebral.sandbox._windows import WindowsSandbox
+
+logger = logging.getLogger(__name__)
 
 # Not data_dir() -- that's under the repo, which isn't AppContainer-traversable
 # (the existing AppContainer test fixture's own rationale: the full parent
@@ -63,19 +66,26 @@ def evaluate_signals(code: str, bars: pd.DataFrame) -> List[int]:
         )
 
         if result.exit_code != 0 or result.killed_reason:
+            logger.warning(
+                "[sandboxed_eval] strategy evaluation failed (exit=%s, killed=%s): %s",
+                result.exit_code, result.killed_reason, (result.stderr or "").strip()[:500],
+            )
             return [0] * len(bars)
 
         if not signals_path.exists():
+            logger.warning("[sandboxed_eval] no signals.json produced -- degrading to flat")
             return [0] * len(bars)
 
         signals = json.loads(signals_path.read_text())
-        if not isinstance(signals, list):
-            return [0] * len(bars)
-        if not all(isinstance(s, int) and s in (1, 0, -1) for s in signals):
+        if not isinstance(signals, list) or not all(
+            isinstance(s, int) and s in (1, 0, -1) for s in signals
+        ):
+            logger.warning("[sandboxed_eval] malformed signal output %r -- degrading to flat", signals)
             return [0] * len(bars)
 
         return signals
-    except Exception:
+    except Exception as exc:
+        logger.warning("[sandboxed_eval] evaluation raised %s -- degrading to flat", exc, exc_info=True)
         return [0] * len(bars)
     finally:
         if workdir.exists():

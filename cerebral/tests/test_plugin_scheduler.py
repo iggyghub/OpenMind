@@ -95,16 +95,24 @@ def test_run_paper_strategy_no_broker_skips(tmp_path, monkeypatch):
     assert result["status"] == "skipped"
 
 
-def test_run_paper_strategy_reports_a_bad_strategy_instead_of_raising(tmp_path, monkeypatch):
+def test_run_paper_strategy_degrades_a_bad_strategy_to_hold_instead_of_raising(tmp_path, monkeypatch, caplog):
+    """S13/S14 (#858/#859): strategy code now runs in a real sandbox, which
+    never propagates a strategy's own failure as an exception -- it degrades
+    to an all-flat signal instead (never crash, never trade on garbage).
+    A strategy missing its `def strategy(data)` entirely is exactly this
+    case: no exception, no error status, just a hold -- but it must still
+    be observable via a WARNING log, not silent."""
     plugin = _plugin(tmp_path)
     record = _record(tmp_path, monkeypatch)
 
-    result = plugin._run_paper_strategy(
-        "broken", StubBrokerClient(), record,
-        {"symbol": "AAPL", "code": "def not_a_strategy(): pass"}, fetch=_fetch,
-    )
+    with caplog.at_level("WARNING", logger="cerebral.trading.sandboxed_eval"):
+        result = plugin._run_paper_strategy(
+            "broken", StubBrokerClient(), record,
+            {"symbol": "AAPL", "code": "def not_a_strategy(): pass"}, fetch=_fetch,
+        )
 
-    assert result["status"] == "error"
+    assert result["status"] == "hold"
+    assert any("sandboxed_eval" in r.name for r in caplog.records)
 
 
 def test_create_event_accepts_short_recurrence(tmp_path):

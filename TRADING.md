@@ -3,12 +3,7 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S13 landed (real out-of-process sandboxed evaluation,
-mechanism only, unwired). Found a genuine structural bug in how this
-sandbox has to be used (files the parent pre-writes into a workdir
-before spawn() are NOT readable by the child -- only files the child
-creates itself during its own execution are) -- see Landed PRs. S14
-(wire it into production, retire compile_strategy) is next.
+## Status: blocked -- PR https://github.com/iggyghub/OpenMind/pull/866 not merged (tests_failed): =================================== ERRORS ==================================== ____________ ERROR collecting cerebral/tests/test_trading_ideas.py ____________ ImportError while importing test module 'C:\OpenMind\cerebral\data\sandbox\self_dev\campaign-trading-s14\cerebral\tests\test_trading_ideas.py'. Hint: make sure your test modules/packages have valid Python names. Traceback: C:\Users\iggy\AppData\Local\Programs\Python\Python312\Lib\importlib\__init__.py:90: in import_module return _boot
 
 ## Next slice -- start here
 
@@ -1309,13 +1304,11 @@ the same penny stock sector.
 - **Anything needing a real broker connection to verify** -> append to
   `docs/trading-live-verify.md`; do not perform it in a loop session.
 - Seam rule (#153/#385): no `from plugins.<x> import ...` inside `cerebral/`.
-- **`trading_ideas.compile_strategy` is not real sandboxing.** It exec()s
-  code ultimately derived from scraped web content, hardened with a
-  forbidden-pattern scan + a minimal builtins allowlist (2026-08-22, see
-  PR #843 in Landed PRs) -- but that's a partial mitigation, not the
-  ADR-0010 sandbox self_dev uses for untrusted code. Route strategy
-  execution through that sandbox for real before S5+ runs generated
-  strategy code against a live broker connection.
+- **`trading_ideas._compile_strategy` is test-only.** Production code no
+  longer uses `exec()`. All strategy execution now routes through
+  `cerebral.trading.sandboxed_eval.evaluate_signals` (S13/#858), which
+  runs code in a real ADR-0010 AppContainer sandbox. Do not call
+  `_compile_strategy` from production code.
 
 ## Future campaigns (explicitly out of scope for S1-S6)
 

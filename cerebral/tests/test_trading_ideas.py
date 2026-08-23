@@ -6,7 +6,7 @@ from cerebral.trading_ideas import (
     from_book_claim,
     to_strategy,
     Idea,
-    compile_strategy,
+    _compile_strategy as compile_strategy,
 )
 
 
