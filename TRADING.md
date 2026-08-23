@@ -101,6 +101,11 @@ ever set True.
   Landed by hand, not via self_dev's own PR #882 (no tests at all, 4 real
   bugs found -- see Landed PRs).
 - [ ] S21 -- #874 -- alpaca-py dependency + live-path preflight (P0b).
+  Narrowed 2026-08-24 after 5 straight self_dev "no commit" failures on
+  the original 4-part issue -- correlation-limit wiring split out to
+  S21b/#883; see Landed PRs once landed.
+- [ ] S21b -- #883 -- Wire check_correlation_limit into the live
+  dispatch path (split from #874).
 - [ ] S22 -- #875 -- Intraday bars: per-strategy interval, Alpaca
   Market Data.
 - [ ] S23 -- #876 -- Intraday-aware graduation: distinct trading-days
