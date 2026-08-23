@@ -251,32 +251,52 @@ class TestAutoPromote:
         calls = []
 
         class FakeScheduler:
-            def _run_paper_strategy(self, args):
-                calls.append(args)
+            def _run_paper_strategy(self, strategy_name, broker, forward_record, config=None):
+                calls.append((strategy_name, broker, forward_record, config))
 
         card = run_gauntlet(
             make_backtest, make_prices(), make_params(), make_benchmark_prices(),
             make_positions(), hypothesis="MA cross test", provenance="internal",
-            scheduler=FakeScheduler(), seed=42,
+            scheduler=FakeScheduler(), paper_broker=object(), seed=42,
         )
         assert card.verdict == "VALIDATED"
         assert len(calls) == 1
-        assert calls[0]["strategy_name"] == "MA cross test"
-        assert calls[0]["interval"] == "5m"
+        strategy_name, broker, forward_record, config = calls[0]
+        assert strategy_name == "MA cross test"
+        assert broker is not None
+        assert forward_record is not None
+        assert config["interval"] == "5m"
 
     def test_unvalidated_does_not_schedule(self):
         calls = []
 
         class FakeScheduler:
-            def _run_paper_strategy(self, args):
-                calls.append(args)
+            def _run_paper_strategy(self, strategy_name, broker, forward_record, config=None):
+                calls.append((strategy_name, broker, forward_record, config))
 
         card = run_gauntlet(
             lambda p, pr: ([100.0] * len(p), {"sharpe": 0.0, "total_return": 0.0}),
             make_prices(), make_params(), make_benchmark_prices(), make_positions(),
-            scheduler=FakeScheduler(), seed=42,
+            scheduler=FakeScheduler(), paper_broker=object(), seed=42,
         )
         assert card.verdict == "UNVALIDATED"
+        assert calls == []
+
+    def test_no_paper_broker_does_not_schedule(self):
+        # scheduler present but paper_broker=None (the default) must also be
+        # a safe no-op -- _run_paper_strategy needs a real broker to place
+        # orders through, a scheduler object alone isn't enough.
+        calls = []
+
+        class FakeScheduler:
+            def _run_paper_strategy(self, strategy_name, broker, forward_record, config=None):
+                calls.append((strategy_name, broker, forward_record, config))
+
+        card = run_gauntlet(
+            make_backtest, make_prices(), make_params(), make_benchmark_prices(),
+            make_positions(), scheduler=FakeScheduler(), seed=42,
+        )
+        assert card.verdict == "VALIDATED"
         assert calls == []
 
     def test_no_scheduler_does_not_raise(self):

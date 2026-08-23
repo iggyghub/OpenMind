@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from .cost_model import apply_costs_to_returns, Trade
+from .forward_record import ForwardRecord
 
 
 @dataclass
@@ -186,11 +187,8 @@ def run_gauntlet(
     holding_period: int = 1,
     seed: int = 42,
     scheduler: Any = None,
-    # ponytail: paper_broker is accepted but not yet used -- scheduling a
-    # paper-trading job (via scheduler) is wired, but nothing consumes that
-    # scheduled event and actually calls paper_broker.place_order yet. That
-    # consumer is a real follow-up piece, not built by this slice; see
-    # TRADING.md's Landed PRs note for S5c.
+    # BrokerClient for auto-promote's paper trade (see the auto-promote
+    # block below); None skips auto-promote entirely (no dry-run mode).
     paper_broker: Any = None,
     auto_promote: bool = True,
 ) -> StrategyCard:
@@ -301,12 +299,23 @@ def run_gauntlet(
     # fabricated ("INIT", pnl=0) row would have silently counted toward
     # the 30-trade minimum without being a real trade -- the forward
     # record only ever gets real broker fills once actual paper trading
-    # (via the scheduled job above) starts placing and recording them.
-    if auto_promote and verdict == "VALIDATED" and scheduler:
-        scheduler._run_paper_strategy({
-            "strategy_name": hypothesis or provenance,
-            "interval": "5m",
-        })
+    # starts placing and recording them.
+    #
+    # ponytail: this places exactly one paper trade at the moment the
+    # gauntlet passes -- there is still no recurring timer that re-invokes
+    # _run_paper_strategy on the requested interval, so a strategy cannot
+    # accumulate the 30 trades check_graduation needs from this call alone.
+    # A real scheduler tick loop (something periodically dispatching
+    # scheduler._list_events()'s due events to _run_paper_strategy) is a
+    # separate, bigger piece; add when that's built.
+    if auto_promote and verdict == "VALIDATED" and scheduler and paper_broker:
+        strategy_name = hypothesis or provenance
+        scheduler._run_paper_strategy(
+            strategy_name,
+            paper_broker,
+            ForwardRecord(),
+            {"interval": "5m"},
+        )
 
     card = StrategyCard(
         hypothesis=hypothesis,

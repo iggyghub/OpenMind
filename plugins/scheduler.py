@@ -207,22 +207,32 @@ class SchedulerPlugin:
         """Executes a scheduled paper trade for the given strategy."""
         if not broker or not forward_record:
             return {"status": "skipped", "reason": "broker/record not provided"}
-        
+        config = config or {}
+
         try:
+            # BrokerClient.place_order's real signature (cerebral/trading/broker.py)
+            # is (symbol, qty, side, type, limit_price=None) -- `price`/`order_type`
+            # aren't real kwargs there and would raise TypeError on every call.
             order = broker.place_order(
                 symbol=config.get("symbol", "SYMBOL"),
                 qty=config.get("position_size", 1.0),
                 side=config.get("side", "buy"),
-                price=0.0,
-                order_type="market"
+                type="market",
             )
             if order.status == "FILLED":
+                # ponytail: Order (cerebral/trading/broker.py) has no price/fees
+                # field at all -- neither AlpacaBrokerClient nor StubBrokerClient
+                # ever populate a fill price, so there is genuinely nothing real
+                # to read here yet. Recording an explicit 0.0 rather than a
+                # fabricated number; add a real price field to Order (Alpaca's
+                # filled_avg_price for the live client, a simulated quote for
+                # the stub) before trusting forward_fills.price for anything.
                 forward_record.add_fill(
                     symbol=order.symbol,
                     side=order.side,
                     qty=order.qty,
-                    price=order.price,
-                    fees=order.fees,
+                    price=0.0,
+                    fees=0.0,
                     pnl=0.0,
                     phase="paper",
                     strategy_id=strategy_name
