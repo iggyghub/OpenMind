@@ -6,23 +6,28 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 ## Status: paper trading works end-to-end with real strategy signals, real
 position tracking, and real realized P&L (S9 + S10, both hand-verified,
 not just tests passing). Live/real-money trading is the active goal now
-(2026-08-23: user asked to finish it) -- credentials not yet configured,
-arm/disarm safety toggle not yet built, no production caller of
-run_gauntlet yet (S10's honest gap #1). None of this is wired to a real
-broker anywhere in the codebase today -- confirmed by grep, not assumed.
+(2026-08-23: user asked to finish it). S11 part 1 (credentials UI) landed
+-- see Landed PRs. Parts 2-4 (arm/disarm toggle, a production caller of
+run_gauntlet, live/paper branching in the dispatch loop) are NOT built.
+No code path anywhere in the codebase can place a live order today --
+confirmed by grep, not assumed. Do not risk live capital until all four
+parts of S11 exist and are hand-verified.
 
 ## Next slice -- start here
 
-- **Active:** S11 -- no issue yet -- live trading, in order: (1) Alpaca
-  credentials wired into Felix's existing per-profile Credentials UI
-  (currently a disconnected, profile-agnostic raw-keyring scheme in
-  broker.py that the UI can't reach), (2) a manual arm/disarm toggle
-  (default OFF) gating any live order, independent of strategy graduation
-  status, (3) a real production entry point that calls run_gauntlet (S10
-  found none exists), (4) live/paper branching in the dispatch loop keyed
-  off StrategyLifecycle status + the arm toggle. Do not risk live capital
-  until all four exist and are hand-verified, matching this campaign's
-  standing discipline.
+- **Active:** S11 (continued) -- no issue yet -- live trading, remaining
+  work in order: (2) a manual arm/disarm toggle (default OFF) gating any
+  live order, independent of strategy graduation status -- credentials
+  existing (part 1, landed) must NOT be sufficient on its own to enable
+  live trading, (3) a real production entry point that calls
+  run_gauntlet (S10 found none exists -- right now nothing in the running
+  app ever validates+promotes a strategy; that's step zero for live to
+  mean anything), (4) live/paper branching in the dispatch loop
+  (cerebral/main.py's _scheduler_loop / cerebral/trading/live_tick.py's
+  dispatch_due_events) keyed off StrategyLifecycle status + the arm
+  toggle -- construct an AlpacaBrokerClient(env="live") only when BOTH a
+  strategy has graduated AND the toggle is armed, and record phase="live"
+  fills only through that path.
 - **Model:** sonnet
 
 ## Queue
@@ -689,6 +694,25 @@ a new issue number -- its body was updated in place to the post-S7 scope.
      returns the strategy's own name as a `symbol`. `find_position` /
      `broker.list_positions()` is the real answer now; the panel-facing
      stub was left alone as out of scope.
+
+- No PR -- S11 part 1 -- Alpaca live key/secret wired into Felix's
+  existing Credentials window (tray/windows/main.html) via two new IPC
+  handlers (set_alpaca_credentials / clear_alpaca_credentials). Turned
+  out simpler than expected: cerebral/trading/broker.py's
+  `_get_alpaca_credentials` already read from a dedicated
+  `service="cerebral_alpaca"` keyring entry, completely bypassing
+  CredentialStore (the per-profile system every other integration in
+  this app uses) -- broker.py needed zero changes, since nothing was
+  ever writing to the place it already reads from except a one-off
+  manual script. Deliberately did NOT force Alpaca into
+  `_STATIC_TOKEN_PROVIDERS`/CredentialStore: that system is per-profile
+  and single-value-per-provider; a brokerage account is one per Felix
+  instance, not per profile, and needs two values (key + secret).
+  Setting credentials here does NOT enable live trading by itself --
+  parts 2-4 of S11 (the arm toggle, a real caller of run_gauntlet,
+  live/paper branching in the dispatch loop) don't exist yet, so there
+  is still no code path anywhere that can place a live order. Full suite
+  green: 5076 passed, 7 skipped, 0 failed; tray JS 28 suites/746 tests.
 
 ## Thesis
 
