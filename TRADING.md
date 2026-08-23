@@ -7,20 +7,20 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 hand-verified (real code, real tests, no mocks on the money-adjacent
 paths). Hand-tracing the FULL chain end to end (per this campaign's own
 standing rule: code existing is not the same as "ready") found two more
-real gaps, neither part of S11's original four parts, both now
-documented below. Do not risk live capital -- not because a part is
-missing, but because the whole chain isn't trustworthy yet: a live fill
-is correctly recorded internally but invisible as "live" in the UI, and
-a strategy's graduation status does not survive a Felix restart.
+real gaps, now scoped as S12 (issue #856). User confirmed 2026-08-23:
+continue: do not risk live capital until paper trading (the whole
+gauntlet -> graduation -> UI chain) is fully tested and honest end to
+end -- that is what S12 closes.
 
 ## Next slice -- start here
 
-- **Active:** none queued. S11 (all four parts) is code-complete;
-  the next work is scoped by the two gaps found in this session's full
-  hand-trace (see "Live trading: what a full trace actually found"
-  below), not yet filed as an issue -- ask the user whether to continue
-  before filing/triggering more, since both gaps affect whether "ready"
-  is a reasonable bar to aim for next vs. a longer-term item.
+- **Active:** S12 -- #856 -- persist StrategyLifecycle status across a
+  Felix restart (SQLite-backed, same convention as ForwardRecord/
+  StrategyStore -- keep the existing in-memory dict as a cache, add
+  persistence underneath, don't change the public API), and surface
+  phase (paper/live) in the trading UI (_trading_broadcast's
+  recent_fills currently drops it; tray/lib/trading-panel.js has zero
+  phase handling). See issue #856 for full acceptance criteria.
 - **Model:** sonnet
 
 ## Queue
@@ -67,6 +67,10 @@ a strategy's graduation status does not survive a Felix restart.
   of S11 now exist; live trading is still not "ready" -- see "Live
   trading: what a full trace actually found" for two more gaps found
   hand-tracing the complete chain.
+
+- [ ] S12 -- #856 -- Persist StrategyLifecycle status across a restart
+  (Part A) + surface phase (paper/live) in the trading UI (Part B). See
+  issue #856 for full acceptance criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
