@@ -3,16 +3,23 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: done -- S19 landed (self_dev's 2nd attempt -- 1st hit a
-transient Bonsai 502 -- produced PR #872; tests_failed was correct even
-though the diff shipped zero tests: 3 real bugs, see Landed PRs). The
-full S13-S19 strategy-building blueprint (sandbox, edit, mix, panel UI)
-is complete. Queue has no unticked slice -- see "What's next" below for
-the honest state of what remains before any of this is genuinely ready.
+## Status: ready -- a full grill session (2026-08-24) landed decisions
+#32-#47: user wants full autonomous idea discovery (reverses the former
+anti-goal), intraday/day-trading data support (the higher-priority
+half), and confirmed they will arm live trading themselves. An Opus
+Plan agent blueprint (`.campaign-scratch/autonomous-discovery-blueprint.md`,
+folded in below) turned this into 9 slices, S20-S28, filed as issues
+#873-#881. The blueprint's own spike found `alpaca-py` isn't even an
+installed dependency -- live trading would silently no-op today, on top
+of decision #47's already-found unwired RiskManager. S20 (risk gate)
+and S21 (alpaca-py + preflight) are P0 gap closure and must land+verify
+before anything else in this queue, and before `trading_live_arm` is
+ever set True.
 
 ## Next slice -- start here
 
-- **Active:** none -- the queue is empty. See "What's next" below.
+- **Active:** S20 -- #873 -- wire RiskManager into the live dispatch
+  path (P0). See issue #873.
 - **Model:** sonnet
 
 ## Queue
@@ -90,6 +97,21 @@ the honest state of what remains before any of this is genuinely ready.
   voting).
 - [x] S19 -- #864 -- Trading panel: strategy list, source view, edit
   box, lineage display.
+- [ ] S20 -- #873 -- Wire RiskManager into the live dispatch path (P0).
+- [ ] S21 -- #874 -- alpaca-py dependency + live-path preflight (P0b).
+- [ ] S22 -- #875 -- Intraday bars: per-strategy interval, Alpaca
+  Market Data.
+- [ ] S23 -- #876 -- Intraday-aware graduation: distinct trading-days
+  floor.
+- [ ] S24 -- #877 -- plugins/stocks.py: fundamentals, SEC filings, IPO
+  detection.
+- [ ] S25 -- #878 -- origin='discovered' lineage + screening cost
+  decision.
+- [ ] S26 -- #879 -- Felix-wide Activity Log (new top-level nav tab).
+- [ ] S27 -- #880 -- Autonomous discovery loop: idea sourcing +
+  screening.
+- [ ] S28 -- #881 -- Ticker fundamentals red-flag gate at live
+  graduation.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -1698,6 +1720,80 @@ general sandbox failure: `WindowsSandbox().spawn(["cmd.exe", "/c",
 "echo hi"], ...)` in the same sandbox succeeds (exit 0, "hi" on stdout).
 S13 cannot be meaningfully verified until the icacls grant (decision
 #23) is applied and this spike is re-run and passes.
+
+## Autonomous discovery + day trading (2026-08-24 blueprint)
+
+Full design produced by an Opus-model Plan agent, spiked and confirmed
+against the real tree before any slice was filed, same discipline as
+the blueprint above. Implements decisions #32-#47. Full text lives in
+`.campaign-scratch/autonomous-discovery-blueprint.md` (a detailed
+per-slice breakdown, five flagged open sub-decisions each paired with a
+recommendation, and a reuse table) -- summary here, issues filed as
+#873-#881:
+
+- **S20 (#873)** -- Wire `RiskManager` into `run_strategy_tick`
+  (`live_tick.py`), the one choke point every order routes through, not
+  each caller. Also: actually apply the position-ramp percentage
+  (currently computed and logged, never multiplied into qty), construct
+  an `AlertDispatcher` in `main.py` (currently never constructed --
+  every documented alert, including "risk limit prevented a trade", is
+  silent in production), and add the three risk-limit settings keys
+  `SettingsStore` is missing.
+- **S21 (#874)** -- `alpaca-py` is not an installed dependency (see the
+  spike finding below) -- add it, then make the live path fail loudly
+  (a `preflight()` check) instead of silently error-looping. Also wires
+  `check_correlation_limit`, the S6 correlation gate that has never run
+  either.
+- **S22 (#875)** -- Intraday bars. `fetch_ohlcv` is daily-only today, no
+  `interval` param exists at all. New `AlpacaMarketDataClient` (same
+  module as the execution client, avoids a backtest-vendor-vs-live-
+  vendor mismatch), per-strategy `interval` column, and fixes two
+  daily-bar assumptions (`DEFAULT_LOOKBACK_DAYS = 180`, hardcoded
+  `sqrt(252)` Sharpe annualisation) that silently break at faster
+  intervals.
+- **S23 (#876)** -- A distinct-trading-days floor alongside the flat
+  30-trade minimum, so a fast intraday strategy can't graduate off
+  trades crammed into one session.
+- **S24 (#877)** -- New `plugins/stocks.py`: yfinance fundamentals
+  (already-free, zero new dependency) + SEC EDGAR filing text and
+  IPO detection (S-1/424B4, notification-only per decision #37).
+- **S25 (#878)** -- `origin='discovered'` lineage (needs a real
+  migration -- SQLite can't ALTER a CHECK constraint and the existing
+  `CREATE TABLE IF NOT EXISTS` DDL edit would be a no-op on real
+  databases) and a decision that the cheap screening pre-filter should
+  NOT use the sandbox at all (argv-only transport makes batching
+  mechanically impossible under Windows' command-line length cap; the
+  pre-filter is Felix's own trusted code, not generated source, so it
+  doesn't need sandboxing in the first place).
+- **S26 (#879)** -- Felix-wide Activity Log (decision #46) -- the trust
+  prerequisite, lands before the discovery loop. A query layer over the
+  already-real `conversation_turns` table, a retrofit of the two
+  console-only background loops, and a new top-level nav tab.
+- **S27 (#880)** -- The autonomous discovery loop itself: one shared
+  convergence path (`run_gauntlet`, unchanged signature) with multiple
+  entry points, an LLM-judge idea-quality pre-filter, a growing
+  watchlist (not a full-universe sweep).
+- **S28 (#881)** -- A ticker-fundamentals red-flag gate (recent 10-Q/
+  10-K scanned for going-concern/restatement/investigation/delisting
+  language) at paper-to-live graduation, for never-before-traded
+  tickers only.
+
+**Decision #43 (user arms live trading) is not a slice** -- the
+mechanism already exists (S11b's toggle); it's gated on S20 and S21
+both landing and being hand-verified, not on any new code of its own.
+
+**Real, load-bearing finding from the spike (2026-08-24), not assumed:**
+`alpaca-py` is not a declared or installed dependency of this repo --
+absent from `pyproject.toml`, absent from `cerebral/requirements.txt`,
+`pip show alpaca-py` reports not found. `AlpacaBrokerClient._connect()`
+raises `RuntimeError` on the missing import; `_run_paper_strategy`'s
+broad `except Exception` swallows it into `{"status": "error", ...}`.
+So flipping `trading_live_arm` to True *today* -- even after S20 wires
+the risk gate -- would produce a silent per-tick error loop, never an
+actual order. The parallel to S13's `STATUS_DLL_NOT_FOUND` finding above
+is exact: a mechanism believed present, never once exercised against
+the real thing. S21 exists specifically to close this before S22-S28
+build anything on top of it.
 
 ## What already exists (reuse, do not rebuild)
 
