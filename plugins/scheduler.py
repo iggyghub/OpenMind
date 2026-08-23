@@ -212,6 +212,24 @@ class SchedulerPlugin:
                     "required": ["strategy_id"],
                 },
             ),
+            Tool(
+                name="mix_strategies",
+                description=(
+                    "Combines multiple validated strategies into a single composite strategy. "
+                    "Resolves each component by strategy_id, validates they share the same symbol, "
+                    "generates the composite source code, and runs the full validation gauntlet. "
+                    "Modes: 'unanimous' (requires exact agreement, else 0), 'majority' (sign of sum, ties 0)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "component_ids": {"type": "array", "items": {"type": "string"}, "description": "List of strategy_ids to mix"},
+                        "mode": {"type": "string", "enum": ["unanimous", "majority"], "description": "Voting mode"}
+                    },
+                    "required": ["component_ids", "mode"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -229,6 +247,8 @@ class SchedulerPlugin:
             return await self._edit_strategy(args)
         if tool_name == "get_strategy_code":
             return self._get_strategy_code(args)
+        if tool_name == "mix_strategies":
+            return await self._run_mix_strategies(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -507,6 +527,60 @@ class SchedulerPlugin:
         version_row = store.get_current_version(strategy_id)
         provenance = store.render_provenance(version_row) if version_row is not None else "unknown"
         return ToolResult(content=json.dumps({"code": spec.code, "provenance": provenance}))
+
+    async def _run_mix_strategies(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
+        component_ids = args.get("component_ids", [])
+        mode = args.get("mode", "")
+        if not component_ids or mode not in ("unanimous", "majority"):
+            return ToolResult(content="component_ids (list) and mode (unanimous/majority) are required", is_error=True)
+
+        store = strategy_store if strategy_store is None else strategy_store
+        if store is None:
+            from cerebral.trading.strategy_store import StrategyStore
+            store = StrategyStore()
+
+        resolved = []
+        symbols = set()
+        provenances = []
+        for cid in component_ids:
+            spec = store.get(cid)
+            version = store.get_current_version(cid)
+            if spec is None or version is None:
+                return ToolResult(content=f"Component strategy '{cid}' not found in store", is_error=True)
+            symbols.add(spec.symbol)
+            provenances.append(store.render_provenance(version))
+            resolved.append((cid, spec.code))
+
+        if len(symbols) > 1:
+            return ToolResult(
+                content=f"Mismatched symbols across components: {sorted(symbols)}. All components must share the same symbol.",
+                is_error=True,
+            )
+        
+        symbol = symbols.pop()
+        
+        try:
+            from cerebral.trading.compose import compose_strategies
+            composite_code = compose_strategies(resolved, mode)
+        except Exception as e:
+            return ToolResult(content=f"Composite generation failed: {e}", is_error=True)
+
+        import uuid
+        new_id = f"mixed_{uuid.uuid4().hex[:8]}"
+        
+        components_json = json.dumps({"mode": mode, "components": [{"id": cid, "provenance": p} for cid, p in zip(component_ids, provenances)]})
+        provenance_str = f"Mixed strategy ({mode}): {components_json}"
+        
+        return await self._run_gauntlet(
+            {
+                "code": composite_code,
+                "symbol": symbol,
+                "hypothesis": f"Composite strategy ({mode}) of {len(component_ids)} components",
+                "provenance": provenance_str,
+            },
+            strategy_store=store, fetch=fetch,
+            origin="mixed", strategy_id=new_id,
+        )
 
     def _run_paper_strategy(
         self, strategy_name: str, broker, forward_record: "ForwardRecord",
