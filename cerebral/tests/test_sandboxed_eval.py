@@ -1,0 +1,118 @@
+"""Tests for cerebral/trading/sandboxed_eval.py (S13/#858).
+
+Deliberately does NOT mock WindowsSandbox -- the whole point of this module
+is that strategy code runs in a real out-of-process sandbox, and a test that
+mocks the sandbox out (as the first attempt at this slice did) proves nothing
+about whether that's actually true. These tests spawn real child processes
+via the real ADR-0010 AppContainer sandbox. Skipped automatically wherever
+the sandbox isn't available (non-Windows, or the icacls grant this campaign's
+own SAFETY section documents hasn't been applied) rather than failing.
+"""
+from pathlib import Path
+
+import cerebral
+import pandas as pd
+import pytest
+
+from cerebral.sandbox._windows import WindowsSandbox
+from cerebral.trading.sandboxed_eval import evaluate_signals
+
+pytestmark = pytest.mark.skipif(
+    not WindowsSandbox.available(), reason="ADR-0010 sandbox not available on this machine"
+)
+
+MA_CROSS_CODE = (
+    "def strategy(data):\n"
+    "    fast = data['Close'].rolling(5).mean()\n"
+    "    slow = data['Close'].rolling(20).mean()\n"
+    "    return (fast > slow).astype(int).tolist()\n"
+)
+
+
+def _bars(n=50):
+    return pd.DataFrame(
+        {"Open": range(100, 100 + n), "High": range(105, 105 + n),
+         "Low": range(95, 95 + n), "Close": range(102, 102 + n),
+         "Volume": [1000] * n},
+        index=pd.date_range("2026-01-01", periods=n, freq="D"),
+    )
+
+
+def _expected_ma_cross_signals(bars: pd.DataFrame) -> list:
+    fast = bars["Close"].rolling(5).mean()
+    slow = bars["Close"].rolling(20).mean()
+    return (fast > slow).astype(int).tolist()
+
+
+def test_evaluate_signals_matches_a_direct_in_process_run():
+    """The actual acceptance criterion: the sandboxed evaluator must produce
+    identical output to running the same strategy function directly."""
+    bars = _bars()
+    expected = _expected_ma_cross_signals(bars)
+
+    result = evaluate_signals(MA_CROSS_CODE, bars)
+
+    assert result == expected
+
+
+def test_containment_a_strategy_cannot_write_outside_its_workdir():
+    """Real containment, not a mocked-failure stand-in. Targets a path
+    inside this repo -- a location the user's own account normally has
+    full write access to -- specifically so a blocked write demonstrates
+    AppContainer's ACL confinement, not ordinary Windows permissions
+    (writing to e.g. C:\\Windows would fail for unrelated reasons even
+    outside the sandbox, and wouldn't prove anything). NOT a temp-dir
+    path, since TEMP is one of the few env vars the sandbox deliberately
+    keeps -- an ambiguous target for a containment test."""
+    target = Path(cerebral.__file__).parent / "_sandbox_containment_test.txt"
+    malicious_code = (
+        "def strategy(data):\n"
+        f"    open(r'{target}', 'w').write('escaped the sandbox')\n"
+        "    return [0] * len(data)\n"
+    )
+    bars = _bars()
+
+    try:
+        result = evaluate_signals(malicious_code, bars)
+        assert all(s == 0 for s in result)
+        assert not target.exists()
+    finally:
+        if target.exists():
+            target.unlink()
+
+
+def test_wrong_shaped_signals_degrades_to_flat_not_a_crash():
+    """A strategy that runs successfully but returns garbage (not a list
+    of 1/0/-1) must not propagate its wrong-shaped output -- evaluate_signals
+    validates the sandbox's own output, not just whether it exited 0."""
+    bars = _bars()
+    bad_code = (
+        "def strategy(data):\n"
+        "    return ['a', 'b', 'c']\n"
+    )
+
+    result = evaluate_signals(bad_code, bars)
+
+    assert all(s == 0 for s in result)
+
+
+def test_a_strategy_that_raises_degrades_to_flat():
+    bars = _bars()
+    raising_code = (
+        "def strategy(data):\n"
+        "    raise ValueError('boom')\n"
+    )
+
+    result = evaluate_signals(raising_code, bars)
+
+    assert all(s == 0 for s in result)
+
+
+def test_workdir_is_cleaned_up_after_a_run():
+    from cerebral.trading.sandboxed_eval import _WORKDIR_ROOT
+
+    before = set(_WORKDIR_ROOT.glob("*")) if _WORKDIR_ROOT.exists() else set()
+    evaluate_signals(MA_CROSS_CODE, _bars())
+    after = set(_WORKDIR_ROOT.glob("*")) if _WORKDIR_ROOT.exists() else set()
+
+    assert after == before
