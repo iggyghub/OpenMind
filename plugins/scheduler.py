@@ -7,6 +7,7 @@ SQLite-backed (same openmind.db). No external calendar deps.
 import json
 import logging
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
@@ -46,6 +47,7 @@ class SchedulerPlugin:
                 start_iso   TEXT    NOT NULL,
                 end_iso     TEXT,
                 recurrence  TEXT,
+                last_run_iso TEXT,
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         """)
@@ -170,6 +172,17 @@ class SchedulerPlugin:
         events = [_row_to_event(r) for r in rows]
         return ToolResult(content=json.dumps({"events": events}))
 
+    def list_due_events(self) -> list[dict]:
+        """Return events due in the last 5 minutes that haven't been run yet.
+        Used by the autonomous paper-trade execution loop (S7/S8)."""
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        five_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S")
+        rows = self._con.execute(
+            "SELECT * FROM events WHERE start_iso >= ? AND start_iso <= ? AND (last_run_iso IS NULL OR last_run_iso != start_iso) ORDER BY start_iso",
+            (five_mins_ago, now_iso)
+        ).fetchall()
+        return [_row_to_event(r) for r in rows]
+
     def _update_event(self, args: dict) -> ToolResult:
         event_id = args.get("id")
         if event_id is None:
@@ -205,6 +218,7 @@ class SchedulerPlugin:
 
     def _run_paper_strategy(self, strategy_name: str, broker, forward_record: "ForwardRecord", config: dict | None = None) -> dict:
         """Executes a scheduled paper trade for the given strategy."""
+        run_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         if not broker or not forward_record:
             return {"status": "skipped", "reason": "broker/record not provided"}
         config = config or {}
@@ -238,6 +252,9 @@ class SchedulerPlugin:
                     strategy_id=strategy_name
                 )
                 logger.info(f"Paper trade executed for {strategy_name}: {order.id}")
+                # Mark this event as run to ensure idempotency across restarts
+                self._con.execute("UPDATE events SET last_run_iso=? WHERE title=?", (run_iso, strategy_name))
+                self._con.commit()
                 return {"status": "executed", "order_id": order.id}
         except Exception as e:
             logger.warning(f"Paper trade execution failed for {strategy_name}: {e}")
