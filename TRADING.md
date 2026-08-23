@@ -3,24 +3,31 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- all four parts of S11 now exist and are individually
-hand-verified (real code, real tests, no mocks on the money-adjacent
-paths). Hand-tracing the FULL chain end to end (per this campaign's own
-standing rule: code existing is not the same as "ready") found two more
-real gaps, now scoped as S12 (issue #856). User confirmed 2026-08-23:
-continue: do not risk live capital until paper trading (the whole
-gauntlet -> graduation -> UI chain) is fully tested and honest end to
-end -- that is what S12 closes.
+## Status: ready -- S12 landed; both gaps the full hand-trace found are
+closed (StrategyLifecycle now survives a restart; a live fill's phase is
+now visibly rendered in the UI, alongside a pre-existing key-mismatch
+bug that meant the fills table never rendered anything at all). Nothing
+left in the Queue. Still do not risk live capital: paper trading itself
+has not yet been run/observed over real time (no strategy has actually
+been submitted via run_gauntlet in production), and the ADR-0010 real
+sandbox for compile_strategy remains a partial mitigation, not full
+isolation -- see SAFETY section, flagged since S4/#843, never actioned.
 
 ## Next slice -- start here
 
-- **Active:** S12 -- #856 -- persist StrategyLifecycle status across a
-  Felix restart (SQLite-backed, same convention as ForwardRecord/
-  StrategyStore -- keep the existing in-memory dict as a cache, add
-  persistence underneath, don't change the public API), and surface
-  phase (paper/live) in the trading UI (_trading_broadcast's
-  recent_fills currently drops it; tray/lib/trading-panel.js has zero
-  phase handling). See issue #856 for full acceptance criteria.
+- **Active:** none queued -- the Queue below is fully ticked. The
+  system can now, for the first time in this campaign, run end to end:
+  a user (or Felix) calls SchedulerPlugin's `run_gauntlet` tool with a
+  real strategy -> on VALIDATED it's registered and scheduled -> the
+  5-minute dispatch loop evaluates it, opens/closes paper positions,
+  and (only if armed AND graduated) would place a live order -> status
+  and every fill's phase survive a restart and are visible in the tray.
+  What's NOT yet true: no strategy has actually been run through this
+  in production (only in tests), and `trading_live_arm` has never been
+  set to True by anyone. Next real step is operational, not another
+  slice: submit a real strategy via the tool, watch it paper-trade for
+  real over days/weeks, and only consider arming once genuinely
+  satisfied -- exactly the caution the user already confirmed.
 - **Model:** sonnet
 
 ## Queue
@@ -68,9 +75,10 @@ end -- that is what S12 closes.
   trading: what a full trace actually found" for two more gaps found
   hand-tracing the complete chain.
 
-- [ ] S12 -- #856 -- Persist StrategyLifecycle status across a restart
-  (Part A) + surface phase (paper/live) in the trading UI (Part B). See
-  issue #856 for full acceptance criteria.
+- [x] S12 -- #856 -- Persist StrategyLifecycle status across a restart
+  (Part A) + surface phase (paper/live) in the trading UI (Part B).
+  Landed by hand, not via self_dev's own PR #857 (a test-isolation bug
+  -- see Landed PRs). Both gaps the full hand-trace found are closed.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -897,10 +905,79 @@ Two real gaps found, neither part of S11's original four parts:
 Neither gap is large, but both are exactly the class of thing this
 campaign's hand-verification discipline exists to catch before saying
 "ready" -- the arm toggle is necessary but not sufficient; the full
-`Status:` line above says so. Not filed as an issue yet -- worth the
-user's input on whether to continue building this out now or treat it
-as a longer-term follow-up, since both affect what "ready" should even
-mean for this feature.
+`Status:` line above says so. User confirmed 2026-08-23: continue
+closing these, with the do-not-risk-live-capital posture unchanged.
+Filed as issue #856 (S12) -- see its Landed PRs entry below.
+
+- PR #857 -- S12 -- opened by self_dev_campaign, closed unmerged (full
+  bug account in the PR's own comment) -- landed by hand instead on top
+  of the real diff (verified via the sandbox's own clone,
+  `campaign-trading-s12`, `git diff 829cc2a..selfdev/16766876`, 3 files
+  / 77 lines, correctly based on current master). The persistence
+  mechanism itself (SQLite-backed `StrategyState`, load-on-init,
+  save-on-every-mutation) was sound and kept largely as written -- the
+  real bug was structural, not logical: `StrategyLifecycle.__init__` had
+  no way to inject a db path at all, unlike `ForwardRecord`/
+  `StrategyStore`'s established convention. Every `StrategyLifecycle()`
+  in the entire test suite (10 call sites across 3 files) now shared ONE
+  real, persistent file with no isolation between test runs. That's what
+  actually produced the reported `tests_failed`: two tests
+  (`test_dispatch_does_not_graduate_on_all_zero_pnl`,
+  `test_dispatch_stays_paper_when_armed_but_not_graduated`) both use
+  strategy name "s1", and a different test earlier in the same run
+  (`test_dispatch_graduates_a_strategy_whose_paper_pnl_clears_the_bar`)
+  had already graduated "s1" to "live" and *saved it to the shared
+  file* -- so a fresh `StrategyLifecycle()` constructed in an unrelated
+  test picked up stale "live" state instead of a clean default. This is
+  not just a test-suite inconvenience: the exact same bug would have
+  meant every strategy in *production* shares undifferentiated state the
+  moment more than one is ever tracked, since nothing scoped the db by
+  profile/session either.
+
+  Fixed by adding `db_path: Optional[Path] = None` to `__init__`
+  (defaulting to the real production path, `data_dir() /
+  "lifecycle.sqlite"`, when omitted -- `cerebral/main.py`'s
+  `_trading_lifecycle = StrategyLifecycle()` needed no change) and
+  threading `tmp_path`-scoped paths through all 10 call sites so every
+  test is genuinely isolated again. 5 new tests prove the actual claim
+  Part A exists to make -- state surviving a *fresh instance* (simulating
+  a restart), not just surviving within one already-constructed object:
+  graduation, ramp progress past 30 trades, the live equity curve, and a
+  halt all persist; a separate test proves two instances against
+  different paths genuinely don't share state (the regression this whole
+  fix exists to prevent).
+
+  Separately, hand-verifying Part B (not part of PR #857's own diff --
+  found while confirming the phase badge would actually be visible):
+  `tray/lib/trading-panel.js`'s `renderLiveStrategyCard` has always read
+  `data.fills`, but `_trading_broadcast` sends `recent_fills` -- a
+  pre-existing key mismatch, present on master since this component was
+  built, meaning the Recent Fills table has never rendered a single real
+  fill, regardless of what data reached it. Adding a `phase` column to a
+  table that never renders anything wouldn't have surfaced anything.
+  Fixed the key alongside adding the phase badge
+  (`.phase-badge.live`/`.phase-badge.paper`, matching the existing
+  status-badge color convention). New `tray/tests/trading-panel.test.js`
+  -- a minimal fake-`document` unit test (no new jsdom dependency; this
+  repo's jest config has none installed and no test uses one) -- proves
+  the fills table actually renders real fill data with a visible
+  LIVE/PAPER badge per row, not just that `phase` reaches the broadcast
+  payload.
+
+  Full suite: 5091 passed, 7 skipped, 0 failed (`cerebral/tests/` +
+  repo-root `tests/`); tray JS 29 suites / 749 tests.
+
+  **Both gaps the full hand-trace (above) found are now closed.** The
+  system can run end to end for the first time in this campaign: a real
+  strategy submitted via `run_gauntlet` -> validated -> registered and
+  scheduled -> dispatched every 5 minutes -> graduates on real paper P&L
+  -> (only if armed) would place a live order, correctly labelled and
+  durable across a restart. What is still true: no strategy has actually
+  been submitted through this in production (only exercised by tests),
+  and the arm toggle has never been set to True. Do not risk live
+  capital -- the next real step is operational (run a real strategy
+  through paper trading for real, over real time, before ever arming
+  it), not another slice.
 
 ## Thesis
 
