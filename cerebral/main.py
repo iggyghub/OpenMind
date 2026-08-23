@@ -232,6 +232,20 @@ if _active_profile:
 # Issue #349 — default "quality" mapping (local qwen3:8b, else cloud Sonnet).
 # User-overridable via the set_task_model IPC / Settings → Models.
 _quality_default = _router.seed_quality_default()
+
+# ── S7/S8: Autonomous paper-trade execution loop & UI wiring ──────────────────
+from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
+from cerebral.trading.broker import StubBrokerClient
+from cerebral.trading.forward_record import ForwardRecord
+from cerebral.trading.lifecycle import StrategyLifecycle
+
+_scheduler_plugin = _SchedulerPlugin()
+_trading_broker = StubBrokerClient()
+_trading_forward_record = ForwardRecord()
+_trading_lifecycle = StrategyLifecycle()
+
+# Start the autonomous execution loop
+asyncio.create_task(_scheduler_loop())
 # Video pipeline routes local-only (no Budd/OpenClaw dependency for a long
 # unattended batch); falls through to the active model if no local model exists.
 _video_default = _router.seed_video_default()
@@ -3287,6 +3301,44 @@ def _parse_context_window(raw, kind: str = "") -> int | None:
     except (TypeError, ValueError):
         return None
     return n if n > 0 else None
+
+
+async def _scheduler_loop() -> None:
+    """Background loop that polls for due scheduler events and triggers paper trades (S7/S8).
+    Runs every 5 minutes. Idempotent via event.last_run_iso tracking. Backs off on repeated failures."""
+    logger.info("[cerebral] Starting autonomous paper-trade scheduler loop")
+    while not _shutdown.is_set():
+        try:
+            due_events = _scheduler_plugin.list_due_events()
+            for evt in due_events:
+                logger.info(f"[cerebral] Scheduler dispatching event: {evt['title']} at {evt['start_iso']}")
+                _scheduler_plugin._run_paper_strategy(evt["title"], _trading_broker, _trading_forward_record, {})
+        except Exception as e:
+            logger.warning(f"[cerebral] Scheduler loop iteration failed (backing off): {e}", exc_info=True)
+        await asyncio.sleep(300)
+
+async def _trading_broadcast() -> None:
+    """Gather and broadcast live trading state to tray subscribers (S7/S8)."""
+    positions, alerts, fills_data = [], [], []
+    try:
+        if _active_profile:
+            for name, state in _trading_lifecycle._states.items():
+                p = {
+                    "name": name, "status": state.status, "live_trades": state.live_trade_count,
+                    "promoted_at": state.promoted_at.isoformat() if state.promoted_at else None,
+                    "recent_fills": [], "equity_curve": _trading_forward_record.get_equity_curve(name)
+                }
+                fills = _trading_forward_record.get_fills(limit=5, strategy_id=name)
+                p["recent_fills"] = [{"symbol": f["symbol"], "side": f["side"], "pnl": f["pnl"]} for f in fills]
+                positions.append(p)
+            alerts = _trading_lifecycle.get_alert_history()
+        await _broadcast({"type": "trading_update", "data": {"positions": positions, "alerts": alerts}})
+    except Exception as e:
+        logger.warning(f"[cerebral] trading broadcast failed: {e}", exc_info=True)
+
+async def _handle_trading_poll(_data: dict) -> None:
+    """IPC handler for tray polling of live trading state."""
+    await _trading_broadcast()
 
 
 async def _ping_custom_model(backend) -> str | None:

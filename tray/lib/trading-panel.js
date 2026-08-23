@@ -1,4 +1,33 @@
 /**
+ * Wires up the Trading Panel UI in the tray.
+ * Fetches initial state, renders, and listens for live updates via IPC.
+ */
+export function initTradingPanel() {
+  const mount = document.getElementById('trading-panel-mount');
+  if (!mount) return;
+
+  const _renderState = (state) => {
+    if (!state || !state.positions || state.positions.length === 0) {
+      mount.innerHTML = '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+      return;
+    }
+    // Render the first live/paper strategy card
+    const data = state.positions[0];
+    renderLiveStrategyCard(data, mount);
+  };
+
+  // Initial fetch
+  window.sendEvent({ type: 'trading_poll' });
+
+  // Listen for live updates
+  window.addEventListener('message', (evt) => {
+    if (evt.data?.type === 'trading_update') {
+      _renderState(evt.data.data);
+    }
+  });
+}
+
+/**
  * Renders a StrategyCard into the given container element.
  * @param {Object} card - StrategyCard object from gauntlet
  * @param {HTMLElement} container - DOM element to render into
