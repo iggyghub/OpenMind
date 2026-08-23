@@ -335,7 +335,7 @@ def run_gauntlet(
             store.save(StrategySpec(
                 strategy_id=strategy_name, symbol=symbol,
                 code=strategy_code, qty=position_qty,
-            ))
+            ), origin='generated', provenance_json={"source": provenance}, hypothesis=hypothesis)
         scheduler._create_event({
             "title": strategy_name,
             "start_iso": now_iso,

@@ -12,6 +12,7 @@ subsystem, and cerebral/ must not depend on plugins/ (seam rule #153/#385).
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -54,19 +55,62 @@ class StrategyStore:
                 qty         REAL NOT NULL DEFAULT 1.0,
                 created_at  TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS strategy_versions (
+                strategy_id       TEXT NOT NULL,
+                version           INTEGER NOT NULL,
+                code              TEXT NOT NULL,
+                origin            TEXT NOT NULL CHECK(origin IN ('generated', 'user_edited', 'mixed')),
+                provenance_json   TEXT,
+                hypothesis        TEXT,
+                parent_version    INTEGER,
+                components_json   TEXT,
+                created_at        TEXT NOT NULL,
+                PRIMARY KEY (strategy_id, version)
+            );
             """
         )
         self._con.commit()
 
-    def save(self, spec: StrategySpec) -> None:
-        """Register (or re-register, on re-validation) one strategy."""
+    def save(self, spec: StrategySpec, origin: str = 'generated', provenance_json=None, hypothesis: str = '', parent_version=None, components_json=None) -> None:
+        """Register (or re-register, on re-validation) one strategy, recording lineage."""
+        max_ver = self._con.execute(
+            "SELECT MAX(version) FROM strategy_versions WHERE strategy_id = ?",
+            (spec.strategy_id,)
+        ).fetchone()[0]
+        next_ver = (max_ver or 0) + 1
+        
+        ts = datetime.now(timezone.utc).isoformat()
+        prov_json_str = json.dumps(provenance_json) if provenance_json is not None else None
+        comp_json_str = json.dumps(components_json) if components_json is not None else None
+        
+        self._con.execute(
+            "INSERT INTO strategy_versions "
+            "(strategy_id, version, code, origin, provenance_json, hypothesis, parent_version, components_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (spec.strategy_id, next_ver, spec.code, origin, prov_json_str, hypothesis, parent_version, comp_json_str, ts),
+        )
         self._con.execute(
             "INSERT OR REPLACE INTO strategy_specs "
             "(strategy_id, symbol, code, qty, created_at) VALUES (?, ?, ?, ?, ?)",
-            (spec.strategy_id, spec.symbol, spec.code, float(spec.qty),
-             datetime.now(timezone.utc).isoformat()),
+            (spec.strategy_id, spec.symbol, spec.code, float(spec.qty), ts),
         )
         self._con.commit()
+
+    def render_provenance(self, row) -> str:
+        """Produce display string for provenance from a strategy_versions row."""
+        v = row["version"]
+        origin = row["origin"]
+        prov = json.loads(row["provenance_json"]) if row["provenance_json"] else {}
+        comp = row.get("components_json") or ""
+        
+        if origin == "generated":
+            src = prov.get("source", prov.get("url", prov.get("book", "generated")))
+            return f"{src} (v{v})"
+        elif origin == "user_edited":
+            src = prov.get("source", prov.get("book", "user edit"))
+            return f"{src}, as modified by user (v{v})"
+        elif origin == "mixed":
+            return f"mix (majority) of: {comp} (v{v})"
+        return f"strategy (v{v})"
 
     def get(self, strategy_id: str) -> Optional[StrategySpec]:
         row = self._con.execute(
