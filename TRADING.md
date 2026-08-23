@@ -3,24 +3,23 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S8 landed real, small, correct progress on gap 2
-(Order fill price -- see Landed PRs). Gaps 1 (recurring dispatcher) and 3
-(UI wiring into main.html) are still untouched. Also surfaced a real infra
-problem (not a code bug): GitHub's own copy of `master` had been stuck at
-PR #841 since S3, because self_dev clones from this local checkout but
-`gh pr merge` still squash-merges against GitHub's own base branch tip --
-every hand-landed slice (S3-S7) never actually reached origin/master, and
-S8's squash merge collapsed all of it into one confusing 3000-line commit
-that looked like an unreviewed reimplementation until traced to its real,
-21-line source diff (see Landed PRs). Reconciled by force-pushing local
-master, which now carries S8's real fix as its own commit. Do not risk
-live capital; #848 remains open for gaps 1 and 3.
+## Status: paper trading works end-to-end, hand-verified (not just tests
+passing) -- see S9's Landed PRs entry for the full call chain traced by
+hand: gauntlet pass -> scheduler event created -> dispatcher's 5-minute
+tick finds it due -> a real (simulated) order fills -> forward_fills gets
+a real price and correct strategy_id -> the event correctly waits its
+full recurrence interval before firing again. Live/real-money trading is
+intentionally unwired -- no live Alpaca credentials configured, and that
+is an accepted, explicit scope boundary right now, not a gap. Issue #848
+closed; all three of its gaps (dispatcher, fill price, UI wiring) are
+closed. If live trading becomes a real goal later, that's new scope, not
+a resumption of #848.
 
 ## Next slice -- start here
 
-- **Active:** S9 -- #848 (issue kept open, updated in place -- same
-  tracking issue, not a new one; see the issue for the current remaining
-  scope after S8)
+- **Active:** none -- #848's scope (paper trading working end-to-end) is
+  done. Live trading would be new scope needing its own grill session,
+  not a continuation of this queue.
 - **Model:** sonnet
 
 ## Queue
@@ -46,10 +45,10 @@ live capital; #848 remains open for gaps 1 and 3.
   field (StubBrokerClient gets a real simulated price, AlpacaBrokerClient.
   get_order extracts the real fill_avg_price); dispatcher and UI wiring
   still open -- see Landed PRs note
-- [ ] S9 -- #848 -- Close S8's remaining gaps: a real recurring dispatcher
+- [x] S9 -- #848 -- Close S8's remaining gaps: a real recurring dispatcher
   for scheduled paper trades, and wiring the Trading Panel UI into
-  main.html -- see issue #848 for the current spec (updated 2026-08-22
-  after S8)
+  main.html -- both landed, hand-verified end-to-end (not just tests
+  passing). Issue #848 closed. See Landed PRs note.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -453,6 +452,116 @@ a new issue number -- its body was updated in place to the post-S7 scope.
   `gh pr view`/`git diff <base>..<head>` against a GitHub PR without first
   confirming the PR's base is actually current. The second habit is now
   established (this entry exists because of it); the first isn't.
+
+- PR #851 -- S9 -- true diff verified via the sandbox's own local clone
+  (cerebral/data/sandbox/self_dev/campaign-trading-s9), per the S8 lesson:
+  e545998..3f8a646, 3 files, 98 lines. The campaign's own test run
+  reported `tests_failed` with a real, specific error --
+  `NameError: name '_scheduler_loop' is not defined` at
+  cerebral/main.py:248, `asyncio.create_task(_scheduler_loop())` called at
+  module import time, ~3000 lines before that function's own def. That
+  diagnosis was right but shallow -- hand-reviewing the rest of the real
+  diff (not just what broke collection) found three more bugs and one
+  structural gap, all on the path this whole slice exists for:
+
+  1. **The NameError itself.** Fixed by moving the task creation into
+     main()'s existing startup block, alongside `heartbeat`/`rss_task` --
+     the established pattern in this file for background loops (they
+     start when the event loop is actually running, not at import time),
+     confirmed by reading how `_worker_heartbeat_loop` gets started
+     elsewhere in the same file.
+  2. **Broken idempotency.** `list_due_events()` compared `last_run_iso`
+     (set to "now" when a trade executes) against `start_iso` (the
+     event's fixed original schedule time) -- two different quantities
+     that are essentially never equal, so the "already ran" check was
+     never true even right after running. A dispatched strategy would
+     have refired on every single 5-minute tick forever instead of
+     respecting its own recurrence interval. Rewrote with real interval
+     math (`_recurrence_interval`, supporting daily/weekly/monthly plus a
+     new `Nm`/`Nh` short-interval pattern trading needs) and added
+     `mark_event_run(event_id)` as its own method -- the dispatcher (which
+     already holds the event row) calls it after dispatch, instead of
+     `_run_paper_strategy` reaching back into the events table by a fuzzy
+     title match, mixing trade-execution and event-bookkeeping concerns.
+  3. **`_VALID_RECURRENCES` had no short-interval support at all** --
+     only `daily`/`weekly`/`monthly`, so even a correctly-timed
+     `_create_event(..., recurrence="5m")` call would have been rejected
+     outright. Added the `Nm`/`Nh` pattern alongside the calendar literals
+     (a distinct axis -- a duration, not a named cadence -- so folded into
+     a separate regex rather than the existing literal set).
+  4. **The structural gap, worse than the other three:** nothing in the
+     entire codebase ever called `scheduler._create_event()` for a
+     trading strategy. gauntlet.py's auto-promote block (S7/S8) called
+     `_run_paper_strategy` directly, once, at the moment a gauntlet
+     passed -- completely bypassing the event system this slice's
+     dispatcher polls. Even with bugs 1-3 fixed, `list_due_events()`
+     would have returned `[]` forever, because nothing populated the
+     table it reads. Fixed by changing gauntlet.py's auto-promote call
+     from executing a trade itself to registering a recurring event
+     (`recurrence="5m"`) -- the dispatcher is now the sole execution
+     path, `ForwardRecord`/broker are no longer threaded through
+     `run_gauntlet`'s call site at all (the dispatcher supplies its own
+     shared instances). `paper_broker` still gates whether auto-promotion
+     happens, it just no longer flows into the scheduler call itself.
+     Updated test_trading_gauntlet.py's `FakeScheduler` fixtures from
+     asserting a `_run_paper_strategy` call to asserting a
+     `_create_event` call with the right title/recurrence.
+
+  Also fixed, lower stakes: tray/lib/trading-panel.js used `export
+  function` (ES module syntax, which a plain `<script src>` tag can't
+  load at all) and its `initTradingPanel()` called `window.sendEvent` /
+  listened via `window.addEventListener('message', ...)` -- neither
+  exists anywhere in this app. The real transport is ws-bridge.js's
+  `onMessage` callback, routed through main.html's own `handleEvent`
+  switch on `event.type`, exactly like every other panel (confirmed by
+  reading ws-bridge.js directly, not assumed). Converted to the same UMD
+  wrapper thinking-panel.js already uses; split into `initTradingPanel()`
+  (mount + loading placeholder) and `renderTradingUpdate()` (the real
+  render, called from a new `'trading_update'` case in `handleEvent`).
+  Wired a "Trading" `lib-tab`/`lib-sub` into main.html's existing Library
+  pane, matching the memory/insights/.../github pattern exactly (a real
+  nav tab, not a hidden or orphaned mount point) -- confirmed live by
+  running the project's own render-smoke.test.js against the edited
+  main.html in an isolated worktree, which caught a real regression (a
+  hardcoded `expect(tabBtns.length).toBe(7)` from before this slice added
+  an 8th tab) and required 2 new assertions for the new wiring, both
+  added. Also added a broadcast call after each dispatch cycle so the
+  panel updates live on real trades, not only when the tab is opened.
+
+  Verification went beyond "tests pass": added
+  `test_end_to_end_due_event_dispatches_a_real_paper_trade`, which
+  schedules a strategy, runs the exact dispatch logic `_scheduler_loop`
+  uses, and asserts a real fill with a real (S8) simulated price and the
+  correct `strategy_id` lands in `forward_fills` -- then that the event
+  is correctly NOT due again immediately (idempotency), with a companion
+  test confirming it IS due again once its recurrence interval has
+  actually elapsed. That's the full chain this multi-slice effort (S6
+  through S9) exists to build, exercised directly, not inferred from
+  passing unit tests on isolated pieces.
+
+  `cerebral/main.py` and `tray/windows/main.html` both had another
+  concurrent session's uncommitted local changes in the live working
+  tree at merge time -- this slice was built and tested entirely in an
+  isolated git worktree against master's last committed state, then
+  merged via `git stash` (scoped to just those two files plus BOOKS.md)
+  / fast-forward / `git stash pop`, auto-merging cleanly. Verified after:
+  both sets of changes coexist correctly (main.py still compiles, the
+  other session's own additions are untouched), full suite green (5045
+  passed, 7 skipped, 0 failed) and the tray JS suite green (28 suites,
+  746 tests) with both sessions' panels present together.
+
+  Full suite in isolation before merging: 5039 passed / 7 skipped / 0
+  failed (cerebral/tests/ + repo-root tests/); tray JS in isolation: 27
+  suites / 737 tests (one suite fewer than the main tree only because
+  campaign-panel.test.js is another session's untracked file, absent
+  from the worktree's git history -- not a regression).
+
+  **Net: all three gaps issue #848 tracked are genuinely closed** --
+  verified by tracing the real call chain by hand, the same discipline
+  every slice in this campaign since S6 has needed to actually mean
+  something. Issue #848 closed. Live/real-money trading remains
+  unwired (no live Alpaca credentials configured) -- an accepted,
+  explicit scope boundary, not a remaining gap of this issue.
 
 ## Thesis
 
