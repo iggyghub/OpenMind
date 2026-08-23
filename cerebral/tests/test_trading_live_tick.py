@@ -6,6 +6,7 @@ real realized P&L on a close, and the graduation/retirement wiring.
 
 No network: every test injects `fetch`.
 """
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -631,3 +632,66 @@ def test_risk_manager_reads_live_settings_store_values(tmp_path):
     res = risk.check_order(10000.0, 0, 0.0, 4000.0, "AAPL", 40.0)  # 40% of equity
 
     assert res.allowed  # would be blocked at the 2.0% default
+
+
+# ── S21b (#874): correlation gate ──────────────────────────────────────────
+
+def _make_correlated_bars(corr=0.8):
+    """Create two symbols with high correlation for fixture data."""
+    base = pd.DataFrame(
+        {"Close": [100.0 + i for i in range(65)]},
+        index=pd.date_range("2026-05-01", periods=65, freq="D"),
+    )
+    # CORX moves 0.8 * AAPL + noise
+    noise = np.random.RandomState(42).randn(len(base)) * 2
+    corx = base.copy()
+    corx["Close"] = (base["Close"] * 0.8 + noise * 2).values
+    return base, corx
+
+
+def test_tick_blocks_high_correlation_open(tmp_path, monkeypatch):
+    """A new position that would push correlated exposure over the configured
+    max_correlation threshold is blocked and broker.place_order is never called."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    # Pre-fill AAPL position
+    broker._positions.append(Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0))
+    
+    aapl_df, corx_df = _make_correlated_bars()
+    
+    def fixture_fetch(symbol, start, end):
+        if symbol == "AAPL":
+            return aapl_df
+        return corx_df
+
+    risk = RiskManager()
+    spec = StrategySpec("s1", "CORX", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixture_fetch, risk=risk)
+
+    assert result == {"status": "blocked", "blocked_by": "correlation_limit"}
+    assert broker._orders == {}
+
+
+def test_tick_does_not_block_closing_trade_due_to_correlation(tmp_path, monkeypatch):
+    """A closing trade is never blocked by correlation (only opens are checked)."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    # Pre-fill AAPL position
+    broker._positions.append(Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0))
+    
+    aapl_df, corx_df = _make_correlated_bars()
+    
+    def fixture_fetch(symbol, start, end):
+        if symbol == "AAPL":
+            return aapl_df
+        return corx_df
+
+    risk = RiskManager()
+    # Signal to close AAPL (flat)
+    spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=10.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixture_fetch, risk=risk)
+
+    assert result["status"] == "closed"
+    assert len(broker._orders) == 1
