@@ -82,6 +82,28 @@ class AlpacaBrokerClient:
             raise RuntimeError("alpaca-py is not installed. Install with: pip install alpaca-py")
         self._connected = True
 
+    def preflight(self) -> tuple[bool, str]:
+        """Checks the live path can actually work before ever routing an
+        order to it: package installed, credentials present for `env`,
+        account reachable and ACTIVE. Never raises -- a caller always gets
+        (False, reason) instead of an exception, so it can fall back to
+        paper instead of error-looping (S21/#874)."""
+        try:
+            import alpaca.trading.client  # noqa: F401
+        except ImportError:
+            return False, "alpaca-py is not installed"
+        try:
+            _get_alpaca_credentials(self.env)
+        except EnvironmentError as exc:
+            return False, str(exc)
+        try:
+            acc = self.get_account()
+        except Exception as exc:
+            return False, f"account unreachable: {exc}"
+        if acc.status != "ACTIVE":
+            return False, f"account status is {acc.status!r}, not ACTIVE"
+        return True, "ok"
+
     def get_account(self) -> Account:
         self._connect()
         acc = self._client.get_account()
