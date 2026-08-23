@@ -3,24 +3,24 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S11b (parts 2+4, arm toggle + live/paper branching)
-landed by hand 2026-08-23 after self_dev's own PR #854 had 3 real bugs
-(see Landed PRs). Part 3 (a reachable production caller of run_gauntlet)
-is still the one remaining blocker before live trading can mean anything
--- continuing as S11c against issue #852, scoped down in place.
+## Status: ready -- all four parts of S11 now exist and are individually
+hand-verified (real code, real tests, no mocks on the money-adjacent
+paths). Hand-tracing the FULL chain end to end (per this campaign's own
+standing rule: code existing is not the same as "ready") found two more
+real gaps, neither part of S11's original four parts, both now
+documented below. Do not risk live capital -- not because a part is
+missing, but because the whole chain isn't trustworthy yet: a live fill
+is correctly recorded internally but invisible as "live" in the UI, and
+a strategy's graduation status does not survive a Felix restart.
 
 ## Next slice -- start here
 
-- **Active:** S11c -- #852 -- live trading, Part 3 only: a real,
-  reachable production entry point that calls run_gauntlet against a real
-  strategy spec (compiled code + symbol), using an MCP tool (via
-  `_orc.call_tool`, matching SchedulerPlugin's existing create_event/
-  list_events pattern) rather than a CommandRegistry phrase command --
-  the first attempt used a Command, whose dispatcher calls
-  `await cmd.handler()` with zero arguments, guaranteeing a crash on any
-  invocation that needs strategy code/symbol as input. See issue #852
-  (updated in place) for the full account of why the first attempt failed
-  and what the fix needs to do differently.
+- **Active:** none queued. S11 (all four parts) is code-complete;
+  the next work is scoped by the two gaps found in this session's full
+  hand-trace (see "Live trading: what a full trace actually found"
+  below), not yet filed as an issue -- ask the user whether to continue
+  before filing/triggering more, since both gaps affect whether "ready"
+  is a reasonable bar to aim for next vs. a longer-term item.
 - **Model:** sonnet
 
 ## Queue
@@ -61,10 +61,12 @@ is still the one remaining blocker before live trading can mean anything
   self_dev's own PR #854 (3 real bugs found -- see Landed PRs). Part 3
   (production caller of run_gauntlet) not delivered; continuing as S11c.
 
-- [ ] S11c -- #852 -- Live trading, Part 3 only: a real, reachable
-  production caller of run_gauntlet. See issue #852 (updated in place)
-  for full acceptance criteria and why the first attempt's approach
-  can't work.
+- [x] S11c -- #852 -- Live trading, Part 3 only: a real, reachable
+  production caller of run_gauntlet. Landed by hand, not via self_dev's
+  own PR #855 (2 more real bugs found -- see Landed PRs). All four parts
+  of S11 now exist; live trading is still not "ready" -- see "Live
+  trading: what a full trace actually found" for two more gaps found
+  hand-tracing the complete chain.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -783,6 +785,118 @@ S11b/S11c similarly reuse issue #852 across two slice labels.
   actually reach `run_gauntlet` in the running app) still doesn't exist,
   so no strategy can ever graduate through real production code today
   (only through tests). Do not risk live capital.
+
+- PR #855 -- S11c -- opened by self_dev_campaign, closed unmerged (full
+  bug account in the PR's own closing comment) -- landed by hand instead
+  on top of the real diff (verified via the sandbox's own clone,
+  `campaign-trading-s11c`, `git diff ae3476b..selfdev/90239321`, 2 files
+  / 89 lines, correctly based on S11b). Two real bugs found hand-verifying:
+
+  1. **The registered tool called the real `run_gauntlet` with parameter
+     names that don't exist on it.** `run_gauntlet(code=code, symbol=
+     symbol, hypothesis=hypothesis, provenance=provenance, scheduler=self,
+     paper_broker=StubBrokerClient())` -- but `run_gauntlet`'s real
+     signature has no `code` parameter at all, and its first two
+     parameters (`backtest_func`, `prices`) are required positionals with
+     no default. Guaranteed `TypeError` on the very first real call --
+     it never once fetched data, compiled the strategy, or built a
+     backtest.
+  2. **The result was read as a dict.** `result.get("verdict", ...)` --
+     but `run_gauntlet` returns a `StrategyCard`, a `@dataclass` with no
+     `.get()` method. A second, independent crash had the first one
+     somehow not fired.
+
+  Neither bug surfaced in the PR's own test, which monkeypatched
+  `plugins.scheduler.run_gauntlet` out entirely with a fake accepting
+  `code=`/`symbol=` directly -- exercising the wrong signature instead of
+  the real one. The reported `tests_failed` was a third, unrelated bug in
+  the same test: `plugin.call_tool(...)` was called without `await`
+  (`call_tool` is `async`), so the assertion ran against a bare coroutine
+  object.
+
+  Fixed properly rather than patched around: `SchedulerPlugin._run_gauntlet`
+  now builds a real backtest wrapper -- compiles the strategy code via
+  `compile_strategy`, calls it against the fetched bars, turns its 1/0/-1
+  target-position signals into an equity curve (shifted one bar so the
+  strategy never trades on a close it hasn't seen yet: `position =
+  signals.shift(1)`) -- and calls `run_gauntlet` with the real kwarg names
+  (`strategy_code=`, `position_sizes=`, etc.), reading `card.verdict`/
+  `card.sharpe`/`card.gates` as real dataclass attributes. Registered as a
+  proper MCP tool (`run_gauntlet`, schema requiring `code`/`symbol`/
+  `hypothesis`) on `SchedulerPlugin.list_tools()`/`call_tool()` -- the
+  same pattern `create_event`/`list_events` already use, reachable via
+  `_orc.call_tool` (chat/tray), not the broken `CommandRegistry` shape
+  the first attempt used.
+
+  3 new tests use the real, unmocked `run_gauntlet` against synthetic
+  two-regime price data (`_trend_prices`: a clean uptrend then a clean
+  downtrend, engineered so a real MA-cross strategy compiled through
+  `compile_strategy` reliably beats its own buy-and-hold benchmark and
+  clears every gate) -- proving the full chain for the first time: tool
+  call with real code+symbol+hypothesis -> `run_gauntlet` runs a real
+  backtest -> `VALIDATED` -> `StrategySpec` registered in the *same*
+  `strategy_specs.db` `_trading_strategy_store` reads (confirmed by
+  checking both call sites construct `StrategyStore()` with no path
+  override, i.e. the same module-level `_DB_PATH` default -- not the same
+  Python object, but the same file, which is how this app already
+  coordinates plugin state) -> event scheduled -> `dispatch_due_events`
+  (called with the real registered spec, no mocking) actually evaluates
+  the compiled strategy and places a real (paper) order. One pre-existing,
+  unrelated test (`cerebral/tests/test_plugins_time_notes.py::
+  TestSchedulerPlugin::test_list_tools_exposes_four_tools`) asserted an
+  exact 4-tool set; updated to 5 and renamed. Full suite: 5087 passed,
+  7 skipped, 0 failed.
+
+  **All four parts of S11 now exist.** This is the first point in the
+  campaign where that's true. Do not read that as "live trading is
+  ready" -- see the next section for what a full hand-trace of the
+  complete chain (gauntlet -> graduation -> arm -> live fill -> UI)
+  actually found.
+
+### Live trading: what a full trace actually found (2026-08-23)
+
+Per this campaign's own standing rule (a slice's code existing is not
+the same as the feature being ready), traced the full chain by hand
+after S11c landed -- not just "do the parts exist," but "does invoking
+them in order actually produce a live order that's honestly visible."
+Two real gaps found, neither part of S11's original four parts:
+
+1. **A strategy's lifecycle status does not survive a Felix restart.**
+   `cerebral/main.py`'s `_trading_lifecycle = StrategyLifecycle()` is a
+   plain in-memory dict (`cerebral/trading/lifecycle.py`'s `_states`) --
+   no SQLite backing, unlike `ForwardRecord`/`StrategyStore`. A restart
+   (routine in this campaign -- self_dev's own auto-merge triggers one,
+   plus tonight's manual one) silently resets every strategy back to
+   "paper" via `get_state`'s lazy-create-as-paper default. This fails
+   *safe*, not open -- a restart can never cause an unarmed/ungraduated
+   strategy to start trading live, only the reverse (a previously-"live"
+   strategy quietly needs to re-earn graduation) -- but it means "live"
+   status is not itself a durable fact today, only a cache of one. Since
+   `check_graduation` reads real persisted `ForwardRecord` data, a
+   strategy that had genuinely earned graduation before a restart should
+   re-earn it again within one dispatch cycle if the underlying evidence
+   still holds -- not verified end-to-end, since doing so would require
+   actually restarting Felix mid-trace.
+2. **A live fill is recorded correctly but is invisible as "live" in the
+   UI.** S11b correctly threads `phase="live"` all the way to the
+   recorded `ForwardRecord` row (verified by 4 tests). But
+   `cerebral/main.py`'s `_trading_broadcast` builds `recent_fills` as
+   `[{"symbol":..., "side":..., "pnl":...} for f in fills]` -- no
+   `phase` field at all -- and `tray/lib/trading-panel.js` has zero
+   references to `phase` anywhere (checked directly, not assumed). A
+   user watching the Trading panel could not tell a live fill from a
+   paper one. This directly violates the Honesty rule this campaign
+   documented from the start ("every surfaced number is labelled
+   backtest/paper/live -- mixing them is a bug") for the one case that
+   matters most: real money moving.
+
+Neither gap is large, but both are exactly the class of thing this
+campaign's hand-verification discipline exists to catch before saying
+"ready" -- the arm toggle is necessary but not sufficient; the full
+`Status:` line above says so. Not filed as an issue yet -- worth the
+user's input on whether to continue building this out now or treat it
+as a longer-term follow-up, since both affect what "ready" should even
+mean for this feature.
 
 ## Thesis
 
