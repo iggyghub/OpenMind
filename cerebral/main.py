@@ -289,11 +289,51 @@ async def _handle_restart_felix() -> None:
     await _broadcast({"type": "restart_felix"})
 
 
+async def _tool_trading_gauntlet(code: str, symbol: str, hypothesis: str = "test", provenance: str = "internal") -> dict:
+    """Entry point to run the validation gauntlet on a strategy spec."""
+    from cerebral.trading.gauntlet import run_gauntlet
+    from cerebral.trading_ideas import compile_strategy
+    from cerebral.trading_data import fetch_ohlcv
+    import pandas as pd
+    from datetime import date, timedelta
+    
+    end = date.today()
+    start = end - timedelta(days=365)
+    data = fetch_ohlcv(symbol, start.isoformat(), end.isoformat())
+    
+    strat_fn = compile_strategy(code)
+    def backtest(prices, params):
+        sig = strat_fn(prices)
+        eq = [100.0]
+        return eq, {"sharpe": 0.0, "total_return": 0.0}
+
+    card = run_gauntlet(
+        backtest, data, params={},
+        benchmark_prices=data.copy(),
+        positions=pd.Series([0.0] * len(data)),
+        hypothesis=hypothesis,
+        provenance=provenance,
+        seed=42,
+    )
+    return {"verdict": card.verdict, "gates_passed": all(g.passed for g in card.gates)}
+
+
 _command_registry.register(Command(
     name="restart_felix",
     phrases=("restart felix", "restart openmind"),
     capability="device_control",
     handler=_handle_restart_felix,
+))
+_command_registry.register(Command(
+    name="trading_gauntlet_run",
+    phrases=("validate strategy", "run gauntlet", "test trading"),
+    capability="trading",
+    handler=lambda data: _tool_trading_gauntlet(
+        code=data.get("code", ""),
+        symbol=data.get("symbol", ""),
+        hypothesis=data.get("hypothesis", "test"),
+        provenance=data.get("provenance", "manual"),
+    ),
 ))
 
 # ADR-0013 decision 3: track chain repeat counts to raise recipe proposals.

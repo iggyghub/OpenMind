@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 _DEFAULTS: dict[str, Any] = {
     "notifications_enabled":     False,
     "reminder_interval_minutes": 120,
+    "trading_arm_enabled":        False,
     "camera_enabled":            False,
     "visualiser_visible":        False,
     "mic_mode":                  "passive",
@@ -77,6 +78,7 @@ _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
 _TYPES: dict[str, type] = {
     "notifications_enabled":     bool,
     "reminder_interval_minutes": int,
+    "trading_arm_enabled":        bool,
     "camera_enabled":            bool,
     "visualiser_visible":        bool,
     "mic_mode":                  str,
