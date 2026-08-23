@@ -3,13 +3,17 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: blocked -- PR https://github.com/iggyghub/OpenMind/pull/866 not merged (tests_failed): =================================== ERRORS ==================================== ____________ ERROR collecting cerebral/tests/test_trading_ideas.py ____________ ImportError while importing test module 'C:\OpenMind\cerebral\data\sandbox\self_dev\campaign-trading-s14\cerebral\tests\test_trading_ideas.py'. Hint: make sure your test modules/packages have valid Python names. Traceback: C:\Users\iggy\AppData\Local\Programs\Python\Python312\Lib\importlib\__init__.py:90: in import_module return _boot
+## Status: ready -- S14 landed. compile_strategy's in-process exec is
+retired; both production call sites route through S13's real sandbox.
+No production code executes untrusted strategy source in Felix's own
+process anymore. S15 (wire to_strategy to a real free model) is next --
+currently every generated strategy, regardless of source, still falls
+through to the hardcoded stub.
 
 ## Next slice -- start here
 
-- **Active:** S14 -- #859 -- retire in-process compile_strategy exec;
-  route both call sites (live_tick.py, plugins/scheduler.py) through
-  S13's sandboxed_eval.evaluate_signals. See issue #859.
+- **Active:** S15 -- #860 -- wire to_strategy to a real free model
+  (task_type="coding" via the existing router). See issue #860.
 - **Model:** sonnet
 
 ## Queue
@@ -66,8 +70,10 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   (unwired). Landed by hand, not via self_dev's own PR #865 (2 real bugs
   found, including a genuine structural sandbox-usage bug -- see Landed
   PRs).
-- [ ] S14 -- #859 -- Retire in-process compile_strategy exec; route
-  both call sites through S13's sandbox.
+- [x] S14 -- #859 -- Retire in-process compile_strategy exec; route
+  both call sites through S13's sandbox. Landed by hand, not via
+  self_dev's own PR #866 (a stale import + an outdated test -- see
+  Landed PRs).
 - [ ] S15 -- #860 -- Wire to_strategy to a real free model (currently
   every generated strategy is the hardcoded stub, regardless of source).
 - [ ] S16 -- #861 -- Strategy lineage: versions, structured provenance,
@@ -1042,6 +1048,45 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   **Mechanism only -- nothing existing is wired to this yet.** S14
   (#859) retires `compile_strategy`'s in-process exec and routes both
   production call sites through this.
+
+- PR #866 -- S14 -- opened by self_dev_campaign, closed unmerged (full
+  bug account in the PR's own comment) -- landed by hand instead on top
+  of the real diff (verified via the sandbox's own clone, `campaign-
+  trading-s14`, `git diff bc7c130..selfdev/69fe26cb`, 6 files / 45
+  lines). The core was correct: both `live_tick.py` and `plugins/
+  scheduler.py` route through `evaluate_signals` now, `compile_strategy`
+  was correctly demoted to `_compile_strategy` (test-only, docstring
+  updated), the warm-up-length right-align fix and the `asyncio.
+  to_thread` wrap were both present and correct. Two problems:
+
+  1. **The reported `tests_failed` cause.** `cerebral/tests/
+     test_trading_ideas.py` still imported the old public
+     `compile_strategy` name -- an `ImportError` at collection, since
+     it was never updated when the function was renamed (unlike
+     `test_trading_live_tick.py`'s matching import in this same PR,
+     which WAS updated). Fixed with the same alias pattern:
+     `from cerebral.trading_ideas import _compile_strategy as
+     compile_strategy`.
+  2. **A real behavior change the PR's own test suite didn't account
+     for.** `test_run_paper_strategy_reports_a_bad_strategy_instead_of_
+     raising` asserted a broken strategy (missing `def strategy(data)`
+     entirely) produces `status == "error"` -- but the sandboxed
+     evaluator never propagates a strategy's own failure as an
+     exception; it degrades to an all-flat signal by design, exactly
+     per issue #859's own acceptance criteria ("never an order placed
+     on a sandbox failure"). Renamed and rewrote the test to assert the
+     correct `"hold"` status. Since a silently-degrading failure with
+     no error status is otherwise unobservable, also added
+     `logger.warning` calls to every fallback path in `sandboxed_eval.
+     evaluate_signals` (sandbox exit failure, missing output, malformed
+     output, any raised exception) -- the rewritten test verifies both
+     the safe degradation and that it's actually logged.
+
+  Full suite: 5096 passed, 7 skipped, 0 failed.
+
+  **No production code executes untrusted strategy source in Felix's
+  own process anymore.** Confirmed by grep: zero production callers of
+  the old public `compile_strategy` name remain anywhere in the repo.
 
 ## Thesis
 
