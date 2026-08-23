@@ -200,6 +200,9 @@ def run_gauntlet(
     strategy_code: Optional[str] = None,
     strategy_store: Any = None,
     position_qty: float = 1.0,
+    origin: str = 'generated',
+    parent_version: Optional[int] = None,
+    strategy_id: Optional[str] = None,
 ) -> StrategyCard:
     rng = np.random.default_rng(seed)
     params = params or {}
@@ -320,7 +323,7 @@ def run_gauntlet(
     # record only ever gets real broker fills once actual paper trading
     # starts placing and recording them.
     if auto_promote and verdict == "VALIDATED" and scheduler and paper_broker:
-        strategy_name = hypothesis or provenance
+        strategy_name = strategy_id or hypothesis or provenance
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         # Register WHAT to trade before scheduling WHEN. The event carries only
         # a title; without a matching spec the dispatcher has no symbol and no
@@ -335,7 +338,8 @@ def run_gauntlet(
             store.save(StrategySpec(
                 strategy_id=strategy_name, symbol=symbol,
                 code=strategy_code, qty=position_qty,
-            ), origin='generated', provenance_json={"source": provenance}, hypothesis=hypothesis)
+            ), origin=origin, provenance_json={"source": provenance}, hypothesis=hypothesis,
+               parent_version=parent_version)
         scheduler._create_event({
             "title": strategy_name,
             "start_iso": now_iso,
