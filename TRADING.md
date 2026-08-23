@@ -3,16 +3,11 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: blocked -- waiting on a one-time user action before S13 can
-start: an `icacls` grant giving the AppContainer sandbox (ADR-0010) read
-access to the Python install directory. Spiked 2026-08-23:
-`WindowsSandbox().spawn([sys.executable, "-c", "print(1)"], ...)` fails
-with `0xC0000135` (STATUS_DLL_NOT_FOUND) -- the sandbox cannot load ANY
-Python interpreter today, confirmed clean against `cmd.exe echo hi`
-succeeding in the same sandbox. User chose to grant AppContainer access
-rather than bundle a separate Python or fall back to a weaker sandbox
-tier. Do not run S13 until the grant is confirmed and the spike re-run
-passes -- reset this to `ready` once that's true.
+## Status: ready -- the icacls grant (decision #23) is applied and the
+spike re-run confirms it fixed the real problem: `WindowsSandbox().
+spawn([sys.executable, "-c", "print(1)"], ...)` and a follow-up `import
+pandas` both now exit 0 with real stdout, where they previously failed
+with `0xC0000135` (STATUS_DLL_NOT_FOUND). S13 is unblocked.
 
 ## Next slice -- start here
 
