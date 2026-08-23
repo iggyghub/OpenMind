@@ -3,21 +3,19 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S15 landed (auto-merged by self_dev_campaign as PR
-#867, then hand-fixed on top -- the router call was never awaited,
-returning a coroutine object instead of code, and had zero tests; see
-Landed PRs). `to_strategy` now correctly generates real code via the
-router when one is given. Still nothing calls it in production though
--- that's S15b, queued next, before S16 (lineage).
+## Status: ready -- S15b landed. `run_gauntlet` now has a real,
+reachable production path from a book/URL/user claim to a gauntlet-
+validated, dispatched strategy -- `to_strategy` (router-backed, S15) is
+actually called from the running app for the first time. Issue #860
+closed (both S15 and S15b done). S15b's own PR #868 had the exact same
+missing-await bug class as S15's PR #867 -- two separate instances of
+the same failure mode in one session; see Landed PRs. S16 (strategy
+lineage) is next.
 
 ## Next slice -- start here
 
-- **Active:** S15b -- #860 -- give `to_strategy` a real, reachable
-  production caller (extend `SchedulerPlugin.run_gauntlet` to accept a
-  claim/URL/book-claim as an alternative to raw code). Issue #860
-  updated in place, scoped to just this now that the router-wiring bug
-  is fixed. See issue #860 for the constructor/seam question that needs
-  resolving first.
+- **Active:** S16 -- #861 -- strategy lineage: versions, structured
+  provenance, component tracking. See issue #861.
 - **Model:** sonnet
 
 ## Queue
@@ -82,9 +80,11 @@ router when one is given. Still nothing calls it in production though
   every generated strategy is the hardcoded stub, regardless of source).
   Landed via auto-merged PR #867, hand-fixed on top (async router bug +
   zero tests -- see Landed PRs).
-- [ ] S15b -- #860 -- Give to_strategy a real, reachable production
+- [x] S15b -- #860 -- Give to_strategy a real, reachable production
   caller -- nothing calls it in the running app yet. Issue #860 updated
-  in place, reused across S15/S15b.
+  in place, reused across S15/S15b, now closed. Landed by hand, not via
+  self_dev's own PR #868 (same missing-await bug class as S15's #867 --
+  see Landed PRs).
 - [ ] S16 -- #861 -- Strategy lineage: versions, structured provenance,
   component tracking.
 - [ ] S17 -- #862 -- Edit a strategy's code (new version, full
@@ -1154,6 +1154,62 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   reachable production path from "a URL/book claim" to "gauntlet-
   validated strategy code" -- issue #860 updated in place, continuing
   as S15b.
+
+- PR #868 -- S15b -- opened by self_dev_campaign, closed unmerged (full
+  bug account in the PR's own comment) -- landed by hand instead on top
+  of the real diff (verified via the sandbox's own clone, `campaign-
+  trading-s15b`, `git diff 4898c45..selfdev/48f000d9`, 2 files / 48
+  lines). The shape was right -- `SchedulerPlugin` now takes a `router`,
+  `run_gauntlet`'s schema accepts `claim`/`url`/`book`+`chapter` as
+  alternatives to `code`, the idea-sourcing dispatch (`from_prose`/
+  `from_book_claim`/`extract_from_url`) was correct. Two real bugs, and
+  notably **both are the same failure mode S15's own PR #867 had, one
+  session, twice**:
+
+  1. Both fallback branches (`code = to_strategy(idea)` on router
+     failure, and on no router at all) called the async `to_strategy`
+     (S15) without `await` -- a coroutine object, not code, on either
+     path. Only the router-success branch correctly awaited it.
+  2. `_run_gauntlet` correctly became `async def` (it has to, to await
+     `to_strategy`), and `call_tool`'s dispatch was correctly updated to
+     `await` it -- but the 4 existing tests from S11c that call `plugin.
+     _run_gauntlet(...)` directly were never updated, which is what
+     actually produced the reported `tests_failed`.
+
+  Fixed by simplifying rather than patching around: `to_strategy`
+  already handles `router=None` and a router failure internally (falls
+  back to the stub, logs a warning -- that's the whole point of S15's
+  own fix), so the duplicate try/except-with-manual-fallback in
+  `_run_gauntlet` was redundant as well as buggy. Replaced with one
+  line: `code = await to_strategy(idea, router=self._router)`. Verified
+  (not assumed) that `cerebral/main.py`'s `_router = ModelRouter()`
+  (line 124) is constructed well before `_scheduler_plugin =
+  _SchedulerPlugin()` (line 249) -- a plain constructor parameter is
+  safe, no deferred-seam pattern needed. Updated the 4 existing tests
+  to `async def`/`await`; one assertion was also stale (`"code" in r.
+  content` on the required-fields check -- `code` isn't required at all
+  anymore, only `symbol`+`hypothesis` are) and got split into two tests
+  for the two real requirement paths. Added 2 new tests: a fake async
+  router proves a `claim` (not code) produces real router-generated
+  code that reaches an actual `run_gauntlet` call and gets registered
+  (not just that `to_strategy` works in isolation); a no-router case
+  proves it degrades to the stub without crashing. Full suite: 5102
+  passed, 7 skipped, 0 failed.
+
+  **Issue #860 closed -- both S15 and S15b are genuinely done.** A user
+  (or Felix) can now call `run_gauntlet` with a book claim, a URL, or
+  plain prose, and -- for the first time in this campaign -- get back
+  real, source-derived strategy code that flows through the full
+  gauntlet -> registration -> scheduling -> dispatch chain, not a
+  generic stub. Worth naming plainly: two slices in a row hit the exact
+  same missing-`await` bug independently, on two different functions
+  that both needed to become async for the same underlying reason
+  (calling the router). Neither was caught by self_dev's own merge gate
+  -- S15's variant auto-merged with zero tests; S15b's variant shipped
+  alongside otherwise-correct code and only the pre-existing tests
+  (unrelated to the new code) caught the second layer of it. Worth
+  double-checking `await` explicitly on every `async def` call this
+  campaign adds from here on, not just trusting the gate.
 
 ## Thesis
 
