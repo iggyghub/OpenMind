@@ -1,3 +1,4 @@
+import json
 import pytest
 from typing import List, Tuple, Sequence, Any
 from cerebral.trading.cost_model import Trade
@@ -324,6 +325,16 @@ class TestAutoPromote:
         assert spec is not None
         assert (spec.symbol, spec.code, spec.qty) == ("AAPL", code, 3.0)
         assert calls[0]["title"] == "MA cross test"  # still scheduled
+
+        # S16/#861: a VALIDATED pass must also record real lineage, not
+        # just the dispatch pointer -- provenance and hypothesis intact,
+        # not silently dropped or flattened.
+        version = store.get_current_version("MA cross test")
+        assert version is not None
+        assert version["origin"] == "generated"
+        assert version["hypothesis"] == "MA cross test"
+        assert json.loads(version["provenance_json"]) == {"source": "internal"}
+        assert "internal" in store.render_provenance(version)
 
     def test_unvalidated_registers_no_spec(self, tmp_path):
         from cerebral.trading.strategy_store import StrategyStore

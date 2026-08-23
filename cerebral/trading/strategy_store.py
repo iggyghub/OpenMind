@@ -96,12 +96,16 @@ class StrategyStore:
         self._con.commit()
 
     def render_provenance(self, row) -> str:
-        """Produce display string for provenance from a strategy_versions row."""
+        """Produce a composed display string from a strategy_versions row --
+        never collapses to one unclear source (the campaign's Honesty rule).
+        `row` is a sqlite3.Row (from get_current_version/get_version below),
+        which supports dict-style `row[...]` access but NOT `.get()` -- it
+        isn't a real Mapping, unlike a plain dict."""
         v = row["version"]
         origin = row["origin"]
         prov = json.loads(row["provenance_json"]) if row["provenance_json"] else {}
-        comp = row.get("components_json") or ""
-        
+        comp = row["components_json"] or ""
+
         if origin == "generated":
             src = prov.get("source", prov.get("url", prov.get("book", "generated")))
             return f"{src} (v{v})"
@@ -109,8 +113,19 @@ class StrategyStore:
             src = prov.get("source", prov.get("book", "user edit"))
             return f"{src}, as modified by user (v{v})"
         elif origin == "mixed":
-            return f"mix (majority) of: {comp} (v{v})"
+            return f"mix of: {comp} (v{v})"
         return f"strategy (v{v})"
+
+    def get_current_version(self, strategy_id: str) -> Optional[sqlite3.Row]:
+        """The most recent strategy_versions row for strategy_id, or None
+        if it's never been saved. The prerequisite S17 (edit)/S18 (mix)
+        need to read a strategy's real lineage; nothing built that reader
+        without this."""
+        return self._con.execute(
+            "SELECT * FROM strategy_versions WHERE strategy_id = ? "
+            "ORDER BY version DESC LIMIT 1",
+            (strategy_id,),
+        ).fetchone()
 
     def get(self, strategy_id: str) -> Optional[StrategySpec]:
         row = self._con.execute(
