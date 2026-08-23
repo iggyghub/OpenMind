@@ -231,8 +231,8 @@ class SchedulerPlugin:
                     symbol=order.symbol,
                     side=order.side,
                     qty=order.qty,
-                    price=0.0,
-                    fees=0.0,
+                    price=order.price,
+                    fees=order.fees,
                     pnl=0.0,
                     phase="paper",
                     strategy_id=strategy_name
