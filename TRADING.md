@@ -8,6 +8,9 @@ top -- render_provenance called a method sqlite3.Row doesn't have,
 unreachable/untested, guaranteed to crash on first real use; see Landed
 PRs). Strategy lineage (versions, structured provenance) is real now,
 with a working reader (`get_current_version`) S17/S18 can build on.
+S17 (#862) blocked after 5 consecutive "Edit step produced no commit"
+failures 2026-08-23 -- ledger-verified not a replay bug (see Landed
+PRs). Needs human attention before retrying.
 
 ## Next slice -- start here
 
@@ -1249,6 +1252,37 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   spec_the_dispatcher_needs`) to assert a VALIDATED pass records real
   lineage, not just the dispatch pointer. Full suite: 5109 passed, 7
   skipped, 0 failed.
+
+- S17 (#862) -- **stopped after 5 consecutive failures, no PR, nothing
+  landed.** Every `python scripts/trigger_campaign.py TRADING.md 1`
+  attempt failed identically: `"Edit step produced no commit --
+  aborting."` -- the model's edit step made no committable change
+  against issue #862's description, five times in a row.
+
+  Investigated whether this was the S7-class ledger-replay bug (a
+  recorded phase result gets resumed instead of re-run when the same
+  run_id is retriggered) before attempt 5, since two byte-identical
+  failures back to back matched that precedent's shape. It is not:
+  read `plugins/self_dev.py`'s `_run` directly -- the "no commit" branch
+  (`if not edit_result.get("committed"): return ToolResult(...,
+  is_error=True)`) returns *before* the `self._ledger.record(run_id,
+  "edit", ...)` call, so a no-commit failure is never persisted.
+  Confirmed empirically too: queried `chain_steps` in
+  `cerebral/data/openmind.db` for `run_id='campaign-trading-s17'` --
+  only the `clone` phase is recorded, `edit` never is. The sandbox
+  clone (`cerebral/data/sandbox/self_dev/campaign-trading-s17`) is
+  clean and matches current master (`8c5c795`, S16's tip) -- not stale.
+  So all 5 attempts genuinely re-invoked the edit model fresh against
+  the same clean, current clone; this is real, repeated stochastic
+  failure on this specific slice, not an artifact of the harness.
+
+  Per the standing decision tree for this failure mode: a 5th identical
+  failure is past "retry immediately, no wait needed" territory and
+  needs human attention rather than a 6th automated attempt -- reported
+  to the user instead of continuing. `campaign-trading-s17`'s ledger
+  (just the one `clone` row) is left as-is; a future retry can reuse it
+  or pass `restart: true` to force a fresh clone if issue #862's
+  description itself turns out to need rewording.
 
 ## Thesis
 
