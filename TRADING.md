@@ -3,20 +3,17 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- bonsai recovered on attempt 4; PR #849 (S7) opened but
-tests_failed on a real (pre-existing, unrelated) bug: tests/test_step_ledger.py
-had the same stale-mock issue commit 2a0f455 already fixed in
-cerebral/tests/test_spill_store.py, just in the repo-root tests/ dir that
-self_dev's test_fn also runs and I hadn't re-checked. Fixed on master
-(commit 88fd9da). Retriggering -- PR #849's own diff was untouched by
-this, so a fresh run should pass tests now. S6 landed lifecycle mechanics
-only; autonomous execution not wired end-to-end yet (see S6's Landed PRs
-entry). Do not risk live capital until S7's actual content is verified to
-close those gaps, not just until its tests pass.
+## Status: ready -- S7 landed real, hand-verified progress (per-strategy
+scoping fully done; paper-trade execution now correct but not recurring;
+a real UI component exists but isn't wired into the app). Autonomous
+execution still isn't happening end-to-end -- see S7's Landed PRs entry.
+Do not risk live capital until S8 closes the remaining gaps.
 
 ## Next slice -- start here
 
-- **Active:** S7 -- #848
+- **Active:** S8 -- #848 (issue kept open, updated in place -- same
+  tracking issue, not a new one; see the issue for the current remaining
+  scope after S7)
 - **Model:** sonnet
 
 ## Queue
@@ -31,14 +28,21 @@ close those gaps, not just until its tests pass.
 - [x] S5c -- #838 -- Paper forward record + auto-promotion
 - [x] S6 -- #839 -- Autonomous live execution + retirement + alerting
   (lifecycle mechanics landed; wiring gaps remain -- see Landed PRs note)
-- [ ] S7 -- #848 -- Wire autonomous paper-trade execution end-to-end
-  (real broker-calling consumer, per-strategy forward-record scoping,
-  Trading Panel UI -- see issue #848 for the full spec)
+- [x] S7 -- #848 -- Wire autonomous paper-trade execution end-to-end
+  (per-strategy forward-record scoping fully landed; paper-trade path now
+  correct but one-shot, not recurring; UI component built but unwired --
+  see Landed PRs note. Issue #848 updated in place with remaining scope,
+  not closed)
+- [ ] S8 -- #848 -- Close S7's remaining gaps: a real recurring dispatcher
+  for scheduled paper trades, a fill-price field on Order (broker.py),
+  and wiring the Trading Panel UI into main.html -- see issue #848 for
+  the current spec (updated 2026-08-22 after S7)
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
-below is the detailed human-readable reference for the same 9 slices; S7 is a
-post-hoc follow-up not in that original list.
+below is the detailed human-readable reference for the same 9 slices; S7/S8 are
+post-hoc follow-ups not in that original list. S8 reuses issue #848 rather than
+a new issue number -- its body was updated in place to the post-S7 scope.
 
 ## Landed PRs
 
@@ -270,6 +274,107 @@ post-hoc follow-up not in that original list.
   and (c) build the Trading Panel UI this campaign has deferred
   incrementally since decision #17 in the grill record. Not filed as a
   GitHub issue by this pass -- that needs the user's go-ahead first.
+- PR #849 -- S7 -- opened by self_dev_campaign, closed unmerged in favor
+  of a hand-verified merge (commit 7c104cb on top of e7d4917). Two
+  separate obstacles, neither in the PR's own 135-line diff
+  (cerebral/trading/forward_record.py, lifecycle.py, plugins/scheduler.py,
+  tray/lib/trading-panel.js):
+
+  First, self_dev's sandboxed test run reported tests_failed against a
+  bug unrelated to this PR: tests/test_step_ledger.py (repo-root, not
+  cerebral/tests/) had the same stale-mock issue commit 2a0f455 already
+  fixed in cerebral/tests/test_spill_store.py -- a local _ScriptedPlanner
+  test double missing the all_tools kwarg ChainEngine.run() gained from
+  the tool-awareness campaign. Missed because my own earlier "cerebral/
+  tests/ is green" checks never covered the repo-root tests/ dir that
+  self_dev_io.py's test_fn also runs as part of the merge gate. Fixed on
+  master directly (commit 88fd9da) since it was pre-existing and
+  unrelated to S7.
+
+  Second (the important one): self_dev_campaign's run_id is deterministic
+  per slice label (`campaign-trading-s7`), and its step-ledger resume
+  logic replays already-recorded phases instead of re-running them --
+  once the "test" phase recorded a tests_failed result, every retrigger
+  replayed that exact same stale result byte-for-byte (confirmed: two
+  consecutive retriggers after the unrelated fix landed produced
+  identical truncated pytest output), regardless of what changed on
+  master. self_dev_campaign doesn't expose a `restart` flag to clear
+  this (only the single-slice `self_dev` tool does), and forcing one
+  would have re-run the stochastic edit step, producing a different diff
+  than the one that needed reviewing anyway. Fetched PR #849's branch
+  into an isolated git worktree instead, merged master in by hand
+  (matching the PR #842/S3 precedent of resolving a stuck slice outside
+  the automated loop), and hand-verified the actual diff against issue
+  #848's three gaps -- the S6 postmortem's lesson that passing tests
+  never means the substance is right.
+
+  That hand-review found the substance mixed: gap 2 (per-strategy
+  scoping) is done correctly and completely -- a real `strategy_id`
+  column, threaded through every ForwardRecord read/write method, and
+  `StrategyLifecycle.check_graduation` actually passes `strategy_id=name`
+  through, not just accepted-and-ignored. Gap 3 (UI) got a real,
+  reasonable `renderLiveStrategyCard` component in tray/lib/trading-
+  panel.js -- but zero callers anywhere, not referenced in main.html, no
+  data path from the backend; a user would never see it (note: the
+  pre-existing `renderStrategyCard` in the same file has the same
+  problem, not new to this slice).
+
+  Gap 1 (paper-trade consumer) was the worst of the three: `plugins/
+  scheduler.py` now has a real `_run_paper_strategy(strategy_name,
+  broker, forward_record, config=None)` method, but it was unreachable
+  by construction -- 4 real bugs, all on the only path that could ever
+  call it, none caught by the PR's own tests because nothing in the PR
+  exercised that path:
+  1. gauntlet.py's only call site still passed one positional dict
+     (`{"strategy_name":..., "interval": "5m"}`, unchanged from S5c/S6)
+     against a method now requiring 4 params -- guaranteed TypeError,
+     uncaught (outside the method's own try/except).
+  2. Inside the method, `broker.place_order(..., price=0.0,
+     order_type="market")` used kwargs that don't exist on the real
+     `BrokerClient.place_order(symbol, qty, side, type,
+     limit_price=None)` -- would also have raised TypeError.
+  3. `config=None` (the default, and how gauntlet.py actually calls it --
+     no config dict at all) but `config.get(...)` was called before the
+     try block -- crashes on exactly the real call shape.
+  4. `order.price` / `order.fees` -- `Order` (cerebral/trading/broker.py)
+     has never had either field, in AlpacaBrokerClient or
+     StubBrokerClient, going back to S5a (#844). Not a typo to silently
+     patch: neither broker implementation has ever computed a real fill
+     price, so there's nothing genuine to read.
+
+  Fixed 1-3 directly (gauntlet.py now calls the method correctly with
+  its own already-accepted-but-unused `paper_broker` param and a real
+  `ForwardRecord()`; the ponytail comment on `paper_broker` claiming it
+  was unused is now stale and was corrected). Fixed 4 by recording an
+  explicit `price=0.0`/`fees=0.0` placeholder with a `# ponytail:`
+  comment rather than fabricating a number -- adding a real price field
+  to Order and populating it (Alpaca's `filled_avg_price` for the live
+  client; StubBrokerClient has no pricing concept at all today) is a
+  separate, legitimate piece of work, now issue #848's gap 2.
+
+  Even fixed, gap 1 is still only partially closed: `_run_paper_strategy`
+  now runs correctly, but exactly once, at the moment a gauntlet run
+  passes -- nothing re-invokes it on the `"interval": "5m"` it's given.
+  A promoted strategy gets one paper trade and can never accumulate the
+  30 trades check_graduation needs from this alone. Documented as a
+  ponytail comment at the gauntlet.py call site; a real recurring
+  dispatcher is issue #848's gap 1, now the top priority.
+
+  New cerebral/tests/test_plugin_scheduler.py covers the fixed method
+  directly (3 tests: execute-and-record, no-config-doesn't-crash,
+  no-broker-skips) -- all 3 would have caught bugs 1-3 above had they
+  existed before this PR shipped untested. Updated test_trading_gauntlet.py's
+  FakeScheduler fixtures to the real signature, added a paper_broker=None
+  no-op case. Full suite green: 5038 passed, 7 skipped, 0 failed
+  (cerebral/tests/ + repo-root tests/ -- the actual scope self_dev_io.py's
+  test_fn runs as the merge gate).
+
+  Issue #848 updated in place (not closed, not replaced) with the
+  post-S7 remaining scope: a real recurring dispatcher, Order's missing
+  price field, and wiring the UI into main.html. Do not risk live
+  capital until at least the dispatcher exists -- without it,
+  "autonomous execution" doesn't exist regardless of how correct the
+  one-shot path now is.
 
 ## Thesis
 
