@@ -235,6 +235,43 @@ def test_set_status_prepends_when_absent():
     assert result.startswith("Status: blocked")
 
 
+def test_set_status_collapses_multiline_reason():
+    """A multi-line reason (pytest output, an HTTP error body) must not
+    leave Status spanning multiple lines -- see test below for what
+    happens on the NEXT write if it does."""
+    result = _set_driver_status(_DRIVER_BOOKS, "blocked", "line one\nline two\nline three")
+    status_line = result.splitlines()[0] if not result.startswith("#") else \
+        next(l for l in result.splitlines() if "Status:" in l)
+    assert "line one" in status_line and "line two" in status_line
+    assert "\n" not in status_line
+
+
+def test_set_status_replaces_old_multiline_block_entirely():
+    """Regression: TRADING.md got corrupted twice in the real campaign this
+    protects against -- a single-line status overwrote only the FIRST line
+    of a previous multi-line one, leaving its continuation lines behind as
+    orphaned, disconnected sentence fragments. A driver file with a
+    pre-existing multi-line Status block (e.g. from a manual edit, or from
+    before this fix existed) must have the WHOLE block replaced, not just
+    its first line."""
+    text = (
+        "# Driver\n\n"
+        "## Status: blocked -- S6 landed lifecycle mechanics only\n"
+        "wired end-to-end yet, see notes below\n"
+        "do not risk live capital until follow-up lands\n\n"
+        "## Next slice -- start here\n\n"
+        "- **Active:** S7 -- #1\n"
+    )
+    result = _set_driver_status(text, "ready")
+    assert "## Status: ready\n" in result
+    # None of the old continuation fragments survive as orphaned lines.
+    assert "wired end-to-end" not in result
+    assert "do not risk live capital" not in result
+    # The rest of the file is untouched.
+    assert "## Next slice -- start here" in result
+    assert "S7 -- #1" in result
+
+
 # ---------------------------------------------------------------------------
 # _advance_driver
 # ---------------------------------------------------------------------------

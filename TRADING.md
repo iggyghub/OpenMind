@@ -3,9 +3,16 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: S6 landed (lifecycle mechanics only) -- autonomous execution is not
-wired end-to-end yet. See the S6 entry in Landed PRs for the specific gaps.
-Do not risk live capital on this until S7 closes them.
+## Status: ready -- bonsai recovered on attempt 4; PR #849 (S7) opened but
+tests_failed on a real (pre-existing, unrelated) bug: tests/test_step_ledger.py
+had the same stale-mock issue commit 2a0f455 already fixed in
+cerebral/tests/test_spill_store.py, just in the repo-root tests/ dir that
+self_dev's test_fn also runs and I hadn't re-checked. Fixed on master
+(commit 88fd9da). Retriggering -- PR #849's own diff was untouched by
+this, so a fresh run should pass tests now. S6 landed lifecycle mechanics
+only; autonomous execution not wired end-to-end yet (see S6's Landed PRs
+entry). Do not risk live capital until S7's actual content is verified to
+close those gaps, not just until its tests pass.
 
 ## Next slice -- start here
 
