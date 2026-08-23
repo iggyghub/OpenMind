@@ -30,7 +30,7 @@ class StubLLM:
         return "def strategy(data):\n    return [1, 2, 3]"
 
 
-class TestTradingIdeas(unittest.TestCase):
+class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
     def test_extract_from_url_with_stubs(self):
         stub_fetcher = StubFetcher()
         stub_crawler = StubCrawler()
@@ -57,10 +57,10 @@ class TestTradingIdeas(unittest.TestCase):
         self.assertEqual(idea.book_info, {"book": "Alpha Quant", "chapter": "3"})
         self.assertIn("Book 'Alpha Quant' Chapter '3' claims:", idea.author_claim_text)
 
-    def test_to_strategy_with_stub_llm(self):
+    async def test_to_strategy_with_stub_llm(self):
         idea = from_prose("Buy when RSI < 30")
         llm_stub = StubLLM()
-        code = to_strategy(idea, llm=llm_stub)
+        code = await to_strategy(idea, llm=llm_stub)
         self.assertEqual(code, "def strategy(data):\n    return [1, 2, 3]")
 
         # Verify it compiles and runs per backtest engine interface. The
@@ -69,7 +69,7 @@ class TestTradingIdeas(unittest.TestCase):
         strategy_fn = compile_strategy(code)
         self.assertEqual(strategy_fn({"close": [1, 2]}), [1, 2, 3])
 
-    def test_to_strategy_honesty_rule_in_prompt(self):
+    async def test_to_strategy_honesty_rule_in_prompt(self):
         idea = from_prose("Market always rises.")
 
         class NaiveLLM:
@@ -77,16 +77,60 @@ class TestTradingIdeas(unittest.TestCase):
                 # Simulates LLM ignoring rule unless forced by prompt
                 return "def strategy(data): return [1]"
 
-        code = to_strategy(idea, llm=NaiveLLM())
+        code = await to_strategy(idea, llm=NaiveLLM())
         self.assertIn("def strategy(data):", code)
         # In production, the prompt enforces the honesty rule strictly.
+
+    async def test_to_strategy_uses_the_router_when_given(self):
+        """S15/#860: to_strategy must actually await the router -- the
+        first attempt at this called router.complete() without awaiting
+        it (a coroutine object, not a string, would have been returned)."""
+        idea = from_prose("Buy when RSI < 30")
+
+        class FakeRouter:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(self, prompt: str, task_type: str) -> str:
+                self.calls.append((prompt, task_type))
+                return "def strategy(data):\n    return [1] * len(data)"
+
+        router = FakeRouter()
+        code = await to_strategy(idea, router=router)
+
+        self.assertEqual(code, "def strategy(data):\n    return [1] * len(data)")
+        self.assertEqual(len(router.calls), 1)
+        prompt, task_type = router.calls[0]
+        self.assertEqual(task_type, "coding")
+        self.assertIn("Buy when RSI < 30", prompt)
+
+    async def test_to_strategy_router_failure_falls_back_to_the_stub(self):
+        """Conservative-continue: a router failure must not raise -- it
+        must degrade to the stub, same as every other failure mode in
+        this campaign."""
+        idea = from_prose("Buy when RSI < 30")
+
+        class FailingRouter:
+            async def complete(self, prompt: str, task_type: str) -> str:
+                raise RuntimeError("model unavailable")
+
+        code = await to_strategy(idea, router=FailingRouter())
+
+        self.assertIn("def strategy(data):", code)
+        self.assertNotIn("model unavailable", code)  # the stub, not an error string
+
+    async def test_to_strategy_with_neither_llm_nor_router_uses_the_stub(self):
+        """The pre-existing default-path behaviour must not regress."""
+        idea = from_prose("Buy when RSI < 30")
+        code = await to_strategy(idea)
+        self.assertIn("def strategy(data):", code)
 
     def test_compile_strategy_validation(self):
         bad_code = "def bad(): pass"
         with self.assertRaises(ValueError):
             compile_strategy(bad_code)
 
-    def test_generated_stub_honours_the_live_contract(self):
+    async def test_generated_stub_honours_the_live_contract(self):
         """The stub used to read data.get("close", []) -- lowercase -- which
         against a real fetch_ohlcv DataFrame silently returns the [] default,
         so it emitted no signals at all. It must read "Close" and return one
@@ -95,7 +139,7 @@ class TestTradingIdeas(unittest.TestCase):
         import pandas as pd
 
         idea = from_prose("Price above its running mean keeps trending.")
-        strategy_fn = compile_strategy(to_strategy(idea))  # no llm -> the stub
+        strategy_fn = compile_strategy(await to_strategy(idea))  # no llm -> the stub
         bars = pd.DataFrame(
             {"Open": [1.0, 2.0, 3.0], "High": [1.0, 2.0, 3.0],
              "Low": [1.0, 2.0, 3.0], "Close": [10.0, 12.0, 8.0],

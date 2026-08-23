@@ -3,17 +3,21 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S14 landed. compile_strategy's in-process exec is
-retired; both production call sites route through S13's real sandbox.
-No production code executes untrusted strategy source in Felix's own
-process anymore. S15 (wire to_strategy to a real free model) is next --
-currently every generated strategy, regardless of source, still falls
-through to the hardcoded stub.
+## Status: ready -- S15 landed (auto-merged by self_dev_campaign as PR
+#867, then hand-fixed on top -- the router call was never awaited,
+returning a coroutine object instead of code, and had zero tests; see
+Landed PRs). `to_strategy` now correctly generates real code via the
+router when one is given. Still nothing calls it in production though
+-- that's S15b, queued next, before S16 (lineage).
 
 ## Next slice -- start here
 
-- **Active:** S15 -- #860 -- wire to_strategy to a real free model
-  (task_type="coding" via the existing router). See issue #860.
+- **Active:** S15b -- #860 -- give `to_strategy` a real, reachable
+  production caller (extend `SchedulerPlugin.run_gauntlet` to accept a
+  claim/URL/book-claim as an alternative to raw code). Issue #860
+  updated in place, scoped to just this now that the router-wiring bug
+  is fixed. See issue #860 for the constructor/seam question that needs
+  resolving first.
 - **Model:** sonnet
 
 ## Queue
@@ -74,8 +78,13 @@ through to the hardcoded stub.
   both call sites through S13's sandbox. Landed by hand, not via
   self_dev's own PR #866 (a stale import + an outdated test -- see
   Landed PRs).
-- [ ] S15 -- #860 -- Wire to_strategy to a real free model (currently
+- [x] S15 -- #860 -- Wire to_strategy to a real free model (currently
   every generated strategy is the hardcoded stub, regardless of source).
+  Landed via auto-merged PR #867, hand-fixed on top (async router bug +
+  zero tests -- see Landed PRs).
+- [ ] S15b -- #860 -- Give to_strategy a real, reachable production
+  caller -- nothing calls it in the running app yet. Issue #860 updated
+  in place, reused across S15/S15b.
 - [ ] S16 -- #861 -- Strategy lineage: versions, structured provenance,
   component tracking.
 - [ ] S17 -- #862 -- Edit a strategy's code (new version, full
@@ -1087,6 +1096,64 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   **No production code executes untrusted strategy source in Felix's
   own process anymore.** Confirmed by grep: zero production callers of
   the old public `compile_strategy` name remain anywhere in the repo.
+
+- PR #867 -- S15 -- **the first slice this session where self_dev's own
+  merge gate reported `auto_merge`** rather than `tests_failed` -- and
+  the first proof that "the gate passed" still isn't the same as
+  "correct," the exact lesson every `tests_failed` slice this session
+  had already taught the hard way. The reported gate result is not
+  evidence on its own; the true diff (verified via the sandbox's own
+  clone, `campaign-trading-s15`, `git diff ff53387..selfdev/2bde9a6f`,
+  1 file / 11 lines) had to be hand-checked exactly like every other
+  slice, and it failed that check. Because it auto-merged, `self_dev_
+  campaign`'s own `pull_fn` had already fast-forwarded local master to
+  the merged commit (`eb2f0f7`) by the time this was reviewed -- unlike
+  every prior slice, there was no open PR left to close; the fix landed
+  as a normal commit on top instead.
+
+  Two real bugs, both invisible because the PR added **zero tests**:
+
+  1. **`router.complete(prompt, task_type="coding")` was never awaited.**
+     `to_strategy` was a plain `def`, not `async def`, and `_router.
+     complete` is `async def complete(self, prompt, task_type) -> str`
+     everywhere else in this codebase (confirmed directly in `cerebral/
+     llm/router.py`). Calling an async method without `await` doesn't
+     raise -- it silently returns a coroutine object. That object would
+     have been returned as if it were generated Python source, then
+     immediately broken downstream (`code.encode('utf-8')` inside
+     `sandboxed_eval.evaluate_signals` on a coroutine object raises
+     `AttributeError`) -- except the bug was wrapped in a bare `except
+     Exception: pass` with no logging, so even that downstream crash
+     would have vanished silently and produced the stub as if nothing
+     had gone wrong. Every real invocation of the router path would
+     have failed completely undetected.
+  2. **No test exercised the router path at all.** The PR's diff was
+     purely a signature change to `to_strategy` plus the two broken
+     lines above -- nothing called it with a `router=` argument, fake
+     or real, so the missing `await` had no chance to surface.
+
+  Fixed by making `to_strategy` `async def` (it has exactly two callers
+  in the whole repo, both in its own test file -- confirmed by grep, so
+  converting it was safe), correctly `await`-ing the router, and
+  replacing the bare `except: pass` with a logged warning before
+  falling back to the stub (conservative-continue, matching this
+  campaign's failure-behaviour convention). `test_trading_ideas.py`'s
+  `TestTradingIdeas` moved from `unittest.TestCase` to `unittest.
+  IsolatedAsyncioTestCase` (a drop-in replacement -- existing sync test
+  methods are unaffected) so its 3 existing `to_strategy` callers could
+  become real `async def test_...` methods. Added 3 new tests: a fake
+  async router proves the real router path is used and its output
+  returned (not the stub); a router that raises proves the fallback to
+  the stub still works and never propagates the failure; the no-model
+  default path is unchanged. Full suite: 5099 passed, 7 skipped, 0
+  failed.
+
+  **Still missing, confirmed by grep (not assumed): nothing in the
+  running app calls `to_strategy` at all.** `to_strategy` now correctly
+  generates real code when given a router, but there is still no
+  reachable production path from "a URL/book claim" to "gauntlet-
+  validated strategy code" -- issue #860 updated in place, continuing
+  as S15b.
 
 ## Thesis
 

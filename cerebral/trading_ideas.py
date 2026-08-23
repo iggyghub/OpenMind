@@ -1,8 +1,11 @@
 from __future__ import annotations
 import datetime
+import logging
 import textwrap
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -91,10 +94,16 @@ def from_book_claim(claim: str, book: str, chapter: str) -> Idea:
     )
 
 
-def to_strategy(idea: Idea, llm: Optional[Any] = None, router=None) -> str:
+async def to_strategy(idea: Idea, llm: Optional[Any] = None, router=None) -> str:
     """
     Generates a runnable `def strategy(data) -> signals:` Python function.
-    Uses Qwen/Budd (free models only) when llm or router is provided.
+    Uses Qwen/Budd (free models only) via the model router (task_type=
+    "coding", decision #26 -- no new paid dependency) when `router` is
+    given, or a synchronous `llm.generate()` adapter for tests/legacy
+    callers. Falls back to a hardcoded stub when neither is given, or if
+    the router call fails -- conservative-continue, matching this
+    campaign's failure-behaviour convention; a strategy generation
+    failure must not crash whatever's calling this.
     Enforces honesty rule: claims are never collapsed to facts.
     """
     claim = idea.author_claim_text or f"Author claims: {idea.claim_text}"
@@ -122,13 +131,15 @@ def to_strategy(idea: Idea, llm: Optional[Any] = None, router=None) -> str:
 
     if llm:
         return llm.generate(prompt)
-    
+
     if router:
         try:
-            result = router.complete(prompt, task_type="coding")
-            return result
-        except Exception:
-            pass
+            return await router.complete(prompt, task_type="coding")
+        except Exception as exc:
+            logger.warning(
+                "[trading_ideas] router.complete failed for to_strategy (%s); "
+                "falling back to the stub strategy", exc,
+            )
 
     return _generate_stub_strategy(claim)
 
