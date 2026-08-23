@@ -3,25 +3,26 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: paper trading works end-to-end, hand-verified (not just tests
-passing) -- see S9's Landed PRs entry for the full call chain traced by
-hand: gauntlet pass -> scheduler event created -> dispatcher's 5-minute
-tick finds it due -> a real (simulated) order fills -> forward_fills gets
-a real price and correct strategy_id -> the event correctly waits its
-full recurrence interval before firing again. Live/real-money trading is
-intentionally unwired -- no live Alpaca credentials configured, and that
-is an accepted, explicit scope boundary right now, not a gap. Issue #848
-closed; all three of its gaps (dispatcher, fill price, UI wiring) are
-closed. If live trading becomes a real goal later, that's new scope, not
-a resumption of #848.
+## Status: paper trading works end-to-end with real strategy signals, real
+position tracking, and real realized P&L (S9 + S10, both hand-verified,
+not just tests passing). Live/real-money trading is the active goal now
+(2026-08-23: user asked to finish it) -- credentials not yet configured,
+arm/disarm safety toggle not yet built, no production caller of
+run_gauntlet yet (S10's honest gap #1). None of this is wired to a real
+broker anywhere in the codebase today -- confirmed by grep, not assumed.
 
 ## Next slice -- start here
 
-- **Active:** none -- #848's scope is done, and S10 closed the
-  strategy->dispatch bridge on top of it (real signals, real position
-  state, real realized P&L). Live trading is still new scope needing its
-  own grill session: it requires the manual arm/disarm toggle that
-  deliberately does not exist yet.
+- **Active:** S11 -- no issue yet -- live trading, in order: (1) Alpaca
+  credentials wired into Felix's existing per-profile Credentials UI
+  (currently a disconnected, profile-agnostic raw-keyring scheme in
+  broker.py that the UI can't reach), (2) a manual arm/disarm toggle
+  (default OFF) gating any live order, independent of strategy graduation
+  status, (3) a real production entry point that calls run_gauntlet (S10
+  found none exists), (4) live/paper branching in the dispatch loop keyed
+  off StrategyLifecycle status + the arm toggle. Do not risk live capital
+  until all four exist and are hand-verified, matching this campaign's
+  standing discipline.
 - **Model:** sonnet
 
 ## Queue
