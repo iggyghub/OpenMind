@@ -3,16 +3,17 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S17 landed (self_dev's 6th attempt produced PR #870
-after a reworded issue #862; tests_failed on 3 pre-existing tests broken
-by the version-scoped dispatch key, zero new tests added -- hand-fixed
-on top, see Landed PRs). `edit_strategy`/`get_strategy_code` are real
-and reachable now; S18 can build on the same lineage/dispatch machinery.
+## Status: ready -- S18 landed (self_dev's 2nd attempt -- 1st hit a
+transient Bonsai 502 -- produced PR #871; tests_failed on a real
+majority-mode syntax bug caught by the PR's own test, plus a deeper
+components_json-never-threaded bug the PR's mocked tests couldn't see;
+both hand-fixed on top, see Landed PRs). `mix_strategies`/
+`compose_strategies` are real and reachable now.
 
 ## Next slice -- start here
 
-- **Active:** S18 -- #863 -- mix strategies into a composite
-  (unanimous/majority voting). See issue #863.
+- **Active:** S19 -- #864 -- Trading panel: strategy list, source view,
+  edit box, lineage display. See issue #864.
 - **Model:** sonnet
 
 ## Queue
@@ -86,7 +87,7 @@ and reachable now; S18 can build on the same lineage/dispatch machinery.
   component tracking.
 - [x] S17 -- #862 -- Edit a strategy's code (new version, full
   re-validation, restarts clean on a live strategy -- user-confirmed).
-- [ ] S18 -- #863 -- Mix strategies into a composite (unanimous/majority
+- [x] S18 -- #863 -- Mix strategies into a composite (unanimous/majority
   voting).
 - [ ] S19 -- #864 -- Trading panel: strategy list, source view, edit
   box, lineage display.
@@ -1379,6 +1380,85 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   works for "what code changes"; it does not yet reliably work for
   "and prove it" -- hand-verification (and hand-writing tests when
   missing) remains load-bearing regardless of how the issue is worded.
+
+- PR #871 -- S18 -- attempt 1 hit a transient Bonsai HTTP 502 (`all
+  enabled models unavailable`); reverted TRADING.md's Status line
+  (verified only that line had changed), waited 5 minutes per the
+  established outage policy, retried. Attempt 2 succeeded -- the first
+  self_dev attempt on issue #863 (unlike S17, which needed a rewording
+  first) -- and, notably, **did include real tests this time** (91 lines
+  in a new `cerebral/tests/test_trading_compose.py`), unlike S17's
+  attempt. `tests_failed` was still correct: verified via the sandbox's
+  own clone (`cerebral/data/sandbox/self_dev/campaign-trading-s18`,
+  `git diff dd0748b..a89345e`, 3 files / 216 lines, purely additive,
+  correctly based on current master) -- two real bugs, one the PR's own
+  tests caught and one they couldn't:
+
+  1. **A guaranteed `SyntaxError`, caught by the PR's own test.** The
+     new `cerebral/trading/compose.py`'s `majority`-mode combine-logic
+     string had mismatched brackets in two places --
+     `min(len(s) for s in signals_list]` and
+     `sum(s[i] for s in aligned]`, both opened with `(` and closed with
+     `]`. Any composite generated in majority mode would fail to
+     `exec()` at all. `test_majority_alignment_and_logic` (which does a
+     real `exec(code, ns)`, not a mock) caught it immediately -- this is
+     what produced `tests_failed`. The alignment/sign logic itself was
+     correct once the brackets were fixed; no assertion changes needed.
+
+  2. **A deeper bug neither of the PR's `mix_strategies` tests could
+     see, because both mock `StrategyStore` and `_run_gauntlet` entirely
+     via `MagicMock(spec=StrategyStore)` and a fake `_run_gauntlet`
+     capturing its call args.** `run_gauntlet` (`cerebral/trading/
+     gauntlet.py`) and `_run_gauntlet` (`plugins/scheduler.py`) never
+     had a `components_json` parameter -- S17 added `origin`/
+     `parent_version`/`strategy_id` passthroughs but not this one, and
+     nothing about S18's own diff added it either. So
+     `_run_mix_strategies` packed component identities into the plain
+     `provenance` string instead (`f"Mixed strategy ({mode}): {json...}"`)
+     -- but `StrategyStore.render_provenance`'s `'mixed'` branch (S16)
+     reads a SEPARATE column, `row["components_json"]`, which nothing
+     ever wrote. Every real mixed strategy's lineage row would have had
+     `components_json = NULL` forever, and `render_provenance` could
+     never actually name a single component -- directly failing issue
+     #863's own 4th acceptance criterion ("A mix's StrategyCard/lineage
+     names every component at its pinned version") for real, invisible
+     to both mocked tests since neither one exercises
+     `StrategyStore.save`/`render_provenance` for real.
+
+  Fixed by threading `components_json: Any = None` through
+  `run_gauntlet` and `_run_gauntlet` (mirroring S17's origin/
+  parent_version/strategy_id pattern exactly) into the existing
+  `store.save(...)` call, and changing `_run_mix_strategies` to pass a
+  real Python list of `{"id", "provenance"}` dicts as `components_json`
+  (not a pre-serialized string embedded in `provenance` -- `store.save()`
+  already does its own `json.dumps` internally, matching how every other
+  origin already uses the parameter). Also simplified a tautological
+  `store = strategy_store if strategy_store is None else strategy_store`
+  (both branches returned the same value; harmless but confusing) to a
+  plain if/else matching `_edit_strategy`'s established pattern, and
+  fixed the scheduler tool-count test for the third time this campaign
+  (5 -> 7 -> 8 tools across S11c/S17/S18) -- flagged as a background task
+  to make that test stop needing a manual edit on every new tool, since
+  it has now cost a hand-fix on 3 separate slices for reasons unrelated
+  to whatever the slice actually changed.
+
+  Added `test_mix_strategies_end_to_end_persists_real_components_json`:
+  the real, unmocked `_run_gauntlet` -> `run_gauntlet` -> `StrategyStore`
+  chain, registering two strategies and mixing them, then reading back
+  the real `strategy_versions` row and asserting `render_provenance`
+  actually names both components -- proving the fixed acceptance
+  criterion for real rather than via a captured mock argument. Uses the
+  SAME strategy code registered under two different `strategy_id`s
+  (deliberately, not two different MA-cross variants) so the test's
+  reliability doesn't depend on two different signals happening to agree
+  often enough to still clear the full gauntlet -- unanimous composition
+  of a signal with itself reproduces the exact original signal,
+  eliminating that risk entirely rather than leaving it to chance.
+
+  Full suite: 5122 passed, 7 skipped, 0 failed (`cerebral/tests/` +
+  repo-root `tests/`). PR #871 closed unmerged in favor of this
+  hand-verified local landing (commits 0c9f574, 7311d69, and this
+  TRADING.md update).
 
 ## Thesis
 
