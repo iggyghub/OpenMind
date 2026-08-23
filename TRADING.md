@@ -17,9 +17,11 @@ a resumption of #848.
 
 ## Next slice -- start here
 
-- **Active:** none -- #848's scope (paper trading working end-to-end) is
-  done. Live trading would be new scope needing its own grill session,
-  not a continuation of this queue.
+- **Active:** none -- #848's scope is done, and S10 closed the
+  strategy->dispatch bridge on top of it (real signals, real position
+  state, real realized P&L). Live trading is still new scope needing its
+  own grill session: it requires the manual arm/disarm toggle that
+  deliberately does not exist yet.
 - **Model:** sonnet
 
 ## Queue
@@ -49,6 +51,11 @@ a resumption of #848.
   for scheduled paper trades, and wiring the Trading Panel UI into
   main.html -- both landed, hand-verified end-to-end (not just tests
   passing). Issue #848 closed. See Landed PRs note.
+
+- [x] S10 -- no issue -- Strategy-to-dispatch bridge: pin down the
+  `def strategy(data) -> signals` live contract, evaluate real signals on a
+  tick, track position state from the broker's own book, and record real
+  realized P&L on a close (the hard blocker on graduation). See Landed PRs.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -562,6 +569,125 @@ a new issue number -- its body was updated in place to the post-S7 scope.
   something. Issue #848 closed. Live/real-money trading remains
   unwired (no live Alpaca credentials configured) -- an accepted,
   explicit scope boundary, not a remaining gap of this issue.
+
+- S10 -- no PR yet (branch `worktree-agent-a9b641d8731a59557`, left for
+  review, not merged). S9 left the dispatcher *running* but *disconnected
+  from any strategy*: `_run_paper_strategy` placed a hardcoded `buy 1
+  "SYMBOL"` -- a literal placeholder ticker, always buy, no sell path
+  anywhere, no strategy consulted -- and every `add_fill` in the codebase
+  passed `pnl=0.0`. Since `check_graduation` requires `lower > 0` on the
+  P&L confidence interval and every recorded P&L was exactly 0.0, **no
+  strategy could mathematically ever graduate**; the "autonomous execution"
+  goal was blocked on arithmetic, not on wiring.
+
+  **The interface decision (decision #5, finally pinned down).** Three
+  incompatible shapes existed with no bridge (documented as open since the
+  S1b/S2 entry above). Resolved by scoping rather than unifying:
+  `run_gauntlet`'s batch `backtest_func(prices, params) -> (equity,
+  metrics)` and `oos_test`/`walk_forward`'s `strategy_fn(data) ->
+  (gross, trades)` keep their shapes -- validating a whole history is a
+  different job from deciding one bar. The LIVE path gets decision #5's
+  `def strategy(data) -> signals`, the only per-tick shape of the three,
+  and the only one `compile_strategy` already builds. Contract, now
+  documented at the top of `cerebral/trading/live_tick.py` and enforced by
+  its tests: `data` is the DataFrame `fetch_ohlcv` returns (capitalised
+  `Open/High/Low/Close/Volume`), `signals` is a sequence of **target
+  positions** (1 long / 0 flat / -1 short), one per bar, and the dispatcher
+  reads the LAST element as "what to hold now". Target state, not an
+  action, so a missed tick, a partial fill or a Felix restart self-corrects
+  on the next tick instead of double-entering.
+
+  New: `cerebral/trading/live_tick.py` (signal evaluation, position-state
+  decision, realized-P&L, `run_strategy_tick`, `dispatch_due_events`) and
+  `cerebral/trading/strategy_store.py` (the symbol + strategy source a
+  scheduler event's bare title can't carry -- its own tiny table, not extra
+  columns on the scheduler plugin's generic `events`, since cerebral/ must
+  not depend on plugins/). `gauntlet.py`'s auto-promote now registers a
+  spec before scheduling; `plugins/scheduler.py::_run_paper_strategy`
+  delegates to `run_strategy_tick`; `cerebral/main.py`'s `_scheduler_loop`
+  is now 5 lines calling `dispatch_due_events` (the whole pass moved into
+  live_tick so it's testable without importing main), with
+  graduation/ramp/retirement wired in after each dispatch.
+
+  Four real bugs found by hand while building on top of this, none caught
+  by any existing test:
+  1. **`_generate_stub_strategy` produced strategies that could never
+     emit a signal.** It read `data.get("close", [])` -- lowercase -- and
+     pandas' `.get()` returns the default for a missing column, so against
+     every DataFrame `fetch_ohlcv` produces it silently got `[]`. Not a
+     crash, just a strategy that permanently says nothing. Fixed to
+     `data["Close"]` and to the 1/0/-1 target-position encoding (the old
+     1/-1 had no way to express "hold nothing"); `to_strategy`'s LLM prompt
+     now states the contract too, since leaving it vague is what let the
+     drift happen.
+  2. **`StubBrokerClient` recorded a hardcoded `avg_entry_price=100.0`
+     while filling at `simulated_price`.** Any P&L computed from the
+     broker's own position -- which is exactly what "numbers from the
+     broker, never re-derived" requires -- would have been wrong by the
+     whole hash-derived offset. Fixed, along with weighted-average entry
+     when adding to a position and stale `current_price`/`market_value`.
+  3. **A fully-closed position lingered at qty 0.0 forever**, so "am I in
+     this name?" answered yes to a flat book. Dropped from the map instead
+     (`find_position` treats a zero-qty row as flat regardless, since real
+     brokers differ).
+  4. **`filled_qty` was 0.0 on a FILLED order** -- self-contradictory, and
+     every caller reading it saw nothing filled on a full fill.
+
+  P&L is computed from the position's entry price vs. the closing order's
+  own fill price x qty, minus the *closing* order's broker-reported fee
+  only. The opening fee is not re-derived or estimated -- it is already
+  recorded on its own fill row's `fees` column, and inventing a number for
+  it is the fabrication failure this campaign has caught twice.
+
+  Tests: 25 new in `test_trading_live_tick.py` (signal evaluation including
+  garbage/empty/warm-up, position direction across both brokers' different
+  side vocabularies, the open/close/hold/flip decision table, P&L long and
+  short with fees, full ticks, the dispatcher, and graduation both ways),
+  plus a rewritten `test_plugin_scheduler.py` and a genuine end-to-end
+  `test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl`: a
+  real `SchedulerPlugin`, a real recurring event, two dispatch passes with
+  a scripted price path, asserting the close's realized P&L equals
+  (55 - 50) x 4 - 0.22 fees and the broker's own book is flat afterwards.
+  No test touches the network (`fetch` is injected everywhere) or Alpaca.
+  Full suite: 5070 passed, 7 skipped, 0 failed (`cerebral/tests/` +
+  repo-root `tests/`).
+
+  **Still not connected / still honest gaps after this:**
+  1. **Nothing in production calls `run_gauntlet`.** Only tests do. So no
+     spec is ever registered and no event is ever created by real code --
+     the chain works end-to-end but has no real entry point yet. This is
+     unchanged from before S10 and is the next real slice.
+  2. **A gauntlet pass without `symbol`/`strategy_code` still schedules an
+     inert event.** Preserved deliberately (existing callers/tests), but
+     the dispatcher will skip it forever with "no strategy spec
+     registered". Better than the placeholder trade it used to place, not
+     as good as refusing to schedule what can't trade.
+  3. **`compute_expectancy_ci` samples every fill, including opening fills
+     recorded at pnl=0.0.** So a 30-"trade" record is really 15 round trips
+     and the mean expectancy is diluted by half. Graduation is now
+     mathematically reachable (verified by a test), but the honesty rule's
+     "30 trades" arguably means 30 *round trips*. Fixing it needs an
+     `is_close` column and a schema migration -- not done, deliberately.
+  4. **`check_retirement` is wired but inert.** It returns early unless
+     status is "live" with a live equity curve, and it is called with
+     `worst_backtest_dd=0.0` because nothing stores the gauntlet's worst
+     backtest drawdown (`StrategyCard` carries an equity curve but no
+     drawdown metric). 0.0 disables the drawdown branch entirely -- honest,
+     since inventing that threshold would fabricate the number that decides
+     when to halt a strategy.
+  5. **Graduation does not start live trading, by design.** It flips the
+     lifecycle status to "live" and logs loudly; the dispatcher holds a
+     `StubBrokerClient` and records `phase="paper"` fills only. No code
+     path added here can reach `AlpacaBrokerClient` -- live execution waits
+     on the manual arm/disarm toggle, which is not built.
+  6. **`compile_strategy` still isn't real sandboxing** (SAFETY section,
+     unchanged) and it now runs on every dispatch tick, not just once at
+     validation -- routing it through the ADR-0010 sandbox matters more
+     after this slice, not less.
+  7. **`StrategyLifecycle.get_open_positions` is still the fake stub** that
+     returns the strategy's own name as a `symbol`. `find_position` /
+     `broker.list_positions()` is the real answer now; the panel-facing
+     stub was left alone as out of scope.
 
 ## Thesis
 

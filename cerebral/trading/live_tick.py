@@ -1,0 +1,284 @@
+"""One live/paper dispatch tick: a validated strategy -> a real broker order.
+
+THE CANONICAL LIVE STRATEGY CONTRACT
+====================================
+Decision #5 in TRADING.md says a strategy is ``def strategy(data) -> signals``.
+That was never pinned down to anything concrete, and three incompatible
+shapes drifted apart. This module pins the *live* one down and is the only
+consumer of it:
+
+``data``
+    The pandas DataFrame ``cerebral.trading_data.fetch_ohlcv`` returns:
+    ascending DatetimeIndex, columns ``Open/High/Low/Close/Volume``
+    (capitalised, split/dividend adjusted). NOT a dict -- the stub generator
+    in ``trading_ideas.py`` used to read ``data.get("close", [])``, which
+    against that DataFrame silently returns the ``[]`` default (pandas'
+    ``.get()`` treats a missing column as absent), i.e. every generated
+    strategy produced no signals whatsoever. Fixed at the generator, pinned
+    here.
+
+``signals``
+    A sequence of TARGET POSITIONS, one per bar, each ``1`` (want long),
+    ``0`` (want flat) or ``-1`` (want short). Target state, not an action:
+    the dispatcher diffs the LAST element against what the broker says it
+    actually holds, so a missed tick, a partial fill or a Felix restart
+    self-corrects on the next tick instead of double-entering. A sequence
+    shorter than ``data`` is fine (indicator warm-up); the last element is
+    always "what to hold now". An empty sequence means "no opinion" -> hold.
+
+``run_gauntlet``'s batch ``backtest_func(prices, params) -> (equity, metrics)``
+is deliberately NOT reconciled with this. Validating a whole history and
+deciding one bar are different jobs with legitimately different shapes; this
+module only owns the live path.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import date, timedelta
+from typing import Any, Callable, List, Optional, Sequence
+
+from cerebral.trading.broker import Position
+from cerebral.trading.strategy_store import StrategySpec, StrategyStore
+from cerebral.trading_ideas import compile_strategy
+
+logger = logging.getLogger(__name__)
+
+SIGNAL_LONG = 1
+SIGNAL_FLAT = 0
+SIGNAL_SHORT = -1
+
+# ponytail: one fixed window rather than asking the strategy how much history
+# it wants. 180 calendar days is ~124 trading bars -- enough for a 100-bar
+# moving average, the deepest indicator anything generated so far uses. Add a
+# `lookback_days` field to StrategySpec when a strategy genuinely needs more.
+DEFAULT_LOOKBACK_DAYS = 180
+
+
+def evaluate_signal(strategy_fn: Callable[[Any], Sequence], data: Any) -> int:
+    """Today's target position: the last element of the strategy's signals.
+
+    Anything the strategy can't express as -1/0/1 is treated as "no opinion"
+    (flat is a decision; garbage is not, and must not become a trade).
+    """
+    signals = strategy_fn(data)
+    if signals is None or len(signals) == 0:
+        return SIGNAL_FLAT
+    raw = signals[-1]
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Strategy returned a non-numeric signal %r; holding", raw)
+        return SIGNAL_FLAT
+    if value not in (SIGNAL_LONG, SIGNAL_FLAT, SIGNAL_SHORT):
+        logger.warning("Strategy returned out-of-range signal %r; holding", raw)
+        return SIGNAL_FLAT
+    return value
+
+
+def position_direction(position: Optional[Position]) -> int:
+    """+1 long / -1 short / 0 flat, from whatever the broker reports.
+
+    The two BrokerClient implementations disagree on how they say it:
+    StubBrokerClient signs ``qty`` and uses ``side`` "buy"/"sell", Alpaca
+    uses ``side`` "long"/"short". Sign of qty first (unambiguous when
+    present), the side string as the fallback.
+    """
+    if position is None:
+        return 0
+    qty = float(position.qty)
+    if qty > 0:
+        return SIGNAL_LONG
+    if qty < 0:
+        return SIGNAL_SHORT
+    side = (position.side or "").lower()
+    if side in ("short", "sell"):
+        return SIGNAL_SHORT
+    if side in ("long", "buy"):
+        return SIGNAL_LONG
+    return SIGNAL_FLAT
+
+
+def find_position(positions: List[Position], symbol: str) -> Optional[Position]:
+    """The broker's own row for this symbol, or None if flat.
+
+    A zero-qty row counts as flat -- brokers differ on whether a fully
+    closed position disappears or lingers at qty 0.
+    """
+    for p in positions:
+        if p.symbol == symbol and float(p.qty) != 0.0:
+            return p
+    return None
+
+
+def decide_action(
+    signal: int, position: Optional[Position], open_qty: float
+) -> Optional[tuple[str, float, bool]]:
+    """(side, qty, is_close) for the order to place, or None to hold.
+
+    ponytail: one order per tick. A flip (long -> short) closes this tick and
+    opens on the next, rather than sending a double-size reversing order --
+    the target-state contract makes that correct automatically, and it keeps
+    a mis-sized flip from ever being possible.
+    """
+    current = position_direction(position)
+    if signal == current:
+        return None
+    if current != 0:
+        # Close what we hold, whatever the new signal is.
+        return ("sell" if current == SIGNAL_LONG else "buy", abs(float(position.qty)), True)
+    return ("buy" if signal == SIGNAL_LONG else "sell", float(open_qty), False)
+
+
+def realized_pnl(
+    entry_price: float, exit_price: float, qty: float, direction: int, fees: float = 0.0
+) -> float:
+    """Realized P&L on a closing trade.
+
+    ``fees`` is the *closing* order's fee only -- the broker reports that one
+    with the fill. The opening order's fee is not re-derived here; it was
+    recorded on its own fill row's ``fees`` column when it happened, and
+    guessing at it would be exactly the fabricated-number failure this
+    campaign keeps catching.
+    """
+    gross = (exit_price - entry_price) * qty
+    if direction == SIGNAL_SHORT:
+        gross = -gross
+    return gross - fees
+
+
+def run_strategy_tick(
+    strategy_id: str,
+    spec: StrategySpec,
+    broker: Any,
+    forward_record: Any,
+    fetch: Optional[Callable] = None,
+    today: Optional[date] = None,
+    phase: str = "paper",
+) -> dict:
+    """Evaluate one strategy against fresh data and act on the result.
+
+    Fetch bars -> compile + call the strategy -> read the broker's own
+    position -> open / close / hold -> record the fill (with real realized
+    P&L on a close). ``phase`` stays "paper" for every caller that exists
+    today; live execution is deliberately unwired.
+    """
+    if fetch is None:
+        # Imported lazily: cerebral.trading_data pulls in yfinance, which
+        # nothing needs at import time (and no test should ever reach).
+        from cerebral.trading_data import fetch_ohlcv as fetch
+
+    end = today or date.today()
+    start = end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
+    data = fetch(spec.symbol, start.isoformat(), end.isoformat())
+
+    # Recompiled per tick rather than cached: compiling is cheap next to a
+    # data fetch, and it means a re-registered spec takes effect immediately.
+    signal = evaluate_signal(compile_strategy(spec.code), data)
+
+    position = find_position(broker.list_positions(), spec.symbol)
+    action = decide_action(signal, position, spec.qty)
+    if action is None:
+        return {"status": "hold", "signal": signal, "symbol": spec.symbol}
+
+    side, qty, is_close = action
+    # Captured BEFORE the order: placing it mutates the broker's position.
+    entry_price = float(position.avg_entry_price) if is_close else 0.0
+    direction = position_direction(position) if is_close else 0
+
+    order = broker.place_order(symbol=spec.symbol, qty=qty, side=side, type="market")
+    if order.status not in ("FILLED", "PARTIALLY_FILLED"):
+        return {"status": "unfilled", "signal": signal, "symbol": spec.symbol,
+                "order_status": order.status}
+
+    # A partial close leaves the remainder on the book; the next tick sees the
+    # smaller position and tries again -- "keep the partial, adjust position
+    # size math" (TRADING.md failure behaviour), for free from target-state
+    # signals.
+    filled = float(order.filled_qty) or float(order.qty)
+    pnl = (
+        realized_pnl(entry_price, float(order.price), filled, direction, float(order.fees))
+        if is_close
+        # An opening fill has no realized P&L yet -- a real 0.0, not a
+        # placeholder. It becomes real on the close that pairs with it.
+        else 0.0
+    )
+
+    forward_record.add_fill(
+        symbol=order.symbol, side=order.side, qty=filled,
+        price=float(order.price), fees=float(order.fees), pnl=pnl,
+        phase=phase, strategy_id=strategy_id,
+    )
+    return {
+        "status": "closed" if is_close else "opened",
+        "signal": signal, "symbol": spec.symbol, "side": order.side,
+        "qty": filled, "price": float(order.price), "pnl": pnl,
+        "order_id": order.id,
+    }
+
+
+def dispatch_due_events(
+    scheduler: Any,
+    broker: Any,
+    forward_record: Any,
+    lifecycle: Any = None,
+    store: Optional[StrategyStore] = None,
+    fetch: Optional[Callable] = None,
+) -> List[dict]:
+    """One pass of the recurring dispatcher: run every due strategy.
+
+    Lives here rather than inline in cerebral/main.py's ``_scheduler_loop``
+    so the whole chain is testable without importing main. ``scheduler`` is
+    duck-typed (``list_due_events`` / ``_run_paper_strategy`` /
+    ``mark_event_run``) -- cerebral/ must not import plugins/.
+    """
+    results: List[dict] = []
+    for evt in scheduler.list_due_events():
+        name = evt["title"]
+        # A halted strategy stays scheduled (retirement is reversible) but
+        # places no new trades. Still marked run, so it doesn't re-check on
+        # every single tick.
+        if lifecycle is not None and lifecycle.get_state(name).status == "halted":
+            scheduler.mark_event_run(evt["id"])
+            results.append({"status": "halted", "strategy": name})
+            continue
+
+        result = scheduler._run_paper_strategy(
+            name, broker, forward_record, {}, store=store, fetch=fetch
+        )
+        # Marked regardless of outcome: a persistently failing strategy should
+        # retry at its own interval, not spam every tick.
+        scheduler.mark_event_run(evt["id"])
+        result["strategy"] = name
+        results.append(result)
+
+        if lifecycle is not None:
+            _apply_lifecycle(lifecycle, name, forward_record, result)
+    return results
+
+
+def _apply_lifecycle(lifecycle: Any, name: str, forward_record: Any, result: dict) -> None:
+    """Graduation / ramp / retirement checks after a dispatch.
+
+    Graduation flips the strategy's lifecycle status to "live" and is the
+    signal a human acts on -- it does NOT start live trading. This dispatcher
+    only ever holds a paper broker and only ever records phase="paper" fills;
+    real-money execution stays unwired behind a manual arm/disarm toggle that
+    does not exist yet.
+    """
+    if lifecycle.check_graduation(name, forward_record):
+        size_pct = lifecycle.apply_position_ramp(name)
+        logger.warning(
+            "[trading] Strategy '%s' met the paper graduation bar (ramp %.0f%%). "
+            "No live orders placed -- live execution is not wired.",
+            name, size_pct * 100,
+        )
+        result["graduated"] = True
+
+    # Wired, but inert until live fills exist: check_retirement returns early
+    # unless status == "live" AND a live equity curve has been recorded, and
+    # the drawdown branch is skipped entirely at worst_backtest_dd=0.0.
+    # 0.0 is honest -- nothing stores the gauntlet's worst backtest drawdown
+    # yet (StrategyCard carries an equity curve but no drawdown metric), and
+    # inventing one would fabricate the very threshold that halts a strategy.
+    if lifecycle.check_retirement(name, worst_backtest_dd=0.0):
+        result["retired"] = True

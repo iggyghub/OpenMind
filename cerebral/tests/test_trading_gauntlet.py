@@ -298,6 +298,50 @@ class TestAutoPromote:
         assert card.verdict == "VALIDATED"
         assert calls == []
 
+    def test_validated_registers_the_spec_the_dispatcher_needs(self, tmp_path):
+        """The event carries only a title. Without a matching spec (symbol +
+        strategy source) the dispatcher has nothing to evaluate and no ticker
+        to trade -- it used to fall back to a literal "SYMBOL" placeholder."""
+        from cerebral.trading.strategy_store import StrategyStore
+
+        calls = []
+
+        class FakeScheduler:
+            def _create_event(self, args):
+                calls.append(args)
+
+        store = StrategyStore(db_path=tmp_path / "specs.db")
+        code = "def strategy(data):\n    return [1] * len(data)"
+        card = run_gauntlet(
+            make_backtest, make_prices(), make_params(), make_benchmark_prices(),
+            make_positions(), hypothesis="MA cross test", provenance="internal",
+            scheduler=FakeScheduler(), paper_broker=object(), seed=42,
+            symbol="AAPL", strategy_code=code, strategy_store=store, position_qty=3.0,
+        )
+
+        assert card.verdict == "VALIDATED"
+        spec = store.get("MA cross test")
+        assert spec is not None
+        assert (spec.symbol, spec.code, spec.qty) == ("AAPL", code, 3.0)
+        assert calls[0]["title"] == "MA cross test"  # still scheduled
+
+    def test_unvalidated_registers_no_spec(self, tmp_path):
+        from cerebral.trading.strategy_store import StrategyStore
+
+        class FakeScheduler:
+            def _create_event(self, args):
+                pass
+
+        store = StrategyStore(db_path=tmp_path / "specs.db")
+        run_gauntlet(
+            lambda p, pr: ([100.0] * len(p), {"sharpe": 0.0, "total_return": 0.0}),
+            make_prices(), make_params(), make_benchmark_prices(), make_positions(),
+            hypothesis="dud", scheduler=FakeScheduler(), paper_broker=object(), seed=42,
+            symbol="AAPL", strategy_code="def strategy(data):\n    return [1]",
+            strategy_store=store,
+        )
+        assert store.list_all() == []
+
     def test_no_scheduler_does_not_raise(self):
         # scheduler=None (the default) must be a safe no-op, not an
         # AttributeError on a None scheduler.

@@ -105,6 +105,16 @@ def to_strategy(idea: Idea, llm: Optional[Any] = None) -> str:
         "HONESTY RULE: The code must treat the claim as a testable hypothesis, "
         "not as market fact. Never assert 'X is true'. Encode logic that tests 'X'.\n"
         "Claim: {claim}\n\n"
+        # The live dispatcher's contract, spelled out -- see
+        # cerebral/trading/live_tick.py. Left vague, generated code read
+        # data.get('close') (lowercase) and produced no signals at all.
+        "CONTRACT:\n"
+        "- `data` is a pandas DataFrame with an ascending DatetimeIndex and "
+        "capitalised columns Open, High, Low, Close, Volume.\n"
+        "- Return a list of target positions, one per bar, each 1 (hold long), "
+        "0 (hold nothing) or -1 (hold short). The LAST element is the position "
+        "to hold right now.\n"
+        "- No imports: only Python builtins and the DataFrame itself are in scope.\n\n"
         "Return ONLY valid Python code for:\n"
         "def strategy(data) -> signals:\n"
         "    ..."
@@ -117,15 +127,28 @@ def to_strategy(idea: Idea, llm: Optional[Any] = None) -> str:
 
 
 def _generate_stub_strategy(claim: str) -> str:
+    """Fallback when no LLM is available.
+
+    Reads data["Close"] (capitalised), not data.get("close", []): the old
+    lowercase .get() returned the [] default against every DataFrame
+    fetch_ohlcv produces, so the stub emitted no signals at all. And it
+    returns target positions in {{1, 0, -1}} per live_tick.py's contract --
+    the old 1/-1 encoding had no way to say "hold nothing".
+    """
     return textwrap.dedent(f'''
     def strategy(data):
         """
         Tests hypothesis: {claim[:120]}
         Strictly follows honesty rule: implements claim as a signal, not truth.
         """
-        close = data.get("close", [])
-        # Stub logic; replace with Qwen/Budd generated logic in production
-        signals = [1 if x > 0 else -1 for x in close]
+        close = list(data["Close"])
+        # Stub logic: long while price is above its own running mean, else
+        # flat. Replace with Qwen/Budd generated logic in production.
+        signals = []
+        running_total = 0.0
+        for i, price in enumerate(close):
+            running_total += price
+            signals.append(1 if price > running_total / (i + 1) else 0)
         return signals
     ''').strip()
 
