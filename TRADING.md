@@ -18,8 +18,8 @@ ever set True.
 
 ## Next slice -- start here
 
-- **Active:** S20 -- #873 -- wire RiskManager into the live dispatch
-  path (P0). See issue #873.
+- **Active:** S21 -- #874 -- alpaca-py dependency + live-path preflight
+  (P0b). See issue #874.
 - **Model:** sonnet
 
 ## Queue
@@ -97,7 +97,9 @@ ever set True.
   voting).
 - [x] S19 -- #864 -- Trading panel: strategy list, source view, edit
   box, lineage display.
-- [ ] S20 -- #873 -- Wire RiskManager into the live dispatch path (P0).
+- [x] S20 -- #873 -- Wire RiskManager into the live dispatch path (P0).
+  Landed by hand, not via self_dev's own PR #882 (no tests at all, 4 real
+  bugs found -- see Landed PRs).
 - [ ] S21 -- #874 -- alpaca-py dependency + live-path preflight (P0b).
 - [ ] S22 -- #875 -- Intraday bars: per-strategy interval, Alpaca
   Market Data.
@@ -1567,6 +1569,88 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   **The full S13-S19 blueprint (2026-08-23 -- sandbox, edit, mix, panel
   UI) is now complete.** See "What's next" below for what that does and
   doesn't mean.
+
+- PR #882 -- S20 -- opened by self_dev_campaign after 3 straight Bonsai
+  502s (retried per the outage policy; the 4th attempt succeeded), closed
+  unmerged in favor of a hand-verified landing (commit bfa1fe0) -- full
+  bug account in the PR's own closing comment. Real diff verified via the
+  sandbox's own clone (`campaign-trading-s20`, `git diff
+  5bda72d..22aca1c`, 4 files / 39 lines, correctly based on current
+  master). The PR added **zero tests**, despite issue #873 explicitly
+  listing test files to touch -- every one of the four bugs below was
+  invisible to its own `tests_failed` gate and would have shipped silent:
+
+  1. `risk.check_order(...)` was called with kwargs `equity=`/
+     `positions=`/`daily_loss=` -- none matching `RiskManager.check_order`'s
+     real signature (`account_equity`, `current_positions_count`,
+     `current_daily_loss`). Guaranteed `TypeError` on every tick where
+     `risk` is not `None`, i.e. every real dispatch after this PR's own
+     wiring landed. This is what actually produced the reported
+     `tests_failed`, once a `FakeScheduler` test double picked up the new
+     `risk=` kwarg and called the real (buggy) code underneath it.
+  2. **The ramp fix was never actually a fix.** `apply_position_ramp`'s
+     `size_pct` was plumbed as a new parameter through
+     `run_strategy_tick`/`dispatch_due_events`/`_run_paper_strategy`, but
+     nothing ever called `lifecycle.apply_position_ramp()` *before*
+     dispatch and passed its result in. The only remaining call to
+     `apply_position_ramp` in the diff is post-hoc, inside
+     `_apply_lifecycle`, purely for a log line after the trade already
+     ran. A "25% ramp" would still have opened at full size -- the exact
+     bug #873 named, just moved one line over. Fixed by computing
+     `ramp_pct = lifecycle.apply_position_ramp(dispatch_id) if is_live
+     else 1.0` inside `dispatch_due_events`'s per-strategy loop, before
+     the call to `_run_paper_strategy`.
+  3. `current_daily_loss` was hardcoded `0.0` -- permanently inert,
+     defeating the entire point of wiring a daily-loss halt (decision
+     #47's "daily-loss halt", the second of RiskManager's three gates).
+     Fixed with a new `ForwardRecord.get_daily_pnl(day_iso=None)` (one
+     `SUM(pnl) WHERE substr(timestamp,1,10)=?` query against columns that
+     already exist -- no schema change, no fabricated number, account-wide
+     rather than per-strategy since the halt is meant to stop all trading
+     for the day) and `current_daily_loss = max(0.0,
+     -forward_record.get_daily_pnl())`.
+  4. **Applying fix #1 as a straight kwarg rename surfaced a fifth bug**:
+     `spec.qty = spec.qty * size_pct` tried to mutate `StrategySpec`,
+     which is `@dataclass(frozen=True)` -- would have raised
+     `FrozenInstanceError` the first time a live-ramped strategy actually
+     dispatched, i.e. exactly when fix #2 made `size_pct != 1.0`
+     reachable for the first time. Fixed to a local `open_qty` variable
+     instead of mutating spec; `decide_action` closes at the position's
+     own qty regardless of `open_qty`, so this only affects the open
+     side, matching the ramp's actual intent (gradual entry, full exit).
+
+  A sixth issue, not a crash but silently defeating the point of its own
+  acceptance criterion: `RiskManager` was constructed in `main.py` with
+  only `alert_dispatcher=`, not `settings_store=_settings` -- so the three
+  new user-configurable risk-limit keys (#873's own 4th acceptance
+  criterion) would never actually reach a live risk check, freezing
+  `RiskConfig`'s hardcoded defaults regardless of what the user set via
+  Settings. Fixed, and construction moved to right after `_settings =
+  _SettingsStore()` is defined (previously constructed several lines
+  before `_settings` existed at all -- the straightforward `settings_store=
+  _settings` fix would have raised `NameError` at import time otherwise).
+
+  Added 9 new tests directly exercising the fixed paths: an over-limit
+  order blocked with `broker._orders` staying empty (the acceptance test
+  #873 names verbatim), a within-limit order still opening normally, the
+  daily-loss halt firing off real accrued P&L instead of a fabricated
+  zero, the ramp actually shrinking the opened qty without touching the
+  frozen spec, a blocked-order alert and a graduation alert both landing
+  in one shared `AlertDispatcher`'s history, the three settings keys
+  round-tripping through `SettingsStore`, and `RiskManager` honoring a
+  live `settings_store` value instead of its baked-in default. Also fixed
+  2 stale test doubles the diff broke: `FakeScheduler._run_paper_strategy`
+  needed `risk=`/`size_pct=` parameters to accept the new call shape, and
+  `test_settings.py::test_all_returns_all_keys`'s expected-key set
+  predates the three new settings keys. Full suite green: 5130 passed, 7
+  skipped, 0 failed (`cerebral/tests/` + repo-root `tests/`). This slice
+  does not touch `tray/`, so no jest run was needed.
+
+  **RiskManager is now a real gate on every live/paper dispatch tick, and
+  its three limits (per-trade %, daily-loss halt, max concurrent
+  positions) are all reachable and user-configurable.** S21 (alpaca-py +
+  live preflight) is next; per decision #47, `trading_live_arm` still must
+  not be set True until S21 also lands and is hand-verified.
 
 ## What's next
 
