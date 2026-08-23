@@ -18,8 +18,8 @@ ever set True.
 
 ## Next slice -- start here
 
-- **Active:** S21 -- #874 -- alpaca-py dependency + live-path preflight
-  (P0b). See issue #874.
+- **Active:** S21b -- #883 -- wire check_correlation_limit into the live
+  dispatch path. See issue #883.
 - **Model:** sonnet
 
 ## Queue
@@ -100,10 +100,11 @@ ever set True.
 - [x] S20 -- #873 -- Wire RiskManager into the live dispatch path (P0).
   Landed by hand, not via self_dev's own PR #882 (no tests at all, 4 real
   bugs found -- see Landed PRs).
-- [ ] S21 -- #874 -- alpaca-py dependency + live-path preflight (P0b).
+- [x] S21 -- #874 -- alpaca-py dependency + live-path preflight (P0b).
   Narrowed 2026-08-24 after 5 straight self_dev "no commit" failures on
   the original 4-part issue -- correlation-limit wiring split out to
-  S21b/#883; see Landed PRs once landed.
+  S21b/#883. Landed by hand, not via self_dev's own PR #884 (no
+  test-injection seam for the live broker -- see Landed PRs).
 - [ ] S21b -- #883 -- Wire check_correlation_limit into the live
   dispatch path (split from #874).
 - [ ] S22 -- #875 -- Intraday bars: per-strategy interval, Alpaca
@@ -1656,6 +1657,70 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   positions) are all reachable and user-configurable.** S21 (alpaca-py +
   live preflight) is next; per decision #47, `trading_live_arm` still must
   not be set True until S21 also lands and is hand-verified.
+
+- PR #884 -- S21 -- opened by self_dev_campaign against the reworded,
+  near-diff-level issue #874 (see the entry above this one: the original
+  4-part issue failed 5 straight times with an identical "Edit step
+  produced no commit", genuinely confirmed via the sandbox clone's own
+  `git log` staying at master's tip every time -- not a ledger replay,
+  since a no-commit failure is never persisted to the step ledger, so
+  every retry re-invoked the model fresh against the same clean clone).
+  Narrowed #874 to dependency + preflight only (correlation-limit split
+  to a new issue, #883/S21b) and rewrote it as exact before/after code
+  snippets quoted from the real files, per S17's exact method. Produced
+  a correct diff on the very next attempt -- confirms the S17 finding
+  again: a near-diff-level issue body reliably fixes this failure mode.
+
+  Real diff verified via the sandbox's own clone (`campaign-trading-s21`,
+  `git diff 24183c6..770a1f1`, 5 files / 60 lines): `alpaca-py` added to
+  `pyproject.toml`; `AlpacaBrokerClient.preflight()` (package importable,
+  keyring credentials present, `get_account()` reachable and `ACTIVE`);
+  `dispatch_due_events` calls it once before ever routing to a live
+  broker, emitting a critical `live_preflight_failed` alert and staying
+  on paper on failure; a new Preflight section in
+  `docs/trading-live-verify.md`. Matched the prescribed snippets almost
+  character for character in every file.
+
+  One real bug, again with zero new tests despite the issue explicitly
+  listing test files: `dispatch_due_events` constructed
+  `AlpacaBrokerClient(env="live")` directly inline, with no injection
+  seam. `preflight()` makes a genuine credential/network check
+  (`import alpaca.trading.client`, `keyring.get_password`,
+  `get_account()`) -- which now fired even inside a pure unit test with
+  `FakeScheduler`, since nothing in the diff let a test substitute a
+  fake broker. Broke 2 of S20's own tests
+  (`test_dispatch_goes_live_only_when_armed_and_graduated`,
+  `test_dispatch_applies_live_ramp_to_the_open_qty`) the moment they ran
+  against this diff -- both silently fell back to paper because the real
+  preflight() correctly failed (no real Alpaca credentials in this dev
+  environment). That's the conservative-continue behavior working
+  exactly as designed, just not observable or injectable from a test.
+  Fixed with a `live_broker_factory: Optional[Callable[[], Any]] = None`
+  parameter on `dispatch_due_events`, matching the existing
+  `fetch=`/`store=`/`risk=` injection-seam pattern already on that
+  function; updated the 2 broken tests to inject a `FakePreflightBroker`
+  stub, and added `test_dispatch_stays_paper_and_alerts_when_preflight_
+  fails` covering the acceptance criterion the issue named.
+
+  Also added the 5 `preflight()` unit tests the issue's acceptance
+  criteria named (package missing, no credentials, unreachable account,
+  non-`ACTIVE` status, success) in a new
+  `cerebral/tests/test_trading_broker_preflight.py` -- none existed.
+  Installed `alpaca-py` into this dev environment (`pip install
+  alpaca-py`) so "importable after `pip install -e .`" is genuinely
+  verified rather than assumed, and so the preflight tests exercise all
+  5 branches for real instead of always hitting "package missing".
+
+  Full suite green: 5136 passed, 7 skipped, 0 failed (`cerebral/tests/`
+  + repo-root `tests/`). This slice does not touch `tray/`, so no jest
+  run was needed. PR #884 closed unmerged in favor of this
+  hand-verified local landing (commit 3c51b33).
+
+  **Both P0 gap-closure slices decision #47 named are now landed:
+  RiskManager enforces real limits on every tick, and the live path
+  fails loudly instead of silently.** `check_correlation_limit` (S21b/
+  #883) and the user's own manual `trading_live_arm` flip (decision #43)
+  remain before any real order can ever reach a live account.
 
 ## What's next
 
