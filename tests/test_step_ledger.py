@@ -36,7 +36,7 @@ class _ScriptedPlanner:
         self._script = list(script)
         self._i = 0
 
-    async def plan(self, transcript, tools, *, prior_steps=None, error=None):
+    async def plan(self, transcript, tools, *, all_tools=None, prior_steps=None, error=None):
         r = self._script[self._i]
         self._i += 1
         return r
