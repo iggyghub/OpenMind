@@ -1640,6 +1640,22 @@ pipeline. The deliverable is *evidence about a strategy* that Felix also acts on
 | 29 | Mix symbol constraint (2026-08-23) | All components of a mix must share the same symbol -- reject otherwise |
 | 30 | Edit/mix UI surface (2026-08-23) | A plain textarea in the Trading panel, not the Documents library (ADR-0011) -- wrong medium (docx vs Python source), wrong editor |
 | 31 | Build order (2026-08-23) | Sandbox (S13-S14) before edit/mix (S17-S18) -- contain the untrusted-code risk before more code flows through it, at the cost of edit/mix landing later |
+| 32 | Autonomous discovery scope (2026-08-24) | **Full** autonomous idea sourcing (web search + navigate, already-built browser plugin tools) and universe screening -- reverses anti-goal above. User explicitly wants this, understands the risk. |
+| 33 | Discovery pipeline shape (2026-08-24) | One shared convergence path (symbol+hypothesis+code -> run_gauntlet, unchanged) with multiple entry points/triggers (ticker-specific ideas skip screening; pattern-general ideas go through the cheap universe pre-filter first) -- not two separate pipelines |
+| 34 | Idea discovery tools (2026-08-24) | Reuse `plugins/browser.py`'s existing `web_search` (Playwright/OpenClaw) + `navigate` -- no new crawling plugin |
+| 35 | New stocks plugin (2026-08-24) | `plugins/stocks.py`: yfinance fundamentals (`.info`/`quarterly_financials`, zero new dependency) + SEC EDGAR (10-Q/10-K text, S-1/424B4 for IPO detection -- free, no key, 10 req/s limit) |
+| 36 | Ticker universe (2026-08-24) | A growing watchlist seeded by real sourced signals, not a periodic full sweep of the ~15-20k US+OTC universe -- full-universe sweep stays technically available (~15-60 min with batching) but isn't the default cadence |
+| 37 | IPO handling (2026-08-24) | Notification-only, via SEC EDGAR's daily filing index (S-1/424B4) -- user decides whether to trade manually with their own IPO-specific strategy; not auto-gauntlet-tested |
+| 38 | Screening sandbox cost (2026-08-24) | One sandbox spawn evaluates many tickers per run (batched), not one spawn per ticker -- the latter would dominate cost (~1s/spawn x thousands); needs a batch-evaluate entry point in `sandboxed_eval.py` |
+| 39 | Day trading / intraday data (2026-08-24) | **The higher-priority half of this expansion.** Data source hierarchy: Alpaca Market Data primary (same account/credentials already integrated -- avoids a backtest-vendor-vs-live-vendor mismatch), Alpha Vantage backup, Playwright/`navigate` scraping as last resort |
+| 40 | Bar interval (2026-08-24) | Per-strategy declared, not one fixed interval -- 5-min/15-min recommended defaults; 1-min available but noisier/more latency-sensitive/most data-constrained (7-day history cap) |
+| 41 | Trade-count scaling (2026-08-24) | The flat 30-trade honesty-rule minimum scales by trades-per-session/interval, so graduation still requires enough independent trading *days*, not just enough trades crammed into one fast session |
+| 42 | Discovered-strategy provenance (2026-08-24) | New `origin='discovered'` value on `strategy_versions` (alongside generated/user_edited/mixed) -- an idea Felix found itself is a different fact from one a human supplied, per the Honesty rule |
+| 43 | Live capital arming (2026-08-24) | **User will arm live trading.** Mechanism: user manually flips `trading_live_arm` (existing S11b toggle, already built) -- Felix does not decide to arm itself. Once armed, trades autonomously within the already-built rails (ramp, risk limits, retirement); no new code for the arm mechanism itself |
+| 44 | Idea-quality pre-filter (2026-08-24) | An LLM-judge pass (same free routed model `to_strategy` uses) rejects vague/non-testable sourced claims before they reach the (expensive) gauntlet |
+| 45 | Ticker fundamentals gate (2026-08-24) | For any never-before-traded ticker: pull its latest 10-Q/10-K via the stocks plugin, LLM-scan for red-flag language (going concern, restatement, investigation, delisting) as an additional gate at paper->live graduation specifically -- not at idea-sourcing time, not blocking paper trading. Previously-vetted tickers skip re-checking |
+| 46 | Activity log (2026-08-24) | Felix-wide (not trading-only), reuses `conversation_turns` + `_record_turn` -- retrofits the scheduler loop and self_dev to actually log instead of console-only `logger.info`. New top-level "Log" nav tab for the full stream; a filtered Activity section inside the Trading tab for trading-scoped entries. Routine screening batches into summary entries ("screened 500, 3 candidates"); real decisions (validated, traded, sourced) log individually |
+| 47 | **P0, found during this grill, not a new feature** (2026-08-24) | `RiskManager` (2%/trade, 6%/day, correlation limit -- S5b/S6, tested, believed wired) is never actually called from `cerebral/trading/live_tick.py`'s real dispatch path -- confirmed by direct grep, zero references. Every live order today would place with **no risk-limit enforcement at all**. Must be wired + verified with a real "an over-limit order gets blocked" test before `trading_live_arm` is ever set True -- prerequisite to decision #43, not part of the autonomous-discovery/day-trading blueprint itself |
 
 ## Strategy building: sandbox, edit, mix (2026-08-23 blueprint)
 
@@ -1837,7 +1853,14 @@ the same penny stock sector.
 - Options pricing / Greeks engine (separate campaign if needed)
 - ML model training for strategy generation (separate campaign if needed)
 - Signal-space search / genetic algorithm (Build Alpha's lane, separate campaign)
-- Autonomous web crawling / source discovery (user provides URLs)
+- ~~Autonomous web crawling / source discovery (user provides URLs)~~ --
+  **reversed 2026-08-23, decision #32** -- user wants full autonomous
+  discovery. Kept struck through rather than deleted: the original
+  reasoning (avoid open-ended scraping/ToS exposure) was real when
+  written, and the reversal is a conscious, informed decision, not an
+  oversight -- see decision #32 for why and what's still bounded (source
+  tools reused, not built from scratch; a growing watchlist, not a full
+  daily universe sweep; every autonomous action logged).
 
 **Honesty rule (not negotiable):**
 - Felix never presents a number without its uncertainty. Backtest, paper, and live
