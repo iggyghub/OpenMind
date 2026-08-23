@@ -3,8 +3,9 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: paper trading works end-to-end with real strategy signals, real
-position tracking, and real realized P&L (S9 + S10, both hand-verified,
+## Status: ready -- paper trading works end-to-end with real strategy
+signals, real position tracking, and real realized P&L (S9 + S10, both
+hand-verified,
 not just tests passing). Live/real-money trading is the active goal now
 (2026-08-23: user asked to finish it). S11 part 1 (credentials UI) landed
 -- see Landed PRs. Parts 2-4 (arm/disarm toggle, a production caller of
@@ -15,14 +16,14 @@ parts of S11 exist and are hand-verified.
 
 ## Next slice -- start here
 
-- **Active:** S11 (continued) -- no issue yet -- live trading, remaining
-  work in order: (2) a manual arm/disarm toggle (default OFF) gating any
-  live order, independent of strategy graduation status -- credentials
-  existing (part 1, landed) must NOT be sufficient on its own to enable
-  live trading, (3) a real production entry point that calls
-  run_gauntlet (S10 found none exists -- right now nothing in the running
-  app ever validates+promotes a strategy; that's step zero for live to
-  mean anything), (4) live/paper branching in the dispatch loop
+- **Active:** S11b -- #852 -- live trading, remaining work in order: (2) a
+  manual arm/disarm toggle (default OFF) gating any live order,
+  independent of strategy graduation status -- credentials existing
+  (part 1, landed) must NOT be sufficient on its own to enable live
+  trading, (3) a real production entry point that calls run_gauntlet
+  (S10 found none exists -- right now nothing in the running app ever
+  validates+promotes a strategy; that's step zero for live to mean
+  anything), (4) live/paper branching in the dispatch loop
   (cerebral/main.py's _scheduler_loop / cerebral/trading/live_tick.py's
   dispatch_due_events) keyed off StrategyLifecycle status + the arm
   toggle -- construct an AlpacaBrokerClient(env="live") only when BOTH a
@@ -62,6 +63,10 @@ parts of S11 exist and are hand-verified.
   `def strategy(data) -> signals` live contract, evaluate real signals on a
   tick, track position state from the broker's own book, and record real
   realized P&L on a close (the hard blocker on graduation). See Landed PRs.
+
+- [ ] S11b -- #852 -- Live trading: arm/disarm toggle (part 2), a real
+  production caller of run_gauntlet (part 3), live/paper branching in the
+  dispatch loop (part 4). See issue #852 for full acceptance criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section

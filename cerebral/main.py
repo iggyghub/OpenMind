@@ -3405,9 +3405,12 @@ async def _scheduler_loop() -> None:
             # graduation/ramp/retirement checks -- lives in live_tick so it's
             # testable without importing main. _trading_broker is a
             # StubBrokerClient: this loop cannot place a live order.
+            # S11 Part 2: read the master arm toggle to gate live execution.
+            arm_toggle = _settings.get("trading_live_arm")
             results = _dispatch_due_events(
                 _scheduler_plugin, _trading_broker, _trading_forward_record,
                 lifecycle=_trading_lifecycle, store=_trading_strategy_store,
+                arm=arm_toggle,
             )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")
@@ -3435,6 +3438,83 @@ async def _trading_broadcast() -> None:
         await _broadcast({"type": "trading_update", "data": {"positions": positions, "alerts": alerts}})
     except Exception as e:
         logger.warning(f"[cerebral] trading broadcast failed: {e}", exc_info=True)
+
+async def _handle_gauntlet_run(data: dict) -> None:
+    """S11 Part 3: production entry point to run the gauntlet validation.
+
+    Calls ``run_gauntlet`` against a real strategy spec fetched from the
+    payload, bridging into the existing auto-promote -> scheduler ->
+    dispatch chain.
+    """
+    from datetime import date, timedelta
+    import pandas as pd
+    import numpy as np
+
+    from cerebral.trading_data import fetch_ohlcv
+    from cerebral.trading.gauntlet import run_gauntlet
+
+    name = data.get("strategy_id", "unnamed")
+    symbol = data.get("symbol", "AAPL")
+    code = data.get("strategy_code", "def strategy(d): return [0]*len(d)")
+    qty = float(data.get("qty", 1.0))
+
+    # Fetch historical data for backtest
+    end = date.today()
+    start = end - timedelta(days=365)
+    try:
+        prices = fetch_ohlcv(symbol, start.isoformat(), end.isoformat())
+    except Exception as exc:
+        logger.warning("[cerebral] gauntlet data fetch failed for %s: %s", symbol, exc)
+        await _broadcast({
+            "type": "gauntlet_result",
+            "data": {"name": name, "error": f"Data fetch failed: {exc}"},
+        })
+        return
+
+    # Default backtest wrapper for the gauntlet
+    def backtest(prices, params):
+        fast = prices["Close"].rolling(int(params.get("fast", 10))).mean()
+        slow = prices["Close"].rolling(int(params.get("slow", 30))).mean()
+        signal = np.select([prices["Close"] > fast, prices["Close"] < slow], [1.0, -1.0], 0.0)
+        daily_ret = signal * prices["Close"].pct_change()
+        eq = 100 * np.cumprod(1 + daily_ret.fillna(0))
+        metrics = {
+            "sharpe": daily_ret.mean() / daily_ret.std() * np.sqrt(252),
+            "total_return": (eq.iloc[-1] / eq.iloc[0]) - 1,
+        }
+        return list(eq), metrics
+
+    benchmark = prices.copy()
+    positions = pd.Series(np.full(len(prices), qty))
+    params = {"fast": 10, "slow": 30}
+
+    try:
+        card = run_gauntlet(
+            backtest, prices, params, benchmark, positions,
+            hypothesis=name, provenance="ipc",
+            symbol=symbol, strategy_code=code, position_qty=qty,
+            scheduler=_scheduler_plugin, paper_broker=StubBrokerClient(),
+            strategy_store=_trading_strategy_store,
+        )
+        logger.info("[cerebral] Gauntlet verdict for %s: %s", name, card.verdict)
+        await _broadcast({
+            "type": "gauntlet_result",
+            "data": {
+                "name": name,
+                "verdict": card.verdict,
+                "gates": [
+                    {"passed": g.passed, "name": g.name, "details": str(g.details) if hasattr(g, "details") else ""}
+                    for g in card.gates
+                ],
+            },
+        })
+    except Exception as exc:
+        logger.exception("[cerebral] gauntlet run failed for %s", name)
+        await _broadcast({
+            "type": "gauntlet_result",
+            "data": {"name": name, "error": str(exc)},
+        })
+
 
 async def _handle_trading_poll(_data: dict) -> None:
     """IPC handler for tray polling of live trading state."""
