@@ -154,6 +154,8 @@ def run_strategy_tick(
     fetch: Optional[Callable] = None,
     today: Optional[date] = None,
     phase: str = "paper",
+    risk: Optional[Any] = None,
+    size_pct: float = 1.0,
 ) -> dict:
     """Evaluate one strategy against fresh data and act on the result.
 
@@ -180,6 +182,9 @@ def run_strategy_tick(
     signals = evaluate_signals(spec.code, data)
     signal = evaluate_signal(lambda d: signals, data)
 
+    if size_pct != 1.0:
+        spec.qty = spec.qty * size_pct
+
     position = find_position(broker.list_positions(), spec.symbol)
     action = decide_action(signal, position, spec.qty)
     if action is None:
@@ -189,6 +194,20 @@ def run_strategy_tick(
     # Captured BEFORE the order: placing it mutates the broker's position.
     entry_price = float(position.avg_entry_price) if is_close else 0.0
     direction = position_direction(position) if is_close else 0
+
+    if risk is not None:
+        last_close = float(data["Close"].iloc[-1]) if "Close" in data.columns else 0.0
+        trade_value = float(qty) * last_close
+        res = risk.check_order(
+            equity=broker.get_account().equity,
+            positions=len(broker.list_positions()),
+            daily_loss=0.0,
+            trade_value=trade_value,
+            symbol=spec.symbol,
+            qty=float(qty),
+        )
+        if not res.allowed:
+            return {"status": "blocked", "blocked_by": res.blocked_by}
 
     order = broker.place_order(symbol=spec.symbol, qty=qty, side=side, type="market")
     if order.status not in ("FILLED", "PARTIALLY_FILLED"):
@@ -229,6 +248,8 @@ def dispatch_due_events(
     store: Optional[StrategyStore] = None,
     fetch: Optional[Callable] = None,
     arm: bool = False,
+    risk: Optional[Any] = None,
+    size_pct: float = 1.0,
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
 
@@ -268,7 +289,8 @@ def dispatch_due_events(
 
         result = scheduler._run_paper_strategy(
             name, current_broker, forward_record, {}, store=store, fetch=fetch,
-            phase="live" if is_live else "paper", dispatch_id=dispatch_id,  # S17
+            phase="live" if is_live else "paper", dispatch_id=dispatch_id,
+            risk=risk, size_pct=size_pct,  # S20
         )
         # Marked regardless of outcome: a persistently failing strategy should
         # retry at its own interval, not spam every tick.
