@@ -279,7 +279,7 @@ class FakeScheduler:
     def mark_event_run(self, event_id):
         self.marked.append(event_id)
 
-    def _run_paper_strategy(self, name, broker, record, config, store=None, fetch=None, phase="paper"):
+    def _run_paper_strategy(self, name, broker, record, config, store=None, fetch=None, phase="paper", dispatch_id=None):
         self.ran.append(name)
         self.brokers.append(broker)
         self.phases.append(phase)

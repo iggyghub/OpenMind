@@ -248,20 +248,27 @@ def dispatch_due_events(
     results: List[dict] = []
     for evt in scheduler.list_due_events():
         name = evt["title"]
+        # S17 (#862): the versioned identity used for forward-record/lifecycle
+        # state, so an edited strategy's paper/live record restarts clean
+        # (decision #27) -- falls back to the bare name when no lineage row
+        # exists yet (e.g. a strategy registered before S16, or store=None).
+        version_row = store.get_current_version(name) if store is not None else None
+        dispatch_id = f"{name}@v{version_row['version']}" if version_row is not None else name
+
         # A halted strategy stays scheduled (retirement is reversible) but
         # places no new trades. Still marked run, so it doesn't re-check on
         # every single tick.
-        if lifecycle is not None and lifecycle.get_state(name).status == "halted":
+        if lifecycle is not None and lifecycle.get_state(dispatch_id).status == "halted":  # S17
             scheduler.mark_event_run(evt["id"])
             results.append({"status": "halted", "strategy": name})
             continue
 
-        is_live = arm and lifecycle is not None and lifecycle.get_state(name).status == "live"
+        is_live = arm and lifecycle is not None and lifecycle.get_state(dispatch_id).status == "live"  # S17
         current_broker = AlpacaBrokerClient(env="live") if is_live else broker
 
         result = scheduler._run_paper_strategy(
             name, current_broker, forward_record, {}, store=store, fetch=fetch,
-            phase="live" if is_live else "paper",
+            phase="live" if is_live else "paper", dispatch_id=dispatch_id,  # S17
         )
         # Marked regardless of outcome: a persistently failing strategy should
         # retry at its own interval, not spam every tick.
@@ -270,7 +277,7 @@ def dispatch_due_events(
         results.append(result)
 
         if lifecycle is not None:
-            _apply_lifecycle(lifecycle, name, forward_record, result)
+            _apply_lifecycle(lifecycle, dispatch_id, forward_record, result)  # S17
     return results
 
 

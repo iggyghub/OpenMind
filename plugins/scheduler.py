@@ -181,6 +181,37 @@ class SchedulerPlugin:
                     "required": ["symbol", "hypothesis"],
                 },
             ),
+            Tool(
+                name="edit_strategy",
+                description=(
+                    "Edits an existing strategy's source code: records a new version, "
+                    "re-runs the full validation gauntlet against the edited code, and "
+                    "only moves the strategy's live dispatch pointer to the new version "
+                    "if it validates. A failed edit leaves the strategy running its "
+                    "last-good version."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "strategy_id": {"type": "string", "description": "The strategy to edit (its existing strategy_id)"},
+                        "code": {"type": "string", "description": "The new Python source: def strategy(data) -> signals"},
+                    },
+                    "required": ["strategy_id", "code"],
+                },
+            ),
+            Tool(
+                name="get_strategy_code",
+                description="Returns a strategy's currently dispatched source code and its rendered provenance.",
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "strategy_id": {"type": "string"},
+                    },
+                    "required": ["strategy_id"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -194,6 +225,10 @@ class SchedulerPlugin:
             return self._delete_event(args)
         if tool_name == "run_gauntlet":
             return await self._run_gauntlet(args)
+        if tool_name == "edit_strategy":
+            return await self._edit_strategy(args)
+        if tool_name == "get_strategy_code":
+            return self._get_strategy_code(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -321,6 +356,7 @@ class SchedulerPlugin:
 
     async def _run_gauntlet(
         self, args: dict, *, strategy_store=None, fetch=None,
+        origin: str = "generated", parent_version=None, strategy_id: "str | None" = None,
     ) -> ToolResult:
         """S11 Part 3: the production entry point for run_gauntlet.
 
@@ -416,6 +452,7 @@ class SchedulerPlugin:
                 scheduler=self, paper_broker=StubBrokerClient(),
                 symbol=symbol, strategy_code=code,
                 strategy_store=strategy_store, position_qty=1.0,
+                origin=origin, parent_version=parent_version, strategy_id=strategy_id,
             )
         except Exception as e:
             logger.warning(f"[scheduler] run_gauntlet failed for {symbol}: {e}", exc_info=True)
@@ -428,9 +465,53 @@ class SchedulerPlugin:
             "gates": [{"name": g.name, "passed": bool(g.passed)} for g in card.gates],
         }))
 
+    async def _edit_strategy(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
+        """S17 (#862): edit an existing strategy's code -- new version, full
+        gauntlet re-run, dispatch pointer only moves on VALIDATED. Delegates
+        to _run_gauntlet's existing auto-promote path via the origin/
+        parent_version/strategy_id params added for exactly this call --
+        no separate gauntlet-calling logic duplicated here."""
+        strategy_id = args.get("strategy_id", "").strip()
+        code = args.get("code", "").strip()
+        if not strategy_id or not code:
+            return ToolResult(content="strategy_id and code are required", is_error=True)
+
+        store = strategy_store if strategy_store is not None else StrategyStore()
+        spec = store.get(strategy_id)
+        parent = store.get_current_version(strategy_id)
+        if spec is None or parent is None:
+            return ToolResult(content=f"No existing strategy '{strategy_id}' to edit", is_error=True)
+
+        provenance = store.render_provenance(parent) + ", as modified by user"
+        return await self._run_gauntlet(
+            {
+                "code": code, "symbol": spec.symbol,
+                "hypothesis": parent["hypothesis"] or "",
+                "provenance": provenance,
+            },
+            strategy_store=store, fetch=fetch,
+            origin="user_edited", parent_version=parent["version"], strategy_id=strategy_id,
+        )
+
+    def _get_strategy_code(self, args: dict, *, strategy_store=None) -> ToolResult:
+        """S17 (#862): companion read -- current dispatched source + provenance."""
+        strategy_id = args.get("strategy_id", "").strip()
+        if not strategy_id:
+            return ToolResult(content="strategy_id is required", is_error=True)
+
+        store = strategy_store if strategy_store is not None else StrategyStore()
+        spec = store.get(strategy_id)
+        if spec is None:
+            return ToolResult(content=f"No strategy '{strategy_id}' found", is_error=True)
+
+        version_row = store.get_current_version(strategy_id)
+        provenance = store.render_provenance(version_row) if version_row is not None else "unknown"
+        return ToolResult(content=json.dumps({"code": spec.code, "provenance": provenance}))
+
     def _run_paper_strategy(
         self, strategy_name: str, broker, forward_record: "ForwardRecord",
         config: dict | None = None, store=None, fetch=None, phase: str = "paper",
+        dispatch_id: str | None = None,
     ) -> dict:
         """Runs one paper-trading tick for the given strategy. Pure trade
         execution -- event bookkeeping (marking a due event as dispatched)
@@ -463,7 +544,7 @@ class SchedulerPlugin:
                 return {"status": "skipped", "reason": "no strategy spec registered"}
 
             result = run_strategy_tick(
-                strategy_name, spec, broker, forward_record, fetch=fetch, phase=phase
+                dispatch_id or strategy_name, spec, broker, forward_record, fetch=fetch, phase=phase
             )
             logger.info(f"Paper tick for {strategy_name}: {result}")
             return result
