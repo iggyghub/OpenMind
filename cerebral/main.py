@@ -3433,7 +3433,7 @@ async def _trading_broadcast() -> None:
                     "recent_fills": [], "equity_curve": _trading_forward_record.get_equity_curve(name)
                 }
                 fills = _trading_forward_record.get_fills(limit=5, strategy_id=name)
-                p["recent_fills"] = [{"symbol": f["symbol"], "side": f["side"], "pnl": f["pnl"]} for f in fills]
+                p["recent_fills"] = [{"symbol": f["symbol"], "side": f["side"], "pnl": f["pnl"], "phase": f["phase"]} for f in fills]
                 positions.append(p)
             alerts = _trading_lifecycle.get_alert_history()
         await _broadcast({"type": "trading_update", "data": {"positions": positions, "alerts": alerts}})

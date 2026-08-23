@@ -177,15 +177,16 @@ function renderLiveStrategyCard(data, container) {
       <div class="card-section">
         <h3>Recent Fills</h3>
         <table class="fills-table">
-          <thead><tr><th>Symbol</th><th>Side</th><th>PnL</th></tr></thead>
+          <thead><tr><th>Symbol</th><th>Side</th><th>PnL</th><th>Phase</th></tr></thead>
           <tbody>
             ${(data.fills || []).slice(0, 5).map(f => `
               <tr>
                 <td>${f.symbol}</td>
                 <td>${f.side.toUpperCase()}</td>
                 <td>${f.pnl.toFixed(2)}</td>
+                <td><span class="phase-badge ${f.phase === 'live' ? 'live' : 'paper'}">${f.phase.toUpperCase()}</span></td>
               </tr>
-            `).join("") || '<tr><td colspan="3">No fills yet</td></tr>'}
+            `).join("") || '<tr><td colspan="4">No fills yet</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -210,7 +211,13 @@ function renderLiveStrategyCard(data, container) {
       .status-live { border-left: 5px solid #3498db; }
       .status-paper { border-left: 5px solid #f1c40f; }
       .status-halted { border-left: 5px solid #e74c3c; }
-      .lifecycle-badge { font-size: 0.75em; padding: 2px 6px; border-radius: 4px; background: #eee; text-transform: uppercase; }
+      .lifecycle-badge { font-size: 0.85em; padding: 4px 10px; border-radius: 6px; font-weight: bold; text-transform: uppercase; }
+      .status-live .lifecycle-badge { background: #3498db; color: #fff; }
+      .status-paper .lifecycle-badge { background: #f1c40f; color: #000; }
+      .status-halted .lifecycle-badge { background: #e74c3c; color: #fff; }
+      .phase-badge { padding: 2px 6px; border-radius: 4px; font-size: 0.75em; text-transform: uppercase; font-weight: 500; }
+      .phase-badge.live { background: #3498db; color: #fff; }
+      .phase-badge.paper { background: #f1c40f; color: #000; }
       .fills-table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-top: 6px; }
       .fills-table th, .fills-table td { padding: 4px 6px; border: 1px solid #eee; text-align: left; }
       .alert-list { list-style: none; padding: 0; font-size: 0.85em; }

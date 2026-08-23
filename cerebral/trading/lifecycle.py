@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import numpy as np
 
+from cerebral.paths import data_dir
 from cerebral.trading.alerts import AlertDispatcher, StructuredAlert
 from cerebral.trading.forward_record import ForwardRecord
 
@@ -27,10 +30,68 @@ class StrategyLifecycle:
     def __init__(self, alert_dispatcher: Optional[AlertDispatcher] = None) -> None:
         self._states: Dict[str, StrategyState] = {}
         self._dispatcher = alert_dispatcher
+        self._db_path = data_dir() / "lifecycle.sqlite"
+        self._init_db()
+        self._load_states()
+
+    def _init_db(self) -> None:
+        conn = sqlite3.connect(str(self._db_path))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_states (
+                name TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'paper',
+                live_trade_count INTEGER NOT NULL DEFAULT 0,
+                position_size_pct REAL NOT NULL DEFAULT 0.25,
+                live_equity_curve TEXT NOT NULL DEFAULT '[]',
+                promoted_at TEXT,
+                peak_live_equity REAL NOT NULL DEFAULT 0.0
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def _load_states(self) -> None:
+        if not self._db_path.exists():
+            return
+        conn = sqlite3.connect(str(self._db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM strategy_states").fetchall()
+        for row in rows:
+            state = StrategyState(
+                name=row["name"],
+                status=row["status"],
+                live_trade_count=row["live_trade_count"],
+                position_size_pct=row["position_size_pct"],
+                live_equity_curve=json.loads(row["live_equity_curve"]),
+                promoted_at=datetime.fromisoformat(row["promoted_at"]) if row["promoted_at"] else None,
+                peak_live_equity=row["peak_live_equity"],
+            )
+            self._states[state.name] = state
+        conn.close()
+
+    def _save_state(self, state: StrategyState) -> None:
+        conn = sqlite3.connect(str(self._db_path))
+        conn.execute("""
+            INSERT OR REPLACE INTO strategy_states
+            (name, status, live_trade_count, position_size_pct, live_equity_curve, promoted_at, peak_live_equity)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            state.name,
+            state.status,
+            state.live_trade_count,
+            state.position_size_pct,
+            json.dumps(state.live_equity_curve),
+            state.promoted_at.isoformat() if state.promoted_at else None,
+            state.peak_live_equity,
+        ))
+        conn.commit()
+        conn.close()
 
     def get_state(self, name: str) -> StrategyState:
         if name not in self._states:
-            self._states[name] = StrategyState(name=name, status="paper")
+            state = StrategyState(name=name, status="paper")
+            self._states[name] = state
+            self._save_state(state)
         return self._states[name]
 
     def update_live_fill(self, name: str, pnl: float) -> None:
@@ -42,6 +103,7 @@ class StrategyLifecycle:
         state.live_equity_curve.append(pnl if not state.live_equity_curve else state.live_equity_curve[-1] + pnl)
         state.peak_live_equity = max(state.peak_live_equity, state.live_equity_curve[-1])
         state.live_trade_count += 1
+        self._save_state(state)
 
     def check_graduation(self, name: str, record: ForwardRecord) -> bool:
         """Auto-promotes paper strategy to live when rolling CI excludes zero after 30+ trades."""
@@ -65,6 +127,7 @@ class StrategyLifecycle:
                     message=f"Strategy '{name}' graduated to live trading (25% size).",
                     context={"strategy": name},
                 ))
+            self._save_state(state)
             return True
         return False
 
@@ -81,6 +144,7 @@ class StrategyLifecycle:
             state.position_size_pct = 0.50
         else:
             state.position_size_pct = 1.0
+        self._save_state(state)
         return state.position_size_pct
 
     def check_retirement(self, name: str, worst_backtest_dd: float) -> bool:
@@ -112,6 +176,7 @@ class StrategyLifecycle:
     def _halt_strategy(self, name: str, reason: str) -> None:
         state = self.get_state(name)
         state.status = "halted"
+        self._save_state(state)
         if self._dispatcher:
             self._dispatcher.emit(StructuredAlert(
                 severity="critical",
