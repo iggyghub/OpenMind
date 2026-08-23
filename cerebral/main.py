@@ -246,7 +246,7 @@ from cerebral.trading.lifecycle import StrategyLifecycle
 from cerebral.trading.live_tick import dispatch_due_events as _dispatch_due_events
 from cerebral.trading.strategy_store import StrategyStore
 
-_scheduler_plugin = _SchedulerPlugin()
+_scheduler_plugin = _SchedulerPlugin(router=_router)
 # Paper only, deliberately: a StubBrokerClient can't reach a real market, so
 # no code path from this loop can fire a live order. Live execution waits on
 # an explicit manual arm/disarm toggle that does not exist yet.

@@ -73,7 +73,8 @@ def _parse_iso(s: "str | None") -> "datetime | None":
 class SchedulerPlugin:
     name = PLUGIN_NAME
 
-    def __init__(self, db_path=None):
+    def __init__(self, db_path=None, router=None):
+        self._router = router
         path = db_path if db_path is not None else str(_DEFAULT_DB)
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -169,11 +170,15 @@ class SchedulerPlugin:
                     "type": "object",
                     "properties": {
                         "code": {"type": "string", "description": "Python source: def strategy(data) -> signals"},
+                        "claim": {"type": "string", "description": "Trading hypothesis text to generate code from"},
+                        "url": {"type": "string", "description": "URL to extract a trading claim from"},
+                        "book": {"type": "string", "description": "Book title for provenance"},
+                        "chapter": {"type": "string", "description": "Chapter number for provenance"},
                         "symbol": {"type": "string", "description": "Ticker to backtest and, on VALIDATED, paper-trade"},
                         "hypothesis": {"type": "string", "description": "Falsifiable claim the strategy is testing"},
-                        "provenance": {"type": "string", "description": "Where the strategy came from (URL, book claim, 'user, verbatim')"},
+                        "provenance": {"type": "string", "description": "Where the strategy came from"},
                     },
-                    "required": ["code", "symbol", "hypothesis"],
+                    "required": ["symbol", "hypothesis"],
                 },
             ),
         ]
@@ -188,7 +193,7 @@ class SchedulerPlugin:
         if tool_name == "delete_event":
             return self._delete_event(args)
         if tool_name == "run_gauntlet":
-            return self._run_gauntlet(args)
+            return await self._run_gauntlet(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -314,7 +319,7 @@ class SchedulerPlugin:
         self._con.commit()
         return ToolResult(content=json.dumps({"id": event_id, "deleted": True}))
 
-    def _run_gauntlet(
+    async def _run_gauntlet(
         self, args: dict, *, strategy_store=None, fetch=None,
     ) -> ToolResult:
         """S11 Part 3: the production entry point for run_gauntlet.
@@ -335,11 +340,46 @@ class SchedulerPlugin:
         `store=None, fetch=None` convention.
         """
         code = args.get("code", "").strip()
+        claim = args.get("claim", "").strip()
+        url = args.get("url", "").strip()
+        book = args.get("book", "").strip()
+        chapter = args.get("chapter", "").strip()
         symbol = args.get("symbol", "").strip()
         hypothesis = args.get("hypothesis", "").strip()
         provenance = args.get("provenance", "")
-        if not code or not symbol or not hypothesis:
-            return ToolResult(content="code, symbol, and hypothesis are required", is_error=True)
+
+        if not symbol or not hypothesis:
+            return ToolResult(content="symbol and hypothesis are required", is_error=True)
+
+        idea = None
+        if code:
+            pass  # code provided directly
+        elif claim:
+            from cerebral.trading_ideas import from_prose
+            idea = from_prose(claim)
+        elif book and chapter:
+            from cerebral.trading_ideas import from_book_claim
+            idea = from_book_claim(claim or "Hypothesis from " + book, book, chapter)
+        elif url:
+            from cerebral.trading_ideas import extract_from_url
+            ideas = extract_from_url(url)
+            idea = ideas[0] if ideas else from_prose("URL provided but extraction returned nothing")
+        else:
+            return ToolResult(content="Either code, claim, book+chapter, or url is required", is_error=True)
+
+        if idea:
+            from cerebral.trading_ideas import to_strategy
+            if self._router:
+                try:
+                    code = await to_strategy(idea, router=self._router)
+                except Exception as exc:
+                    logger.warning("[scheduler] to_strategy router failed: %s; falling back to stub", exc)
+                    code = to_strategy(idea)
+            else:
+                code = to_strategy(idea)
+
+        if not code:
+            return ToolResult(content="Strategy generation failed", is_error=True)
 
         if fetch is None:
             from cerebral.trading_data import fetch_ohlcv as fetch
