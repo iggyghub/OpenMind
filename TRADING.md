@@ -3,12 +3,16 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S6 landed lifecycle mechanics only, autonomous execution
-not wired end-to-end yet (see S6's Landed PRs entry). S7 (#848) closes the
-gaps. Do not risk live capital until S7 lands. bonsai model server has
-returned 502 Bad Gateway on 3 consecutive S7 attempts today; per user's
-retry policy (feedback_bonsai_outage_retry_policy), waiting 5min and
-retrying, up to 5 attempts total before reporting a real outage.
+## Status: ready -- bonsai recovered on attempt 4; PR #849 (S7) opened but
+tests_failed on a real (pre-existing, unrelated) bug: tests/test_step_ledger.py
+had the same stale-mock issue commit 2a0f455 already fixed in
+cerebral/tests/test_spill_store.py, just in the repo-root tests/ dir that
+self_dev's test_fn also runs and I hadn't re-checked. Fixed on master
+(commit 88fd9da). Retriggering -- PR #849's own diff was untouched by
+this, so a fresh run should pass tests now. S6 landed lifecycle mechanics
+only; autonomous execution not wired end-to-end yet (see S6's Landed PRs
+entry). Do not risk live capital until S7's actual content is verified to
+close those gaps, not just until its tests pass.
 
 ## Next slice -- start here
 
