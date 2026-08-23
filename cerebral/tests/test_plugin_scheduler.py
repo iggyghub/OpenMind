@@ -1,4 +1,5 @@
 """Unit tests for SchedulerPlugin's paper-trade execution + dispatch (issue #848)."""
+import json
 import pytest
 from datetime import datetime, timedelta, timezone
 
@@ -253,3 +254,47 @@ def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, m
     # Paper only: nothing here can graduate on 2 trades, and nothing live fired.
     assert lifecycle.get_state("penny breakout").status == "paper"
     assert all(r["phase"] == "paper" for r in rows)
+
+
+def test_run_gauntlet_tool_schedules_event_on_validated(tmp_path, monkeypatch):
+    """Invokes the new MCP tool, asserts a VALIDATED verdict triggers an event."""
+    from cerebral.trading.live_tick import dispatch_due_events
+
+    plugin = _plugin(tmp_path)
+    
+    # Mock run_gauntlet to return a VALIDATED verdict and trigger auto-promote
+    mock_verdict_calls = []
+    def mock_gauntlet(code, symbol, hypothesis=None, provenance=None, scheduler=None, paper_broker=None, **kw):
+        mock_verdict_calls.append((code, symbol, hypothesis))
+        if scheduler:
+            # Simulate S9/S10 auto-promote: scheduler creates an event on VALIDATED
+            scheduler._create_event({
+                "title": f"Gauntlet {symbol}",
+                "start_iso": (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+                "recurrence": "5m",
+            })
+        return {"verdict": "VALIDATED", "equity_curve": [0, 1, 2]}
+    
+    monkeypatch.setattr("plugins.scheduler.run_gauntlet", mock_gauntlet)
+
+    tool_code = "def strategy(data):\n    return [1] * len(data)"
+    r = plugin.call_tool("run_gauntlet", {"code": tool_code, "symbol": "TSLA", "hypothesis": "momentum"})
+    
+    assert not r.is_error
+    data = json.loads(r.content)
+    assert data["verdict"] == "VALIDATED"
+    
+    # Verify event was scheduled by the mock auto-promote
+    due = plugin.list_due_events()
+    assert len(due) == 1
+    assert "Gauntlet TSLA" in due[0]["title"]
+    
+    # Verify dispatch chain works on the scheduled event
+    broker = StubBrokerClient()
+    record = _record(tmp_path, monkeypatch)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("Gauntlet TSLA", "TSLA", tool_code, qty=1.0))
+    
+    results = dispatch_due_events(plugin, broker, record, store=store, fetch=_fetch)
+    assert len(results) == 1
+    assert results[0]["status"] == "opened"

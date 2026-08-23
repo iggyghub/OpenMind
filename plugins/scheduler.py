@@ -14,6 +14,8 @@ from pathlib import Path
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.trading.live_tick import run_strategy_tick
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
+from cerebral.trading.gauntlet import run_gauntlet
+from cerebral.trading.broker import StubBrokerClient
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +152,21 @@ class SchedulerPlugin:
                     "required": ["id"],
                 },
             ),
+            Tool(
+                name="run_gauntlet",
+                description="Runs a live-pipeline gauntlet backtest for a strategy. Validates performance and, if VALIDATED, triggers auto-promotion to paper trading.",
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "code":         {"type": "string", "description": "Python source for the strategy function"},
+                        "symbol":       {"type": "string", "description": "Ticker symbol for backtesting"},
+                        "hypothesis":   {"type": "string", "description": "Optional hypothesis describing the strategy's edge"},
+                        "provenance":   {"type": "string", "description": "Optional provenance tag"},
+                    },
+                    "required": ["code", "symbol"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -161,6 +178,8 @@ class SchedulerPlugin:
             return self._update_event(args)
         if tool_name == "delete_event":
             return self._delete_event(args)
+        if tool_name == "run_gauntlet":
+            return self._run_gauntlet_tool(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -285,6 +304,31 @@ class SchedulerPlugin:
         self._con.execute("DELETE FROM events WHERE id=?", (event_id,))
         self._con.commit()
         return ToolResult(content=json.dumps({"id": event_id, "deleted": True}))
+
+    def _run_gauntlet_tool(self, args: dict) -> ToolResult:
+        code = args.get("code", "")
+        symbol = args.get("symbol", "")
+        hypothesis = args.get("hypothesis")
+        provenance = args.get("provenance")
+
+        if not code or not symbol:
+            return ToolResult(content="code and symbol are required", is_error=True)
+
+        try:
+            result = run_gauntlet(
+                code=code,
+                symbol=symbol,
+                hypothesis=hypothesis,
+                provenance=provenance,
+                scheduler=self,
+                paper_broker=StubBrokerClient(),
+            )
+            verdict = result.get("verdict", result.get("status", "UNKNOWN"))
+            logger.info(f"Gauntlet run for {symbol} finished with verdict: {verdict}")
+            return ToolResult(content=json.dumps({"verdict": verdict, "details": result}))
+        except Exception as e:
+            logger.warning(f"Gauntlet tool failed: {e}")
+            return ToolResult(content=f"Gauntlet execution failed: {e}", is_error=True)
 
     def _run_paper_strategy(
         self, strategy_name: str, broker, forward_record: "ForwardRecord",
