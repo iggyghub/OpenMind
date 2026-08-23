@@ -3,31 +3,27 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S12 landed; both gaps the full hand-trace found are
-closed (StrategyLifecycle now survives a restart; a live fill's phase is
-now visibly rendered in the UI, alongside a pre-existing key-mismatch
-bug that meant the fills table never rendered anything at all). Nothing
-left in the Queue. Still do not risk live capital: paper trading itself
-has not yet been run/observed over real time (no strategy has actually
-been submitted via run_gauntlet in production), and the ADR-0010 real
-sandbox for compile_strategy remains a partial mitigation, not full
-isolation -- see SAFETY section, flagged since S4/#843, never actioned.
+## Status: blocked -- waiting on a one-time user action before S13 can
+start: an `icacls` grant giving the AppContainer sandbox (ADR-0010) read
+access to the Python install directory. Spiked 2026-08-23:
+`WindowsSandbox().spawn([sys.executable, "-c", "print(1)"], ...)` fails
+with `0xC0000135` (STATUS_DLL_NOT_FOUND) -- the sandbox cannot load ANY
+Python interpreter today, confirmed clean against `cmd.exe echo hi`
+succeeding in the same sandbox. User chose to grant AppContainer access
+rather than bundle a separate Python or fall back to a weaker sandbox
+tier. Do not run S13 until the grant is confirmed and the spike re-run
+passes -- reset this to `ready` once that's true.
 
 ## Next slice -- start here
 
-- **Active:** none queued -- the Queue below is fully ticked. The
-  system can now, for the first time in this campaign, run end to end:
-  a user (or Felix) calls SchedulerPlugin's `run_gauntlet` tool with a
-  real strategy -> on VALIDATED it's registered and scheduled -> the
-  5-minute dispatch loop evaluates it, opens/closes paper positions,
-  and (only if armed AND graduated) would place a live order -> status
-  and every fill's phase survive a restart and are visible in the tray.
-  What's NOT yet true: no strategy has actually been run through this
-  in production (only in tests), and `trading_live_arm` has never been
-  set to True by anyone. Next real step is operational, not another
-  slice: submit a real strategy via the tool, watch it paper-trade for
-  real over days/weeks, and only consider arming once genuinely
-  satisfied -- exactly the caution the user already confirmed.
+- **Active:** S13 -- #858 -- sandboxed strategy evaluation, mechanism
+  only (unwired). See issue #858. Six more slices queued behind it
+  (S14-S19, #859-#864) -- real sandboxing, wiring `to_strategy` to an
+  actual free model (currently every generated strategy silently falls
+  through to a hardcoded stub regardless of source -- #860), strategy
+  lineage/versioning, editing, mixing, and a UI to use all of it. Full
+  plan and the open questions it resolved are in "Strategy building:
+  sandbox, edit, mix (2026-08-23 blueprint)" below.
 - **Model:** sonnet
 
 ## Queue
@@ -79,6 +75,21 @@ isolation -- see SAFETY section, flagged since S4/#843, never actioned.
   (Part A) + surface phase (paper/live) in the trading UI (Part B).
   Landed by hand, not via self_dev's own PR #857 (a test-isolation bug
   -- see Landed PRs). Both gaps the full hand-trace found are closed.
+
+- [ ] S13 -- #858 -- Sandboxed strategy evaluation, mechanism only
+  (unwired). Blocked on the icacls grant -- see Status.
+- [ ] S14 -- #859 -- Retire in-process compile_strategy exec; route
+  both call sites through S13's sandbox.
+- [ ] S15 -- #860 -- Wire to_strategy to a real free model (currently
+  every generated strategy is the hardcoded stub, regardless of source).
+- [ ] S16 -- #861 -- Strategy lineage: versions, structured provenance,
+  component tracking.
+- [ ] S17 -- #862 -- Edit a strategy's code (new version, full
+  re-validation, restarts clean on a live strategy -- user-confirmed).
+- [ ] S18 -- #863 -- Mix strategies into a composite (unanimous/majority
+  voting).
+- [ ] S19 -- #864 -- Trading panel: strategy list, source view, edit
+  box, lineage display.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -1015,6 +1026,57 @@ pipeline. The deliverable is *evidence about a strategy* that Felix also acts on
 | 20 | Phasing | Sequential -- S4 stays after gauntlet |
 | 21 | Settings | All thresholds, limits, and gate parameters are user-configurable |
 | 22 | Free only | No paid data sources, no paid models, free commissions |
+| 23 | Sandbox fix (2026-08-23) | AppContainer sandbox can't load Python at all (spiked, confirmed) -- user chose an icacls grant of AppContainer read access to the Python install dir, over bundling a separate Python or falling back to a weaker sandbox tier |
+| 24 | Sandbox transport (2026-08-23) | Bars via CSV, signals via a JSON file in the workdir (not stdout -- truncates at 30k chars) |
+| 25 | Sandbox cadence (2026-08-23) | Runs on every dispatch tick, not just once at validation -- caching a compiled callable would reintroduce in-process exec |
+| 26 | LLM wiring (2026-08-23) | to_strategy reuses task_type="coding" via the existing router -- no new task_type, no paid dependency; added as its own prerequisite slice (S15) since every strategy generated so far was silently the stub |
+| 27 | Edit + live history (2026-08-23) | An edit to a live strategy restarts clean (forward record scoped to strategy_id@version) -- user confirmed over carrying history across an edit, per the Honesty rule |
+| 28 | Mix modes (2026-08-23) | unanimous + majority only for v1 -- no weighted/threshold mode until a real use case needs it (YAGNI) |
+| 29 | Mix symbol constraint (2026-08-23) | All components of a mix must share the same symbol -- reject otherwise |
+| 30 | Edit/mix UI surface (2026-08-23) | A plain textarea in the Trading panel, not the Documents library (ADR-0011) -- wrong medium (docx vs Python source), wrong editor |
+| 31 | Build order (2026-08-23) | Sandbox (S13-S14) before edit/mix (S17-S18) -- contain the untrusted-code risk before more code flows through it, at the cost of edit/mix landing later |
+
+## Strategy building: sandbox, edit, mix (2026-08-23 blueprint)
+
+Full design produced by an Opus-model Plan agent, spiked and confirmed
+before any slice was filed. Six slices, in dependency order:
+
+- **S13 (#858)** -- `cerebral/trading/sandboxed_eval.py`: runs strategy
+  code in a real out-of-process sandbox (`WindowsSandbox`, ADR-0010) via
+  a child Python process, never `exec()` in Felix's own address space.
+  Mechanism only, unwired.
+- **S14 (#859)** -- retires `compile_strategy`'s in-process exec
+  entirely; both production call sites (`live_tick.py`, `plugins/
+  scheduler.py`) route through S13. Also fixes a warm-up-length crash
+  and an event-loop-blocking bug found while planning this.
+- **S15 (#860)** -- wires `to_strategy` to a real free model (task_type=
+  "coding" via the existing router). Without this, "strategies from
+  books/internet" all silently degrade to the same hardcoded stub
+  regardless of source -- discovered while blueprinting this, not
+  previously known.
+- **S16 (#861)** -- strategy lineage: a `strategy_versions` table
+  (structured provenance, origin, parent_version, components) alongside
+  the existing `strategy_specs` dispatch pointer. Prerequisite for S17/S18.
+- **S17 (#862)** -- edit a strategy's code via a new `edit_strategy` MCP
+  tool: new version, full gauntlet re-run, dispatch pointer only moves
+  on VALIDATED, forward record restarts clean (user-confirmed, #27).
+- **S18 (#863)** -- mix strategies into a composite via `compose_
+  strategies`/a `mix_strategies` tool: unanimous or majority voting,
+  right-aligned signal sequences, a new strategy_id, full gauntlet
+  required, provenance names every component at its pinned version.
+- **S19 (#864)** -- Trading panel: multiple strategies (not just
+  `positions[0]`), source view, provenance/version display, an edit
+  textarea wired to S17.
+
+**Real, load-bearing finding from the spike (2026-08-23), not assumed:**
+`WindowsSandbox().spawn([sys.executable, "-c", "print(1)"], workdir,
+timeout_s=15)` returns exit code `0xC0000135` (`STATUS_DLL_NOT_FOUND`)
+-- the AppContainer cannot load the Python interpreter at all, before
+even reaching pandas. Confirmed this is AppContainer-specific and not a
+general sandbox failure: `WindowsSandbox().spawn(["cmd.exe", "/c",
+"echo hi"], ...)` in the same sandbox succeeds (exit 0, "hi" on stdout).
+S13 cannot be meaningfully verified until the icacls grant (decision
+#23) is applied and this spike is re-run and passes.
 
 ## What already exists (reuse, do not rebuild)
 
