@@ -46,10 +46,119 @@ function renderTradingUpdate(data, container) {
     mount.innerHTML = '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
     return;
   }
-  // Render the first live/paper strategy card. Multiple concurrent
-  // strategies showing side-by-side is a real gap, not attempted here --
-  // matches the single-position shape _trading_broadcast() sends today.
-  renderLiveStrategyCard(data.positions[0], mount);
+
+  // S19: maintain interactive state on the mount element
+  if (!mount._strategyState) {
+    mount._strategyState = { selectedIdx: 0, strategies: data.positions, alerts: data.alerts || [] };
+  } else {
+    mount._strategyState.strategies = data.positions;
+    mount._strategyState.alerts = data.alerts || [];
+  }
+  const state = mount._strategyState;
+  const strategy = state.strategies[state.selectedIdx];
+
+  mount.innerHTML = `
+    <div class="trading-panel-layout">
+      <div class="strategy-list">
+        <h3>Strategies</h3>
+        <ul>
+          ${state.strategies.map((s, i) => `
+            <li class="${i === state.selectedIdx ? 'selected' : ''}" data-idx="${i}">
+              ${s.name} <span class="status-badge">${s.status.toUpperCase()}</span>
+            </li>
+          `).join('')}
+        </ul>
+      </div>
+      <div class="strategy-detail">
+        ${strategy ? `
+          <div class="detail-header">
+            <h2>${strategy.name}</h2>
+            <div class="version-badge">v${strategy.version ?? '0'}</div>
+          </div>
+          <div class="provenance-box">${strategy.provenance || 'No lineage recorded.'}</div>
+          <div class="edit-box">
+            <h3>Edit Strategy Code</h3>
+            <textarea class="strategy-code-editor" rows="12" spellcheck="false">${strategy.code || ''}</textarea>
+            <button class="save-strategy-btn">Save Changes</button>
+          </div>
+          <div class="fill-list">
+             <h3>Recent Fills</h3>
+             <table class="fills-table">
+               <thead><tr><th>Symbol</th><th>Side</th><th>PnL</th><th>Phase</th></tr></thead>
+               <tbody>
+                 ${(strategy.recent_fills || []).slice(0, 5).map(f => `
+                   <tr><td>${f.symbol}</td><td>${f.side.toUpperCase()}</td><td>${f.pnl.toFixed(2)}</td><td>${(f.phase || 'paper').toUpperCase()}</td></tr>
+                 `).join("") || '<tr><td colspan="4">No fills yet</td></tr>'}
+               </tbody>
+             </table>
+          </div>
+          <div class="alerts-box">
+             <h3>Alerts</h3>
+             <ul>${(state.alerts || []).slice(0, 5).map(a => `<li class="alert-${a.severity}">[${a.severity.toUpperCase()}] ${a.event_type}: ${a.message}</li>`).join("") || '<li>No alerts</li>'}</ul>
+          </div>
+        ` : '<div style="padding:16px;">Select a strategy.</div>'}
+      </div>
+    </div>
+  `;
+
+  // Wire list selection
+  mount.querySelectorAll('.strategy-list li').forEach(li => {
+    li.addEventListener('click', () => {
+      state.selectedIdx = parseInt(li.dataset.idx, 10);
+      renderTradingUpdate(data, mount);
+    });
+  });
+
+  // Wire edit save button
+  const saveBtn = mount.querySelector('.save-strategy-btn');
+  const textarea = mount.querySelector('.strategy-code-editor');
+  if (saveBtn && textarea && strategy) {
+    saveBtn.addEventListener('click', () => {
+      if (window.sendEvent) {
+        window.sendEvent({
+          type: 'strategy_edit',
+          data: {
+            strategy_name: strategy.name,
+            code: textarea.value,
+            version: strategy.version
+          }
+        });
+      }
+    });
+  }
+
+  // Inject styles (idempotent)
+  const styleId = "trading-panel-v2-styles";
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      .trading-panel-layout { display: flex; gap: 16px; font-family: sans-serif; }
+      .strategy-list { width: 220px; border-right: 1px solid #eee; padding-right: 12px; }
+      .strategy-list ul { list-style: none; padding: 0; margin: 0; }
+      .strategy-list li { padding: 8px; cursor: pointer; border-radius: 4px; margin-bottom: 4px; color: #333; }
+      .strategy-list li.selected { background: #e3f2fd; font-weight: bold; color: #0d47a1; }
+      .strategy-list li:hover { background: #f5f5f5; }
+      .status-badge { font-size: 0.7em; padding: 2px 5px; border-radius: 3px; background: #eee; margin-left: 6px; }
+      .strategy-detail { flex: 1; }
+      .detail-header { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #eee; padding-bottom: 8px; margin-bottom: 12px; }
+      .version-badge { background: #f1f1f1; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+      .provenance-box { background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 0.9em; white-space: pre-wrap; border-left: 3px solid #3498db; }
+      .edit-box { margin-top: 12px; }
+      .strategy-code-editor { width: 100%; font-family: monospace; font-size: 0.9em; padding: 8px; border: 1px solid #ccc; border-radius: 4px; resize: vertical; box-sizing: border-box; }
+      .save-strategy-btn { margin-top: 8px; padding: 6px 12px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; }
+      .save-strategy-btn:hover { background: #2980b9; }
+      .fill-list, .alerts-box { margin-top: 16px; }
+      .fills-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+      .fills-table th, .fills-table td { padding: 4px 6px; border: 1px solid #eee; text-align: left; }
+      .alerts-box ul { list-style: none; padding: 0; }
+      .alerts-box li { padding: 4px 0; border-bottom: 1px solid #f0f0f0; font-size: 0.9em; }
+      .alert-critical { color: #e74c3c; }
+      .alert-warning { color: #f39c12; }
+      .alert-info { color: #3498db; }
+    `;
+    document.head.appendChild(style);
+  }
 }
 
 /**

@@ -3431,10 +3431,17 @@ async def _trading_broadcast() -> None:
     try:
         if _active_profile:
             for name, state in _trading_lifecycle._states.items():
+                # S19: attach version, provenance, and source code for the edit surface
+                provenance = getattr(state, "provenance", "") or ""
+                if callable(getattr(state, "render_provenance", None)):
+                    provenance = state.render_provenance()
                 p = {
                     "name": name, "status": state.status, "live_trades": state.live_trade_count,
                     "promoted_at": state.promoted_at.isoformat() if state.promoted_at else None,
-                    "recent_fills": [], "equity_curve": _trading_forward_record.get_equity_curve(name)
+                    "recent_fills": [], "equity_curve": _trading_forward_record.get_equity_curve(name),
+                    "version": getattr(state, "version", 0),
+                    "provenance": provenance,
+                    "code": getattr(state, "code", ""),
                 }
                 fills = _trading_forward_record.get_fills(limit=5, strategy_id=name)
                 p["recent_fills"] = [{"symbol": f["symbol"], "side": f["side"], "pnl": f["pnl"], "phase": f["phase"]} for f in fills]
