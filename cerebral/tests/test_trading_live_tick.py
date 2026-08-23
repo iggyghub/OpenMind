@@ -291,7 +291,7 @@ def test_dispatch_runs_and_marks_each_due_event(tmp_path, monkeypatch):
 
     results = dispatch_due_events(sched, StubBrokerClient(),
                                   make_record(tmp_path, monkeypatch),
-                                  lifecycle=StrategyLifecycle())
+                                  lifecycle=StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite"))
 
     assert sched.ran == ["s1", "s2"]
     assert sched.marked == [1, 2]
@@ -300,7 +300,7 @@ def test_dispatch_runs_and_marks_each_due_event(tmp_path, monkeypatch):
 
 def test_dispatch_skips_a_halted_strategy_but_still_marks_it(tmp_path, monkeypatch):
     sched = FakeScheduler([{"id": 1, "title": "s1"}])
-    lifecycle = StrategyLifecycle()
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     lifecycle.get_state("s1").status = "halted"
 
     results = dispatch_due_events(sched, StubBrokerClient(),
@@ -317,7 +317,7 @@ def test_dispatch_graduates_a_strategy_whose_paper_pnl_clears_the_bar(tmp_path, 
     record = make_record(tmp_path, monkeypatch)
     for _ in range(30):
         record.add_fill("AAPL", "sell", 1.0, 12.0, pnl=2.0, strategy_id="s1")
-    lifecycle = StrategyLifecycle()
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     sched = FakeScheduler([{"id": 1, "title": "s1"}])
 
     results = dispatch_due_events(sched, StubBrokerClient(), record, lifecycle=lifecycle)
@@ -331,7 +331,7 @@ def test_dispatch_does_not_graduate_on_all_zero_pnl(tmp_path, monkeypatch):
     record = make_record(tmp_path, monkeypatch)
     for _ in range(30):
         record.add_fill("AAPL", "buy", 1.0, 12.0, pnl=0.0, strategy_id="s1")
-    lifecycle = StrategyLifecycle()
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
 
     dispatch_due_events(FakeScheduler([{"id": 1, "title": "s1"}]),
                         StubBrokerClient(), record, lifecycle=lifecycle)
@@ -351,7 +351,7 @@ def test_dispatch_does_not_graduate_on_all_zero_pnl(tmp_path, monkeypatch):
 def test_dispatch_stays_paper_when_disarmed_even_if_graduated(tmp_path, monkeypatch):
     paper_broker = StubBrokerClient()
     record = make_record(tmp_path, monkeypatch)
-    lifecycle = StrategyLifecycle()
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     lifecycle.get_state("s1").status = "live"
     sched = FakeScheduler([{"id": 1, "title": "s1"}])
 
@@ -364,7 +364,7 @@ def test_dispatch_stays_paper_when_disarmed_even_if_graduated(tmp_path, monkeypa
 def test_dispatch_stays_paper_when_armed_but_not_graduated(tmp_path, monkeypatch):
     paper_broker = StubBrokerClient()
     record = make_record(tmp_path, monkeypatch)
-    lifecycle = StrategyLifecycle()  # default status is "paper", not "live"
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")  # default status is "paper", not "live"
     sched = FakeScheduler([{"id": 1, "title": "s1"}])
 
     dispatch_due_events(sched, paper_broker, record, lifecycle=lifecycle, arm=True)
@@ -378,7 +378,7 @@ def test_dispatch_goes_live_only_when_armed_and_graduated(tmp_path, monkeypatch)
 
     paper_broker = StubBrokerClient()
     record = make_record(tmp_path, monkeypatch)
-    lifecycle = StrategyLifecycle()
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     lifecycle.get_state("s1").status = "live"
     sched = FakeScheduler([{"id": 1, "title": "s1"}])
 
@@ -395,7 +395,7 @@ def test_dispatch_arm_defaults_off(tmp_path, monkeypatch):
     like arm=False, never touching AlpacaBrokerClient."""
     paper_broker = StubBrokerClient()
     record = make_record(tmp_path, monkeypatch)
-    lifecycle = StrategyLifecycle()
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     lifecycle.get_state("s1").status = "live"
     sched = FakeScheduler([{"id": 1, "title": "s1"}])
 

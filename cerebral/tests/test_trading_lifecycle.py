@@ -12,8 +12,8 @@ def dispatcher():
 
 
 @pytest.fixture
-def lifecycle(dispatcher):
-    return StrategyLifecycle(alert_dispatcher=dispatcher)
+def lifecycle(dispatcher, tmp_path):
+    return StrategyLifecycle(alert_dispatcher=dispatcher, db_path=tmp_path / "lifecycle.sqlite")
 
 
 def test_graduation_requires_30_trades_and_positive_ci(lifecycle):
@@ -91,8 +91,74 @@ def test_alerts_emitted_on_graduation(lifecycle):
     mock_record = MagicMock()
     mock_record.compute_expectancy_ci.return_value = (0.2, 0.05, 0.35, True)
     lifecycle.check_graduation("alert_test", mock_record)
-    
+
     alerts = lifecycle.get_alert_history()
     assert len(alerts) == 1
     assert alerts[0].event_type == "paper_to_live_graduation"
     assert alerts[0].severity == "info"
+
+
+# ── S12 Part A: status must survive a restart (a fresh process = a fresh
+# StrategyLifecycle instance against the same db_path) ──────────────────────
+
+def test_graduation_survives_a_fresh_instance(tmp_path):
+    """The actual bug: a Felix restart used to silently drop every
+    strategy back to "paper" because StrategyLifecycle kept state in
+    memory only. Simulates a restart by throwing away the instance and
+    constructing a brand new one against the same path."""
+    db_path = tmp_path / "lifecycle.sqlite"
+    lifecycle = StrategyLifecycle(db_path=db_path)
+    mock_record = MagicMock()
+    mock_record.compute_expectancy_ci.return_value = (0.2, 0.05, 0.35, True)
+    lifecycle.check_graduation("restart_test", mock_record)
+    assert lifecycle.get_state("restart_test").status == "live"
+
+    fresh = StrategyLifecycle(db_path=db_path)  # a new process, same db
+
+    state = fresh.get_state("restart_test")
+    assert state.status == "live"
+    assert state.position_size_pct == 0.25
+    assert state.promoted_at is not None
+
+
+def test_ramp_and_live_equity_curve_survive_a_fresh_instance(tmp_path):
+    db_path = tmp_path / "lifecycle.sqlite"
+    lifecycle = StrategyLifecycle(db_path=db_path)
+    lifecycle.get_state("ramp_test").status = "live"
+    lifecycle._save_state(lifecycle.get_state("ramp_test"))
+    for _ in range(35):
+        lifecycle.update_live_fill("ramp_test", pnl=1.0)
+    lifecycle.apply_position_ramp("ramp_test")
+
+    fresh = StrategyLifecycle(db_path=db_path)
+
+    state = fresh.get_state("ramp_test")
+    assert state.live_trade_count == 35
+    assert state.position_size_pct == 0.50  # ramped past 30 trades
+    assert state.live_equity_curve[-1] == 35.0
+    assert state.peak_live_equity == 35.0
+
+
+def test_halt_survives_a_fresh_instance(tmp_path):
+    db_path = tmp_path / "lifecycle.sqlite"
+    lifecycle = StrategyLifecycle(db_path=db_path)
+    lifecycle.get_state("halt_test").status = "live"
+    lifecycle._save_state(lifecycle.get_state("halt_test"))
+    lifecycle._halt_strategy("halt_test", "test halt")
+
+    fresh = StrategyLifecycle(db_path=db_path)
+
+    assert fresh.get_state("halt_test").status == "halted"
+
+
+def test_two_instances_against_different_paths_do_not_share_state(tmp_path):
+    """The regression this whole fix exists to prevent: before db_path
+    injection existed, every StrategyLifecycle() in the test suite shared
+    ONE real file, so a strategy graduated in one test leaked "live"
+    status into an unrelated test using the same strategy name."""
+    a = StrategyLifecycle(db_path=tmp_path / "a.sqlite")
+    b = StrategyLifecycle(db_path=tmp_path / "b.sqlite")
+    a.get_state("s1").status = "live"
+    a._save_state(a.get_state("s1"))
+
+    assert b.get_state("s1").status == "paper"

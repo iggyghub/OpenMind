@@ -221,7 +221,7 @@ def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, m
     plugin = _plugin(tmp_path)
     broker = ScriptedPriceBroker([50.0, 55.0])  # buy at 50, sell at 55
     record = _record(tmp_path, monkeypatch)
-    lifecycle = StrategyLifecycle()
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("penny breakout", "PENNY", ALWAYS_LONG, qty=4.0))
     past = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
