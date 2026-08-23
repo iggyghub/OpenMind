@@ -38,6 +38,7 @@ dependencies = [
     "PyYAML>=6.0",  # S1 #537: SKILL.md front-matter parsing (skills subsystem, ADR-0014)
     "pandas>=2.0",  # S1a #831: trading_data OHLCV DataFrames
     "yfinance>=0.2",  # S1a #831: trading_data OHLCV source
+    "alpaca-py>=0.33.0",  # S21 #874: live/paper broker execution
     # computer_use (ADR-0016) _WindowsBackend deps -- Windows-only, so gated.
     # Absent, _make_default_backend() swallows the ImportError and every tool
     # returns "not available on this platform" with no obvious cause.

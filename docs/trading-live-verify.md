@@ -8,6 +8,24 @@ All unit tests in this repository use `StubBrokerClient` and do not hit real API
 - Valid `alpaca_live_key` and `alpaca_live_secret` stored in your OS keyring under `cerebral_alpaca`.
 - Paper trading mode is verified via CI; live mode requires manual execution.
 
+## Preflight (S21/#874)
+
+Before a graduated strategy is ever routed to a real Alpaca connection,
+`dispatch_due_events` calls `AlpacaBrokerClient.preflight()` once per tick
+it would otherwise go live. On failure it emits a `critical`
+`live_preflight_failed` alert and keeps the strategy on the paper broker
+instead of silently error-looping.
+
+To verify by hand against a REAL PAPER (never live) Alpaca account:
+1. Confirm `alpaca-py` is installed: `pip show alpaca-py`.
+2. With no keyring credentials set, graduate a strategy to live status and
+   confirm the dispatcher logs `live_preflight_failed` with reason
+   "Missing Alpaca credentials for env: live" and the strategy's fills stay
+   `phase="paper"`.
+3. Set real `alpaca_live_key`/`alpaca_live_secret` in the `cerebral_alpaca`
+   keyring service and confirm `preflight()` now reports success against a
+   real (paper-mode) account.
+
 ## Verification Steps
 
 ### 1. Graduation to Live

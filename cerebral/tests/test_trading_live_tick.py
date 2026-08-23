@@ -380,21 +380,58 @@ def test_dispatch_stays_paper_when_armed_but_not_graduated(tmp_path, monkeypatch
     assert sched.phases == ["paper"]
 
 
-def test_dispatch_goes_live_only_when_armed_and_graduated(tmp_path, monkeypatch):
-    from cerebral.trading.broker import AlpacaBrokerClient
+class FakePreflightBroker:
+    """Injected via live_broker_factory= so a test never constructs a real
+    AlpacaBrokerClient -- preflight() would otherwise make a genuine
+    credential/network check even inside a pure unit test (S21/#874)."""
 
+    def __init__(self, ok: bool = True, reason: str = "ok"):
+        self.env = "live"
+        self._ok = ok
+        self._reason = reason
+
+    def preflight(self):
+        return self._ok, self._reason
+
+
+def test_dispatch_goes_live_only_when_armed_and_graduated(tmp_path, monkeypatch):
     paper_broker = StubBrokerClient()
     record = make_record(tmp_path, monkeypatch)
     lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     lifecycle.get_state("s1").status = "live"
     sched = FakeScheduler([{"id": 1, "title": "s1"}])
 
-    dispatch_due_events(sched, paper_broker, record, lifecycle=lifecycle, arm=True)
+    dispatch_due_events(sched, paper_broker, record, lifecycle=lifecycle, arm=True,
+                         live_broker_factory=lambda: FakePreflightBroker(ok=True))
 
     assert len(sched.brokers) == 1
-    assert isinstance(sched.brokers[0], AlpacaBrokerClient)
+    assert isinstance(sched.brokers[0], FakePreflightBroker)
     assert sched.brokers[0].env == "live"
     assert sched.phases == ["live"]
+
+
+def test_dispatch_stays_paper_and_alerts_when_preflight_fails(tmp_path, monkeypatch):
+    """The acceptance test #874 names: preflight failure keeps the strategy
+    on paper (phase="paper") and emits a critical alert instead of silently
+    error-looping -- conservative-continue, per TRADING.md failure behaviour."""
+    paper_broker = StubBrokerClient()
+    record = make_record(tmp_path, monkeypatch)
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    lifecycle.get_state("s1").status = "live"
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+    dispatcher = AlertDispatcher()
+
+    dispatch_due_events(sched, paper_broker, record, lifecycle=lifecycle, arm=True,
+                         alert_dispatcher=dispatcher,
+                         live_broker_factory=lambda: FakePreflightBroker(ok=False, reason="no creds"))
+
+    assert sched.brokers == [paper_broker]
+    assert sched.phases == ["paper"]
+    alerts = dispatcher.get_pending()
+    assert len(alerts) == 1
+    assert alerts[0].event_type == "live_preflight_failed"
+    assert alerts[0].severity == "critical"
+    assert "no creds" in alerts[0].message
 
 
 def test_dispatch_arm_defaults_off(tmp_path, monkeypatch):
@@ -520,7 +557,8 @@ def test_dispatch_applies_live_ramp_to_the_open_qty(tmp_path, monkeypatch):
     lifecycle.get_state("s1").status = "live"  # fresh graduation: count=0 -> ramp 0.25
     sched = FakeScheduler([{"id": 1, "title": "s1"}])
 
-    dispatch_due_events(sched, broker, record, lifecycle=lifecycle, arm=True)
+    dispatch_due_events(sched, broker, record, lifecycle=lifecycle, arm=True,
+                         live_broker_factory=lambda: FakePreflightBroker(ok=True))
 
     assert sched.size_pcts == [0.25]
 

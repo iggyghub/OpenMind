@@ -3423,6 +3423,7 @@ async def _scheduler_loop() -> None:
                 lifecycle=_trading_lifecycle, store=_trading_strategy_store,
                 arm=_settings.get("trading_live_arm"),
                 risk=_risk_mgr,
+                alert_dispatcher=_alert_dispatcher,
             )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")

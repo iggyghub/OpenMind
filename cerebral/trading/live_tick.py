@@ -38,6 +38,7 @@ from datetime import date, timedelta
 from typing import Any, Callable, List, Optional, Sequence
 
 from cerebral.trading.broker import AlpacaBrokerClient, Position
+from cerebral.trading.alerts import AlertDispatcher, StructuredAlert
 from cerebral.trading.sandboxed_eval import evaluate_signals
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 
@@ -256,6 +257,8 @@ def dispatch_due_events(
     arm: bool = False,
     risk: Optional[Any] = None,
     size_pct: float = 1.0,
+    alert_dispatcher: Optional[AlertDispatcher] = None,
+    live_broker_factory: Optional[Callable[[], Any]] = None,
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
 
@@ -291,7 +294,26 @@ def dispatch_due_events(
             continue
 
         is_live = arm and lifecycle is not None and lifecycle.get_state(dispatch_id).status == "live"  # S17
-        current_broker = AlpacaBrokerClient(env="live") if is_live else broker
+        current_broker = broker
+        if is_live:
+            # Injectable so tests never construct a real AlpacaBrokerClient
+            # (whose preflight() would otherwise make a genuine credential/
+            # network check even inside a pure unit test) -- matches the
+            # existing fetch=/store=/risk= injection seams on this function.
+            live_broker = (live_broker_factory or (lambda: AlpacaBrokerClient(env="live")))()
+            ok, reason = live_broker.preflight()
+            if ok:
+                current_broker = live_broker
+            else:
+                # Conservative-continue (TRADING.md failure behaviour): stay
+                # on paper rather than silently error-looping every tick.
+                is_live = False
+                if alert_dispatcher is not None:
+                    alert_dispatcher.emit(StructuredAlert(
+                        severity="critical", event_type="live_preflight_failed",
+                        message=f"Live preflight failed for '{name}': {reason}. Staying on paper.",
+                        context={"strategy": name, "dispatch_id": dispatch_id, "reason": reason},
+                    ))
 
         # Ramp only advances (and only matters) once a strategy is actually
         # trading live -- a disarmed/paper strategy's live_trade_count never
