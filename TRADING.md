@@ -3,17 +3,16 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S18 landed (self_dev's 2nd attempt -- 1st hit a
-transient Bonsai 502 -- produced PR #871; tests_failed on a real
-majority-mode syntax bug caught by the PR's own test, plus a deeper
-components_json-never-threaded bug the PR's mocked tests couldn't see;
-both hand-fixed on top, see Landed PRs). `mix_strategies`/
-`compose_strategies` are real and reachable now.
+## Status: done -- S19 landed (self_dev's 2nd attempt -- 1st hit a
+transient Bonsai 502 -- produced PR #872; tests_failed was correct even
+though the diff shipped zero tests: 3 real bugs, see Landed PRs). The
+full S13-S19 strategy-building blueprint (sandbox, edit, mix, panel UI)
+is complete. Queue has no unticked slice -- see "What's next" below for
+the honest state of what remains before any of this is genuinely ready.
 
 ## Next slice -- start here
 
-- **Active:** S19 -- #864 -- Trading panel: strategy list, source view,
-  edit box, lineage display. See issue #864.
+- **Active:** none -- the queue is empty. See "What's next" below.
 - **Model:** sonnet
 
 ## Queue
@@ -89,7 +88,7 @@ both hand-fixed on top, see Landed PRs). `mix_strategies`/
   re-validation, restarts clean on a live strategy -- user-confirmed).
 - [x] S18 -- #863 -- Mix strategies into a composite (unanimous/majority
   voting).
-- [ ] S19 -- #864 -- Trading panel: strategy list, source view, edit
+- [x] S19 -- #864 -- Trading panel: strategy list, source view, edit
   box, lineage display.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
@@ -1459,6 +1458,142 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   repo-root `tests/`). PR #871 closed unmerged in favor of this
   hand-verified local landing (commits 0c9f574, 7311d69, and this
   TRADING.md update).
+
+- PR #872 -- S19 -- attempt 1 hit a transient Bonsai HTTP 502; reverted
+  TRADING.md's Status line (verified only that line changed), waited 5
+  minutes, retried. Attempt 2 succeeded. Touches `tray/` and
+  `cerebral/main.py`, both GUARDRAIL_PATHS per ADR-0015 -- self_dev can
+  only ever draft here, never auto-merge, so `tests_failed` (or any
+  merge_decision short of a clean pass) was always going to mean
+  "review by hand," regardless of what the diff actually contained.
+
+  Verified via the sandbox's own clone (`cerebral/data/sandbox/self_dev/
+  campaign-trading-s19`, `git diff 34783e9..bf27dd3`, 2 files / 121
+  lines, correctly based on current master). The structural shape was
+  reasonable -- a real multi-strategy list UI, the UMD wrapper kept
+  intact -- but **zero test files were touched**, the same red flag
+  S15/S16/S18 have each independently confirmed correlates with real
+  bugs on this campaign, and this was no exception. Three, none caught
+  by anything because nothing tested this code at all:
+
+  1. **Every strategy's provenance/version stayed permanently fake.**
+     `_trading_broadcast` (`cerebral/main.py`) read
+     `getattr(state, "provenance", "")`, `getattr(state, "version", 0)`,
+     `getattr(state, "code", "")` off `state` -- a `StrategyState`
+     object from `cerebral/trading/lifecycle.py`, which has none of
+     those attributes at all. The real data lives in `StrategyStore`
+     (S16-S18's `strategy_versions`/`strategy_specs`, already built and
+     working) -- never queried. The `getattr(..., default)` pattern
+     didn't crash, it just silently returned the default every single
+     time, so this would have shipped to a real user looking like a
+     completed feature (version badges, a provenance box) while
+     permanently showing blank/zero for every strategy. Fixed to
+     actually call `_trading_strategy_store.get()`/
+     `get_current_version()`/`render_provenance()`, stripping the
+     `"@vN"` dispatch-id suffix S17 introduced (`_trading_lifecycle`'s
+     own keys) to recover the base `strategy_id` `strategy_versions` is
+     keyed by.
+  2. **The Save button called `window.sendEvent` directly** -- the
+     exact bug `tray/lib/trading-panel.js`'s own header comment has
+     warned about by name since S9 ("neither of which anything in this
+     app ever sends"). Whether or not this happens to resolve in a real
+     browser (top-level function declarations in `main.html`'s own
+     non-module `<script>` block do attach to `window`), it directly
+     contradicts the file's own documented architecture -- and it's
+     untestable in the Node/jest harness this repo actually uses
+     (`window` doesn't exist there at all without a jsdom dependency
+     this campaign has deliberately avoided). Fixed by threading the
+     caller's real `sendEvent` through as an explicit parameter
+     (`renderTradingUpdate(data, container, sendEventFn)`), matching
+     every other panel's convention of the CALLER owning the transport,
+     never the module.
+  3. **No backend route for `strategy_edit` existed at all.** Even with
+     bug 2 fixed, `main.py`'s WS dispatcher (the giant `elif t == ...`
+     chain) had no branch for it -- the Save button would send into the
+     void regardless. Added one, calling the real `_scheduler_plugin.
+     call_tool("edit_strategy", ...)` (S17) and re-broadcasting trading
+     state afterward.
+
+  Fixed all three, plus extracted the Save button's event-building into
+  a pure `buildStrategyEditEvent(strategy, code)` function (matching
+  `self-dev-card.js`'s established `buildStateMessage` precedent) so
+  the event shape is directly unit-testable without simulating a DOM
+  click -- this repo's tray tests deliberately have no jsdom dependency
+  (S12's precedent), so a real click-simulation integration test (the
+  issue's own "(if practical)" hedge on this exact point) would have
+  needed either a new dependency or a hand-built DOM mock detailed
+  enough to risk becoming exactly the kind of fake-mock that hides real
+  bugs this campaign has repeatedly warned about -- skipped deliberately
+  rather than built badly. Added 4 new JS tests instead (multi-strategy
+  rendering, provenance/version actually rendered -- not just present in
+  the broadcast payload, S12's own lesson -- a no-lineage fallback, and
+  the real `buildStrategyEditEvent` shape). No new Python test for
+  `_trading_broadcast` itself: checked `cerebral/tests/
+  test_main_dispatcher.py` first and confirmed this codebase's own
+  convention is to test dispatcher isolation generically, never one
+  `elif` branch's business logic in isolation -- adding one here would
+  have been inconsistent with how every other branch in that same
+  function is (and isn't) tested.
+
+  Full suite: 5122 passed, 7 skipped, 0 failed (`cerebral/tests/` +
+  repo-root `tests/`); tray JS: 29 suites, 753 tests, including
+  `render-smoke.test.js` (the test that already caught a real main.html
+  regression once, at S9). PR #872 closed unmerged in favor of this
+  hand-verified local landing (commits e0c92a4, 9230f09, and this
+  TRADING.md update).
+
+  **The full S13-S19 blueprint (2026-08-23 -- sandbox, edit, mix, panel
+  UI) is now complete.** See "What's next" below for what that does and
+  doesn't mean.
+
+## What's next
+
+The S13-S19 blueprint is code-complete and hand-verified, the same way
+every slice in this campaign has been -- passing tests were never
+treated as sufficient on their own, and that discipline found a real,
+often severe bug in every single one of S17, S18, and S19 that a
+passing (or, for S17/S18's `tests_failed` cases, a *reasonable-looking*
+failing) test suite did not catch by itself. What is genuinely true
+right now:
+
+- A strategy's source can be edited (`edit_strategy`) with a real new
+  version, a real full gauntlet re-run, and a dispatch pointer that only
+  moves on VALIDATED.
+- Multiple validated strategies can be mixed (`mix_strategies`) into a
+  real composite that runs through the identical sandbox/gauntlet/
+  dispatch path as any other strategy, with real, readable-back lineage
+  naming every component.
+- The Trading panel shows every tracked strategy, its real version and
+  provenance, its source, and an edit box that round-trips through the
+  real `edit_strategy` tool end to end.
+
+What is still NOT true, same as every prior "landed" milestone in this
+campaign -- do not read "the blueprint is complete" as "ready":
+
+- **No real strategy has been submitted through any of this in
+  production.** Every chain above is exercised by tests (now including
+  real, unmocked ones for S17/S18/S19's own new surfaces) -- nothing in
+  the live app has actually called `edit_strategy`/`mix_strategies` with
+  real user intent yet.
+- **The arm toggle has never been set to True.** Live capital is not
+  and has never been at risk anywhere in this campaign. That posture is
+  unchanged by S13-S19.
+- **`render_provenance`'s `mixed` branch embeds a raw JSON string**,
+  not a formatted one -- functionally satisfies "names every component"
+  (confirmed by the S18 end-to-end test) but isn't pretty. Low priority,
+  cosmetic only.
+- **No `get_version(strategy_id, n)` reader exists** -- only
+  `get_current_version`. S19's panel shows the CURRENT version's
+  provenance/code for every tracked strategy, even one whose particular
+  `StrategyState` entry (keyed by an older `"<id>@v<n>"`) represents a
+  now-superseded version. Acceptable for what the acceptance criteria
+  actually asked for; would need a real reader to show historical
+  versions accurately.
+- **Operational, not code, is the real remaining step**: run a real
+  strategy through paper trading for real, over real time, watch an
+  edit or a mix actually go through the panel with a human driving it --
+  the standing next step this campaign's own notes have repeated since
+  S12, still true.
 
 ## Thesis
 
