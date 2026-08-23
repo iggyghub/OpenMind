@@ -35,6 +35,8 @@ class Order:
     side: str
     type: str
     status: str
+    price: float = 0.0
+    fees: float = 0.0
 
 
 @runtime_checkable
@@ -142,6 +144,8 @@ class AlpacaBrokerClient:
             side=filled_order.side.value,
             type=filled_order.type.value,
             status=filled_order.status.value,
+            price=0.0,  # Live fill price populated on status update
+            fees=0.0,
         )
 
     def cancel_order(self, order_id: str) -> None:
@@ -151,6 +155,8 @@ class AlpacaBrokerClient:
     def get_order(self, order_id: str) -> Order:
         self._connect()
         o = self._client.get_order_by_id(order_id)
+        # Populate fill price from Alpaca's confirmed fill_avg_price
+        fill_price = float(o.fill_avg_price) if o.fill_avg_price else 0.0
         return Order(
             id=o.id,
             symbol=o.symbol,
@@ -159,6 +165,8 @@ class AlpacaBrokerClient:
             side=o.side.value,
             type=o.type.value,
             status=o.status.value,
+            price=fill_price,
+            fees=float(o.fees) if o.fees else 0.0,
         )
 
 
@@ -199,9 +207,14 @@ class StubBrokerClient:
             filled_qty = float(qty) * self._partial_fill_ratio
             status = "PARTIALLY_FILLED" if filled_qty < float(qty) else "FILLED"
 
+        # Simulated quote/price model for test fills
+        simulated_price = limit_price if limit_price else 100.0 + (abs(hash(symbol)) % 500) / 10.0
+
         order = Order(
             id=order_id, symbol=symbol, qty=qty,
             filled_qty=filled_qty, side=side, type=type, status=status,
+            price=simulated_price,
+            fees=round(qty * simulated_price * 0.001, 2),  # 0.1% simulated fee
         )
         self._orders[order_id] = order
 
@@ -220,8 +233,8 @@ class StubBrokerClient:
                 symbol=symbol,
                 qty=float(qty) if side == "buy" else -float(qty),
                 avg_entry_price=100.0, side=side,
-                market_value=100.0 * (float(qty) if side == "buy" else -float(qty)),
-                unrealized_pl=0.0, current_price=100.0,
+                market_value=simulated_price * (float(qty) if side == "buy" else -float(qty)),
+                unrealized_pl=0.0, current_price=simulated_price,
             )
         return order
 
