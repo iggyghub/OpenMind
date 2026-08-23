@@ -1,10 +1,10 @@
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Callable, Tuple, Optional, Sequence
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
 from .cost_model import apply_costs_to_returns, Trade
-from .forward_record import ForwardRecord
 
 
 @dataclass
@@ -287,12 +287,22 @@ def run_gauntlet(
     sharpe_ci = _bootstrap_ci(daily_returns, rng=rng)
     total_return_ci = _bootstrap_ci(np.cumprod(1 + daily_returns) - 1, rng=rng)
 
-    # Auto-promote to paper trading on gauntlet pass. Routes through
-    # scheduler's own public _run_paper_strategy (added alongside this
-    # slice) rather than writing to scheduler._con directly -- reaching
-    # into a plugin's private connection from cerebral/ is exactly what
-    # the seam rule (an explicit S5c acceptance criterion) exists to
-    # prevent, and scheduler.py already exposes the real API for this.
+    # Auto-promote to paper trading on gauntlet pass. Registers a recurring
+    # scheduler event via the plugin's own public _create_event -- reaching
+    # into scheduler's private connection from cerebral/ is exactly what the
+    # seam rule (an explicit S5c acceptance criterion) exists to prevent.
+    #
+    # S9: this used to call scheduler._run_paper_strategy(...) directly,
+    # once, at promotion time -- a strategy could never accumulate the 30
+    # trades check_graduation needs from a single call. The real recurring
+    # dispatcher (cerebral/main.py's _scheduler_loop, S9) polls
+    # scheduler.list_due_events() and calls _run_paper_strategy itself on
+    # each due event, using its own shared broker/ForwardRecord -- this
+    # call site's only job now is registering that the strategy should be
+    # dispatched, not dispatching it. paper_broker is still required to gate
+    # auto-promotion (a caller not wanting live trading wired can pass
+    # None), even though it's no longer threaded through to the scheduler
+    # call -- the dispatcher supplies its own broker instance.
     #
     # No seed fill: ForwardRecord's own __post_init__ already creates the
     # table on construction, so there was never a reason to write one. A
@@ -300,22 +310,14 @@ def run_gauntlet(
     # the 30-trade minimum without being a real trade -- the forward
     # record only ever gets real broker fills once actual paper trading
     # starts placing and recording them.
-    #
-    # ponytail: this places exactly one paper trade at the moment the
-    # gauntlet passes -- there is still no recurring timer that re-invokes
-    # _run_paper_strategy on the requested interval, so a strategy cannot
-    # accumulate the 30 trades check_graduation needs from this call alone.
-    # A real scheduler tick loop (something periodically dispatching
-    # scheduler._list_events()'s due events to _run_paper_strategy) is a
-    # separate, bigger piece; add when that's built.
     if auto_promote and verdict == "VALIDATED" and scheduler and paper_broker:
         strategy_name = hypothesis or provenance
-        scheduler._run_paper_strategy(
-            strategy_name,
-            paper_broker,
-            ForwardRecord(),
-            {"interval": "5m"},
-        )
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        scheduler._create_event({
+            "title": strategy_name,
+            "start_iso": now_iso,
+            "recurrence": "5m",
+        })
 
     card = StrategyCard(
         hypothesis=hypothesis,

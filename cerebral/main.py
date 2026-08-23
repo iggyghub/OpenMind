@@ -233,7 +233,12 @@ if _active_profile:
 # User-overridable via the set_task_model IPC / Settings → Models.
 _quality_default = _router.seed_quality_default()
 
-# ── S7/S8: Autonomous paper-trade execution loop & UI wiring ──────────────────
+# ── S7/S8/S9: Autonomous paper-trade execution loop & UI wiring ───────────────
+# _scheduler_loop is started from main() (below, alongside heartbeat/rss_task)
+# -- NOT here. This module-level section runs at import time, before any
+# event loop exists; asyncio.create_task() here would fail (or, if it
+# happened to run, would call _scheduler_loop before its def is reached
+# later in this file -- both real bugs a fresh self-dev edit hit).
 from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
@@ -244,8 +249,6 @@ _trading_broker = StubBrokerClient()
 _trading_forward_record = ForwardRecord()
 _trading_lifecycle = StrategyLifecycle()
 
-# Start the autonomous execution loop
-asyncio.create_task(_scheduler_loop())
 # Video pipeline routes local-only (no Budd/OpenClaw dependency for a long
 # unattended batch); falls through to the active model if no local model exists.
 _video_default = _router.seed_video_default()
@@ -3304,15 +3307,32 @@ def _parse_context_window(raw, kind: str = "") -> int | None:
 
 
 async def _scheduler_loop() -> None:
-    """Background loop that polls for due scheduler events and triggers paper trades (S7/S8).
-    Runs every 5 minutes. Idempotent via event.last_run_iso tracking. Backs off on repeated failures."""
+    """Background loop that polls for due scheduler events and triggers paper
+    trades (S7-S9). Runs every 5 minutes. Idempotent via
+    SchedulerPlugin.list_due_events()/mark_event_run() -- a recurring event
+    is only re-dispatched once its own recurrence interval has elapsed since
+    its last run, not on every tick. Marks an event run regardless of the
+    trade's own outcome (not just on success): a persistently failing
+    strategy should retry at its normal interval, not spam every 5-minute
+    tick forever."""
     logger.info("[cerebral] Starting autonomous paper-trade scheduler loop")
     while not _shutdown.is_set():
         try:
             due_events = _scheduler_plugin.list_due_events()
             for evt in due_events:
                 logger.info(f"[cerebral] Scheduler dispatching event: {evt['title']} at {evt['start_iso']}")
-                _scheduler_plugin._run_paper_strategy(evt["title"], _trading_broker, _trading_forward_record, {})
+                result = _scheduler_plugin._run_paper_strategy(
+                    evt["title"], _trading_broker, _trading_forward_record, {}
+                )
+                logger.info(f"[cerebral] Dispatch result for {evt['title']}: {result}")
+                _scheduler_plugin.mark_event_run(evt["id"])
+                # Registers the strategy in the lifecycle tracker (a no-op if
+                # already tracked) purely so it shows up in _trading_broadcast --
+                # StrategyLifecycle's live-trade counters are untouched here,
+                # this dispatch loop only ever places paper trades.
+                _trading_lifecycle.get_state(evt["title"])
+            if due_events:
+                await _trading_broadcast()
         except Exception as e:
             logger.warning(f"[cerebral] Scheduler loop iteration failed (backing off): {e}", exc_info=True)
         await asyncio.sleep(300)
@@ -6012,6 +6032,9 @@ async def _handle_message(msg: dict) -> None:
             except Exception as exc:
                 logger.warning("[cerebral] doc_save_to_disk failed: %s", exc)
 
+    elif t == "trading_poll":  # S9 -- Trading Panel initial fetch + refresh
+        await _handle_trading_poll(msg.get("data", {}))
+
 
 # ── WebSocket handler ─────────────────────────────────────────────────────────
 
@@ -7481,10 +7504,12 @@ async def main() -> None:
                 "[cerebral] RSS poller disabled (set %s to enable)",
                 RSS_POLL_INTERVAL_ENV,
             )
+        scheduler_task = asyncio.create_task(_scheduler_loop())
         await _shutdown.wait()
         heartbeat.cancel()
         if rss_task is not None:
             rss_task.cancel()
+        scheduler_task.cancel()
 
     if pipeline is not None:
         pipeline.stop()

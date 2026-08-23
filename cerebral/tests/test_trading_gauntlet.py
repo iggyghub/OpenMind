@@ -251,8 +251,8 @@ class TestAutoPromote:
         calls = []
 
         class FakeScheduler:
-            def _run_paper_strategy(self, strategy_name, broker, forward_record, config=None):
-                calls.append((strategy_name, broker, forward_record, config))
+            def _create_event(self, args):
+                calls.append(args)
 
         card = run_gauntlet(
             make_backtest, make_prices(), make_params(), make_benchmark_prices(),
@@ -261,18 +261,16 @@ class TestAutoPromote:
         )
         assert card.verdict == "VALIDATED"
         assert len(calls) == 1
-        strategy_name, broker, forward_record, config = calls[0]
-        assert strategy_name == "MA cross test"
-        assert broker is not None
-        assert forward_record is not None
-        assert config["interval"] == "5m"
+        assert calls[0]["title"] == "MA cross test"
+        assert calls[0]["recurrence"] == "5m"
+        assert calls[0]["start_iso"]
 
     def test_unvalidated_does_not_schedule(self):
         calls = []
 
         class FakeScheduler:
-            def _run_paper_strategy(self, strategy_name, broker, forward_record, config=None):
-                calls.append((strategy_name, broker, forward_record, config))
+            def _create_event(self, args):
+                calls.append(args)
 
         card = run_gauntlet(
             lambda p, pr: ([100.0] * len(p), {"sharpe": 0.0, "total_return": 0.0}),
@@ -284,13 +282,14 @@ class TestAutoPromote:
 
     def test_no_paper_broker_does_not_schedule(self):
         # scheduler present but paper_broker=None (the default) must also be
-        # a safe no-op -- _run_paper_strategy needs a real broker to place
-        # orders through, a scheduler object alone isn't enough.
+        # a safe no-op -- paper_broker gates whether auto-promotion is
+        # wanted at all, even though the scheduler event itself no longer
+        # carries the broker (the dispatcher supplies its own).
         calls = []
 
         class FakeScheduler:
-            def _run_paper_strategy(self, strategy_name, broker, forward_record, config=None):
-                calls.append((strategy_name, broker, forward_record, config))
+            def _create_event(self, args):
+                calls.append(args)
 
         card = run_gauntlet(
             make_backtest, make_prices(), make_params(), make_benchmark_prices(),

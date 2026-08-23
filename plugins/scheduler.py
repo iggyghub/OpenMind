@@ -6,6 +6,7 @@ SQLite-backed (same openmind.db). No external calendar deps.
 """
 import json
 import logging
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,6 +27,41 @@ from cerebral.paths import data_dir
 _DEFAULT_DB = data_dir() / "openmind.db"
 
 _VALID_RECURRENCES = {"daily", "weekly", "monthly"}
+# S7-S9: short intraday intervals for the autonomous paper-trade dispatcher
+# (gauntlet.py schedules "5m") -- a separate pattern from the calendar-style
+# literals above rather than folding "5m" into _VALID_RECURRENCES, since it's
+# a different axis (a duration, not a named cadence).
+_SHORT_RECURRENCE_RE = re.compile(r"^(\d+)(m|h)$")
+
+
+def _is_valid_recurrence(recurrence: str) -> bool:
+    return recurrence in _VALID_RECURRENCES or bool(_SHORT_RECURRENCE_RE.match(recurrence))
+
+
+def _recurrence_interval(recurrence: str | None) -> "timedelta | None":
+    """Time between recurrences, or None for a one-time event / unknown value."""
+    if not recurrence:
+        return None
+    if recurrence == "daily":
+        return timedelta(days=1)
+    if recurrence == "weekly":
+        return timedelta(weeks=1)
+    if recurrence == "monthly":
+        return timedelta(days=30)  # approximate -- fine for a due-check, not billing
+    m = _SHORT_RECURRENCE_RE.match(recurrence)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        return timedelta(minutes=n) if unit == "m" else timedelta(hours=n)
+    return None
+
+
+def _parse_iso(s: "str | None") -> "datetime | None":
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
 
 
 class SchedulerPlugin:
@@ -139,9 +175,13 @@ class SchedulerPlugin:
             return ToolResult(content="title is required", is_error=True)
         if not start_iso:
             return ToolResult(content="start_iso is required", is_error=True)
-        if recurrence and recurrence not in _VALID_RECURRENCES:
+        if recurrence and not _is_valid_recurrence(recurrence):
             return ToolResult(
-                content=f"recurrence must be one of {sorted(_VALID_RECURRENCES)}", is_error=True
+                content=(
+                    f"recurrence must be one of {sorted(_VALID_RECURRENCES)} "
+                    "or a short interval like '5m'/'1h'"
+                ),
+                is_error=True,
             )
 
         cur = self._con.execute(
@@ -173,15 +213,43 @@ class SchedulerPlugin:
         return ToolResult(content=json.dumps({"events": events}))
 
     def list_due_events(self) -> list[dict]:
-        """Return events due in the last 5 minutes that haven't been run yet.
-        Used by the autonomous paper-trade execution loop (S7/S8)."""
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-        five_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S")
+        """Return events due for dispatch right now (S7-S9 autonomous
+        paper-trade loop): a never-run event whose start_iso has passed, or
+        a recurring event whose recurrence interval has elapsed since
+        last_run_iso.
+
+        Filters candidates in SQL (recurring, or never run) then checks the
+        actual due-ness in Python -- comparing "now minus a per-recurrence
+        timedelta" against last_run_iso doesn't reduce to a single SQL
+        expression cleanly across daily/weekly/monthly/Nm/Nh, and the
+        candidate set (one event per active strategy) is small enough that
+        this never needs to be a database-side filter.
+        """
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         rows = self._con.execute(
-            "SELECT * FROM events WHERE start_iso >= ? AND start_iso <= ? AND (last_run_iso IS NULL OR last_run_iso != start_iso) ORDER BY start_iso",
-            (five_mins_ago, now_iso)
+            "SELECT * FROM events WHERE recurrence IS NOT NULL OR last_run_iso IS NULL"
         ).fetchall()
-        return [_row_to_event(r) for r in rows]
+        due = []
+        for row in rows:
+            start = _parse_iso(row["start_iso"])
+            last_run = _parse_iso(row["last_run_iso"])
+            if last_run is None:
+                if start is not None and start <= now:
+                    due.append(row)
+                continue
+            interval = _recurrence_interval(row["recurrence"])
+            if interval is not None and now - last_run >= interval:
+                due.append(row)
+        return [_row_to_event(r) for r in due]
+
+    def mark_event_run(self, event_id: int) -> None:
+        """Records that a due event was just dispatched (S7-S9). Kept
+        separate from _run_paper_strategy -- that method's job is placing a
+        trade, not managing event bookkeeping; the dispatcher (which already
+        holds the event row) calls this after a successful dispatch."""
+        run_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        self._con.execute("UPDATE events SET last_run_iso=? WHERE id=?", (run_iso, event_id))
+        self._con.commit()
 
     def _update_event(self, args: dict) -> ToolResult:
         event_id = args.get("id")
@@ -217,8 +285,9 @@ class SchedulerPlugin:
         return ToolResult(content=json.dumps({"id": event_id, "deleted": True}))
 
     def _run_paper_strategy(self, strategy_name: str, broker, forward_record: "ForwardRecord", config: dict | None = None) -> dict:
-        """Executes a scheduled paper trade for the given strategy."""
-        run_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        """Executes a paper trade for the given strategy. Pure trade
+        execution -- event bookkeeping (marking a due event as dispatched)
+        is the caller's job; see mark_event_run()."""
         if not broker or not forward_record:
             return {"status": "skipped", "reason": "broker/record not provided"}
         config = config or {}
@@ -234,13 +303,6 @@ class SchedulerPlugin:
                 type="market",
             )
             if order.status == "FILLED":
-                # ponytail: Order (cerebral/trading/broker.py) has no price/fees
-                # field at all -- neither AlpacaBrokerClient nor StubBrokerClient
-                # ever populate a fill price, so there is genuinely nothing real
-                # to read here yet. Recording an explicit 0.0 rather than a
-                # fabricated number; add a real price field to Order (Alpaca's
-                # filled_avg_price for the live client, a simulated quote for
-                # the stub) before trusting forward_fills.price for anything.
                 forward_record.add_fill(
                     symbol=order.symbol,
                     side=order.side,
@@ -252,9 +314,6 @@ class SchedulerPlugin:
                     strategy_id=strategy_name
                 )
                 logger.info(f"Paper trade executed for {strategy_name}: {order.id}")
-                # Mark this event as run to ensure idempotency across restarts
-                self._con.execute("UPDATE events SET last_run_iso=? WHERE title=?", (run_iso, strategy_name))
-                self._con.commit()
                 return {"status": "executed", "order_id": order.id}
         except Exception as e:
             logger.warning(f"Paper trade execution failed for {strategy_name}: {e}")

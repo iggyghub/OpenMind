@@ -110,17 +110,17 @@ test('library pane exists with sub-tab bar (S5)', () => {
   expect(pane).not.toBeNull();
   const tabs = pane.querySelector('#lib-tabs');
   expect(tabs).not.toBeNull();
-  // Seven sub-tabs (memory / insights / recipes / documents / job-search /
-  // videos / github). Thinking (#816/#825) deliberately has NO tab button --
-  // pill-only, see the test below.
+  // Eight sub-tabs (memory / insights / recipes / documents / job-search /
+  // videos / github / trading -- issue #848 S9). Thinking (#816/#825)
+  // deliberately has NO tab button -- pill-only, see the test below.
   const tabBtns = pane.querySelectorAll('.lib-tab');
-  expect(tabBtns.length).toBe(7);
+  expect(tabBtns.length).toBe(8);
 });
 
-test('library pane contains memory, insights, recipes, documents, job-search, videos, github sub-sections', () => {
+test('library pane contains memory, insights, recipes, documents, job-search, videos, github, trading sub-sections', () => {
   const pane = root.querySelector('.pane[data-route="library"]');
   expect(pane).not.toBeNull();
-  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github']) {
+  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github', 'trading']) {
     const el = pane.querySelector(`.lib-sub[data-lib="${sub}"]`);
     expect(el).not.toBeNull();
   }
@@ -154,6 +154,22 @@ test('thinking-panel.js script tag is present', () => {
   const srcTags = root.querySelectorAll('script[src]');
   const found = srcTags.some(s => (s.getAttribute('src') || '').includes('thinking-panel'));
   expect(found).toBe(true);
+});
+
+// ── issue #848 (S9) — Trading panel wiring present ─────────────────────────
+
+test('trading-panel.js script tag is present', () => {
+  const srcTags = root.querySelectorAll('script[src]');
+  const found = srcTags.some(s => (s.getAttribute('src') || '').includes('trading-panel'));
+  expect(found).toBe(true);
+});
+
+test('trading lib-sub has the panel mount point', () => {
+  const pane = root.querySelector('.pane[data-route="library"]');
+  expect(pane).not.toBeNull();
+  const sub = pane.querySelector('.lib-sub[data-lib="trading"]');
+  expect(sub).not.toBeNull();
+  expect(sub.querySelector('#trading-panel-mount')).not.toBeNull();
 });
 
 test('THINKING pill and thinking feed element both exist', () => {

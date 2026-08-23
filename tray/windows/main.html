@@ -5919,6 +5919,7 @@
         <button class="lib-tab" data-lib="job-search" type="button">Job Search</button>
         <button class="lib-tab" data-lib="videos" type="button">Videos</button>
         <button class="lib-tab" data-lib="github" type="button">GitHub</button>
+        <button class="lib-tab" data-lib="trading" type="button">Trading</button>
       </div>
 
       <div class="lib-sub is-active" data-lib="memory">
@@ -6069,6 +6070,14 @@
         </div>
       </div>
 
+      <!-- Trading panel (issue #848, S6-S9) -- lifecycle status, fills, and
+           alert history for autonomous paper-trading strategies. Fed by
+           trading_update broadcasts (cerebral/main.py's _trading_broadcast),
+           polled on tab activation like GitHub/Videos above. -->
+      <div class="lib-sub" data-lib="trading">
+        <div id="trading-panel-mount"></div>
+      </div>
+
     </section>
 
       </div><!-- /.ws-primary -->
@@ -6131,6 +6140,11 @@
        toggled by the THINKING pill. Dual-mode: window.ThinkingPanelMod
        here, module.exports for Node tests. -->
   <script src="../lib/thinking-panel.js"></script>
+
+  <!-- Trading panel helpers (issue #848, S6-S9) -- strategy gauntlet cards +
+       live lifecycle/fills/alerts. Dual-mode: window.TradingPanelMod here,
+       module.exports for Node tests. -->
+  <script src="../lib/trading-panel.js"></script>
 
   <!-- Workspace shell (S2 -- #481) -- primary + secondary slot state layer.
        Dual-mode: window.WorkspaceMod here, module.exports for Node tests. -->
@@ -6785,6 +6799,10 @@
             errors:  (event.data && event.data.errors)  || [],
           };
           renderPlugins();
+          break;
+        case 'trading_update':
+          // Issue #848 (S9) -- Trading tab: lifecycle status, fills, alerts.
+          if (window.TradingPanelMod) window.TradingPanelMod.renderTradingUpdate(event.data);
           break;
         case 'plugins:list':
         case 'plugins:changed':
@@ -11725,6 +11743,14 @@
         startGithubPoll();
       } else {
         stopGithubPoll();
+      }
+      // Issue #848 (S9) -- Trading tab: show a loading placeholder and ask
+      // for current state on activation. No poll loop -- trading_update is
+      // pushed by the backend (see handleEvent's 'trading_update' case),
+      // this is just the initial fetch on tab open.
+      if (target === 'trading' && window.TradingPanelMod) {
+        window.TradingPanelMod.initTradingPanel();
+        sendEvent({ type: 'trading_poll' });
       }
     }
 

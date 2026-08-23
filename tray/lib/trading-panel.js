@@ -1,30 +1,55 @@
-/**
- * Wires up the Trading Panel UI in the tray.
- * Fetches initial state, renders, and listens for live updates via IPC.
+/* Trading panel helpers -- issue #848 (S6-S9).
+ * Dual-mode: window.TradingPanelMod in the renderer (main.html loads this
+ * via <script src>, matching thinking-panel.js's convention -- there is no
+ * `export`/`import` here because a plain <script> tag can't use ES module
+ * syntax), module.exports for Node tests.
+ *
+ * No WS/sendEvent logic lives in this file (that was the S9 bug: it called
+ * window.sendEvent/listened on window.addEventListener('message', ...),
+ * neither of which anything in this app ever sends -- the real transport is
+ * ws-bridge.js's onMessage callback, routed through main.html's own
+ * handleEvent(event) switch on event.type, exactly like every other panel).
+ * initTradingPanel() only prepares the mount and asks the caller to poll;
+ * renderTradingUpdate() is what main.html calls from its switch case.
  */
-export function initTradingPanel() {
+(function (root, factory) {
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = factory();
+  } else {
+    root.TradingPanelMod = factory();
+  }
+}(typeof self !== 'undefined' ? self : this, function () {
+
+/**
+ * Prepares the Trading Panel mount with a loading placeholder. Does not
+ * itself request data -- the caller (main.html) sends the initial
+ * `trading_poll` event via its own sendEvent() after calling this, and
+ * routes the `trading_update` response to renderTradingUpdate() the same
+ * way it routes every other broadcast.
+ */
+function initTradingPanel() {
   const mount = document.getElementById('trading-panel-mount');
   if (!mount) return;
+  mount.innerHTML = '<div style="padding:16px; color:var(--text-muted); text-align:center;">Loading trading state…</div>';
+}
 
-  const _renderState = (state) => {
-    if (!state || !state.positions || state.positions.length === 0) {
-      mount.innerHTML = '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
-      return;
-    }
-    // Render the first live/paper strategy card
-    const data = state.positions[0];
-    renderLiveStrategyCard(data, mount);
-  };
-
-  // Initial fetch
-  window.sendEvent({ type: 'trading_poll' });
-
-  // Listen for live updates
-  window.addEventListener('message', (evt) => {
-    if (evt.data?.type === 'trading_update') {
-      _renderState(evt.data.data);
-    }
-  });
+/**
+ * Renders a `trading_update` broadcast's data into the mount.
+ * @param {Object} data - { positions: [...], alerts: [...] } from
+ *   cerebral/main.py's _trading_broadcast()
+ * @param {HTMLElement} [container] - defaults to #trading-panel-mount
+ */
+function renderTradingUpdate(data, container) {
+  const mount = container || document.getElementById('trading-panel-mount');
+  if (!mount) return;
+  if (!data || !data.positions || data.positions.length === 0) {
+    mount.innerHTML = '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+    return;
+  }
+  // Render the first live/paper strategy card. Multiple concurrent
+  // strategies showing side-by-side is a real gap, not attempted here --
+  // matches the single-position shape _trading_broadcast() sends today.
+  renderLiveStrategyCard(data.positions[0], mount);
 }
 
 /**
@@ -32,7 +57,7 @@ export function initTradingPanel() {
  * @param {Object} card - StrategyCard object from gauntlet
  * @param {HTMLElement} container - DOM element to render into
  */
-export function renderStrategyCard(card, container) {
+function renderStrategyCard(card, container) {
   if (!container) return;
 
   const verdictClass = card.verdict === "VALIDATED" ? "pass" : card.verdict === "UNVALIDATED" ? "fail" : "warn";
@@ -131,7 +156,7 @@ export function renderStrategyCard(card, container) {
  * @param {Object} data - { name, status, live_trades, equity_curve, alerts, fills }
  * @param {HTMLElement} container
  */
-export function renderLiveStrategyCard(data, container) {
+function renderLiveStrategyCard(data, container) {
   if (!container) return;
   
   const statusClass = data.status === 'live' ? 'status-live' : data.status === 'paper' ? 'status-paper' : 'status-halted';
@@ -197,3 +222,12 @@ export function renderLiveStrategyCard(data, container) {
     document.head.appendChild(style);
   }
 }
+
+return {
+  initTradingPanel:    initTradingPanel,
+  renderTradingUpdate: renderTradingUpdate,
+  renderStrategyCard:  renderStrategyCard,
+  renderLiveStrategyCard: renderLiveStrategyCard,
+};
+
+}));
