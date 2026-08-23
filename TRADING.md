@@ -3,17 +3,24 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- S7 landed real, hand-verified progress (per-strategy
-scoping fully done; paper-trade execution now correct but not recurring;
-a real UI component exists but isn't wired into the app). Autonomous
-execution still isn't happening end-to-end -- see S7's Landed PRs entry.
-Do not risk live capital until S8 closes the remaining gaps.
+## Status: ready -- S8 landed real, small, correct progress on gap 2
+(Order fill price -- see Landed PRs). Gaps 1 (recurring dispatcher) and 3
+(UI wiring into main.html) are still untouched. Also surfaced a real infra
+problem (not a code bug): GitHub's own copy of `master` had been stuck at
+PR #841 since S3, because self_dev clones from this local checkout but
+`gh pr merge` still squash-merges against GitHub's own base branch tip --
+every hand-landed slice (S3-S7) never actually reached origin/master, and
+S8's squash merge collapsed all of it into one confusing 3000-line commit
+that looked like an unreviewed reimplementation until traced to its real,
+21-line source diff (see Landed PRs). Reconciled by force-pushing local
+master, which now carries S8's real fix as its own commit. Do not risk
+live capital; #848 remains open for gaps 1 and 3.
 
 ## Next slice -- start here
 
-- **Active:** S8 -- #848 (issue kept open, updated in place -- same
+- **Active:** S9 -- #848 (issue kept open, updated in place -- same
   tracking issue, not a new one; see the issue for the current remaining
-  scope after S7)
+  scope after S8)
 - **Model:** sonnet
 
 ## Queue
@@ -33,10 +40,16 @@ Do not risk live capital until S8 closes the remaining gaps.
   correct but one-shot, not recurring; UI component built but unwired --
   see Landed PRs note. Issue #848 updated in place with remaining scope,
   not closed)
-- [ ] S8 -- #848 -- Close S7's remaining gaps: a real recurring dispatcher
+- [x] S8 -- #848 -- Close S7's remaining gaps: a real recurring dispatcher
   for scheduled paper trades, a fill-price field on Order (broker.py),
-  and wiring the Trading Panel UI into main.html -- see issue #848 for
-  the current spec (updated 2026-08-22 after S7)
+  and wiring the Trading Panel UI into main.html -- landed the fill-price
+  field (StubBrokerClient gets a real simulated price, AlpacaBrokerClient.
+  get_order extracts the real fill_avg_price); dispatcher and UI wiring
+  still open -- see Landed PRs note
+- [ ] S9 -- #848 -- Close S8's remaining gaps: a real recurring dispatcher
+  for scheduled paper trades, and wiring the Trading Panel UI into
+  main.html -- see issue #848 for the current spec (updated 2026-08-22
+  after S8)
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -375,6 +388,71 @@ a new issue number -- its body was updated in place to the post-S7 scope.
   capital until at least the dispatcher exists -- without it,
   "autonomous execution" doesn't exist regardless of how correct the
   one-shot path now is.
+
+- PR #850 -- S8 -- auto-merged by self_dev_campaign, and the first slice
+  this campaign where that auto-merge genuinely reached GitHub's
+  origin/master (every slice since S3 had been hand-verified and landed
+  on local master instead, PR left open as a paper trail -- see S3/#842).
+  That surfaced a real, previously-invisible infra problem, initially
+  misdiagnosed as "S8 is an unreviewed from-scratch reimplementation" --
+  worth recording both the wrong first read and the real finding, since
+  the wrong read nearly threw away good work.
+
+  clone_fn (cerebral/self_dev_io.py) clones from this local checkout, not
+  GitHub -- confirmed the sandbox's own commit (030ccb3, in
+  cerebral/data/sandbox/self_dev/campaign-trading-s8) has local master's
+  real tip (201284d) as its direct parent, so the edit step worked
+  correctly against the full S3-S7 history. But `gh pr merge` still
+  squash-merges against GitHub's own copy of the base branch, and GitHub's
+  `master` had been stuck at PR #841 since S3 (nothing since had ever been
+  pushed there). Squash-merging a branch whose real diff was 21 lines
+  against a base 25 commits stale produced a single ~3000-line commit
+  (14e4ac5) that looked exactly like an independent from-scratch
+  reimplementation of the entire trading module in a `gh pr view`/`git
+  diff` against origin/master -- because GitHub had no reference point
+  closer than #841 to diff against. First read of that misleading diff
+  concluded S8 hadn't touched gaps 1/2/3 in any real way and nearly got
+  discarded via a full-history force-push with no cherry-picking. Caught
+  before acting: `git log` on the sandbox's own local clone directory
+  showed its actual commit's parent was 201284d (local master's real
+  tip), not #841 -- diffing 201284d..030ccb3 directly (bypassing GitHub's
+  stale-base view entirely) gave the true, small, legitimate slice diff.
+
+  The real diff (2 files, 21 lines): `Order` (cerebral/trading/broker.py)
+  gains `price`/`fees` fields; `StubBrokerClient.place_order` now computes
+  a real simulated price (`100.0 + hash(symbol)-derived offset`, a
+  deterministic per-symbol pseudo-quote) and a simulated 0.1% fee instead
+  of having no pricing concept at all; `AlpacaBrokerClient.get_order`
+  extracts Alpaca's real `fill_avg_price` (place_order's own return still
+  can't -- Alpaca doesn't confirm a fill price until a status check,
+  which nothing calls yet); `plugins/scheduler.py`'s `_run_paper_strategy`
+  now records the order's real price/fees instead of the explicit 0.0
+  placeholder S7 had left. Cherry-picked directly onto local master
+  (commit c7dd1a4) rather than kept as part of the misleading squash
+  commit. Full suite still green after: 5038 passed, 7 skipped, 0 failed.
+
+  Gap 2 (Order fill price) is now substantially real for paper trading
+  (the stub broker tests actually exercise) and partially real for live
+  (Alpaca's confirmed fill price is extractable, just not wired to a
+  post-place_order status check yet). Gaps 1 (recurring dispatcher) and 3
+  (UI wiring into main.html) are untouched -- confirmed directly in the
+  true diff, not assumed.
+
+  Reconciliation: force-pushed local master over origin/master with the
+  user's explicit go-ahead (asked first given the scale -- rewriting
+  already-merged public history). Local master, now including S8's real
+  fix as its own clean commit, is origin/master. PRs #843-847 remain open
+  on GitHub as they've been all campaign; #850's squash commit (14e4ac5)
+  is no longer part of origin/master's history.
+
+  Structural fix still needed, separate from any one slice: `gh pr merge`
+  squash-merging against GitHub's stale base is what actually produces
+  the misleading diffs and the eventual force-push need -- either push
+  local master to origin after every hand-verified landing (closing the
+  gap self_dev's own merges widen every time), or stop trusting
+  `gh pr view`/`git diff <base>..<head>` against a GitHub PR without first
+  confirming the PR's base is actually current. The second habit is now
+  established (this entry exists because of it); the first isn't.
 
 ## Thesis
 
