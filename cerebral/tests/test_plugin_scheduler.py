@@ -189,7 +189,13 @@ def test_end_to_end_due_event_dispatches_a_real_paper_trade(tmp_path, monkeypatc
     the dispatcher (cerebral/main.py's _scheduler_loop calls exactly this
     function) finds it due, evaluates the real strategy, executes it, and a
     real fill with a real price and the correct strategy_id lands in
-    forward_fills."""
+    forward_fills.
+
+    S17 (#862): the fill lands under the VERSIONED dispatch key
+    ("<id>@v<n>"), not the bare strategy_id -- store.save() (S16) always
+    creates a lineage row now, so dispatch_due_events always has a real
+    current_version to key the forward record by (decision #27's
+    restarts-clean-on-edit scoping)."""
     from cerebral.trading.live_tick import dispatch_due_events
 
     plugin = _plugin(tmp_path)
@@ -203,7 +209,7 @@ def test_end_to_end_due_event_dispatches_a_real_paper_trade(tmp_path, monkeypatc
     results = dispatch_due_events(plugin, broker, record, store=store, fetch=_fetch)
 
     assert [r["status"] for r in results] == ["opened"]
-    fills = record.get_fills(strategy_id="MA cross test")
+    fills = record.get_fills(strategy_id="MA cross test@v1")
     assert len(fills) == 1
     assert fills[0]["price"] > 0  # StubBrokerClient's real simulated price (S8), not a placeholder
     assert fills[0]["symbol"] == "AAPL"  # the spec's real ticker, not "SYMBOL"
@@ -214,7 +220,15 @@ def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, m
     """Two scheduled dispatches of one strategy: the signal flips from long to
     flat between ticks, so tick 1 opens and tick 2 closes -- and the closing
     fill carries a REAL realized P&L (entry vs exit x qty, less the broker's
-    own reported fee), not the hardcoded 0.0 every fill used to record."""
+    own reported fee), not the hardcoded 0.0 every fill used to record.
+
+    S17 (#862): the second store.save() below (swapping the code so the
+    strategy goes flat) is itself a new lineage version -- exactly the
+    "editing a strategy restarts its forward record" behavior decision #27
+    confirmed. So the open (v1) and close (v2) fills land under two
+    different dispatch keys, not one; the P&L math itself (closed[0]["pnl"],
+    computed live from the broker's own position, not read back from
+    storage) is unaffected and is still the test's real claim."""
     from cerebral.trading.live_tick import dispatch_due_events
     from cerebral.trading.lifecycle import StrategyLifecycle
 
@@ -256,13 +270,15 @@ def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, m
     expected_pnl = (55.0 - 50.0) * 4.0 - exit_fees    # 20.00 gross - 0.22 = 19.78
     assert closed[0]["pnl"] == pytest.approx(expected_pnl)
 
-    rows = record.get_fills(strategy_id="penny breakout")
-    assert len(rows) == 2
-    assert record.get_equity_curve("penny breakout")[-1] == pytest.approx(expected_pnl)
+    open_rows = record.get_fills(strategy_id="penny breakout@v1")
+    close_rows = record.get_fills(strategy_id="penny breakout@v2")
+    assert len(open_rows) == 1
+    assert len(close_rows) == 1
+    assert record.get_equity_curve("penny breakout@v2")[-1] == pytest.approx(expected_pnl)
     assert broker.list_positions() == []  # flat again, per the broker's own book
     # Paper only: nothing here can graduate on 2 trades, and nothing live fired.
-    assert lifecycle.get_state("penny breakout").status == "paper"
-    assert all(r["phase"] == "paper" for r in rows)
+    assert lifecycle.get_state("penny breakout@v2").status == "paper"
+    assert all(r["phase"] == "paper" for r in open_rows + close_rows)
 
 
 # ── S11 Part 3: run_gauntlet production entry point ─────────────────────────
@@ -428,3 +444,112 @@ async def test_run_gauntlet_claim_without_a_router_uses_the_stub(tmp_path):
 
     assert not result.is_error, result.content  # degrades to the stub, never crashes
     assert store.get("always flat") is None
+
+
+# ── S17 (#862): edit_strategy / get_strategy_code ────────────────────────────
+# edit_strategy delegates entirely to _run_gauntlet's existing auto-promote
+# path (origin/parent_version/strategy_id, added for exactly this call) --
+# these tests prove that delegation actually produces real lineage and only
+# moves the dispatch pointer on VALIDATED, using the real (unmocked)
+# run_gauntlet against the same _trend_prices/MA_CROSS_CODE fixtures S11c's
+# tests above already established.
+
+ALWAYS_FLAT_CODE = "def strategy(data):\n    return [0] * len(data)\n"
+
+
+async def _register_ma_cross(plugin, store, fetch):
+    result = await plugin._run_gauntlet(
+        {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "MA cross trend test"},
+        strategy_store=store, fetch=fetch,
+    )
+    assert json.loads(result.content)["verdict"] == "VALIDATED"
+
+
+async def test_edit_strategy_validated_records_a_new_version_and_moves_the_pointer(tmp_path):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end):
+        return _trend_prices()
+
+    await _register_ma_cross(plugin, store, fetch)
+    edited_code = MA_CROSS_CODE.replace("rolling(10)", "rolling(9)")
+
+    result = await plugin._edit_strategy(
+        {"strategy_id": "MA cross trend test", "code": edited_code},
+        strategy_store=store, fetch=fetch,
+    )
+
+    assert not result.is_error, result.content
+    assert json.loads(result.content)["verdict"] == "VALIDATED"
+
+    version_row = store.get_current_version("MA cross trend test")
+    assert version_row["version"] == 2
+    assert version_row["origin"] == "user_edited"
+    assert version_row["parent_version"] == 1
+
+    spec = store.get("MA cross trend test")
+    assert spec.code.rstrip() == edited_code.rstrip()  # dispatch pointer moved to the edit
+
+
+async def test_edit_strategy_unvalidated_does_not_move_the_dispatch_pointer(tmp_path):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end):
+        return _trend_prices()
+
+    await _register_ma_cross(plugin, store, fetch)
+
+    result = await plugin._edit_strategy(
+        {"strategy_id": "MA cross trend test", "code": ALWAYS_FLAT_CODE},
+        strategy_store=store, fetch=fetch,
+    )
+
+    assert not result.is_error, result.content
+    assert json.loads(result.content)["verdict"] == "UNVALIDATED"
+
+    # No new lineage row, and the strategy keeps running its last-good code.
+    version_row = store.get_current_version("MA cross trend test")
+    assert version_row["version"] == 1
+    spec = store.get("MA cross trend test")
+    assert spec.code.rstrip() == MA_CROSS_CODE.rstrip()
+
+
+async def test_edit_strategy_requires_an_existing_strategy(tmp_path):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    result = await plugin._edit_strategy(
+        {"strategy_id": "never registered", "code": ALWAYS_FLAT_CODE},
+        strategy_store=store,
+    )
+
+    assert result.is_error
+    assert "never registered" in result.content
+
+
+async def test_get_strategy_code_returns_real_source_and_provenance(tmp_path):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end):
+        return _trend_prices()
+
+    await _register_ma_cross(plugin, store, fetch)
+
+    result = plugin._get_strategy_code({"strategy_id": "MA cross trend test"}, strategy_store=store)
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["code"].rstrip() == MA_CROSS_CODE.rstrip()
+    assert "(v1)" in data["provenance"]
+
+
+def test_get_strategy_code_unknown_strategy_is_an_error(tmp_path):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    result = plugin._get_strategy_code({"strategy_id": "never registered"}, strategy_store=store)
+
+    assert result.is_error

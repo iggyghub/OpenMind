@@ -272,6 +272,7 @@ class FakeScheduler:
         self.ran = []
         self.brokers = []   # the `broker` dispatch_due_events actually passed, per call
         self.phases = []    # the `phase` dispatch_due_events actually passed, per call
+        self.dispatch_ids = []  # S17: the `dispatch_id` dispatch_due_events actually passed, per call
 
     def list_due_events(self):
         return self.events
@@ -283,6 +284,7 @@ class FakeScheduler:
         self.ran.append(name)
         self.brokers.append(broker)
         self.phases.append(phase)
+        self.dispatch_ids.append(dispatch_id)
         return dict(self.tick_result)
 
 
@@ -416,3 +418,43 @@ def test_strategy_store_round_trip(tmp_path):
     store.save(StrategySpec("s1", "MSFT", ALWAYS_FLAT, qty=1.0))  # re-validation
     assert store.get("s1").symbol == "MSFT"
     assert len(store.list_all()) == 1
+
+
+# ── S17 (#862): dispatch reads/writes the versioned forward-record key ──────
+
+def test_dispatch_scopes_the_forward_record_to_the_current_version(tmp_path, monkeypatch):
+    """A strategy with real prior history under v1 gets edited to v2 (a
+    second store.save() -- exactly what edit_strategy's auto-promote does).
+    The next dispatch must read/write v2's own, empty forward record --
+    not the v1 history -- proving decision #27's "restarts clean" for real,
+    through dispatch_due_events itself rather than a unit-level check."""
+    store = make_store(tmp_path)
+    record = make_record(tmp_path, monkeypatch)
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+
+    store.save(StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0))  # v1
+    record.add_fill("AAPL", "sell", 1.0, 12.0, pnl=5.0, strategy_id="s1@v1")
+    store.save(StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0))  # v2 (an edit)
+
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+    dispatch_due_events(sched, StubBrokerClient(), record, lifecycle=lifecycle, store=store)
+
+    # The dispatcher used the CURRENT version's key, not the bare title.
+    assert sched.dispatch_ids == ["s1@v2"]
+    # v1's real history is untouched and still there under its own key...
+    assert record.trade_count(strategy_id="s1@v1") == 1
+    # ...but v2 (the current, dispatched version) starts clean.
+    assert lifecycle.get_state("s1@v2").status == "paper"
+    assert record.compute_expectancy_ci(strategy_id="s1@v2")[3] is False  # insufficient (0 trades)
+
+
+def test_dispatch_falls_back_to_the_bare_id_with_no_lineage(tmp_path, monkeypatch):
+    """A strategy dispatched with no store (or no matching lineage row) keeps
+    the pre-S17 behavior exactly -- the bare title is the key, unchanged."""
+    record = make_record(tmp_path, monkeypatch)
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    dispatch_due_events(sched, StubBrokerClient(), record)
+
+    assert sched.ran == ["s1"]
+    assert sched.dispatch_ids == ["s1"]
