@@ -21,8 +21,8 @@ that gate.
 
 ## Next slice -- start here
 
-- **Active:** S24 -- #877 -- plugins/stocks.py: fundamentals, SEC
-  filings, IPO detection. See issue #877.
+- **Active:** S25 -- #878 -- origin='discovered' lineage + screening
+  cost decision. See issue #878.
 - **Model:** sonnet
 
 ## Queue
@@ -119,8 +119,9 @@ that gate.
   floor. Landed by hand, not via self_dev's own PR #887 (broken
   monkeypatch + 6 pre-existing tests broken by the tuple-size change --
   see Landed PRs).
-- [ ] S24 -- #877 -- plugins/stocks.py: fundamentals, SEC filings, IPO
-  detection.
+- [x] S24 -- #877 -- plugins/stocks.py: fundamentals, SEC filings, IPO
+  detection. Landed by hand, not via self_dev's own PR #888 (the plugin
+  as written could never have loaded -- see Landed PRs).
 - [ ] S25 -- #878 -- origin='discovered' lineage + screening cost
   decision.
 - [ ] S26 -- #879 -- Felix-wide Activity Log (new top-level nav tab).
@@ -1899,6 +1900,62 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   touches `tray/lib/trading-panel.js`, so the jest run was required).
   PR #887 closed unmerged in favor of this hand-verified local landing
   (commit 1f7344a).
+
+- PR #888 -- S24 -- opened by self_dev_campaign, closed unmerged after a
+  hand-rewrite -- the substance wasn't salvageable, unlike every prior
+  slice this campaign. Real diff verified via the sandbox's own clone
+  (`campaign-trading-s24`, `git diff 422d606..f4f8d25`, 2 files / 442
+  lines): a new `plugins/stocks.py` and its test file.
+
+  **The plugin as written could never have loaded, on top of a broken
+  import.** Two separate, compounding structural problems, both
+  confirmed by tracing the real loader
+  (`cerebral/mcp/orchestrator.py::_load_plugin_file`), not assumed:
+  1. `from plugins.http_client import get as http_get` -- `http_client.
+     py` has no `get()` function; it exposes a private async
+     `_default_fetch(method, url, ...)` and an `HttpClientPlugin`
+     class. This is what actually produced the reported `tests_failed`
+     (an `ImportError` on collection).
+  2. **Fixing the import alone would not have made this loadable.**
+     `list_tools()` returned `List[str]` instead of `list[Tool]`,
+     `create(ctx: Any)` required a positional argument, and there was
+     no `call_tool` method or plugin class at all. The real loader
+     calls `module.create()` with **zero arguments** (confirmed reading
+     the call site directly), then calls `plugin.list_tools()`
+     expecting `Tool` objects with `.name`/`.description`. `create(ctx)`
+     would have raised `TypeError` the instant real plugin discovery
+     reached this file -- issue #877 explicitly said "following
+     plugins/markets.py's exact shape," but the diff didn't follow it.
+
+  Two more real, not just structural, bugs:
+  3. `_sec_filings`'s CIK/filing lookup was built on the legacy
+     `browse-edgar` XML endpoint with fragile manual parsing -- the
+     diff's own inline comments admitted the uncertainty ("EDGAR index
+     XML structure varies", "not always present for URL"). Rewrote
+     against SEC's real JSON APIs: the static ticker->CIK map at
+     `sec.gov/files/company_tickers.json` and the per-company
+     submissions JSON at `data.sec.gov/submissions/CIK{cik}.json`,
+     which lists every recent filing's form/accession/date/
+     primaryDocument directly -- no XML guessing needed.
+  4. `sec_new_filings` fetched a `.bz2`-compressed EDGAR index, but
+     `_default_fetch` always decodes JSON or text, never raw bytes --
+     decoding a bz2 binary as text would have corrupted it before
+     decompression could run. Switched to EDGAR's plain-text `.idx`
+     daily index (`daily-index/{year}/QTR{q}/master.{date}.idx`,
+     pipe-delimited, no compression), which fetches cleanly through the
+     existing text HTTP path. Also, `ctx.notify(...)` doesn't exist
+     anywhere in this codebase (grepped directly) -- replaced with an
+     optional `notify_fn:` constructor parameter, matching this
+     campaign's DI convention for every other cross-boundary seam.
+
+  Rewrote `plugins/stocks.py` as a proper `StocksPlugin` class around
+  the reusable pieces (yfinance fundamentals, IPO-form filtering), and
+  `test_plugin_stocks.py` from scratch against the real shape (11
+  tests) -- plus a direct load-through-the-real-discovery-mechanism
+  check confirming zero registration errors, which the original diff
+  would have failed. Full suite green: 5162 passed, 7 skipped, 0 failed
+  (`cerebral/tests/` + repo-root `tests/`). This slice does not touch
+  `tray/`, so no jest run was needed. Landed as commit 9efa94b.
 
 ## What's next
 
