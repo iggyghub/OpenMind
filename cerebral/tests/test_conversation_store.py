@@ -11,6 +11,7 @@ import sqlite3
 import pytest
 
 from cerebral.db.conversation import (
+    KIND_ACTIVITY,
     KIND_FELIX_SPEECH,
     KIND_USER_TEXT,
     KIND_USER_VOICE,
@@ -350,3 +351,85 @@ def test_search_threads_carries_project_id(store):
     hits = store.search_threads(1, "Trip")
     assert hits
     assert hits[0]["project_id"] == p.id
+
+
+# ── S26 (#879): Activity Log ─────────────────────────────────────────────
+
+def test_get_or_create_activity_thread_is_stable(store):
+    """Same lookup-or-create-by-title pattern as _LEGACY_THREAD_TITLE --
+    calling it twice returns the same thread, not a new one each time."""
+    a = store.get_or_create_activity_thread(1)
+    b = store.get_or_create_activity_thread(1)
+    assert a.id == b.id
+    assert a.title == "Autonomous activity"
+
+
+def test_activity_entries_do_not_pollute_the_active_chat_thread(store):
+    """The bug this whole design exists to prevent: an activity entry must
+    never land in whatever thread the user last had open."""
+    chat_thread = store.create_thread(1, title="Regular chat")
+    store.append(1, KIND_USER_TEXT, {"text": "hi"}, thread_id=chat_thread.id)
+
+    activity_thread = store.get_or_create_activity_thread(1)
+    store.append(1, KIND_ACTIVITY, {"summary": "dispatched 3 strategies"}, thread_id=activity_thread.id)
+
+    chat_turns = store.list_recent_for_thread(chat_thread.id)
+    assert len(chat_turns) == 1
+    assert chat_turns[0].kind == KIND_USER_TEXT
+
+
+def test_activity_thread_does_not_become_the_active_chat_thread(store):
+    """The bug in the OTHER direction: appending to the activity thread
+    bumps its updated_at, so a naive "most recently updated thread" lookup
+    would make it the resolved active thread for the user's NEXT real chat
+    message -- get_or_create_default_thread/latest_thread must exclude it."""
+    activity_thread = store.get_or_create_activity_thread(1)
+    store.append(1, KIND_ACTIVITY, {"summary": "..."}, thread_id=activity_thread.id)
+
+    resolved = store.get_or_create_default_thread(1)
+
+    assert resolved.id != activity_thread.id
+
+
+def test_list_activity_filters_by_kind_across_all_threads(store):
+    t1 = store.create_thread(1, title="Thread 1")
+    t2 = store.create_thread(1, title="Thread 2")
+    store.append(1, KIND_USER_TEXT, {"text": "chat"}, thread_id=t1.id)
+    store.append(1, KIND_ACTIVITY, {"summary": "a1"}, thread_id=t1.id)
+    store.append(1, KIND_ACTIVITY, {"summary": "a2"}, thread_id=t2.id)
+
+    results = store.list_activity(1, kinds=[KIND_ACTIVITY])
+
+    assert len(results) == 2
+    assert all(r.kind == KIND_ACTIVITY for r in results)
+    assert {r.content["summary"] for r in results} == {"a1", "a2"}
+
+
+def test_list_activity_is_profile_scoped(store):
+    store.append(1, KIND_ACTIVITY, {"summary": "profile 1"})
+    store.append(2, KIND_ACTIVITY, {"summary": "profile 2"})
+
+    results = store.list_activity(1, kinds=[KIND_ACTIVITY])
+
+    assert len(results) == 1
+    assert results[0].content["summary"] == "profile 1"
+
+
+def test_list_activity_respects_since(store):
+    """ts is CURRENT_TIMESTAMP (second precision, not microsecond) -- two
+    appends in the same test can share an identical ts, so this asserts
+    against clearly-past/clearly-future cutoffs rather than the exact
+    boundary between two rapid successive rows."""
+    store.append(1, KIND_ACTIVITY, {"summary": "entry"})
+
+    assert len(store.list_activity(1, since="2000-01-01 00:00:00")) == 1
+    assert len(store.list_activity(1, since="2999-01-01 00:00:00")) == 0
+
+
+def test_list_activity_no_kind_filter_returns_everything(store):
+    store.append(1, KIND_USER_TEXT, {"text": "chat"})
+    store.append(1, KIND_ACTIVITY, {"summary": "activity"})
+
+    results = store.list_activity(1)
+
+    assert len(results) == 2

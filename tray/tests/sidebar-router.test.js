@@ -13,13 +13,14 @@ test('VALID_ROUTES is a Set', () => {
 });
 
 // S5: 4 nav sections + profiles (kept accessible for first_run / header switcher);
-// Trading promoted to a 5th nav section, #864 follow-up.
-test('VALID_ROUTES has 6 entries', () => {
-  expect(VALID_ROUTES.size).toBe(6);
+// Trading promoted to a 5th nav section (#864 follow-up); Log added as a 6th
+// (S26/#879, the Activity Log).
+test('VALID_ROUTES has 7 entries', () => {
+  expect(VALID_ROUTES.size).toBe(7);
 });
 
-test('VALID_ROUTES contains the 5 nav sections and profiles', () => {
-  const expected = ['conversation', 'harness', 'library', 'trading', 'settings', 'profiles'];
+test('VALID_ROUTES contains the 6 nav sections and profiles', () => {
+  const expected = ['conversation', 'harness', 'library', 'trading', 'log', 'settings', 'profiles'];
   for (const route of expected) {
     expect(VALID_ROUTES.has(route)).toBe(true);
   }

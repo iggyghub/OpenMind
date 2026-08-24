@@ -45,6 +45,11 @@ KIND_SYSTEM_EVENT = "system_event"
 # transient log line -- reconstructable history like any other kind, encrypted
 # at rest the same way (the storage layer handles that transparently).
 KIND_SUMMARY      = "summary"
+# S26 (#879), decision #46 -- the Activity Log's own discriminator. content_json
+# is encrypted (Fernet), so this plaintext, indexed `kind` value is what
+# list_activity() filters on; a SQL LIKE against content would not work
+# (search_threads has that exact latent bug already -- do not copy it).
+KIND_ACTIVITY     = "activity"
 
 VALID_KINDS = frozenset({
     KIND_USER_VOICE,
@@ -54,11 +59,17 @@ VALID_KINDS = frozenset({
     KIND_TOOL_RESULT,
     KIND_SYSTEM_EVENT,
     KIND_SUMMARY,
+    KIND_ACTIVITY,
 })
 
 # S9 (#292) -- the back-fill thread for pre-#292 turns. Stable name so a
 # user with a partly-migrated DB doesn't end up with two of them.
 _LEGACY_THREAD_TITLE = "Legacy conversation"
+# S26 (#879), decision #46 sub-decision 5 -- one dedicated, stable per-profile
+# thread for autonomous entries, so they never interleave into whatever chat
+# thread the user last had open. Resolved the same lookup-or-create way as
+# _LEGACY_THREAD_TITLE above.
+_ACTIVITY_THREAD_TITLE = "Autonomous activity"
 
 # Cap on the auto-generated title derived from the first user turn.
 _AUTO_TITLE_MAX_CHARS = 60
@@ -293,10 +304,22 @@ class ConversationStore:
         return cur.rowcount > 0
 
     def latest_thread(self, profile_id: int) -> ConversationThread | None:
+        """The profile's most-recently-updated thread, used to resolve
+        "the active chat thread" on both the read and write path.
+
+        Excludes the dedicated Activity thread (S26/#879, decision #46
+        sub-decision 5): every append() bumps its thread's updated_at, so
+        without this exclusion a background loop writing an activity entry
+        would make _ACTIVITY_THREAD_TITLE the "most recent" thread and the
+        user's very next chat message would silently land there instead of
+        a real conversation thread -- the exact pollution this design is
+        meant to prevent, just in the opposite direction.
+        """
         row = self._con.execute(
             "SELECT * FROM conversation_threads "
-            "WHERE profile_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
-            (profile_id,),
+            "WHERE profile_id = ? AND title != ? "
+            "ORDER BY updated_at DESC, id DESC LIMIT 1",
+            (profile_id, _ACTIVITY_THREAD_TITLE),
         ).fetchone()
         return _row_to_thread(row) if row else None
 
@@ -309,6 +332,21 @@ class ConversationStore:
         if thread is not None:
             return thread
         return self.create_thread(profile_id, title="")
+
+    def get_or_create_activity_thread(self, profile_id: int) -> ConversationThread:
+        """The one dedicated thread autonomous entries (kind=KIND_ACTIVITY)
+        get appended to -- never the profile's currently-active chat thread
+        (S26/#879, decision #46 sub-decision 5). Same lookup-or-create-by-
+        title pattern _backfill_legacy_threads already uses for
+        _LEGACY_THREAD_TITLE."""
+        existing = self._con.execute(
+            "SELECT id FROM conversation_threads "
+            "WHERE profile_id = ? AND title = ? ORDER BY id ASC LIMIT 1",
+            (profile_id, _ACTIVITY_THREAD_TITLE),
+        ).fetchone()
+        if existing is not None:
+            return self._get_thread(existing["id"])
+        return self.create_thread(profile_id, title=_ACTIVITY_THREAD_TITLE)
 
     # -- turns ------------------------------------------------------------
 
@@ -413,6 +451,51 @@ class ConversationStore:
             "ORDER BY id ASC",
             (thread_id, limit),
         ).fetchall()
+        return [_row_to_turn(r) for r in rows]
+
+    def list_activity(
+        self, profile_id: int, *,
+        kinds: "list[str] | None" = None,
+        since: str | None = None,
+        limit: int = 100,
+    ) -> list[ConversationTurn]:
+        """Kind-filtered, time-ranged, cross-thread reader for the Activity
+        Log (S26/#879, decision #46). Unlike list_recent, this is not
+        thread-scoped -- an activity stream is meant to be read across
+        every thread the profile has, not just the currently-open one.
+
+        Filters on the plaintext, indexed `kind` column only. content_json
+        is encrypted (Fernet) -- a SQL LIKE against it cannot work at all
+        (search_threads has that exact latent bug already; do not copy the
+        pattern here). Sub-scoping by e.g. "trading only" is a `source` key
+        inside the encrypted content, meant to be filtered in Python AFTER
+        this kind filter has already cut the row count down, not as a
+        second plaintext column -- that would leak what encryption-at-rest
+        exists to protect.
+
+        `since`, when given, must be in the same sortable string format as
+        the `ts` column (`CURRENT_TIMESTAMP`'s default, `YYYY-MM-DD
+        HH:MM:SS` -- second precision, not microsecond; plain lexicographic
+        comparison works because that format sorts the same as it reads).
+        """
+        if limit <= 0:
+            return []
+        conditions = ["profile_id = ?"]
+        params: list = [profile_id]
+        if kinds:
+            placeholders = ",".join("?" for _ in kinds)
+            conditions.append(f"kind IN ({placeholders})")
+            params.extend(kinds)
+        if since:
+            conditions.append("ts >= ?")
+            params.append(since)
+        query = (
+            "SELECT * FROM (SELECT * FROM conversation_turns WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY id DESC LIMIT ?) ORDER BY id ASC"
+        )
+        params.append(limit)
+        rows = self._con.execute(query, params).fetchall()
         return [_row_to_turn(r) for r in rows]
 
     def fork_thread(

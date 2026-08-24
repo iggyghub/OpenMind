@@ -69,6 +69,7 @@ from cerebral.security import (
 )
 from cerebral.commands import Command, CommandRegistry
 from cerebral.db.conversation import (
+    KIND_ACTIVITY,
     KIND_FELIX_SPEECH,
     KIND_SUMMARY,
     KIND_SYSTEM_EVENT,
@@ -3222,6 +3223,35 @@ async def _record_turn(
         logger.exception("[cerebral] conversation_turn_emitted broadcast failed")
 
 
+async def _record_activity(kind: str, content: dict) -> None:
+    """Persist one Activity Log entry (S26/#879, decision #46) to the
+    profile's dedicated "Autonomous activity" thread -- never the user's
+    currently-active chat thread (sub-decision 5). ``kind`` is accepted for
+    seam-signature parity with _record_turn/record_turn_fn (both self_dev's
+    record_activity_fn and _scheduler_loop pass "activity" today) but is
+    otherwise unused; every Activity Log row is KIND_ACTIVITY by
+    definition.
+
+    Silently skips when no profile is active, matching _record_turn's own
+    contract -- but a background loop should check for an active profile
+    BEFORE dispatching at all (decision #46's "Felix does not trade when
+    it cannot record that it traded"), not rely on this guard alone."""
+    if _active_profile is None:
+        return
+    try:
+        thread = _conversation.get_or_create_activity_thread(_active_profile.id)
+        turn = _conversation.append(
+            _active_profile.id, KIND_ACTIVITY, content, thread_id=thread.id,
+        )
+    except Exception:
+        logger.exception("[cerebral] activity_turn append failed")
+        return
+    try:
+        await _broadcast({"type": "activity_turn_emitted", "data": {"turn": turn.to_dict()}})
+    except Exception:
+        logger.exception("[cerebral] activity_turn_emitted broadcast failed")
+
+
 def _conversation_turns_event(limit: int = 50) -> dict:
     """Snapshot of the active profile + active thread's last ``limit``
     turns, oldest first.
@@ -3406,6 +3436,17 @@ async def _scheduler_loop() -> None:
     logger.info("[cerebral] Starting autonomous paper-trade scheduler loop")
     while not _shutdown.is_set():
         try:
+            # S26 (#879), decision #46 sub-decision 4: a background loop
+            # must not dispatch un-logged -- "Felix does not trade when it
+            # cannot record that it traded." _record_activity itself also
+            # no-ops with no active profile, but skipping dispatch entirely
+            # here (not just the logging) is the recommended fix: dispatching
+            # anyway and losing the record is a worse failure mode than not
+            # dispatching this pass and catching up next tick.
+            if _active_profile is None:
+                await asyncio.sleep(300)
+                continue
+
             # The whole pass -- due-event lookup, per-strategy signal
             # evaluation, position diff, order, realized P&L, then
             # graduation/ramp/retirement checks -- lives in live_tick so it's
@@ -3429,6 +3470,23 @@ async def _scheduler_loop() -> None:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")
             if results:
                 await _trading_broadcast()
+                # One batched summary row per pass, not one row per
+                # strategy (decision #46: "batch routine activity...
+                # log real decisions individually") -- notable outcomes
+                # (a real trade, a block, a graduation) are named inline
+                # rather than hidden inside an undifferentiated count.
+                notable = [
+                    r for r in results
+                    if r.get("status") in ("opened", "closed", "blocked") or r.get("graduated")
+                ]
+                await _record_activity("activity", {
+                    "source": "trading",
+                    "summary": (
+                        f"Scheduler dispatch: {len(results)} strategies checked, "
+                        f"{len(notable)} notable"
+                    ),
+                    "results": results,
+                })
         except Exception as e:
             logger.warning(f"[cerebral] Scheduler loop iteration failed (backing off): {e}", exc_info=True)
         await asyncio.sleep(300)
@@ -3474,6 +3532,32 @@ async def _trading_broadcast() -> None:
 async def _handle_trading_poll(_data: dict) -> None:
     """IPC handler for tray polling of live trading state."""
     await _trading_broadcast()
+
+
+async def _handle_activity_poll(data: dict) -> None:
+    """IPC handler for the Log nav tab and the Trading pane's filtered
+    Activity section (S26/#879, decision #46).
+
+    `source`, when given, filters in Python against the decrypted
+    content's own `source` key -- never a second plaintext DB column,
+    which would leak what encryption-at-rest exists to protect (sub-
+    decision 3). Over-fetches before filtering since the source filter
+    runs after the SQL LIMIT; this is an approximation (not exact
+    pagination), acceptable for an activity feed."""
+    data = data or {}
+    if _active_profile is None:
+        await _broadcast({"type": "activity_log_data", "data": {"turns": [], "source": data.get("source")}})
+        return
+    source = data.get("source")
+    limit = int(data.get("limit") or 100)
+    fetch_limit = max(limit * 5, 200) if source else limit
+    turns = _conversation.list_activity(_active_profile.id, kinds=[KIND_ACTIVITY], limit=fetch_limit)
+    if source:
+        turns = [t for t in turns if (t.content or {}).get("source") == source][-limit:]
+    await _broadcast({"type": "activity_log_data", "data": {
+        "turns": [t.to_dict() for t in turns],
+        "source": source,
+    }})
 
 
 async def _ping_custom_model(backend) -> str | None:
@@ -6187,6 +6271,9 @@ async def _handle_message(msg: dict) -> None:
     elif t == "trading_poll":  # S9 -- Trading Panel initial fetch + refresh
         await _handle_trading_poll(msg.get("data", {}))
 
+    elif t == "activity_poll":  # S26 (#879) -- Log tab + Trading pane's Activity section
+        await _handle_activity_poll(msg.get("data", {}))
+
     elif t == "strategy_edit":  # S19 (#864) -- Trading Panel edit box -> S17's edit_strategy tool
         d = msg.get("data") or {}
         strategy_id = (d.get("strategy_name") or d.get("strategy_id") or "").strip()
@@ -7151,6 +7238,7 @@ def _wire_plugin_seams() -> None:
         ("self_dev", "set_restart_fn", _self_dev_restart),                           # ADR-0015 SD-2 #555
         ("self_dev", "set_rollback_fn", _self_dev_rollback),                         # #813 manual rollback
         ("self_dev", "set_record_turn_fn", _record_turn),                           # #810 pending-review card
+        ("self_dev", "set_record_activity_fn", _record_activity),                   # S26 #879 Activity Log
         ("computer_use", "set_driving_fn", _computer_use_driving),                   # S2 #576 (ADR-0016 (c))
         ("computer_use", "set_vision_ground_fn", _computer_use_vision_ground),       # S5 #578 (ADR-0016 sec 5)
         ("computer_use", "set_attended_handoff_fn", _computer_use_attended_handoff), # S6 #579 (ADR-0016 sec 6)

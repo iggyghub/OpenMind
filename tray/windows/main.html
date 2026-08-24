@@ -5217,6 +5217,7 @@
       <button class="nav-item" data-route="harness"><span class="nav-icon" aria-hidden="true">&#x2699;</span><span class="nav-label">Harness</span></button>
       <button class="nav-item" data-route="library"><span class="nav-icon" aria-hidden="true">&#x2630;</span><span class="nav-label">Library</span></button>
       <button class="nav-item" data-route="trading"><span class="nav-icon" aria-hidden="true">&#x2316;</span><span class="nav-label">Trading</span></button>
+      <button class="nav-item" data-route="log"><span class="nav-icon" aria-hidden="true">&#x2261;</span><span class="nav-label">Log</span></button>
       <button class="nav-item" data-route="settings"><span class="nav-icon" aria-hidden="true">&#x25C6;</span><span class="nav-label">Settings</span></button>
     </nav>
   </aside>
@@ -6297,6 +6298,19 @@
         </form>
       </div>
       <div id="trading-panel-mount"></div>
+      <!-- S26 (#879): trading-sourced entries only -- cerebral/main.py's
+           _handle_activity_poll filters server-side on content.source. -->
+      <div class="trd-activity-section">
+        <h3>Activity</h3>
+        <div id="trading-activity-mount"></div>
+      </div>
+    </section>
+
+    <!-- S26 (#879), decision #46 -- the Felix-wide Activity Log. Full
+         unfiltered stream (all sources), fed by activity_log_data broadcasts
+         (cerebral/main.py's _handle_activity_poll / _record_activity). -->
+    <section class="pane" data-route="log" hidden>
+      <div id="activity-log-mount"></div>
     </section>
 
       </div><!-- /.ws-primary -->
@@ -6369,6 +6383,7 @@
        live lifecycle/fills/alerts. Dual-mode: window.TradingPanelMod here,
        module.exports for Node tests. -->
   <script src="../lib/trading-panel.js"></script>
+  <script src="../lib/activity-log.js"></script>
 
   <!-- Workspace shell (S2 -- #481) -- primary + secondary slot state layer.
        Dual-mode: window.WorkspaceMod here, module.exports for Node tests. -->
@@ -7035,6 +7050,24 @@
           // module never reaches for window.sendEvent itself, the exact S9
           // bug this file's own header comment warns about.
           if (window.TradingPanelMod) window.TradingPanelMod.renderTradingUpdate(event.data, null, sendEvent);
+          break;
+        case 'activity_log_data':
+        case 'activity_turn_emitted':
+          // S26 (#879) -- one broadcast type feeds two destinations,
+          // distinguished by data.source: "trading" -> the Trading pane's
+          // filtered Activity section, falsy -> the Log tab's full stream.
+          // activity_turn_emitted (a single new turn, no `turns` array) is
+          // normalized into the same { turns: [...] } shape renderActivityLog
+          // expects, so a live update and a poll response render identically.
+          if (window.ActivityLogMod) {
+            var actData = event.data && event.data.turns
+              ? event.data
+              : { turns: event.data && event.data.turn ? [event.data.turn] : [], source: null };
+            var actContainer = actData.source === 'trading'
+              ? document.getElementById('trading-activity-mount')
+              : document.getElementById('activity-log-mount');
+            window.ActivityLogMod.renderActivityLog(actData, actContainer);
+          }
           break;
         case 'strategy_edit_result':
           // S19 (#864) -- the panel already re-renders from the
@@ -12168,6 +12201,22 @@
         if (window.TradingPanelMod) {
           window.TradingPanelMod.initTradingPanel();
           sendEvent({ type: 'trading_poll' });
+        }
+        // S26 (#879): the pane's own filtered Activity section --
+        // source:"trading" is filtered server-side (_handle_activity_poll),
+        // never a plaintext client-side guess against decrypted content.
+        if (window.ActivityLogMod) {
+          window.ActivityLogMod.initActivityLog('trading-activity-mount');
+          sendEvent({ type: 'activity_poll', data: { source: 'trading' } });
+        }
+      } else if (route === 'log') {
+        // S26 (#879), decision #46 -- the Felix-wide Activity Log. No poll
+        // loop -- activity_turn_emitted is pushed live by the backend as
+        // entries happen (see handleEvent's case), this is just the initial
+        // fetch on tab open, same contract as the Trading pane above.
+        if (window.ActivityLogMod) {
+          window.ActivityLogMod.initActivityLog('activity-log-mount');
+          sendEvent({ type: 'activity_poll', data: {} });
         }
       } else if (route === 'settings') {
         sendEvent({ type: 'refresh_models' });

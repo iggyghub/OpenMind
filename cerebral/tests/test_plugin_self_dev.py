@@ -208,6 +208,29 @@ async def test_test_failure_opens_pr_but_does_not_merge(tmp_path):
     assert merge_calls == [], "merge_fn must not be called when tests fail"
 
 
+async def test_test_failure_records_an_activity_entry(tmp_path):
+    """S26 (#879): a PR needing human review (guardrail hit or failed
+    tests) is a real decision, logged to the Activity Log -- separate from
+    the #810 pending-review card's record_turn_fn call."""
+    recorded = []
+
+    async def fake_record_activity(kind, content):
+        recorded.append((kind, content))
+
+    plugin = _make(
+        tmp_path,
+        test_fn=lambda d: (False, "1 failed, 0 passed"),
+        record_activity_fn=fake_record_activity,
+    )
+    await plugin.call_tool("self_dev", {"change_description": "Broken change"})
+
+    assert len(recorded) == 1
+    kind, content = recorded[0]
+    assert kind == "activity"
+    assert content["source"] == "self_dev"
+    assert content["pr_url"] == _PR_URL
+
+
 # ---------------------------------------------------------------------------
 # Error propagation
 # ---------------------------------------------------------------------------
@@ -625,6 +648,42 @@ async def test_rollback_records_system_event(tmp_path):
     kind, content = recorded[0]
     assert kind == "system_event"
     assert content == {"kind": "self_dev_manual_rollback"}
+
+
+async def test_rollback_records_an_activity_entry(tmp_path):
+    """S26 (#879): record_activity_fn is a separate seam from record_turn_fn
+    -- both must fire for the same event, one for the #810 pending-review
+    card's active-thread turn, one for the Activity Log's dedicated thread."""
+    recorded = []
+
+    async def fake_record_activity(kind, content):
+        recorded.append((kind, content))
+
+    async def fake_rollback():
+        pass
+
+    plugin = _make(tmp_path, rollback_fn=fake_rollback, record_activity_fn=fake_record_activity)
+    result = await plugin.call_tool("self_dev_rollback", {})
+
+    assert not result.is_error, result.content
+    assert len(recorded) == 1
+    kind, content = recorded[0]
+    assert kind == "activity"
+    assert content["source"] == "self_dev"
+    assert "rollback" in content["summary"].lower()
+
+
+async def test_rollback_survives_record_activity_fn_failure(tmp_path):
+    async def fake_rollback():
+        pass
+
+    async def boom(kind, content):
+        raise RuntimeError("conversation store unavailable")
+
+    plugin = _make(tmp_path, rollback_fn=fake_rollback, record_activity_fn=boom)
+    result = await plugin.call_tool("self_dev_rollback", {})
+
+    assert not result.is_error, result.content
 
 
 async def test_rollback_survives_record_turn_fn_failure(tmp_path):

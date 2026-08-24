@@ -375,6 +375,13 @@ _edit_fn = None
 _restart_fn = None
 _record_turn_fn = None
 _rollback_fn = None
+# S26 (#879), decision #46 -- distinct from record_turn_fn: record_turn_fn
+# (below) writes into the user's active chat thread for the #810 pending-
+# review card, an inline actionable UI element that belongs where the user
+# is looking. record_activity_fn writes into the dedicated "Autonomous
+# activity" thread instead, for the Activity Log -- a different destination
+# for the same event, not a replacement.
+_record_activity_fn = None
 
 
 def set_edit_fn(fn) -> None:
@@ -397,6 +404,11 @@ def set_rollback_fn(fn) -> None:
     _rollback_fn = fn
 
 
+def set_record_activity_fn(fn) -> None:
+    global _record_activity_fn
+    _record_activity_fn = fn
+
+
 async def _default_record_turn_fn(kind: str, content: dict) -> None:
     """No-op until main.py wires the Conversation store seam via
     set_record_turn_fn (main.py's own ``_record_turn``, S9/#292).
@@ -407,6 +419,17 @@ async def _default_record_turn_fn(kind: str, content: dict) -> None:
     continue) rather than raising."""
     logger.warning(
         "[self_dev] record_turn_fn not wired -- system_event turn dropped (kind=%s)",
+        kind,
+    )
+
+
+async def _default_record_activity_fn(kind: str, content: dict) -> None:
+    """No-op until main.py wires the Activity Log seam via
+    set_record_activity_fn (main.py's own ``_record_activity``, S26/#879).
+    Same fail-open reasoning as _default_record_turn_fn -- a dropped
+    Activity Log entry is a lesser failure than refusing self-dev."""
+    logger.warning(
+        "[self_dev] record_activity_fn not wired -- activity entry dropped (kind=%s)",
         kind,
     )
 
@@ -445,6 +468,7 @@ class SelfDevPlugin:
         rollback_fn: RollbackFn | None = None,
         issue_fn: IssueFn | None = None,
         record_turn_fn: RecordTurnFn | None = None,
+        record_activity_fn: RecordTurnFn | None = None,
         pr_state_fn: PrStateFn | None = None,
         repo_url: str | None = None,
         sandbox_root: Path | None = None,
@@ -475,6 +499,7 @@ class SelfDevPlugin:
         self._restart_override = restart_fn
         self._rollback_override = rollback_fn
         self._record_turn_override = record_turn_fn
+        self._record_activity_override = record_activity_fn
         self._repo_url = repo_url or str(_REPO_ROOT)
         self._sandbox_root = sandbox_root or (data_dir() / "sandbox" / "self_dev")
         self._live_root = live_root or _REPO_ROOT
@@ -490,6 +515,9 @@ class SelfDevPlugin:
 
     def _resolve_record_turn(self) -> RecordTurnFn:
         return self._record_turn_override or _record_turn_fn or _default_record_turn_fn
+
+    def _resolve_record_activity(self) -> RecordTurnFn:
+        return self._record_activity_override or _record_activity_fn or _default_record_activity_fn
 
     def pr_state(self, pr_url: str) -> str:
         """Live PR state (OPEN/MERGED/CLOSED) via the injected pr_state_fn
@@ -795,6 +823,22 @@ class SelfDevPlugin:
                     "[self_dev] record_turn_fn failed for run %r -- "
                     "merge decision proceeding regardless", run_id,
                 )
+            # S26 (#879): a real decision (a PR needs human review), logged
+            # to the Activity Log individually -- not batched, unlike
+            # routine/noisy activity, per decision #46's "log real decisions
+            # individually" -- separate from the pending-review card above,
+            # which writes to the user's active chat thread instead.
+            try:
+                await self._resolve_record_activity()("activity", {
+                    "source": "self_dev",
+                    "summary": f"Self-dev PR {pr_url} needs human review: {reason}",
+                    "pr_url": pr_url,
+                    "run_id": run_id,
+                })
+            except Exception:
+                logger.exception(
+                    "[self_dev] record_activity_fn failed for run %r", run_id,
+                )
 
         if not test_passed:
             # PR stays open for review -- this is a normal, non-error outcome
@@ -893,6 +937,16 @@ class SelfDevPlugin:
             })
         except Exception:
             logger.exception("[self_dev] record_turn_fn failed for manual rollback")
+
+        # S26 (#879): a manual rollback is a real decision, logged
+        # individually to the Activity Log.
+        try:
+            await self._resolve_record_activity()("activity", {
+                "source": "self_dev",
+                "summary": "Manual rollback triggered -- reverting to the last known-good state",
+            })
+        except Exception:
+            logger.exception("[self_dev] record_activity_fn failed for manual rollback")
 
         return ToolResult(content=json.dumps({
             "status": "rolling_back",
