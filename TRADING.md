@@ -21,8 +21,8 @@ that gate.
 
 ## Next slice -- start here
 
-- **Active:** S25 -- #878 -- origin='discovered' lineage + screening
-  cost decision. See issue #878.
+- **Active:** S26 -- #879 -- Felix-wide Activity Log (new top-level nav
+  tab). See issue #879.
 - **Model:** sonnet
 
 ## Queue
@@ -122,8 +122,11 @@ that gate.
 - [x] S24 -- #877 -- plugins/stocks.py: fundamentals, SEC filings, IPO
   detection. Landed by hand, not via self_dev's own PR #888 (the plugin
   as written could never have loaded -- see Landed PRs).
-- [ ] S25 -- #878 -- origin='discovered' lineage + screening cost
-  decision.
+- [x] S25 -- #878 -- origin='discovered' lineage + screening cost
+  decision. Auto-merged correctly (PR #889, commit 112e99f) --
+  hand-verified the CHECK-constraint migration for real against an
+  old-schema DB and added the regression tests the blueprint asked for
+  but the PR didn't include -- see Landed PRs.
 - [ ] S26 -- #879 -- Felix-wide Activity Log (new top-level nav tab).
 - [ ] S27 -- #880 -- Autonomous discovery loop: idea sourcing +
   screening.
@@ -1956,6 +1959,47 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   would have failed. Full suite green: 5162 passed, 7 skipped, 0 failed
   (`cerebral/tests/` + repo-root `tests/`). This slice does not touch
   `tray/`, so no jest run was needed. Landed as commit 9efa94b.
+
+- PR #889 -- S25 -- the first slice this campaign since S3/S8 to
+  auto-merge and have local master genuinely stay in sync automatically
+  (`self_dev`'s `_run` now does a `pull origin master --ff-only` after a
+  successful merge -- confirmed via `git reflog`, a real fix for the
+  gap S8's postmortem flagged). Given the stakes (a live SQLite schema
+  migration touching every existing user's `strategy_specs.db`), did
+  NOT just trust `merge_decision: auto_merge` -- hand-verified the
+  actual migration by building a database with the pre-S25 DDL (CHECK
+  constraint, one real pre-existing row) and running the real
+  `StrategyStore` against it directly:
+  - The CHECK constraint is genuinely gone from the new DDL.
+  - The pre-existing row survived the rebuild intact.
+  - `save(origin="discovered")` -- an `IntegrityError` against the old
+    schema -- now succeeds.
+  - A second open against the same (already-migrated) file (simulating
+    a restart) is idempotent: no re-migration, no duplicated rows.
+  - `save()` now validates `origin` in Python and raises a readable
+    `ValueError` for a bad value, instead of relying on the dropped
+    SQL CHECK.
+  - `render_provenance` gained the `'discovered'` branch the blueprint
+    named -- an unrecognized origin no longer silently erases that the
+    strategy was ever marked `'discovered'`.
+  - The #38 sandbox-batching sub-decision was correctly left
+    unimplemented, exactly as the blueprint recommended -- only a
+    docstring was added to `sandboxed_eval.py` explaining why no
+    batching exists, no functional change.
+
+  The diff itself shipped **zero tests**, despite the blueprint's own
+  explicit warning about this exact failure mode: "a fresh tmp_path
+  test suite would go entirely green while the user's real
+  `strategy_specs.db` raises `IntegrityError`... the regression test
+  must run against a DB created with the old DDL, not a fresh one, or
+  it proves nothing." Added the 4 old-schema-DB migration tests the
+  blueprint asked for, plus origin validation and the new
+  `render_provenance` branch, and fixed one now-stale test comment
+  claiming a `strategy_versions` row "always has SOME origin per the
+  CHECK constraint" -- no longer true post-migration. Full suite green:
+  5168 passed, 7 skipped, 0 failed (`cerebral/tests/` + repo-root
+  `tests/`). This slice does not touch `tray/`. Landed as commit
+  12a88c9, directly on top of the genuinely-auto-merged 112e99f.
 
 ## What's next
 
