@@ -323,6 +323,9 @@ def dispatch_due_events(
     size_pct: float = 1.0,
     alert_dispatcher: Optional[AlertDispatcher] = None,
     live_broker_factory: Optional[Callable[[], Any]] = None,
+    latest_accession_fn: Optional[Callable] = None,
+    fundamentals_scan_fn: Optional[Callable] = None,
+    vetted_tickers: Optional[Any] = None,
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
 
@@ -397,11 +400,23 @@ def dispatch_due_events(
         results.append(result)
 
         if lifecycle is not None:
-            _apply_lifecycle(lifecycle, dispatch_id, forward_record, result)  # S17
+            _apply_lifecycle(
+                lifecycle, dispatch_id, forward_record, result,
+                symbol=result.get("symbol"),
+                latest_accession_fn=latest_accession_fn,
+                fundamentals_scan_fn=fundamentals_scan_fn,
+                vetted_tickers=vetted_tickers,
+            )  # S17 / S28 (#881)
     return results
 
 
-def _apply_lifecycle(lifecycle: Any, name: str, forward_record: Any, result: dict) -> None:
+def _apply_lifecycle(
+    lifecycle: Any, name: str, forward_record: Any, result: dict,
+    symbol: Optional[str] = None,
+    latest_accession_fn: Optional[Callable] = None,
+    fundamentals_scan_fn: Optional[Callable] = None,
+    vetted_tickers: Optional[Any] = None,
+) -> None:
     """Graduation / ramp / retirement checks after a dispatch.
 
     Graduation flips the strategy's lifecycle status to "live" -- it does
@@ -409,8 +424,18 @@ def _apply_lifecycle(lifecycle: Any, name: str, forward_record: Any, result: dic
     a real AlpacaBrokerClient (and records phase="live") when the manual
     arm/disarm toggle is also on (S11 Part 2/4); every other combination
     keeps trading on the paper broker with phase="paper" fills.
+
+    S28 (#881): symbol/latest_accession_fn/fundamentals_scan_fn/
+    vetted_tickers are threaded straight through to check_graduation's own
+    same-named params -- entirely optional, backward compatible when
+    unset.
     """
-    if lifecycle.check_graduation(name, forward_record):
+    if lifecycle.check_graduation(
+        name, forward_record, symbol=symbol,
+        latest_accession_fn=latest_accession_fn,
+        fundamentals_scan_fn=fundamentals_scan_fn,
+        vetted_tickers=vetted_tickers,
+    ):
         size_pct = lifecycle.apply_position_ramp(name)
         logger.warning(
             "[trading] Strategy '%s' met the paper graduation bar (ramp %.0f%%). "

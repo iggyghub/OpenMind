@@ -349,6 +349,28 @@ def test_dispatch_graduates_a_strategy_whose_paper_pnl_clears_the_bar(tmp_path, 
     assert lifecycle.get_state("s1").position_size_pct == 0.25  # ramp starts at 25%
 
 
+def test_dispatch_refuses_graduation_on_a_red_flagged_filing(tmp_path, monkeypatch):
+    """S28 (#881), exercised through the full dispatch chain (not just
+    check_graduation in isolation): dispatch_due_events threads
+    symbol/latest_accession_fn/fundamentals_scan_fn/vetted_tickers all the
+    way through _apply_lifecycle into check_graduation."""
+    record = make_record(tmp_path, monkeypatch)
+    for i in range(30):
+        _add_fill_on_day(record, f"2026-0{1 + i // 28}-{1 + i % 28:02d}", "AAPL", "sell", 1.0,
+                          12.0, pnl=2.0, strategy_id="s1")
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    sched = FakeScheduler([{"id": 1, "title": "s1"}], tick_result={"status": "opened", "symbol": "AAPL"})
+
+    results = dispatch_due_events(
+        sched, StubBrokerClient(), record, lifecycle=lifecycle,
+        latest_accession_fn=lambda s: "0001-24-000001",
+        fundamentals_scan_fn=lambda s: (True, "going concern warning"),
+    )
+
+    assert results[0].get("graduated") is not True
+    assert lifecycle.get_state("s1").status == "paper"
+
+
 def test_dispatch_does_not_graduate_on_all_zero_pnl(tmp_path, monkeypatch):
     record = make_record(tmp_path, monkeypatch)
     for _ in range(30):

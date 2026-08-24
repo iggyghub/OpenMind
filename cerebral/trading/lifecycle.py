@@ -5,13 +5,26 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 import numpy as np
 
 from cerebral.paths import data_dir
 from cerebral.trading.alerts import AlertDispatcher, StructuredAlert
 from cerebral.trading.forward_record import ForwardRecord
+
+if TYPE_CHECKING:
+    from cerebral.trading.discovery import VettedTickers
+
+# S28 (#881): symbol -> accession number (or None if no filing found);
+# symbol -> (red_flagged, reason). Both sync -- check_graduation's whole
+# call chain (dispatch_due_events -> _apply_lifecycle) is synchronous,
+# offloaded to a worker thread via asyncio.to_thread in _scheduler_loop, so
+# a blocking SEC/LLM call here is safe the same way run_strategy_tick's own
+# blocking yfinance fetch already is. Production wires a sync bridge over
+# the real (async) StocksPlugin; tests inject plain sync fakes.
+LatestAccessionFn = Callable[[str], Optional[str]]
+FundamentalsScanFn = Callable[[str], "tuple[bool, str]"]
 
 _DEFAULT_DB_PATH = data_dir() / "lifecycle.sqlite"
 
@@ -111,31 +124,77 @@ class StrategyLifecycle:
         state.live_trade_count += 1
         self._save_state(state)
 
-    def check_graduation(self, name: str, record: ForwardRecord) -> bool:
-        """Auto-promotes paper strategy to live when rolling CI excludes zero after 30+ trades."""
+    def check_graduation(
+        self, name: str, record: ForwardRecord,
+        symbol: Optional[str] = None,
+        latest_accession_fn: Optional["LatestAccessionFn"] = None,
+        fundamentals_scan_fn: Optional["FundamentalsScanFn"] = None,
+        vetted_tickers: Optional["VettedTickers"] = None,
+    ) -> bool:
+        """Auto-promotes paper strategy to live when rolling CI excludes zero after 30+ trades.
+
+        S28 (#881), decision #45: for a never-before-traded ticker only,
+        right at this paper->live moment (never at idea-sourcing time, never
+        blocking paper trading), pulls the ticker's latest 10-Q/10-K and
+        LLM-scans it for red-flag language before allowing the promotion.
+        "Never-before-traded" is exactly what `vetted_tickers` already
+        tracks: a symbol with no vetting record (or one on a since-
+        superseded filing) hasn't been cleared for THIS filing yet, so it
+        gets a real scan; a symbol already vetted clean on the CURRENT
+        filing skips straight through without a repeat SEC/LLM call.
+
+        Entirely skipped (backward compatible) when `symbol` is None or the
+        gate functions aren't supplied -- existing callers/tests that don't
+        care about this feature are unaffected.
+        """
         state = self.get_state(name)
         if state.status != "paper":
             return False
 
         mean, lower, upper, is_sufficient, trade_count, distinct_days = record.compute_expectancy_ci(strategy_id=name)
-        if is_sufficient and lower > 0:
-            state.status = "live"
-            state.live_trade_count = 0
-            state.position_size_pct = 0.25
-            state.live_equity_curve = []
-            state.peak_live_equity = 0.0
-            state.promoted_at = datetime.now(timezone.utc)
+        if not (is_sufficient and lower > 0):
+            return False
 
-            if self._dispatcher:
-                self._dispatcher.emit(StructuredAlert(
-                    severity="info",
-                    event_type="paper_to_live_graduation",
-                    message=f"Strategy '{name}' graduated to live trading (25% size).",
-                    context={"strategy": name},
-                ))
-            self._save_state(state)
-            return True
-        return False
+        if symbol is not None and latest_accession_fn is not None and fundamentals_scan_fn is not None:
+            accession = latest_accession_fn(symbol)
+            if accession is not None:
+                cached = vetted_tickers.get_verdict(symbol, accession) if vetted_tickers is not None else None
+                if cached is not None:
+                    red_flagged, reason = cached, "cached verdict from a prior vetting of this exact filing"
+                else:
+                    red_flagged, reason = fundamentals_scan_fn(symbol)
+                    if vetted_tickers is not None:
+                        vetted_tickers.record(symbol, accession, red_flagged)
+                if red_flagged:
+                    if self._dispatcher:
+                        self._dispatcher.emit(StructuredAlert(
+                            severity="critical",
+                            event_type="fundamentals_red_flag",
+                            message=f"Strategy '{name}' graduation refused: {reason}",
+                            context={"strategy": name, "symbol": symbol, "accession": accession},
+                        ))
+                    return False
+            # accession is None: no filing found -- conservative-continue,
+            # do not block graduation over a missing/unreachable filing
+            # (inventing a refusal here would be a fabricated signal, the
+            # same failure class this campaign has caught before).
+
+        state.status = "live"
+        state.live_trade_count = 0
+        state.position_size_pct = 0.25
+        state.live_equity_curve = []
+        state.peak_live_equity = 0.0
+        state.promoted_at = datetime.now(timezone.utc)
+
+        if self._dispatcher:
+            self._dispatcher.emit(StructuredAlert(
+                severity="info",
+                event_type="paper_to_live_graduation",
+                message=f"Strategy '{name}' graduated to live trading (25% size).",
+                context={"strategy": name},
+            ))
+        self._save_state(state)
+        return True
 
     def apply_position_ramp(self, name: str) -> float:
         """Returns current position size percentage based on live trade count."""

@@ -183,3 +183,63 @@ async def run_discovery_pass(
             judge_idea_fn=judge_idea_fn, record_activity_fn=record_activity_fn,
         ))
     return results
+
+
+_VETTED_DB_PATH = data_dir() / "vetted_tickers.db"
+
+
+class VettedTickers:
+    """Fundamentals red-flag gate vetting record (S28/#881, decision #45).
+
+    Keyed by symbol + the SEC filing accession number that was actually
+    scanned, not just symbol -- so a genuinely NEW filing since the ticker
+    was last checked re-triggers the scan, while re-graduating (or
+    re-checking) an already-vetted ticker on the SAME filing skips the
+    expensive fetch+LLM-scan and reuses the remembered verdict. One row
+    per symbol (a symbol's vetting record is replaced wholesale on each
+    real scan, not appended) -- only the latest filing's verdict matters
+    for a graduation decision happening right now.
+    """
+
+    def __init__(self, db_path: Optional[Path] = None) -> None:
+        path = db_path if db_path is not None else _VETTED_DB_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._con = sqlite3.connect(str(path), check_same_thread=False)
+        self._con.row_factory = sqlite3.Row
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS vetted_tickers (
+                symbol            TEXT PRIMARY KEY,
+                accession_number  TEXT NOT NULL,
+                vetted_at         TEXT NOT NULL,
+                red_flagged       INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        self._con.commit()
+
+    def get_verdict(self, symbol: str, accession_number: str) -> Optional[bool]:
+        """Returns the remembered red_flagged verdict if `symbol` was
+        already vetted on EXACTLY this accession number, else None (never
+        vetted, or vetted on a since-superseded filing -- both mean "do a
+        real scan")."""
+        row = self._con.execute(
+            "SELECT accession_number, red_flagged FROM vetted_tickers WHERE symbol = ?",
+            (symbol,),
+        ).fetchone()
+        if row is None or row["accession_number"] != accession_number:
+            return None
+        return bool(row["red_flagged"])
+
+    def record(self, symbol: str, accession_number: str, red_flagged: bool) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._con.execute(
+            "INSERT INTO vetted_tickers (symbol, accession_number, vetted_at, red_flagged) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(symbol) DO UPDATE SET "
+            "accession_number=excluded.accession_number, "
+            "vetted_at=excluded.vetted_at, red_flagged=excluded.red_flagged",
+            (symbol, accession_number, now, int(red_flagged)),
+        )
+        self._con.commit()
+
+    def close(self) -> None:
+        self._con.close()

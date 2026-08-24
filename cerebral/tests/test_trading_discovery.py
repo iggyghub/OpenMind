@@ -7,6 +7,7 @@ import pytest
 
 from cerebral.trading.discovery import (
     DiscoveryWatchlist,
+    VettedTickers,
     extract_ticker,
     process_idea,
     run_discovery_pass,
@@ -219,3 +220,48 @@ async def test_run_discovery_pass_processes_every_idea(tmp_path):
 
     assert len(results) == 2
     assert {c[1] for c in gauntlet.calls} == {"AAPL", "TSLA"}
+
+
+# ── VettedTickers (S28/#881) ──────────────────────────────────────────────
+
+def _vetted(tmp_path):
+    return VettedTickers(db_path=tmp_path / "vetted.db")
+
+
+def test_get_verdict_returns_none_for_a_never_vetted_symbol(tmp_path):
+    v = _vetted(tmp_path)
+    assert v.get_verdict("XYZ", "0001-24-000001") is None
+
+
+def test_get_verdict_returns_the_recorded_verdict_for_the_same_accession(tmp_path):
+    v = _vetted(tmp_path)
+    v.record("XYZ", "0001-24-000001", red_flagged=True)
+
+    assert v.get_verdict("XYZ", "0001-24-000001") is True
+
+
+def test_get_verdict_returns_none_for_a_different_accession(tmp_path):
+    """A new filing (different accession) must not reuse the old verdict --
+    this is the whole mechanism that makes a NEW filing re-trigger a scan."""
+    v = _vetted(tmp_path)
+    v.record("XYZ", "0001-24-000001", red_flagged=False)
+
+    assert v.get_verdict("XYZ", "0001-24-000002") is None
+
+
+def test_record_replaces_the_prior_verdict_for_the_same_symbol(tmp_path):
+    v = _vetted(tmp_path)
+    v.record("XYZ", "0001-24-000001", red_flagged=True)
+    v.record("XYZ", "0001-24-000002", red_flagged=False)
+
+    assert v.get_verdict("XYZ", "0001-24-000001") is None  # superseded
+    assert v.get_verdict("XYZ", "0001-24-000002") is False
+
+
+def test_vetted_tickers_are_independent_per_symbol(tmp_path):
+    v = _vetted(tmp_path)
+    v.record("XYZ", "0001-24-000001", red_flagged=True)
+    v.record("ABC", "0002-24-000001", red_flagged=False)
+
+    assert v.get_verdict("XYZ", "0001-24-000001") is True
+    assert v.get_verdict("ABC", "0002-24-000001") is False

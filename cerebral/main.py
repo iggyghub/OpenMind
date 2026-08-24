@@ -248,6 +248,7 @@ from cerebral.trading.alerts import AlertDispatcher
 from cerebral.trading.risk_limits import RiskManager
 from cerebral.trading.live_tick import dispatch_due_events as _dispatch_due_events
 from cerebral.trading.strategy_store import StrategyStore
+from cerebral.trading.discovery import VettedTickers
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
 # Paper only, deliberately: a StubBrokerClient can't reach a real market, so
@@ -258,6 +259,75 @@ _trading_forward_record = ForwardRecord()
 _alert_dispatcher = AlertDispatcher()
 _trading_lifecycle = StrategyLifecycle(alert_dispatcher=_alert_dispatcher)
 _trading_strategy_store = StrategyStore()
+_vetted_tickers = VettedTickers()  # S28 (#881)
+
+
+def _latest_10q_10k_accession(symbol: str) -> "str | None":
+    """Sync bridge over StocksPlugin.sec_filings (async) -- safe here
+    because dispatch_due_events (this function's only caller) always runs
+    inside _scheduler_loop's asyncio.to_thread offload, never the main
+    event loop, the same reasoning run_strategy_tick's own blocking
+    yfinance fetch already relies on."""
+    import asyncio
+    from plugins.stocks import StocksPlugin
+
+    async def _fetch() -> "str | None":
+        plugin = StocksPlugin()
+        result = await plugin.call_tool("sec_filings", {"symbol": symbol, "count": 1})
+        if result.is_error:
+            return None
+        filings = json.loads(result.content).get("filings") or []
+        return filings[0]["accession"] if filings else None
+
+    try:
+        return asyncio.run(_fetch())
+    except Exception:
+        logger.warning("[cerebral] S28 latest-filing lookup failed for %s", symbol, exc_info=True)
+        return None
+
+
+def _fundamentals_red_flag_scan(symbol: str) -> "tuple[bool, str]":
+    """Fetch the ticker's latest filing text and LLM-scan it for red-flag
+    language (going concern, restatement, investigation, delisting).
+    Fails CLOSED (treated as red-flagged, graduation refused, strategy
+    stays paper) on any fetch/LLM failure -- unlike judge_idea's fail-open
+    default, this gates real capital risk, so an inconclusive scan must
+    not silently let a promotion through."""
+    import asyncio
+    from plugins.stocks import StocksPlugin
+
+    async def _scan() -> "tuple[bool, str]":
+        plugin = StocksPlugin()
+        result = await plugin.call_tool("sec_filings", {"symbol": symbol, "count": 1})
+        if result.is_error:
+            return True, f"could not fetch filing for {symbol}: {result.content}"
+        filings = json.loads(result.content).get("filings") or []
+        if not filings:
+            return True, f"no 10-Q/10-K on file for {symbol}"
+        # S24's sec_filings doesn't fetch full filing text today (only the
+        # filing index) -- scan what's actually available (form + date)
+        # rather than fabricating a text body that was never fetched.
+        filing = filings[0]
+        prompt = (
+            "You are a cautious risk analyst. A trading strategy is about "
+            "to graduate from paper to live trading on this ticker. Does "
+            f"this filing metadata suggest a red flag? {json.dumps(filing)}\n"
+            "Respond with exactly one line: 'CLEAR' or 'FLAG: <reason>'."
+        )
+        try:
+            raw = await _router.complete(prompt, task_type="coding")
+        except Exception as exc:
+            return True, f"red-flag scan model unavailable: {exc}"
+        raw = (raw or "").strip()
+        if raw.upper().startswith("FLAG"):
+            reason = raw.split(":", 1)[1].strip() if ":" in raw else "flagged by scan"
+            return True, reason
+        return False, "clear"
+
+    try:
+        return asyncio.run(_scan())
+    except Exception as exc:
+        return True, f"red-flag scan failed: {exc}"
 
 # Video pipeline routes local-only (no Budd/OpenClaw dependency for a long
 # unattended batch); falls through to the active model if no local model exists.
@@ -3490,6 +3560,9 @@ async def _scheduler_loop() -> None:
                 arm=_settings.get("trading_live_arm"),
                 risk=_risk_mgr,
                 alert_dispatcher=_alert_dispatcher,
+                latest_accession_fn=_latest_10q_10k_accession,
+                fundamentals_scan_fn=_fundamentals_red_flag_scan,
+                vetted_tickers=_vetted_tickers,
             )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")

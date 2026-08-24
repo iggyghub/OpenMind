@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 from cerebral.trading.lifecycle import StrategyLifecycle, StrategyState
 from cerebral.trading.alerts import AlertDispatcher, StructuredAlert
+from cerebral.trading.discovery import VettedTickers
 
 
 @pytest.fixture
@@ -162,3 +163,158 @@ def test_two_instances_against_different_paths_do_not_share_state(tmp_path):
     a._save_state(a.get_state("s1"))
 
     assert b.get_state("s1").status == "paper"
+
+
+# ── S28 (#881): fundamentals red-flag gate at graduation ─────────────────
+
+def _ci_mock():
+    m = MagicMock()
+    m.compute_expectancy_ci.return_value = (0.5, 0.1, 0.9, True, 30, 30)  # passes CI test
+    return m
+
+
+def test_red_flagged_filing_refuses_graduation_with_a_critical_alert(dispatcher, lifecycle):
+    """The acceptance test #881 names: red-flag language blocks graduation
+    even though the paper CI test passes, and emits a critical alert."""
+    record = _ci_mock()
+
+    graduated = lifecycle.check_graduation(
+        "strat1", record, symbol="XYZ",
+        latest_accession_fn=lambda s: "0001-24-000001",
+        fundamentals_scan_fn=lambda s: (True, "going concern warning"),
+    )
+
+    assert graduated is False
+    assert lifecycle.get_state("strat1").status == "paper"
+    alerts = dispatcher.get_pending()
+    red_flag_alerts = [a for a in alerts if a.event_type == "fundamentals_red_flag"]
+    assert len(red_flag_alerts) == 1
+    assert red_flag_alerts[0].severity == "critical"
+    assert "going concern" in red_flag_alerts[0].message
+
+
+def test_clean_filing_graduates_normally(lifecycle):
+    record = _ci_mock()
+
+    graduated = lifecycle.check_graduation(
+        "strat1", record, symbol="XYZ",
+        latest_accession_fn=lambda s: "0001-24-000001",
+        fundamentals_scan_fn=lambda s: (False, "clear"),
+    )
+
+    assert graduated is True
+    assert lifecycle.get_state("strat1").status == "live"
+
+
+def test_no_symbol_skips_the_gate_entirely_backward_compatible(lifecycle):
+    """Existing callers/tests that don't pass symbol= are unaffected --
+    every pre-S28 test in this file relies on exactly this."""
+    record = _ci_mock()
+
+    graduated = lifecycle.check_graduation("strat1", record)  # no symbol=
+
+    assert graduated is True
+
+
+def test_previously_vetted_ticker_same_filing_skips_the_scan(tmp_path, dispatcher, lifecycle):
+    """The acceptance test #881 names: a previously-vetted ticker (same
+    symbol, same accession already checked) skips the SEC/LLM scan
+    entirely on a second graduation attempt."""
+    vetted = VettedTickers(db_path=tmp_path / "vetted.db")
+    vetted.record("XYZ", "0001-24-000001", red_flagged=False)
+    scan_calls = []
+
+    def scan(symbol):
+        scan_calls.append(symbol)
+        return True, "should never be called"  # if called, the test must fail
+
+    record = _ci_mock()
+    graduated = lifecycle.check_graduation(
+        "strat1", record, symbol="XYZ",
+        latest_accession_fn=lambda s: "0001-24-000001",  # same accession as vetted
+        fundamentals_scan_fn=scan,
+        vetted_tickers=vetted,
+    )
+
+    assert graduated is True  # cached verdict was clean
+    assert scan_calls == []  # scan never invoked
+
+
+def test_previously_vetted_ticker_with_a_new_filing_re_triggers_the_scan(tmp_path, lifecycle):
+    """The acceptance test #881 names: a genuinely NEW filing since the
+    ticker was last checked re-triggers the scan."""
+    vetted = VettedTickers(db_path=tmp_path / "vetted.db")
+    vetted.record("XYZ", "0001-24-000001", red_flagged=False)  # old filing, was clean
+    scan_calls = []
+
+    def scan(symbol):
+        scan_calls.append(symbol)
+        return True, "new filing has a red flag"
+
+    record = _ci_mock()
+    graduated = lifecycle.check_graduation(
+        "strat1", record, symbol="XYZ",
+        latest_accession_fn=lambda s: "0001-24-000002",  # a NEW accession
+        fundamentals_scan_fn=scan,
+        vetted_tickers=vetted,
+    )
+
+    assert graduated is False  # the new filing was actually scanned and flagged
+    assert scan_calls == ["XYZ"]
+
+
+def test_vetted_verdict_persists_across_a_second_red_flagged_check(tmp_path, dispatcher, lifecycle):
+    """A ticker vetted RED-FLAGGED on a filing that hasn't changed must
+    stay refused on a later check too -- not silently graduate once the
+    scan is skipped."""
+    vetted = VettedTickers(db_path=tmp_path / "vetted.db")
+    vetted.record("XYZ", "0001-24-000001", red_flagged=True)
+    scan_calls = []
+
+    def scan(symbol):
+        scan_calls.append(symbol)
+        return False, "should never be called"
+
+    record = _ci_mock()
+    graduated = lifecycle.check_graduation(
+        "strat1", record, symbol="XYZ",
+        latest_accession_fn=lambda s: "0001-24-000001",
+        fundamentals_scan_fn=scan,
+        vetted_tickers=vetted,
+    )
+
+    assert graduated is False
+    assert scan_calls == []
+
+
+def test_no_filing_found_does_not_block_graduation(lifecycle):
+    """Conservative-continue: a missing/unreachable filing must not
+    fabricate a refusal -- inventing a red flag here would be exactly the
+    fabricated-signal failure class this campaign has caught before."""
+    record = _ci_mock()
+
+    graduated = lifecycle.check_graduation(
+        "strat1", record, symbol="XYZ",
+        latest_accession_fn=lambda s: None,  # no filing on record
+        fundamentals_scan_fn=lambda s: (True, "unreachable"),
+    )
+
+    assert graduated is True
+
+
+def test_gate_does_not_run_when_ci_test_itself_fails(lifecycle):
+    """The fundamentals gate only matters once the CI test already passed
+    -- it must not be consulted (or crash) on a strategy that isn't
+    graduation-eligible in the first place."""
+    mock_record = MagicMock()
+    mock_record.compute_expectancy_ci.return_value = (0.1, -0.2, 0.4, True, 30, 30)  # lower <= 0
+    scan_calls = []
+
+    graduated = lifecycle.check_graduation(
+        "strat1", mock_record, symbol="XYZ",
+        latest_accession_fn=lambda s: "0001-24-000001",
+        fundamentals_scan_fn=lambda s: scan_calls.append(s) or (False, "clear"),
+    )
+
+    assert graduated is False
+    assert scan_calls == []
