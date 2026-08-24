@@ -24,6 +24,7 @@ from cerebral.paths import data_dir
 # Module-level Path (not str) so tests can monkeypatch it -- .parent.mkdir()
 # below is pathlib-only, the S5c fixture bug.
 _DB_PATH = data_dir() / "strategy_specs.db"
+_VALID_ORIGINS = ('generated', 'user_edited', 'mixed', 'discovered')
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,7 @@ class StrategyStore:
                 strategy_id       TEXT NOT NULL,
                 version           INTEGER NOT NULL,
                 code              TEXT NOT NULL,
-                origin            TEXT NOT NULL CHECK(origin IN ('generated', 'user_edited', 'mixed')),
+                origin            TEXT NOT NULL,
                 provenance_json   TEXT,
                 hypothesis        TEXT,
                 parent_version    INTEGER,
@@ -80,8 +81,32 @@ class StrategyStore:
         except OperationalError:
             pass  # Column already exists
 
+        # S25 migration: drop legacy CHECK constraint on origin
+        try:
+            ddl_row = self._con.execute(
+                "SELECT sql FROM sqlite_master WHERE name='strategy_versions'"
+            ).fetchone()
+            if ddl_row and 'user_edited' in ddl_row[0] and 'discovered' not in ddl_row[0]:
+                self._con.execute("BEGIN TRANSACTION")
+                self._con.execute(
+                    "CREATE TABLE strategy_versions_new ("
+                    "strategy_id TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, "
+                    "origin TEXT NOT NULL, provenance_json TEXT, hypothesis TEXT, "
+                    "parent_version INTEGER, components_json TEXT, created_at TEXT NOT NULL, "
+                    "PRIMARY KEY (strategy_id, version))"
+                )
+                self._con.execute("INSERT INTO strategy_versions_new SELECT * FROM strategy_versions")
+                self._con.execute("DROP TABLE strategy_versions")
+                self._con.execute("ALTER TABLE strategy_versions_new RENAME TO strategy_versions")
+                self._con.commit()
+        except Exception:
+            self._con.rollback()
+
     def save(self, spec: StrategySpec, origin: str = 'generated', provenance_json=None, hypothesis: str = '', parent_version=None, components_json=None) -> None:
         """Register (or re-register, on re-validation) one strategy, recording lineage."""
+        if origin not in _VALID_ORIGINS:
+            raise ValueError(f"Invalid origin: {origin!r}. Must be one of {_VALID_ORIGINS}")
+        
         max_ver = self._con.execute(
             "SELECT MAX(version) FROM strategy_versions WHERE strategy_id = ?",
             (spec.strategy_id,)
@@ -123,6 +148,8 @@ class StrategyStore:
             return f"{src}, as modified by user (v{v})"
         elif origin == "mixed":
             return f"mix of: {comp} (v{v})"
+        elif origin == "discovered":
+            return f"discovered (v{v})"
         return f"strategy (v{v})"
 
     def get_current_version(self, strategy_id: str) -> Optional[sqlite3.Row]:

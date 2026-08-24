@@ -1,3 +1,15 @@
+"""Strategy evaluation runner.
+
+IMPORTANT: Do NOT batch tickers through command-line arguments here.
+Windows `CreateProcess` caps the command line at 32,767 characters.
+One symbol's daily bars is already ~14KB base64 (~45% of budget), so
+batching hundreds of tickers via argv is impossible (not just slow).
+Additionally, this sandbox exists to run *generated* untrusted strategy
+code. The cheap universe pre-filter (a later slice) runs Felix's own
+trusted code in-process at zero spawn cost with no sandbox involvement.
+Only tickers that survive the pre-filter get a real sandboxed strategy
+evaluation, one spawn each.
+"""
 import base64
 import json
 import logging
