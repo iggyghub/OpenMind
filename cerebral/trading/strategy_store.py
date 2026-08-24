@@ -16,6 +16,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from sqlite3 import OperationalError
 from typing import List, Optional
 
 from cerebral.paths import data_dir
@@ -38,6 +39,7 @@ class StrategySpec:
     symbol: str
     code: str
     qty: float = 1.0
+    interval: str = "1d"
 
 
 class StrategyStore:
@@ -53,6 +55,7 @@ class StrategyStore:
                 symbol      TEXT NOT NULL,
                 code        TEXT NOT NULL,
                 qty         REAL NOT NULL DEFAULT 1.0,
+                interval    TEXT NOT NULL DEFAULT '1d',
                 created_at  TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS strategy_versions (
@@ -70,6 +73,12 @@ class StrategyStore:
             """
         )
         self._con.commit()
+        # Migration: add interval column if table exists but lacks it
+        try:
+            self._con.execute("ALTER TABLE strategy_specs ADD COLUMN interval TEXT NOT NULL DEFAULT '1d'")
+            self._con.commit()
+        except OperationalError:
+            pass  # Column already exists
 
     def save(self, spec: StrategySpec, origin: str = 'generated', provenance_json=None, hypothesis: str = '', parent_version=None, components_json=None) -> None:
         """Register (or re-register, on re-validation) one strategy, recording lineage."""
@@ -90,8 +99,8 @@ class StrategyStore:
         )
         self._con.execute(
             "INSERT OR REPLACE INTO strategy_specs "
-            "(strategy_id, symbol, code, qty, created_at) VALUES (?, ?, ?, ?, ?)",
-            (spec.strategy_id, spec.symbol, spec.code, float(spec.qty), ts),
+            "(strategy_id, symbol, code, qty, interval, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (spec.strategy_id, spec.symbol, spec.code, float(spec.qty), spec.interval, ts),
         )
         self._con.commit()
 
@@ -135,7 +144,7 @@ class StrategyStore:
             return None
         return StrategySpec(
             strategy_id=row["strategy_id"], symbol=row["symbol"],
-            code=row["code"], qty=row["qty"],
+            code=row["code"], qty=row["qty"], interval=row["interval"],
         )
 
     def list_all(self) -> List[StrategySpec]:
@@ -144,7 +153,7 @@ class StrategyStore:
         ).fetchall()
         return [
             StrategySpec(strategy_id=r["strategy_id"], symbol=r["symbol"],
-                         code=r["code"], qty=r["qty"])
+                         code=r["code"], qty=r["qty"], interval=r["interval"])
             for r in rows
         ]
 

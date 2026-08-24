@@ -42,7 +42,7 @@ def make_bars(n=5):
 
 
 def fixed_fetch(df):
-    return lambda symbol, start, end: df
+    return lambda symbol, start, end, interval="1d": df
 
 
 def make_record(tmp_path, monkeypatch):
@@ -244,7 +244,7 @@ def test_tick_on_a_flat_signal_while_flat_places_no_order(tmp_path, monkeypatch)
 def test_tick_asks_for_the_documented_lookback_window():
     seen = {}
 
-    def spy_fetch(symbol, start, end):
+    def spy_fetch(symbol, start, end, interval="1d"):
         seen["symbol"], seen["start"], seen["end"] = symbol, start, end
         return make_bars()
 
@@ -659,7 +659,7 @@ def test_tick_blocks_high_correlation_open(tmp_path, monkeypatch):
     
     aapl_df, corx_df = _make_correlated_bars()
     
-    def fixture_fetch(symbol, start, end):
+    def fixture_fetch(symbol, start, end, interval="1d"):
         if symbol == "AAPL":
             return aapl_df
         return corx_df
@@ -682,7 +682,7 @@ def test_tick_does_not_block_closing_trade_due_to_correlation(tmp_path, monkeypa
     
     aapl_df, corx_df = _make_correlated_bars()
     
-    def fixture_fetch(symbol, start, end):
+    def fixture_fetch(symbol, start, end, interval="1d"):
         if symbol == "AAPL":
             return aapl_df
         return corx_df

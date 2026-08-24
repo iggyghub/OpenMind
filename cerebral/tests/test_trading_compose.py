@@ -139,7 +139,7 @@ async def test_mix_strategies_end_to_end_persists_real_components_json(tmp_path)
     plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
-    def fetch(symbol, start, end):
+    def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     r1 = await plugin._run_gauntlet(

@@ -7,6 +7,29 @@ import pandas as pd
 from .cost_model import apply_costs_to_returns, Trade
 
 
+_TRADING_HOURS_PER_DAY = 6.5
+
+
+def _bars_per_year(interval: str) -> float:
+    """Trading bars per year for Sharpe annualisation, derived from interval.
+
+    Each interval gets its own bars-per-day figure -- bucketing "1h"/"4h"
+    (or "5m"/"15m"/"30m") onto one shared formula would silently apply the
+    wrong annualisation factor to every interval but the one the formula
+    was actually written for (e.g. a 4h strategy's Sharpe inflated by the
+    same factor as a 1h one, ~4x too large).
+    """
+    if interval == "1d":
+        return 252.0
+    if interval.endswith("h"):
+        hours = float(interval[:-1])
+        return 252 * (_TRADING_HOURS_PER_DAY / hours)
+    if interval.endswith("m"):
+        minutes = float(interval[:-1])
+        return 252 * (_TRADING_HOURS_PER_DAY * 60 / minutes)
+    return 252.0
+
+
 @dataclass
 class GateResult:
     """Result of a single S2 gate (oos_test / walk_forward)."""
@@ -204,12 +227,14 @@ def run_gauntlet(
     parent_version: Optional[int] = None,
     strategy_id: Optional[str] = None,
     components_json: Any = None,
+    interval: str = "1d",
 ) -> StrategyCard:
     rng = np.random.default_rng(seed)
     params = params or {}
     equity_curve, metrics = backtest_func(prices, params)
     daily_returns = np.diff(equity_curve) / equity_curve[:-1] if len(equity_curve) > 1 else np.array([0.0])
-    sharpe = metrics.get("sharpe", float(np.mean(daily_returns) / np.std(daily_returns) * np.sqrt(252))) if np.std(daily_returns) > 0 else 0.0
+    ann_factor = _bars_per_year(interval)
+    sharpe = metrics.get("sharpe", float(np.mean(daily_returns) / np.std(daily_returns) * ann_factor)) if np.std(daily_returns) > 0 else 0.0
     total_return = (equity_curve[-1] / equity_curve[0]) - 1 if equity_curve[0] != 0 else 0.0
 
     gates: List[GauntletGateResult] = []

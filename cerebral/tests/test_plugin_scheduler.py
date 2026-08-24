@@ -33,7 +33,7 @@ def _bars():
     )
 
 
-def _fetch(symbol, start, end):
+def _fetch(symbol, start, end, interval="1d"):
     """Injected everywhere -- a test must never reach yfinance."""
     return _bars()
 
@@ -332,7 +332,7 @@ async def test_run_gauntlet_validated_registers_spec_and_schedules_event(tmp_pat
     plugin = _plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
-    def fetch(symbol, start, end):
+    def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     result = await plugin._run_gauntlet(
@@ -366,7 +366,7 @@ async def test_run_gauntlet_validated_event_actually_dispatches(tmp_path, monkey
     broker = StubBrokerClient()
     record = _record(tmp_path, monkeypatch)
 
-    def fetch(symbol, start, end):
+    def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     result = await plugin._run_gauntlet(
@@ -386,7 +386,7 @@ async def test_run_gauntlet_unvalidated_schedules_nothing(tmp_path):
     plugin = _plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
-    def flat_fetch(symbol, start, end):
+    def flat_fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     result = await plugin._run_gauntlet(
@@ -413,7 +413,7 @@ async def test_run_gauntlet_generates_code_from_a_claim_via_the_router(tmp_path)
     plugin._router = FakeRouter()
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
-    def fetch(symbol, start, end):
+    def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     result = await plugin._run_gauntlet(
@@ -434,7 +434,7 @@ async def test_run_gauntlet_claim_without_a_router_uses_the_stub(tmp_path):
     plugin = _plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
-    def fetch(symbol, start, end):
+    def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     result = await plugin._run_gauntlet(
@@ -469,7 +469,7 @@ async def test_edit_strategy_validated_records_a_new_version_and_moves_the_point
     plugin = _plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
-    def fetch(symbol, start, end):
+    def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     await _register_ma_cross(plugin, store, fetch)
@@ -496,7 +496,7 @@ async def test_edit_strategy_unvalidated_does_not_move_the_dispatch_pointer(tmp_
     plugin = _plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
-    def fetch(symbol, start, end):
+    def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     await _register_ma_cross(plugin, store, fetch)
@@ -533,7 +533,7 @@ async def test_get_strategy_code_returns_real_source_and_provenance(tmp_path):
     plugin = _plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
-    def fetch(symbol, start, end):
+    def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     await _register_ma_cross(plugin, store, fetch)

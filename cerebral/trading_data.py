@@ -12,6 +12,7 @@ which can skew backtesting results if not accounted for.
 """
 
 import os
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -22,12 +23,12 @@ from yfinance.exceptions import YFException
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 
 
-def _cache_path(symbol: str, start: str, end: str) -> str:
+def _cache_path(symbol: str, start: str, end: str, interval: str = "1d") -> str:
     """Generate a deterministic cache file path for a given ticker and date range."""
     os.makedirs(_CACHE_DIR, exist_ok=True)
     # Sanitize symbol for filesystem safety
     safe_symbol = "".join(c if c.isalnum() else "-" for c in symbol)
-    filename = f"{safe_symbol}_{start}_{end}.csv"
+    filename = f"{safe_symbol}_{start}_{end}_{interval}.csv"
     return os.path.join(_CACHE_DIR, filename)
 
 
@@ -35,6 +36,7 @@ def fetch_ohlcv(
     symbol: str,
     start: str,
     end: str,
+    interval: str = "1d",
     cache: bool = True,
 ) -> pd.DataFrame:
     """
@@ -48,6 +50,8 @@ def fetch_ohlcv(
         Start date in YYYY-MM-DD format
     end : str
         End date in YYYY-MM-DD format
+    interval : str
+        Bar resolution (e.g., "1d", "5m", "1h"). Passed through to data source.
     cache : bool
         If True, use local file cache to avoid redundant network calls
 
@@ -71,15 +75,27 @@ def fetch_ohlcv(
     except ValueError as e:
         raise ValueError(f"Invalid date format: {e}") from e
 
-    # Check cache
+    # Try Alpaca Market Data first (preferred per decision #39)
+    try:
+        from cerebral.trading.broker import AlpacaMarketDataClient
+        client = AlpacaMarketDataClient("paper")
+        df = client.get_bars(symbol, start, end, interval)
+        if cache:
+            cache_file = _cache_path(symbol, start, end, interval)
+            try:
+                df.to_csv(cache_file)
+            except Exception:
+                pass
+        return df
+    except Exception:
+        pass  # Falls through to yfinance
+
+    # Cache TTL: daily is fine for a day, intraday stalifies in ~1 hour.
+    ttl_seconds = 86400 if interval == "1d" else 3600
     if cache:
-        cache_file = _cache_path(symbol, start, end)
+        cache_file = _cache_path(symbol, start, end, interval)
         if os.path.exists(cache_file):
-            # Re-fetch if cached file is older than 1 day
-            file_age = datetime.now() - datetime.fromtimestamp(
-                os.path.getmtime(cache_file)
-            )
-            if file_age.days < 1:
+            if time.time() - os.path.getmtime(cache_file) < ttl_seconds:
                 try:
                     df = pd.read_csv(cache_file, index_col=0, parse_dates=True)
                     # Ensure columns are correctly named
@@ -92,7 +108,7 @@ def fetch_ohlcv(
     # Fetch from yfinance
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(start=start, end=end)
+        df = ticker.history(start=start, end=end, interval=interval)
     except Exception as e:
         raise YFException(f"Failed to fetch data for {symbol}: {e}") from e
 
@@ -113,7 +129,7 @@ def fetch_ohlcv(
     # Cache result
     if cache:
         try:
-            cache_file = _cache_path(symbol, start, end)
+            cache_file = _cache_path(symbol, start, end, interval)
             df.to_csv(cache_file)
         except Exception:
             pass  # Non-fatal — caller still gets data

@@ -51,10 +51,17 @@ SIGNAL_FLAT = 0
 SIGNAL_SHORT = -1
 
 # ponytail: one fixed window rather than asking the strategy how much history
-# it wants. 180 calendar days is ~124 trading bars -- enough for a 100-bar
-# moving average, the deepest indicator anything generated so far uses. Add a
-# `lookback_days` field to StrategySpec when a strategy genuinely needs more.
-DEFAULT_LOOKBACK_DAYS = 180
+# it wants. 180 calendar days is ~124 trading bars for daily data.
+# For intraday intervals, 180 days is excessive and lookup is replaced by
+# an interval-derived function. Add a `lookback_days` field to StrategySpec
+# when a strategy genuinely needs more.
+def _lookback_days(interval: str) -> int:
+    """Calendar days to look back, derived from interval to avoid 180d for 5m bars."""
+    if interval == "1d":
+        return 180
+    if interval in ("1h", "4h"):
+        return 60
+    return 30  # 1m, 5m, 15m, 30m
 
 
 def evaluate_signal(strategy_fn: Callable[[Any], Sequence], data: Any) -> int:
@@ -218,8 +225,8 @@ def run_strategy_tick(
         from cerebral.trading_data import fetch_ohlcv as fetch
 
     end = today or date.today()
-    start = end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
-    data = fetch(spec.symbol, start.isoformat(), end.isoformat())
+    start = end - timedelta(days=_lookback_days(spec.interval))
+    data = fetch(spec.symbol, start.isoformat(), end.isoformat(), interval=spec.interval)
 
     # Re-evaluated per tick rather than cached: a sandbox spawn is cheap
     # next to a data fetch, and it means a re-registered spec takes effect

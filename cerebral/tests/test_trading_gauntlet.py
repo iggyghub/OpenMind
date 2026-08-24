@@ -2,7 +2,7 @@ import json
 import pytest
 from typing import List, Tuple, Sequence, Any
 from cerebral.trading.cost_model import Trade
-from cerebral.trading.gauntlet import oos_test, walk_forward, GateResult
+from cerebral.trading.gauntlet import oos_test, walk_forward, GateResult, _bars_per_year
 
 class MockStrategy:
     """Mock strategy that returns predefined returns and trades."""
@@ -361,3 +361,28 @@ class TestAutoPromote:
             make_positions(), seed=42,
         )
         assert card.verdict == "VALIDATED"
+
+
+class TestBarsPerYear:
+    """S22 (#875): each interval must get its own annualisation factor --
+    bucketing several intervals onto one shared formula silently applies the
+    wrong factor to every interval but the one it was written for."""
+
+    def test_daily(self):
+        assert _bars_per_year("1d") == 252.0
+
+    def test_1h_and_4h_are_distinct(self):
+        h1, h4 = _bars_per_year("1h"), _bars_per_year("4h")
+        assert h1 == pytest.approx(252 * 6.5)
+        assert h4 == pytest.approx(252 * 6.5 / 4)
+        assert h1 != h4
+
+    def test_5m_15m_30m_are_all_distinct(self):
+        m5, m15, m30 = _bars_per_year("5m"), _bars_per_year("15m"), _bars_per_year("30m")
+        assert m5 == pytest.approx(252 * 6.5 * 60 / 5)
+        assert m15 == pytest.approx(252 * 6.5 * 60 / 15)
+        assert m30 == pytest.approx(252 * 6.5 * 60 / 30)
+        assert len({m5, m15, m30}) == 3
+
+    def test_unknown_interval_falls_back_to_daily(self):
+        assert _bars_per_year("bogus") == 252.0

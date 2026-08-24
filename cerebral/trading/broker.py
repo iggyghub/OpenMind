@@ -297,3 +297,76 @@ class StubBrokerClient:
     def enable_partial_fills_for(self, symbol: str, ratio: float) -> None:
         self._partial_fill_symbol = symbol
         self._partial_fill_ratio = ratio
+
+
+class AlpacaMarketDataClient:
+    """Alpaca historical market data client. Uses the same credentials as AlpacaBrokerClient
+    to keep backtest/live data vendor aligned (decision #39). Falls back to yfinance in
+    cerebral.trading_data if this is unavailable or misconfigured."""
+    def __init__(self, env: str = "paper") -> None:
+        if env not in ("paper", "live"):
+            raise ValueError("env must be 'paper' or 'live'")
+        self.env = env
+        self._client = None
+        self._connected = False
+
+    def _connect(self) -> None:
+        if self._connected:
+            return
+        api_key, api_secret = _get_alpaca_credentials(self.env)
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockBarsRequest
+            self._client = StockHistoricalDataClient(api_key, api_secret)
+            self._request_cls = StockBarsRequest
+        except ImportError:
+            raise RuntimeError("alpaca-py is not installed. Install with: pip install alpaca-py")
+        self._connected = True
+
+    def get_bars(self, symbol: str, start: str, end: str, interval: str) -> pd.DataFrame:
+        self._connect()
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        from datetime import datetime
+
+        # Map yfinance-compatible interval strings to a real Alpaca TimeFrame.
+        # TimeFrame.Minute/.Hour are themselves fixed 1-unit constants (e.g.
+        # TimeFrame.Minute == "1Min") -- using them directly for "5m"/"30m"/
+        # "4h" would silently request 1-minute/1-hour bars regardless of what
+        # interval was actually asked for. TimeFrame(amount, unit) is the
+        # real constructor for anything other than 1 unit.
+        tf_map = {
+            "1m": (1, TimeFrameUnit.Minute),
+            "5m": (5, TimeFrameUnit.Minute),
+            "15m": (15, TimeFrameUnit.Minute),
+            "30m": (30, TimeFrameUnit.Minute),
+            "1h": (1, TimeFrameUnit.Hour),
+            "4h": (4, TimeFrameUnit.Hour),
+            "1d": (1, TimeFrameUnit.Day),
+            "1w": (1, TimeFrameUnit.Week),
+            "1M": (1, TimeFrameUnit.Month),
+        }
+        amount, unit = tf_map.get(interval, (1, TimeFrameUnit.Day))
+        timeframe = TimeFrame(amount, unit)
+
+        start_dt = datetime.fromisoformat(start) if isinstance(start, str) else start
+        end_dt = datetime.fromisoformat(end) if isinstance(end, str) else end
+
+        req = self._request_cls(
+            symbol_or_symbols=symbol,
+            timeframe=timeframe,
+            start=start_dt,
+            end=end_dt,
+        )
+        bars = self._client.get_stock_bars(req)
+        df = bars.df
+
+        required_cols = ["open", "high", "low", "close", "volume"]
+        if not all(c in df.columns for c in required_cols):
+            raise ValueError(f"Missing columns in Alpaca response for {symbol}")
+
+        df = df[required_cols]
+        df.columns = ["Open", "High", "Low", "Close", "Volume"]
+        df = df.sort_index()
+        df.index.name = "Date"
+        df = df.dropna(how="all")
+        return df
