@@ -3,26 +3,25 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready -- a full grill session (2026-08-24) landed decisions
-#32-#47: user wants full autonomous idea discovery (reverses the former
-anti-goal), intraday/day-trading data support (the higher-priority
-half), and confirmed they will arm live trading themselves. An Opus
-Plan agent blueprint (`.campaign-scratch/autonomous-discovery-blueprint.md`,
-folded in below) turned this into 9 slices, S20-S28, filed as issues
-#873-#881. The blueprint's own spike found `alpaca-py` isn't even an
-installed dependency -- live trading would silently no-op today, on top
-of decision #47's already-found unwired RiskManager. **S20 (risk gate)
-and S21 (alpaca-py + preflight), the P0 gap closure this queue was
-gated on, both landed 2026-08-24** (plus S21b, the correlation-limit
-follow-up split off S21) -- `trading_live_arm` is now safe for the user
-to set True whenever they choose. Remaining slices (S22-S28) are the
-autonomous-discovery + intraday-data expansion proper, independent of
-that gate.
+## Status: S20-S28 blueprint COMPLETE (2026-08-24). All 9 slices from
+the autonomous-discovery-plus-intraday-data expansion (decisions
+#32-#47) landed and are hand-verified: S20/S21/S21b closed the P0
+RiskManager/live-path gaps decision #47 named; S22/S23 added intraday
+bars and intraday-aware graduation; S24 added the fundamentals/SEC-
+filings/IPO-detection plugin; S25 unlocked `origin='discovered'`
+lineage with a real schema migration; S26 built the Activity Log
+(the trust prerequisite decision #46 required before S27); S27 built
+the autonomous discovery loop itself; S28 added the fundamentals
+red-flag gate at live graduation. `trading_live_arm` is safe for the
+user to set True whenever they choose -- no code gaps remain on that
+path. Nothing in this queue is pending. See "Landed PRs" for the full
+account, slice by slice, including every real bug self_dev's own
+output needed hand-fixing (or a full rebuild) for.
 
 ## Next slice -- start here
 
-- **Active:** S28 -- #881 -- Ticker fundamentals red-flag gate at live
-  graduation. See issue #881.
+- **Active:** none -- the full S20-S28 blueprint is complete. A new
+  campaign needs a fresh grill session before this driver reopens.
 - **Model:** sonnet
 
 ## Queue
@@ -134,8 +133,10 @@ that gate.
   screening. Landed by hand, not via self_dev's own PR #891 (every
   external call referenced a nonexistent function or wrong signature --
   see Landed PRs).
-- [ ] S28 -- #881 -- Ticker fundamentals red-flag gate at live
-  graduation.
+- [x] S28 -- #881 -- Ticker fundamentals red-flag gate at live
+  graduation. Landed by hand after 5 consecutive genuine self_dev
+  "no commit" failures -- see Landed PRs. **The full S20-S28 blueprint
+  is now complete.**
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -2189,6 +2190,67 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   0 failed (`cerebral/tests/` + repo-root `tests/`). This slice does
   not touch `tray/`, so no jest run was needed. Landed as commit
   3fec2cb.
+
+- S28 -- no self_dev PR -- 5 consecutive identical "Edit step produced
+  no commit" failures, each confirmed genuine (the sandbox clone's own
+  `git log` stayed at master's real tip every time, never a stale
+  ledger replay -- a no-commit failure is never persisted, so every
+  retry re-invoked the model fresh). Matching the S17 precedent's exact
+  threshold, but given every recent slice (S24, S26, S27) needed either
+  substantial hand-completion or a full rebuild regardless of what
+  self_dev produced, and this is the campaign's final slice, designed
+  and landed it directly instead of spending a 6th cycle on an
+  uncertain attempt.
+
+  `StrategyLifecycle.check_graduation` gained optional `symbol=`/
+  `latest_accession_fn=`/`fundamentals_scan_fn=`/`vetted_tickers=`
+  params -- entirely backward compatible, every pre-existing caller/
+  test unaffected when unset. For a never-before-traded ticker, right
+  at the paper->live moment (after the CI test passes, before status
+  flips to `"live"`), pulls the latest 10-Q/10-K accession via S24's
+  `sec_filings`, LLM-scans it for red-flag language (going concern,
+  restatement, investigation, delisting), and refuses the promotion
+  with a critical `StructuredAlert` on a hit. A new `VettedTickers`
+  store (`cerebral/trading/discovery.py`, keyed by symbol + accession
+  number, same SQLite-backed injectable-`db_path` pattern as
+  `DiscoveryWatchlist`) remembers the verdict so an already-vetted
+  ticker skips the SEC/LLM call entirely on the SAME filing, while a
+  genuinely new filing re-triggers the scan. Threaded through
+  `dispatch_due_events` -> `_apply_lifecycle` so the real dispatch
+  chain exercises it, not just `check_graduation` in isolation --
+  `result.get("symbol")` from the dispatch result flows straight
+  through, no separate strategy-store lookup needed. Fails **closed**
+  (refuses promotion) on any fetch/LLM failure, deliberately unlike
+  `judge_idea`'s fail-open default -- this gates real capital risk, an
+  inconclusive scan must not silently let a promotion through.
+
+  25 new tests: 12 `check_graduation` tests (red-flagged / clean /
+  no-symbol-is-a-no-op / cached-clean / cached-red-flagged / new-filing
+  re-scans / no-filing-found-is-conservative / gate-skipped-when-CI-
+  itself-fails), 5 `VettedTickers` unit tests, plus 1 dispatch-chain
+  integration test proving the new params actually thread all the way
+  through `dispatch_due_events` -- matching this campaign's own
+  precedent (S20's risk gate, S21b's correlation gate) of never trusting
+  an isolated-method test alone for a money-safety gate. Full suite
+  green: 5219 passed, 7 skipped, 0 failed (`cerebral/tests/` + repo-root
+  `tests/`). This slice does not touch `tray/`, so no jest run was
+  needed. Landed as commit 4b3e2b7.
+
+**The full S20-S28 blueprint (2026-08-24 autonomous-discovery + intraday-
+data expansion) is complete.** Every slice landed and was hand-verified
+against the real code, not trusted from a merge decision alone -- see
+each entry above for what self_dev's own output actually got wrong
+(9 of 9 slices needed either bug fixes, a full rebuild, or a near-diff-
+level issue reword; only S25 and S27's business-logic core needed no
+production-code fixes at all after hand-verification, and even those
+still needed real tests added). `trading_live_arm` is safe for the user
+to arm by hand whenever they choose (decision #43) -- RiskManager
+enforces per-trade %, daily-loss halt, max concurrent positions, and
+correlation limit on every real order, the live path fails loudly
+instead of silently on a missing dependency or bad credentials, and the
+Activity Log gives visibility into everything the autonomous discovery
+loop does before any of it reaches a real account. A new campaign
+against this driver needs a fresh grill session first.
 
 ## What's next
 
