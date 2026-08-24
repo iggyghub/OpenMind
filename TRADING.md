@@ -21,8 +21,8 @@ that gate.
 
 ## Next slice -- start here
 
-- **Active:** S22 -- #875 -- Intraday bars: per-strategy interval, Alpaca
-  Market Data. See issue #875.
+- **Active:** S23 -- #876 -- Intraday-aware graduation: distinct
+  trading-days floor. See issue #876.
 - **Model:** sonnet
 
 ## Queue
@@ -112,8 +112,9 @@ that gate.
   dispatch path (split from #874). Landed by hand, not via self_dev's
   own PR #885 (2 test bugs + 1 real production bug found -- see Landed
   PRs).
-- [ ] S22 -- #875 -- Intraday bars: per-strategy interval, Alpaca
-  Market Data.
+- [x] S22 -- #875 -- Intraday bars: per-strategy interval, Alpaca
+  Market Data. Landed by hand, not via self_dev's own PR #886 (zero
+  tests, 2 real production bugs -- see Landed PRs).
 - [ ] S23 -- #876 -- Intraday-aware graduation: distinct trading-days
   floor.
 - [ ] S24 -- #877 -- plugins/stocks.py: fundamentals, SEC filings, IPO
@@ -1783,6 +1784,64 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   landed) are the only code gaps gating decision #43 -- `trading_live_arm`
   can safely go True whenever the user chooses to flip it by hand; S22
   (intraday data) is a separate, independent chain, not a prerequisite.
+
+- PR #886 -- S22 -- landed after a sustained ~50-minute Bonsai 502 outage
+  (5 identical 502s before this attempt went through -- notably longer
+  than the single-retry recoveries S20/S21b saw, but it cleared on its
+  own; no reword needed). Real diff verified via the sandbox's own clone
+  (`campaign-trading-s22`, `git diff c2e74ae..69d4ddc`, 6 files / 141
+  lines): `fetch_ohlcv` gained `interval=` (cache key + TTL both
+  interval-aware), a new `AlpacaMarketDataClient` (preferred over
+  yfinance per decision #39), an `interval` column on
+  `StrategySpec`/`strategy_specs`, and `DEFAULT_LOOKBACK_DAYS`/Sharpe
+  annualisation both became interval-derived instead of flat daily-only
+  assumptions.
+
+  **Zero tests again** (3rd time this campaign: S20, S21, now S22).
+  The interval parameter threading alone broke 30 existing tests the
+  moment it ran:
+  1. Every test-side `fetch(symbol, start, end)` stub across the whole
+     trading suite broke -- `run_strategy_tick`, `_build_correlation_
+     matrix`'s callers, and `_run_gauntlet` all now call `fetch(...,
+     interval=...)`, but none of the ~13 stubs across
+     `test_trading_live_tick.py`, `test_plugin_scheduler.py`, and
+     `test_trading_compose.py` accepted it -- guaranteed `TypeError` on
+     every one. Fixed all of them to accept `interval="1d"`.
+  2. `_cache_path` gained a required positional `interval` param with no
+     default, breaking 2 more tests in `test_trading_data.py`. Gave it
+     `interval: str = "1d"` -- minimal and backward-compatible; every
+     real call site in the diff already passes it explicitly.
+
+  **Two real production bugs, not just test breakage** -- both
+  silently-wrong-number bugs, the same class this campaign's
+  hand-verification exists to catch:
+  3. `AlpacaMarketDataClient.get_bars`'s interval map sent `"5m"`/
+     `"15m"`/`"30m"` all to `TimeFrame.Minute` and `"4h"` to
+     `TimeFrame.Hour` -- both fixed 1-unit constants (`TimeFrame.Minute
+     == "1Min"`, verified directly), so every one of those four
+     intervals would have silently fetched the base 1-minute or 1-hour
+     bars regardless of what was actually asked for. Fixed with
+     `TimeFrame(amount, unit)` via `TimeFrameUnit`, giving each interval
+     its own real construction. New `test_trading_market_data.py` (3
+     tests, fake Alpaca client, no network) asserts the exact
+     `TimeFrame.value` string for all 9 supported intervals.
+  4. `gauntlet.py`'s `_bars_per_year` bucketed `"1h"`/`"4h"` onto one
+     shared formula and `"5m"`/`"15m"`/`"30m"` onto another -- a 4h
+     strategy's Sharpe would have used the same annualisation factor as
+     a 1h one (~4x too large); a 30m strategy the same factor as 5m
+     (~6x too large). Sharpe feeds graduation decisions, so this is the
+     same fabricated/miscomputed-number failure class this campaign has
+     caught in the money-safety path before (S6's rolling-CI bug, S10's
+     P&L math), just in the annualisation step this time. Rewrote to
+     derive bars-per-day per-interval from its own numeric prefix rather
+     than a lookup table with shared buckets. New `TestBarsPerYear` (4
+     tests) asserts 1h≠4h and 5m≠15m≠30m are all numerically distinct
+     and match the real formula.
+
+  Full suite green: 5145 passed, 7 skipped, 0 failed (`cerebral/tests/`
+  + repo-root `tests/`). This slice does not touch `tray/`, so no jest
+  run was needed. PR #886 closed unmerged in favor of this
+  hand-verified local landing (commit 6e365f8).
 
 ## What's next
 
