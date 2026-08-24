@@ -297,3 +297,70 @@ class StubBrokerClient:
     def enable_partial_fills_for(self, symbol: str, ratio: float) -> None:
         self._partial_fill_symbol = symbol
         self._partial_fill_ratio = ratio
+
+
+class AlpacaMarketDataClient:
+    """Alpaca historical market data client. Uses the same credentials as AlpacaBrokerClient
+    to keep backtest/live data vendor aligned (decision #39). Falls back to yfinance in
+    cerebral.trading_data if this is unavailable or misconfigured."""
+    def __init__(self, env: str = "paper") -> None:
+        if env not in ("paper", "live"):
+            raise ValueError("env must be 'paper' or 'live'")
+        self.env = env
+        self._client = None
+        self._connected = False
+
+    def _connect(self) -> None:
+        if self._connected:
+            return
+        api_key, api_secret = _get_alpaca_credentials(self.env)
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockBarsRequest
+            self._client = StockHistoricalDataClient(api_key, api_secret)
+            self._request_cls = StockBarsRequest
+        except ImportError:
+            raise RuntimeError("alpaca-py is not installed. Install with: pip install alpaca-py")
+        self._connected = True
+
+    def get_bars(self, symbol: str, start: str, end: str, interval: str) -> pd.DataFrame:
+        self._connect()
+        from alpaca.data.timeframe import TimeFrame
+        from datetime import datetime
+
+        # Map yfinance-compatible interval strings to Alpaca TimeFrame
+        tf_map = {
+            "1m": TimeFrame.Minute,
+            "5m": TimeFrame.Minute,
+            "15m": TimeFrame.Minute,
+            "30m": TimeFrame.Minute,
+            "1h": TimeFrame.Hour,
+            "4h": TimeFrame.Hour,
+            "1d": TimeFrame.Day,
+            "1w": TimeFrame.Week,
+            "1M": TimeFrame.Month,
+        }
+        timeframe = tf_map.get(interval, TimeFrame.Day)
+
+        start_dt = datetime.fromisoformat(start) if isinstance(start, str) else start
+        end_dt = datetime.fromisoformat(end) if isinstance(end, str) else end
+
+        req = self._request_cls(
+            symbol_or_symbols=symbol,
+            timeframe=timeframe,
+            start=start_dt,
+            end=end_dt,
+        )
+        bars = self._client.get_stock_bars(req)
+        df = bars.df
+
+        required_cols = ["open", "high", "low", "close", "volume"]
+        if not all(c in df.columns for c in required_cols):
+            raise ValueError(f"Missing columns in Alpaca response for {symbol}")
+
+        df = df[required_cols]
+        df.columns = ["Open", "High", "Low", "Close", "Volume"]
+        df = df.sort_index()
+        df.index.name = "Date"
+        df = df.dropna(how="all")
+        return df

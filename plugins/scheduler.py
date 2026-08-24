@@ -377,7 +377,7 @@ class SchedulerPlugin:
     async def _run_gauntlet(
         self, args: dict, *, strategy_store=None, fetch=None,
         origin: str = "generated", parent_version=None, strategy_id: "str | None" = None,
-        components_json=None,
+        components_json=None, interval: str = "1d",
     ) -> ToolResult:
         """S11 Part 3: the production entry point for run_gauntlet.
 
@@ -409,6 +409,7 @@ class SchedulerPlugin:
         symbol = args.get("symbol", "").strip()
         hypothesis = args.get("hypothesis", "").strip()
         provenance = args.get("provenance", "")
+        interval = args.get("interval", "1d")
 
         if not symbol or not hypothesis:
             return ToolResult(content="symbol and hypothesis are required", is_error=True)
@@ -440,9 +441,11 @@ class SchedulerPlugin:
         from cerebral.trading.sandboxed_eval import evaluate_signals
 
         end = datetime.now(timezone.utc).date()
-        start = end - timedelta(days=365)
+        # Intraday bars don't need 365 calendar days; use interval-derived lookback
+        lookback_days = 365 if interval == "1d" else 30
+        start = end - timedelta(days=lookback_days)
         try:
-            prices = fetch(symbol, start.isoformat(), end.isoformat())
+            prices = fetch(symbol, start.isoformat(), end.isoformat(), interval=interval)
         except Exception as e:
             return ToolResult(content=f"Data fetch failed for {symbol}: {e}", is_error=True)
 
@@ -474,7 +477,7 @@ class SchedulerPlugin:
                 symbol=symbol, strategy_code=code,
                 strategy_store=strategy_store, position_qty=1.0,
                 origin=origin, parent_version=parent_version, strategy_id=strategy_id,
-                components_json=components_json,
+                components_json=components_json, interval=interval,
             )
         except Exception as e:
             logger.warning(f"[scheduler] run_gauntlet failed for {symbol}: {e}", exc_info=True)
