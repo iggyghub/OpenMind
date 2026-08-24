@@ -144,6 +144,53 @@ async def to_strategy(idea: Idea, llm: Optional[Any] = None, router=None) -> str
     return _generate_stub_strategy(claim)
 
 
+async def judge_idea(idea: Idea, llm: Optional[Any] = None, router=None) -> "tuple[bool, str]":
+    """Idea-quality pre-filter (S27/#880, decision #44): rejects vague or
+    non-testable claims before they reach the expensive gauntlet.
+
+    Same free routed model to_strategy already uses (task_type="coding",
+    decision #26 -- no new task_type, no paid model). Conservative-continue
+    on any failure: accept rather than silently drop a real idea because
+    the judge model was unreachable -- an over-eager gauntlet run wastes
+    compute, a wrongly-dropped idea is lost information.
+
+    Returns (accepted, reason).
+    """
+    claim = idea.author_claim_text or f"Author claims: {idea.claim_text}"
+
+    prompt = (
+        "You are a skeptical quant researcher screening trading hypotheses "
+        "before expensive backtesting. A TESTABLE claim names a specific, "
+        "measurable market behavior (a price pattern, an indicator "
+        "threshold, an event reaction) that could be encoded as "
+        "`def strategy(data) -> signals`. A VAGUE claim makes no falsifiable "
+        "prediction (e.g. 'the market is efficient', 'good companies go up').\n"
+        f"Claim: {claim}\n\n"
+        "Respond with exactly one line: either 'ACCEPT' or "
+        "'REJECT: <one-sentence reason>'."
+    )
+
+    if llm:
+        raw = llm.generate(prompt)
+    elif router:
+        try:
+            raw = await router.complete(prompt, task_type="coding")
+        except Exception as exc:
+            logger.warning(
+                "[trading_ideas] router.complete failed for judge_idea (%s); "
+                "accepting by default", exc,
+            )
+            return True, "judge unavailable, accepted by default"
+    else:
+        return True, "no judge configured, accepted by default"
+
+    raw = (raw or "").strip()
+    if raw.upper().startswith("REJECT"):
+        reason = raw.split(":", 1)[1].strip() if ":" in raw else "rejected by judge"
+        return False, reason
+    return True, "accepted by judge"
+
+
 def _generate_stub_strategy(claim: str) -> str:
     """Fallback when no LLM is available.
 

@@ -553,3 +553,213 @@ def test_get_strategy_code_unknown_strategy_is_an_error(tmp_path):
     result = plugin._get_strategy_code({"strategy_id": "never registered"}, strategy_store=store)
 
     assert result.is_error
+
+
+# ── S27 (#880): autonomous discovery loop ────────────────────────────────
+# Real _run_gauntlet, real compiled strategies, injected fetch/router/
+# web_search -- never real network, never a real LLM, matching every other
+# slice's SAFETY discipline in this campaign.
+
+class FakeRouterReturningCode:
+    """A router whose .complete() always returns MA_CROSS_CODE, so a
+    discovered idea's generated strategy is the same deterministic,
+    reliably-VALIDATED fixture the rest of this file already uses."""
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, prompt: str, task_type: str) -> str:
+        self.calls.append((prompt, task_type))
+        return MA_CROSS_CODE
+
+
+class AcceptingRouter(FakeRouterReturningCode):
+    """judge_idea's router.complete is called with a DIFFERENT prompt than
+    to_strategy's (screening vs. generation) -- distinguish by content so
+    one fake router can serve both roles in one test."""
+    async def complete(self, prompt: str, task_type: str) -> str:
+        self.calls.append((prompt, task_type))
+        if "REJECT" in prompt or "ACCEPT" in prompt:  # judge_idea's own prompt
+            return "ACCEPT"
+        return MA_CROSS_CODE  # to_strategy's own prompt
+
+
+class RejectingRouter(FakeRouterReturningCode):
+    async def complete(self, prompt: str, task_type: str) -> str:
+        self.calls.append((prompt, task_type))
+        if "REJECT" in prompt or "ACCEPT" in prompt:
+            return "REJECT: too vague to test"
+        return MA_CROSS_CODE
+
+
+def _web_search_hits(*hits):
+    async def fn(query: str):
+        return list(hits)
+    return fn
+
+
+async def test_ensure_discovery_event_is_idempotent(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    plugin.ensure_discovery_event()
+    plugin.ensure_discovery_event()
+
+    events = plugin._con.execute(
+        "SELECT COUNT(*) FROM events WHERE title = ?", (plugin.DISCOVERY_EVENT_TITLE,)
+    ).fetchone()[0]
+    assert events == 1
+
+
+async def test_ticker_specific_idea_reaches_run_gauntlet_with_origin_discovered(tmp_path):
+    """The acceptance test #880 names: a ticker-specific sourced idea
+    reaches run_gauntlet with origin='discovered' and the source URL as
+    provenance, without going through the screening pre-filter."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    router = FakeRouterReturningCode()
+    plugin = SchedulerPlugin(
+        db_path=str(tmp_path / "sched.db"), router=router,
+        web_search_fn=_web_search_hits({
+            "url": "https://example.com/aapl-earnings",
+            "title": "AAPL beats on strong earnings",
+            "snippet": "AAPL tends to rally after a strong earnings beat.",
+        }),
+    )
+
+    result = await plugin._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["sourced"] == 1
+    assert data["dispatched"] == 1
+    # Real registration proves it actually reached run_gauntlet, not a mock.
+    # strategy_id defaults to the hypothesis text (pre-existing _run_gauntlet
+    # behavior -- no strategy_id was passed), so look up by symbol instead.
+    specs = [s for s in store.list_all() if s.symbol == "AAPL"]
+    assert len(specs) == 1
+    version = store.get_current_version(specs[0].strategy_id)
+    assert version["origin"] == "discovered"
+    provenance = json.loads(version["provenance_json"])
+    assert "example.com/aapl-earnings" in provenance["source"]
+    # judge_idea must never have been consulted for a ticker-specific idea.
+    judge_prompts = [p for p, t in router.calls if "REJECT" in p or "ACCEPT" in p]
+    assert judge_prompts == []
+
+
+async def test_pattern_general_idea_is_screened_and_accepted_reaches_gauntlet(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    router = AcceptingRouter()
+    plugin = SchedulerPlugin(
+        db_path=str(tmp_path / "sched.db"), router=router,
+        web_search_fn=_web_search_hits({
+            "url": "https://example.com/mean-reversion",
+            "title": "A mean-reversion pattern in equities",
+            "snippet": "Stocks that fall 3 days in a row tend to bounce.",
+        }),
+    )
+    plugin._discovery_watchlist.upsert("MSFT")
+
+    result = await plugin._run_discovery({"queries": ["mean reversion pattern"]}, strategy_store=store, fetch=fetch)
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["dispatched"] == 1
+    specs = [s for s in store.list_all() if s.symbol == "MSFT"]
+    assert len(specs) == 1
+    version = store.get_current_version(specs[0].strategy_id)
+    assert version["origin"] == "discovered"
+    # judge_idea WAS consulted for a pattern-general idea.
+    judge_prompts = [p for p, t in router.calls if "REJECT" in p or "ACCEPT" in p]
+    assert len(judge_prompts) == 1
+
+
+async def test_rejected_pattern_idea_never_reaches_run_gauntlet(tmp_path):
+    """The acceptance test #880 names explicitly, exercised at the real
+    SchedulerPlugin level (not just discovery.py's own unit test)."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        raise AssertionError("fetch must never be called -- the idea was rejected")
+
+    router = RejectingRouter()
+    plugin = SchedulerPlugin(
+        db_path=str(tmp_path / "sched.db"), router=router,
+        web_search_fn=_web_search_hits({
+            "url": "https://example.com/vague",
+            "title": "Markets go up sometimes",
+            "snippet": "Good companies tend to do well over time.",
+        }),
+    )
+    plugin._discovery_watchlist.upsert("MSFT")
+
+    result = await plugin._run_discovery({}, strategy_store=store, fetch=fetch)
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["dispatched"] == 0
+    assert [s for s in store.list_all() if s.symbol == "MSFT"] == []
+
+
+async def test_both_accepted_and_rejected_ideas_log_to_the_activity_log(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    logged = []
+
+    async def record_activity(kind, content):
+        logged.append((kind, content))
+
+    router = RejectingRouter()
+    plugin = SchedulerPlugin(
+        db_path=str(tmp_path / "sched.db"), router=router,
+        record_activity_fn=record_activity,
+        web_search_fn=_web_search_hits({
+            "url": "https://example.com/vague",
+            "title": "Markets go up sometimes",
+            "snippet": "Good companies tend to do well over time.",
+        }),
+    )
+
+    await plugin._run_discovery({"queries": ["vague claim"]}, strategy_store=store, fetch=fetch)
+
+    assert len(logged) == 1
+    kind, content = logged[0]
+    assert content["source"] == "discovery"
+    assert content["status"] == "rejected"
+
+
+async def test_run_discovery_uses_default_queries_when_none_given(tmp_path):
+    calls = []
+
+    async def web_search(query):
+        calls.append(query)
+        return []
+
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), web_search_fn=web_search)
+
+    result = await plugin._run_discovery({})
+
+    assert not result.is_error
+    assert len(calls) >= 1  # a real default query list was used, not empty
+
+
+async def test_run_discovery_accepts_explicit_queries(tmp_path):
+    calls = []
+
+    async def web_search(query):
+        calls.append(query)
+        return []
+
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), web_search_fn=web_search)
+
+    await plugin._run_discovery({"queries": ["my custom query"]})
+
+    assert calls == ["my custom query"]

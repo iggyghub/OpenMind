@@ -3252,6 +3252,14 @@ async def _record_activity(kind: str, content: dict) -> None:
         logger.exception("[cerebral] activity_turn_emitted broadcast failed")
 
 
+# S27 (#880): wired here, not at _scheduler_plugin's own construction --
+# _record_activity is defined well after _scheduler_plugin (module-level,
+# line ~252), so a constructor-time reference would be a NameError. Direct
+# attribute assignment, matching how self_dev's seams are wired later via
+# their own setters once every closure they capture actually exists.
+_scheduler_plugin._record_activity_fn = _record_activity
+
+
 def _conversation_turns_event(limit: int = 50) -> dict:
     """Snapshot of the active profile + active thread's last ``limit``
     turns, oldest first.
@@ -3446,6 +3454,23 @@ async def _scheduler_loop() -> None:
             if _active_profile is None:
                 await asyncio.sleep(300)
                 continue
+
+            # S27 (#880): the autonomous discovery loop's own recurring
+            # event, checked and consumed BEFORE dispatch_due_events gets
+            # its own list_due_events() call -- mark_event_run here means
+            # the per-strategy dispatcher below never mistakes this event
+            # for a strategy to run (list_due_events/_run_paper_strategy
+            # share the same `events` table; this is the one title that
+            # means "run discovery", not "dispatch a strategy").
+            for evt in _scheduler_plugin.list_due_events():
+                if evt["title"] != _scheduler_plugin.DISCOVERY_EVENT_TITLE:
+                    continue
+                try:
+                    discovery_result = await _scheduler_plugin.call_tool("run_discovery", {})
+                    logger.info(f"[cerebral] Discovery pass: {discovery_result.content}")
+                except Exception:
+                    logger.exception("[cerebral] Discovery pass failed")
+                _scheduler_plugin.mark_event_run(evt["id"])
 
             # The whole pass -- due-event lookup, per-strategy signal
             # evaluation, position diff, order, realized P&L, then
@@ -7762,6 +7787,9 @@ async def main() -> None:
                 "[cerebral] RSS poller disabled (set %s to enable)",
                 RSS_POLL_INTERVAL_ENV,
             )
+        # S27 (#880): idempotent get-or-create -- registers the discovery
+        # loop's own recurring event once, safe to call on every boot.
+        _scheduler_plugin.ensure_discovery_event()
         scheduler_task = asyncio.create_task(_scheduler_loop())
         await _shutdown.wait()
         heartbeat.cancel()

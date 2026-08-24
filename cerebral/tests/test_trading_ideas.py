@@ -5,6 +5,7 @@ from cerebral.trading_ideas import (
     from_prose,
     from_book_claim,
     to_strategy,
+    judge_idea,
     Idea,
     _compile_strategy as compile_strategy,
 )
@@ -153,6 +154,70 @@ class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(s in (1, 0, -1) for s in signals))
         # 12 > mean(10,12)=11 -> long;  8 < mean(10,12,8)=10 -> flat.
         self.assertEqual(signals, [0, 1, 0])
+
+    # ── judge_idea (S27/#880, decision #44) ─────────────────────────────
+
+    async def test_judge_idea_rejects_a_vague_claim(self):
+        idea = from_prose("The market is generally efficient over time.")
+
+        class RejectingRouter:
+            async def complete(self, prompt: str, task_type: str) -> str:
+                return "REJECT: no falsifiable prediction"
+
+        accepted, reason = await judge_idea(idea, router=RejectingRouter())
+
+        self.assertFalse(accepted)
+        self.assertIn("falsifiable", reason)
+
+    async def test_judge_idea_accepts_a_testable_claim(self):
+        idea = from_prose("RSI below 30 predicts a bounce within 5 days.")
+
+        class AcceptingRouter:
+            async def complete(self, prompt: str, task_type: str) -> str:
+                return "ACCEPT"
+
+        accepted, reason = await judge_idea(idea, router=AcceptingRouter())
+
+        self.assertTrue(accepted)
+
+    async def test_judge_idea_uses_the_router_with_coding_task_type(self):
+        idea = from_prose("RSI below 30 predicts a bounce within 5 days.")
+
+        class FakeRouter:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(self, prompt: str, task_type: str) -> str:
+                self.calls.append((prompt, task_type))
+                return "ACCEPT"
+
+        router = FakeRouter()
+        await judge_idea(idea, router=router)
+
+        self.assertEqual(len(router.calls), 1)
+        prompt, task_type = router.calls[0]
+        self.assertEqual(task_type, "coding")
+        self.assertIn("RSI below 30", prompt)
+
+    async def test_judge_idea_router_failure_accepts_by_default(self):
+        """Conservative-continue: a real idea must not be silently lost
+        because the judge model was unreachable."""
+        idea = from_prose("RSI below 30 predicts a bounce within 5 days.")
+
+        class FailingRouter:
+            async def complete(self, prompt: str, task_type: str) -> str:
+                raise RuntimeError("model unavailable")
+
+        accepted, reason = await judge_idea(idea, router=FailingRouter())
+
+        self.assertTrue(accepted)
+
+    async def test_judge_idea_with_no_router_accepts_by_default(self):
+        idea = from_prose("RSI below 30 predicts a bounce within 5 days.")
+
+        accepted, reason = await judge_idea(idea)
+
+        self.assertTrue(accepted)
 
 
 if __name__ == "__main__":

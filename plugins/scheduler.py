@@ -18,6 +18,8 @@ from cerebral.trading.live_tick import run_strategy_tick
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.gauntlet import run_gauntlet
+from cerebral.trading.discovery import DiscoveryWatchlist, run_discovery_pass
+from cerebral.trading_ideas import Idea, judge_idea as _judge_idea
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +75,15 @@ def _parse_iso(s: "str | None") -> "datetime | None":
 class SchedulerPlugin:
     name = PLUGIN_NAME
 
-    def __init__(self, db_path=None, router=None):
+    # S27 (#880): the one recurring event title that means "run the
+    # discovery loop", not a strategy dispatch -- checked and consumed
+    # (mark_event_run) by cerebral/main.py's _scheduler_loop BEFORE
+    # dispatch_due_events gets its own turn at list_due_events(), so the
+    # per-strategy dispatcher never mistakes it for a strategy to run.
+    DISCOVERY_EVENT_TITLE = "__autonomous_discovery__"
+
+    def __init__(self, db_path=None, router=None, web_search_fn=None,
+                 record_activity_fn=None, discovery_watchlist=None):
         self._router = router
         path = db_path if db_path is not None else str(_DEFAULT_DB)
         if path != ":memory:":
@@ -81,6 +91,26 @@ class SchedulerPlugin:
         self._con = sqlite3.connect(str(path), check_same_thread=False)
         self._con.row_factory = sqlite3.Row
         self._init_schema()
+        # S27 (#880): web_search_fn/record_activity_fn are injectable seams
+        # (fetch=/store=/risk=/notify_fn='s established convention this
+        # campaign uses throughout) -- default to the real BrowserPlugin /
+        # a no-op respectively, resolved lazily so importing this module
+        # never pulls in plugins/browser.py at module-load time.
+        self._web_search_fn = web_search_fn
+        self._record_activity_fn = record_activity_fn
+        # Derived from this instance's own db_path directory, not a bare
+        # DiscoveryWatchlist() default -- every existing test that already
+        # isolates SchedulerPlugin(db_path=tmp_path/...) gets an isolated
+        # watchlist for free, instead of silently touching the real
+        # production discovery_watchlist.db the way a bare default would.
+        if discovery_watchlist is not None:
+            self._discovery_watchlist = discovery_watchlist
+        elif path == ":memory:":
+            self._discovery_watchlist = DiscoveryWatchlist(db_path=Path(":memory:"))
+        else:
+            self._discovery_watchlist = DiscoveryWatchlist(
+                db_path=Path(path).parent / "discovery_watchlist.db"
+            )
 
     def _init_schema(self) -> None:
         self._con.executescript("""
@@ -230,6 +260,27 @@ class SchedulerPlugin:
                     "required": ["component_ids", "mode"],
                 },
             ),
+            Tool(
+                name="run_discovery",
+                description=(
+                    "S27/#880: one autonomous discovery-loop pass. Sources ideas via "
+                    "web_search, screens pattern-general ones through judge_idea and the "
+                    "growing ticker watchlist (ticker-specific ideas skip screening), and "
+                    "dispatches accepted candidates to run_gauntlet with origin='discovered'. "
+                    "Normally triggered by its own recurring scheduler event, not called "
+                    "directly by the model."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "queries": {
+                            "type": "array", "items": {"type": "string"},
+                            "description": "Web-search queries to source ideas from (default: a fixed general set).",
+                        },
+                    },
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -245,6 +296,8 @@ class SchedulerPlugin:
             return await self._run_gauntlet(args)
         if tool_name == "edit_strategy":
             return await self._edit_strategy(args)
+        if tool_name == "run_discovery":
+            return await self._run_discovery(args)
         if tool_name == "get_strategy_code":
             return self._get_strategy_code(args)
         if tool_name == "mix_strategies":
@@ -488,6 +541,114 @@ class SchedulerPlugin:
             "sharpe": card.sharpe,
             "total_return": card.total_return,
             "gates": [{"name": g.name, "passed": bool(g.passed)} for g in card.gates],
+        }))
+
+    # ------------------------------------------------------------------
+    # S27 (#880): autonomous discovery loop
+    # ------------------------------------------------------------------
+
+    def ensure_discovery_event(self, recurrence: str = "1h") -> None:
+        """Idempotent get-or-create for the one recurring discovery event
+        (decision #34's own cadence requirement: reuse the existing
+        recurring-event mechanism, not a second background loop). Safe to
+        call on every boot -- a no-op once the event already exists."""
+        existing = self._con.execute(
+            "SELECT id FROM events WHERE title = ?", (self.DISCOVERY_EVENT_TITLE,)
+        ).fetchone()
+        if existing is not None:
+            return
+        self._create_event({
+            "title": self.DISCOVERY_EVENT_TITLE,
+            "start_iso": datetime.now(timezone.utc).isoformat(),
+            "recurrence": recurrence,
+        })
+
+    async def _source_ideas(self, queries: list[str]) -> list["Idea"]:
+        """web_search each query, turn hits into Ideas. Real production
+        path constructs plugins/browser.py's BrowserPlugin lazily (never
+        at module-load time); tests inject web_search_fn instead (SAFETY:
+        never a real network call in a test)."""
+        if self._web_search_fn is not None:
+            search = self._web_search_fn
+        else:
+            from plugins.browser import BrowserPlugin
+            browser = BrowserPlugin()
+
+            async def search(query: str) -> list[dict]:
+                result = await browser.call_tool("web_search", {"query": query, "max_results": 3})
+                if result.is_error:
+                    logger.warning("[scheduler] discovery web_search failed for %r: %s", query, result.content)
+                    return []
+                data = json.loads(result.content)
+                hits = data.get("results", data) if isinstance(data, dict) else data
+                return hits if isinstance(hits, list) else []
+
+        ideas: list[Idea] = []
+        for query in queries:
+            try:
+                hits = await search(query)
+            except Exception as exc:
+                logger.warning("[scheduler] discovery sourcing failed for %r: %s", query, exc)
+                continue
+            for hit in hits:
+                url = hit.get("url") or hit.get("source_url")
+                title = hit.get("title") or hit.get("page_title") or ""
+                snippet = hit.get("snippet") or hit.get("text") or title
+                if not snippet:
+                    continue
+                ideas.append(Idea(
+                    source_url=url, page_title=title, claim_text=snippet,
+                    provenance=f"url: {url}" if url else f"web_search: {query}",
+                    author_claim_text=f"Author claims: {snippet}",
+                ))
+        return ideas
+
+    async def _run_discovery(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
+        """The discovery loop's one trigger: source -> screen -> dispatch.
+        `symbol + hypothesis + code -> run_gauntlet` (decision #33) stays
+        the single unchanged convergence point -- this only ever calls
+        self._run_gauntlet with origin='discovered', never a parallel path.
+
+        `strategy_store`/`fetch` are test-only injection seams (not part of
+        the Tool schema), threaded straight through to _run_gauntlet --
+        matching its own `store=None, fetch=None` convention. Without this,
+        a test exercising run_discovery would silently fall through to
+        _run_gauntlet's real yfinance-backed default fetch."""
+        queries = args.get("queries") or [
+            "quantitative trading hypothesis", "stock market anomaly research",
+        ]
+
+        async def run_gauntlet_fn(idea: Idea, ticker: str) -> dict:
+            gauntlet_args = {
+                "symbol": ticker,
+                "hypothesis": idea.claim_text or "discovered hypothesis",
+                "provenance": idea.provenance,
+            }
+            if idea.source_url:
+                gauntlet_args["url"] = idea.source_url
+            result = await self._run_gauntlet(
+                gauntlet_args, origin="discovered",
+                strategy_store=strategy_store, fetch=fetch,
+            )
+            return {"ticker": ticker, "is_error": result.is_error, "result": result.content}
+
+        async def judge_idea_fn(idea: Idea) -> "tuple[bool, str]":
+            return await _judge_idea(idea, router=self._router)
+
+        record_activity_fn = self._record_activity_fn
+
+        try:
+            ideas = await self._source_ideas(queries)
+        except Exception as exc:
+            logger.exception("[scheduler] discovery sourcing failed entirely: %s", exc)
+            return ToolResult(content=f"Discovery sourcing failed: {exc}", is_error=True)
+
+        results = await run_discovery_pass(
+            ideas, self._discovery_watchlist, run_gauntlet_fn,
+            judge_idea_fn=judge_idea_fn, record_activity_fn=record_activity_fn,
+        )
+        return ToolResult(content=json.dumps({
+            "sourced": len(ideas), "dispatched": len(results),
         }))
 
     async def _edit_strategy(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
