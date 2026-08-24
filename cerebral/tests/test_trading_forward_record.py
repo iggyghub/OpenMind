@@ -100,3 +100,22 @@ def test_zero_trades_ci():
     assert upper == 0.0
     assert not sufficient
     record.close()
+
+
+def test_intraday_cluster_fails_distinct_days_floor(monkeypatch):
+    """S23: 30+ trades on the same day must fail graduation due to distinct-days floor.
+    Old trade-count-only logic would have wrongly passed."""
+    import datetime as dt
+    fake_now = dt.datetime(2026, 7, 19, 12, 0, 0, tzinfo=dt.timezone.utc)
+    monkeypatch.setattr("cerebral.trading.forward_record.datetime", dt)
+    monkeypatch.setattr("cerebral.trading.forward_record.datetime.now", lambda tz: fake_now)
+    
+    record = ForwardRecord()
+    for i in range(35):
+        record.add_fill("AAPL", "buy", 1.0, 100.0 + i, pnl=i * 2.0)
+    
+    mean, lower, upper, is_sufficient, n, distinct_days = record.compute_expectancy_ci()
+    assert n == 35
+    assert distinct_days == 1
+    assert not is_sufficient  # Fails because distinct_days(1) < floor(30)
+    record.close()

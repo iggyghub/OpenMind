@@ -324,9 +324,14 @@ function renderLiveStrategyCard(data, container) {
       <div class="card-section">
         <h3>Performance</h3>
         <ul>
-          <li>Live Trades: ${data.live_trades}</li>
+          <li>Live Trades: ${data.live_trades ?? 0}</li>
+          <li>Distinct Trading Days: ${data.distinct_days ?? 0}</li>
           <li>Equity Curve: ${data.equity_curve ? '📈' : '⏳'}</li>
         </ul>
+        ${(data.live_trades ?? 0) < 30 || (data.distinct_days ?? 0) < 30 ? 
+          `<p style="color:var(--warning); font-size:0.85em; margin-top:6px;">
+             Sample insufficient: ${((data.live_trades ?? 0) < 30 ? 'trades < 30' : '')} ${((data.live_trades ?? 0) < 30 && (data.distinct_days ?? 0) < 30 ? 'and ' : '')} ${((data.distinct_days ?? 0) < 30 ? 'distinct days < 30' : '')}
+           </p>` : ''}
       </div>
       <div class="card-section">
         <h3>Recent Fills</h3>

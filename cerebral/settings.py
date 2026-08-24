@@ -73,6 +73,8 @@ _DEFAULTS: dict[str, Any] = {
     "max_per_trade_risk_pct":    2.0,
     "max_daily_loss_pct":        6.0,
     "max_concurrent_positions":  10,
+    # S23: Minimum distinct trading days required for graduation/graduation math.
+    "distinct_days_floor":       30,
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -98,6 +100,7 @@ _TYPES: dict[str, type] = {
     "max_per_trade_risk_pct":    float,
     "max_daily_loss_pct":        float,
     "max_concurrent_positions":  int,
+    "distinct_days_floor":       int,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
