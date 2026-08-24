@@ -21,8 +21,8 @@ that gate.
 
 ## Next slice -- start here
 
-- **Active:** S27 -- #880 -- Autonomous discovery loop: idea sourcing +
-  screening. See issue #880.
+- **Active:** S28 -- #881 -- Ticker fundamentals red-flag gate at live
+  graduation. See issue #881.
 - **Model:** sonnet
 
 ## Queue
@@ -130,8 +130,10 @@ that gate.
 - [x] S26 -- #879 -- Felix-wide Activity Log (new top-level nav tab).
   Landed by hand, not via self_dev's own PR #890 (a bare tray-only stub,
   none of the backend the acceptance criteria required -- see Landed PRs).
-- [ ] S27 -- #880 -- Autonomous discovery loop: idea sourcing +
-  screening.
+- [x] S27 -- #880 -- Autonomous discovery loop: idea sourcing +
+  screening. Landed by hand, not via self_dev's own PR #891 (every
+  external call referenced a nonexistent function or wrong signature --
+  see Landed PRs).
 - [ ] S28 -- #881 -- Ticker fundamentals red-flag gate at live
   graduation.
 
@@ -2106,6 +2108,87 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   (`cerebral/tests/` + repo-root `tests/`); tray JS: 30 suites, 772
   tests. Landed as commit c1b2b64, directly on top of the auto-merged
   742acad.
+
+- PR #891 -- S27 -- opened by self_dev_campaign, closed unmerged after a
+  rebuild -- like S24, the substance wasn't salvageable. Real diff
+  verified via the sandbox's own clone (`campaign-trading-s27`, `git
+  diff 71d3e70..4aad5ec`, 2 files / 262 lines): a new
+  `cerebral/trading/discovery.py` and its test.
+
+  **Every external call in the diff referenced a nonexistent function or
+  the wrong signature, none of it checked against the real code:**
+  1. `from cerebral.trading_ideas import Idea, judge_idea` --
+     `judge_idea` doesn't exist anywhere in `trading_ideas.py`. This is
+     the actual `ImportError` behind the reported `tests_failed`.
+  2. `from plugins.stocks import get_fundamentals` -- S24's real plugin
+     exposes `stock_fundamentals` as a tool reachable via
+     `StocksPlugin().call_tool(...)`, not a standalone function.
+  3. `from plugins.scheduler import _run_gauntlet` -- `_run_gauntlet` is
+     a private *method* on `SchedulerPlugin` (confirmed reading the
+     class directly), not a module-level function; this import alone
+     fails.
+  4. `_dispatch_to_gauntlet` called `_run_gauntlet(claim=..., url=...,
+     origin='discovered', ticker=...)` -- the real signature is
+     `async def _run_gauntlet(self, args: dict, *, ..., origin=
+     "generated", ...)`, one positional `args` dict, not those kwargs
+     directly. Would have raised `TypeError` on first real use,
+     independent of bug #3.
+  5. The whole trigger function was synchronous but called into
+     `_run_gauntlet` (async) and Playwright-backed browser tools (also
+     async) -- a fundamental async/sync mismatch on top of everything
+     else.
+
+  **Rebuilt from the real issue #880 acceptance criteria**, checking
+  every real shape first (`plugins/browser.py`'s `web_search`/`navigate`
+  via `BrowserPlugin.call_tool`, the actual `_run_gauntlet(args, *,
+  origin=...)`, `trading_ideas.py`'s real `Idea`/`to_strategy` pattern):
+  - `cerebral/trading/discovery.py`: pure and duck-typed (`Discovery
+    Watchlist` SQLite-backed, `extract_ticker`, `process_idea`,
+    `run_discovery_pass`) -- **no `plugins/` imports**, matching
+    `live_tick.py`'s own "cerebral/ must not import plugins/" layering
+    rule, which the original diff violated by importing
+    `plugins.browser`/`plugins.stocks`/`plugins.scheduler` directly
+    from inside `cerebral/trading/`.
+  - `judge_idea(idea, llm=None, router=None) -> (bool, reason)` added
+    to `trading_ideas.py`, matching `to_strategy`'s own router /
+    conservative-continue pattern exactly.
+  - `plugins/scheduler.py`: `web_search_fn`/`record_activity_fn`
+    injection seams, `_source_ideas` (real `BrowserPlugin.call_tool`
+    by default, an injected fake in every test), `_run_discovery`
+    (sources -> screens -> dispatches to the real
+    `self._run_gauntlet(..., origin="discovered")`, decision #33's
+    single unchanged convergence point), a `run_discovery` tool, and
+    `ensure_discovery_event()`/`DISCOVERY_EVENT_TITLE` for cadence.
+  - `cerebral/main.py`: the discovery event is checked and consumed in
+    `_scheduler_loop` **before** `dispatch_due_events` gets its own
+    `list_due_events()` call -- both read the same `events` table, so
+    without this ordering the per-strategy dispatcher would have
+    mistaken the discovery event for a strategy to run.
+
+  **One real isolation risk caught before it repeated S26's
+  contamination mistake:** `SchedulerPlugin`'s new `DiscoveryWatchlist`
+  default would have used the real production `discovery_watchlist.db`
+  for every test constructing `SchedulerPlugin(db_path=tmp_path/...)`
+  without *also* knowing to override the watchlist separately. Fixed
+  by deriving the watchlist's path from the scheduler's own `db_path`
+  directory (handling `:memory:` explicitly) -- every existing isolated
+  test gets an isolated watchlist for free, no test file needed to
+  change.
+
+  Verified all 4 acceptance criteria directly against the real
+  `_run_gauntlet` (never mocked, matching the discipline S11c's
+  postmortem established): a ticker-specific idea reaches it with
+  `origin='discovered'` and the source URL in `provenance_json`,
+  skipping `judge_idea` entirely; a pattern-general idea is judged
+  first and only its watchlist-matched candidates dispatch; a rejected
+  idea never reaches `run_gauntlet` (asserted via a `fetch` that raises
+  if ever called); both outcomes produce a real Activity Log entry.
+  21 new tests (15 `discovery.py` unit tests, 3 `judge_idea` tests, 8
+  scheduler-level integration tests using the real compiled
+  `MA_CROSS_CODE` fixture). Full suite green: 5205 passed, 7 skipped,
+  0 failed (`cerebral/tests/` + repo-root `tests/`). This slice does
+  not touch `tray/`, so no jest run was needed. Landed as commit
+  3fec2cb.
 
 ## What's next
 
