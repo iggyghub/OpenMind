@@ -21,8 +21,8 @@ that gate.
 
 ## Next slice -- start here
 
-- **Active:** S23 -- #876 -- Intraday-aware graduation: distinct
-  trading-days floor. See issue #876.
+- **Active:** S24 -- #877 -- plugins/stocks.py: fundamentals, SEC
+  filings, IPO detection. See issue #877.
 - **Model:** sonnet
 
 ## Queue
@@ -115,8 +115,10 @@ that gate.
 - [x] S22 -- #875 -- Intraday bars: per-strategy interval, Alpaca
   Market Data. Landed by hand, not via self_dev's own PR #886 (zero
   tests, 2 real production bugs -- see Landed PRs).
-- [ ] S23 -- #876 -- Intraday-aware graduation: distinct trading-days
-  floor.
+- [x] S23 -- #876 -- Intraday-aware graduation: distinct trading-days
+  floor. Landed by hand, not via self_dev's own PR #887 (broken
+  monkeypatch + 6 pre-existing tests broken by the tuple-size change --
+  see Landed PRs).
 - [ ] S24 -- #877 -- plugins/stocks.py: fundamentals, SEC filings, IPO
   detection.
 - [ ] S25 -- #878 -- origin='discovered' lineage + screening cost
@@ -1842,6 +1844,61 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   + repo-root `tests/`). This slice does not touch `tray/`, so no jest
   run was needed. PR #886 closed unmerged in favor of this
   hand-verified local landing (commit 6e365f8).
+
+- PR #887 -- S23 -- landed on the first attempt, real diff verified via
+  the sandbox's own clone (`campaign-trading-s23`, `git diff
+  ba3d315..aba368b`, 5 files / 63 lines): `ForwardRecord.compute_
+  expectancy_ci`/`compute_live_expectancy_ci` now return a 6-tuple
+  (`mean, lower, upper, is_sufficient, trade_count, distinct_days`)
+  instead of 4, a new `get_distinct_days()`, `check_graduation` unpacks
+  the new shape, a `distinct_days_floor` SettingsStore key (default 30),
+  and the Trading panel surfaces both numbers.
+
+  **The diff's own new test was broken in a way worth naming, not just a
+  typo:** `monkeypatch.setattr("cerebral.trading.forward_record.
+  datetime", dt)` where `dt` is the `datetime` *module* -- but
+  `forward_record.py` does `from datetime import datetime`, so
+  `forward_record.datetime` is the `datetime` *class*, not the module.
+  Patching it to the module broke every other `datetime.now()` call in
+  the file. Rewrote using a small `_add_fill_on_day` helper that inserts
+  a fill with a controlled timestamp directly via SQL -- `add_fill()`
+  itself always stamps "now", with no way to inject a date through the
+  public API -- cleaner than monkeypatching a stdlib class, and the same
+  technique the fix needed in 3 more places.
+
+  **Breaking the tuple size broke 6 pre-existing tests the diff never
+  touched:** `test_zero_trades_ci`/`test_compute_expectancy_ci`
+  (`ForwardRecord`'s own suite) unpacked 4 values; 3 mocked
+  `compute_expectancy_ci.return_value` tuples in
+  `test_trading_lifecycle.py` were still 4-tuples, raising `ValueError`
+  on `check_graduation`'s new 6-value unpack; and 2 of S20's own
+  dispatch-level tests asserted graduation on 30 fills recorded at the
+  same instant -- correctly no longer sufficient now that they land on
+  one calendar day. Fixed all 6, and rewrote the two dispatch-level ones
+  to spread fills across 30 real distinct days, exercising the new floor
+  through the *full* dispatch path -- a real gap the diff's own test
+  never checked (it only exercised `ForwardRecord` in isolation, never
+  `check_graduation`/`dispatch_due_events` together).
+
+  **One production-coupling smell, not a crash but worth fixing:** both
+  CI methods constructed a fresh `SettingsStore()` internally on every
+  call -- with no path argument, that defaults to the *real production*
+  settings file, so every CI computation (including from an isolated
+  `tmp_path`-scoped test) read/touched the live `felix-settings.json`
+  Cerebral's own running process might be concurrently writing to. Added
+  an optional `floor: Optional[int] = None` parameter to both methods,
+  matching this campaign's established DI convention (`fetch=`/`store=`/
+  `risk=`/`alert_dispatcher=` are all injected the same way).
+
+  Also fixed the now-stale `test_settings.py::test_all_returns_all_keys`
+  expected-key set (missing `distinct_days_floor`) -- the same recurring
+  gap this campaign hit at S20 and S21.
+
+  Full suite green: 5147 passed, 7 skipped, 0 failed (`cerebral/tests/`
+  + repo-root `tests/`); tray JS: 29 suites, 761 tests (this slice
+  touches `tray/lib/trading-panel.js`, so the jest run was required).
+  PR #887 closed unmerged in favor of this hand-verified local landing
+  (commit 1f7344a).
 
 ## What's next
 
