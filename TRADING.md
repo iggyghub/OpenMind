@@ -21,8 +21,8 @@ that gate.
 
 ## Next slice -- start here
 
-- **Active:** S26 -- #879 -- Felix-wide Activity Log (new top-level nav
-  tab). See issue #879.
+- **Active:** S27 -- #880 -- Autonomous discovery loop: idea sourcing +
+  screening. See issue #880.
 - **Model:** sonnet
 
 ## Queue
@@ -127,7 +127,9 @@ that gate.
   hand-verified the CHECK-constraint migration for real against an
   old-schema DB and added the regression tests the blueprint asked for
   but the PR didn't include -- see Landed PRs.
-- [ ] S26 -- #879 -- Felix-wide Activity Log (new top-level nav tab).
+- [x] S26 -- #879 -- Felix-wide Activity Log (new top-level nav tab).
+  Landed by hand, not via self_dev's own PR #890 (a bare tray-only stub,
+  none of the backend the acceptance criteria required -- see Landed PRs).
 - [ ] S27 -- #880 -- Autonomous discovery loop: idea sourcing +
   screening.
 - [ ] S28 -- #881 -- Ticker fundamentals red-flag gate at live
@@ -2000,6 +2002,110 @@ Filed as issue #856 (S12) -- see its Landed PRs entry below.
   5168 passed, 7 skipped, 0 failed (`cerebral/tests/` + repo-root
   `tests/`). This slice does not touch `tray/`. Landed as commit
   12a88c9, directly on top of the genuinely-auto-merged 112e99f.
+
+- PR #890 -- S26 -- opened by self_dev_campaign, auto-merged (commit
+  742acad) -- but the real diff (verified directly, not trusted from
+  `merge_decision`) was only 2 files / 76 lines: a bare `activity-log.js`
+  render stub and its test. None of #879's actual acceptance criteria
+  were met -- no `list_activity` query layer, no `KIND_ACTIVITY`, no
+  retrofit of `_scheduler_loop`'s console-only logging, no `self_dev.py`
+  extension, no dedicated thread, no nav-tab wiring in
+  `sidebar-router.js`/`main.html`, no Trading pane Activity section.
+  The render stub itself also cached its DOM query
+  (`doc.querySelector('[data-route="log"]')`) once at module-load time
+  -- a permanent no-op if the Log pane didn't exist in the DOM yet when
+  the script first loaded (which it never did, since nothing wired the
+  pane into `main.html` either).
+
+  **Given S27 (the autonomous discovery loop) explicitly depends on the
+  Activity Log actually working (decision #46: "the log has to work
+  before the loop that fills it starts running"), built the rest by
+  hand rather than advance the queue on a non-functional log:**
+  - `ConversationStore.list_activity(profile_id, *, kinds=, since=,
+    limit=)` -- kind-filtered, time-ranged, cross-thread. Filters on the
+    plaintext, indexed `kind` column only (`content_json` is
+    Fernet-encrypted; a `LIKE` against it cannot work at all --
+    `search_threads` already has that exact latent bug, not repeated
+    here). New `KIND_ACTIVITY = "activity"`.
+  - A dedicated `get_or_create_activity_thread` ("Autonomous activity"),
+    resolved the same lookup-or-create-by-title way
+    `_LEGACY_THREAD_TITLE` already is -- so autonomous entries never
+    interleave into whatever chat thread the user last had open.
+  - **A real cross-cutting bug this surfaced, not just a missing
+    feature:** every `append()` bumps its thread's `updated_at`, so a
+    background loop writing to the Activity thread would make it the
+    profile's "most recently updated" thread -- and both
+    `get_or_create_default_thread` and `main.py`'s own active-chat-
+    thread resolution pick the most-recently-updated thread as the
+    default. Without excluding it, the user's very next real chat
+    message could have silently landed in the Activity thread instead
+    of a new conversation. Fixed by excluding
+    `_ACTIVITY_THREAD_TITLE` from `latest_thread()`'s candidate pool --
+    verified directly (built a case that reproduced the pollution
+    before the fix, confirmed clean after).
+  - `_scheduler_loop` retrofit: skips dispatch entirely (not just the
+    logging) while no profile is active ("Felix does not trade when it
+    cannot record that it traded," decision #46 sub-decision 4), and
+    persists one batched summary activity row per dispatch pass -- not
+    one per strategy -- naming notable outcomes (opened/closed/blocked/
+    graduated) inline rather than hiding them in an undifferentiated
+    count.
+  - `plugins/self_dev.py` gained a parallel `record_activity_fn` seam
+    (same shape as the existing `record_turn_fn`, same fail-open
+    default) -- kept genuinely separate rather than repointing the
+    existing seam, since `record_turn_fn` writes into the user's
+    *active* chat thread for the #810 pending-review card (an inline
+    actionable UI element that belongs where the user is looking),
+    while `record_activity_fn` writes into the dedicated Activity
+    thread instead -- two different destinations for the same event,
+    confirmed by tracing what actually reads the existing calls
+    (`self-dev-card.js`) before touching them. Both existing call sites
+    (a PR needing human review, a manual rollback) now fire both seams.
+  - UI: `sidebar-router.js`'s `VALID_ROUTES` gained `'log'` (6th nav
+    section), a `<button data-route="log">` + `<section data-route="log"
+    hidden>` in `main.html`, a real `activity-log.js` (DOM lookups
+    happen fresh on every render call, not cached at load time --
+    matching `trading-panel.js`'s own established convention, which the
+    original stub violated), a new `activity_poll` -> `activity_log_data`
+    IPC round-trip (`cerebral/main.py::_handle_activity_poll`, filtering
+    a `source` sub-scope in Python *after* the kind filter, per
+    sub-decision 3 -- never a second plaintext DB column), and the
+    Trading pane's own filtered Activity section
+    (`source: "trading"`, server-side filtered).
+
+  A real `_active_profile is None` guard was also added inside
+  `_handle_activity_poll` and `_record_activity` themselves (belt-and-
+  suspenders under the loop-level skip above).
+
+  **A genuine mistake made and caught during hand-verification, worth
+  recording:** the first two ad-hoc verification scripts against
+  `ConversationStore` reassigned the module's `DB_PATH` global expecting
+  it to redirect a fresh `ConversationStore()` to a temp file --
+  `__init__(self, db_path: Path = DB_PATH)` binds that default at
+  function-*definition* time, so the reassignment was silently a no-op,
+  and both scripts wrote real test rows (4 turns, 2 threads) into the
+  actual running Felix's production `openmind.db` under profile_id=1.
+  Caught by inspecting the DB directly before trusting the output;
+  the exact rows (ids 14852-14855, threads 15-16, all with matching
+  recent timestamps and no other profile-1 activity mixed in) were
+  identified and deleted, verified back to the pre-contamination
+  max-id state. All subsequent verification passed `db_path=` explicitly,
+  matching this repo's own test fixture convention. Logged to
+  `.learnings/LEARNINGS.md` so this doesn't repeat.
+
+  New tests: 6 `ConversationStore` tests (activity-thread stability,
+  pollution in both directions, kind filtering, profile scoping, `since`
+  filtering against real second-precision timestamps), 3 `self_dev.py`
+  tests (both real event sites recording an activity entry, survival on
+  `record_activity_fn` failure), 9 `activity-log.js` tests (including
+  one that directly proves the fresh-lookup-per-render-call fix, using
+  two different fake mounts across two calls), plus `VALID_ROUTES`/
+  `render-smoke` count updates (6 nav sections now, matching the exact
+  "hardcoded tab count breaks on the Nth addition" class this campaign
+  hit at S9 and S17). Full suite green: 5178 passed, 7 skipped, 0 failed
+  (`cerebral/tests/` + repo-root `tests/`); tray JS: 30 suites, 772
+  tests. Landed as commit c1b2b64, directly on top of the auto-merged
+  742acad.
 
 ## What's next
 
