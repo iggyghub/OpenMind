@@ -18,7 +18,7 @@ def lifecycle(dispatcher, tmp_path):
 
 def test_graduation_requires_30_trades_and_positive_ci(lifecycle):
     mock_record = MagicMock()
-    mock_record.compute_expectancy_ci.return_value = (0.5, 0.1, 0.9, True)
+    mock_record.compute_expectancy_ci.return_value = (0.5, 0.1, 0.9, True, 30, 30)
     state = lifecycle.get_state("test_strat")
     assert state.status == "paper"
     
@@ -89,7 +89,7 @@ def test_halted_strategies_ignore_fills(lifecycle):
 
 def test_alerts_emitted_on_graduation(lifecycle):
     mock_record = MagicMock()
-    mock_record.compute_expectancy_ci.return_value = (0.2, 0.05, 0.35, True)
+    mock_record.compute_expectancy_ci.return_value = (0.2, 0.05, 0.35, True, 30, 30)
     lifecycle.check_graduation("alert_test", mock_record)
 
     alerts = lifecycle.get_alert_history()
@@ -109,7 +109,7 @@ def test_graduation_survives_a_fresh_instance(tmp_path):
     db_path = tmp_path / "lifecycle.sqlite"
     lifecycle = StrategyLifecycle(db_path=db_path)
     mock_record = MagicMock()
-    mock_record.compute_expectancy_ci.return_value = (0.2, 0.05, 0.35, True)
+    mock_record.compute_expectancy_ci.return_value = (0.2, 0.05, 0.35, True, 30, 30)
     lifecycle.check_graduation("restart_test", mock_record)
     assert lifecycle.get_state("restart_test").status == "live"
 

@@ -46,16 +46,22 @@ def test_compute_expectancy_ci():
     for i in range(10):
         record.add_fill("TSLA", "buy", 1.0, 100.0 + i, pnl=i * 5.0)
     
-    mean, lower, upper, sufficient = record.compute_expectancy_ci()
+    # floor=1: isolate the trade-count check this test targets -- all fills
+    # land "now" (one real distinct day), so the default floor of 30 would
+    # fail this on the distinct-days axis instead of the one being tested.
+    mean, lower, upper, sufficient, n, distinct_days = record.compute_expectancy_ci(floor=1)
     assert not sufficient
     assert mean == 22.5  # avg of 0,5,10,...,45
-    
+    assert n == 10
+
     # Add more to reach threshold
     for i in range(20):
         record.add_fill("NVDA", "buy", 1.0, 500.0 + i, pnl=i * 2.0)
-        
-    mean2, lower2, upper2, sufficient2 = record.compute_expectancy_ci()
+
+    mean2, lower2, upper2, sufficient2, n2, distinct_days2 = record.compute_expectancy_ci(floor=1)
     assert sufficient2
+    assert n2 == 30
+    assert distinct_days2 == 1  # all fills recorded "now" -- one real trading day
     assert mean2 > 0
     record.close()
 
@@ -94,9 +100,57 @@ def test_stub_broker_integration():
 def test_zero_trades_ci():
     """CI returns zeros and insufficient flag when no trades exist."""
     record = ForwardRecord()
-    mean, lower, upper, sufficient = record.compute_expectancy_ci()
+    mean, lower, upper, sufficient, n, distinct_days = record.compute_expectancy_ci()
     assert mean == 0.0
     assert lower == 0.0
     assert upper == 0.0
     assert not sufficient
+    assert n == 0
+    assert distinct_days == 0
+    record.close()
+
+
+def _add_fill_on_day(record, day_iso, symbol, side, qty, price, pnl, strategy_id="global"):
+    """Insert a fill with a controlled timestamp -- add_fill() always stamps
+    "now", with no way to inject a date through the public API. Bypasses it
+    with a direct insert instead of monkeypatching the datetime CLASS
+    forward_record.py imports (`from datetime import datetime` -- patching
+    "cerebral.trading.forward_record.datetime" replaces that class with
+    something else entirely, breaking every other datetime.now() call in
+    the module, not just the one under test)."""
+    record._con.execute(
+        "INSERT INTO forward_fills (timestamp, phase, symbol, side, qty, price, fees, pnl, strategy_id) "
+        "VALUES (?, 'paper', ?, ?, ?, ?, 0.0, ?, ?)",
+        (f"{day_iso}T12:00:00+00:00", symbol, side, qty, price, pnl, strategy_id),
+    )
+    record._con.commit()
+
+
+def test_intraday_cluster_fails_distinct_days_floor():
+    """S23: 30+ trades on the same day must fail graduation due to the
+    distinct-days floor. Old trade-count-only logic would have wrongly
+    passed this -- every fill lands on the same calendar date."""
+    record = ForwardRecord()
+    for i in range(35):
+        _add_fill_on_day(record, "2026-07-19", "AAPL", "buy", 1.0, 100.0 + i, pnl=i * 2.0)
+
+    mean, lower, upper, is_sufficient, n, distinct_days = record.compute_expectancy_ci()
+    assert n == 35
+    assert distinct_days == 1
+    assert not is_sufficient  # fails because distinct_days(1) < floor(30)
+    record.close()
+
+
+def test_enough_trades_across_enough_distinct_days_is_sufficient():
+    """Unchanged from today's behavior for a real daily-bar strategy: 30
+    trades spread across 30 distinct days passes, same as before S23."""
+    record = ForwardRecord()
+    for i in range(30):
+        _add_fill_on_day(record, f"2026-0{1 + i // 28}-{1 + i % 28:02d}", "AAPL", "buy", 1.0,
+                          100.0 + i, pnl=i - 15.0)
+
+    mean, lower, upper, is_sufficient, n, distinct_days = record.compute_expectancy_ci(floor=30)
+    assert n == 30
+    assert distinct_days == 30
+    assert is_sufficient
     record.close()

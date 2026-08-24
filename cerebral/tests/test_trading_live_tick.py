@@ -319,12 +319,26 @@ def test_dispatch_skips_a_halted_strategy_but_still_marks_it(tmp_path, monkeypat
     assert results[0]["status"] == "halted"
 
 
+def _add_fill_on_day(record, day_iso, symbol, side, qty, price, pnl, strategy_id="global"):
+    """Insert a fill with a controlled timestamp -- add_fill() always stamps
+    "now" (S23/#876's distinct-days floor means 30 same-instant fills no
+    longer clear the CI bar; real tests of graduation now need real
+    distinct calendar days, not a monkeypatched datetime class)."""
+    record._con.execute(
+        "INSERT INTO forward_fills (timestamp, phase, symbol, side, qty, price, fees, pnl, strategy_id) "
+        "VALUES (?, 'paper', ?, ?, ?, ?, 0.0, ?, ?)",
+        (f"{day_iso}T12:00:00+00:00", symbol, side, qty, price, pnl, strategy_id),
+    )
+    record._con.commit()
+
+
 def test_dispatch_graduates_a_strategy_whose_paper_pnl_clears_the_bar(tmp_path, monkeypatch):
     """Pre-#S10 this was mathematically impossible: every recorded pnl was
     hardcoded 0.0, so check_graduation's `lower > 0` never held."""
     record = make_record(tmp_path, monkeypatch)
-    for _ in range(30):
-        record.add_fill("AAPL", "sell", 1.0, 12.0, pnl=2.0, strategy_id="s1")
+    for i in range(30):
+        _add_fill_on_day(record, f"2026-0{1 + i // 28}-{1 + i % 28:02d}", "AAPL", "sell", 1.0,
+                          12.0, pnl=2.0, strategy_id="s1")
     lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     sched = FakeScheduler([{"id": 1, "title": "s1"}])
 
@@ -592,9 +606,11 @@ def test_blocked_order_and_graduation_alerts_share_one_dispatcher(tmp_path, monk
     run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=100.0),
                        broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
 
-    # Trigger a graduation alert: 30 identical winning fills clears the CI bar.
-    for _ in range(30):
-        record.add_fill("MSFT", "sell", 1.0, 100.0, pnl=10.0, strategy_id="s2")
+    # Trigger a graduation alert: 30 winning fills across 30 distinct days
+    # clears both the trade-count and distinct-days bars (S23/#876).
+    for i in range(30):
+        _add_fill_on_day(record, f"2026-0{1 + i // 28}-{1 + i % 28:02d}", "MSFT", "sell", 1.0,
+                          100.0, pnl=10.0, strategy_id="s2")
     lifecycle.check_graduation("s2", record)
 
     event_types = {a.event_type for a in lifecycle.get_alert_history()}

@@ -79,19 +79,49 @@ class ForwardRecord:
         rows = self._con.execute("SELECT pnl FROM forward_fills WHERE phase = 'live' AND strategy_id = ? ORDER BY timestamp ASC", (strategy_id,)).fetchall()
         return [r["pnl"] for r in rows]
 
-    def compute_live_expectancy_ci(self, strategy_id: str = "global") -> tuple[float, float, float, bool]:
+    def compute_live_expectancy_ci(
+        self, strategy_id: str = "global", floor: Optional[int] = None,
+    ) -> tuple[float, float, float, bool, int, int]:
         """Same as compute_expectancy_ci but restricted to live trades."""
         pnls = self.get_live_pnls(strategy_id)
         n = len(pnls)
         if n == 0:
-            return 0.0, 0.0, 0.0, False
-        
+            return 0.0, 0.0, 0.0, False, 0, 0
+
         mean = float(np.mean(pnls))
         se = float(np.std(pnls, ddof=1) / math.sqrt(n)) if n > 1 else 0.0
         lower = mean - 1.96 * se
         upper = mean + 1.96 * se
-        is_sufficient = n >= 30
-        return mean, lower, upper, is_sufficient
+
+        distinct_days = self.get_distinct_days(strategy_id)
+        if floor is None:
+            floor = self._distinct_days_floor()
+
+        is_sufficient = n >= 30 and distinct_days >= floor
+        return mean, lower, upper, is_sufficient, n, distinct_days
+
+    @staticmethod
+    def _distinct_days_floor() -> int:
+        """Default distinct-days floor, read from the real SettingsStore.
+
+        Only called when a caller doesn't pass floor= explicitly -- tests
+        and other callers that want an isolated/deterministic value should
+        pass floor= directly rather than relying on (and touching) the
+        real production settings file.
+        """
+        try:
+            from cerebral.settings import SettingsStore
+            return SettingsStore().get("distinct_days_floor") or 30
+        except Exception:
+            return 30
+
+    def get_distinct_days(self, strategy_id: str = "global") -> int:
+        """Count distinct trading days (UTC calendar dates) for a strategy."""
+        row = self._con.execute(
+            "SELECT COUNT(DISTINCT substr(timestamp, 1, 10)) FROM forward_fills WHERE strategy_id = ?",
+            (strategy_id,)
+        ).fetchone()
+        return int(row[0])
 
     def get_fills(self, limit: Optional[int] = None, strategy_id: str = "global") -> List[sqlite3.Row]:
         query = "SELECT * FROM forward_fills WHERE strategy_id = ? ORDER BY timestamp DESC"
@@ -102,24 +132,30 @@ class ForwardRecord:
     def trade_count(self, strategy_id: str = "global") -> int:
         return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE strategy_id = ?", (strategy_id,)).fetchone()[0]
 
-    def compute_expectancy_ci(self, strategy_id: str = "global") -> Tuple[float, float, float, bool]:
-        """Returns (mean, lower_ci, upper_ci, is_sufficient) for realized PnL.
-        Uses mean +/- 1.96 * SE. Marks insufficient if < 30 trades.
+    def compute_expectancy_ci(
+        self, strategy_id: str = "global", floor: Optional[int] = None,
+    ) -> Tuple[float, float, float, bool, int, int]:
+        """Returns (mean, lower_ci, upper_ci, is_sufficient, trade_count, distinct_days) for realized PnL.
+        Uses mean +/- 1.96 * SE. Marks insufficient if < 30 trades OR < configured distinct trading days.
         """
         n = self.trade_count(strategy_id)
+        distinct_days = self.get_distinct_days(strategy_id)
         if n == 0:
-            return 0.0, 0.0, 0.0, False
-        
+            return 0.0, 0.0, 0.0, False, 0, 0
+
         rows = self._con.execute("SELECT pnl FROM forward_fills WHERE strategy_id = ?", (strategy_id,)).fetchall()
         pnls = np.array([r["pnl"] for r in rows])
-        
+
         mean = float(np.mean(pnls))
         se = float(np.std(pnls, ddof=1) / math.sqrt(n)) if n > 1 else 0.0
         lower = mean - 1.96 * se
         upper = mean + 1.96 * se
-        
-        is_sufficient = n >= 30
-        return mean, lower, upper, is_sufficient
+
+        if floor is None:
+            floor = self._distinct_days_floor()
+
+        is_sufficient = n >= 30 and distinct_days >= floor
+        return mean, lower, upper, is_sufficient, n, distinct_days
 
     def get_equity_curve(self, strategy_id: str = "global") -> List[float]:
         """Returns cumulative PnL equity curve chronologically."""

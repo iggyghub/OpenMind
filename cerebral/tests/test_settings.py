@@ -61,6 +61,7 @@ class TestSettingsStore:
             "max_per_trade_risk_pct",
             "max_daily_loss_pct",
             "max_concurrent_positions",
+            "distinct_days_floor",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):
