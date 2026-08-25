@@ -34,6 +34,85 @@ function initTradingPanel() {
 }
 
 /**
+ * Discovery control block (S31/#896) -- start/stop + optional duration,
+ * rendered above the strategy list/empty-state either way (discovery is
+ * independent of whether any strategy exists yet). Pure string builder,
+ * matching this file's own convention for the other render helpers.
+ * @param {Object} [discovery] - { enabled, stop_at, queries, interval }
+ *   from cerebral/main.py's _trading_broadcast(); undefined/null renders
+ *   as stopped (a caller/test that hasn't wired discovery yet still works).
+ */
+function _renderDiscoveryControl(discovery) {
+  const running = !!(discovery && discovery.enabled);
+  let statusText = 'Stopped';
+  if (running) {
+    statusText = 'Running indefinitely';
+    if (discovery.stop_at) {
+      const stopDate = new Date(discovery.stop_at);
+      if (!isNaN(stopDate.getTime())) statusText = 'Running -- stops ' + stopDate.toLocaleString();
+    }
+  }
+  return `
+    <div class="discovery-control">
+      <h3>Autonomous Discovery</h3>
+      <div class="discovery-control-row">
+        <button class="discovery-start-btn" ${running ? 'disabled' : ''}>Start</button>
+        <button class="discovery-stop-btn" ${running ? '' : 'disabled'}>Stop</button>
+        <span class="discovery-status">${statusText}</span>
+      </div>
+      <div class="discovery-control-row">
+        <label for="discovery-duration-input">Duration (hours, blank = indefinite)</label>
+        <input type="number" class="discovery-duration-input" min="0" step="0.5" placeholder="e.g. 2" ${running ? 'disabled' : ''}>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Wires the discovery control's Start/Stop buttons. Sends a trading_poll
+ * right after each call_tool so the panel reflects the new state without
+ * waiting for the next natural broadcast -- same pattern other action
+ * buttons in this app use to refresh themselves post-action.
+ */
+function _wireDiscoveryControl(mount, sendEventFn) {
+  const startBtn = mount.querySelector('.discovery-start-btn');
+  const stopBtn = mount.querySelector('.discovery-stop-btn');
+  const durInput = mount.querySelector('.discovery-duration-input');
+  if (startBtn) {
+    startBtn.addEventListener('click', () => {
+      if (!sendEventFn) return;
+      const hours = durInput && durInput.value !== '' ? parseFloat(durInput.value) : null;
+      sendEventFn(buildStartDiscoveryEvent(hours));
+      sendEventFn({ type: 'trading_poll' });
+    });
+  }
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+      if (!sendEventFn) return;
+      sendEventFn(buildStopDiscoveryEvent());
+      sendEventFn({ type: 'trading_poll' });
+    });
+  }
+}
+
+/**
+ * Builds the `start_discovery` call_tool event (S31/#896). durationHours
+ * of null/undefined/NaN omits duration_hours entirely -- start_discovery
+ * treats that as "run indefinitely," matching the tool's own convention.
+ */
+function buildStartDiscoveryEvent(durationHours) {
+  const args = {};
+  if (typeof durationHours === 'number' && !isNaN(durationHours)) {
+    args.duration_hours = durationHours;
+  }
+  return { type: 'call_tool', data: { name: 'start_discovery', args: args } };
+}
+
+function buildStopDiscoveryEvent() {
+  return { type: 'call_tool', data: { name: 'stop_discovery', args: {} } };
+}
+
+/**
  * Renders a `trading_update` broadcast's data into the mount.
  * @param {Object} data - { positions: [...], alerts: [...] } from
  *   cerebral/main.py's _trading_broadcast()
@@ -48,8 +127,18 @@ function initTradingPanel() {
 function renderTradingUpdate(data, container, sendEventFn) {
   const mount = container || document.getElementById('trading-panel-mount');
   if (!mount) return;
+
+  // S31 (#896): rendered (and wired) in both branches below -- discovery
+  // control is independent of whether any strategy exists yet, so it must
+  // not disappear behind the empty-state message. Styles injected here,
+  // unconditionally, so both branches have them (previously only the
+  // non-empty branch injected any styles at all).
+  const discoveryHtml = _renderDiscoveryControl(data && data.discovery);
+  _injectTradingPanelStyles();
+
   if (!data || !data.positions || data.positions.length === 0) {
-    mount.innerHTML = '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+    mount.innerHTML = discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+    _wireDiscoveryControl(mount, sendEventFn);
     return;
   }
 
@@ -63,7 +152,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const state = mount._strategyState;
   const strategy = state.strategies[state.selectedIdx];
 
-  mount.innerHTML = `
+  mount.innerHTML = discoveryHtml + `
     <div class="trading-panel-layout">
       <div class="strategy-list">
         <h3>Strategies</h3>
@@ -107,6 +196,8 @@ function renderTradingUpdate(data, container, sendEventFn) {
     </div>
   `;
 
+  _wireDiscoveryControl(mount, sendEventFn);
+
   // Wire list selection
   mount.querySelectorAll('.strategy-list li').forEach(li => {
     li.addEventListener('click', () => {
@@ -123,39 +214,58 @@ function renderTradingUpdate(data, container, sendEventFn) {
       if (sendEventFn) sendEventFn(buildStrategyEditEvent(strategy, textarea.value));
     });
   }
+}
 
-  // Inject styles (idempotent)
+/**
+ * Idempotent style injection for renderTradingUpdate's markup, including
+ * the discovery control (S31/#896). Hoisted out to its own function and
+ * called unconditionally near the top of renderTradingUpdate -- previously
+ * this only ran on the non-empty-positions path (dead code on the
+ * empty-state branch, harmless when that branch had no styled markup of
+ * its own, but the discovery control now renders on BOTH branches and
+ * needs its styles present either way.
+ */
+function _injectTradingPanelStyles() {
   const styleId = "trading-panel-v2-styles";
-  if (!document.getElementById(styleId)) {
-    const style = document.createElement("style");
-    style.id = styleId;
-    style.textContent = `
-      .trading-panel-layout { display: flex; gap: 16px; font-family: sans-serif; }
-      .strategy-list { width: 220px; border-right: 1px solid #eee; padding-right: 12px; }
-      .strategy-list ul { list-style: none; padding: 0; margin: 0; }
-      .strategy-list li { padding: 8px; cursor: pointer; border-radius: 4px; margin-bottom: 4px; color: #333; }
-      .strategy-list li.selected { background: #e3f2fd; font-weight: bold; color: #0d47a1; }
-      .strategy-list li:hover { background: #f5f5f5; }
-      .status-badge { font-size: 0.7em; padding: 2px 5px; border-radius: 3px; background: #eee; margin-left: 6px; }
-      .strategy-detail { flex: 1; }
-      .detail-header { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #eee; padding-bottom: 8px; margin-bottom: 12px; }
-      .version-badge { background: #f1f1f1; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
-      .provenance-box { background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 0.9em; white-space: pre-wrap; border-left: 3px solid #3498db; }
-      .edit-box { margin-top: 12px; }
-      .strategy-code-editor { width: 100%; font-family: monospace; font-size: 0.9em; padding: 8px; border: 1px solid #ccc; border-radius: 4px; resize: vertical; box-sizing: border-box; }
-      .save-strategy-btn { margin-top: 8px; padding: 6px 12px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; }
-      .save-strategy-btn:hover { background: #2980b9; }
-      .fill-list, .alerts-box { margin-top: 16px; }
-      .fills-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
-      .fills-table th, .fills-table td { padding: 4px 6px; border: 1px solid #eee; text-align: left; }
-      .alerts-box ul { list-style: none; padding: 0; }
-      .alerts-box li { padding: 4px 0; border-bottom: 1px solid #f0f0f0; font-size: 0.9em; }
-      .alert-critical { color: #e74c3c; }
-      .alert-warning { color: #f39c12; }
-      .alert-info { color: #3498db; }
-    `;
-    document.head.appendChild(style);
-  }
+  if (document.getElementById(styleId)) return;
+  const style = document.createElement("style");
+  style.id = styleId;
+  style.textContent = `
+    .trading-panel-layout { display: flex; gap: 16px; font-family: sans-serif; }
+    .strategy-list { width: 220px; border-right: 1px solid #eee; padding-right: 12px; }
+    .strategy-list ul { list-style: none; padding: 0; margin: 0; }
+    .strategy-list li { padding: 8px; cursor: pointer; border-radius: 4px; margin-bottom: 4px; color: #333; }
+    .strategy-list li.selected { background: #e3f2fd; font-weight: bold; color: #0d47a1; }
+    .strategy-list li:hover { background: #f5f5f5; }
+    .status-badge { font-size: 0.7em; padding: 2px 5px; border-radius: 3px; background: #eee; margin-left: 6px; }
+    .strategy-detail { flex: 1; }
+    .detail-header { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #eee; padding-bottom: 8px; margin-bottom: 12px; }
+    .version-badge { background: #f1f1f1; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+    .provenance-box { background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 0.9em; white-space: pre-wrap; border-left: 3px solid #3498db; }
+    .edit-box { margin-top: 12px; }
+    .strategy-code-editor { width: 100%; font-family: monospace; font-size: 0.9em; padding: 8px; border: 1px solid #ccc; border-radius: 4px; resize: vertical; box-sizing: border-box; }
+    .save-strategy-btn { margin-top: 8px; padding: 6px 12px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; }
+    .save-strategy-btn:hover { background: #2980b9; }
+    .fill-list, .alerts-box { margin-top: 16px; }
+    .fills-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+    .fills-table th, .fills-table td { padding: 4px 6px; border: 1px solid #eee; text-align: left; }
+    .alerts-box ul { list-style: none; padding: 0; }
+    .alerts-box li { padding: 4px 0; border-bottom: 1px solid #f0f0f0; font-size: 0.9em; }
+    .alert-critical { color: #e74c3c; }
+    .alert-warning { color: #f39c12; }
+    .alert-info { color: #3498db; }
+    .discovery-control { margin-bottom: 16px; padding: 12px; background: #f8f9fa; border-radius: 6px; border: 1px solid #eee; font-family: sans-serif; }
+    .discovery-control h3 { margin: 0 0 8px; font-size: 14px; }
+    .discovery-control-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .discovery-control-row:last-child { margin-bottom: 0; }
+    .discovery-start-btn, .discovery-stop-btn { padding: 4px 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; color: #fff; }
+    .discovery-start-btn { background: #2ecc71; }
+    .discovery-stop-btn { background: #e74c3c; }
+    .discovery-start-btn:disabled, .discovery-stop-btn:disabled { background: #ccc; cursor: default; }
+    .discovery-status { font-size: 12px; color: #555; }
+    .discovery-duration-input { width: 80px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 3px; }
+  `;
+  document.head.appendChild(style);
 }
 
 /**
@@ -638,6 +748,8 @@ return {
   buildRunGauntletEvent: buildRunGauntletEvent,
   initTickersView:     initTickersView,
   renderTickersUpdate: renderTickersUpdate,
+  buildStartDiscoveryEvent: buildStartDiscoveryEvent,
+  buildStopDiscoveryEvent: buildStopDiscoveryEvent,
 };
 
 }));

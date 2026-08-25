@@ -138,6 +138,92 @@ describe('renderTradingUpdate (S19 multi-strategy panel)', () => {
   });
 });
 
+// S31 (#896): manual discovery start/stop + duration control. The control
+// must render on BOTH the empty-positions and populated branches (it's
+// independent of whether any strategy exists yet) -- that's the real bug
+// class this suite guards against, not just "does the button show up."
+describe('renderTradingUpdate discovery control (S31/#896)', () => {
+  test('renders even with zero strategies -- not hidden behind the empty state', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], discovery: { enabled: false } }, mount);
+      expect(mount.innerHTML).toContain('No active strategies');
+      expect(mount.innerHTML).toContain('Autonomous Discovery');
+      expect(mount.innerHTML).toContain('discovery-start-btn');
+      expect(mount.innerHTML).toContain('discovery-stop-btn');
+    });
+  });
+
+  test('renders alongside a populated strategy list too', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: TWO_STRATEGIES, alerts: [], discovery: { enabled: false } }, mount);
+      expect(mount.innerHTML).toContain('Autonomous Discovery');
+      expect(mount.innerHTML).toContain('MA cross A');
+    });
+  });
+
+  test('disabled discovery shows Stopped, Start enabled, Stop disabled', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], discovery: { enabled: false } }, mount);
+      expect(mount.innerHTML).toContain('Stopped');
+      expect(mount.innerHTML).toContain('discovery-start-btn" >');
+      expect(mount.innerHTML).toContain('discovery-stop-btn" disabled>');
+    });
+  });
+
+  test('enabled discovery with no stop_at shows "Running indefinitely", Start disabled, Stop enabled', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], discovery: { enabled: true, stop_at: '' } }, mount);
+      expect(mount.innerHTML).toContain('Running indefinitely');
+      expect(mount.innerHTML).toContain('discovery-start-btn" disabled>');
+      expect(mount.innerHTML).toContain('discovery-stop-btn" >');
+    });
+  });
+
+  test('enabled discovery with a stop_at shows a real stop time, not just "Running"', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [],
+        discovery: { enabled: true, stop_at: '2026-08-26T00:00:00+00:00' },
+      }, mount);
+      expect(mount.innerHTML).toContain('Running -- stops');
+      expect(mount.innerHTML).not.toContain('Running indefinitely');
+    });
+  });
+
+  test('missing discovery data entirely renders as stopped, not a crash', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('Stopped');
+    });
+  });
+});
+
+describe('buildStartDiscoveryEvent / buildStopDiscoveryEvent (S31/#896)', () => {
+  test('start with a duration includes duration_hours', () => {
+    expect(TradingPanel.buildStartDiscoveryEvent(2.5)).toEqual({
+      type: 'call_tool', data: { name: 'start_discovery', args: { duration_hours: 2.5 } },
+    });
+  });
+
+  test('start with no duration omits duration_hours entirely (indefinite)', () => {
+    expect(TradingPanel.buildStartDiscoveryEvent(null)).toEqual({
+      type: 'call_tool', data: { name: 'start_discovery', args: {} },
+    });
+  });
+
+  test('stop sends stop_discovery with no args', () => {
+    expect(TradingPanel.buildStopDiscoveryEvent()).toEqual({
+      type: 'call_tool', data: { name: 'stop_discovery', args: {} },
+    });
+  });
+});
+
 describe('buildStrategyEditEvent (the Save button\'s real event shape)', () => {
   test('sends strategy_edit with the strategy name, new code, and its version', () => {
     const event = TradingPanel.buildStrategyEditEvent(

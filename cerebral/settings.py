@@ -75,6 +75,15 @@ _DEFAULTS: dict[str, Any] = {
     "max_concurrent_positions":  10,
     # S23: Minimum distinct trading days required for graduation/graduation math.
     "distinct_days_floor":       30,
+    # S31: manual discovery start/stop + duration. discovery_enabled defaults
+    # OFF -- discovery does not run on its own until explicitly started.
+    # discovery_stop_at is an ISO timestamp ("" means run indefinitely).
+    # discovery_queries/discovery_interval override run_discovery's own
+    # built-in defaults when non-empty.
+    "discovery_enabled":         False,
+    "discovery_stop_at":         "",
+    "discovery_queries":         [],
+    "discovery_interval":        "15m",
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -101,6 +110,10 @@ _TYPES: dict[str, type] = {
     "max_daily_loss_pct":        float,
     "max_concurrent_positions":  int,
     "distinct_days_floor":       int,
+    "discovery_enabled":         bool,
+    "discovery_stop_at":         str,
+    "discovery_queries":         list,
+    "discovery_interval":        str,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
@@ -156,6 +169,8 @@ class SettingsStore:
             raise ValueError("enabled_skills must be a list of str")
         if key == "setvalue_roles" and not all(isinstance(i, str) for i in value):
             raise ValueError("setvalue_roles must be a list of str")
+        if key == "discovery_queries" and not all(isinstance(i, str) for i in value):
+            raise ValueError("discovery_queries must be a list of str")
         self._data[key] = value
         self._save()
 

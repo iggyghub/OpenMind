@@ -249,6 +249,7 @@ from cerebral.trading.risk_limits import RiskManager
 from cerebral.trading.live_tick import dispatch_due_events as _dispatch_due_events
 from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.discovery import VettedTickers
+from cerebral.trading.market_hours import is_market_hours
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
 # Paper only, deliberately: a StubBrokerClient can't reach a real market, so
@@ -349,6 +350,12 @@ _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
 _settings = _SettingsStore()
+# S31 (#896): bind the real singleton, not SchedulerPlugin's own auto-
+# derived default -- both would point at the same felix-settings.json file
+# on disk but load it into two separate in-memory dicts, so a set() through
+# one would silently never be visible through the other until a restart.
+# Same pattern as _scheduler_plugin._record_activity_fn below.
+_scheduler_plugin._settings = _settings
 # Constructed here, not with the other trading globals above: RiskManager
 # reads live settings via settings_store, which must exist first.
 _risk_mgr = RiskManager(settings_store=_settings, alert_dispatcher=_alert_dispatcher)
@@ -3510,7 +3517,13 @@ async def _scheduler_loop() -> None:
     its last run, not on every tick. Marks an event run regardless of the
     trade's own outcome (not just on success): a persistently failing
     strategy should retry at its normal interval, not spam every 5-minute
-    tick forever."""
+    tick forever.
+
+    S31 (#896): discovery only actually dispatches when
+    settings.discovery_enabled is True (default OFF -- manual start/stop,
+    see start_discovery/stop_discovery), with an optional discovery_stop_at
+    auto-expiry checked every tick here (no separate timer). Paper-trade
+    dispatch is gated to market hours via is_market_hours()."""
     logger.info("[cerebral] Starting autonomous paper-trade scheduler loop")
     while not _shutdown.is_set():
         try:
@@ -3535,8 +3548,36 @@ async def _scheduler_loop() -> None:
             for evt in _scheduler_plugin.list_due_events():
                 if evt["title"] != _scheduler_plugin.DISCOVERY_EVENT_TITLE:
                     continue
+                # S31 (#896): manually stopped -- skip without mark_event_run,
+                # so re-enabling makes it immediately due again instead of
+                # waiting out the rest of its last real interval.
+                if not _settings.get("discovery_enabled"):
+                    continue
+                # Auto-stop: an expired duration timer disables discovery on
+                # its own next due tick, logged so it's visible rather than
+                # silently going quiet. Also skipped without mark_event_run.
+                stop_at = _settings.get("discovery_stop_at")
+                if stop_at:
+                    from datetime import datetime, timezone
+                    try:
+                        stop_dt = datetime.fromisoformat(stop_at)
+                    except ValueError:
+                        stop_dt = None
+                    if stop_dt is not None and stop_dt.tzinfo is not None:
+                        stop_dt = stop_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    if stop_dt is not None and stop_dt <= datetime.now(timezone.utc).replace(tzinfo=None):
+                        await _scheduler_plugin.call_tool("stop_discovery", {})
+                        await _record_activity("activity", {
+                            "source": "trading",
+                            "summary": "Discovery auto-stopped: its duration timer expired",
+                        })
+                        continue
                 try:
-                    discovery_result = await _scheduler_plugin.call_tool("run_discovery", {})
+                    discovery_args = {
+                        "queries": _settings.get("discovery_queries") or None,
+                        "interval": _settings.get("discovery_interval"),
+                    }
+                    discovery_result = await _scheduler_plugin.call_tool("run_discovery", discovery_args)
                     logger.info(f"[cerebral] Discovery pass: {discovery_result.content}")
                 except Exception:
                     logger.exception("[cerebral] Discovery pass failed")
@@ -3552,18 +3593,22 @@ async def _scheduler_loop() -> None:
             # when both conditions hold (Part 4). Offloaded to a thread
             # (S14/#859): each strategy now costs a real sandbox spawn on
             # top of the yfinance fetch, and this loop must not block the
-            # event loop for that long.
-            results = await asyncio.to_thread(
-                _dispatch_due_events,
-                _scheduler_plugin, _trading_broker, _trading_forward_record,
-                lifecycle=_trading_lifecycle, store=_trading_strategy_store,
-                arm=_settings.get("trading_live_arm"),
-                risk=_risk_mgr,
-                alert_dispatcher=_alert_dispatcher,
-                latest_accession_fn=_latest_10q_10k_accession,
-                fundamentals_scan_fn=_fundamentals_red_flag_scan,
-                vetted_tickers=_vetted_tickers,
-            )
+            # event loop for that long. S31 (#896): skipped entirely outside
+            # market hours -- results stays [] and everything below already
+            # no-ops on an empty list.
+            results = []
+            if is_market_hours():
+                results = await asyncio.to_thread(
+                    _dispatch_due_events,
+                    _scheduler_plugin, _trading_broker, _trading_forward_record,
+                    lifecycle=_trading_lifecycle, store=_trading_strategy_store,
+                    arm=_settings.get("trading_live_arm"),
+                    risk=_risk_mgr,
+                    alert_dispatcher=_alert_dispatcher,
+                    latest_accession_fn=_latest_10q_10k_accession,
+                    fundamentals_scan_fn=_fundamentals_red_flag_scan,
+                    vetted_tickers=_vetted_tickers,
+                )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")
             if results:
@@ -3623,7 +3668,19 @@ async def _trading_broadcast() -> None:
                 p["recent_fills"] = [{"symbol": f["symbol"], "side": f["side"], "pnl": f["pnl"], "phase": f["phase"]} for f in fills]
                 positions.append(p)
             alerts = _trading_lifecycle.get_alert_history()
-        await _broadcast({"type": "trading_update", "data": {"positions": positions, "alerts": alerts}})
+        # S31 (#896): read _scheduler_plugin's own settings-backed state
+        # directly rather than round-tripping through get_discovery_status's
+        # ToolResult/json -- same values, no serialization needed here.
+        discovery = {
+            "enabled": _scheduler_plugin._settings.get("discovery_enabled"),
+            "stop_at": _scheduler_plugin._settings.get("discovery_stop_at"),
+            "queries": _scheduler_plugin._settings.get("discovery_queries"),
+            "interval": _scheduler_plugin._settings.get("discovery_interval"),
+        }
+        await _broadcast({
+            "type": "trading_update",
+            "data": {"positions": positions, "alerts": alerts, "discovery": discovery},
+        })
     except Exception as e:
         logger.warning(f"[cerebral] trading broadcast failed: {e}", exc_info=True)
 

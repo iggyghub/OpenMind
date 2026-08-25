@@ -906,3 +906,94 @@ async def test_run_discovery_accepts_an_explicit_interval_override(tmp_path):
 
     assert not result.is_error, result.content
     assert seen_intervals == ["5m"]
+
+
+# ── S31 (#896): manual discovery start/stop + duration ────────────────────
+
+def test_discovery_defaults_to_disabled(tmp_path):
+    """discovery_enabled defaults False -- discovery does NOT run on its
+    own until explicitly started (the intended behavior change from
+    "always on once the underlying scheduler-loop bug is fixed")."""
+    plugin = _plugin(tmp_path)
+    status = json.loads(plugin._get_discovery_status({}).content)
+    assert status["enabled"] is False
+
+
+def test_start_discovery_with_no_args_enables_indefinitely(tmp_path):
+    plugin = _plugin(tmp_path)
+    result = plugin._start_discovery({})
+    status = json.loads(result.content)
+    assert status["enabled"] is True
+    assert status["stop_at"] == ""
+
+
+def test_start_discovery_with_duration_sets_a_real_stop_at(tmp_path):
+    plugin = _plugin(tmp_path)
+    before = datetime.now(timezone.utc)
+
+    result = plugin._start_discovery({"duration_hours": 2})
+
+    status = json.loads(result.content)
+    assert status["enabled"] is True
+    stop_at = datetime.fromisoformat(status["stop_at"])
+    assert stop_at.tzinfo is not None
+    delta = stop_at - before
+    assert timedelta(hours=1, minutes=59) < delta < timedelta(hours=2, minutes=1)
+
+
+def test_start_discovery_stores_custom_queries_and_interval(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._start_discovery({"queries": ["5 minute ORB strategy"], "interval": "5m"})
+
+    status = json.loads(plugin._get_discovery_status({}).content)
+    assert status["queries"] == ["5 minute ORB strategy"]
+    assert status["interval"] == "5m"
+
+
+def test_start_discovery_with_empty_queries_leaves_existing_value_alone(tmp_path):
+    """Empty queries/interval on start_discovery must not reset an already-
+    customized value back to the built-in default -- #896's own scope note."""
+    plugin = _plugin(tmp_path)
+    plugin._start_discovery({"queries": ["day trading momentum"], "interval": "5m"})
+
+    plugin._start_discovery({})  # re-enable with no overrides
+
+    status = json.loads(plugin._get_discovery_status({}).content)
+    assert status["queries"] == ["day trading momentum"]
+    assert status["interval"] == "5m"
+
+
+def test_stop_discovery_disables_and_clears_stop_at(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._start_discovery({"duration_hours": 4})
+
+    result = plugin._stop_discovery({})
+
+    status = json.loads(result.content)
+    assert status["enabled"] is False
+    assert status["stop_at"] == ""
+
+
+def test_get_discovery_status_reflects_real_settings_store_state(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._settings.set("discovery_enabled", True)
+    plugin._settings.set("discovery_interval", "1m")
+
+    status = json.loads(plugin._get_discovery_status({}).content)
+    assert status["enabled"] is True
+    assert status["interval"] == "1m"
+
+
+def test_settings_injection_isolates_from_the_real_production_file(tmp_path):
+    """Same isolation convention as discovery_watchlist/discovery_attempts:
+    a tmp_path-scoped plugin must get its own felix-settings.json, never
+    the real production one -- checked by path, not by real-file content
+    (which is live machine state this test must not depend on: an
+    unrelated setting saved by the real running process at any point would
+    make a content-based assertion flaky for reasons having nothing to do
+    with this isolation)."""
+    from cerebral.settings import _SETTINGS_PATH
+    plugin = _plugin(tmp_path)
+
+    assert plugin._settings._path != _SETTINGS_PATH
+    assert plugin._settings._path == tmp_path / "felix-settings.json"

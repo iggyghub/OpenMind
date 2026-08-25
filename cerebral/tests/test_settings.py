@@ -62,6 +62,10 @@ class TestSettingsStore:
             "max_daily_loss_pct",
             "max_concurrent_positions",
             "distinct_days_floor",
+            "discovery_enabled",
+            "discovery_stop_at",
+            "discovery_queries",
+            "discovery_interval",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):
@@ -272,6 +276,38 @@ class TestSettingsStore:
         store = SettingsStore(tmp_path / "s.json")
         with pytest.raises(ValueError, match="setvalue_roles must be a list of str"):
             store.set("setvalue_roles", ["Edit", 42])
+
+    # S31 (#896): manual discovery start/stop + duration settings.
+
+    def test_discovery_enabled_defaults_false(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("discovery_enabled") is False
+
+    def test_discovery_stop_at_defaults_empty(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("discovery_stop_at") == ""
+
+    def test_discovery_queries_defaults_empty_list(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("discovery_queries") == []
+
+    def test_discovery_interval_defaults_15m(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("discovery_interval") == "15m"
+
+    def test_discovery_queries_rejects_non_str_items(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        with pytest.raises(ValueError, match="discovery_queries must be a list of str"):
+            store.set("discovery_queries", ["ok", 42])
+
+    def test_discovery_settings_persist_to_disk(self, tmp_path):
+        p = tmp_path / "s.json"
+        s1 = SettingsStore(p)
+        s1.set("discovery_enabled", True)
+        s1.set("discovery_queries", ["day trading momentum"])
+        s2 = SettingsStore(p)
+        assert s2.get("discovery_enabled") is True
+        assert s2.get("discovery_queries") == ["day trading momentum"]
 
     def test_user_idle_ms_defaults_4000(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")

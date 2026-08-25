@@ -20,6 +20,7 @@ from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.gauntlet import run_gauntlet
 from cerebral.trading.discovery import DiscoveryAttempts, DiscoveryWatchlist, run_discovery_pass
 from cerebral.trading_ideas import Idea, judge_idea as _judge_idea
+from cerebral.settings import SettingsStore
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ class SchedulerPlugin:
 
     def __init__(self, db_path=None, router=None, web_search_fn=None,
                  record_activity_fn=None, discovery_watchlist=None,
-                 discovery_attempts=None):
+                 discovery_attempts=None, settings=None):
         self._router = router
         path = db_path if db_path is not None else str(_DEFAULT_DB)
         if path != ":memory:":
@@ -136,6 +137,15 @@ class SchedulerPlugin:
             self._discovery_attempts = DiscoveryAttempts(
                 db_path=Path(path).parent / "discovery_attempts.db"
             )
+        # S31 (#896): same isolation convention -- a tmp_path-scoped
+        # SchedulerPlugin(db_path=...) test gets its own felix-settings.json
+        # instead of silently touching the real one.
+        if settings is not None:
+            self._settings = settings
+        elif path == ":memory:":
+            self._settings = SettingsStore(path=Path(":memory:"))
+        else:
+            self._settings = SettingsStore(path=Path(path).parent / "felix-settings.json")
 
     def _init_schema(self) -> None:
         self._con.executescript("""
@@ -324,6 +334,48 @@ class SchedulerPlugin:
                     },
                 },
             ),
+            Tool(
+                name="start_discovery",
+                description=(
+                    "S31/#896: manually enable the discovery loop (default OFF -- it does "
+                    "not run on its own until this is called). Pass duration_hours to "
+                    "auto-stop after that many hours; omit it to run until stop_discovery is "
+                    "called. Pass queries/interval to override run_discovery's own built-in "
+                    "defaults for every subsequent pass (e.g. to focus on day-trading "
+                    "strategies specifically) -- omitted or empty leaves the current stored "
+                    "value unchanged, it does not reset to the built-in default."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "queries": {
+                            "type": "array", "items": {"type": "string"},
+                            "description": "Override the queries used for every future discovery pass.",
+                        },
+                        "interval": {
+                            "type": "string",
+                            "description": "Override the bar interval used for every future discovery pass.",
+                        },
+                        "duration_hours": {
+                            "type": "number",
+                            "description": "Auto-stop after this many hours. Omit to run indefinitely.",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="stop_discovery",
+                description="S31/#896: immediately disable the discovery loop and clear any auto-stop timer.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="get_discovery_status",
+                description="S31/#896: current discovery enabled/stop_at/queries/interval state.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -341,6 +393,12 @@ class SchedulerPlugin:
             return await self._edit_strategy(args)
         if tool_name == "run_discovery":
             return await self._run_discovery(args)
+        if tool_name == "start_discovery":
+            return self._start_discovery(args)
+        if tool_name == "stop_discovery":
+            return self._stop_discovery(args)
+        if tool_name == "get_discovery_status":
+            return self._get_discovery_status(args)
         if tool_name == "get_strategy_code":
             return self._get_strategy_code(args)
         if tool_name == "mix_strategies":
@@ -727,6 +785,41 @@ class SchedulerPlugin:
         )
         return ToolResult(content=json.dumps({
             "sourced": len(ideas), "dispatched": len(results),
+        }))
+
+    # ------------------------------------------------------------------
+    # S31 (#896): manual discovery start/stop + duration
+    # ------------------------------------------------------------------
+
+    def _start_discovery(self, args: dict) -> ToolResult:
+        queries = args.get("queries") or []
+        interval = (args.get("interval") or "").strip()
+        duration_hours = args.get("duration_hours")
+
+        self._settings.set("discovery_enabled", True)
+        if duration_hours is not None:
+            stop_at = (datetime.now(timezone.utc) + timedelta(hours=float(duration_hours))).isoformat()
+            self._settings.set("discovery_stop_at", stop_at)
+        else:
+            self._settings.set("discovery_stop_at", "")
+        if queries:
+            self._settings.set("discovery_queries", list(queries))
+        if interval:
+            self._settings.set("discovery_interval", interval)
+
+        return self._get_discovery_status({})
+
+    def _stop_discovery(self, args: dict) -> ToolResult:
+        self._settings.set("discovery_enabled", False)
+        self._settings.set("discovery_stop_at", "")
+        return self._get_discovery_status({})
+
+    def _get_discovery_status(self, args: dict) -> ToolResult:
+        return ToolResult(content=json.dumps({
+            "enabled": self._settings.get("discovery_enabled"),
+            "stop_at": self._settings.get("discovery_stop_at"),
+            "queries": self._settings.get("discovery_queries"),
+            "interval": self._settings.get("discovery_interval"),
         }))
 
     async def _edit_strategy(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
