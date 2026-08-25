@@ -3,11 +3,12 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S30 -- #894
+- **Active:** none -- S30 is the last queued slice and it's landed. A
+  new campaign against this driver needs a fresh grill session first.
 - **Model:** sonnet
 
 ## Queue
@@ -138,7 +139,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   either. Needs a GitHub issue filed before a self_dev campaign can
   pick it up.
 
-- [ ] S30 -- #894 -- Persisted per-attempt discovery log: gauntlet
+- [x] S30 -- #894 -- Persisted per-attempt discovery log: gauntlet
   verdict/reasoning per candidate. Closes the gap S29 (decision #49)
   found -- `DiscoveryWatchlist` has no per-attempt record, so a
   screened-but-strategy-less ticker can't be told apart from one that
@@ -2322,6 +2323,64 @@ against this driver needs a fresh grill session first.
   tests (`trading-panel.test.js`). Full suite green: 5236 passed, 7
   skipped, 0 failed (`cerebral/tests/` + repo-root `tests/`); tray jest
   30 suites / 778 tests, 0 failed. Landed as commit 120bca6.
+
+- S30 -- #894 -- Persisted per-attempt discovery log: gauntlet
+  verdict/reasoning per candidate. Closes S29's own disclosed gap
+  (decision #49): `DiscoveryWatchlist` had no per-attempt record, so a
+  screened-but-strategy-less ticker couldn't be told apart from one the
+  gauntlet actually rejected. Not landed via self_dev's own PR #895:
+  the whole diff referenced three names (`record_attempt_fn`,
+  `get_latest_attempt`, `_extract_attempt_reason`) that were never
+  defined, imported, or threaded through any function signature -- a
+  guaranteed `NameError` at runtime, no persisted log was added at all,
+  only the pre-filter dispatch path was touched (the ticker-specific
+  fast path wasn't), and the one CSS class it added was never referenced
+  by any markup (`tests_failed`, same "dead CSS" failure shape as S29's
+  own aborted PR #893). Landed by hand instead.
+
+  New `cerebral/trading/discovery.py::DiscoveryAttempts` (same SQLite/
+  db_path-injection convention as `VettedTickers` -- one row per symbol,
+  replaced wholesale on each new attempt, only the latest matters).
+  `process_idea`/`run_discovery_pass` gained an optional
+  `record_attempt_fn`, called after `run_gauntlet_fn` returns on BOTH
+  the ticker-specific fast path and the pre-filter loop (self_dev's
+  attempt only wired the latter). `_attempt_outcome()` reads either the
+  real production result shape (`{"ticker", "is_error", "result": <JSON
+  string>}`) or the flat test-fake shape already used throughout
+  `test_trading_discovery.py` (`{"ticker", "verdict"}`) so the existing
+  fakes didn't need to change shape -- on UNVALIDATED, names the first
+  failed gate and its own `details` string (e.g. "vs_benchmark:
+  underperformed by 3.2%"), which required `plugins/scheduler.py`'s
+  `_run_gauntlet` to actually include `details` in its gate JSON (it
+  only had `name`/`passed` before, so no result reaching this module
+  had a real reason string to read even if it tried). `SchedulerPlugin`
+  gets a `_discovery_attempts` instance alongside `_discovery_watchlist`,
+  same injection/isolation convention.
+
+  `build_ticker_view` gained an optional `get_latest_attempt` param --
+  a real "rejected" stage (with `reason`) for a ticker whose most recent
+  attempt was UNVALIDATED and has no strategy yet; defaults to `None` so
+  any caller not yet wired to `DiscoveryAttempts` keeps the old 3-stage
+  behavior. A strategy's existence still always overrides "rejected",
+  same as it did "screened" before. `cerebral/main.py`'s
+  `_trading_tickers_data()` wires the real
+  `_discovery_attempts.get_latest`. `tray/lib/trading-panel.js` shows a
+  red "Rejected" badge + the reason text on the Tickers card in place of
+  the generic "Screened -- no strategy yet." text. Deliberately did NOT
+  add a live "gauntlet-running" status (#894's own scope note): a
+  dispatch is one awaited call within one discovery pass tick, no
+  meaningful in-progress window exists to poll for.
+
+  18 new backend tests (`test_trading_discovery.py`,
+  `test_trading_ticker_view.py`, `test_plugin_scheduler.py`), 1 new
+  frontend test (`trading-panel.test.js`). Full suite green: 5258
+  passed, 7 skipped (`cerebral/tests/` + repo-root `tests/`) -- one
+  unrelated pre-existing failure on unmodified files, see
+  `.learnings/ERRORS.md`'s 2026-08-25 entry (a `git checkout master --
+  .` run to discard #895's diff accidentally reverted separate
+  uncommitted WIP on `cerebral/mcp/orchestrator.py` and its test, not
+  caused by this slice); tray jest 30 suites / 780 tests, 0 failed.
+  Landed as commit 4e81904.
 
 ## What's next
 
