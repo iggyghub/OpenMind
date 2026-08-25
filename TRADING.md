@@ -3,25 +3,19 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: S20-S28 blueprint COMPLETE (2026-08-24). All 9 slices from
-the autonomous-discovery-plus-intraday-data expansion (decisions
-#32-#47) landed and are hand-verified: S20/S21/S21b closed the P0
-RiskManager/live-path gaps decision #47 named; S22/S23 added intraday
-bars and intraday-aware graduation; S24 added the fundamentals/SEC-
-filings/IPO-detection plugin; S25 unlocked `origin='discovered'`
-lineage with a real schema migration; S26 built the Activity Log
-(the trust prerequisite decision #46 required before S27); S27 built
-the autonomous discovery loop itself; S28 added the fundamentals
-red-flag gate at live graduation. `trading_live_arm` is safe for the
-user to set True whenever they choose -- no code gaps remain on that
-path. Nothing in this queue is pending. See "Landed PRs" for the full
-account, slice by slice, including every real bug self_dev's own
-output needed hand-fixing (or a full rebuild) for.
+## Status: S29 landed (2026-08-24). S20-S28 blueprint plus S29 (Trading
+pane "Tickers" sub-tab, decisions #48-#51) all landed and hand-verified.
+S29's own self_dev attempt (PR #893) was a 14-line dead-CSS stub meeting
+none of its acceptance criteria -- closed unmerged, landed by hand
+instead; see "Landed PRs" for the full account, including two disclosed
+scope adjustments found while building it for real. `trading_live_arm`
+is safe for the user to set True whenever they choose -- no code gaps
+remain on that path. Nothing in this queue is pending.
 
 ## Next slice -- start here
 
-- **Active:** none -- the full S20-S28 blueprint is complete. A new
-  campaign needs a fresh grill session before this driver reopens.
+- **Active:** none -- S29 is the last queued slice and it's landed. A
+  new campaign against this driver needs a fresh grill session first.
 - **Model:** sonnet
 
 ## Queue
@@ -137,6 +131,20 @@ output needed hand-fixing (or a full rebuild) for.
   graduation. Landed by hand after 5 consecutive genuine self_dev
   "no commit" failures -- see Landed PRs. **The full S20-S28 blueprint
   is now complete.**
+
+- [x] S29 -- #892 -- Trading pane "Tickers" sub-tab: per-ticker
+  progress view. Grilled 2026-08-24 (decisions #48-#51). Adds a
+  sub-tab strip to the Trading pane (Strategies/Tickers); the Tickers
+  view lists every currently-active ticker (watchlist, mid-gauntlet,
+  or backing a paper/live strategy) with a step tracker pre-strategy
+  and, post-strategy, a cumulative equity-curve-vs-buy-and-hold-
+  benchmark chart per phase (paper and live kept as separate,
+  never-joined lines), each trade a hoverable dot showing its
+  strategy. Reuses the existing per-strategy canvas chart
+  (`tray/lib/trading-panel.js:254`) and the gauntlet's existing
+  `vs_benchmark` definition (`gauntlet.py:277`) rather than inventing
+  either. Needs a GitHub issue filed before a self_dev campaign can
+  pick it up.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -2252,6 +2260,66 @@ Activity Log gives visibility into everything the autonomous discovery
 loop does before any of it reaches a real account. A new campaign
 against this driver needs a fresh grill session first.
 
+- S29 -- #892 -- Trading pane "Tickers" sub-tab: per-ticker progress view.
+  Grilled 2026-08-24 (decisions #48-#51) -- the first slice of the new
+  campaign phase opened after S20-S28. Not landed via self_dev's own PR
+  #893: the whole diff was 14 lines of dead CSS for a `.trd-tab` strip
+  never referenced by any markup, JS, or backend -- zero of the eight
+  acceptance criteria met (`tests_failed`, closed unmerged; see the PR's
+  own diff for the full account). Landed by hand instead.
+
+  Two real, disclosed scope adjustments the grill's acceptance criteria
+  assumed away, found while building this for real (same Honesty-rule
+  discipline as S10's "still honest gaps" list):
+  1. **The pre-strategy "step tracker" (screened/judged/gauntlet-running/
+     result) from decision #49 isn't buildable as written.**
+     `discovery.py`'s `DiscoveryWatchlist` has no persisted per-attempt
+     log -- S27's `process_idea` only ever records a "dispatched" activity
+     entry, never the eventual gauntlet verdict, so a screened-but-
+     strategy-less ticker cannot be told apart from one that was judged-
+     and-rejected or dispatched-and-failed the gauntlet without inventing
+     a status nothing actually stores. Built three honest stages instead
+     (`cerebral/trading/ticker_view.py`): "screened" (in the watchlist, no
+     strategy yet), "validated" (a strategy exists, zero fills so far),
+     "charting" (a strategy exists with at least one fill -- the real
+     chart). A watchlist symbol also never drops out of "screened" on its
+     own, same reasoning -- `DiscoveryWatchlist` has no rejection/expiry
+     flag either. Only a halted strategy with zero fills is dropped
+     (decision #48's "nothing paper/live behind it"), since that IS real,
+     queryable state (`StrategyLifecycle` status + `ForwardRecord` fills).
+  2. **The buy-and-hold benchmark line needed a concrete definition the
+     issue left implicit.** Reuses the gauntlet's own `vs_benchmark` gate
+     (`gauntlet.py:277`: `last_close/first_close-1`) but expressed as a
+     running series instead of one before/after scalar, scaled to the
+     segment's own first fill's real qty and entry price -- so the
+     benchmark lands in the same $ units as the strategy's own cumulative-
+     PnL line (both are real dollar amounts) rather than mixing a $
+     series with a fabricated "invested capital" percentage.
+
+  Backend: `cerebral/trading/ticker_view.py`'s `build_ticker_view`/
+  `build_ticker_benchmark` are pure and duck-typed (own data sources
+  injected as plain callables/dicts, matching `live_tick.py`/
+  `discovery.py`'s own convention) -- `cerebral/main.py`'s
+  `_trading_tickers_data()` is a thin wrapper binding the real module-
+  level singletons, plus a new `trading_tickers_poll` IPC handler
+  broadcasting `trading_tickers_update`. Frontend: a `.trd-tabs` sub-tab
+  strip on the Trading pane (Strategies/Tickers, matching Settings' own
+  sub-tab pattern -- decision #51), and `tray/lib/trading-panel.js` grew
+  `renderTickersUpdate`/`initTickersView` reusing the existing per-
+  strategy canvas chart's drawing approach, extended to a second
+  (benchmark) line, per-trade dot markers, and a shared hover tooltip
+  showing the trade's strategy/side/price/PnL/timestamp -- paper and live
+  segments render as separate canvases per decision #50, never one joined
+  line. Hand-verified live in a real browser (not just jest, which has no
+  canvas 2D context): sub-tab switching, all three stages' markup, both
+  segments' dot counts, and the hover tooltip's actual content all
+  confirmed against injected sample data before landing.
+
+  15 new backend tests (`test_trading_ticker_view.py`), 5 new frontend
+  tests (`trading-panel.test.js`). Full suite green: 5236 passed, 7
+  skipped, 0 failed (`cerebral/tests/` + repo-root `tests/`); tray jest
+  30 suites / 778 tests, 0 failed.
+
 ## What's next
 
 The S13-S19 blueprint is code-complete and hand-verified, the same way
@@ -2362,6 +2430,10 @@ pipeline. The deliverable is *evidence about a strategy* that Felix also acts on
 | 45 | Ticker fundamentals gate (2026-08-24) | For any never-before-traded ticker: pull its latest 10-Q/10-K via the stocks plugin, LLM-scan for red-flag language (going concern, restatement, investigation, delisting) as an additional gate at paper->live graduation specifically -- not at idea-sourcing time, not blocking paper trading. Previously-vetted tickers skip re-checking |
 | 46 | Activity log (2026-08-24) | Felix-wide (not trading-only), reuses `conversation_turns` + `_record_turn` -- retrofits the scheduler loop and self_dev to actually log instead of console-only `logger.info`. New top-level "Log" nav tab for the full stream; a filtered Activity section inside the Trading tab for trading-scoped entries. Routine screening batches into summary entries ("screened 500, 3 candidates"); real decisions (validated, traded, sourced) log individually |
 | 47 | **P0, found during this grill, not a new feature** (2026-08-24) | `RiskManager` (2%/trade, 6%/day, correlation limit -- S5b/S6, tested, believed wired) is never actually called from `cerebral/trading/live_tick.py`'s real dispatch path -- confirmed by direct grep, zero references. Every live order today would place with **no risk-limit enforcement at all**. Must be wired + verified with a real "an over-limit order gets blocked" test before `trading_live_arm` is ever set True -- prerequisite to decision #43, not part of the autonomous-discovery/day-trading blueprint itself |
+| 48 | Ticker view scope (2026-08-24) | "Currently active" tickers only -- in watchlist/screening, mid-gauntlet, or backing a paper/live strategy -- drops off once halted/rejected with nothing paper/live behind it. Avoids an unbounded historical list |
+| 49 | Ticker progress display (2026-08-24) | Pre-strategy stage (watchlist/screening/gauntlet) shows a step tracker (screened -> judged -> gauntlet running -> result), no chart -- nothing to plot yet. Post-strategy stage (paper or live) shows a cumulative equity-curve overlay: the strategy's own line vs. a buy-and-hold benchmark line (same definition as the gauntlet's existing `vs_benchmark` gate, `gauntlet.py:277`), each closed trade marked as a dot; hovering a dot shows that trade's strategy/details. One card per ticker, not per strategy -- if multiple strategies target the same ticker, all their trades plot on the same chart against the one benchmark line, disambiguated on hover |
+| 50 | Paper/live chart isolation (2026-08-24) | Paper and live segments render as two separate, never-joined equity lines per strategy, each measured against its own buy-and-hold benchmark recomputed for that segment's own date range -- matches the existing `phase`-column isolation principle (TRADING.md's own "Live trades are isolated from paper/backtest trades" rule); a blended line would let simulated performance visually vouch for real-money performance |
+| 51 | Trading pane sub-tabs (2026-08-24) | Trading gains a sub-tab strip matching Settings' existing pattern: **Strategies** (default -- today's create-form/list/activity content, unchanged) and **Tickers** (new, this slice). Future trading views become new sub-tabs here, never new top-level sidebar sections (CONTEXT.md's Main window entry updated to match: the sidebar is open-ended, not capped at four) |
 
 ## Strategy building: sandbox, edit, mix (2026-08-23 blueprint)
 

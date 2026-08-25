@@ -216,3 +216,102 @@ describe('buildRunGauntletEvent (the create-strategy form\'s real event shape)',
     expect(withoutProv.data.args.provenance).toBeUndefined();
   });
 });
+
+// S29 (#892), decisions #48-#51 -- Trading pane "Tickers" sub-tab.
+// renderTickersUpdate calls mount.querySelectorAll/querySelector to wire
+// canvas charts + hover, same as renderTradingUpdate above -- reuses this
+// file's own fakeInteractiveMount() so those calls no-op instead of
+// throwing; canvas drawing itself needs a real 2D context this suite
+// doesn't have, so only the innerHTML string (stage text, badges, names)
+// is asserted, matching this file's established style.
+
+describe('initTickersView', () => {
+  test('shows a loading placeholder in the tickers mount', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      global.document.getElementById = (id) => (id === 'trading-tickers-mount' ? mount : null);
+      TradingPanel.initTickersView();
+      expect(mount.innerHTML).toContain('Loading tickers');
+    });
+  });
+});
+
+describe('renderTickersUpdate', () => {
+  test('no tickers renders the empty state', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTickersUpdate({ tickers: [] }, mount);
+      expect(mount.innerHTML).toContain('No tickers in play yet');
+    });
+  });
+
+  test('a screened ticker (no strategy yet) shows its own status, not a chart', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTickersUpdate({
+        tickers: [{ symbol: 'NVDA', stage: 'screened', strategies: [] }],
+      }, mount);
+      expect(mount.innerHTML).toContain('NVDA');
+      expect(mount.innerHTML).toContain('Screened');
+      expect(mount.innerHTML).toContain('no strategy yet');
+      expect(mount.innerHTML).not.toContain('trd-ticker-canvas');
+    });
+  });
+
+  test('a validated strategy with zero fills shows "awaiting first paper trade", not a chart', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTickersUpdate({
+        tickers: [{
+          symbol: 'AAPL', stage: 'validated',
+          strategies: [{ name: 'ma-cross', status: 'paper', segments: [] }],
+        }],
+      }, mount);
+      expect(mount.innerHTML).toContain('ma-cross');
+      expect(mount.innerHTML).toContain('>PAPER<');
+      expect(mount.innerHTML).toContain('awaiting first paper trade');
+      expect(mount.innerHTML).not.toContain('trd-ticker-canvas');
+    });
+  });
+
+  test('a charting ticker renders one canvas per phase segment', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTickersUpdate({
+        tickers: [{
+          symbol: 'AAPL', stage: 'charting',
+          strategies: [{
+            name: 'ma-cross', status: 'live',
+            segments: [
+              { phase: 'paper', points: [{ ts: '2026-01-01T00:00:00', equity: 0, side: 'buy', pnl: 0, price: 100, strategy: 'ma-cross' }], benchmark: [] },
+              { phase: 'live', points: [{ ts: '2026-01-05T00:00:00', equity: 2, side: 'buy', pnl: 2, price: 110, strategy: 'ma-cross' }], benchmark: [] },
+            ],
+          }],
+        }],
+      }, mount);
+      expect(mount.innerHTML).toContain('trd-ticker-canvas-0-0-0');
+      expect(mount.innerHTML).toContain('trd-ticker-canvas-0-0-1');
+      expect(mount.innerHTML).toContain('PAPER vs. buy-and-hold');
+      expect(mount.innerHTML).toContain('LIVE vs. buy-and-hold');
+    });
+  });
+
+  test('multiple strategies on the same ticker all appear on one card', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTickersUpdate({
+        tickers: [{
+          symbol: 'AAPL', stage: 'validated',
+          strategies: [
+            { name: 'strategy-one', status: 'paper', segments: [] },
+            { name: 'strategy-two', status: 'paper', segments: [] },
+          ],
+        }],
+      }, mount);
+      expect(mount.innerHTML).toContain('strategy-one');
+      expect(mount.innerHTML).toContain('strategy-two');
+      // one card, not two -- both strategies nested under the single AAPL header
+      expect((mount.innerHTML.match(/trd-ticker-card/g) || []).length).toBe(1);
+    });
+  });
+});

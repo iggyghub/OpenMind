@@ -6244,65 +6244,78 @@
          trading_update broadcasts (cerebral/main.py's _trading_broadcast),
          polled on tab activation. -->
     <section class="pane" data-route="trading" hidden>
-      <div class="trd-create-section">
-        <button class="trd-create-toggle" id="trd-create-toggle" type="button">
-          + New strategy
-        </button>
-        <form class="trd-create-form" id="trd-create-form" hidden>
-          <div class="trd-create-row">
-            <label for="trd-create-symbol">Symbol</label>
-            <input type="text" id="trd-create-symbol" placeholder="AAPL" required />
-          </div>
-          <div class="trd-create-row">
-            <label for="trd-create-hypothesis">Hypothesis</label>
-            <input type="text" id="trd-create-hypothesis"
-              placeholder="Falsifiable claim this strategy tests" required />
-          </div>
-          <div class="trd-create-row">
-            <label for="trd-create-source">Idea source</label>
-            <select id="trd-create-source">
-              <option value="code">Python code</option>
-              <option value="claim">Prose claim</option>
-              <option value="url">URL</option>
-              <option value="book">Book + chapter</option>
-            </select>
-          </div>
-          <div class="trd-create-row" data-source-field="code">
-            <label for="trd-create-code">Code</label>
-            <textarea id="trd-create-code" rows="6" spellcheck="false"
-              placeholder="def strategy(data):&#10;    ..."></textarea>
-          </div>
-          <div class="trd-create-row" data-source-field="claim" hidden>
-            <label for="trd-create-claim">Claim</label>
-            <input type="text" id="trd-create-claim" placeholder="Buy when RSI crosses 30" />
-          </div>
-          <div class="trd-create-row" data-source-field="url" hidden>
-            <label for="trd-create-url">URL</label>
-            <input type="url" id="trd-create-url" placeholder="https://..." />
-          </div>
-          <div class="trd-create-row" data-source-field="book" hidden>
-            <label for="trd-create-book">Book</label>
-            <input type="text" id="trd-create-book" placeholder="Book title" />
-            <label for="trd-create-chapter">Chapter</label>
-            <input type="text" id="trd-create-chapter" placeholder="Chapter number" />
-          </div>
-          <div class="trd-create-row">
-            <label for="trd-create-provenance">Provenance (optional)</label>
-            <input type="text" id="trd-create-provenance"
-              placeholder="Where this came from, if not the URL/book above" />
-          </div>
-          <div class="trd-create-actions">
-            <button type="submit" class="trd-create-submit">Run gauntlet</button>
-            <span class="trd-create-status" id="trd-create-status"></span>
-          </div>
-        </form>
+      <!-- S29 (#892), decision #51 -- sub-tab strip. Trading views land as
+           sub-tabs here going forward, never new top-level sidebar sections. -->
+      <div class="trd-tabs" id="trd-tabs">
+        <button class="trd-tab is-active" data-trd-tab="strategies" type="button">Strategies</button>
+        <button class="trd-tab" data-trd-tab="tickers" type="button">Tickers</button>
       </div>
-      <div id="trading-panel-mount"></div>
-      <!-- S26 (#879): trading-sourced entries only -- cerebral/main.py's
-           _handle_activity_poll filters server-side on content.source. -->
-      <div class="trd-activity-section">
-        <h3>Activity</h3>
-        <div id="trading-activity-mount"></div>
+
+      <div class="trd-panel" data-trd-panel="strategies">
+        <div class="trd-create-section">
+          <button class="trd-create-toggle" id="trd-create-toggle" type="button">
+            + New strategy
+          </button>
+          <form class="trd-create-form" id="trd-create-form" hidden>
+            <div class="trd-create-row">
+              <label for="trd-create-symbol">Symbol</label>
+              <input type="text" id="trd-create-symbol" placeholder="AAPL" required />
+            </div>
+            <div class="trd-create-row">
+              <label for="trd-create-hypothesis">Hypothesis</label>
+              <input type="text" id="trd-create-hypothesis"
+                placeholder="Falsifiable claim this strategy tests" required />
+            </div>
+            <div class="trd-create-row">
+              <label for="trd-create-source">Idea source</label>
+              <select id="trd-create-source">
+                <option value="code">Python code</option>
+                <option value="claim">Prose claim</option>
+                <option value="url">URL</option>
+                <option value="book">Book + chapter</option>
+              </select>
+            </div>
+            <div class="trd-create-row" data-source-field="code">
+              <label for="trd-create-code">Code</label>
+              <textarea id="trd-create-code" rows="6" spellcheck="false"
+                placeholder="def strategy(data):&#10;    ..."></textarea>
+            </div>
+            <div class="trd-create-row" data-source-field="claim" hidden>
+              <label for="trd-create-claim">Claim</label>
+              <input type="text" id="trd-create-claim" placeholder="Buy when RSI crosses 30" />
+            </div>
+            <div class="trd-create-row" data-source-field="url" hidden>
+              <label for="trd-create-url">URL</label>
+              <input type="url" id="trd-create-url" placeholder="https://..." />
+            </div>
+            <div class="trd-create-row" data-source-field="book" hidden>
+              <label for="trd-create-book">Book</label>
+              <input type="text" id="trd-create-book" placeholder="Book title" />
+              <label for="trd-create-chapter">Chapter</label>
+              <input type="text" id="trd-create-chapter" placeholder="Chapter number" />
+            </div>
+            <div class="trd-create-row">
+              <label for="trd-create-provenance">Provenance (optional)</label>
+              <input type="text" id="trd-create-provenance"
+                placeholder="Where this came from, if not the URL/book above" />
+            </div>
+            <div class="trd-create-actions">
+              <button type="submit" class="trd-create-submit">Run gauntlet</button>
+              <span class="trd-create-status" id="trd-create-status"></span>
+            </div>
+          </form>
+        </div>
+        <div id="trading-panel-mount"></div>
+        <!-- S26 (#879): trading-sourced entries only -- cerebral/main.py's
+             _handle_activity_poll filters server-side on content.source. -->
+        <div class="trd-activity-section">
+          <h3>Activity</h3>
+          <div id="trading-activity-mount"></div>
+        </div>
+      </div>
+
+      <div class="trd-panel" data-trd-panel="tickers" hidden>
+        <div id="trading-tickers-mount"></div>
       </div>
     </section>
 
@@ -7050,6 +7063,9 @@
           // module never reaches for window.sendEvent itself, the exact S9
           // bug this file's own header comment warns about.
           if (window.TradingPanelMod) window.TradingPanelMod.renderTradingUpdate(event.data, null, sendEvent);
+          break;
+        case 'trading_tickers_update':  // S29 (#892)
+          if (window.TradingPanelMod) window.TradingPanelMod.renderTickersUpdate(event.data, null);
           break;
         case 'activity_log_data':
         case 'activity_turn_emitted':
@@ -12141,6 +12157,24 @@
       }
     }
 
+    // S29 (#892), decision #51 -- Trading pane sub-tab activation
+    // (Strategies / Tickers). Plain click-driven, not hash-routed like
+    // Settings' -- two tabs, no deep-linking requirement.
+    function tradingActivateSub(sub) {
+      const KNOWN_SUBS = new Set(['strategies', 'tickers']);
+      const target = KNOWN_SUBS.has(sub) ? sub : 'strategies';
+      document.querySelectorAll('.trd-tab').forEach((btn) => {
+        btn.classList.toggle('is-active', btn.dataset.trdTab === target);
+      });
+      document.querySelectorAll('.trd-panel').forEach((el) => {
+        el.hidden = el.dataset.trdPanel !== target;
+      });
+      if (target === 'tickers' && window.TradingPanelMod) {
+        window.TradingPanelMod.initTickersView();
+        sendEvent({ type: 'trading_tickers_poll' });
+      }
+    }
+
     // Settings sub-tab activation (General / AI models). Mirrors libActivateSub.
     function settingsActivateSub(sub) {
       const KNOWN_SUBS = new Set(['general', 'models', 'signin', 'permissions']);
@@ -12209,6 +12243,14 @@
           window.ActivityLogMod.initActivityLog('trading-activity-mount');
           sendEvent({ type: 'activity_poll', data: { source: 'trading' } });
         }
+        // S29 (#892): re-pull the Tickers sub-tab's data too if it's the
+        // one currently active (e.g. returning to this route via back/
+        // forward with Tickers already selected) -- tradingActivateSub
+        // itself handles the poll for an actual tab click.
+        var trdTickersTabEl = document.querySelector('.trd-tab[data-trd-tab="tickers"]');
+        if (trdTickersTabEl && trdTickersTabEl.classList.contains('is-active')) {
+          tradingActivateSub('tickers');
+        }
       } else if (route === 'log') {
         // S26 (#879), decision #46 -- the Felix-wide Activity Log. No poll
         // loop -- activity_turn_emitted is pushed live by the backend as
@@ -12264,6 +12306,16 @@
         var btn = e.target.closest('.set-tab');
         if (!btn) return;
         location.hash = '#settings/' + btn.dataset.setSub;
+      });
+    }
+
+    // S29 (#892) -- Trading pane sub-tab clicks (Strategies / Tickers).
+    const trdTabsEl = document.getElementById('trd-tabs');
+    if (trdTabsEl) {
+      trdTabsEl.addEventListener('click', function (e) {
+        var btn = e.target.closest('.trd-tab');
+        if (!btn) return;
+        tradingActivateSub(btn.dataset.trdTab);
       });
     }
 

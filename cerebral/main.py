@@ -3632,6 +3632,26 @@ async def _handle_trading_poll(_data: dict) -> None:
     await _trading_broadcast()
 
 
+async def _trading_tickers_data() -> dict:
+    """Thin wrapper binding cerebral/main.py's real module-level trading
+    singletons to the pure, testable aggregation in
+    cerebral.trading.ticker_view (S29/#892, decisions #48-#51)."""
+    from cerebral.trading.ticker_view import build_ticker_view
+    from cerebral.trading_data import fetch_ohlcv
+    return build_ticker_view(
+        watchlist_symbols=_scheduler_plugin._discovery_watchlist.symbols(),
+        states=_trading_lifecycle._states,
+        get_spec=_trading_strategy_store.get,
+        get_fills=lambda dispatch_id: _trading_forward_record.get_fills(strategy_id=dispatch_id),
+        fetch_ohlcv=fetch_ohlcv,
+    )
+
+
+async def _handle_trading_tickers_poll(_data: dict) -> None:
+    """IPC handler for the Trading pane's Tickers sub-tab (S29/#892)."""
+    await _broadcast({"type": "trading_tickers_update", "data": await _trading_tickers_data()})
+
+
 async def _handle_activity_poll(data: dict) -> None:
     """IPC handler for the Log nav tab and the Trading pane's filtered
     Activity section (S26/#879, decision #46).
@@ -6368,6 +6388,9 @@ async def _handle_message(msg: dict) -> None:
 
     elif t == "trading_poll":  # S9 -- Trading Panel initial fetch + refresh
         await _handle_trading_poll(msg.get("data", {}))
+
+    elif t == "trading_tickers_poll":  # S29 (#892) -- Tickers sub-tab fetch
+        await _handle_trading_tickers_poll(msg.get("data", {}))
 
     elif t == "activity_poll":  # S26 (#879) -- Log tab + Trading pane's Activity section
         await _handle_activity_poll(msg.get("data", {}))
