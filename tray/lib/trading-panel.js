@@ -64,6 +64,18 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const strategy = state.strategies[state.selectedIdx];
 
   mount.innerHTML = `
+    <div class="discovery-control" style="margin-bottom:16px; padding:12px; background:#f8f9fa; border-radius:6px; border:1px solid #eee;">
+      <h3 style="margin:0 0 8px; font-size:14px;">Autonomous Discovery</h3>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+        <button id="discovery-start-btn" style="padding:4px 10px; background:#3498db; color:#fff; border:none; border-radius:4px; cursor:pointer;">Start</button>
+        <button id="discovery-stop-btn" style="padding:4px 10px; background:#e74c3c; color:#fff; border:none; border-radius:4px; cursor:pointer;">Stop</button>
+        <span id="discovery-status" style="font-size:12px; color:#555;">Status: polling…</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <label style="font-size:12px;">Duration (hours, leave empty for indefinite):</label>
+        <input type="number" id="discovery-duration" min="0" step="0.5" placeholder="e.g. 4" style="width:80px; padding:3px 6px; border:1px solid #ccc; border-radius:3px;">
+      </div>
+    </div>
     <div class="trading-panel-layout">
       <div class="strategy-list">
         <h3>Strategies</h3>
@@ -106,6 +118,44 @@ function renderTradingUpdate(data, container, sendEventFn) {
       </div>
     </div>
   `;
+
+  // S31: Discovery controls
+  const startBtn = mount.querySelector('#discovery-start-btn');
+  const stopBtn = mount.querySelector('#discovery-stop-btn');
+  const durInput = mount.querySelector('#discovery-duration');
+  const statusSpan = mount.querySelector('#discovery-status');
+  let _discPollInterval = null;
+
+  function pollDiscoveryStatus() {
+    if (sendEventFn) {
+      sendEventFn({
+        type: 'call_tool',
+        data: { name: 'get_discovery_status', args: {} }
+      });
+    }
+  }
+
+  if (_discPollInterval) clearInterval(_discPollInterval);
+  _discPollInterval = setInterval(pollDiscoveryStatus, 3000);
+
+  if (startBtn) startBtn.onclick = () => {
+    if (sendEventFn) {
+      sendEventFn({
+        type: 'call_tool',
+        data: {
+          name: 'start_discovery',
+          args: {
+            duration_hours: durInput.value ? parseFloat(durInput.value) : null
+          }
+        }
+      });
+    }
+  };
+  if (stopBtn) stopBtn.onclick = () => {
+    if (sendEventFn) sendEventFn({ type: 'call_tool', data: { name: 'stop_discovery', args: {} } });
+  };
+  if (statusSpan) statusSpan.textContent = "Status: polling…";
+  pollDiscoveryStatus();
 
   // Wire list selection
   mount.querySelectorAll('.strategy-list li').forEach(li => {
