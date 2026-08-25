@@ -3,12 +3,11 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: done
+## Status: ready
 
 ## Next slice -- start here
 
-- **Active:** none -- S30 is the last queued slice and it's landed. A
-  new campaign against this driver needs a fresh grill session first.
+- **Active:** S31 -- #896
 - **Model:** sonnet
 
 ## Queue
@@ -149,6 +148,18 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   `build_ticker_view`, and that reason surfaced on the Tickers card.
   No live "gauntlet-running" status -- a dispatch is one awaited call,
   nothing to poll mid-flight. See #894 for full acceptance criteria.
+
+- [ ] S31 -- #896 -- Manual discovery start/stop with duration + market-
+  hours gate for paper dispatch. Separate bugfix (not this slice, landed
+  same day): the whole autonomous scheduler loop was silently dead
+  (events table schema drift + a tz-aware timestamp comparison crash).
+  With that fixed, discovery becomes a fully-automatic always-on
+  process with no user control at all -- this slice adds a real
+  discovery_enabled/discovery_stop_at toggle (settings-backed,
+  start_discovery/stop_discovery tools), Trading panel UI for it, and
+  gates paper-trade dispatch to Mon-Fri 9:30-16:00 America/New_York
+  (stdlib zoneinfo, no holiday calendar -- disclosed gap). See #896 for
+  full acceptance criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
