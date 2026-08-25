@@ -573,6 +573,7 @@ function _injectTickerStyles() {
     .trd-ticker-stage-badge { font-size: 0.75em; padding: 3px 8px; border-radius: 10px; font-weight: 600; text-transform: uppercase; background: var(--bg); color: var(--text-muted); }
     .trd-ticker-stage-charting { background: #2ecc71; color: #fff; }
     .trd-ticker-status { color: var(--text-muted); font-size: 0.9em; margin: 4px 0; }
+    .trd-ticker-rejected { color: #e74c3c; font-weight: 500; }
     .trd-ticker-strategy { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
     .trd-ticker-strategy-name { font-weight: 500; margin-bottom: 4px; }
     .trd-ticker-segment { margin-top: 6px; }

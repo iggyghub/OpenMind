@@ -87,9 +87,16 @@ def build_ticker_view(
             ``cerebral.trading_data.fetch_ohlcv``.
     """
     tickers: Dict[str, dict] = {
-        sym: {"symbol": sym, "stage": "screened", "strategies": []}
+        sym: {"symbol": sym, "stage": "screened", "strategies": [], "reason": ""}
         for sym in watchlist_symbols
     }
+
+    # S30: Apply per-attempt log to override "screened" -> "rejected"
+    for sym in watchlist_symbols:
+        attempt = get_latest_attempt(sym)
+        if attempt is not None and attempt.get("verdict") == "UNVALIDATED":
+            tickers[sym]["stage"] = "rejected"
+            tickers[sym]["reason"] = attempt.get("reason", "")
 
     for dispatch_id, state in states.items():
         base_id = dispatch_id.rsplit("@v", 1)[0] if "@v" in dispatch_id else dispatch_id
