@@ -175,8 +175,16 @@ async def process_idea(
 
     results: List[dict] = []
     for candidate in watchlist.prefilter_candidates(idea):
-        results.append(await run_gauntlet_fn(idea, candidate))
+        result = await run_gauntlet_fn(idea, candidate)
+        if record_attempt_fn is not None:
+            await record_attempt_fn({
+                "symbol": candidate,
+                "verdict": result.get("verdict", ""),
+                "reason": _extract_attempt_reason(result),
+                "idea_url": idea.source_url,
+            })
         watchlist.upsert(candidate, source=idea.provenance)
+        results.append(result)
     return results
 
 
