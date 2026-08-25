@@ -2318,7 +2318,7 @@ against this driver needs a fresh grill session first.
   15 new backend tests (`test_trading_ticker_view.py`), 5 new frontend
   tests (`trading-panel.test.js`). Full suite green: 5236 passed, 7
   skipped, 0 failed (`cerebral/tests/` + repo-root `tests/`); tray jest
-  30 suites / 778 tests, 0 failed.
+  30 suites / 778 tests, 0 failed. Landed as commit 120bca6.
 
 ## What's next
 
