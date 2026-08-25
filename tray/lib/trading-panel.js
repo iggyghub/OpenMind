@@ -254,16 +254,17 @@ function _injectTradingPanelStyles() {
     .alert-critical { color: #e74c3c; }
     .alert-warning { color: #f39c12; }
     .alert-info { color: #3498db; }
-    .discovery-control { margin-bottom: 16px; padding: 12px; background: #f8f9fa; border-radius: 6px; border: 1px solid #eee; font-family: sans-serif; }
-    .discovery-control h3 { margin: 0 0 8px; font-size: 14px; }
+    .discovery-control { margin-bottom: 16px; padding: 12px; background: var(--bg-elev, #f8f9fa); border-radius: 6px; border: 1px solid var(--border, #eee); font-family: sans-serif; }
+    .discovery-control h3 { margin: 0 0 8px; font-size: 14px; color: var(--text, #333); }
     .discovery-control-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
     .discovery-control-row:last-child { margin-bottom: 0; }
+    .discovery-control label { color: var(--text-muted, #555); font-size: 0.9em; }
     .discovery-start-btn, .discovery-stop-btn { padding: 4px 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; color: #fff; }
     .discovery-start-btn { background: #2ecc71; }
     .discovery-stop-btn { background: #e74c3c; }
-    .discovery-start-btn:disabled, .discovery-stop-btn:disabled { background: #ccc; cursor: default; }
-    .discovery-status { font-size: 12px; color: #555; }
-    .discovery-duration-input { width: 80px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 3px; }
+    .discovery-start-btn:disabled, .discovery-stop-btn:disabled { background: var(--border, #ccc); color: var(--text-muted, #888); cursor: default; }
+    .discovery-status { font-size: 12px; color: var(--text-muted, #555); }
+    .discovery-duration-input { width: 80px; padding: 3px 6px; border: 1px solid var(--border, #ccc); border-radius: 3px; background: var(--bg, #fff); color: var(--text, #333); }
   `;
   document.head.appendChild(style);
 }
