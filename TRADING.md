@@ -146,6 +146,17 @@ remain on that path. Nothing in this queue is pending.
   either. Needs a GitHub issue filed before a self_dev campaign can
   pick it up.
 
+- [ ] S30 -- #894 -- Persisted per-attempt discovery log: gauntlet
+  verdict/reasoning per candidate. Closes the gap S29 (decision #49)
+  found -- `DiscoveryWatchlist` has no per-attempt record, so a
+  screened-but-strategy-less ticker can't be told apart from one that
+  was judged/dispatched and actually rejected by the gauntlet. Adds a
+  persisted log of each `run_gauntlet_fn` dispatch's outcome (verdict +
+  which gate failed + why), a real "rejected" stage in
+  `build_ticker_view`, and that reason surfaced on the Tickers card.
+  No live "gauntlet-running" status -- a dispatch is one awaited call,
+  nothing to poll mid-flight. See #894 for full acceptance criteria.
+
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
 below is the detailed human-readable reference for the same 9 slices; S7/S8 are
