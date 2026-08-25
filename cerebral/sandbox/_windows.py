@@ -288,6 +288,9 @@ def _ensure_ac_libs() -> None:
     k.ReadFile.argtypes = [
         wt.HANDLE, ctypes.c_void_p, wt.DWORD, ctypes.POINTER(wt.DWORD), ctypes.c_void_p,
     ]
+    k.WriteFile.argtypes = [
+        wt.HANDLE, ctypes.c_char_p, wt.DWORD, ctypes.POINTER(wt.DWORD), ctypes.c_void_p,
+    ]
 
     _userenv_dll  = u
     _advapi32_dll = a
@@ -385,6 +388,38 @@ def _ac_make_pipe():
     return int(r.value), int(w.value)
 
 
+def _ac_make_input_pipe():
+    """Return (read_int, write_int) for a CHILD-reads pipe -- the reverse of
+    _ac_make_pipe: the read end is inheritable (handed to the child as
+    stdin), the write end is not (kept by the parent to feed data in)."""
+    k = ctypes.windll.kernel32
+    sa = _SECURITY_ATTRIBUTES_SA()
+    sa.nLength        = ctypes.sizeof(sa)
+    sa.bInheritHandle = True
+    r, w = wt.HANDLE(), wt.HANDLE()
+    if not k.CreatePipe(ctypes.byref(r), ctypes.byref(w), ctypes.byref(sa), 0):
+        raise OSError(f"CreatePipe: {ctypes.GetLastError()}")
+    k.SetHandleInformation(w, 1, 0)   # clear HANDLE_FLAG_INHERIT on write end (parent keeps this)
+    return int(r.value), int(w.value)
+
+
+def _ac_write_pipe(handle_int: int, data: bytes) -> None:
+    """Write `data` to a pipe write handle in full, then leave it for the
+    caller to close (signals EOF to the reading child). Call from a
+    dedicated thread -- like _ac_read_pipe's reader threads, a single
+    WriteFile can block once the pipe's kernel buffer fills, and the child
+    only starts draining it after ResumeThread."""
+    k = ctypes.windll.kernel32
+    written = wt.DWORD()
+    offset = 0
+    view = memoryview(data)
+    while offset < len(view):
+        chunk = bytes(view[offset:offset + 65536])
+        if not k.WriteFile(handle_int, chunk, len(chunk), ctypes.byref(written), None):
+            return  # child exited/closed its end early -- nothing more to do
+        offset += written.value
+
+
 def _ac_read_pipe(handle_int: int) -> bytes:
     """Drain a pipe read handle to EOF (call from a dedicated thread)."""
     k   = ctypes.windll.kernel32
@@ -409,17 +444,22 @@ def _ac_spawn(
     sec_caps: _SECURITY_CAPABILITIES,
     extra_flags: int,
     env_block=None,
+    *,
+    has_stdin: bool = False,
 ) -> tuple:
     """
     Launch cmd inside an AppContainer (CREATE_SUSPENDED + EXTENDED_STARTUPINFO_PRESENT).
-    Returns (proc_handle, thread_handle, pid, stdout_read, stderr_read) -- all ints.
-    Caller is responsible for closing all five handles.
+    Returns (proc_handle, thread_handle, pid, stdout_read, stderr_read,
+    stdin_write) -- all ints; stdin_write is 0 when has_stdin is False.
+    Caller is responsible for closing all six handles (stdin_write after
+    writing whatever data it wants the child to read, to signal EOF).
     sec_caps must stay alive until this function returns.
     """
     k = ctypes.windll.kernel32
 
     stdout_r, stdout_w = _ac_make_pipe()
     stderr_r, stderr_w = _ac_make_pipe()
+    stdin_r, stdin_w = _ac_make_input_pipe() if has_stdin else (0, 0)
 
     attr_ptr, attr_buf = _ac_build_attr_list(sec_caps)
 
@@ -427,7 +467,7 @@ def _ac_spawn(
         si_ex = _STARTUPINFOEXW()
         si_ex.StartupInfo.cb         = ctypes.sizeof(_STARTUPINFOEXW)
         si_ex.StartupInfo.dwFlags    = STARTF_USESTDHANDLES
-        si_ex.StartupInfo.hStdInput  = 0
+        si_ex.StartupInfo.hStdInput  = stdin_r
         si_ex.StartupInfo.hStdOutput = stdout_w
         si_ex.StartupInfo.hStdError  = stderr_w
         si_ex.lpAttributeList        = attr_ptr.value
@@ -453,12 +493,14 @@ def _ac_spawn(
 
         return (
             int(pi.hProcess), int(pi.hThread), int(pi.dwProcessId),
-            stdout_r, stderr_r,
+            stdout_r, stderr_r, stdin_w,
         )
     finally:
         k.DeleteProcThreadAttributeList(attr_ptr)
         k.CloseHandle(stdout_w)
         k.CloseHandle(stderr_w)
+        if has_stdin:
+            k.CloseHandle(stdin_r)  # the child's copy -- parent keeps stdin_w
 
 # ---------------------------------------------------------------------------
 # Public class
@@ -511,6 +553,7 @@ class WindowsSandbox(Sandbox):
         workdir: str,
         *,
         timeout_s: Optional[float] = None,
+        stdin_data: Optional[bytes] = None,
     ) -> SandboxResult:
         import win32api, win32job
 
@@ -520,17 +563,19 @@ class WindowsSandbox(Sandbox):
         try:
             _apply_limits(job, self._max_procs, self._max_commit_bytes)
             if self._use_appcontainer:
-                return self._run_appcontainer(cmd, workdir, job, effective_timeout, scrubbed)
-            return self._run(cmd, workdir, job, effective_timeout, scrubbed)
+                return self._run_appcontainer(cmd, workdir, job, effective_timeout, scrubbed, stdin_data)
+            return self._run(cmd, workdir, job, effective_timeout, scrubbed, stdin_data)
         finally:
             win32api.CloseHandle(job)
 
     # ------------------------------------------------------------------ SBX-1
-    def _run(self, cmd, workdir, job, timeout_s: float, env: dict) -> SandboxResult:
+    def _run(self, cmd, workdir, job, timeout_s: float, env: dict,
+              stdin_data: Optional[bytes] = None) -> SandboxResult:
         import win32api, win32job, win32con
 
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE if stdin_data is not None else None,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             cwd=workdir,
             env=env,
@@ -561,7 +606,7 @@ class WindowsSandbox(Sandbox):
         timer = threading.Timer(timeout_s, _kill)
         timer.start()
         try:
-            out, err = proc.communicate()
+            out, err = proc.communicate(input=stdin_data)
         finally:
             timer.cancel()
 
@@ -573,7 +618,8 @@ class WindowsSandbox(Sandbox):
         )
 
     # ------------------------------------------------------------------ SBX-2/3
-    def _run_appcontainer(self, cmd, workdir, job, timeout_s: float, env: dict) -> SandboxResult:
+    def _run_appcontainer(self, cmd, workdir, job, timeout_s: float, env: dict,
+                           stdin_data: Optional[bytes] = None) -> SandboxResult:
         import win32api, win32job, win32con
 
         # Unique profile name: <=64 chars, alphanumeric + hyphens
@@ -593,10 +639,11 @@ class WindowsSandbox(Sandbox):
             sec_caps.Reserved        = 0
 
             env_block = _env_dict_to_block(env)
-            hproc, hthread, pid, stdout_r, stderr_r = _ac_spawn(
+            hproc, hthread, pid, stdout_r, stderr_r, stdin_w = _ac_spawn(
                 cmd, workdir, sec_caps,
                 CREATE_SUSPENDED | CREATE_NO_WINDOW,
                 env_block,
+                has_stdin=stdin_data is not None,
             )
 
             k = ctypes.windll.kernel32
@@ -609,7 +656,10 @@ class WindowsSandbox(Sandbox):
                     win32api.CloseHandle(h)
             except Exception as exc:
                 k.TerminateProcess(hproc, 1)
-                for hh in (hproc, hthread, stdout_r, stderr_r):
+                handles = [hproc, hthread, stdout_r, stderr_r]
+                if stdin_data is not None:
+                    handles.append(stdin_w)
+                for hh in handles:
                     k.CloseHandle(hh)
                 raise RuntimeError(f"AssignProcessToJobObject failed: {exc}") from exc
 
@@ -626,16 +676,31 @@ class WindowsSandbox(Sandbox):
             def _read_err():
                 err_buf[0] = _ac_read_pipe(stderr_r)
 
+            def _write_in():
+                # Written only after ResumeThread so the child can actually
+                # drain the pipe -- writing before resume would block on a
+                # payload bigger than the pipe's kernel buffer (the child,
+                # still suspended, can never read to make room).
+                _ac_write_pipe(stdin_w, stdin_data)
+                k.CloseHandle(stdin_w)  # EOF
+
             def _kill_timeout():
                 killed[0] = True
                 k.TerminateProcess(hproc, 1)
 
             t_out  = threading.Thread(target=_read_out, daemon=True)
             t_err  = threading.Thread(target=_read_err, daemon=True)
+            threads = [t_out, t_err]
+            if stdin_data is not None:
+                t_in = threading.Thread(target=_write_in, daemon=True)
+                threads.append(t_in)
             timer  = threading.Timer(timeout_s, _kill_timeout)
-            t_out.start(); t_err.start(); timer.start()
+            for t in threads:
+                t.start()
+            timer.start()
             try:
-                t_out.join(); t_err.join()
+                for t in threads:
+                    t.join()
             finally:
                 timer.cancel()
 

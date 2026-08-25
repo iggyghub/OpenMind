@@ -28,5 +28,11 @@ class Sandbox(abc.ABC):
         workdir: str,
         *,
         timeout_s: Optional[float] = None,
+        stdin_data: Optional[bytes] = None,
     ) -> SandboxResult:
-        """Run *cmd* inside the sandbox, return when done or killed."""
+        """Run *cmd* inside the sandbox, return when done or killed.
+
+        ``stdin_data``, when given, is written to the child's stdin and the
+        pipe closed (EOF) once fully written -- for a payload too large to
+        pass safely as an argv token (CreateProcessW's ~32,767-char command-
+        line limit on Windows)."""

@@ -108,6 +108,28 @@ def test_a_strategy_that_raises_degrades_to_flat():
     assert all(s == 0 for s in result)
 
 
+def test_a_full_years_daily_bars_still_produce_real_signals_not_flat():
+    """Regression (2026-08-24): a real year of daily OHLCV for one ticker
+    is ~36KB base64-encoded -- over CreateProcessW's ~32,767-char command-
+    line limit on its own, before the strategy code is even added. Passing
+    it as an argv token made every such run fail CreateProcessW outright
+    and silently degrade to an all-flat signal (sharpe/return always
+    exactly 0.0, regardless of what the strategy code actually said).
+    A real crossover strategy against a realistically-sized bar history
+    must produce genuine, non-degenerate signals."""
+    bars = _bars(n=252)  # ~1 trading year
+    expected = _expected_ma_cross_signals(bars)
+
+    result = evaluate_signals(MA_CROSS_CODE, bars)
+
+    assert result == expected
+    assert any(s != 0 for s in result), (
+        "signals came back all-flat -- the sandbox spawn likely failed "
+        "silently (e.g. CreateProcessW command-line length) rather than "
+        "actually running the strategy"
+    )
+
+
 def test_workdir_is_cleaned_up_after_a_run():
     from cerebral.trading.sandboxed_eval import _WORKDIR_ROOT
 

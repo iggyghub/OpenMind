@@ -153,6 +153,29 @@ def test_short_output_not_truncated(tmp_path):
     assert "[truncated]" not in result.stdout
     assert "hello" in result.stdout
 
+
+def test_stdin_data_is_readable_by_the_child(tmp_path):
+    result = _sb().spawn(
+        [sys.executable, "-c", "import sys; print(sys.stdin.read())"], str(tmp_path),
+        stdin_data=b"hello from the parent",
+    )
+    assert result.exit_code == 0
+    assert "hello from the parent" in result.stdout
+
+
+def test_stdin_payload_larger_than_the_old_argv_limit(tmp_path):
+    """Regression (2026-08-24): CreateProcessW's ~32,767-char command-line
+    cap silently degraded every real gauntlet run to a flat signal once a
+    year of daily bars (~36KB base64) was embedded in argv. A payload well
+    past that limit must still arrive intact over stdin."""
+    payload = b"x" * 200_000
+    result = _sb().spawn(
+        [sys.executable, "-c", "import sys; print(len(sys.stdin.read()))"], str(tmp_path),
+        stdin_data=payload,
+    )
+    assert result.exit_code == 0
+    assert "200000" in result.stdout
+
 # ---------------------------------------------------------------------------
 # SBX-2: AppContainer basic sanity
 # ---------------------------------------------------------------------------
@@ -164,6 +187,29 @@ def test_appcontainer_echo_succeeds(ac_workdir):
     )
     assert result.exit_code == 0, f"stderr: {result.stderr!r}"
     assert "appcontainer-ok" in result.stdout
+
+
+def test_appcontainer_stdin_data_is_readable_by_the_child(ac_workdir):
+    result = _sb_ac().spawn(
+        [sys.executable, "-c", "import sys; print(sys.stdin.read())"], ac_workdir,
+        stdin_data=b"hello from the parent",
+    )
+    assert result.exit_code == 0, f"stderr: {result.stderr!r}"
+    assert "hello from the parent" in result.stdout
+
+
+def test_appcontainer_stdin_payload_larger_than_the_old_argv_limit(ac_workdir):
+    """The real regression case: a payload that would have blown out
+    CreateProcessW's command-line limit if it had traveled as an argv
+    token must arrive intact over stdin, through the real AppContainer
+    child (not just the SBX-1 Job-Object-only path above)."""
+    payload = b"y" * 200_000
+    result = _sb_ac().spawn(
+        [sys.executable, "-c", "import sys; print(len(sys.stdin.read()))"], ac_workdir,
+        stdin_data=payload,
+    )
+    assert result.exit_code == 0, f"stderr: {result.stderr!r}"
+    assert "200000" in result.stdout
 
 # ---------------------------------------------------------------------------
 # SBX-2: workdir kernel ACL

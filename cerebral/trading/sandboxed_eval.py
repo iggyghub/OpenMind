@@ -1,16 +1,18 @@
 """Strategy evaluation runner.
 
-IMPORTANT: Do NOT batch tickers through command-line arguments here.
-Windows `CreateProcess` caps the command line at 32,767 characters.
-One symbol's daily bars is already ~14KB base64 (~45% of budget), so
-batching hundreds of tickers via argv is impossible (not just slow).
-Additionally, this sandbox exists to run *generated* untrusted strategy
-code. The cheap universe pre-filter (a later slice) runs Felix's own
-trusted code in-process at zero spawn cost with no sandbox involvement.
-Only tickers that survive the pre-filter get a real sandboxed strategy
-evaluation, one spawn each.
+IMPORTANT: code + bars travel over the child's stdin, not argv. Windows
+`CreateProcessW` caps the whole command line at 32,767 characters, and one
+symbol's full year of daily bars alone already runs ~36KB base64-encoded --
+over the limit on its own, before the strategy code is even added (confirmed
+2026-08-24: a real SPY gauntlet run produced a 36,553-char command line and
+CreateProcessW failed outright with error 206/ERROR_FILENAME_EXCED_RANGE,
+silently degrading every such run to an all-flat signal). stdin has no such
+limit. This doesn't change the "no batching tickers through one spawn"
+policy -- this sandbox exists to run *generated* untrusted strategy code,
+and only tickers that survive the cheap in-process pre-filter get a real
+sandboxed evaluation, one spawn each; stdin just fixes how a single
+ticker's own payload gets in.
 """
-import base64
 import json
 import logging
 import shutil
@@ -37,15 +39,16 @@ _WORKDIR_ROOT = Path(r"C:\Users\Public\OpenMind-sbx\trading")
 # propagate a folder ACL change onto pre-existing children (confirmed
 # empirically: a script file copied into the workdir before spawn() fails
 # with STATUS access-denied; a file the CHILD creates itself, after the
-# grant is in effect, works fine). So both the strategy code and the bars
-# data travel as argv (base64, to survive command-line quoting), and the
-# only file involved is signals.json, which the child writes itself.
+# grant is in effect, works fine). So the strategy code and bars data travel
+# as one JSON payload over stdin (no argv-length limit, no base64 tax), and
+# the only file involved is signals.json, which the child writes itself.
 _RUNNER = (
-    "import sys, base64, io, json\n"
+    "import sys, io, json\n"
     "import pandas as pd\n"
-    "code = base64.b64decode(sys.argv[1]).decode('utf-8')\n"
-    "bars_csv = base64.b64decode(sys.argv[2]).decode('utf-8')\n"
-    "signals_path = sys.argv[3]\n"
+    "payload = json.load(sys.stdin)\n"
+    "code = payload['code']\n"
+    "bars_csv = payload['bars_csv']\n"
+    "signals_path = sys.argv[1]\n"
     "bars = pd.read_csv(io.StringIO(bars_csv), index_col=0, parse_dates=True)\n"
     "ns = {}\n"
     "exec(code, ns)\n"
@@ -66,15 +69,18 @@ def evaluate_signals(code: str, bars: pd.DataFrame) -> List[int]:
     workdir.mkdir(parents=True, exist_ok=True)
 
     signals_path = workdir / "signals.json"
-    b64_code = base64.b64encode(code.encode("utf-8")).decode("ascii")
-    b64_bars = base64.b64encode(bars.to_csv(index=True).encode("utf-8")).decode("ascii")
+    stdin_payload = json.dumps({
+        "code": code,
+        "bars_csv": bars.to_csv(index=True),
+    }).encode("utf-8")
 
     try:
         sandbox = WindowsSandbox()
         result = sandbox.spawn(
-            [sys.executable, "-c", _RUNNER, b64_code, b64_bars, str(signals_path)],
+            [sys.executable, "-c", _RUNNER, str(signals_path)],
             str(workdir),
             timeout_s=20,
+            stdin_data=stdin_payload,
         )
 
         if result.exit_code != 0 or result.killed_reason:
