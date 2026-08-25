@@ -613,9 +613,20 @@ class SchedulerPlugin:
         the Tool schema), threaded straight through to _run_gauntlet --
         matching its own `store=None, fetch=None` convention. Without this,
         a test exercising run_discovery would silently fall through to
-        _run_gauntlet's real yfinance-backed default fetch."""
+        _run_gauntlet's real yfinance-backed default fetch.
+
+        Default queries (fixed 2026-08-25): the original pair ("quantitative
+        trading hypothesis", "stock market anomaly research") only ever
+        surfaced textbook/explainer content -- confirmed live, 0/6 accepted
+        across two real passes, judge_idea correctly rejecting every one as
+        not a specific, falsifiable claim. Queries naming a concrete,
+        named strategy (RSI, moving-average crossover) instead of the
+        abstract concept of strategy-having surface real backtest/guide
+        articles that DO state a specific rule -- confirmed live, 4/6
+        accepted with the same unchanged judge."""
         queries = args.get("queries") or [
-            "quantitative trading hypothesis", "stock market anomaly research",
+            "RSI oversold bounce strategy backtest results",
+            "moving average crossover strategy that beats buy and hold",
         ]
 
         async def run_gauntlet_fn(idea: Idea, ticker: str) -> dict:
