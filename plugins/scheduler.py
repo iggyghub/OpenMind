@@ -64,12 +64,27 @@ def _recurrence_interval(recurrence: str | None) -> "timedelta | None":
 
 
 def _parse_iso(s: "str | None") -> "datetime | None":
+    """Always returns a naive UTC datetime, even when `s` carries an
+    explicit offset (e.g. `datetime.now(timezone.utc).isoformat()`, as
+    ensure_discovery_event's start_iso does). list_due_events compares
+    everything against `now = datetime.now(timezone.utc).replace(tzinfo=
+    None)` and mark_event_run's own last_run_iso (stored via strftime,
+    never carries an offset) -- an aware value straight out of
+    fromisoformat crashed that comparison with "can't compare
+    offset-naive and offset-aware datetimes" (found live 2026-08-25: the
+    discovery event's own start_iso is the one production value that
+    hits this path, so the autonomous scheduler loop never actually
+    fired it -- only got this far after fixing the last_run_iso column
+    migration above)."""
     if not s:
         return None
     try:
-        return datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(s)
     except ValueError:
         return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 class SchedulerPlugin:
@@ -134,6 +149,20 @@ class SchedulerPlugin:
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        # Migration: the real production openmind.db's `events` table
+        # predates last_run_iso -- CREATE TABLE IF NOT EXISTS above is a
+        # no-op against an existing table, so that column was never added.
+        # Every list_due_events() call was throwing "no such column:
+        # last_run_iso", silently swallowed by _scheduler_loop's broad
+        # except Exception in cerebral/main.py -- the entire autonomous
+        # discovery + paper-trade dispatch loop has been dead since
+        # whenever this table was first created, never once firing via
+        # its recurring event. Same idempotent try/ALTER-except pattern
+        # as plugins/job_search.py's own column migrations.
+        try:
+            self._con.execute("ALTER TABLE events ADD COLUMN last_run_iso TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         self._con.commit()
 
     # ------------------------------------------------------------------

@@ -142,6 +142,68 @@ def test_list_due_events_fires_never_run_event_in_the_past(tmp_path):
     assert due[0]["title"] == "strat"
 
 
+def test_list_due_events_fires_a_past_event_with_a_tz_aware_start_iso(tmp_path):
+    """Regression (found live 2026-08-25): ensure_discovery_event stores
+    start_iso via datetime.now(timezone.utc).isoformat() -- an offset-
+    suffixed string -- while list_due_events compares against a naive
+    `now`. fromisoformat used to return that offset straight through,
+    crashing every call with "can't compare offset-naive and
+    offset-aware datetimes". The autonomous discovery event never fired
+    via this path in production because of exactly this."""
+    plugin = _plugin(tmp_path)
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    plugin._create_event({"title": "strat", "start_iso": past, "recurrence": "5m"})
+
+    due = plugin.list_due_events()
+
+    assert len(due) == 1
+    assert due[0]["title"] == "strat"
+
+
+def test_ensure_discovery_event_is_actually_due_immediately(tmp_path):
+    """Integration-level regression for the same bug: the real production
+    call path (ensure_discovery_event -> list_due_events), not just a
+    hand-built tz-aware start_iso."""
+    plugin = _plugin(tmp_path)
+    plugin.ensure_discovery_event()
+
+    due = plugin.list_due_events()
+
+    assert any(e["title"] == plugin.DISCOVERY_EVENT_TITLE for e in due)
+
+
+def test_schema_migrates_an_events_table_missing_last_run_iso(tmp_path):
+    """Regression (found live 2026-08-25): the real production
+    openmind.db's `events` table predated the last_run_iso column --
+    CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so
+    every list_due_events() call there threw "no such column:
+    last_run_iso", silently swallowed by cerebral/main.py's
+    _scheduler_loop. Simulates that pre-migration table shape."""
+    import sqlite3
+    db_path = tmp_path / "old_schema.db"
+    con = sqlite3.connect(str(db_path))
+    con.execute("""
+        CREATE TABLE events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            title       TEXT    NOT NULL,
+            start_iso   TEXT    NOT NULL,
+            end_iso     TEXT,
+            recurrence  TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    con.commit()
+    con.close()
+
+    plugin = SchedulerPlugin(db_path=str(db_path))
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    plugin._create_event({"title": "strat", "start_iso": past, "recurrence": "5m"})
+
+    due = plugin.list_due_events()  # must not raise
+
+    assert len(due) == 1
+
+
 def test_list_due_events_skips_future_event(tmp_path):
     plugin = _plugin(tmp_path)
     future = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
