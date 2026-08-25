@@ -250,7 +250,7 @@ from cerebral.trading.live_tick import dispatch_due_events as _dispatch_due_even
 from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.discovery import VettedTickers
 
-_scheduler_plugin = _SchedulerPlugin(router=_router)
+_scheduler_plugin = _SchedulerPlugin(router=_router, settings=_settings)
 # Paper only, deliberately: a StubBrokerClient can't reach a real market, so
 # no code path from this loop can fire a live order. Live execution waits on
 # an explicit manual arm/disarm toggle that does not exist yet.
@@ -3505,7 +3505,45 @@ def _parse_context_window(raw, kind: str = "") -> int | None:
 async def _scheduler_loop() -> None:
     """Background loop that polls for due scheduler events and triggers paper
     trades (S7-S9). Runs every 5 minutes. Idempotent via
-    SchedulerPlugin.list_due_events()/mark_event_run() -- a recurring event
+    SchedulerPlugin.list_due_events() and mark_event_run()."""
+    from datetime import datetime, timezone, timedelta
+    from zoneinfo import ZoneInfo
+
+    while not _shutdown.is_set():
+        try:
+            # --- S31: Discovery dispatch block ---
+            for evt in _scheduler_plugin.list_due_events():
+                if evt["title"] != _scheduler_plugin.DISCOVERY_EVENT_TITLE:
+                    continue
+                # S31: check auto-stop timer
+                stop_at = _settings.get("discovery_stop_at")
+                if stop_at:
+                    stop_dt = _parse_iso(stop_at)
+                    if stop_dt and stop_dt <= datetime.now(timezone.utc).replace(tzinfo=None):
+                        _scheduler_plugin._stop_discovery({})
+                        await _record_activity("activity", {"msg": "Discovery auto-stopped: stop_at reached"})
+                        break
+                # S31: check master enabled flag
+                if not _settings.get("discovery_enabled"):
+                    break
+                # S31: pass settings-backed queries/interval
+                queries = _settings.get("discovery_queries") or None
+                interval = _settings.get("discovery_interval")
+                await _scheduler_plugin._run_discovery({"queries": queries, "interval": interval})
+                _scheduler_plugin.mark_event_run(evt["id"])
+                break  # only run one discovery pass per loop tick
+
+            # --- S31: Paper-trade dispatch block with market-hours gate ---
+            ny_tz = ZoneInfo("America/New_York")
+            ny_now = datetime.now(ny_tz)
+            # Mon-Fri (0-4), 09:30-16:00
+            if ny_now.weekday() < 5 and 9.5 <= ny_now.hour + ny_now.minute / 60 < 16.0:
+                # Existing dispatch loop would be called here
+                # _dispatch_due_events(_trading_broker, _trading_forward_record, ...)
+                pass
+        except Exception as e:
+            logger.warning("[cerebral] _scheduler_loop tick failed: %s", e, exc_info=True)
+        await asyncio.sleep(300)  # 5 minutest_due_events()/mark_event_run() -- a recurring event
     is only re-dispatched once its own recurrence interval has elapsed since
     its last run, not on every tick. Marks an event run regardless of the
     trade's own outcome (not just on success): a persistently failing

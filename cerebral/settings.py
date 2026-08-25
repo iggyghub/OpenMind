@@ -101,6 +101,10 @@ _TYPES: dict[str, type] = {
     "max_daily_loss_pct":        float,
     "max_concurrent_positions":  int,
     "distinct_days_floor":       int,
+    "discovery_enabled":         bool,
+    "discovery_stop_at":         str,
+    "discovery_queries":         list,
+    "discovery_interval":        str,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
@@ -156,6 +160,8 @@ class SettingsStore:
             raise ValueError("enabled_skills must be a list of str")
         if key == "setvalue_roles" and not all(isinstance(i, str) for i in value):
             raise ValueError("setvalue_roles must be a list of str")
+        if key == "discovery_queries" and not all(isinstance(i, str) for i in value):
+            raise ValueError("discovery_queries must be a list of str")
         self._data[key] = value
         self._save()
 

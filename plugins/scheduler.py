@@ -19,6 +19,7 @@ from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.gauntlet import run_gauntlet
 from cerebral.trading.discovery import DiscoveryAttempts, DiscoveryWatchlist, run_discovery_pass
+from cerebral.settings import SettingsStore
 from cerebral.trading_ideas import Idea, judge_idea as _judge_idea
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ class SchedulerPlugin:
 
     def __init__(self, db_path=None, router=None, web_search_fn=None,
                  record_activity_fn=None, discovery_watchlist=None,
-                 discovery_attempts=None):
+                 discovery_attempts=None, settings=None):
         self._router = router
         path = db_path if db_path is not None else str(_DEFAULT_DB)
         if path != ":memory:":
@@ -324,6 +325,44 @@ class SchedulerPlugin:
                     },
                 },
             ),
+            Tool(
+                name="start_discovery",
+                description=(
+                    "S31: Manually enable the discovery loop. Pass `duration_hours` to "
+                    "auto-stop after that many hours. Pass `queries`/`interval` to override "
+                    "defaults (empty lists/strings leave existing settings untouched)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "queries": {
+                            "type": "array", "items": {"type": "string"},
+                            "description": "Override default queries.",
+                        },
+                        "interval": {
+                            "type": "string",
+                            "description": "Override default interval.",
+                        },
+                        "duration_hours": {
+                            "type": "number",
+                            "description": "Auto-stop after N hours. Omit to run indefinitely.",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="stop_discovery",
+                description="S31: Immediately disable the discovery loop and clear any stop timer.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="get_discovery_status",
+                description="S31: Returns current discovery enabled/stop_at/queries/interval state.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -341,6 +380,12 @@ class SchedulerPlugin:
             return await self._edit_strategy(args)
         if tool_name == "run_discovery":
             return await self._run_discovery(args)
+        if tool_name == "start_discovery":
+            return self._start_discovery(args)
+        if tool_name == "stop_discovery":
+            return self._stop_discovery(args)
+        if tool_name == "get_discovery_status":
+            return self._get_discovery_status(args)
         if tool_name == "get_strategy_code":
             return self._get_strategy_code(args)
         if tool_name == "mix_strategies":
@@ -727,6 +772,38 @@ class SchedulerPlugin:
         )
         return ToolResult(content=json.dumps({
             "sourced": len(ideas), "dispatched": len(results),
+        }))
+
+    # ------------------------------------------------------------------
+    # S31: Manual discovery control
+    # ------------------------------------------------------------------
+    def _start_discovery(self, args: dict) -> ToolResult:
+        queries = args.get("queries") or []
+        interval = args.get("interval") or ""
+        duration_hours = args.get("duration_hours")
+        self._settings.set("discovery_enabled", True)
+        now = datetime.now(timezone.utc)
+        if duration_hours is not None:
+            self._settings.set("discovery_stop_at", (now + timedelta(hours=duration_hours)).isoformat())
+        else:
+            self._settings.set("discovery_stop_at", "")
+        if queries:
+            self._settings.set("discovery_queries", queries)
+        if interval:
+            self._settings.set("discovery_interval", interval)
+        return ToolResult(content=json.dumps({"status": "started", "stop_at": self._settings.get("discovery_stop_at")}))
+
+    def _stop_discovery(self, args: dict) -> ToolResult:
+        self._settings.set("discovery_enabled", False)
+        self._settings.set("discovery_stop_at", "")
+        return ToolResult(content=json.dumps({"status": "stopped"}))
+
+    def _get_discovery_status(self, args: dict) -> ToolResult:
+        return ToolResult(content=json.dumps({
+            "enabled": self._settings.get("discovery_enabled"),
+            "stop_at": self._settings.get("discovery_stop_at"),
+            "queries": self._settings.get("discovery_queries"),
+            "interval": self._settings.get("discovery_interval"),
         }))
 
     async def _edit_strategy(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
