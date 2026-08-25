@@ -6744,7 +6744,15 @@ async def _process_command(
     cmd = _command_registry.match(transcript)
     if cmd is not None:
         if cmd.capability is not None:
-            decision = await _orc.check_capabilities(cmd.name, {cmd.capability}, {}, {})
+            # Not check_capabilities(cmd.name, ...) -- cmd.name ("restart_felix")
+            # is a _command_registry entry, never a registered MCP tool, so
+            # that call always fell into check_capabilities' own "unknown
+            # tool_name -> DENY" guard regardless of the device_control ACL
+            # default. resolve_capability is the same ACL/gate/consent
+            # resolution minus that tool-index membership check (found live
+            # 2026-08-25 -- restart_felix was silently unreachable via
+            # voice/chat for this exact reason).
+            decision = await _orc.resolve_capability(cmd.capability, cmd.name)
         else:
             decision = Decision.SILENT
         if decision is Decision.SILENT:

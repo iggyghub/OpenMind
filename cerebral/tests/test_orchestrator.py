@@ -1049,6 +1049,63 @@ async def test_check_capabilities_unknown_tool_denies():
     assert decision is Decision.DENY
 
 
+# ---------------------------------------------------------------------------
+# resolve_capability() (found live 2026-08-25, H4-S1 restart_felix bug) —
+# a deterministic voice/text command (cerebral/main.py's _command_registry)
+# is never a registered MCP tool, so check_capabilities' "unknown tool_name
+# -> DENY" guard misfired for it unconditionally regardless of the
+# capability's own ACL default. resolve_capability is the fix: same
+# ACL/gate/consent resolution, minus the tool-index membership check.
+# ---------------------------------------------------------------------------
+
+async def test_resolve_capability_unregistered_name_still_resolves_normally():
+    # The whole point of the bug fix: unlike check_capabilities, an
+    # unregistered context_name (e.g. "restart_felix", a Command name, not
+    # a Tool name) must not force DENY -- device_control's own SILENT
+    # default should come through untouched.
+    orc = MCPOrchestrator()
+
+    decision = await orc.resolve_capability("device_control", "restart_felix")
+
+    assert decision is Decision.SILENT
+
+
+async def test_resolve_capability_deny_cap_still_denies():
+    orc = MCPOrchestrator()
+
+    decision = await orc.resolve_capability("shell_exec", "some_command")
+
+    assert decision is Decision.DENY
+
+
+async def test_resolve_capability_ask_cap_routes_to_consent():
+    consent = _RecordingConsent(Decision.SILENT)
+    orc = MCPOrchestrator(consent=consent)
+
+    decision = await orc.resolve_capability("fs_write", "some_command")
+
+    assert decision is Decision.SILENT
+    assert consent.received  # actually routed through the consent surface
+
+
+async def test_resolve_capability_consent_denial_propagates():
+    consent = _RecordingConsent(Decision.DENY)
+    orc = MCPOrchestrator(consent=consent)
+
+    decision = await orc.resolve_capability("fs_write", "some_command")
+
+    assert decision is Decision.DENY
+
+
+async def test_resolve_capability_unknown_capability_string_denies():
+    # Defensive, same posture as check_capabilities' own unknown-cap guard.
+    orc = MCPOrchestrator()
+
+    decision = await orc.resolve_capability("not_a_real_capability", "some_command")
+
+    assert decision is Decision.DENY
+
+
 async def test_check_capabilities_silent_cap_returns_silent():
     orc = MCPOrchestrator()
     orc.register(_make_plugin("files", ["read_file"]))

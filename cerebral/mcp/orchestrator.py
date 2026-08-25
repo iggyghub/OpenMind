@@ -573,6 +573,51 @@ class MCPOrchestrator:
 
         return worst
 
+    async def resolve_capability(
+        self, capability: str, context_name: str, flags: CallFlags | None = None,
+    ) -> Decision:
+        """Resolve a single capability's ACL/gate decision for something
+        that is NOT a registered MCP tool -- e.g. a deterministic voice/
+        text command (H4-S1's ``_command_registry`` in cerebral/main.py).
+
+        ``check_capabilities()`` unconditionally returns ``Decision.DENY``
+        when ``tool_name not in self._tool_index`` -- a real safety guard
+        for the tray ``call_tool``/queue ``approve_item`` paths, where an
+        unrecognized name really does mean "don't dispatch this." Calling
+        it for ``restart_felix`` -- registered only in ``_command_registry``,
+        never as an MCP tool via any plugin's ``list_tools()`` -- made that
+        guard misfire every single time: the capability check always
+        DENIED regardless of the ``device_control`` ACL default, and the
+        caller's own non-SILENT branch discards that outcome with no
+        error, log, or consent prompt surfaced anywhere (found live
+        2026-08-25 -- "restart felix" sent twice over the WS bridge did
+        nothing both times).
+
+        Same modal/consent routing as ``check_capabilities``, just without
+        the tool-index membership guard -- ``context_name`` is passed
+        through to ``ACL.resolve``/the modal/consent surfaces purely for
+        logging/display, same role ``tool_name`` plays there.
+        """
+        try:
+            cap = Capability(capability)
+        except ValueError:
+            return Decision.DENY
+        decision = (
+            self._acl.resolve(cap, context_name, flags) if self._acl is not None
+            else self._gate.check(cap, flags)
+        )
+        if flags is not None and flags.irreversible and decision is not Decision.DENY:
+            if self._modal is not None:
+                decision = await self._modal.request(cap, context_name, {}, flags)
+            else:
+                decision = Decision.DENY
+        elif decision is Decision.ASK:
+            if self._consent is not None:
+                decision = await self._consent.request(cap, context_name, {}, flags)
+            else:
+                decision = Decision.DENY
+        return decision
+
     def _merge_irreversible(
         self, flags: CallFlags | None, tool_name: str,
     ) -> CallFlags | None:
