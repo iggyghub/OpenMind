@@ -90,8 +90,24 @@ class DiscoveryWatchlist:
         acceptance criteria don't require -- returning the existing
         watchlist honestly, capped, rather than inventing an unvalidated
         scoring function.
+
+        An empty watchlist falls back to _KNOWN_TICKERS (fix, 2026-08-25):
+        the watchlist only grows via upsert() inside a dispatch, and a
+        pattern-general idea only dispatches via this method's own return
+        value -- on a cold start (or after every prior candidate has
+        already been fully explored) that's a real deadlock, not a
+        theoretical one: the first live discovery pass against the real
+        OpenClaw web_search wiring sourced 6 real ideas and dispatched
+        zero, watchlist still empty. Falling back to the same ~20-symbol
+        known-liquid set extract_ticker() already trusts (never an
+        unbounded universe sweep -- decision #36 stands) breaks the
+        deadlock without changing what "trusted symbol" means anywhere
+        else in this module.
         """
-        return self.symbols()[:limit]
+        existing = self.symbols()
+        if existing:
+            return existing[:limit]
+        return sorted(_KNOWN_TICKERS)[:limit]
 
     def close(self) -> None:
         self._con.close()

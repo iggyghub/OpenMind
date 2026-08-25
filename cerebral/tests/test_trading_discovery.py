@@ -81,6 +81,32 @@ def test_watchlist_prefilter_candidates_caps_at_limit(tmp_path):
     assert len(candidates) == 2
 
 
+def test_watchlist_prefilter_candidates_falls_back_to_known_tickers_when_empty(tmp_path):
+    """Fix (2026-08-25): an empty watchlist used to return [] here forever
+    -- the watchlist only grows via a dispatch, and a pattern-general idea
+    only dispatches via this method's return value, so a cold start could
+    never bootstrap itself. Confirmed live: the first real discovery pass
+    against the real web_search wiring sourced 6 ideas, dispatched 0."""
+    from cerebral.trading.discovery import _KNOWN_TICKERS
+    wl = _watchlist(tmp_path)
+
+    candidates = wl.prefilter_candidates(_pattern_idea(), limit=3)
+
+    assert len(candidates) == 3
+    assert all(c in _KNOWN_TICKERS for c in candidates)
+
+
+def test_watchlist_prefilter_candidates_prefers_real_watchlist_over_fallback(tmp_path):
+    """The moment the watchlist has anything real on it, the fallback
+    never applies -- a screened ticker always beats the generic seed."""
+    wl = _watchlist(tmp_path)
+    wl.upsert("PLTR")  # deliberately NOT in _KNOWN_TICKERS
+
+    candidates = wl.prefilter_candidates(_pattern_idea(), limit=3)
+
+    assert candidates == ["PLTR"]
+
+
 # ── extract_ticker ────────────────────────────────────────────────────────
 
 def test_extract_ticker_recognizes_a_known_symbol():
@@ -188,14 +214,22 @@ async def test_accepted_pattern_idea_only_dispatches_the_prefiltered_candidates(
     assert len(results) == 2
 
 
-async def test_accepted_idea_with_empty_watchlist_dispatches_nothing(tmp_path):
+async def test_accepted_idea_with_empty_watchlist_dispatches_the_known_ticker_fallback(tmp_path):
+    """Updated (2026-08-25): this used to assert dispatches nothing --
+    that was the real, live cold-start deadlock (see
+    test_watchlist_prefilter_candidates_falls_back_to_known_tickers_when_empty).
+    An accepted pattern-general idea now reaches the gauntlet even before
+    anything has ever been screened, via _KNOWN_TICKERS."""
+    from cerebral.trading.discovery import _KNOWN_TICKERS
     wl = _watchlist(tmp_path)
     gauntlet = RecordingGauntlet()
     judge = FixedJudge(accepted=True)
 
     results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=judge)
 
-    assert results == []
+    assert len(results) > 0
+    dispatched_tickers = {c[1] for c in gauntlet.calls}
+    assert dispatched_tickers.issubset(_KNOWN_TICKERS)
 
 
 async def test_no_judge_configured_accepts_by_default(tmp_path):
