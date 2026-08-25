@@ -276,7 +276,11 @@ class SchedulerPlugin:
                     "properties": {
                         "queries": {
                             "type": "array", "items": {"type": "string"},
-                            "description": "Web-search queries to source ideas from (default: a fixed general set).",
+                            "description": "Web-search queries to source ideas from (default: a day-trading-focused set).",
+                        },
+                        "interval": {
+                            "type": "string",
+                            "description": "Bar interval every dispatched candidate is backtested at, e.g. '15m', '5m', '1d' (default: '15m').",
                         },
                     },
                 },
@@ -623,17 +627,31 @@ class SchedulerPlugin:
         named strategy (RSI, moving-average crossover) instead of the
         abstract concept of strategy-having surface real backtest/guide
         articles that DO state a specific rule -- confirmed live, 4/6
-        accepted with the same unchanged judge."""
+        accepted with the same unchanged judge.
+
+        Day-trading focus (2026-08-25): default queries name an intraday
+        timeframe explicitly, and every dispatch now carries `interval`
+        (default "15m", decision #40's own recommended default -- 1m is
+        noisier/more data-constrained, and this discovery path has no
+        per-idea signal to justify going that granular). Without an
+        explicit interval, _run_gauntlet defaults to "1d" and every
+        discovered strategy would be a swing/position strategy regardless
+        of what the sourced claim was actually about. `_run_gauntlet`'s
+        own fetch already goes through Alpaca Market Data first with a
+        yfinance intraday fallback (decision #39) -- no new data plumbing
+        needed here, just actually asking for it."""
         queries = args.get("queries") or [
-            "RSI oversold bounce strategy backtest results",
-            "moving average crossover strategy that beats buy and hold",
+            "day trading strategy 5 minute chart backtest",
+            "intraday scalping strategy that actually works",
         ]
+        interval = args.get("interval") or "15m"
 
         async def run_gauntlet_fn(idea: Idea, ticker: str) -> dict:
             gauntlet_args = {
                 "symbol": ticker,
                 "hypothesis": idea.claim_text or "discovered hypothesis",
                 "provenance": idea.provenance,
+                "interval": interval,
             }
             if idea.source_url:
                 gauntlet_args["url"] = idea.source_url

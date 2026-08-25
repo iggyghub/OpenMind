@@ -763,3 +763,58 @@ async def test_run_discovery_accepts_explicit_queries(tmp_path):
     await plugin._run_discovery({"queries": ["my custom query"]})
 
     assert calls == ["my custom query"]
+
+
+async def test_run_discovery_defaults_to_a_day_trading_interval(tmp_path):
+    """Fix (2026-08-25): without an explicit interval, _run_gauntlet
+    defaults to "1d" -- every discovered strategy was a swing/position
+    strategy regardless of what the sourced claim was actually about.
+    run_discovery must now ask for an intraday interval by default so
+    "focus on day trading" is real, not just a query-wording change."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    seen_intervals = []
+
+    def fetch(symbol, start, end, interval="1d"):
+        seen_intervals.append(interval)
+        return _trend_prices()
+
+    router = FakeRouterReturningCode()
+    plugin = SchedulerPlugin(
+        db_path=str(tmp_path / "sched.db"), router=router,
+        web_search_fn=_web_search_hits({
+            "url": "https://example.com/aapl-earnings",
+            "title": "AAPL beats on strong earnings",
+            "snippet": "AAPL tends to rally after a strong earnings beat.",
+        }),
+    )
+
+    result = await plugin._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
+
+    assert not result.is_error, result.content
+    assert seen_intervals == ["15m"]
+
+
+async def test_run_discovery_accepts_an_explicit_interval_override(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    seen_intervals = []
+
+    def fetch(symbol, start, end, interval="1d"):
+        seen_intervals.append(interval)
+        return _trend_prices()
+
+    router = FakeRouterReturningCode()
+    plugin = SchedulerPlugin(
+        db_path=str(tmp_path / "sched.db"), router=router,
+        web_search_fn=_web_search_hits({
+            "url": "https://example.com/aapl-earnings",
+            "title": "AAPL beats on strong earnings",
+            "snippet": "AAPL tends to rally after a strong earnings beat.",
+        }),
+    )
+
+    result = await plugin._run_discovery(
+        {"queries": ["aapl earnings"], "interval": "5m"}, strategy_store=store, fetch=fetch,
+    )
+
+    assert not result.is_error, result.content
+    assert seen_intervals == ["5m"]
