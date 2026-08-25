@@ -3,11 +3,12 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S31 -- #896
+- **Active:** none -- S31 is the last queued slice and it's landed. A
+  new campaign against this driver needs a fresh grill session first.
 - **Model:** sonnet
 
 ## Queue
@@ -149,7 +150,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   No live "gauntlet-running" status -- a dispatch is one awaited call,
   nothing to poll mid-flight. See #894 for full acceptance criteria.
 
-- [ ] S31 -- #896 -- Manual discovery start/stop with duration + market-
+- [x] S31 -- #896 -- Manual discovery start/stop with duration + market-
   hours gate for paper dispatch. Separate bugfix (not this slice, landed
   same day): the whole autonomous scheduler loop was silently dead
   (events table schema drift + a tz-aware timestamp comparison crash).
@@ -2392,6 +2393,92 @@ against this driver needs a fresh grill session first.
   uncommitted WIP on `cerebral/mcp/orchestrator.py` and its test, not
   caused by this slice); tray jest 30 suites / 780 tests, 0 failed.
   Landed as commit 4e81904.
+
+- S31 -- #896 -- Manual discovery start/stop with duration + market-hours
+  gate for paper dispatch. Filed the same day as a separate bugfix (not
+  itself a queued slice, landed as commit 8fe7628): the whole autonomous
+  scheduler loop had been silently dead since it was first written --
+  `events` table schema drift (the real production `openmind.db` predated
+  the `last_run_iso` column `CREATE TABLE IF NOT EXISTS` never adds to an
+  existing table) plus a tz-aware timestamp comparison crash in
+  `list_due_events` (the discovery event's own `start_iso` is offset-
+  suffixed, `now` deliberately isn't) -- both caught every 5 minutes by
+  `_scheduler_loop`'s broad `except Exception`, logged as a warning, never
+  surfaced. With that fixed, discovery would have become a fully-automatic
+  always-on process with zero user control -- this slice is what the user
+  actually asked for once they knew that: direct control over when
+  discovery runs and for how long.
+
+  Not landed via self_dev's own PR #897 -- worse than S29/S30's own
+  aborted attempts, not just non-functional: `cerebral/main.py` came back
+  with a genuine `SyntaxError` (an unterminated docstring left over from a
+  bad find-replace, confirmed with `py_compile` -- the module didn't even
+  import), the real `_dispatch_due_events` call was deleted entirely and
+  replaced with a `pass` stub (would have silently disabled ALL paper
+  trading even with the syntax fixed), `self._settings` was referenced
+  everywhere but never assigned in `__init__` (guaranteed
+  `AttributeError`), and `main.py`'s new code called `_parse_iso` without
+  ever importing it (`NameError`). Landed by hand instead.
+
+  `cerebral/settings.py` gained `discovery_enabled` (default **False** --
+  discovery does not run on its own until explicitly started, a real
+  behavior change from what the bugfix alone would have produced),
+  `discovery_stop_at`, `discovery_queries`, `discovery_interval` -- same
+  `SettingsStore` convention as `trading_live_arm`. `plugins/scheduler.py`
+  gained a `settings` injection seam (same isolation convention as
+  `discovery_watchlist`/`discovery_attempts` -- a `tmp_path`-scoped test
+  plugin gets its own `felix-settings.json`, never the real one) and three
+  new tools: `start_discovery` (optional `queries`/`interval`/
+  `duration_hours` -- empty `queries`/`interval` leave the existing stored
+  value alone rather than silently resetting to the built-in defaults,
+  per this issue's own scope note), `stop_discovery`,
+  `get_discovery_status`. `cerebral/main.py` binds the real `_settings`
+  singleton onto `_scheduler_plugin` explicitly (two separate
+  `SettingsStore` instances over the same JSON file would silently drift
+  out of sync otherwise -- `_load()` only runs once at construction).
+  `_scheduler_loop`'s discovery block now checks `discovery_enabled`
+  first, auto-stops on an expired `discovery_stop_at` (logged as an
+  activity entry, not silent), and passes settings-backed
+  `queries`/`interval` into `run_discovery` instead of a hardcoded `{}`.
+
+  New `cerebral/trading/market_hours.py::is_market_hours(now=None)` --
+  pure, stdlib `zoneinfo` only (decision #22, free only), Mon-Fri
+  09:30-16:00 America/New_York, `now=` injectable so tests use a fake
+  clock instead of waiting for or faking the real one. Disclosed,
+  deliberate gap: no market-holiday calendar (Thanksgiving/Christmas/etc.
+  will incorrectly read as open) -- this gate's job is just "not literally
+  24/7," which is what was actually asked for; a real NYSE calendar is a
+  separate slice if it ever matters. Gates the real `_dispatch_due_events`
+  call in `_scheduler_loop` -- kept intact, not touched otherwise.
+
+  `tray/lib/trading-panel.js` gained a Discovery control (Start/Stop +
+  optional duration-hours field) on the Trading pane, rendered on BOTH the
+  populated-strategies and empty-positions branches -- discovery is
+  independent of whether any strategy exists yet, so it must not disappear
+  behind the "No active strategies" message. Found and fixed the same
+  class of bug that would have caused: style injection previously only
+  ran on the non-empty branch (harmless before, since that branch had no
+  styled markup of its own -- but the discovery control now renders on
+  both, so styles were hoisted to run unconditionally). Reuses the
+  existing generic `call_tool` WS route, same as the create-strategy form
+  and S17's edit box -- no bespoke IPC route, and a `trading_poll`
+  re-send after each click refreshes the panel immediately rather than
+  waiting for the next natural broadcast. `start_discovery`/
+  `stop_discovery` being registered tools means chat/voice control
+  ("search for day trading strategies for the next 2 hours") needed no
+  separate wiring at all -- it already routes through the normal planner
+  path every other tool does.
+
+  24 new backend tests (`test_plugin_scheduler.py`,
+  `test_trading_market_hours.py`, `test_settings.py`), 9 new frontend
+  tests (`trading-panel.test.js`), plus a real regression fix in
+  `test_settings.py` (an existing test hardcoded the full settings key
+  set -- caught by running the FULL suite, not just this slice's own new
+  tests, same discipline this campaign has followed throughout). Full
+  suite green: 5284 passed, 7 skipped, one pre-existing unrelated failure
+  (`test_plugins_time_notes.py`, tied to separately-lost WIP -- see
+  `.learnings/ERRORS.md`'s 2026-08-25 entry); tray jest 30 suites / 788
+  tests, 0 failed. Landed as commit 5df740c.
 
 ## What's next
 
