@@ -3,19 +3,11 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: S29 landed (2026-08-24). S20-S28 blueprint plus S29 (Trading
-pane "Tickers" sub-tab, decisions #48-#51) all landed and hand-verified.
-S29's own self_dev attempt (PR #893) was a 14-line dead-CSS stub meeting
-none of its acceptance criteria -- closed unmerged, landed by hand
-instead; see "Landed PRs" for the full account, including two disclosed
-scope adjustments found while building it for real. `trading_live_arm`
-is safe for the user to set True whenever they choose -- no code gaps
-remain on that path. Nothing in this queue is pending.
+## Status: ready
 
 ## Next slice -- start here
 
-- **Active:** none -- S29 is the last queued slice and it's landed. A
-  new campaign against this driver needs a fresh grill session first.
+- **Active:** S30 -- #894
 - **Model:** sonnet
 
 ## Queue
