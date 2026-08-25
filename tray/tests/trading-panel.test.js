@@ -258,6 +258,23 @@ describe('renderTickersUpdate', () => {
     });
   });
 
+  test('a rejected ticker (S30/#894) shows its gauntlet reason, not the generic screened text', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTickersUpdate({
+        tickers: [{
+          symbol: 'NVDA', stage: 'rejected', strategies: [],
+          reason: 'vs_benchmark: underperformed by 3.2%',
+        }],
+      }, mount);
+      expect(mount.innerHTML).toContain('NVDA');
+      expect(mount.innerHTML).toContain('Rejected');
+      expect(mount.innerHTML).toContain('vs_benchmark: underperformed by 3.2%');
+      expect(mount.innerHTML).not.toContain('no strategy yet');
+      expect(mount.innerHTML).not.toContain('trd-ticker-canvas');
+    });
+  });
+
   test('a validated strategy with zero fills shows "awaiting first paper trade", not a chart', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();

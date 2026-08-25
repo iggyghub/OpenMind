@@ -18,7 +18,7 @@ from cerebral.trading.live_tick import run_strategy_tick
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.gauntlet import run_gauntlet
-from cerebral.trading.discovery import DiscoveryWatchlist, run_discovery_pass
+from cerebral.trading.discovery import DiscoveryAttempts, DiscoveryWatchlist, run_discovery_pass
 from cerebral.trading_ideas import Idea, judge_idea as _judge_idea
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,8 @@ class SchedulerPlugin:
     DISCOVERY_EVENT_TITLE = "__autonomous_discovery__"
 
     def __init__(self, db_path=None, router=None, web_search_fn=None,
-                 record_activity_fn=None, discovery_watchlist=None):
+                 record_activity_fn=None, discovery_watchlist=None,
+                 discovery_attempts=None):
         self._router = router
         path = db_path if db_path is not None else str(_DEFAULT_DB)
         if path != ":memory:":
@@ -110,6 +111,15 @@ class SchedulerPlugin:
         else:
             self._discovery_watchlist = DiscoveryWatchlist(
                 db_path=Path(path).parent / "discovery_watchlist.db"
+            )
+        # S30 (#894): same isolation convention as discovery_watchlist above.
+        if discovery_attempts is not None:
+            self._discovery_attempts = discovery_attempts
+        elif path == ":memory:":
+            self._discovery_attempts = DiscoveryAttempts(db_path=Path(":memory:"))
+        else:
+            self._discovery_attempts = DiscoveryAttempts(
+                db_path=Path(path).parent / "discovery_attempts.db"
             )
 
     def _init_schema(self) -> None:
@@ -544,7 +554,10 @@ class SchedulerPlugin:
             "verdict": card.verdict,
             "sharpe": card.sharpe,
             "total_return": card.total_return,
-            "gates": [{"name": g.name, "passed": bool(g.passed)} for g in card.gates],
+            "gates": [
+                {"name": g.name, "passed": bool(g.passed), "details": g.details}
+                for g in card.gates
+            ],
         }))
 
     # ------------------------------------------------------------------
@@ -666,6 +679,12 @@ class SchedulerPlugin:
 
         record_activity_fn = self._record_activity_fn
 
+        async def record_attempt_fn(entry: dict) -> None:
+            self._discovery_attempts.record(
+                entry["symbol"], entry["verdict"],
+                reason=entry.get("reason", ""), idea_url=entry.get("idea_url", ""),
+            )
+
         try:
             ideas = await self._source_ideas(queries)
         except Exception as exc:
@@ -675,6 +694,7 @@ class SchedulerPlugin:
         results = await run_discovery_pass(
             ideas, self._discovery_watchlist, run_gauntlet_fn,
             judge_idea_fn=judge_idea_fn, record_activity_fn=record_activity_fn,
+            record_attempt_fn=record_attempt_fn,
         )
         return ToolResult(content=json.dumps({
             "sourced": len(ideas), "dispatched": len(results),

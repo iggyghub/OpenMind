@@ -648,6 +648,32 @@ async def test_ticker_specific_idea_reaches_run_gauntlet_with_origin_discovered(
     assert judge_prompts == []
 
 
+async def test_run_discovery_persists_the_attempt_outcome(tmp_path):
+    """S30/#894: the real gauntlet outcome must land in
+    plugin._discovery_attempts, not just get counted and discarded."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    router = FakeRouterReturningCode()
+    plugin = SchedulerPlugin(
+        db_path=str(tmp_path / "sched.db"), router=router,
+        web_search_fn=_web_search_hits({
+            "url": "https://example.com/aapl-earnings",
+            "title": "AAPL beats on strong earnings",
+            "snippet": "AAPL tends to rally after a strong earnings beat.",
+        }),
+    )
+
+    result = await plugin._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
+
+    assert not result.is_error, result.content
+    latest = plugin._discovery_attempts.get_latest("AAPL")
+    assert latest is not None
+    assert latest["verdict"] == "VALIDATED"
+
+
 async def test_pattern_general_idea_is_screened_and_accepted_reaches_gauntlet(tmp_path):
     store = StrategyStore(db_path=tmp_path / "specs.db")
 

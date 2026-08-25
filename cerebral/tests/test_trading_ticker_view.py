@@ -53,7 +53,9 @@ class TestBuildTickerView:
             watchlist_symbols=["NVDA"], states={}, get_spec=lambda sid: None,
             get_fills=lambda sid: [], fetch_ohlcv=_fake_fetch_ohlcv({}),
         )
-        assert result["tickers"] == [{"symbol": "NVDA", "stage": "screened", "strategies": []}]
+        assert result["tickers"] == [
+            {"symbol": "NVDA", "stage": "screened", "strategies": [], "reason": ""}
+        ]
 
     def test_strategy_with_no_fills_is_validated_not_screened(self):
         states = {"s1": SimpleNamespace(status="paper")}
@@ -174,3 +176,52 @@ class TestBuildTickerView:
             get_fills=lambda sid: [], fetch_ohlcv=_fake_fetch_ohlcv({}),
         )
         assert [t["symbol"] for t in result["tickers"]] == ["AAPL", "MSFT", "TSLA"]
+
+    # ── S30/#894: real "rejected" stage from DiscoveryAttempts ────────────
+
+    def test_no_get_latest_attempt_stays_three_stage_screened(self):
+        """Backward-compatible default: an omitted get_latest_attempt never
+        introduces "rejected" -- old callers keep the old behavior."""
+        result = build_ticker_view(
+            watchlist_symbols=["NVDA"], states={}, get_spec=lambda sid: None,
+            get_fills=lambda sid: [], fetch_ohlcv=_fake_fetch_ohlcv({}),
+        )
+        assert result["tickers"][0]["stage"] == "screened"
+
+    def test_unvalidated_attempt_with_no_strategy_is_rejected(self):
+        result = build_ticker_view(
+            watchlist_symbols=["NVDA"], states={}, get_spec=lambda sid: None,
+            get_fills=lambda sid: [], fetch_ohlcv=_fake_fetch_ohlcv({}),
+            get_latest_attempt=lambda sym: {"verdict": "UNVALIDATED", "reason": "vs_benchmark: underperformed"},
+        )
+        t = result["tickers"][0]
+        assert t["stage"] == "rejected"
+        assert t["reason"] == "vs_benchmark: underperformed"
+
+    def test_validated_attempt_stays_screened_not_rejected(self):
+        result = build_ticker_view(
+            watchlist_symbols=["NVDA"], states={}, get_spec=lambda sid: None,
+            get_fills=lambda sid: [], fetch_ohlcv=_fake_fetch_ohlcv({}),
+            get_latest_attempt=lambda sym: {"verdict": "VALIDATED", "reason": ""},
+        )
+        assert result["tickers"][0]["stage"] == "screened"
+
+    def test_no_attempt_on_record_stays_screened(self):
+        result = build_ticker_view(
+            watchlist_symbols=["NVDA"], states={}, get_spec=lambda sid: None,
+            get_fills=lambda sid: [], fetch_ohlcv=_fake_fetch_ohlcv({}),
+            get_latest_attempt=lambda sym: None,
+        )
+        assert result["tickers"][0]["stage"] == "screened"
+
+    def test_a_strategy_always_overrides_rejected(self):
+        """The states loop takes priority once a strategy exists, even if
+        this symbol's most recent discovery attempt was UNVALIDATED (e.g.
+        it was later dispatched again by a user-authored idea and passed)."""
+        states = {"s1": SimpleNamespace(status="paper")}
+        result = build_ticker_view(
+            watchlist_symbols=["AAPL"], states=states, get_spec=lambda sid: _spec("AAPL"),
+            get_fills=lambda sid: [], fetch_ohlcv=_fake_fetch_ohlcv({}),
+            get_latest_attempt=lambda sym: {"verdict": "UNVALIDATED", "reason": "noise gate failed"},
+        )
+        assert result["tickers"][0]["stage"] == "validated"

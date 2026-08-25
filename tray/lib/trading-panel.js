@@ -404,13 +404,15 @@ function initTickersView() {
 
 function _tickerStageLabel(stage) {
   if (stage === 'screened') return 'Screened';
+  if (stage === 'rejected') return 'Rejected';
   if (stage === 'validated') return 'Validated';
   return 'Charting';
 }
 
 /**
- * Renders one ticker's card markup. Three stages (decision #49) -- a
- * screened ticker with no strategy yet gets a one-line status, a validated
+ * Renders one ticker's card markup. Four stages (decision #49, S30/#894) --
+ * a screened ticker with no strategy yet gets a one-line status, a rejected
+ * ticker shows its most recent gauntlet attempt's own reason, a validated
  * strategy with zero fills gets a one-line status, and only a strategy with
  * at least one fill gets a canvas (one per phase segment -- decision #50
  * keeps paper/live as separate, never-joined charts).
@@ -418,7 +420,10 @@ function _tickerStageLabel(stage) {
 function _renderTickerCard(ticker, ti) {
   const strategies = ticker.strategies || [];
   let body;
-  if (ticker.stage === 'screened' || strategies.length === 0) {
+  if (ticker.stage === 'rejected' && strategies.length === 0) {
+    const reason = ticker.reason || 'no reason recorded';
+    body = `<p class="trd-ticker-status trd-ticker-rejected">Rejected by the gauntlet — ${reason}</p>`;
+  } else if (ticker.stage === 'screened' || strategies.length === 0) {
     body = '<p class="trd-ticker-status">Screened — no strategy yet.</p>';
   } else {
     body = strategies.map((s, si) => {
@@ -572,7 +577,9 @@ function _injectTickerStyles() {
     .trd-ticker-header h3 { margin: 0; }
     .trd-ticker-stage-badge { font-size: 0.75em; padding: 3px 8px; border-radius: 10px; font-weight: 600; text-transform: uppercase; background: var(--bg); color: var(--text-muted); }
     .trd-ticker-stage-charting { background: #2ecc71; color: #fff; }
+    .trd-ticker-stage-rejected { background: #e74c3c; color: #fff; }
     .trd-ticker-status { color: var(--text-muted); font-size: 0.9em; margin: 4px 0; }
+    .trd-ticker-status.trd-ticker-rejected { color: #e74c3c; }
     .trd-ticker-strategy { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
     .trd-ticker-strategy-name { font-weight: 500; margin-bottom: 4px; }
     .trd-ticker-segment { margin-top: 6px; }

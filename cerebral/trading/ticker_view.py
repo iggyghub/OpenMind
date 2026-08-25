@@ -48,29 +48,36 @@ def build_ticker_view(
     get_spec: Callable[[str], Optional["object"]],
     get_fills: Callable[[str], List[dict]],
     fetch_ohlcv: Callable,
+    get_latest_attempt: Optional[Callable[[str], Optional[dict]]] = None,
 ) -> dict:
     """Groups strategies by symbol rather than strategy_id, so a ticker
     with more than one strategy shows all of them on one card, and a
     ticker still mid-discovery (no strategy registered yet) shows too.
 
-    Three honest stages (decision #49). Not four: discovery.py's
-    DiscoveryWatchlist has no persisted per-attempt log (S27 only records
-    "dispatched" via record_activity_fn, never the eventual gauntlet
-    verdict), so a screened-but-strategy-less ticker cannot be told apart
-    from one that was judged-and-rejected or dispatched-and-failed the
-    gauntlet without inventing a status that isn't actually stored anywhere
-    -- fabricating that distinction would break the Honesty rule this
-    campaign enforces throughout. What's real and shown instead:
-      - "screened":   in the discovery watchlist, no strategy exists for it.
+    Four honest stages now (decision #49, closed by S30/#894 -- was three).
+    discovery.py's DiscoveryAttempts persists each dispatch's real gauntlet
+    outcome, so a screened-but-strategy-less ticker CAN now be told apart
+    from one that was actually dispatched and rejected:
+      - "screened":   in the discovery watchlist, no attempt on record yet,
+        no strategy exists for it.
+      - "rejected":   its most recent logged attempt was UNVALIDATED, no
+        strategy exists for it -- the reason is on the "reason" key.
       - "validated":  a strategy exists but has recorded zero fills yet.
       - "charting":   a strategy exists with at least one fill -- the real
         equity-vs-benchmark chart.
 
-    Known limitation, same honesty reasoning: DiscoveryWatchlist also has no
-    rejection/expiry flag, so a watchlist symbol never drops out of
-    "screened" on its own even if discovery rejected it long ago -- only a
-    halted strategy with zero fills is dropped (decision #48's "nothing
-    paper/live behind it"), since that IS real, queryable state.
+    "rejected" only applies while no strategy exists for that symbol -- the
+    states loop below always takes priority once one does, same as before.
+    `get_latest_attempt` is optional (defaults to None, preserving the old
+    three-stage behavior for any caller not yet wired to DiscoveryAttempts).
+
+    Still not tracked, same honesty reasoning as before: DiscoveryWatchlist
+    has no expiry flag, so a watchlist symbol never drops off this view on
+    its own -- only a halted strategy with zero fills is dropped (decision
+    #48's "nothing paper/live behind it"), since that IS real, queryable
+    state. There is also no live "gauntlet currently running" stage --
+    deliberately out of scope, see #894: a dispatch is one awaited call,
+    nothing meaningful to poll mid-flight.
 
     Args:
         watchlist_symbols: ``DiscoveryWatchlist.symbols()`` -- tickers
@@ -85,11 +92,20 @@ def build_ticker_view(
         fetch_ohlcv: (symbol, start_date, end_date, interval="1d") -> a
             DataFrame with a "Close" column -- matching
             ``cerebral.trading_data.fetch_ohlcv``.
+        get_latest_attempt: symbol -> {"verdict", "reason", ...} or None --
+            matching ``DiscoveryAttempts.get_latest``.
     """
     tickers: Dict[str, dict] = {
-        sym: {"symbol": sym, "stage": "screened", "strategies": []}
+        sym: {"symbol": sym, "stage": "screened", "strategies": [], "reason": ""}
         for sym in watchlist_symbols
     }
+
+    if get_latest_attempt is not None:
+        for sym in watchlist_symbols:
+            attempt = get_latest_attempt(sym)
+            if attempt is not None and attempt.get("verdict") == "UNVALIDATED":
+                tickers[sym]["stage"] = "rejected"
+                tickers[sym]["reason"] = attempt.get("reason", "")
 
     for dispatch_id, state in states.items():
         base_id = dispatch_id.rsplit("@v", 1)[0] if "@v" in dispatch_id else dispatch_id
@@ -120,7 +136,7 @@ def build_ticker_view(
         if state.status == "halted" and not segments:
             continue  # decision #48: halted with nothing paper/live behind it
 
-        entry = tickers.setdefault(symbol, {"symbol": symbol, "stage": "screened", "strategies": []})
+        entry = tickers.setdefault(symbol, {"symbol": symbol, "stage": "screened", "strategies": [], "reason": ""})
         entry["strategies"].append({"name": dispatch_id, "status": state.status, "segments": segments})
         if segments:
             entry["stage"] = "charting"

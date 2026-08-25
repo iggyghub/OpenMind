@@ -6,6 +6,7 @@ Activity Log) is injected. No network, no real LLM, no real sandbox.
 import pytest
 
 from cerebral.trading.discovery import (
+    DiscoveryAttempts,
     DiscoveryWatchlist,
     VettedTickers,
     extract_ticker,
@@ -59,6 +60,26 @@ class RecordingActivity:
 
     async def __call__(self, kind, content):
         self.calls.append((kind, content))
+
+
+class RecordingAttempt:
+    """Fake record_attempt_fn (S30/#894) -- records every call verbatim."""
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(self, entry: dict) -> None:
+        self.calls.append(entry)
+
+
+class UnvalidatedGauntlet:
+    """Fake run_gauntlet_fn returning the flat test shape with a failed gate."""
+    async def __call__(self, idea: Idea, ticker: str) -> dict:
+        return {
+            "ticker": ticker, "verdict": "UNVALIDATED",
+            "gates": [
+                {"name": "vs_benchmark", "passed": False, "details": "underperformed by 3.2%"},
+            ],
+        }
 
 
 # ── DiscoveryWatchlist ───────────────────────────────────────────────────
@@ -299,3 +320,100 @@ def test_vetted_tickers_are_independent_per_symbol(tmp_path):
 
     assert v.get_verdict("XYZ", "0001-24-000001") is True
     assert v.get_verdict("ABC", "0002-24-000001") is False
+
+
+# ── DiscoveryAttempts (S30/#894) ───────────────────────────────────────────
+
+def _attempts(tmp_path):
+    return DiscoveryAttempts(db_path=tmp_path / "attempts.db")
+
+
+def test_get_latest_returns_none_for_a_never_attempted_symbol(tmp_path):
+    a = _attempts(tmp_path)
+    assert a.get_latest("XYZ") is None
+
+
+def test_record_then_get_latest_round_trips(tmp_path):
+    a = _attempts(tmp_path)
+    a.record("XYZ", "UNVALIDATED", reason="vs_benchmark: underperformed", idea_url="https://x")
+
+    latest = a.get_latest("XYZ")
+    assert latest["verdict"] == "UNVALIDATED"
+    assert latest["reason"] == "vs_benchmark: underperformed"
+    assert latest["idea_url"] == "https://x"
+
+
+def test_record_replaces_the_prior_attempt_for_the_same_symbol(tmp_path):
+    """One row per symbol -- only the MOST RECENT attempt matters, same as
+    VettedTickers' own replace-wholesale convention."""
+    a = _attempts(tmp_path)
+    a.record("XYZ", "UNVALIDATED", reason="first try")
+    a.record("XYZ", "VALIDATED", reason="")
+
+    assert a.get_latest("XYZ")["verdict"] == "VALIDATED"
+
+
+def test_attempts_are_independent_per_symbol(tmp_path):
+    a = _attempts(tmp_path)
+    a.record("XYZ", "UNVALIDATED", reason="noise gate")
+    a.record("ABC", "VALIDATED")
+
+    assert a.get_latest("XYZ")["verdict"] == "UNVALIDATED"
+    assert a.get_latest("ABC")["verdict"] == "VALIDATED"
+
+
+# ── process_idea: per-attempt logging (S30/#894) ───────────────────────────
+
+async def test_ticker_specific_dispatch_records_the_attempt(tmp_path):
+    wl = _watchlist(tmp_path)
+    attempt = RecordingAttempt()
+
+    await process_idea(_ticker_idea("AAPL"), wl, RecordingGauntlet(), record_attempt_fn=attempt)
+
+    assert len(attempt.calls) == 1
+    assert attempt.calls[0]["symbol"] == "AAPL"
+    assert attempt.calls[0]["verdict"] == "VALIDATED"
+
+
+async def test_prefiltered_dispatch_records_an_attempt_per_candidate(tmp_path):
+    wl = _watchlist(tmp_path)
+    for sym in ["AAPL", "MSFT"]:
+        wl.upsert(sym)
+    attempt = RecordingAttempt()
+    judge = FixedJudge(accepted=True)
+
+    await process_idea(_pattern_idea(), wl, RecordingGauntlet(), judge_idea_fn=judge,
+                        record_attempt_fn=attempt)
+
+    assert {c["symbol"] for c in attempt.calls} == {"AAPL", "MSFT"}
+
+
+async def test_unvalidated_dispatch_records_the_failed_gates_reason(tmp_path):
+    wl = _watchlist(tmp_path)
+    attempt = RecordingAttempt()
+
+    await process_idea(_ticker_idea("AAPL"), wl, UnvalidatedGauntlet(), record_attempt_fn=attempt)
+
+    assert attempt.calls[0]["verdict"] == "UNVALIDATED"
+    assert attempt.calls[0]["reason"] == "vs_benchmark: underperformed by 3.2%"
+
+
+async def test_rejected_pattern_idea_never_records_an_attempt(tmp_path):
+    """No candidate ticker was ever chosen -- nothing to key an attempt on,
+    same reasoning as #894's issue scope note."""
+    wl = _watchlist(tmp_path)
+    attempt = RecordingAttempt()
+    judge = FixedJudge(accepted=False, reason="too vague")
+
+    await process_idea(_pattern_idea(), wl, RecordingGauntlet(), judge_idea_fn=judge,
+                        record_attempt_fn=attempt)
+
+    assert attempt.calls == []
+
+
+async def test_no_record_attempt_fn_is_a_silent_no_op(tmp_path):
+    """Default None must not raise -- matches record_activity_fn's own
+    optional convention."""
+    wl = _watchlist(tmp_path)
+    results = await process_idea(_ticker_idea("AAPL"), wl, RecordingGauntlet())
+    assert len(results) == 1

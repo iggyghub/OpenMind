@@ -3644,6 +3644,7 @@ async def _trading_tickers_data() -> dict:
         get_spec=_trading_strategy_store.get,
         get_fills=lambda dispatch_id: _trading_forward_record.get_fills(strategy_id=dispatch_id),
         fetch_ohlcv=fetch_ohlcv,
+        get_latest_attempt=_scheduler_plugin._discovery_attempts.get_latest,
     )
 
 

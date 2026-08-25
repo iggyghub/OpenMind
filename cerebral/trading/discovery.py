@@ -8,6 +8,7 @@ that boundary.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
@@ -113,6 +114,96 @@ class DiscoveryWatchlist:
         self._con.close()
 
 
+class DiscoveryAttempts:
+    """Persisted per-attempt gauntlet log (S30/#894).
+
+    Closes the gap S29 (decision #49) found: `process_idea` used to only
+    ever record a "dispatched" activity entry via `record_activity_fn` --
+    the actual `run_gauntlet_fn` outcome (VALIDATED/UNVALIDATED + which
+    gate failed and why) was computed, returned, and then discarded. This
+    is that outcome, persisted. Same one-row-per-symbol/db_path-injection
+    convention as VettedTickers: only the MOST RECENT attempt matters for
+    "is this ticker currently screened or actually rejected" -- a symbol's
+    row is replaced wholesale on each new attempt, not appended.
+    """
+
+    def __init__(self, db_path: Optional[Path] = None) -> None:
+        path = db_path if db_path is not None else data_dir() / "discovery_attempts.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._con = sqlite3.connect(str(path), check_same_thread=False)
+        self._con.row_factory = sqlite3.Row
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS discovery_attempts (
+                symbol       TEXT PRIMARY KEY,
+                attempted_at TEXT NOT NULL,
+                verdict      TEXT NOT NULL,
+                reason       TEXT NOT NULL DEFAULT '',
+                idea_url     TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        self._con.commit()
+
+    def record(self, symbol: str, verdict: str, reason: str = "", idea_url: str = "") -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._con.execute(
+            "INSERT INTO discovery_attempts (symbol, attempted_at, verdict, reason, idea_url) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(symbol) DO UPDATE SET "
+            "attempted_at=excluded.attempted_at, verdict=excluded.verdict, "
+            "reason=excluded.reason, idea_url=excluded.idea_url",
+            (symbol, now, verdict, reason, idea_url),
+        )
+        self._con.commit()
+
+    def get_latest(self, symbol: str) -> Optional[dict]:
+        row = self._con.execute(
+            "SELECT symbol, attempted_at, verdict, reason, idea_url "
+            "FROM discovery_attempts WHERE symbol = ?", (symbol,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def close(self) -> None:
+        self._con.close()
+
+
+def _attempt_outcome(result: dict) -> "tuple[str, str]":
+    """Extracts (verdict, reason) from one run_gauntlet_fn return value.
+
+    Two real shapes reach this: the production one from
+    plugins/scheduler.py's run_gauntlet_fn (`{"ticker", "is_error",
+    "result": <StrategyCard JSON string>}`) and the flat test-fake shape
+    already used throughout test_trading_discovery.py (`{"ticker",
+    "verdict"}`, no nesting). Handling both means the existing fakes don't
+    need to change shape just because this function now also reads them.
+
+    On UNVALIDATED, the reason names the first failed gate and its own
+    `details` string (e.g. "vs_benchmark: underperformed by 3.2%") -- not
+    just "failed", per #894's acceptance criteria.
+    """
+    if "verdict" in result:
+        verdict = result.get("verdict", "")
+        gates = result.get("gates", [])
+    elif "result" in result:
+        try:
+            data = json.loads(result["result"])
+        except (TypeError, ValueError):
+            return "ERROR", str(result.get("result", ""))[:200]
+        verdict = data.get("verdict", "")
+        gates = data.get("gates", [])
+    else:
+        return "UNKNOWN", ""
+
+    if verdict != "UNVALIDATED":
+        return verdict, ""
+
+    for gate in gates:
+        if not gate.get("passed", True):
+            name = gate.get("name", "gate")
+            details = gate.get("details", "")
+            return verdict, f"{name}: {details}" if details else name
+    return verdict, ""
+
+
 def extract_ticker(idea: Idea) -> Optional[str]:
     """A ticker-specific idea (decision #36) names a specific stock in its
     claim or page title. Deliberately conservative: an unrecognized
@@ -128,6 +219,19 @@ def extract_ticker(idea: Idea) -> Optional[str]:
 RunGauntletFn = Callable[[Idea, str], Awaitable[dict]]
 JudgeIdeaFn = Callable[[Idea], Awaitable["tuple[bool, str]"]]
 RecordActivityFn = Callable[[str, dict], Awaitable[None]]
+RecordAttemptFn = Callable[[dict], Awaitable[None]]
+
+
+async def _record_attempt(
+    record_attempt_fn: Optional[RecordAttemptFn], symbol: str, idea: Idea, result: dict,
+) -> None:
+    if record_attempt_fn is None:
+        return
+    verdict, reason = _attempt_outcome(result)
+    await record_attempt_fn({
+        "symbol": symbol, "verdict": verdict, "reason": reason,
+        "idea_url": idea.source_url or "",
+    })
 
 
 async def process_idea(
@@ -136,6 +240,7 @@ async def process_idea(
     run_gauntlet_fn: RunGauntletFn,
     judge_idea_fn: Optional[JudgeIdeaFn] = None,
     record_activity_fn: Optional[RecordActivityFn] = None,
+    record_attempt_fn: Optional[RecordAttemptFn] = None,
 ) -> List[dict]:
     """One sourced idea -> zero or more run_gauntlet dispatches.
 
@@ -144,6 +249,11 @@ async def process_idea(
     exists to narrow an unbounded universe of pattern-general ideas down
     to a few candidates; an idea that already names its own ticker has
     nothing left to narrow.
+
+    `record_attempt_fn` (S30/#894) persists each dispatch's real gauntlet
+    outcome via DiscoveryAttempts -- separate from `record_activity_fn`,
+    which only ever logs a "dispatched" activity-feed entry before the
+    gauntlet has even run and is unrelated to this.
     """
     ticker = extract_ticker(idea)
 
@@ -155,6 +265,7 @@ async def process_idea(
                 "source": "discovery", "status": "dispatched",
                 "ticker": ticker, "idea_url": idea.source_url,
             })
+        await _record_attempt(record_attempt_fn, ticker, idea, result)
         return [result]
 
     if judge_idea_fn is not None:
@@ -175,8 +286,10 @@ async def process_idea(
 
     results: List[dict] = []
     for candidate in watchlist.prefilter_candidates(idea):
-        results.append(await run_gauntlet_fn(idea, candidate))
+        result = await run_gauntlet_fn(idea, candidate)
         watchlist.upsert(candidate, source=idea.provenance)
+        await _record_attempt(record_attempt_fn, candidate, idea, result)
+        results.append(result)
     return results
 
 
@@ -186,6 +299,7 @@ async def run_discovery_pass(
     run_gauntlet_fn: RunGauntletFn,
     judge_idea_fn: Optional[JudgeIdeaFn] = None,
     record_activity_fn: Optional[RecordActivityFn] = None,
+    record_attempt_fn: Optional[RecordAttemptFn] = None,
 ) -> List[dict]:
     """One discovery-loop tick: every already-sourced idea, processed in
     turn. Sourcing (web_search/navigate) is the caller's job -- kept out
@@ -197,6 +311,7 @@ async def run_discovery_pass(
         results.extend(await process_idea(
             idea, watchlist, run_gauntlet_fn,
             judge_idea_fn=judge_idea_fn, record_activity_fn=record_activity_fn,
+            record_attempt_fn=record_attempt_fn,
         ))
     return results
 
