@@ -143,7 +143,7 @@ function _renderBooksSection(books) {
     <div class="books-section">
       <h3>Books</h3>
       <div class="books-upload-row">
-        <input type="file" class="books-file-input" multiple accept=".pdf,.txt,.md">
+        <input type="file" class="books-file-input" multiple accept=".pdf,.epub,.mobi,.azw,.azw3,.docx,.doc,.odt,.rtf,.txt,.md">
         <span class="books-upload-hint">PDF or plain text -- upload several at once, each processes in the background.</span>
       </div>
       <div class="books-list">${rows || '<div class="books-empty">No books uploaded yet.</div>'}</div>

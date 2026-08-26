@@ -16,9 +16,14 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import sqlite3
+import subprocess
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Awaitable, Callable, List, Optional
 
@@ -38,11 +43,16 @@ STATUS_PROCESSING = "processing"
 STATUS_DONE = "done"
 STATUS_ERROR = "error"
 
-# Extensions this module can pull text from. EPUB deliberately not
-# supported yet (no epub-parsing dependency installed) -- PDF/plain-text
-# covers what's actually been asked for.
+# Extensions this module can pull text from. Real books arrive in whatever
+# format the source sells them in, not just PDF -- ebook formats (epub,
+# kindle mobi/azw3) and office formats (docx/doc/odt/rtf, via the same
+# LibreOffice headless conversion the Documents campaign already wired up)
+# are all in scope.
 _PDF_SUFFIXES = frozenset({".pdf"})
 _TEXT_SUFFIXES = frozenset({".txt", ".md", ".markdown"})
+_EPUB_SUFFIXES = frozenset({".epub"})
+_KINDLE_SUFFIXES = frozenset({".mobi", ".azw", ".azw3"})
+_OFFICE_SUFFIXES = frozenset({".docx", ".doc", ".odt", ".rtf"})
 
 ClaimExtractorFn = Callable[[str], Awaitable[List[str]]]
 
@@ -146,6 +156,144 @@ def _row_to_book(row: sqlite3.Row) -> Book:
     )
 
 
+class _TextOnlyHTMLParser(HTMLParser):
+    """Strips tags/scripts/styles for a plain-text approximation of an
+    HTML/XHTML page. Good enough for claim extraction -- exact reading
+    order and formatting don't matter once the text is chunked and fed
+    to an LLM anyway."""
+
+    def __init__(self):
+        super().__init__()
+        self._skip = False
+        self.pieces: List[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self._skip = True
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style"):
+            self._skip = False
+
+    def handle_data(self, data):
+        if not self._skip and data.strip():
+            self.pieces.append(data.strip())
+
+
+def _html_to_text(html: str) -> str:
+    parser = _TextOnlyHTMLParser()
+    parser.feed(html)
+    return "\n\n".join(parser.pieces)
+
+
+def _extract_pdf_text(path: Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return ""
+    try:
+        reader = PdfReader(str(path))
+    except Exception:
+        logger.exception("[books] Failed to open PDF %s", path)
+        return ""
+    pieces = []
+    for page in reader.pages:
+        try:
+            pieces.append(page.extract_text() or "")
+        except Exception:
+            continue
+    return "\n\n".join(p.strip() for p in pieces if p.strip())
+
+
+def _extract_text_file(path: Path) -> str:
+    data = path.read_bytes()
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("latin-1", errors="replace")
+
+
+def _extract_epub_text(path: Path) -> str:
+    """EPUB is a zip of XHTML content files. Reading-order comes from the
+    OPF spine in a fully correct reader; sorting filenames gets a good
+    enough approximation here (real epub tooling names chapter files
+    sequentially) without adding an epub-parsing dependency."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = sorted(
+                n for n in zf.namelist()
+                if n.lower().endswith((".xhtml", ".html", ".htm"))
+            )
+            pieces = []
+            for name in names:
+                try:
+                    raw = zf.read(name).decode("utf-8", errors="replace")
+                except Exception:
+                    continue
+                pieces.append(_html_to_text(raw))
+        return "\n\n".join(p.strip() for p in pieces if p.strip())
+    except Exception:
+        logger.exception("[books] Failed to open EPUB %s", path)
+        return ""
+
+
+def _extract_kindle_text(path: Path) -> str:
+    """Kindle mobi/azw3 formats are a proprietary container; unpacks to an
+    epub, raw html, or (rare, older format) a pdf depending on the book's
+    internal version -- dispatch to whichever extractor matches."""
+    try:
+        import mobi
+    except ImportError:
+        logger.warning("[books] 'mobi' package not installed -- cannot extract %s", path)
+        return ""
+    tempdir = None
+    try:
+        tempdir, out_path = mobi.extract(str(path))
+        out = Path(out_path)
+        suffix = out.suffix.lower()
+        if suffix == ".epub":
+            return _extract_epub_text(out)
+        if suffix == ".pdf":
+            return _extract_pdf_text(out)
+        if suffix in (".html", ".htm"):
+            return _html_to_text(out.read_text(encoding="utf-8", errors="replace"))
+        return ""
+    except Exception:
+        logger.exception("[books] Failed to extract Kindle book %s", path)
+        return ""
+    finally:
+        if tempdir:
+            shutil.rmtree(tempdir, ignore_errors=True)
+
+
+def _extract_office_text(path: Path) -> str:
+    """docx/doc/odt/rtf via the same headless LibreOffice conversion the
+    Documents campaign already wired up (ADR-0011, plugins/documents.py)
+    -- no new dependency, LibreOffice reads all four natively."""
+    from plugins.documents import find_soffice
+    soffice = find_soffice()
+    if soffice is None:
+        logger.warning("[books] LibreOffice not found -- cannot extract %s", path)
+        return ""
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            proc = subprocess.run(
+                [str(soffice), "--headless", "--convert-to", "txt", "--outdir", tmp, str(path)],
+                capture_output=True, timeout=120,
+            )
+        except Exception:
+            logger.exception("[books] soffice conversion failed for %s", path)
+            return ""
+        if proc.returncode != 0:
+            logger.warning(
+                "[books] soffice exited %s for %s: %s",
+                proc.returncode, path, (proc.stderr or b"").decode(errors="replace")[:200],
+            )
+            return ""
+        out_path = Path(tmp) / f"{path.stem}.txt"
+        return _extract_text_file(out_path) if out_path.exists() else ""
+
+
 def extract_full_text(path: Path) -> str:
     """Full, uncapped text extraction -- deliberately separate from
     cerebral/db/attachments.py's extract_text(), which truncates at
@@ -154,28 +302,15 @@ def extract_full_text(path: Path) -> str:
     one truncated blob."""
     suffix = path.suffix.lower()
     if suffix in _PDF_SUFFIXES:
-        try:
-            from pypdf import PdfReader
-        except ImportError:
-            return ""
-        try:
-            reader = PdfReader(str(path))
-        except Exception:
-            logger.exception("[books] Failed to open PDF %s", path)
-            return ""
-        pieces = []
-        for page in reader.pages:
-            try:
-                pieces.append(page.extract_text() or "")
-            except Exception:
-                continue
-        return "\n\n".join(p.strip() for p in pieces if p.strip())
+        return _extract_pdf_text(path)
     if suffix in _TEXT_SUFFIXES:
-        data = path.read_bytes()
-        try:
-            return data.decode("utf-8")
-        except UnicodeDecodeError:
-            return data.decode("latin-1", errors="replace")
+        return _extract_text_file(path)
+    if suffix in _EPUB_SUFFIXES:
+        return _extract_epub_text(path)
+    if suffix in _KINDLE_SUFFIXES:
+        return _extract_kindle_text(path)
+    if suffix in _OFFICE_SUFFIXES:
+        return _extract_office_text(path)
     return ""
 
 

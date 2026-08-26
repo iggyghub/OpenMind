@@ -3,7 +3,9 @@
 Pure and duck-typed, mirroring test_trading_discovery.py's own
 conventions -- no real LLM, no real PDF, no real sandbox.
 """
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -81,8 +83,8 @@ def test_extract_full_text_reads_plain_text_file(tmp_path):
 
 
 def test_extract_full_text_returns_empty_for_unsupported_extension(tmp_path):
-    p = tmp_path / "book.epub"
-    p.write_bytes(b"not really an epub")
+    p = tmp_path / "book.xyz"
+    p.write_bytes(b"whatever this format is, nothing here understands it")
     assert extract_full_text(p) == ""
 
 
@@ -91,6 +93,91 @@ def test_extract_full_text_falls_back_to_latin1_on_bad_utf8(tmp_path):
     p.write_bytes(b"\xe9caf\xe9")  # not valid utf-8
     text = extract_full_text(p)
     assert text  # decoded via latin-1 fallback, not raised
+
+
+def test_extract_full_text_returns_empty_for_a_corrupt_epub(tmp_path):
+    p = tmp_path / "book.epub"
+    p.write_bytes(b"not really a zip file")
+    assert extract_full_text(p) == ""
+
+
+def _make_epub(path: Path, chapters: list) -> None:
+    with zipfile.ZipFile(path, "w") as zf:
+        for i, html in enumerate(chapters):
+            zf.writestr(f"OEBPS/chapter{i}.xhtml", html)
+
+
+def test_extract_full_text_reads_a_real_epub(tmp_path):
+    p = tmp_path / "book.epub"
+    _make_epub(p, [
+        "<html><body><script>ignored();</script><p>Chapter one text.</p></body></html>",
+        "<html><body><p>Chapter two text.</p></body></html>",
+    ])
+
+    text = extract_full_text(p)
+
+    assert "Chapter one text." in text
+    assert "Chapter two text." in text
+    assert "ignored();" not in text  # script content stripped, not narrated
+
+
+def test_extract_full_text_kindle_dispatches_to_the_extracted_epub(tmp_path):
+    p = tmp_path / "book.mobi"
+    p.write_bytes(b"fake mobi bytes")
+    epub_path = tmp_path / "extracted" / "book.epub"
+    epub_path.parent.mkdir()
+    _make_epub(epub_path, ["<html><body><p>Kindle chapter text.</p></body></html>"])
+
+    with patch("mobi.extract", return_value=(str(epub_path.parent), str(epub_path))):
+        text = extract_full_text(p)
+
+    assert "Kindle chapter text." in text
+
+
+def test_extract_full_text_kindle_cleans_up_its_tempdir(tmp_path):
+    p = tmp_path / "book.mobi"
+    p.write_bytes(b"fake mobi bytes")
+    extracted_dir = tmp_path / "extracted"
+    extracted_dir.mkdir()
+    html_path = extracted_dir / "book.html"
+    html_path.write_text("<p>Some text.</p>", encoding="utf-8")
+
+    with patch("mobi.extract", return_value=(str(extracted_dir), str(html_path))):
+        extract_full_text(p)
+
+    assert not extracted_dir.exists()  # shutil.rmtree ran in the finally block
+
+
+def test_extract_full_text_kindle_failure_degrades_to_empty(tmp_path):
+    p = tmp_path / "book.azw3"
+    p.write_bytes(b"fake azw3 bytes")
+
+    with patch("mobi.extract", side_effect=ValueError("could not extract")):
+        assert extract_full_text(p) == ""
+
+
+def test_extract_full_text_office_uses_libreoffice_headless_conversion(tmp_path):
+    p = tmp_path / "book.docx"
+    p.write_bytes(b"fake docx bytes")
+
+    def fake_run(cmd, capture_output, timeout):
+        outdir = Path(cmd[cmd.index("--outdir") + 1])
+        (outdir / "book.txt").write_bytes("Docx chapter text.".encode("utf-8"))
+        return type("R", (), {"returncode": 0, "stderr": b""})()
+
+    with patch("plugins.documents.find_soffice", return_value=Path("C:/soffice.exe")), \
+         patch("subprocess.run", side_effect=fake_run):
+        text = extract_full_text(p)
+
+    assert text == "Docx chapter text."
+
+
+def test_extract_full_text_office_without_libreoffice_degrades_to_empty(tmp_path):
+    p = tmp_path / "book.rtf"
+    p.write_bytes(b"fake rtf bytes")
+
+    with patch("plugins.documents.find_soffice", return_value=None):
+        assert extract_full_text(p) == ""
 
 
 # ── BookStore ────────────────────────────────────────────────────────────

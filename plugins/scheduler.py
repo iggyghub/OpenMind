@@ -942,8 +942,9 @@ class SchedulerPlugin:
         if not text.strip():
             return ToolResult(
                 content=(
-                    f"Could not extract any text from '{filename}' -- only PDF "
-                    "and plain-text books are supported today."
+                    f"Could not extract any text from '{filename}' -- supported "
+                    "formats are PDF, EPUB, MOBI/AZW3, DOCX/DOC/ODT/RTF, and "
+                    "plain text/Markdown."
                 ),
                 is_error=True,
             )
