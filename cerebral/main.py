@@ -7966,7 +7966,13 @@ async def main() -> None:
     await _start_discord_user_subscriber()
 
     logger.info("[cerebral] Starting IPC server on ws://%s:%d", HOST, PORT)
-    async with serve(_ws_handler, HOST, PORT):
+    # max_size: websockets' own default (1 MiB) silently closes the
+    # connection on anything bigger, with no error surfaced to the tray --
+    # upload_book's base64-encoded file payload blows past that for any
+    # real book (the feature's own live-verify used a one-paragraph test
+    # file, well under 1 MiB, so this never showed up). Local-only IPC
+    # (ws://localhost), so a generous cap costs nothing but memory.
+    async with serve(_ws_handler, HOST, PORT, max_size=200 * 1024 * 1024):
         logger.info("[cerebral] Listening - waiting for tray connection")
         # Harness UI rework, S1 #469 -- broadcast the initial plugin
         # snapshot as `plugins:changed` on startup-complete (spec 5.1
