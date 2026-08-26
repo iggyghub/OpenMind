@@ -105,6 +105,31 @@ class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task_type, "coding")
         self.assertIn("Buy when RSI < 30", prompt)
 
+    async def test_to_strategy_strips_markdown_fence_and_prose(self):
+        """2026-08-26: chat-tuned models wrap generated code in a ```
+        fence with prose before/after ("Here is a Python strategy
+        function..."). Exec'ing that raw reply is a SyntaxError, which
+        sandboxed_eval.py silently degrades to an all-flat signal --
+        the `monte_carlo_permutation: p=1.000` pattern seen live on two
+        independent ideas. to_strategy must hand back bare, compilable
+        code regardless of how the model dresses up its reply."""
+        idea = from_prose("Buy when RSI < 30")
+
+        class ChattyRouter:
+            async def complete(self, prompt: str, task_type: str) -> str:
+                return (
+                    "Here is a Python strategy function that implements "
+                    "the hypothesis:\n\n```python\n"
+                    "def strategy(data):\n    return [1] * len(data)\n"
+                    "```\n\nThis function always returns long."
+                )
+
+        code = await to_strategy(idea, router=ChattyRouter())
+
+        self.assertEqual(code, "def strategy(data):\n    return [1] * len(data)")
+        strategy_fn = compile_strategy(code)  # must not raise SyntaxError
+        self.assertEqual(strategy_fn({"close": [1, 2]}), [1])
+
     async def test_to_strategy_router_failure_falls_back_to_the_stub(self):
         """Conservative-continue: a router failure must not raise -- it
         must degrade to the stub, same as every other failure mode in

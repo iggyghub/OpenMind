@@ -1,11 +1,28 @@
 from __future__ import annotations
 import datetime
 import logging
+import re
 import textwrap
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+_CODE_FENCE_RE = re.compile(r"```(?:python)?\s*\n?(.*?)```", re.DOTALL)
+
+
+def _extract_code(reply: str) -> str:
+    """Chat-tuned models routinely wrap generated code in a ``` fence with
+    prose before/after ("Here is a Python strategy function...") instead of
+    bare source -- exec'ing that raw text is a guaranteed SyntaxError, which
+    the sandbox (cerebral/trading/sandboxed_eval.py) silently degrades to an
+    all-flat signal on any failure. That flat signal is what produces the
+    `monte_carlo_permutation: p=1.000` verdict seen live 2026-08-26 (a
+    strategy with zero variance always permutes to itself). Extract the
+    first fenced block when present; otherwise assume the reply is already
+    bare code (matches every existing stub/test double)."""
+    match = _CODE_FENCE_RE.search(reply)
+    return match.group(1).strip() if match else reply.strip()
 
 
 @dataclass
@@ -130,11 +147,11 @@ async def to_strategy(idea: Idea, llm: Optional[Any] = None, router=None) -> str
     ).format(claim=claim)
 
     if llm:
-        return llm.generate(prompt)
+        return _extract_code(llm.generate(prompt))
 
     if router:
         try:
-            return await router.complete(prompt, task_type="coding")
+            return _extract_code(await router.complete(prompt, task_type="coding"))
         except Exception as exc:
             logger.warning(
                 "[trading_ideas] router.complete failed for to_strategy (%s); "
