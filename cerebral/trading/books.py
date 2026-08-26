@@ -335,10 +335,16 @@ def chunk_text(text: str, chunk_chars: int = 6000) -> List[str]:
 
 
 async def extract_claims_from_chunk(chunk: str, router) -> List[str]:
-    """Default claim extractor: one LLM pass per chunk, same free-routed
-    model judge_idea/to_strategy already use (task_type='coding', decision
-    #26 -- no new paid dependency). Returns zero or more testable claims,
-    one per line in the response."""
+    """Default claim extractor: one LLM pass per chunk. Routed on its own
+    task_type='books' (2026-08-26) rather than reusing 'coding' -- a real
+    book runs hundreds of these calls as a background job with no one
+    waiting on it, so it's worth pointing at a slower/more careful model
+    than day-to-day coding chat without touching that mapping. judge_idea/
+    to_strategy stay on 'coding' -- they're the same shared convergence
+    point (decision #33) a web-sourced idea also goes through, so
+    book-vs-web provenance shouldn't change which model screens/writes the
+    actual strategy code. Returns zero or more testable claims, one per
+    line in the response."""
     prompt = (
         "You are extracting testable trading-strategy claims from a book "
         "excerpt. A TESTABLE claim names a specific, measurable market "
@@ -357,7 +363,7 @@ async def extract_claims_from_chunk(chunk: str, router) -> List[str]:
         # simply yields no claims rather than raising.
         return []
     try:
-        raw = await router.complete(prompt, task_type="coding")
+        raw = await router.complete(prompt, task_type="books")
     except Exception as exc:
         logger.warning("[books] claim extraction failed for a chunk (%s); skipping", exc)
         return []

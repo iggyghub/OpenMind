@@ -6669,7 +6669,11 @@
     // reasoning (field-mapping, fit-scoring, dossier extraction) -- #349.
     // 'self_dev' = core self-modification loop (ADR-0015 / #554).
     // 'coding' = coding-flavoured chat turns (dedicated coding server).
-    const SET_TASK_TYPES = ['chat', 'tool', 'extraction', 'quality', 'self_dev', 'coding'];
+    // 'books' = book-ingestion claim extraction (trading campaign,
+    // 2026-08-26) -- hundreds of chunk passes as a background job with
+    // nobody waiting on it, worth its own (likely slower/more careful)
+    // model independent of the day-to-day 'coding' mapping.
+    const SET_TASK_TYPES = ['chat', 'tool', 'extraction', 'quality', 'self_dev', 'coding', 'books'];
 
     // Settings v2 state (Issue #209). Owned by Cerebral; received via
     // settings_updated broadcasts. Defaults match Cerebral's _DEFAULTS.

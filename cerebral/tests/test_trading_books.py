@@ -311,6 +311,24 @@ async def test_extract_claims_from_chunk_with_no_router_yields_nothing():
     assert await extract_claims_from_chunk("some excerpt", router=None) == []
 
 
+async def test_extract_claims_from_chunk_uses_its_own_books_task_type():
+    """2026-08-26: routed on task_type='books', not 'coding' -- a real book
+    is hundreds of background chunk passes nobody is waiting on, so it gets
+    its own model mapping independent of day-to-day coding chat."""
+    class RecordingRouter:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, prompt, task_type):
+            self.calls.append(task_type)
+            return "NONE"
+
+    router = RecordingRouter()
+    await extract_claims_from_chunk("some excerpt", router=router)
+
+    assert router.calls == ["books"]
+
+
 async def test_ingest_book_uses_rank_fn_and_candidate_limit(tmp_path):
     wl = _watchlist(tmp_path)
     for sym in ["AAPL", "MSFT", "TSLA"]:
