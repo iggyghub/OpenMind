@@ -3527,6 +3527,12 @@ async def _scheduler_loop() -> None:
     logger.info("[cerebral] Starting autonomous paper-trade scheduler loop")
     while not _shutdown.is_set():
         try:
+            # Written unconditionally, first thing every iteration -- proves
+            # the loop is still alive independent of whether anything was
+            # due this tick (see scheduler_heartbeat's own comment in
+            # settings.py for why this exists).
+            from datetime import datetime, timezone
+            _settings.set("scheduler_heartbeat", datetime.now(timezone.utc).isoformat())
             # S26 (#879), decision #46 sub-decision 4: a background loop
             # must not dispatch un-logged -- "Felix does not trade when it
             # cannot record that it traded." _record_activity itself also
@@ -3677,12 +3683,28 @@ async def _trading_broadcast() -> None:
             "queries": _scheduler_plugin._settings.get("discovery_queries"),
             "interval": _scheduler_plugin._settings.get("discovery_interval"),
         }
+        # 2026-08-26: book ingestion progress -- read directly, same
+        # pattern as discovery above, no round-trip through list_books'
+        # ToolResult/json needed here.
+        books = [
+            {
+                "id": b.id, "title": b.title, "filename": b.filename, "status": b.status,
+                "total_chunks": b.total_chunks, "processed_chunks": b.processed_chunks,
+                "strategies_found": b.strategies_found, "error_message": b.error_message,
+            }
+            for b in _scheduler_plugin._book_store.list_all()
+        ]
         await _broadcast({
             "type": "trading_update",
-            "data": {"positions": positions, "alerts": alerts, "discovery": discovery},
+            "data": {"positions": positions, "alerts": alerts, "discovery": discovery, "books": books},
         })
     except Exception as e:
         logger.warning(f"[cerebral] trading broadcast failed: {e}", exc_info=True)
+
+# 2026-08-26: lets the plugin schedule a live broadcast as book ingestion
+# progresses (chunk-by-chunk, in its own background task) without the
+# panel having to poll -- same wiring pattern as _record_activity_fn.
+_scheduler_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
 
 async def _handle_trading_poll(_data: dict) -> None:
     """IPC handler for tray polling of live trading state."""
@@ -7908,6 +7930,19 @@ async def main() -> None:
         _PLUGINS_DIR,
         disabled=frozenset(_settings.get("disabled_plugins") or []),
     )
+    # discover_plugins() just built its OWN fresh SchedulerPlugin() (via
+    # scheduler.py's create()) with no settings/router/watchlist wiring --
+    # a SEPARATE instance from the bare _scheduler_plugin global that
+    # _scheduler_loop/_trading_broadcast actually use. Every IPC/voice/chat
+    # tool call (start_discovery, get_discovery_status, run_discovery, ...)
+    # was silently talking to that other instance's own settings cache,
+    # which only ever synced with the autonomous loop's copy at the next
+    # full restart. Found live 2026-08-26 (see .learnings/LEARNINGS.md):
+    # get_discovery_status kept reporting a discovery_enabled/
+    # scheduler_heartbeat that never matched what the loop was actually
+    # acting on. register() supports re-registering under the same name to
+    # replace it -- do that with the real, fully-wired instance instead.
+    _orc.register(_scheduler_plugin)
     _attach_builder_plugin()
     _wire_plugin_seams()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))

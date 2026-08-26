@@ -752,6 +752,10 @@ async def test_pattern_general_idea_is_screened_and_accepted_reaches_gauntlet(tm
         }),
     )
     plugin._discovery_watchlist.upsert("MSFT")
+    # Isolate from the known-liquid overflow (2026-08-26 fix, see
+    # discovery.py's prefilter_candidates) -- this test only cares that
+    # MSFT specifically reaches the gauntlet, not how wide the pool is.
+    plugin._settings.set("discovery_candidate_limit", 1)
 
     result = await plugin._run_discovery({"queries": ["mean reversion pattern"]}, strategy_store=store, fetch=fetch)
 
@@ -963,6 +967,44 @@ def test_start_discovery_with_empty_queries_leaves_existing_value_alone(tmp_path
     assert status["interval"] == "5m"
 
 
+def test_start_discovery_defaults_candidate_limit_to_10(tmp_path):
+    plugin = _plugin(tmp_path)
+    result = plugin._start_discovery({})
+    status = json.loads(result.content)
+    assert status["candidate_limit"] == 10
+
+
+def test_start_discovery_stores_custom_candidate_limit(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._start_discovery({"candidate_limit": 25})
+
+    status = json.loads(plugin._get_discovery_status({}).content)
+    assert status["candidate_limit"] == 25
+
+
+def test_start_discovery_with_no_candidate_limit_leaves_existing_value_alone(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._start_discovery({"candidate_limit": 25})
+
+    plugin._start_discovery({})  # re-enable with no overrides
+
+    status = json.loads(plugin._get_discovery_status({}).content)
+    assert status["candidate_limit"] == 25
+
+
+def test_get_discovery_status_reports_scheduler_heartbeat(tmp_path):
+    """Proves the background loop is alive independent of whether discovery
+    itself has found anything due -- see scheduler_heartbeat's comment in
+    settings.py for why this was added (found live 2026-08-26: the loop
+    silently stopped ticking overnight with no visible error anywhere)."""
+    plugin = _plugin(tmp_path)
+    plugin._settings.set("scheduler_heartbeat", "2026-08-26T02:14:56+00:00")
+
+    status = json.loads(plugin._get_discovery_status({}).content)
+
+    assert status["scheduler_heartbeat"] == "2026-08-26T02:14:56+00:00"
+
+
 def test_stop_discovery_disables_and_clears_stop_at(tmp_path):
     plugin = _plugin(tmp_path)
     plugin._start_discovery({"duration_hours": 4})
@@ -997,3 +1039,117 @@ def test_settings_injection_isolates_from_the_real_production_file(tmp_path):
 
     assert plugin._settings._path != _SETTINGS_PATH
     assert plugin._settings._path == tmp_path / "felix-settings.json"
+
+
+# ── 2026-08-26: book ingestion ───────────────────────────────────────────
+# Real _run_gauntlet, real compiled strategies, injected fetch/router --
+# same SAFETY discipline as the discovery section above. A book is just a
+# different idea source; everything downstream is the exact same pipeline.
+
+class BookRouter(FakeRouterReturningCode):
+    """Distinguishes THREE prompt shapes sharing one fake: claim
+    extraction (books.py's own prompt), judge_idea's ACCEPT/REJECT
+    screen, and to_strategy's code generation -- AcceptingRouter above
+    only needs to handle the latter two."""
+    def __init__(self, claims: list):
+        super().__init__()
+        self._claims = claims
+
+    async def complete(self, prompt: str, task_type: str) -> str:
+        self.calls.append((prompt, task_type))
+        if "testable trading-strategy claims" in prompt:
+            return "\n".join(self._claims) if self._claims else "NONE"
+        if "REJECT" in prompt or "ACCEPT" in prompt:
+            return "ACCEPT"
+        return MA_CROSS_CODE
+
+
+def _b64(text: str) -> str:
+    import base64
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+async def test_upload_book_extracts_and_dispatches_a_claim(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    router = BookRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    result = await plugin._upload_book(
+        {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
+        strategy_store=store, fetch=fetch,
+    )
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    book_id = data["book_id"]
+    assert data["status"] == "queued"
+    assert data["total_chunks"] == 1
+
+    await plugin._book_tasks[book_id]  # wait for the background ingestion to finish
+
+    books = json.loads(plugin._list_books({}).content)
+    book = next(b for b in books if b["id"] == book_id)
+    assert book["status"] == "done"
+    assert book["processed_chunks"] == 1
+    assert book["strategies_found"] == 1
+
+    specs = [s for s in store.list_all() if s.symbol == "AAPL"]
+    assert len(specs) == 1
+    version = store.get_current_version(specs[0].strategy_id)
+    assert version["origin"] == "discovered"
+
+
+async def test_upload_book_requires_filename_and_data(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    result = await plugin._upload_book({})
+
+    assert result.is_error
+
+
+async def test_upload_book_rejects_invalid_base64(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    result = await plugin._upload_book({"filename": "a.txt", "data_base64": "not-valid-base64!!"})
+
+    assert result.is_error
+
+
+async def test_upload_book_rejects_a_file_with_no_extractable_text(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    result = await plugin._upload_book({"filename": "book.epub", "data_base64": _b64("whatever")})
+
+    assert result.is_error
+    assert "Could not extract" in result.content
+
+
+async def test_upload_book_with_no_claims_still_completes(tmp_path):
+    router = BookRouter([])  # NONE every chunk
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    result = await plugin._upload_book({"filename": "empty.txt", "data_base64": _b64("Dry narrative, no claims here.")})
+    book_id = json.loads(result.content)["book_id"]
+
+    await plugin._book_tasks[book_id]
+
+    books = json.loads(plugin._list_books({}).content)
+    book = next(b for b in books if b["id"] == book_id)
+    assert book["status"] == "done"
+    assert book["strategies_found"] == 0
+
+
+async def test_list_books_orders_newest_first(tmp_path):
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=BookRouter([]))
+
+    r1 = await plugin._upload_book({"filename": "first.txt", "data_base64": _b64("first book text")})
+    await plugin._book_tasks[json.loads(r1.content)["book_id"]]
+    r2 = await plugin._upload_book({"filename": "second.txt", "data_base64": _b64("second book text")})
+    await plugin._book_tasks[json.loads(r2.content)["book_id"]]
+
+    titles = [b["title"] for b in json.loads(plugin._list_books({}).content)]
+
+    assert titles == ["second", "first"]

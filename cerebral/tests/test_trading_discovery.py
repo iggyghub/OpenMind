@@ -117,15 +117,33 @@ def test_watchlist_prefilter_candidates_falls_back_to_known_tickers_when_empty(t
     assert all(c in _KNOWN_TICKERS for c in candidates)
 
 
-def test_watchlist_prefilter_candidates_prefers_real_watchlist_over_fallback(tmp_path):
-    """The moment the watchlist has anything real on it, the fallback
-    never applies -- a screened ticker always beats the generic seed."""
+def test_watchlist_prefilter_candidates_puts_real_watchlist_entries_first(tmp_path):
+    """A screened ticker still comes before the known-liquid overflow --
+    but (fix, 2026-08-26) no longer excludes it entirely. The old
+    behavior (fallback never applies once the watchlist has anything on
+    it) is exactly what left a real watchlist stuck at 3 symbols for over
+    a day live -- see prefilter_candidates' own docstring."""
+    from cerebral.trading.discovery import _KNOWN_TICKERS
     wl = _watchlist(tmp_path)
     wl.upsert("PLTR")  # deliberately NOT in _KNOWN_TICKERS
 
     candidates = wl.prefilter_candidates(_pattern_idea(), limit=3)
 
-    assert candidates == ["PLTR"]
+    assert candidates[0] == "PLTR"
+    assert len(candidates) == 3
+    assert all(c in _KNOWN_TICKERS for c in candidates[1:])
+
+
+def test_watchlist_prefilter_candidates_never_duplicates_a_watchlist_symbol_already_in_known_tickers(tmp_path):
+    """A watchlist symbol that's ALSO in _KNOWN_TICKERS (e.g. AAPL, seeded
+    by an earlier ticker-specific dispatch) must appear once, not twice,
+    in the combined universe."""
+    wl = _watchlist(tmp_path)
+    wl.upsert("AAPL")  # IS in _KNOWN_TICKERS
+
+    candidates = wl.prefilter_candidates(_pattern_idea(), limit=100)
+
+    assert candidates.count("AAPL") == 1
 
 
 # ── extract_ticker ────────────────────────────────────────────────────────
@@ -228,7 +246,7 @@ async def test_accepted_pattern_idea_only_dispatches_the_prefiltered_candidates(
     gauntlet = RecordingGauntlet()
     judge = FixedJudge(accepted=True)
 
-    results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=judge)
+    results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=judge, candidate_limit=2)
 
     dispatched_tickers = {c[1] for c in gauntlet.calls}
     assert dispatched_tickers == {"AAPL", "MSFT"}
@@ -258,7 +276,7 @@ async def test_no_judge_configured_accepts_by_default(tmp_path):
     wl.upsert("AAPL")
     gauntlet = RecordingGauntlet()
 
-    results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=None)
+    results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=None, candidate_limit=1)
 
     assert len(results) == 1
 
@@ -383,7 +401,7 @@ async def test_prefiltered_dispatch_records_an_attempt_per_candidate(tmp_path):
     judge = FixedJudge(accepted=True)
 
     await process_idea(_pattern_idea(), wl, RecordingGauntlet(), judge_idea_fn=judge,
-                        record_attempt_fn=attempt)
+                        record_attempt_fn=attempt, candidate_limit=2)
 
     assert {c["symbol"] for c in attempt.calls} == {"AAPL", "MSFT"}
 
@@ -417,3 +435,95 @@ async def test_no_record_attempt_fn_is_a_silent_no_op(tmp_path):
     wl = _watchlist(tmp_path)
     results = await process_idea(_ticker_idea("AAPL"), wl, RecordingGauntlet())
     assert len(results) == 1
+
+
+# ── rank_for_day_trading ─────────────────────────────────────────────────
+
+def _bars(price: float, dollar_range_pct: float, volume: float, days: int = 25):
+    """A synthetic daily-bars DataFrame with a fixed close, a fixed
+    high-low range as a % of close, and a fixed volume every day --
+    enough to drive rank_for_day_trading's liquidity/volatility scoring
+    without touching real yfinance data."""
+    import pandas as pd
+    half_range = price * dollar_range_pct / 2
+    return pd.DataFrame({
+        "Open": [price] * days,
+        "High": [price + half_range] * days,
+        "Low": [price - half_range] * days,
+        "Close": [price] * days,
+        "Volume": [volume] * days,
+    })
+
+
+def test_rank_for_day_trading_orders_by_volatility_among_liquid_symbols():
+    from cerebral.trading.discovery import rank_for_day_trading
+    bars = {
+        "CALM": _bars(price=100, dollar_range_pct=0.01, volume=1_000_000),   # $100M/day, low range
+        "WILD": _bars(price=100, dollar_range_pct=0.08, volume=1_000_000),   # $100M/day, high range
+    }
+
+    ranked = rank_for_day_trading(list(bars), lambda sym, *a, **kw: bars[sym])
+
+    assert ranked == ["WILD", "CALM"]
+
+
+def test_rank_for_day_trading_drops_illiquid_symbols_outright():
+    from cerebral.trading.discovery import rank_for_day_trading
+    bars = {
+        "THIN": _bars(price=100, dollar_range_pct=0.20, volume=1_000),  # huge range, $100K/day -- illiquid
+        "SOLID": _bars(price=100, dollar_range_pct=0.02, volume=1_000_000),
+    }
+
+    ranked = rank_for_day_trading(list(bars), lambda sym, *a, **kw: bars[sym])
+
+    assert ranked == ["SOLID"]
+
+
+def test_rank_for_day_trading_drops_penny_stocks_below_min_price():
+    from cerebral.trading.discovery import rank_for_day_trading
+    bars = {"PENNY": _bars(price=1.5, dollar_range_pct=0.20, volume=10_000_000)}
+
+    ranked = rank_for_day_trading(list(bars), lambda sym, *a, **kw: bars[sym])
+
+    assert ranked == []
+
+
+def test_rank_for_day_trading_skips_symbols_whose_fetch_fails():
+    from cerebral.trading.discovery import rank_for_day_trading
+
+    def flaky_fetch(symbol, *a, **kw):
+        if symbol == "BROKEN":
+            raise RuntimeError("network down")
+        return _bars(price=50, dollar_range_pct=0.03, volume=1_000_000)
+
+    ranked = rank_for_day_trading(["BROKEN", "OK"], flaky_fetch)
+
+    assert ranked == ["OK"]
+
+
+def test_prefilter_candidates_uses_rank_fn_when_given(tmp_path):
+    """rank_fn (day-trade fitness) beats plain recency ordering when
+    supplied -- the whole point of adding it."""
+    wl = _watchlist(tmp_path)
+    for sym in ["AAPL", "MSFT", "TSLA"]:
+        wl.upsert(sym)
+
+    ranked_order = ["TSLA", "AAPL", "MSFT"]
+    candidates = wl.prefilter_candidates(
+        _pattern_idea(), limit=2, rank_fn=lambda symbols: ranked_order,
+    )
+
+    assert candidates == ["TSLA", "AAPL"]
+
+
+def test_prefilter_candidates_falls_back_to_universe_if_rank_fn_returns_nothing(tmp_path):
+    """Every candidate failing its liquidity floor shouldn't mean zero
+    candidates to try -- fall back to the unranked universe (watchlist
+    entries first, known-liquid overflow after)."""
+    wl = _watchlist(tmp_path)
+    wl.upsert("AAPL")
+
+    candidates = wl.prefilter_candidates(_pattern_idea(), limit=2, rank_fn=lambda symbols: [])
+
+    assert candidates[0] == "AAPL"
+    assert len(candidates) == 2

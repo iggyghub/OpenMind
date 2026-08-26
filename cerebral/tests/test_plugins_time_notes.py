@@ -318,12 +318,14 @@ class TestSchedulerPlugin:
     # -----------------------------------------------------------------------
     # Cycle 10 — list_tools exposes all four tools
     # -----------------------------------------------------------------------
-    def test_list_tools_exposes_eight_tools(self):
+    def test_list_tools_exposes_all_scheduler_tools(self):
         from plugins.scheduler import create
         names = {t.name for t in create().list_tools()}
         assert names == {
             "create_event", "list_events", "update_event", "delete_event",
             "run_gauntlet", "edit_strategy", "get_strategy_code", "mix_strategies",
+            "run_discovery", "start_discovery", "stop_discovery", "get_discovery_status",
+            "upload_book", "list_books",
         }
 
     # -----------------------------------------------------------------------

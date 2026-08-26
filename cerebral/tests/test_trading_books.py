@@ -1,0 +1,239 @@
+"""Tests for cerebral/trading/books.py (2026-08-26).
+
+Pure and duck-typed, mirroring test_trading_discovery.py's own
+conventions -- no real LLM, no real PDF, no real sandbox.
+"""
+from pathlib import Path
+
+import pytest
+
+from cerebral.trading.books import (
+    Book, BookStore, chunk_text, extract_claims_from_chunk, extract_full_text, ingest_book,
+)
+from cerebral.trading.discovery import DiscoveryWatchlist
+
+
+def _watchlist(tmp_path):
+    return DiscoveryWatchlist(db_path=tmp_path / "watchlist.db")
+
+
+def _store(tmp_path):
+    return BookStore(db_path=tmp_path / "books.db")
+
+
+class RecordingGauntlet:
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(self, idea, ticker):
+        self.calls.append((idea, ticker))
+        return {"ticker": ticker, "verdict": "VALIDATED"}
+
+
+class FixedJudge:
+    def __init__(self, accepted=True, reason="ok"):
+        self._accepted, self._reason = accepted, reason
+
+    async def __call__(self, idea):
+        return self._accepted, self._reason
+
+
+class FixedExtractor:
+    """Fake claim extractor: returns a scripted list of claims per chunk,
+    keyed by chunk order (calls[0] for the first chunk, etc.)."""
+    def __init__(self, claims_per_chunk):
+        self._claims_per_chunk = claims_per_chunk
+        self.calls = []
+
+    async def __call__(self, chunk):
+        self.calls.append(chunk)
+        idx = len(self.calls) - 1
+        return self._claims_per_chunk[idx] if idx < len(self._claims_per_chunk) else []
+
+
+# ── chunk_text ───────────────────────────────────────────────────────────
+
+def test_chunk_text_packs_paragraphs_up_to_the_limit():
+    text = "\n\n".join(["para one is short"] * 5)
+    chunks = chunk_text(text, chunk_chars=40)
+    assert len(chunks) > 1
+    assert "".join(chunks).replace("\n\n", "") == "".join(["para one is short"] * 5)
+
+
+def test_chunk_text_keeps_an_oversized_paragraph_intact():
+    huge_para = "x" * 500
+    chunks = chunk_text(huge_para, chunk_chars=100)
+    assert chunks == [huge_para]
+
+
+def test_chunk_text_handles_empty_input():
+    assert chunk_text("") == []
+
+
+# ── extract_full_text ────────────────────────────────────────────────────
+
+def test_extract_full_text_reads_plain_text_file(tmp_path):
+    p = tmp_path / "book.txt"
+    # write_bytes, not write_text -- Windows' text-mode newline translation
+    # would otherwise turn \n into \r\n and break the exact-match assertion.
+    p.write_bytes("Chapter one.\n\nChapter two.".encode("utf-8"))
+    assert extract_full_text(p) == "Chapter one.\n\nChapter two."
+
+
+def test_extract_full_text_returns_empty_for_unsupported_extension(tmp_path):
+    p = tmp_path / "book.epub"
+    p.write_bytes(b"not really an epub")
+    assert extract_full_text(p) == ""
+
+
+def test_extract_full_text_falls_back_to_latin1_on_bad_utf8(tmp_path):
+    p = tmp_path / "book.txt"
+    p.write_bytes(b"\xe9caf\xe9")  # not valid utf-8
+    text = extract_full_text(p)
+    assert text  # decoded via latin-1 fallback, not raised
+
+
+# ── BookStore ────────────────────────────────────────────────────────────
+
+def test_book_store_add_and_get_round_trips(tmp_path):
+    store = _store(tmp_path)
+    added = store.add("Market Wizards", "wizards.pdf", "/data/books/1/wizards.pdf")
+
+    fetched = store.get(added.id)
+
+    assert fetched is not None
+    assert fetched.title == "Market Wizards"
+    assert fetched.status == "queued"
+    assert fetched.total_chunks == 0
+
+
+def test_book_store_progress_updates_persist(tmp_path):
+    store = _store(tmp_path)
+    book = store.add("Reminiscences", "rem.pdf", "/x/rem.pdf")
+
+    store.set_total_chunks(book.id, 10)
+    store.update_progress(book.id, 3, 2)
+
+    fetched = store.get(book.id)
+    assert fetched.status == "processing"
+    assert fetched.total_chunks == 10
+    assert fetched.processed_chunks == 3
+    assert fetched.strategies_found == 2
+
+
+def test_book_store_set_done_and_set_error(tmp_path):
+    store = _store(tmp_path)
+    b1 = store.add("A", "a.pdf", "/a.pdf")
+    b2 = store.add("B", "b.pdf", "/b.pdf")
+
+    store.set_done(b1.id)
+    store.set_error(b2.id, "unreadable PDF")
+
+    assert store.get(b1.id).status == "done"
+    err = store.get(b2.id)
+    assert err.status == "error"
+    assert err.error_message == "unreadable PDF"
+
+
+def test_book_store_list_all_orders_newest_first(tmp_path):
+    store = _store(tmp_path)
+    store.add("First", "1.pdf", "/1.pdf")
+    store.add("Second", "2.pdf", "/2.pdf")
+
+    titles = [b.title for b in store.list_all()]
+
+    assert titles == ["Second", "First"]
+
+
+# ── ingest_book ──────────────────────────────────────────────────────────
+
+async def test_ingest_book_dispatches_a_claim_that_names_a_ticker(tmp_path):
+    wl = _watchlist(tmp_path)
+    gauntlet = RecordingGauntlet()
+    extractor = FixedExtractor([["AAPL tends to rally after strong earnings beats."]])
+
+    result = await ingest_book(
+        ["chunk one text"], "Some Book", wl, gauntlet, extractor,
+    )
+
+    assert result == {"chunks": 1, "claims_seen": 1, "dispatched": 1}
+    assert gauntlet.calls[0][1] == "AAPL"
+
+
+async def test_ingest_book_skips_chunks_with_no_claims():
+    wl_calls = []
+
+    class NullWatchlist:
+        def prefilter_candidates(self, idea, limit=3, rank_fn=None):
+            wl_calls.append(idea)
+            return []
+
+        def upsert(self, *a, **kw):
+            pass
+
+    extractor = FixedExtractor([[], [], []])
+    gauntlet = RecordingGauntlet()
+
+    result = await ingest_book(
+        ["c1", "c2", "c3"], "Empty Book", NullWatchlist(), gauntlet, extractor,
+    )
+
+    assert result == {"chunks": 3, "claims_seen": 0, "dispatched": 0}
+    assert gauntlet.calls == []
+
+
+async def test_ingest_book_runs_pattern_general_claims_through_the_judge(tmp_path):
+    wl = _watchlist(tmp_path)
+    wl.upsert("MSFT")
+    gauntlet = RecordingGauntlet()
+    extractor = FixedExtractor([["Stocks that fall 3 days in a row tend to bounce."]])
+    judge = FixedJudge(accepted=False, reason="too vague")
+
+    result = await ingest_book(
+        ["chunk"], "Vague Book", wl, gauntlet, extractor, judge_idea_fn=judge,
+    )
+
+    assert result["dispatched"] == 0
+    assert gauntlet.calls == []
+
+
+async def test_ingest_book_reports_progress_after_each_chunk():
+    progress_calls = []
+    extractor = FixedExtractor([["AAPL always goes up on Tuesdays."], []])
+    gauntlet = RecordingGauntlet()
+
+    class NullWatchlist:
+        def prefilter_candidates(self, idea, limit=3, rank_fn=None):
+            return []
+
+        def upsert(self, *a, **kw):
+            pass
+
+    await ingest_book(
+        ["chunk one", "chunk two"], "Progress Book", NullWatchlist(), gauntlet, extractor,
+        on_progress=lambda done, total, dispatched: progress_calls.append((done, total, dispatched)),
+    )
+
+    assert progress_calls == [(1, 2, 1), (2, 2, 1)]
+
+
+async def test_extract_claims_from_chunk_with_no_router_yields_nothing():
+    """Unlike judge_idea's 'accept by default', there's no idea yet to
+    fall back on here -- a missing router just means this chunk produces
+    no claims, not a crash."""
+    assert await extract_claims_from_chunk("some excerpt", router=None) == []
+
+
+async def test_ingest_book_uses_rank_fn_and_candidate_limit(tmp_path):
+    wl = _watchlist(tmp_path)
+    for sym in ["AAPL", "MSFT", "TSLA"]:
+        wl.upsert(sym)
+    gauntlet = RecordingGauntlet()
+    extractor = FixedExtractor([["Mean reversion after a losing streak."]])
+
+    await ingest_book(
+        ["chunk"], "Ranked Book", wl, gauntlet, extractor,
+        rank_fn=lambda symbols: ["TSLA", "MSFT", "AAPL"], candidate_limit=1,
+    )
+
+    assert [c[1] for c in gauntlet.calls] == ["TSLA"]

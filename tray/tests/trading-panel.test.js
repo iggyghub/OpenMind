@@ -204,6 +204,102 @@ describe('renderTradingUpdate discovery control (S31/#896)', () => {
   });
 });
 
+// 2026-08-26: book ingestion -- must render alongside both branches (like
+// discovery control above), and needs to survive an undefined/empty
+// data.books without crashing (a fresh install with no books uploaded yet).
+describe('renderTradingUpdate books section (2026-08-26)', () => {
+  test('renders even with zero strategies and no books uploaded yet', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('Books');
+      expect(mount.innerHTML).toContain('books-file-input');
+      expect(mount.innerHTML).toContain('No books uploaded yet.');
+    });
+  });
+
+  test('renders alongside a populated strategy list too', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: TWO_STRATEGIES, alerts: [],
+        books: [{ id: 1, title: 'Market Wizards', filename: 'wiz.pdf', status: 'done', total_chunks: 10, processed_chunks: 10, strategies_found: 3, error_message: '' }],
+      }, mount);
+      expect(mount.innerHTML).toContain('MA cross A');
+      expect(mount.innerHTML).toContain('Market Wizards');
+    });
+  });
+
+  test('a processing book shows a progress bar and chunk count', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [],
+        books: [{ id: 1, title: 'Reminiscences', filename: 'r.pdf', status: 'processing', total_chunks: 20, processed_chunks: 8, strategies_found: 1, error_message: '' }],
+      }, mount);
+      expect(mount.innerHTML).toContain('book-progress-bar');
+      expect(mount.innerHTML).toContain('width:40%');
+      expect(mount.innerHTML).toContain('8/20 chunks');
+      expect(mount.innerHTML).toContain('1 strategy found');
+    });
+  });
+
+  test('a done book does not show a progress bar', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [],
+        books: [{ id: 1, title: 'Done Book', filename: 'd.pdf', status: 'done', total_chunks: 5, processed_chunks: 5, strategies_found: 2, error_message: '' }],
+      }, mount);
+      expect(mount.innerHTML).not.toContain('book-progress-bar');
+      expect(mount.innerHTML).toContain('2 strategies found');
+    });
+  });
+
+  test('an errored book surfaces the real error message, not just "error"', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [],
+        books: [{ id: 1, title: 'Bad Book', filename: 'b.epub', status: 'error', total_chunks: 0, processed_chunks: 0, strategies_found: 0, error_message: 'Could not extract any text' }],
+      }, mount);
+      expect(mount.innerHTML).toContain('Error: Could not extract any text');
+    });
+  });
+
+  test('multiple books each render their own row', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [],
+        books: [
+          { id: 1, title: 'Book One', filename: 'a.pdf', status: 'done', total_chunks: 1, processed_chunks: 1, strategies_found: 0, error_message: '' },
+          { id: 2, title: 'Book Two', filename: 'b.pdf', status: 'queued', total_chunks: 0, processed_chunks: 0, strategies_found: 0, error_message: '' },
+        ],
+      }, mount);
+      expect(mount.innerHTML).toContain('Book One');
+      expect(mount.innerHTML).toContain('Book Two');
+      expect((mount.innerHTML.match(/book-row"/g) || []).length).toBe(2);
+    });
+  });
+});
+
+describe('buildUploadBookEvent (2026-08-26)', () => {
+  test('builds the real upload_book call_tool shape', () => {
+    expect(TradingPanel.buildUploadBookEvent('wizards.pdf', 'YWJj')).toEqual({
+      type: 'call_tool',
+      data: { name: 'upload_book', args: { filename: 'wizards.pdf', data_base64: 'YWJj' } },
+    });
+  });
+
+  test('an explicit title is included; omitted defaults server-side', () => {
+    expect(TradingPanel.buildUploadBookEvent('wizards.pdf', 'YWJj', 'Market Wizards')).toEqual({
+      type: 'call_tool',
+      data: { name: 'upload_book', args: { filename: 'wizards.pdf', data_base64: 'YWJj', title: 'Market Wizards' } },
+    });
+  });
+});
+
 describe('buildStartDiscoveryEvent / buildStopDiscoveryEvent (S31/#896)', () => {
   test('start with a duration includes duration_hours', () => {
     expect(TradingPanel.buildStartDiscoveryEvent(2.5)).toEqual({

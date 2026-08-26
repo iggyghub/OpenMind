@@ -84,6 +84,17 @@ _DEFAULTS: dict[str, Any] = {
     "discovery_stop_at":         "",
     "discovery_queries":         [],
     "discovery_interval":        "15m",
+    # How many candidate tickers a single accepted pattern-general idea is
+    # tested against per discovery pass (see rank_for_day_trading).
+    "discovery_candidate_limit": 10,
+    # Written unconditionally at the top of every _scheduler_loop iteration
+    # (main.py) -- proves the background task is still alive independent of
+    # whether anything was due that tick. Found live 2026-08-26: the loop
+    # silently stopped ticking overnight with no exception visible anywhere
+    # (no process logs captured), leaving last_run_iso frozen for 11+ hours
+    # with nothing to distinguish "task died" from "nothing was due" short
+    # of a live forced-due hand trace. This closes that gap for next time.
+    "scheduler_heartbeat":       "",
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -114,6 +125,8 @@ _TYPES: dict[str, type] = {
     "discovery_stop_at":         str,
     "discovery_queries":         list,
     "discovery_interval":        str,
+    "discovery_candidate_limit": int,
+    "scheduler_heartbeat":       str,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
@@ -159,6 +172,8 @@ class SettingsStore:
             value = max(0, min(100, value))
         if key == "user_idle_ms":
             value = max(0, value)
+        if key == "discovery_candidate_limit":
+            value = max(1, value)
         if key == "mic_mode" and value not in _MIC_MODE_VALUES:
             raise ValueError(
                 f"mic_mode must be one of {sorted(_MIC_MODE_VALUES)}, got {value!r}"

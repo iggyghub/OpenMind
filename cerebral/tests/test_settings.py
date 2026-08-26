@@ -66,6 +66,8 @@ class TestSettingsStore:
             "discovery_stop_at",
             "discovery_queries",
             "discovery_interval",
+            "discovery_candidate_limit",
+            "scheduler_heartbeat",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):
@@ -294,6 +296,19 @@ class TestSettingsStore:
     def test_discovery_interval_defaults_15m(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")
         assert store.get("discovery_interval") == "15m"
+
+    def test_discovery_candidate_limit_defaults_10(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("discovery_candidate_limit") == 10
+
+    def test_discovery_candidate_limit_floors_at_1(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("discovery_candidate_limit", 0)
+        assert store.get("discovery_candidate_limit") == 1
+
+    def test_scheduler_heartbeat_defaults_empty(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("scheduler_heartbeat") == ""
 
     def test_discovery_queries_rejects_non_str_items(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")

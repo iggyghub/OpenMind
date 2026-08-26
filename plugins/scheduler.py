@@ -4,10 +4,13 @@ Scheduler plugin — MCP server for Felix.
 Tools: create_event, list_events, update_event, delete_event, run_gauntlet.
 SQLite-backed (same openmind.db). No external calendar deps.
 """
+import asyncio
+import base64
 import json
 import logging
 import re
 import sqlite3
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,7 +21,10 @@ from cerebral.trading.live_tick import run_strategy_tick
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.gauntlet import run_gauntlet
-from cerebral.trading.discovery import DiscoveryAttempts, DiscoveryWatchlist, run_discovery_pass
+from cerebral.trading.discovery import (
+    DiscoveryAttempts, DiscoveryWatchlist, rank_for_day_trading, run_discovery_pass,
+)
+from cerebral.trading.books import BookStore, chunk_text, extract_claims_from_chunk, extract_full_text, ingest_book
 from cerebral.trading_ideas import Idea, judge_idea as _judge_idea
 from cerebral.settings import SettingsStore
 
@@ -100,7 +106,7 @@ class SchedulerPlugin:
 
     def __init__(self, db_path=None, router=None, web_search_fn=None,
                  record_activity_fn=None, discovery_watchlist=None,
-                 discovery_attempts=None, settings=None):
+                 discovery_attempts=None, settings=None, book_store=None):
         self._router = router
         path = db_path if db_path is not None else str(_DEFAULT_DB)
         if path != ":memory:":
@@ -146,6 +152,28 @@ class SchedulerPlugin:
             self._settings = SettingsStore(path=Path(":memory:"))
         else:
             self._settings = SettingsStore(path=Path(path).parent / "felix-settings.json")
+        # 2026-08-26: same isolation convention -- a tmp_path-scoped
+        # SchedulerPlugin(db_path=...) test gets its own books.db.
+        if book_store is not None:
+            self._book_store = book_store
+        elif path == ":memory:":
+            self._book_store = BookStore(db_path=Path(":memory:"))
+        else:
+            self._book_store = BookStore(db_path=Path(path).parent / "books.db")
+        self._books_dir = (
+            Path(path).parent / "books" if path != ":memory:" else Path(":memory:")
+        )
+        # Background ingestion tasks keyed by book id -- held here so they
+        # aren't garbage-collected mid-run (asyncio only keeps a weak
+        # reference to a task once nothing else holds it) and so a second
+        # upload of the same book id (can't happen today, ids are
+        # AUTOINCREMENT) wouldn't silently overlap.
+        self._book_tasks: dict[int, "asyncio.Task"] = {}
+        # Wired post-construction by main.py (same pattern as
+        # _record_activity_fn) to schedule a _trading_broadcast() so the
+        # panel's book-progress bars update live, not just on the next
+        # unrelated broadcast or a manual trading_poll.
+        self._on_trading_change = None
 
     def _init_schema(self) -> None:
         self._con.executescript("""
@@ -361,6 +389,14 @@ class SchedulerPlugin:
                             "type": "number",
                             "description": "Auto-stop after this many hours. Omit to run indefinitely.",
                         },
+                        "candidate_limit": {
+                            "type": "integer",
+                            "description": (
+                                "How many candidate tickers a single accepted pattern-general "
+                                "idea is tested against per pass (default 10). Omit to leave "
+                                "the current stored value unchanged."
+                            ),
+                        },
                     },
                 },
             ),
@@ -373,6 +409,34 @@ class SchedulerPlugin:
             Tool(
                 name="get_discovery_status",
                 description="S31/#896: current discovery enabled/stop_at/queries/interval state.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="upload_book",
+                description=(
+                    "2026-08-26: upload a book (PDF or plain text) for Felix to read in "
+                    "full and pull testable trading-strategy claims out of. Each claim "
+                    "found goes through the exact same judge/screen/gauntlet pipeline as "
+                    "a web-sourced idea. Processing runs in the background (a real book "
+                    "is many LLM passes, one per chunk) -- this returns immediately with "
+                    "the book's id and queued status; poll list_books for progress. Call "
+                    "once per file for multiple books."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "description": "Original filename, e.g. 'market_wizards.pdf'."},
+                        "data_base64": {"type": "string", "description": "Base64-encoded file bytes."},
+                        "title": {"type": "string", "description": "Book title (defaults to the filename without extension)."},
+                    },
+                    "required": ["filename", "data_base64"],
+                },
+            ),
+            Tool(
+                name="list_books",
+                description="2026-08-26: every uploaded book with its ingestion status/progress/strategies-found count.",
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
             ),
@@ -403,6 +467,10 @@ class SchedulerPlugin:
             return self._get_strategy_code(args)
         if tool_name == "mix_strategies":
             return await self._run_mix_strategies(args)
+        if tool_name == "upload_book":
+            return await self._upload_book(args)
+        if tool_name == "list_books":
+            return self._list_books(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -571,10 +639,18 @@ class SchedulerPlugin:
         if not code:
             from cerebral.trading_ideas import from_prose, from_book_claim, extract_from_url, to_strategy
 
-            if claim:
-                idea = from_prose(claim)
-            elif book and chapter:
+            # book+chapter checked before bare claim (2026-08-26) so a
+            # caller with a specific claim AND book provenance (book
+            # ingestion) gets from_book_claim(claim, book, chapter) --
+            # correct provenance, real claim text -- instead of losing the
+            # book/chapter tagging to from_prose's generic "user, verbatim"
+            # provenance. Every pre-existing caller passes exactly one of
+            # claim/book+chapter, never both, so this is additive: claim-
+            # only and book+chapter-only behavior are both unchanged.
+            if book and chapter:
                 idea = from_book_claim(claim or f"Hypothesis from {book}", book, chapter)
+            elif claim:
+                idea = from_prose(claim)
             elif url:
                 ideas = extract_from_url(url)
                 if not ideas:
@@ -764,6 +840,12 @@ class SchedulerPlugin:
         async def judge_idea_fn(idea: Idea) -> "tuple[bool, str]":
             return await _judge_idea(idea, router=self._router)
 
+        def rank_fn(symbols: list) -> list:
+            fetch_fn = fetch
+            if fetch_fn is None:
+                from cerebral.trading_data import fetch_ohlcv as fetch_fn
+            return rank_for_day_trading(symbols, fetch_fn)
+
         record_activity_fn = self._record_activity_fn
 
         async def record_attempt_fn(entry: dict) -> None:
@@ -778,10 +860,12 @@ class SchedulerPlugin:
             logger.exception("[scheduler] discovery sourcing failed entirely: %s", exc)
             return ToolResult(content=f"Discovery sourcing failed: {exc}", is_error=True)
 
+        candidate_limit = self._settings.get("discovery_candidate_limit")
         results = await run_discovery_pass(
             ideas, self._discovery_watchlist, run_gauntlet_fn,
             judge_idea_fn=judge_idea_fn, record_activity_fn=record_activity_fn,
-            record_attempt_fn=record_attempt_fn,
+            record_attempt_fn=record_attempt_fn, rank_fn=rank_fn,
+            candidate_limit=candidate_limit,
         )
         return ToolResult(content=json.dumps({
             "sourced": len(ideas), "dispatched": len(results),
@@ -795,6 +879,7 @@ class SchedulerPlugin:
         queries = args.get("queries") or []
         interval = (args.get("interval") or "").strip()
         duration_hours = args.get("duration_hours")
+        candidate_limit = args.get("candidate_limit")
 
         self._settings.set("discovery_enabled", True)
         if duration_hours is not None:
@@ -806,6 +891,8 @@ class SchedulerPlugin:
             self._settings.set("discovery_queries", list(queries))
         if interval:
             self._settings.set("discovery_interval", interval)
+        if candidate_limit is not None:
+            self._settings.set("discovery_candidate_limit", int(candidate_limit))
 
         return self._get_discovery_status({})
 
@@ -820,7 +907,145 @@ class SchedulerPlugin:
             "stop_at": self._settings.get("discovery_stop_at"),
             "queries": self._settings.get("discovery_queries"),
             "interval": self._settings.get("discovery_interval"),
+            "candidate_limit": self._settings.get("discovery_candidate_limit"),
+            # Proves the background scheduler loop is alive at all, separate
+            # from whether discovery itself found anything due -- see
+            # scheduler_heartbeat's comment in settings.py.
+            "scheduler_heartbeat": self._settings.get("scheduler_heartbeat"),
         }))
+
+    # ------------------------------------------------------------------
+    # 2026-08-26: book ingestion -- a book is just another idea SOURCE,
+    # everything downstream (judge/screen/dispatch) reuses process_idea
+    # unchanged (decision #33).
+    # ------------------------------------------------------------------
+
+    async def _upload_book(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
+        filename = (args.get("filename") or "").strip()
+        data_b64 = args.get("data_base64") or ""
+        if not filename or not data_b64:
+            return ToolResult(content="filename and data_base64 are required", is_error=True)
+        try:
+            data = base64.b64decode(data_b64)
+        except Exception as exc:
+            return ToolResult(content=f"Invalid base64 data: {exc}", is_error=True)
+
+        title = (args.get("title") or "").strip() or Path(filename).stem
+        safe_name = Path(filename).name or "upload"
+
+        dest_dir = self._books_dir / uuid.uuid4().hex
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / safe_name
+        dest.write_bytes(data)
+
+        text = extract_full_text(dest)
+        if not text.strip():
+            return ToolResult(
+                content=(
+                    f"Could not extract any text from '{filename}' -- only PDF "
+                    "and plain-text books are supported today."
+                ),
+                is_error=True,
+            )
+
+        book = self._book_store.add(title, safe_name, str(dest))
+        chunks = chunk_text(text)
+        self._book_store.set_total_chunks(book.id, len(chunks))
+
+        task = asyncio.create_task(
+            self._run_book_ingestion(book.id, chunks, title, strategy_store=strategy_store, fetch=fetch)
+        )
+        self._book_tasks[book.id] = task
+
+        return ToolResult(content=json.dumps({
+            "book_id": book.id, "title": title, "status": "queued", "total_chunks": len(chunks),
+        }))
+
+    async def _run_book_ingestion(
+        self, book_id: int, chunks: list, title: str, *, strategy_store=None, fetch=None,
+    ) -> None:
+        """Runs in the background (asyncio.create_task, not awaited by the
+        upload_book caller) -- a real book is many LLM passes and would
+        block the IPC response for minutes otherwise. BookStore progress
+        is polled by list_books, not pushed."""
+        async def run_gauntlet_fn(idea: Idea, ticker: str) -> dict:
+            gauntlet_args = {
+                "symbol": ticker,
+                "hypothesis": idea.claim_text or "book-sourced hypothesis",
+                "provenance": idea.provenance,
+            }
+            # _run_gauntlet requires one of code/claim/url/book+chapter to
+            # generate strategy code from -- a book-sourced idea carries
+            # book_info (set by from_book_claim), not source_url like a
+            # web-sourced one. claim is also passed so the real extracted
+            # claim text survives (book+chapter alone would fall back to a
+            # generic "Hypothesis from {book}" -- see _run_gauntlet's own
+            # book+chapter branch).
+            if idea.book_info:
+                gauntlet_args["book"] = idea.book_info.get("book", "")
+                gauntlet_args["chapter"] = idea.book_info.get("chapter", "")
+                gauntlet_args["claim"] = idea.claim_text
+            result = await self._run_gauntlet(
+                # "discovered", not a new "book" bucket -- origin is a
+                # deliberately closed enum (strategy_store._VALID_ORIGINS)
+                # and book ingestion is autonomous sourcing exactly like
+                # web discovery, just from a different source. The book/
+                # chapter provenance still survives via idea.provenance.
+                gauntlet_args, origin="discovered", strategy_store=strategy_store, fetch=fetch,
+            )
+            return {"ticker": ticker, "is_error": result.is_error, "result": result.content}
+
+        async def claim_extractor(chunk: str) -> list:
+            return await extract_claims_from_chunk(chunk, self._router)
+
+        async def judge_idea_fn(idea: Idea) -> "tuple[bool, str]":
+            return await _judge_idea(idea, router=self._router)
+
+        def rank_fn(symbols: list) -> list:
+            fetch_fn = fetch
+            if fetch_fn is None:
+                from cerebral.trading_data import fetch_ohlcv as fetch_fn
+            return rank_for_day_trading(symbols, fetch_fn)
+
+        async def record_attempt_fn(entry: dict) -> None:
+            self._discovery_attempts.record(
+                entry["symbol"], entry["verdict"],
+                reason=entry.get("reason", ""), idea_url=entry.get("idea_url", ""),
+            )
+
+        def on_progress(done: int, total: int, dispatched: int) -> None:
+            self._book_store.update_progress(book_id, done, dispatched)
+            if self._on_trading_change is not None:
+                self._on_trading_change()
+
+        candidate_limit = self._settings.get("discovery_candidate_limit")
+        try:
+            await ingest_book(
+                chunks, title, self._discovery_watchlist, run_gauntlet_fn, claim_extractor,
+                judge_idea_fn=judge_idea_fn, record_activity_fn=self._record_activity_fn,
+                record_attempt_fn=record_attempt_fn, rank_fn=rank_fn,
+                candidate_limit=candidate_limit, on_progress=on_progress,
+            )
+            self._book_store.set_done(book_id)
+        except Exception as exc:
+            logger.exception("[scheduler] book ingestion failed for book_id=%s", book_id)
+            self._book_store.set_error(book_id, str(exc))
+        finally:
+            self._book_tasks.pop(book_id, None)
+            if self._on_trading_change is not None:
+                self._on_trading_change()
+
+    def _list_books(self, args: dict) -> ToolResult:
+        books = self._book_store.list_all()
+        return ToolResult(content=json.dumps([
+            {
+                "id": b.id, "title": b.title, "filename": b.filename, "status": b.status,
+                "total_chunks": b.total_chunks, "processed_chunks": b.processed_chunks,
+                "strategies_found": b.strategies_found, "created_at": b.created_at,
+                "error_message": b.error_message,
+            }
+            for b in books
+        ]))
 
     async def _edit_strategy(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
         """S17 (#862): edit an existing strategy's code -- new version, full

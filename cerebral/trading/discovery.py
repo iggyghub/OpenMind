@@ -12,9 +12,9 @@ import json
 import logging
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, List, Optional
+from typing import Any, Awaitable, Callable, List, Optional
 
 from cerebral.paths import data_dir
 from cerebral.trading_ideas import Idea
@@ -78,37 +78,45 @@ class DiscoveryWatchlist:
         ).fetchall()
         return [r["symbol"] for r in rows]
 
-    def prefilter_candidates(self, idea: Idea, limit: int = 3) -> List[str]:
+    def prefilter_candidates(
+        self, idea: Idea, limit: int = 3, rank_fn: Optional[RankCandidatesFn] = None,
+    ) -> List[str]:
         """Cheap, in-process, TRUSTED-code pre-filter -- deliberately not
         the sandbox (S25/#878's own sub-decision 2: the sandbox exists for
         untrusted *generated strategy code*, not for Felix's own logic
         scanning a symbol list, and batching untrusted evaluation through
         argv is mechanically impossible on Windows regardless).
 
-        Today: the most recently screened tickers already on the growing
-        watchlist. A real ranking heuristic (liquidity/momentum matched
-        against the idea's own text) is a deepening this slice's
-        acceptance criteria don't require -- returning the existing
-        watchlist honestly, capped, rather than inventing an unvalidated
-        scoring function.
-
-        An empty watchlist falls back to _KNOWN_TICKERS (fix, 2026-08-25):
-        the watchlist only grows via upsert() inside a dispatch, and a
-        pattern-general idea only dispatches via this method's own return
-        value -- on a cold start (or after every prior candidate has
-        already been fully explored) that's a real deadlock, not a
-        theoretical one: the first live discovery pass against the real
-        OpenClaw web_search wiring sourced 6 real ideas and dispatched
-        zero, watchlist still empty. Falling back to the same ~20-symbol
+        The candidate universe is the growing watchlist PLUS the ~20-symbol
         known-liquid set extract_ticker() already trusts (never an
-        unbounded universe sweep -- decision #36 stands) breaks the
-        deadlock without changing what "trusted symbol" means anywhere
-        else in this module.
+        unbounded universe sweep -- decision #36 stands), watchlist entries
+        first. Fix (2026-08-26): this used to return ONLY the watchlist
+        once it had anything on it at all, permanently excluding the
+        known-liquid set from that point on -- confirmed live, a watchlist
+        seeded with 3 symbols stayed stuck at exactly those 3 for over a
+        day of real passes, since nothing pattern-general ever got a
+        chance to introduce a new one. Always including the known-liquid
+        set keeps fresh candidates in the running so the pool can actually
+        widen over time (each one dispatched here gets upsert()'d into the
+        watchlist by process_idea, same as any other candidate).
+
+        `rank_fn` (optional, injected -- see rank_for_day_trading) orders
+        that universe by actual day-trading fitness (liquidity + intraday
+        range) instead of raw watchlist-then-alphabetical order. Omitted
+        (the default, and every pre-existing caller/test) keeps watchlist
+        entries first, in their natural recency order, known-liquid
+        overflow after. A rank_fn that returns nothing (e.g. every
+        candidate failed its liquidity floor) falls back to the unranked
+        universe rather than returning zero candidates.
         """
         existing = self.symbols()
-        if existing:
-            return existing[:limit]
-        return sorted(_KNOWN_TICKERS)[:limit]
+        overflow = sorted(_KNOWN_TICKERS - set(existing))
+        universe = existing + overflow
+        if rank_fn is not None:
+            ranked = rank_fn(universe)
+            if ranked:
+                return ranked[:limit]
+        return universe[:limit]
 
     def close(self) -> None:
         self._con.close()
@@ -219,6 +227,50 @@ def extract_ticker(idea: Idea) -> Optional[str]:
 RunGauntletFn = Callable[[Idea, str], Awaitable[dict]]
 JudgeIdeaFn = Callable[[Idea], Awaitable["tuple[bool, str]"]]
 RecordActivityFn = Callable[[str, dict], Awaitable[None]]
+FetchOhlcvFn = Callable[..., "Any"]
+RankCandidatesFn = Callable[[List[str]], List[str]]
+
+
+def rank_for_day_trading(
+    symbols: List[str],
+    fetch_ohlcv_fn: FetchOhlcvFn,
+    lookback_days: int = 20,
+    min_price: float = 5.0,
+    min_dollar_volume: float = 5_000_000,
+) -> List[str]:
+    """Ranks candidate symbols by day-trading fitness: liquid enough to
+    enter/exit without moving the price, volatile enough to actually have
+    an intraday signal to trade. Neither property was checked anywhere
+    before this -- prefilter_candidates just returned the most-recently-
+    screened tickers (or an alphabetical static list on cold start), which
+    is not a suitability judgement.
+
+    A symbol below `min_dollar_volume` (avg daily $ volume) is dropped
+    outright, not ranked last -- illiquid names aren't day-tradeable
+    regardless of how much they move. Survivors are ranked by average
+    daily range as a % of close (a cheap ATR proxy -- no prior-close true
+    range needed for a same-day ranking pass), most volatile first. A
+    symbol whose fetch fails or returns no data is silently skipped -- a
+    data gap isn't a suitability signal either way."""
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=lookback_days * 2)  # padding for weekends/holidays
+    scored: List["tuple[str, float]"] = []
+    for symbol in symbols:
+        try:
+            df = fetch_ohlcv_fn(symbol, start.isoformat(), end.isoformat(), interval="1d")
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        df = df.tail(lookback_days)
+        if df["Close"].mean() < min_price:
+            continue
+        if (df["Close"] * df["Volume"]).mean() < min_dollar_volume:
+            continue
+        range_pct = ((df["High"] - df["Low"]) / df["Close"]).mean()
+        scored.append((symbol, range_pct))
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return [symbol for symbol, _ in scored]
 RecordAttemptFn = Callable[[dict], Awaitable[None]]
 
 
@@ -241,6 +293,8 @@ async def process_idea(
     judge_idea_fn: Optional[JudgeIdeaFn] = None,
     record_activity_fn: Optional[RecordActivityFn] = None,
     record_attempt_fn: Optional[RecordAttemptFn] = None,
+    rank_fn: Optional[RankCandidatesFn] = None,
+    candidate_limit: int = 3,
 ) -> List[dict]:
     """One sourced idea -> zero or more run_gauntlet dispatches.
 
@@ -285,7 +339,7 @@ async def process_idea(
         return []
 
     results: List[dict] = []
-    for candidate in watchlist.prefilter_candidates(idea):
+    for candidate in watchlist.prefilter_candidates(idea, limit=candidate_limit, rank_fn=rank_fn):
         result = await run_gauntlet_fn(idea, candidate)
         watchlist.upsert(candidate, source=idea.provenance)
         await _record_attempt(record_attempt_fn, candidate, idea, result)
@@ -300,6 +354,8 @@ async def run_discovery_pass(
     judge_idea_fn: Optional[JudgeIdeaFn] = None,
     record_activity_fn: Optional[RecordActivityFn] = None,
     record_attempt_fn: Optional[RecordAttemptFn] = None,
+    rank_fn: Optional[RankCandidatesFn] = None,
+    candidate_limit: int = 3,
 ) -> List[dict]:
     """One discovery-loop tick: every already-sourced idea, processed in
     turn. Sourcing (web_search/navigate) is the caller's job -- kept out
@@ -311,7 +367,8 @@ async def run_discovery_pass(
         results.extend(await process_idea(
             idea, watchlist, run_gauntlet_fn,
             judge_idea_fn=judge_idea_fn, record_activity_fn=record_activity_fn,
-            record_attempt_fn=record_attempt_fn,
+            record_attempt_fn=record_attempt_fn, rank_fn=rank_fn,
+            candidate_limit=candidate_limit,
         ))
     return results
 

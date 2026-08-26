@@ -113,6 +113,84 @@ function buildStopDiscoveryEvent() {
 }
 
 /**
+ * Books section (2026-08-26): multi-file upload -- Felix reads each book
+ * in full and pulls testable strategy claims out of it, dispatching each
+ * through the same judge/screen/gauntlet pipeline web-sourced ideas use.
+ * Deliberately its own Trading-panel section, not a chat attachment (see
+ * the design discussion this landed from): a whole book is a background
+ * job with real progress, not a single reply-to-this-message interaction.
+ * @param {Array} [books] - [{id, title, filename, status, total_chunks,
+ *   processed_chunks, strategies_found, error_message}] from
+ *   cerebral/main.py's _trading_broadcast().
+ */
+function _renderBooksSection(books) {
+  const rows = (books || []).map((b) => {
+    const pct = b.total_chunks > 0 ? Math.round((b.processed_chunks / b.total_chunks) * 100) : 0;
+    const statusLabel = b.status === 'error' ? 'Error: ' + (b.error_message || 'unknown') : b.status;
+    return `
+      <div class="book-row" data-status="${b.status}">
+        <div class="book-row-title">${b.title}</div>
+        <div class="book-row-meta">
+          <span class="book-status book-status-${b.status}">${statusLabel}</span>
+          ${b.status === 'processing' ? `<span class="book-progress-text">${b.processed_chunks}/${b.total_chunks} chunks</span>` : ''}
+          <span class="book-strategies-found">${b.strategies_found} strateg${b.strategies_found === 1 ? 'y' : 'ies'} found</span>
+        </div>
+        ${b.status === 'processing' ? `<div class="book-progress-bar"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
+      </div>
+    `;
+  }).join('');
+  return `
+    <div class="books-section">
+      <h3>Books</h3>
+      <div class="books-upload-row">
+        <input type="file" class="books-file-input" multiple accept=".pdf,.txt,.md">
+        <span class="books-upload-hint">PDF or plain text -- upload several at once, each processes in the background.</span>
+      </div>
+      <div class="books-list">${rows || '<div class="books-empty">No books uploaded yet.</div>'}</div>
+    </div>
+  `;
+}
+
+/**
+ * Builds the `upload_book` call_tool event for one file. Pure so the
+ * event shape is directly testable without a real FileReader (this repo
+ * has no jsdom -- see trading-panel.test.js's header comment).
+ * @param {string} filename
+ * @param {string} dataBase64 - base64-encoded file bytes
+ * @param {string} [title] - defaults (server-side) to filename without extension
+ */
+function buildUploadBookEvent(filename, dataBase64, title) {
+  const args = { filename: filename, data_base64: dataBase64 };
+  if (title) args.title = title;
+  return { type: 'call_tool', data: { name: 'upload_book', args: args } };
+}
+
+/**
+ * Wires the multi-file input: reads each selected file as base64 and
+ * fires one upload_book call per file (matching upload_book's own "call
+ * once per file for multiple books" contract), then polls once so the
+ * new queued row appears without waiting for the first background
+ * progress tick.
+ */
+function _wireBooksSection(mount, sendEventFn) {
+  const input = mount.querySelector('.books-file-input');
+  if (!input || !sendEventFn) return;
+  input.addEventListener('change', () => {
+    const files = Array.from(input.files || []);
+    files.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = String(reader.result).split(',').pop(); // strip data: URL prefix
+        sendEventFn(buildUploadBookEvent(file.name, base64));
+        sendEventFn({ type: 'trading_poll' });
+      };
+      reader.readAsDataURL(file);
+    });
+    input.value = ''; // allow re-selecting the same file(s) later
+  });
+}
+
+/**
  * Renders a `trading_update` broadcast's data into the mount.
  * @param {Object} data - { positions: [...], alerts: [...] } from
  *   cerebral/main.py's _trading_broadcast()
@@ -134,11 +212,13 @@ function renderTradingUpdate(data, container, sendEventFn) {
   // unconditionally, so both branches have them (previously only the
   // non-empty branch injected any styles at all).
   const discoveryHtml = _renderDiscoveryControl(data && data.discovery);
+  const booksHtml = _renderBooksSection(data && data.books);
   _injectTradingPanelStyles();
 
   if (!data || !data.positions || data.positions.length === 0) {
-    mount.innerHTML = discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+    mount.innerHTML = discoveryHtml + booksHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
     _wireDiscoveryControl(mount, sendEventFn);
+    _wireBooksSection(mount, sendEventFn);
     return;
   }
 
@@ -152,7 +232,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const state = mount._strategyState;
   const strategy = state.strategies[state.selectedIdx];
 
-  mount.innerHTML = discoveryHtml + `
+  mount.innerHTML = discoveryHtml + booksHtml + `
     <div class="trading-panel-layout">
       <div class="strategy-list">
         <h3>Strategies</h3>
@@ -197,6 +277,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   `;
 
   _wireDiscoveryControl(mount, sendEventFn);
+  _wireBooksSection(mount, sendEventFn);
 
   // Wire list selection
   mount.querySelectorAll('.strategy-list li').forEach(li => {
@@ -265,6 +346,22 @@ function _injectTradingPanelStyles() {
     .discovery-start-btn:disabled, .discovery-stop-btn:disabled { background: var(--border, #ccc); color: var(--text-muted, #888); cursor: default; }
     .discovery-status { font-size: 12px; color: var(--text-muted, #555); }
     .discovery-duration-input { width: 80px; padding: 3px 6px; border: 1px solid var(--border, #ccc); border-radius: 3px; background: var(--bg, #fff); color: var(--text, #333); }
+    .books-section { margin-bottom: 16px; padding: 12px; background: var(--bg-elev, #f8f9fa); border-radius: 6px; border: 1px solid var(--border, #eee); font-family: sans-serif; }
+    .books-section h3 { margin: 0 0 8px; font-size: 14px; color: var(--text, #333); }
+    .books-upload-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+    .books-upload-hint { font-size: 0.85em; color: var(--text-muted, #777); }
+    .books-list { display: flex; flex-direction: column; gap: 8px; }
+    .books-empty { color: var(--text-muted, #888); font-size: 0.9em; padding: 4px 0; }
+    .book-row { padding: 8px 10px; background: var(--bg, #fff); border: 1px solid var(--border, #eee); border-radius: 4px; }
+    .book-row-title { font-weight: 500; color: var(--text, #333); margin-bottom: 4px; }
+    .book-row-meta { display: flex; gap: 10px; align-items: center; font-size: 0.85em; color: var(--text-muted, #666); flex-wrap: wrap; }
+    .book-status { padding: 1px 6px; border-radius: 3px; background: #eee; text-transform: capitalize; }
+    .book-status-done { background: #d4edda; color: #155724; }
+    .book-status-processing { background: #fff3cd; color: #856404; }
+    .book-status-error { background: #f8d7da; color: #721c24; }
+    .book-status-queued { background: #e2e3e5; color: #383d41; }
+    .book-progress-bar { margin-top: 6px; height: 5px; border-radius: 3px; background: var(--border, #eee); overflow: hidden; }
+    .book-progress-fill { height: 100%; background: #3498db; transition: width 0.3s ease; }
   `;
   document.head.appendChild(style);
 }
@@ -751,6 +848,7 @@ return {
   renderTickersUpdate: renderTickersUpdate,
   buildStartDiscoveryEvent: buildStartDiscoveryEvent,
   buildStopDiscoveryEvent: buildStopDiscoveryEvent,
+  buildUploadBookEvent: buildUploadBookEvent,
 };
 
 }));
