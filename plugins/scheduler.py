@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import re
+import shutil
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -440,6 +441,53 @@ class SchedulerPlugin:
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="stop_book",
+                description=(
+                    "2026-08-26: cancel a book's in-progress ingestion, freezing its "
+                    "progress where it stands (strategies already dispatched are "
+                    "unaffected). Also un-sticks a book left stuck at 'processing' "
+                    "by a Cerebral restart mid-run, when there's no live task left "
+                    "to cancel."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"book_id": {"type": "integer"}},
+                    "required": ["book_id"],
+                },
+            ),
+            Tool(
+                name="retry_book",
+                description=(
+                    "2026-08-26: redo a book's ingestion from scratch -- cancels any "
+                    "in-progress run, re-extracts and re-chunks the original uploaded "
+                    "file (still on disk), and reprocesses every chunk again. Does not "
+                    "remove strategies/attempts a previous run already dispatched."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"book_id": {"type": "integer"}},
+                    "required": ["book_id"],
+                },
+            ),
+            Tool(
+                name="delete_book",
+                description=(
+                    "2026-08-26: remove a book's record and its stored file. Cancels "
+                    "any in-progress ingestion first. Does not remove strategies/"
+                    "attempts already dispatched from this book -- those are "
+                    "independent historical records, same as a web-sourced idea's "
+                    "attempts surviving even though the source URL isn't stored."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"book_id": {"type": "integer"}},
+                    "required": ["book_id"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -471,6 +519,12 @@ class SchedulerPlugin:
             return await self._upload_book(args)
         if tool_name == "list_books":
             return self._list_books(args)
+        if tool_name == "stop_book":
+            return self._stop_book(args)
+        if tool_name == "retry_book":
+            return await self._retry_book(args)
+        if tool_name == "delete_book":
+            return self._delete_book(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -952,15 +1006,22 @@ class SchedulerPlugin:
         book = self._book_store.add(title, safe_name, str(dest))
         chunks = chunk_text(text)
         self._book_store.set_total_chunks(book.id, len(chunks))
-
-        task = asyncio.create_task(
-            self._run_book_ingestion(book.id, chunks, title, strategy_store=strategy_store, fetch=fetch)
-        )
-        self._book_tasks[book.id] = task
+        self._launch_book_ingestion(book.id, chunks, title, strategy_store=strategy_store, fetch=fetch)
 
         return ToolResult(content=json.dumps({
             "book_id": book.id, "title": title, "status": "queued", "total_chunks": len(chunks),
         }))
+
+    def _launch_book_ingestion(
+        self, book_id: int, chunks: list, title: str, *, strategy_store=None, fetch=None,
+    ) -> None:
+        """Shared by upload_book and retry_book: fires the background
+        ingestion task and registers it so stop_book/retry_book/
+        delete_book can find and cancel it later."""
+        task = asyncio.create_task(
+            self._run_book_ingestion(book_id, chunks, title, strategy_store=strategy_store, fetch=fetch)
+        )
+        self._book_tasks[book_id] = task
 
     async def _run_book_ingestion(
         self, book_id: int, chunks: list, title: str, *, strategy_store=None, fetch=None,
@@ -1019,6 +1080,19 @@ class SchedulerPlugin:
             if self._on_trading_change is not None:
                 self._on_trading_change()
 
+        # Every terminal-state write below is guarded by "am I still the
+        # task registered for this book_id" -- retry_book cancels this
+        # task and immediately registers a NEW one under the same id.
+        # Cancellation is delivered asynchronously (at this coroutine's
+        # next await, not synchronously in .cancel()), so without the
+        # guard a stale cancelled run finishing its handler AFTER the new
+        # run has already started would clobber fresh progress/state with
+        # its own stale STOPPED/error write.
+        current_task = asyncio.current_task()
+
+        def _still_current() -> bool:
+            return self._book_tasks.get(book_id) is current_task
+
         candidate_limit = self._settings.get("discovery_candidate_limit")
         try:
             await ingest_book(
@@ -1027,12 +1101,23 @@ class SchedulerPlugin:
                 record_attempt_fn=record_attempt_fn, rank_fn=rank_fn,
                 candidate_limit=candidate_limit, on_progress=on_progress,
             )
-            self._book_store.set_done(book_id)
+            if _still_current():
+                self._book_store.set_done(book_id)
+        except asyncio.CancelledError:
+            # Deliberately not re-raised: this coroutine IS the task
+            # itself (fire-and-forget via asyncio.create_task) -- nothing
+            # awaits its result or checks task.cancelled(), so swallowing
+            # here just ends the task cleanly with a real terminal status
+            # instead of leaving the book stuck at "processing" forever.
+            if _still_current():
+                self._book_store.set_stopped(book_id)
         except Exception as exc:
             logger.exception("[scheduler] book ingestion failed for book_id=%s", book_id)
-            self._book_store.set_error(book_id, str(exc))
+            if _still_current():
+                self._book_store.set_error(book_id, str(exc))
         finally:
-            self._book_tasks.pop(book_id, None)
+            if _still_current():
+                self._book_tasks.pop(book_id, None)
             if self._on_trading_change is not None:
                 self._on_trading_change()
 
@@ -1047,6 +1132,83 @@ class SchedulerPlugin:
             }
             for b in books
         ]))
+
+    def _stop_book(self, args: dict) -> ToolResult:
+        book_id = args.get("book_id")
+        if not isinstance(book_id, int):
+            return ToolResult(content="book_id (integer) is required", is_error=True)
+        book = self._book_store.get(book_id)
+        if book is None:
+            return ToolResult(content=f"No book with id {book_id}", is_error=True)
+
+        task = self._book_tasks.get(book_id)
+        if task is not None and not task.done():
+            task.cancel()  # _run_book_ingestion's own handler sets STATUS_STOPPED
+        else:
+            # No live task -- e.g. a Cerebral restart mid-run orphaned this
+            # book at "processing" with nothing left to cancel. Mark it
+            # stopped directly so it isn't stuck forever.
+            self._book_store.set_stopped(book_id)
+            if self._on_trading_change is not None:
+                self._on_trading_change()
+        return ToolResult(content=json.dumps({"book_id": book_id, "status": "stopped"}))
+
+    async def _retry_book(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
+        book_id = args.get("book_id")
+        if not isinstance(book_id, int):
+            return ToolResult(content="book_id (integer) is required", is_error=True)
+        book = self._book_store.get(book_id)
+        if book is None:
+            return ToolResult(content=f"No book with id {book_id}", is_error=True)
+
+        task = self._book_tasks.get(book_id)
+        if task is not None and not task.done():
+            task.cancel()
+
+        path = Path(book.stored_path)
+        if not path.exists():
+            return ToolResult(
+                content=f"Original file for '{book.title}' is no longer on disk -- cannot redo",
+                is_error=True,
+            )
+        text = extract_full_text(path)
+        if not text.strip():
+            return ToolResult(content=f"Could not re-extract any text from '{book.title}'", is_error=True)
+
+        chunks = chunk_text(text)
+        self._book_store.reset(book_id)
+        self._book_store.set_total_chunks(book_id, len(chunks))
+        self._launch_book_ingestion(book_id, chunks, book.title, strategy_store=strategy_store, fetch=fetch)
+        if self._on_trading_change is not None:
+            self._on_trading_change()
+
+        return ToolResult(content=json.dumps({
+            "book_id": book_id, "title": book.title, "status": "queued", "total_chunks": len(chunks),
+        }))
+
+    def _delete_book(self, args: dict) -> ToolResult:
+        book_id = args.get("book_id")
+        if not isinstance(book_id, int):
+            return ToolResult(content="book_id (integer) is required", is_error=True)
+        book = self._book_store.get(book_id)
+        if book is None:
+            return ToolResult(content=f"No book with id {book_id}", is_error=True)
+
+        task = self._book_tasks.get(book_id)
+        if task is not None and not task.done():
+            task.cancel()
+
+        try:
+            stored_dir = Path(book.stored_path).resolve().parent
+            if stored_dir.is_relative_to(self._books_dir.resolve()):
+                shutil.rmtree(stored_dir, ignore_errors=True)
+        except Exception:
+            logger.warning("[scheduler] could not remove stored file for book_id=%s", book_id, exc_info=True)
+
+        self._book_store.delete(book_id)
+        if self._on_trading_change is not None:
+            self._on_trading_change()
+        return ToolResult(content=json.dumps({"book_id": book_id, "status": "deleted"}))
 
     async def _edit_strategy(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
         """S17 (#862): edit an existing strategy's code -- new version, full

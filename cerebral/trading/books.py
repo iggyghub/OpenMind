@@ -42,6 +42,7 @@ STATUS_QUEUED = "queued"
 STATUS_PROCESSING = "processing"
 STATUS_DONE = "done"
 STATUS_ERROR = "error"
+STATUS_STOPPED = "stopped"
 
 # Extensions this module can pull text from. Real books arrive in whatever
 # format the source sells them in, not just PDF -- ebook formats (epub,
@@ -132,6 +133,28 @@ class BookStore:
             "UPDATE books SET status = ?, error_message = ? WHERE id = ?",
             (STATUS_ERROR, message, book_id),
         )
+        self._con.commit()
+
+    def set_stopped(self, book_id: int) -> None:
+        self._con.execute(
+            "UPDATE books SET status = ? WHERE id = ?", (STATUS_STOPPED, book_id),
+        )
+        self._con.commit()
+
+    def reset(self, book_id: int) -> None:
+        """Back to a fresh queued state, all progress/counters cleared --
+        used by retry_book to redo a book's ingestion from scratch.
+        total_chunks is set separately (set_total_chunks) once the file
+        has been re-extracted and re-chunked."""
+        self._con.execute(
+            "UPDATE books SET status = ?, total_chunks = 0, processed_chunks = 0, "
+            "strategies_found = 0, error_message = '' WHERE id = ?",
+            (STATUS_QUEUED, book_id),
+        )
+        self._con.commit()
+
+    def delete(self, book_id: int) -> None:
+        self._con.execute("DELETE FROM books WHERE id = ?", (book_id,))
         self._con.commit()
 
     def get(self, book_id: int) -> Optional[Book]:

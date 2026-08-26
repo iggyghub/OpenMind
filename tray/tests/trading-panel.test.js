@@ -267,6 +267,31 @@ describe('renderTradingUpdate books section (2026-08-26)', () => {
     });
   });
 
+  test('a processing book shows a Stop button', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [],
+        books: [{ id: 5, title: 'Reminiscences', filename: 'r.pdf', status: 'processing', total_chunks: 20, processed_chunks: 8, strategies_found: 1, error_message: '' }],
+      }, mount);
+      expect(mount.innerHTML).toContain('book-stop-btn');
+      expect(mount.innerHTML).toContain('data-book-id="5"');
+    });
+  });
+
+  test('a done book has no Stop button, but keeps Redo and Delete', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [],
+        books: [{ id: 5, title: 'Done Book', filename: 'd.pdf', status: 'done', total_chunks: 5, processed_chunks: 5, strategies_found: 2, error_message: '' }],
+      }, mount);
+      expect(mount.innerHTML).not.toContain('book-stop-btn');
+      expect(mount.innerHTML).toContain('book-retry-btn');
+      expect(mount.innerHTML).toContain('book-delete-btn');
+    });
+  });
+
   test('multiple books each render their own row', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
@@ -296,6 +321,26 @@ describe('buildUploadBookEvent (2026-08-26)', () => {
     expect(TradingPanel.buildUploadBookEvent('wizards.pdf', 'YWJj', 'Market Wizards')).toEqual({
       type: 'call_tool',
       data: { name: 'upload_book', args: { filename: 'wizards.pdf', data_base64: 'YWJj', title: 'Market Wizards' } },
+    });
+  });
+});
+
+describe('buildStopBookEvent / buildRetryBookEvent / buildDeleteBookEvent (2026-08-26)', () => {
+  test('stop_book carries the book id', () => {
+    expect(TradingPanel.buildStopBookEvent(7)).toEqual({
+      type: 'call_tool', data: { name: 'stop_book', args: { book_id: 7 } },
+    });
+  });
+
+  test('retry_book carries the book id', () => {
+    expect(TradingPanel.buildRetryBookEvent(7)).toEqual({
+      type: 'call_tool', data: { name: 'retry_book', args: { book_id: 7 } },
+    });
+  });
+
+  test('delete_book carries the book id', () => {
+    expect(TradingPanel.buildDeleteBookEvent(7)).toEqual({
+      type: 'call_tool', data: { name: 'delete_book', args: { book_id: 7 } },
     });
   });
 });

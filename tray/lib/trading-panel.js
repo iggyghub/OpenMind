@@ -127,8 +127,9 @@ function _renderBooksSection(books) {
   const rows = (books || []).map((b) => {
     const pct = b.total_chunks > 0 ? Math.round((b.processed_chunks / b.total_chunks) * 100) : 0;
     const statusLabel = b.status === 'error' ? 'Error: ' + (b.error_message || 'unknown') : b.status;
+    const canStop = b.status === 'processing' || b.status === 'queued';
     return `
-      <div class="book-row" data-status="${b.status}">
+      <div class="book-row" data-status="${b.status}" data-book-id="${b.id}">
         <div class="book-row-title">${b.title}</div>
         <div class="book-row-meta">
           <span class="book-status book-status-${b.status}">${statusLabel}</span>
@@ -136,6 +137,11 @@ function _renderBooksSection(books) {
           <span class="book-strategies-found">${b.strategies_found} strateg${b.strategies_found === 1 ? 'y' : 'ies'} found</span>
         </div>
         ${b.status === 'processing' ? `<div class="book-progress-bar"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
+        <div class="book-row-actions">
+          ${canStop ? `<button class="book-stop-btn" type="button" data-book-id="${b.id}">Stop</button>` : ''}
+          <button class="book-retry-btn" type="button" data-book-id="${b.id}">Redo</button>
+          <button class="book-delete-btn" type="button" data-book-id="${b.id}">Delete</button>
+        </div>
       </div>
     `;
   }).join('');
@@ -144,7 +150,7 @@ function _renderBooksSection(books) {
       <h3>Books</h3>
       <div class="books-upload-row">
         <input type="file" class="books-file-input" multiple accept=".pdf,.epub,.mobi,.azw,.azw3,.docx,.doc,.odt,.rtf,.txt,.md">
-        <span class="books-upload-hint">PDF or plain text -- upload several at once, each processes in the background.</span>
+        <span class="books-upload-hint">Upload several at once -- each reads in full and processes in the background.</span>
       </div>
       <div class="books-list">${rows || '<div class="books-empty">No books uploaded yet.</div>'}</div>
     </div>
@@ -165,28 +171,67 @@ function buildUploadBookEvent(filename, dataBase64, title) {
   return { type: 'call_tool', data: { name: 'upload_book', args: args } };
 }
 
+/** Cancels a book's in-progress ingestion, freezing its progress in place. */
+function buildStopBookEvent(bookId) {
+  return { type: 'call_tool', data: { name: 'stop_book', args: { book_id: bookId } } };
+}
+
+/** Redoes a book's ingestion from scratch (re-extracts + re-chunks the stored file). */
+function buildRetryBookEvent(bookId) {
+  return { type: 'call_tool', data: { name: 'retry_book', args: { book_id: bookId } } };
+}
+
+/** Removes a book's record and stored file (strategies already dispatched are kept). */
+function buildDeleteBookEvent(bookId) {
+  return { type: 'call_tool', data: { name: 'delete_book', args: { book_id: bookId } } };
+}
+
 /**
- * Wires the multi-file input: reads each selected file as base64 and
- * fires one upload_book call per file (matching upload_book's own "call
- * once per file for multiple books" contract), then polls once so the
- * new queued row appears without waiting for the first background
- * progress tick.
+ * Wires the multi-file input (reads each selected file as base64 and fires
+ * one upload_book call per file, then polls once so the new queued row
+ * appears without waiting for the first background progress tick) and the
+ * per-row Stop/Redo/Delete buttons (event-delegated off .books-list since
+ * rows re-render on every trading_update).
  */
 function _wireBooksSection(mount, sendEventFn) {
   const input = mount.querySelector('.books-file-input');
-  if (!input || !sendEventFn) return;
-  input.addEventListener('change', () => {
-    const files = Array.from(input.files || []);
-    files.forEach((file) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = String(reader.result).split(',').pop(); // strip data: URL prefix
-        sendEventFn(buildUploadBookEvent(file.name, base64));
-        sendEventFn({ type: 'trading_poll' });
-      };
-      reader.readAsDataURL(file);
+  if (input && sendEventFn) {
+    input.addEventListener('change', () => {
+      const files = Array.from(input.files || []);
+      files.forEach((file) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const base64 = String(reader.result).split(',').pop(); // strip data: URL prefix
+          sendEventFn(buildUploadBookEvent(file.name, base64));
+          sendEventFn({ type: 'trading_poll' });
+        };
+        reader.readAsDataURL(file);
+      });
+      input.value = ''; // allow re-selecting the same file(s) later
     });
-    input.value = ''; // allow re-selecting the same file(s) later
+  }
+
+  const list = mount.querySelector('.books-list');
+  if (!list || !sendEventFn) return;
+  list.addEventListener('click', (e) => {
+    const stopBtn = e.target.closest('.book-stop-btn');
+    if (stopBtn) {
+      sendEventFn(buildStopBookEvent(parseInt(stopBtn.dataset.bookId, 10)));
+      return;
+    }
+    const retryBtn = e.target.closest('.book-retry-btn');
+    if (retryBtn) {
+      sendEventFn(buildRetryBookEvent(parseInt(retryBtn.dataset.bookId, 10)));
+      return;
+    }
+    const deleteBtn = e.target.closest('.book-delete-btn');
+    if (deleteBtn) {
+      const row = deleteBtn.closest('.book-row');
+      const title = row ? row.querySelector('.book-row-title').textContent : 'this book';
+      if (window.confirm(`Delete "${title}"? This removes its record and stored file -- strategies it already produced are kept.`)) {
+        sendEventFn(buildDeleteBookEvent(parseInt(deleteBtn.dataset.bookId, 10)));
+      }
+    }
   });
 }
 
@@ -849,6 +894,9 @@ return {
   buildStartDiscoveryEvent: buildStartDiscoveryEvent,
   buildStopDiscoveryEvent: buildStopDiscoveryEvent,
   buildUploadBookEvent: buildUploadBookEvent,
+  buildStopBookEvent: buildStopBookEvent,
+  buildRetryBookEvent: buildRetryBookEvent,
+  buildDeleteBookEvent: buildDeleteBookEvent,
 };
 
 }));

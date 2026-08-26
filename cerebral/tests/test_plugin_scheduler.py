@@ -1,8 +1,10 @@
 """Unit tests for SchedulerPlugin's paper-trade execution + dispatch (issue #848)."""
+import asyncio
 import json
 import pytest
 import pandas as pd
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from plugins.scheduler import SchedulerPlugin
 from cerebral.trading.broker import StubBrokerClient
@@ -1153,3 +1155,174 @@ async def test_list_books_orders_newest_first(tmp_path):
     titles = [b["title"] for b in json.loads(plugin._list_books({}).content)]
 
     assert titles == ["second", "first"]
+
+
+# ── 2026-08-26: stop_book / retry_book / delete_book ─────────────────────
+# User-facing gap found live: no way to stop, redo, or delete an uploaded
+# book once it's queued/processing/done.
+
+class BlockingRouter(BookRouter):
+    """Blocks the FIRST call to .complete() on `gate` until a test releases
+    it -- lets a test observe (and act on) a book while its ingestion task
+    is still genuinely mid-chunk, instead of racing a fast fake."""
+    def __init__(self, claims):
+        super().__init__(claims)
+        self.gate = asyncio.Event()
+        self.entered = asyncio.Event()
+
+    async def complete(self, prompt: str, task_type: str) -> str:
+        self.entered.set()
+        await self.gate.wait()
+        return await super().complete(prompt, task_type)
+
+
+async def test_stop_book_cancels_the_running_task(tmp_path):
+    router = BlockingRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
+    book_id = json.loads(result.content)["book_id"]
+    task = plugin._book_tasks[book_id]
+    await router.entered.wait()  # ingestion is now blocked mid chunk 1
+
+    stop_result = plugin._stop_book({"book_id": book_id})
+    assert not stop_result.is_error
+    await task  # cancellation is swallowed internally -- completes normally
+
+    assert plugin._book_store.get(book_id).status == "stopped"
+
+
+async def test_stop_book_marks_an_orphaned_processing_book_as_stopped(tmp_path):
+    """No entry in _book_tasks -- simulates a book left stuck at
+    'processing' by a Cerebral restart that lost the in-memory task."""
+    plugin = _plugin(tmp_path)
+    book = plugin._book_store.add("Orphaned", "o.txt", "/tmp/o.txt")
+    plugin._book_store.set_total_chunks(book.id, 5)
+    plugin._book_store.update_progress(book.id, 2, 0)
+
+    result = plugin._stop_book({"book_id": book.id})
+
+    assert not result.is_error
+    assert plugin._book_store.get(book.id).status == "stopped"
+
+
+async def test_stop_book_unknown_id_is_an_error(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    result = plugin._stop_book({"book_id": 9999})
+
+    assert result.is_error
+
+
+async def test_retry_book_reprocesses_from_scratch(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    router = BookRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    result = await plugin._upload_book(
+        {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
+        strategy_store=store, fetch=fetch,
+    )
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+    assert plugin._book_store.get(book_id).status == "done"
+
+    retry_result = await plugin._retry_book({"book_id": book_id}, strategy_store=store, fetch=fetch)
+    assert not retry_result.is_error, retry_result.content
+    await plugin._book_tasks[book_id]
+
+    book = plugin._book_store.get(book_id)
+    assert book.status == "done"
+    assert book.processed_chunks == 1
+    assert book.strategies_found == 1
+
+
+async def test_retry_book_errors_when_the_stored_file_is_gone(tmp_path):
+    plugin = _plugin(tmp_path)
+    book = plugin._book_store.add("Missing File", "m.txt", str(tmp_path / "does_not_exist.txt"))
+
+    result = await plugin._retry_book({"book_id": book.id})
+
+    assert result.is_error
+    assert "no longer on disk" in result.content
+
+
+async def test_retry_book_unknown_id_is_an_error(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    result = await plugin._retry_book({"book_id": 9999})
+
+    assert result.is_error
+
+
+async def test_retry_book_is_not_clobbered_by_the_superseded_tasks_late_completion(tmp_path):
+    """Cancellation is delivered asynchronously -- retry_book cancels the
+    old task and immediately registers a new one under the same book_id.
+    The old task's own completion handler must recognize it's no longer
+    'current' and skip writing terminal state, or its late cancellation
+    settling could clobber the new run's fresh status."""
+    router = BlockingRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
+    book_id = json.loads(result.content)["book_id"]
+    old_task = plugin._book_tasks[book_id]
+    await router.entered.wait()
+
+    retry_result = await plugin._retry_book({"book_id": book_id})
+    assert not retry_result.is_error, retry_result.content
+    new_task = plugin._book_tasks[book_id]
+    assert new_task is not old_task
+
+    await old_task  # let the superseded task's cancellation settle first
+    assert plugin._book_store.get(book_id).status != "stopped"  # not clobbered
+
+    router.gate.set()  # release the still-blocked new run so it can finish
+    await new_task
+
+    assert plugin._book_store.get(book_id).status == "done"
+
+
+async def test_delete_book_removes_the_record_and_the_stored_file(tmp_path):
+    router = BookRouter([])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+    stored_path = Path(plugin._book_store.get(book_id).stored_path)
+    assert stored_path.exists()
+
+    delete_result = plugin._delete_book({"book_id": book_id})
+
+    assert not delete_result.is_error
+    assert plugin._book_store.get(book_id) is None
+    assert not stored_path.exists()
+
+
+async def test_delete_book_cancels_an_in_progress_task(tmp_path):
+    router = BlockingRouter(["Some claim about AAPL."])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
+    book_id = json.loads(result.content)["book_id"]
+    task = plugin._book_tasks[book_id]
+    await router.entered.wait()
+
+    delete_result = plugin._delete_book({"book_id": book_id})
+    assert not delete_result.is_error
+    await task  # cancellation settles cleanly, no crash
+
+    assert plugin._book_store.get(book_id) is None
+
+
+async def test_delete_book_unknown_id_is_an_error(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    result = plugin._delete_book({"book_id": 9999})
+
+    assert result.is_error

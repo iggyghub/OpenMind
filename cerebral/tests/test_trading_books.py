@@ -222,6 +222,49 @@ def test_book_store_set_done_and_set_error(tmp_path):
     assert err.error_message == "unreadable PDF"
 
 
+def test_book_store_set_stopped(tmp_path):
+    store = _store(tmp_path)
+    book = store.add("Reminiscences", "rem.pdf", "/x/rem.pdf")
+    store.set_total_chunks(book.id, 10)
+    store.update_progress(book.id, 4, 1)
+
+    store.set_stopped(book.id)
+
+    fetched = store.get(book.id)
+    assert fetched.status == "stopped"
+    assert fetched.processed_chunks == 4  # progress frozen in place, not cleared
+    assert fetched.strategies_found == 1
+
+
+def test_book_store_reset_clears_progress_back_to_queued(tmp_path):
+    store = _store(tmp_path)
+    book = store.add("Reminiscences", "rem.pdf", "/x/rem.pdf")
+    store.set_total_chunks(book.id, 10)
+    store.update_progress(book.id, 4, 1)
+    store.set_error(book.id, "some earlier failure")
+
+    store.reset(book.id)
+
+    fetched = store.get(book.id)
+    assert fetched.status == "queued"
+    assert fetched.total_chunks == 0
+    assert fetched.processed_chunks == 0
+    assert fetched.strategies_found == 0
+    assert fetched.error_message == ""
+
+
+def test_book_store_delete_removes_the_row(tmp_path):
+    store = _store(tmp_path)
+    keep = store.add("Keep Me", "keep.pdf", "/keep.pdf")
+    gone = store.add("Delete Me", "gone.pdf", "/gone.pdf")
+
+    store.delete(gone.id)
+
+    assert store.get(gone.id) is None
+    assert store.get(keep.id) is not None
+    assert [b.title for b in store.list_all()] == ["Keep Me"]
+
+
 def test_book_store_list_all_orders_newest_first(tmp_path):
     store = _store(tmp_path)
     store.add("First", "1.pdf", "/1.pdf")

@@ -325,7 +325,7 @@ class TestSchedulerPlugin:
             "create_event", "list_events", "update_event", "delete_event",
             "run_gauntlet", "edit_strategy", "get_strategy_code", "mix_strategies",
             "run_discovery", "start_discovery", "stop_discovery", "get_discovery_status",
-            "upload_book", "list_books",
+            "upload_book", "list_books", "stop_book", "retry_book", "delete_book",
         }
 
     # -----------------------------------------------------------------------
