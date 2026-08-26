@@ -123,7 +123,7 @@ function buildStopDiscoveryEvent() {
  *   processed_chunks, strategies_found, error_message}] from
  *   cerebral/main.py's _trading_broadcast().
  */
-function _renderBooksSection(books) {
+function _renderBooksSection(books, booksModel) {
   const rows = (books || []).map((b) => {
     const pct = b.total_chunks > 0 ? Math.round((b.processed_chunks / b.total_chunks) * 100) : 0;
     const statusLabel = b.status === 'error' ? 'Error: ' + (b.error_message || 'unknown') : b.status;
@@ -147,7 +147,7 @@ function _renderBooksSection(books) {
   }).join('');
   return `
     <div class="books-section">
-      <h3>Books</h3>
+      <h3>Books ${booksModel ? `<span class="books-reading-model">reading with ${booksModel}</span>` : ''}</h3>
       <div class="books-upload-row">
         <input type="file" class="books-file-input" multiple accept=".pdf,.epub,.mobi,.azw,.azw3,.docx,.doc,.odt,.rtf,.txt,.md">
         <span class="books-upload-hint">Upload several at once -- each reads in full and processes in the background.</span>
@@ -257,7 +257,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   // unconditionally, so both branches have them (previously only the
   // non-empty branch injected any styles at all).
   const discoveryHtml = _renderDiscoveryControl(data && data.discovery);
-  const booksHtml = _renderBooksSection(data && data.books);
+  const booksHtml = _renderBooksSection(data && data.books, data && data.books_model);
   _injectTradingPanelStyles();
 
   if (!data || !data.positions || data.positions.length === 0) {
@@ -393,6 +393,7 @@ function _injectTradingPanelStyles() {
     .discovery-duration-input { width: 80px; padding: 3px 6px; border: 1px solid var(--border, #ccc); border-radius: 3px; background: var(--bg, #fff); color: var(--text, #333); }
     .books-section { margin-bottom: 16px; padding: 12px; background: var(--bg-elev, #f8f9fa); border-radius: 6px; border: 1px solid var(--border, #eee); font-family: sans-serif; }
     .books-section h3 { margin: 0 0 8px; font-size: 14px; color: var(--text, #333); }
+    .books-reading-model { font-size: 0.75em; font-weight: normal; color: var(--text-muted, #777); margin-left: 6px; }
     .books-upload-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
     .books-upload-hint { font-size: 0.85em; color: var(--text-muted, #777); }
     .books-list { display: flex; flex-direction: column; gap: 8px; }

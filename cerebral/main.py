@@ -3694,9 +3694,23 @@ async def _trading_broadcast() -> None:
             }
             for b in _scheduler_plugin._book_store.list_all()
         ]
+        # Which model claim-extraction is actually reading chunks with right
+        # now -- setting the 'books' task in Settings -> Models had no
+        # visible confirmation anywhere it was taking effect (found live
+        # 2026-08-26). Resolve the friendly label the same way the Settings
+        # panel already shows it, falling back to the bare id if a custom
+        # model was since removed.
+        books_task_model_id = _router.task_models().get("books") or _router.active_model
+        books_model_label = next(
+            (m["label"] for m in _router.list_models() if m["id"] == books_task_model_id),
+            books_task_model_id,
+        )
         await _broadcast({
             "type": "trading_update",
-            "data": {"positions": positions, "alerts": alerts, "discovery": discovery, "books": books},
+            "data": {
+                "positions": positions, "alerts": alerts, "discovery": discovery,
+                "books": books, "books_model": books_model_label,
+            },
         })
     except Exception as e:
         logger.warning(f"[cerebral] trading broadcast failed: {e}", exc_info=True)

@@ -218,6 +218,24 @@ describe('renderTradingUpdate books section (2026-08-26)', () => {
     });
   });
 
+  test('shows which model is reading books, when known', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [], books: [], books_model: 'Budd thinking',
+      }, mount);
+      expect(mount.innerHTML).toContain('reading with Budd thinking');
+    });
+  });
+
+  test('omits the reading-with label when no books_model is given', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], books: [] }, mount);
+      expect(mount.innerHTML).not.toContain('reading with');
+    });
+  });
+
   test('renders alongside a populated strategy list too', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
