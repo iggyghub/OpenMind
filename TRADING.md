@@ -3,12 +3,12 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: active
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S32 -- #898 -- Manual per-strategy Halt/Resume + trade-count
-  visibility on the Strategies list.
+- **Active:** none -- S32 is the last queued slice and it's landed. A
+  new campaign against this driver needs a fresh grill session first.
 - **Model:** sonnet
 
 ## Queue
@@ -162,7 +162,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   (stdlib zoneinfo, no holiday calendar -- disclosed gap). See #896 for
   full acceptance criteria.
 
-- [ ] S32 -- #898 -- Manual per-strategy Halt/Resume + trade-count
+- [x] S32 -- #898 -- Manual per-strategy Halt/Resume + trade-count
   visibility on the Strategies list. Found live 2026-08-27 testing book-
   sourced strategies: no way to tell if a strategy is actually trading
   (list shows only name + status, no activity signal) and no way to stop
@@ -175,7 +175,19 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   a trade-count badge + Halt/Resume buttons in the tray Strategies view.
   Resume always lands back at "paper", never straight to "live" -- a
   resumed strategy re-earns live status through the normal 30-trade
-  graduation gate again. See #898 for full acceptance criteria.
+  graduation gate again. self_dev's own attempt (PR #899) implemented the
+  four files correctly but shipped two real gaps, fixed by hand: the two
+  new tools' `Tool(...)` entries were never added to `list_tools()` (the
+  dispatch handlers existed, so a raw call_tool IPC message worked, but
+  the LLM planner/chat routing and any tool-introspection UI couldn't see
+  them at all), and zero test coverage was added for any of it -- writing
+  that coverage caught a real bug (`s.live_trades` rendered literally as
+  the string "undefined" when missing). Also surfaced, unrelated to this
+  slice: scheduler.py's capability manifest hadn't been updated to declare
+  `fs_delete` when delete_book's shutil.rmtree() landed earlier the same
+  day, caught by a full-suite run (that feature's own commits only ran
+  the scoped trading test files) -- fixed separately on master. See #898 for full acceptance
+  criteria and the PR for the full bug account.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
