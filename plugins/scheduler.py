@@ -37,9 +37,11 @@ logger = logging.getLogger(__name__)
 PLUGIN_NAME = "scheduler"
 
 # ADR-0005 / Issue #44 — list_events reads SQLite (fs_read); create_event /
-# update_event / delete_event mutate the events table (fs_write). The DB
-# file itself is never unlinked, so fs_delete is not needed.
-REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write"})
+# update_event / delete_event mutate the events table (fs_write).
+# 2026-08-27: delete_book's shutil.rmtree() on a book's stored upload
+# directory needs fs_delete too -- the DB file itself is still never
+# unlinked, but a book's underlying source file now can be.
+REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write", "fs_delete"})
 
 from cerebral.paths import data_dir
 
