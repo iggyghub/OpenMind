@@ -9,6 +9,7 @@ from pathlib import Path
 from plugins.scheduler import SchedulerPlugin
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
+from cerebral.trading.lifecycle import StrategyLifecycle
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 
 ALWAYS_LONG = "def strategy(data):\n    return [1] * len(data)"
@@ -1336,3 +1337,97 @@ async def test_delete_book_unknown_id_is_an_error(tmp_path):
     result = plugin._delete_book({"book_id": 9999})
 
     assert result.is_error
+
+
+# ── halt_strategy / resume_strategy (S32/#898, 2026-08-27) ──────────────
+# _lifecycle is a post-construction seam (like _on_trading_change) --
+# cerebral/main.py wires the real StrategyLifecycle singleton in after
+# both objects already exist, so tests inject their own tmp_path-scoped
+# one the same way.
+
+def test_halt_strategy_requires_strategy_id(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+
+    result = plugin._halt_strategy({})
+
+    assert result.is_error
+
+
+def test_halt_strategy_without_a_wired_lifecycle_is_an_error(tmp_path):
+    plugin = _plugin(tmp_path)  # _lifecycle left at its None default
+
+    result = plugin._halt_strategy({"strategy_id": "s1"})
+
+    assert result.is_error
+
+
+def test_halt_strategy_sets_status_to_halted(tmp_path):
+    plugin = _plugin(tmp_path)
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    plugin._lifecycle = lifecycle
+    lifecycle.get_state("s1")  # create it, default "paper"
+
+    result = plugin._halt_strategy({"strategy_id": "s1"})
+
+    assert not result.is_error, result.content
+    assert lifecycle.get_state("s1").status == "halted"
+
+
+def test_halt_strategy_triggers_on_trading_change(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    calls = []
+    plugin._on_trading_change = lambda: calls.append(1)
+
+    plugin._halt_strategy({"strategy_id": "s1"})
+
+    assert calls == [1]
+
+
+def test_resume_strategy_requires_strategy_id(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+
+    result = plugin._resume_strategy({})
+
+    assert result.is_error
+
+
+def test_resume_strategy_rejects_a_strategy_that_is_not_halted(tmp_path):
+    plugin = _plugin(tmp_path)
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    plugin._lifecycle = lifecycle
+    lifecycle.get_state("s1")  # default "paper", never halted
+
+    result = plugin._resume_strategy({"strategy_id": "s1"})
+
+    assert result.is_error
+    assert "not halted" in result.content
+
+
+def test_resume_strategy_goes_back_to_paper(tmp_path):
+    plugin = _plugin(tmp_path)
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    plugin._lifecycle = lifecycle
+    lifecycle.halt_strategy("s1")
+
+    result = plugin._resume_strategy({"strategy_id": "s1"})
+
+    assert not result.is_error, result.content
+    assert lifecycle.get_state("s1").status == "paper"
+
+
+async def test_halt_and_resume_strategy_are_reachable_via_call_tool(tmp_path):
+    plugin = _plugin(tmp_path)
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    plugin._lifecycle = lifecycle
+    lifecycle.get_state("s1")
+
+    halt_result = await plugin.call_tool("halt_strategy", {"strategy_id": "s1"})
+    assert not halt_result.is_error, halt_result.content
+    assert lifecycle.get_state("s1").status == "halted"
+
+    resume_result = await plugin.call_tool("resume_strategy", {"strategy_id": "s1"})
+    assert not resume_result.is_error, resume_result.content
+    assert lifecycle.get_state("s1").status == "paper"

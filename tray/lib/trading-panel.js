@@ -211,6 +211,16 @@ function buildDeleteBookEvent(bookId) {
   return { type: 'call_tool', data: { name: 'delete_book', args: { book_id: bookId } } };
 }
 
+/** Halts a strategy's autonomous dispatch manually. */
+function buildHaltStrategyEvent(strategyId) {
+  return { type: 'call_tool', data: { name: 'halt_strategy', args: { strategy_id: strategyId } } };
+}
+
+/** Reverses a manual or automatic halt, resuming at 'paper' status. */
+function buildResumeStrategyEvent(strategyId) {
+  return { type: 'call_tool', data: { name: 'resume_strategy', args: { strategy_id: strategyId } } };
+}
+
 /**
  * Wires the multi-file input (reads each selected file as base64 and fires
  * one upload_book call per file, then polls once so the new queued row
@@ -336,11 +346,14 @@ function renderTradingUpdate(data, container, sendEventFn) {
       <div class="strategy-list">
         <h3>Strategies</h3>
         <ul>
-          ${state.strategies.map((s, i) => `
+          ${state.strategies.map((s, i) => {
+            const trades = s.live_trades || 0;
+            return `
             <li class="${i === state.selectedIdx ? 'selected' : ''}" data-idx="${i}">
-              ${s.name} <span class="status-badge">${s.status.toUpperCase()}</span>
+              ${s.name} <span class="status-badge">${s.status.toUpperCase()}</span> <span class="trade-count-badge">${trades} trade${trades === 1 ? '' : 's'}</span>
             </li>
-          `).join('')}
+          `;
+          }).join('')}
         </ul>
       </div>
       <div class="strategy-detail">
@@ -354,6 +367,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
             <h3>Edit Strategy Code</h3>
             <textarea class="strategy-code-editor" rows="12" spellcheck="false">${strategy.code || ''}</textarea>
             <button class="save-strategy-btn">Save Changes</button>
+            <button class="halt-resume-btn" id="halt-resume-btn" style="margin-top: 8px; padding: 6px 12px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">${strategy.status === 'halted' ? 'Resume' : 'Halt'}</button>
           </div>
           <div class="fill-list">
              <h3>Recent Fills</h3>
@@ -387,10 +401,17 @@ function renderTradingUpdate(data, container, sendEventFn) {
 
   // Wire edit save button
   const saveBtn = mount.querySelector('.save-strategy-btn');
+  const haltResumeBtn = mount.querySelector('#halt-resume-btn');
   const textarea = mount.querySelector('.strategy-code-editor');
   if (saveBtn && textarea && strategy) {
     saveBtn.addEventListener('click', () => {
       if (sendEventFn) sendEventFn(buildStrategyEditEvent(strategy, textarea.value));
+    });
+  }
+  if (haltResumeBtn && sendEventFn) {
+    haltResumeBtn.addEventListener('click', () => {
+      if (strategy.status !== 'halted' && !window.confirm("Halt this strategy's autonomous dispatch?")) return;
+      sendEventFn(strategy.status === 'halted' ? buildResumeStrategyEvent(strategy.name) : buildHaltStrategyEvent(strategy.name));
     });
   }
 }
@@ -425,6 +446,8 @@ function _injectTradingPanelStyles() {
     .strategy-code-editor { width: 100%; font-family: monospace; font-size: 0.9em; padding: 8px; border: 1px solid #ccc; border-radius: 4px; resize: vertical; box-sizing: border-box; }
     .save-strategy-btn { margin-top: 8px; padding: 6px 12px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; }
     .save-strategy-btn:hover { background: #2980b9; }
+    .halt-resume-btn { margin-top: 8px; padding: 6px 12px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; }
+    .trade-count-badge { font-size: 0.7em; padding: 2px 5px; border-radius: 3px; background: #e0e0e0; margin-left: 6px; }
     .fill-list, .alerts-box { margin-top: 16px; }
     .fills-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
     .fills-table th, .fills-table td { padding: 4px 6px; border: 1px solid #eee; text-align: left; }
@@ -959,6 +982,8 @@ return {
   buildStopBookEvent: buildStopBookEvent,
   buildRetryBookEvent: buildRetryBookEvent,
   buildDeleteBookEvent: buildDeleteBookEvent,
+  buildHaltStrategyEvent: buildHaltStrategyEvent,
+  buildResumeStrategyEvent: buildResumeStrategyEvent,
 };
 
 }));

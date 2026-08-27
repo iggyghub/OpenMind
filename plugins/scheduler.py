@@ -180,6 +180,7 @@ class SchedulerPlugin:
         # panel's book-progress bars update live, not just on the next
         # unrelated broadcast or a manual trading_poll.
         self._on_trading_change = None
+        self._lifecycle = None
 
     def _init_schema(self) -> None:
         self._con.executescript("""
@@ -493,6 +494,35 @@ class SchedulerPlugin:
                     "required": ["book_id"],
                 },
             ),
+            Tool(
+                name="halt_strategy",
+                description=(
+                    "2026-08-27: manually halts a strategy's autonomous dispatch "
+                    "(paper or live) -- reversible via resume_strategy. Keeps all "
+                    "history (fills, lineage); only stops future scheduled ticks."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"strategy_id": {"type": "string"}},
+                    "required": ["strategy_id"],
+                },
+            ),
+            Tool(
+                name="resume_strategy",
+                description=(
+                    "2026-08-27: reverses a halt (manual or automatic) -- resumes "
+                    "at 'paper' status; re-earns live status through the normal "
+                    "30-trade graduation gate again rather than resuming live "
+                    "immediately."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"strategy_id": {"type": "string"}},
+                    "required": ["strategy_id"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -530,6 +560,10 @@ class SchedulerPlugin:
             return await self._retry_book(args)
         if tool_name == "delete_book":
             return self._delete_book(args)
+        if tool_name == "halt_strategy":
+            return self._halt_strategy(args)
+        if tool_name == "resume_strategy":
+            return self._resume_strategy(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -1216,6 +1250,31 @@ class SchedulerPlugin:
         if self._on_trading_change is not None:
             self._on_trading_change()
         return ToolResult(content=json.dumps({"book_id": book_id, "status": "deleted"}))
+
+    def _halt_strategy(self, args: dict) -> ToolResult:
+        strategy_id = (args.get("strategy_id") or "").strip()
+        if not strategy_id:
+            return ToolResult(content="strategy_id is required", is_error=True)
+        if self._lifecycle is None:
+            return ToolResult(content="Strategy lifecycle is not wired", is_error=True)
+        self._lifecycle.halt_strategy(strategy_id)
+        if self._on_trading_change is not None:
+            self._on_trading_change()
+        return ToolResult(content=json.dumps({"strategy_id": strategy_id, "status": "halted"}))
+
+    def _resume_strategy(self, args: dict) -> ToolResult:
+        strategy_id = (args.get("strategy_id") or "").strip()
+        if not strategy_id:
+            return ToolResult(content="strategy_id is required", is_error=True)
+        if self._lifecycle is None:
+            return ToolResult(content="Strategy lifecycle is not wired", is_error=True)
+        state = self._lifecycle.get_state(strategy_id)
+        if state.status != "halted":
+            return ToolResult(content=f"Strategy '{strategy_id}' is not halted (status={state.status})", is_error=True)
+        self._lifecycle.resume_strategy(strategy_id)
+        if self._on_trading_change is not None:
+            self._on_trading_change()
+        return ToolResult(content=json.dumps({"strategy_id": strategy_id, "status": "paper"}))
 
     async def _edit_strategy(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
         """S17 (#862): edit an existing strategy's code -- new version, full

@@ -83,9 +83,55 @@ def test_halted_strategies_ignore_fills(lifecycle):
     state = lifecycle.get_state("ignore_test")
     state.status = "halted"
     lifecycle.update_live_fill("ignore_test", pnl=5.0)
-    
+
     assert len(state.live_equity_curve) == 0
     assert state.live_trade_count == 0
+
+
+# ── halt_strategy / resume_strategy (S32/#898, 2026-08-27) ──────────────
+# Manual counterpart to the automatic CI/drawdown halt in check_retirement
+# -- user-triggered instead of computed, same effect.
+
+def test_halt_strategy_sets_status_and_persists(lifecycle):
+    lifecycle.get_state("manual_halt")  # create it first, default "paper"
+
+    lifecycle.halt_strategy("manual_halt")
+
+    assert lifecycle.get_state("manual_halt").status == "halted"
+
+
+def test_halt_strategy_emits_the_same_alert_the_automatic_path_does(lifecycle):
+    lifecycle.get_state("manual_halt_alert")
+
+    lifecycle.halt_strategy("manual_halt_alert")
+
+    alerts = lifecycle.get_alert_history()
+    assert len(alerts) == 1
+    assert alerts[0].event_type == "strategy_retirement"
+    assert alerts[0].severity == "critical"
+    assert "manual_halt_alert" in alerts[0].message
+
+
+def test_resume_strategy_goes_to_paper_not_live(lifecycle):
+    state = lifecycle.get_state("resume_test")
+    state.status = "live"  # simulate a strategy that was live before halting
+    lifecycle._save_state(state)
+    lifecycle.halt_strategy("resume_test")
+    assert lifecycle.get_state("resume_test").status == "halted"
+
+    lifecycle.resume_strategy("resume_test")
+
+    assert lifecycle.get_state("resume_test").status == "paper"
+
+
+def test_resume_strategy_persists_across_a_fresh_instance(tmp_path):
+    a = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    a.halt_strategy("persist_test")
+    a.resume_strategy("persist_test")
+
+    fresh = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+
+    assert fresh.get_state("persist_test").status == "paper"
 
 
 def test_alerts_emitted_on_graduation(lifecycle):

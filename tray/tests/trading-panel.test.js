@@ -138,6 +138,82 @@ describe('renderTradingUpdate (S19 multi-strategy panel)', () => {
   });
 });
 
+// S32/#898 (2026-08-27): user feedback -- no way to tell if a strategy is
+// actually trading (list showed only name + status) and no way to stop
+// one manually (only the automatic CI/drawdown halt existed).
+describe('renderTradingUpdate trade-count badge (S32/#898)', () => {
+  test('shows the real live_trades count in the list', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const strategies = [{ ...TWO_STRATEGIES[0], live_trades: 7 }];
+      TradingPanel.renderTradingUpdate({ positions: strategies, alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('7 trades');
+    });
+  });
+
+  test('a strategy with no trades yet shows "0 trades", not undefined', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const strategies = [{ ...TWO_STRATEGIES[0], live_trades: 0 }];
+      TradingPanel.renderTradingUpdate({ positions: strategies, alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('0 trades');
+      expect(mount.innerHTML).not.toContain('undefined');
+    });
+  });
+
+  test('a missing live_trades field defaults to 0 rather than rendering undefined', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: TWO_STRATEGIES, alerts: [] }, mount);
+      expect(mount.innerHTML).not.toContain('undefined');
+    });
+  });
+
+  test('exactly one trade is singular, not "1 trades"', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const strategies = [{ ...TWO_STRATEGIES[0], live_trades: 1 }];
+      TradingPanel.renderTradingUpdate({ positions: strategies, alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('1 trade<');
+      expect(mount.innerHTML).not.toContain('1 trades');
+    });
+  });
+});
+
+describe('buildHaltStrategyEvent / buildResumeStrategyEvent (S32/#898)', () => {
+  test('halt_strategy carries the strategy id', () => {
+    expect(TradingPanel.buildHaltStrategyEvent('my strategy@v1')).toEqual({
+      type: 'call_tool', data: { name: 'halt_strategy', args: { strategy_id: 'my strategy@v1' } },
+    });
+  });
+
+  test('resume_strategy carries the strategy id', () => {
+    expect(TradingPanel.buildResumeStrategyEvent('my strategy@v1')).toEqual({
+      type: 'call_tool', data: { name: 'resume_strategy', args: { strategy_id: 'my strategy@v1' } },
+    });
+  });
+});
+
+describe('renderTradingUpdate Halt/Resume button (S32/#898)', () => {
+  test('an active (non-halted) strategy shows Halt', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [{ ...TWO_STRATEGIES[0], status: 'paper' }], alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('>Halt<');
+      expect(mount.innerHTML).not.toContain('>Resume<');
+    });
+  });
+
+  test('a halted strategy shows Resume, not Halt', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [{ ...TWO_STRATEGIES[0], status: 'halted' }], alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('>Resume<');
+      expect(mount.innerHTML).not.toContain('>Halt<');
+    });
+  });
+});
+
 // S31 (#896): manual discovery start/stop + duration control. The control
 // must render on BOTH the empty-positions and populated branches (it's
 // independent of whether any strategy exists yet) -- that's the real bug
