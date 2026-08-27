@@ -346,11 +346,14 @@ function renderTradingUpdate(data, container, sendEventFn) {
       <div class="strategy-list">
         <h3>Strategies</h3>
         <ul>
-          ${state.strategies.map((s, i) => `
+          ${state.strategies.map((s, i) => {
+            const trades = s.live_trades || 0;
+            return `
             <li class="${i === state.selectedIdx ? 'selected' : ''}" data-idx="${i}">
-              ${s.name} <span class="status-badge">${s.status.toUpperCase()}</span> <span class="trade-count-badge">${s.live_trades} trade${s.live_trades === 1 ? '' : 's'}</span>
+              ${s.name} <span class="status-badge">${s.status.toUpperCase()}</span> <span class="trade-count-badge">${trades} trade${trades === 1 ? '' : 's'}</span>
             </li>
-          `).join('')}
+          `;
+          }).join('')}
         </ul>
       </div>
       <div class="strategy-detail">
