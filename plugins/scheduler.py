@@ -492,6 +492,35 @@ class SchedulerPlugin:
                     "required": ["book_id"],
                 },
             ),
+            Tool(
+                name="halt_strategy",
+                description=(
+                    "2026-08-27: manually halts a strategy's autonomous dispatch "
+                    "(paper or live) -- reversible via resume_strategy. Keeps all "
+                    "history (fills, lineage); only stops future scheduled ticks."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"strategy_id": {"type": "string"}},
+                    "required": ["strategy_id"],
+                },
+            ),
+            Tool(
+                name="resume_strategy",
+                description=(
+                    "2026-08-27: reverses a halt (manual or automatic) -- resumes "
+                    "at 'paper' status; re-earns live status through the normal "
+                    "30-trade graduation gate again rather than resuming live "
+                    "immediately."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"strategy_id": {"type": "string"}},
+                    "required": ["strategy_id"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
