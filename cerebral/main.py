@@ -10,6 +10,7 @@ Starts:
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -3675,7 +3676,17 @@ async def _trading_broadcast() -> None:
                 fills = _trading_forward_record.get_fills(limit=5, strategy_id=name)
                 p["recent_fills"] = [{"symbol": f["symbol"], "side": f["side"], "pnl": f["pnl"], "phase": f["phase"]} for f in fills]
                 positions.append(p)
-            alerts = _trading_lifecycle.get_alert_history()
+            # dataclasses.asdict, not the raw StructuredAlert objects --
+            # json.dumps can't serialize a dataclass instance directly.
+            # Found live 2026-08-27: this broke EVERY _trading_broadcast
+            # once the alert history stopped being empty (S32's
+            # halt_strategy is the first thing that ever actually emitted
+            # one outside a test) -- the whole trading_update broadcast
+            # silently failed (caught by the broad except below, logged to
+            # cerebral.err.log only), so the tray panel never got a single
+            # live update the whole time, even though books kept
+            # processing normally server-side.
+            alerts = [dataclasses.asdict(a) for a in _trading_lifecycle.get_alert_history()]
         # S31 (#896): read _scheduler_plugin's own settings-backed state
         # directly rather than round-tripping through get_discovery_status's
         # ToolResult/json -- same values, no serialization needed here.
