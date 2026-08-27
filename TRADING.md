@@ -3,12 +3,12 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: done
+## Status: active
 
 ## Next slice -- start here
 
-- **Active:** none -- S31 is the last queued slice and it's landed. A
-  new campaign against this driver needs a fresh grill session first.
+- **Active:** S32 -- #898 -- Manual per-strategy Halt/Resume + trade-count
+  visibility on the Strategies list.
 - **Model:** sonnet
 
 ## Queue
@@ -161,6 +161,21 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   gates paper-trade dispatch to Mon-Fri 9:30-16:00 America/New_York
   (stdlib zoneinfo, no holiday calendar -- disclosed gap). See #896 for
   full acceptance criteria.
+
+- [ ] S32 -- #898 -- Manual per-strategy Halt/Resume + trade-count
+  visibility on the Strategies list. Found live 2026-08-27 testing book-
+  sourced strategies: no way to tell if a strategy is actually trading
+  (list shows only name + status, no activity signal) and no way to stop
+  one manually -- the only existing halt path is the automatic rolling-
+  CI/drawdown check in StrategyLifecycle.check_retirement. Adds public
+  halt_strategy/resume_strategy methods on StrategyLifecycle (thin
+  wrappers reusing the existing private _halt_strategy, not new logic),
+  two matching SchedulerPlugin tools wired to the real `_trading_lifecycle`
+  via a post-construction seam (same pattern as _on_trading_change), and
+  a trade-count badge + Halt/Resume buttons in the tray Strategies view.
+  Resume always lands back at "paper", never straight to "live" -- a
+  resumed strategy re-earns live status through the normal 30-trade
+  graduation gate again. See #898 for full acceptance criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
