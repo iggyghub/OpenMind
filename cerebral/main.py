@@ -260,6 +260,7 @@ _trading_broker = StubBrokerClient()
 _trading_forward_record = ForwardRecord()
 _alert_dispatcher = AlertDispatcher()
 _trading_lifecycle = StrategyLifecycle(alert_dispatcher=_alert_dispatcher)
+_scheduler_plugin._lifecycle = _trading_lifecycle
 _trading_strategy_store = StrategyStore()
 _vetted_tickers = VettedTickers()  # S28 (#881)
 

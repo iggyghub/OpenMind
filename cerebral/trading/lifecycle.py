@@ -250,6 +250,16 @@ class StrategyLifecycle:
                 context={"strategy": name},
             ))
 
+    def halt_strategy(self, name: str, reason: str = "Halted by user") -> None:
+        """Thin public wrapper around _halt_strategy."""
+        self._halt_strategy(name, reason)
+
+    def resume_strategy(self, name: str) -> None:
+        """Resumes a halted strategy back to 'paper' (never straight to 'live')."""
+        state = self.get_state(name)
+        state.status = "paper"
+        self._save_state(state)
+
     def get_open_positions(self, name: str) -> List[dict]:
         """Returns pending/handled positions for a strategy (stubbed for panel view)."""
         state = self.get_state(name)
