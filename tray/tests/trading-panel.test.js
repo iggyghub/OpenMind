@@ -204,14 +204,15 @@ describe('renderTradingUpdate discovery control (S31/#896)', () => {
   });
 });
 
-// 2026-08-26: book ingestion -- must render alongside both branches (like
-// discovery control above), and needs to survive an undefined/empty
-// data.books without crashing (a fresh install with no books uploaded yet).
-describe('renderTradingUpdate books section (2026-08-26)', () => {
+// 2026-08-27: Books moved out to its own Trading sub-tab (previously
+// embedded atop the Strategies sub-tab, see renderTradingUpdate below for
+// the "it's gone from there now" regression guard) -- renderBooksPanel
+// reads the exact same trading_update payload, just into its own mount.
+describe('renderBooksPanel (2026-08-27, was "renderTradingUpdate books section")', () => {
   test('renders even with zero strategies and no books uploaded yet', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
-      TradingPanel.renderTradingUpdate({ positions: [], alerts: [] }, mount);
+      TradingPanel.renderBooksPanel({ positions: [], alerts: [] }, mount);
       expect(mount.innerHTML).toContain('Books');
       expect(mount.innerHTML).toContain('books-file-input');
       expect(mount.innerHTML).toContain('No books uploaded yet.');
@@ -221,7 +222,7 @@ describe('renderTradingUpdate books section (2026-08-26)', () => {
   test('shows which model is reading books, when known', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
-      TradingPanel.renderTradingUpdate({
+      TradingPanel.renderBooksPanel({
         positions: [], alerts: [], books: [], books_model: 'Budd thinking',
       }, mount);
       expect(mount.innerHTML).toContain('reading with Budd thinking');
@@ -231,53 +232,94 @@ describe('renderTradingUpdate books section (2026-08-26)', () => {
   test('omits the reading-with label when no books_model is given', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
-      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], books: [] }, mount);
+      TradingPanel.renderBooksPanel({ positions: [], alerts: [], books: [] }, mount);
       expect(mount.innerHTML).not.toContain('reading with');
-    });
-  });
-
-  test('renders alongside a populated strategy list too', () => {
-    withFakeDocument(() => {
-      const mount = fakeInteractiveMount();
-      TradingPanel.renderTradingUpdate({
-        positions: TWO_STRATEGIES, alerts: [],
-        books: [{ id: 1, title: 'Market Wizards', filename: 'wiz.pdf', status: 'done', total_chunks: 10, processed_chunks: 10, strategies_found: 3, error_message: '' }],
-      }, mount);
-      expect(mount.innerHTML).toContain('MA cross A');
-      expect(mount.innerHTML).toContain('Market Wizards');
     });
   });
 
   test('a processing book shows a progress bar and chunk count', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
-      TradingPanel.renderTradingUpdate({
+      TradingPanel.renderBooksPanel({
         positions: [], alerts: [],
         books: [{ id: 1, title: 'Reminiscences', filename: 'r.pdf', status: 'processing', total_chunks: 20, processed_chunks: 8, strategies_found: 1, error_message: '' }],
       }, mount);
       expect(mount.innerHTML).toContain('book-progress-bar');
       expect(mount.innerHTML).toContain('width:40%');
       expect(mount.innerHTML).toContain('8/20 chunks');
-      expect(mount.innerHTML).toContain('1 strategy found');
     });
   });
 
   test('a done book does not show a progress bar', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
-      TradingPanel.renderTradingUpdate({
+      TradingPanel.renderBooksPanel({
         positions: [], alerts: [],
         books: [{ id: 1, title: 'Done Book', filename: 'd.pdf', status: 'done', total_chunks: 5, processed_chunks: 5, strategies_found: 2, error_message: '' }],
       }, mount);
       expect(mount.innerHTML).not.toContain('book-progress-bar');
-      expect(mount.innerHTML).toContain('2 strategies found');
+    });
+  });
+
+  // 2026-08-27: "N strategies found" was actually every gauntlet dispatch
+  // attempt (pass or fail) -- confusingly high (e.g. "190 strategies
+  // found" against 3 real validated ones). Now split into a plain
+  // dispatch count and a real "N valid strategies" figure with a
+  // drill-down into what they actually are.
+  test('shows dispatch count separately from the real valid-strategy count', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderBooksPanel({
+        positions: [], alerts: [],
+        books: [{
+          id: 1, title: 'The Intelligent Investor', filename: 'ii.mobi', status: 'processing',
+          total_chunks: 205, processed_chunks: 42, strategies_found: 190, error_message: '',
+          valid_strategies: [
+            { strategy_id: 's1', symbol: 'AAPL', hypothesis: 'Buy Dow dogs by yield/sqrt(price)', chapter: 'chunk 16', version: 1, code: 'def strategy(data): ...', created_at: '2026-08-27T00:16:00Z' },
+          ],
+        }],
+      }, mount);
+      expect(mount.innerHTML).toContain('190 dispatches');
+      expect(mount.innerHTML).toContain('1 valid strategy');
+      expect(mount.innerHTML).not.toContain('190 strategies found');
+    });
+  });
+
+  test('a book with zero valid strategies shows a disabled toggle', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderBooksPanel({
+        positions: [], alerts: [],
+        books: [{ id: 1, title: 'No Hits Yet', filename: 'x.pdf', status: 'processing', total_chunks: 5, processed_chunks: 1, strategies_found: 0, error_message: '', valid_strategies: [] }],
+      }, mount);
+      expect(mount.innerHTML).toContain('0 valid strategies');
+      expect(mount.innerHTML).toMatch(/book-valid-toggle[^>]*disabled/);
+    });
+  });
+
+  test('valid strategy details (symbol, hypothesis, chapter) are present in the DOM for drill-down', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderBooksPanel({
+        positions: [], alerts: [],
+        books: [{
+          id: 1, title: 'Market Wizards', filename: 'mw.pdf', status: 'done',
+          total_chunks: 10, processed_chunks: 10, strategies_found: 20, error_message: '',
+          valid_strategies: [
+            { strategy_id: 's1', symbol: 'AAPL', hypothesis: 'A real extracted claim', chapter: 'chunk 3', version: 1, code: '...', created_at: '2026-08-27T00:00:00Z' },
+          ],
+        }],
+      }, mount);
+      expect(mount.innerHTML).toContain('book-valid-list');
+      expect(mount.innerHTML).toContain('A real extracted claim');
+      expect(mount.innerHTML).toContain('chunk 3');
     });
   });
 
   test('an errored book surfaces the real error message, not just "error"', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
-      TradingPanel.renderTradingUpdate({
+      TradingPanel.renderBooksPanel({
         positions: [], alerts: [],
         books: [{ id: 1, title: 'Bad Book', filename: 'b.epub', status: 'error', total_chunks: 0, processed_chunks: 0, strategies_found: 0, error_message: 'Could not extract any text' }],
       }, mount);
@@ -288,7 +330,7 @@ describe('renderTradingUpdate books section (2026-08-26)', () => {
   test('a processing book shows a Stop button', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
-      TradingPanel.renderTradingUpdate({
+      TradingPanel.renderBooksPanel({
         positions: [], alerts: [],
         books: [{ id: 5, title: 'Reminiscences', filename: 'r.pdf', status: 'processing', total_chunks: 20, processed_chunks: 8, strategies_found: 1, error_message: '' }],
       }, mount);
@@ -300,7 +342,7 @@ describe('renderTradingUpdate books section (2026-08-26)', () => {
   test('a done book has no Stop button, but keeps Redo and Delete', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
-      TradingPanel.renderTradingUpdate({
+      TradingPanel.renderBooksPanel({
         positions: [], alerts: [],
         books: [{ id: 5, title: 'Done Book', filename: 'd.pdf', status: 'done', total_chunks: 5, processed_chunks: 5, strategies_found: 2, error_message: '' }],
       }, mount);
@@ -313,7 +355,7 @@ describe('renderTradingUpdate books section (2026-08-26)', () => {
   test('multiple books each render their own row', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
-      TradingPanel.renderTradingUpdate({
+      TradingPanel.renderBooksPanel({
         positions: [], alerts: [],
         books: [
           { id: 1, title: 'Book One', filename: 'a.pdf', status: 'done', total_chunks: 1, processed_chunks: 1, strategies_found: 0, error_message: '' },
@@ -323,6 +365,28 @@ describe('renderTradingUpdate books section (2026-08-26)', () => {
       expect(mount.innerHTML).toContain('Book One');
       expect(mount.innerHTML).toContain('Book Two');
       expect((mount.innerHTML.match(/book-row"/g) || []).length).toBe(2);
+    });
+  });
+});
+
+describe('renderTradingUpdate no longer embeds the Books section (2026-08-27)', () => {
+  test('the Strategies mount has no books UI even when books are present', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [],
+        books: [{ id: 1, title: 'Market Wizards', filename: 'wiz.pdf', status: 'done', total_chunks: 10, processed_chunks: 10, strategies_found: 3, error_message: '' }],
+      }, mount);
+      expect(mount.innerHTML).not.toContain('books-file-input');
+      expect(mount.innerHTML).not.toContain('Market Wizards');
+    });
+  });
+
+  test('renders normally alongside a populated strategy list', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: TWO_STRATEGIES, alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('MA cross A');
     });
   });
 });

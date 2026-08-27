@@ -6249,6 +6249,7 @@
       <div class="trd-tabs" id="trd-tabs">
         <button class="trd-tab is-active" data-trd-tab="strategies" type="button">Strategies</button>
         <button class="trd-tab" data-trd-tab="tickers" type="button">Tickers</button>
+        <button class="trd-tab" data-trd-tab="books" type="button">Books</button>
       </div>
 
       <div class="trd-panel" data-trd-panel="strategies">
@@ -6316,6 +6317,10 @@
 
       <div class="trd-panel" data-trd-panel="tickers" hidden>
         <div id="trading-tickers-mount"></div>
+      </div>
+
+      <div class="trd-panel" data-trd-panel="books" hidden>
+        <div id="books-panel-mount"></div>
       </div>
     </section>
 
@@ -7067,6 +7072,10 @@
           // module never reaches for window.sendEvent itself, the exact S9
           // bug this file's own header comment warns about.
           if (window.TradingPanelMod) window.TradingPanelMod.renderTradingUpdate(event.data, null, sendEvent);
+          // Books moved to its own sub-tab (2026-08-27) -- same payload,
+          // no separate broadcast/poll needed (unlike Tickers below, which
+          // has its own dedicated broadcast type).
+          if (window.TradingPanelMod) window.TradingPanelMod.renderBooksPanel(event.data, null, sendEvent);
           break;
         case 'trading_tickers_update':  // S29 (#892)
           if (window.TradingPanelMod) window.TradingPanelMod.renderTickersUpdate(event.data, null);
@@ -12162,10 +12171,10 @@
     }
 
     // S29 (#892), decision #51 -- Trading pane sub-tab activation
-    // (Strategies / Tickers). Plain click-driven, not hash-routed like
-    // Settings' -- two tabs, no deep-linking requirement.
+    // (Strategies / Tickers / Books). Plain click-driven, not hash-routed
+    // like Settings' -- few tabs, no deep-linking requirement.
     function tradingActivateSub(sub) {
-      const KNOWN_SUBS = new Set(['strategies', 'tickers']);
+      const KNOWN_SUBS = new Set(['strategies', 'tickers', 'books']);
       const target = KNOWN_SUBS.has(sub) ? sub : 'strategies';
       document.querySelectorAll('.trd-tab').forEach((btn) => {
         btn.classList.toggle('is-active', btn.dataset.trdTab === target);

@@ -14,6 +14,7 @@ testable without a real router or real backtests.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -432,3 +433,38 @@ async def ingest_book(
         if on_progress is not None:
             on_progress(i + 1, total, dispatched)
     return {"chunks": total, "claims_seen": claims_seen, "dispatched": dispatched}
+
+
+def list_validated_strategies(title: str, strategy_store) -> List[dict]:
+    """Every currently-registered strategy (StrategyStore.list_all -- a
+    real VALIDATED-and-persisted spec, not a raw gauntlet dispatch attempt)
+    whose provenance traces back to this book.
+
+    2026-08-27: "N strategies found" in the Books panel was actually
+    counting every gauntlet dispatch (pass or fail) -- a single accepted
+    claim fans out to up to candidate_limit tickers, each counted, so 40+
+    chunks in it read "190 strategies found" against 3 real validated
+    ones. This is the real count/list, matched on the exact provenance
+    string from_book_claim writes (`f"book: {title} ch {chapter}"`), the
+    same value _run_gauntlet threads through to
+    StrategyStore.save(provenance_json={"source": ...}).
+    """
+    prefix = f"book: {title} ch "
+    results: List[dict] = []
+    for spec in strategy_store.list_all():
+        row = strategy_store.get_current_version(spec.strategy_id)
+        if row is None or not row["provenance_json"]:
+            continue
+        source = json.loads(row["provenance_json"]).get("source", "")
+        if not source.startswith(prefix):
+            continue
+        results.append({
+            "strategy_id": spec.strategy_id,
+            "symbol": spec.symbol,
+            "hypothesis": (row["hypothesis"] or "").strip() or spec.strategy_id,
+            "chapter": source[len(prefix):],
+            "version": row["version"],
+            "code": spec.code,
+            "created_at": row["created_at"],
+        })
+    return results

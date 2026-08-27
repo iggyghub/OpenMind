@@ -113,30 +113,55 @@ function buildStopDiscoveryEvent() {
 }
 
 /**
- * Books section (2026-08-26): multi-file upload -- Felix reads each book
- * in full and pulls testable strategy claims out of it, dispatching each
- * through the same judge/screen/gauntlet pipeline web-sourced ideas use.
- * Deliberately its own Trading-panel section, not a chat attachment (see
- * the design discussion this landed from): a whole book is a background
- * job with real progress, not a single reply-to-this-message interaction.
+ * Books section (2026-08-26, own sub-tab since 2026-08-27): multi-file
+ * upload -- Felix reads each book in full and pulls testable strategy
+ * claims out of it, dispatching each through the same judge/screen/
+ * gauntlet pipeline web-sourced ideas use.
  * @param {Array} [books] - [{id, title, filename, status, total_chunks,
- *   processed_chunks, strategies_found, error_message}] from
- *   cerebral/main.py's _trading_broadcast().
+ *   processed_chunks, strategies_found, error_message, valid_strategies}]
+ *   from cerebral/main.py's _trading_broadcast(). strategies_found is
+ *   every gauntlet DISPATCH attempt (pass or fail -- a single accepted
+ *   claim fans out to up to candidate_limit tickers, each counted);
+ *   valid_strategies is the real validated/persisted list, usually much
+ *   smaller -- see books.py's list_validated_strategies.
+ * @param {string} [booksModel] - friendly label of the model currently
+ *   mapped to the 'books' task, or falsy if unknown.
+ * @param {Set<number>} [expandedIds] - book ids whose valid-strategies
+ *   list should render open, not collapsed (persisted on the mount
+ *   across re-renders -- see renderBooksPanel).
  */
-function _renderBooksSection(books, booksModel) {
+function _renderBooksSection(books, booksModel, expandedIds) {
+  const expanded = expandedIds || new Set();
   const rows = (books || []).map((b) => {
     const pct = b.total_chunks > 0 ? Math.round((b.processed_chunks / b.total_chunks) * 100) : 0;
     const statusLabel = b.status === 'error' ? 'Error: ' + (b.error_message || 'unknown') : b.status;
     const canStop = b.status === 'processing' || b.status === 'queued';
+    const validList = b.valid_strategies || [];
+    const isOpen = expanded.has(b.id);
+    const validListHtml = validList.length ? `
+      <ul class="book-valid-list" ${isOpen ? '' : 'hidden'}>
+        ${validList.map((s) => `
+          <li class="book-valid-item">
+            <span class="book-valid-symbol">${s.symbol}</span>
+            <span class="book-valid-hypothesis">${s.hypothesis}</span>
+            <span class="book-valid-chapter">(${s.chapter})</span>
+          </li>
+        `).join('')}
+      </ul>
+    ` : '';
     return `
       <div class="book-row" data-status="${b.status}" data-book-id="${b.id}">
         <div class="book-row-title">${b.title}</div>
         <div class="book-row-meta">
           <span class="book-status book-status-${b.status}">${statusLabel}</span>
           ${b.status === 'processing' ? `<span class="book-progress-text">${b.processed_chunks}/${b.total_chunks} chunks</span>` : ''}
-          <span class="book-strategies-found">${b.strategies_found} strateg${b.strategies_found === 1 ? 'y' : 'ies'} found</span>
+          <span class="book-dispatch-count">${b.strategies_found} dispatch${b.strategies_found === 1 ? '' : 'es'}</span>
+          <button class="book-valid-toggle" type="button" data-book-id="${b.id}" ${validList.length ? '' : 'disabled'}>
+            ${validList.length} valid strateg${validList.length === 1 ? 'y' : 'ies'}
+          </button>
         </div>
         ${b.status === 'processing' ? `<div class="book-progress-bar"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
+        ${validListHtml}
         <div class="book-row-actions">
           ${canStop ? `<button class="book-stop-btn" type="button" data-book-id="${b.id}">Stop</button>` : ''}
           <button class="book-retry-btn" type="button" data-book-id="${b.id}">Redo</button>
@@ -212,8 +237,22 @@ function _wireBooksSection(mount, sendEventFn) {
   }
 
   const list = mount.querySelector('.books-list');
-  if (!list || !sendEventFn) return;
+  if (!list) return;
   list.addEventListener('click', (e) => {
+    const validBtn = e.target.closest('.book-valid-toggle');
+    if (validBtn && !validBtn.disabled) {
+      const bookId = parseInt(validBtn.dataset.bookId, 10);
+      const listEl = validBtn.closest('.book-row').querySelector('.book-valid-list');
+      if (listEl) {
+        listEl.hidden = !listEl.hidden;
+        if (mount._expandedBookIds) {
+          if (listEl.hidden) mount._expandedBookIds.delete(bookId);
+          else mount._expandedBookIds.add(bookId);
+        }
+      }
+      return;
+    }
+    if (!sendEventFn) return;
     const stopBtn = e.target.closest('.book-stop-btn');
     if (stopBtn) {
       sendEventFn(buildStopBookEvent(parseInt(stopBtn.dataset.bookId, 10)));
@@ -233,6 +272,23 @@ function _wireBooksSection(mount, sendEventFn) {
       }
     }
   });
+}
+
+/**
+ * Renders the Books sub-tab (own tab since 2026-08-27, previously embedded
+ * atop the Strategies sub-tab) from the same `trading_update` payload
+ * renderTradingUpdate already receives -- no separate broadcast/poll.
+ * @param {Object} data - { books, books_model } from _trading_broadcast()
+ * @param {HTMLElement} [container] - defaults to #books-panel-mount
+ * @param {Function} [sendEventFn] - see renderTradingUpdate's own doc
+ */
+function renderBooksPanel(data, container, sendEventFn) {
+  const mount = container || document.getElementById('books-panel-mount');
+  if (!mount) return;
+  if (!mount._expandedBookIds) mount._expandedBookIds = new Set();
+  _injectTradingPanelStyles();
+  mount.innerHTML = _renderBooksSection(data && data.books, data && data.books_model, mount._expandedBookIds);
+  _wireBooksSection(mount, sendEventFn);
 }
 
 /**
@@ -257,13 +313,11 @@ function renderTradingUpdate(data, container, sendEventFn) {
   // unconditionally, so both branches have them (previously only the
   // non-empty branch injected any styles at all).
   const discoveryHtml = _renderDiscoveryControl(data && data.discovery);
-  const booksHtml = _renderBooksSection(data && data.books, data && data.books_model);
   _injectTradingPanelStyles();
 
   if (!data || !data.positions || data.positions.length === 0) {
-    mount.innerHTML = discoveryHtml + booksHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+    mount.innerHTML = discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
     _wireDiscoveryControl(mount, sendEventFn);
-    _wireBooksSection(mount, sendEventFn);
     return;
   }
 
@@ -277,7 +331,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const state = mount._strategyState;
   const strategy = state.strategies[state.selectedIdx];
 
-  mount.innerHTML = discoveryHtml + booksHtml + `
+  mount.innerHTML = discoveryHtml + `
     <div class="trading-panel-layout">
       <div class="strategy-list">
         <h3>Strategies</h3>
@@ -322,7 +376,6 @@ function renderTradingUpdate(data, container, sendEventFn) {
   `;
 
   _wireDiscoveryControl(mount, sendEventFn);
-  _wireBooksSection(mount, sendEventFn);
 
   // Wire list selection
   mount.querySelectorAll('.strategy-list li').forEach(li => {
@@ -408,6 +461,13 @@ function _injectTradingPanelStyles() {
     .book-status-queued { background: #e2e3e5; color: #383d41; }
     .book-progress-bar { margin-top: 6px; height: 5px; border-radius: 3px; background: var(--border, #eee); overflow: hidden; }
     .book-progress-fill { height: 100%; background: #3498db; transition: width 0.3s ease; }
+    .book-valid-toggle { font-size: 0.85em; background: none; border: 1px solid var(--border, #ccc); border-radius: 3px; padding: 1px 6px; cursor: pointer; color: var(--text, #333); }
+    .book-valid-toggle:disabled { opacity: 0.5; cursor: default; }
+    .book-valid-list { margin: 8px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--border, #eee); }
+    .book-valid-item { display: flex; gap: 8px; align-items: baseline; padding: 6px 0; font-size: 0.85em; border-bottom: 1px solid var(--border, #f0f0f0); }
+    .book-valid-symbol { font-weight: 600; color: var(--text, #333); }
+    .book-valid-hypothesis { color: var(--text, #333); flex: 1; }
+    .book-valid-chapter { color: var(--text-muted, #888); font-size: 0.9em; }
   `;
   document.head.appendChild(style);
 }
@@ -886,6 +946,7 @@ function renderTickersUpdate(data, container) {
 return {
   initTradingPanel:    initTradingPanel,
   renderTradingUpdate: renderTradingUpdate,
+  renderBooksPanel: renderBooksPanel,
   renderStrategyCard:  renderStrategyCard,
   renderLiveStrategyCard: renderLiveStrategyCard,
   buildStrategyEditEvent: buildStrategyEditEvent,

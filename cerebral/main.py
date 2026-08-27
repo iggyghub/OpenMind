@@ -250,6 +250,7 @@ from cerebral.trading.live_tick import dispatch_due_events as _dispatch_due_even
 from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.discovery import VettedTickers
 from cerebral.trading.market_hours import is_market_hours
+from cerebral.trading.books import list_validated_strategies
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
 # Paper only, deliberately: a StubBrokerClient can't reach a real market, so
@@ -3685,12 +3686,17 @@ async def _trading_broadcast() -> None:
         }
         # 2026-08-26: book ingestion progress -- read directly, same
         # pattern as discovery above, no round-trip through list_books'
-        # ToolResult/json needed here.
+        # ToolResult/json needed here. valid_strategies (2026-08-27) is the
+        # REAL validated/persisted list for this book -- strategies_found
+        # above is every gauntlet dispatch attempt (pass or fail), which
+        # reads confusingly high (e.g. "190 strategies found" against 3
+        # actually validated) -- see books.py's list_validated_strategies.
         books = [
             {
                 "id": b.id, "title": b.title, "filename": b.filename, "status": b.status,
                 "total_chunks": b.total_chunks, "processed_chunks": b.processed_chunks,
                 "strategies_found": b.strategies_found, "error_message": b.error_message,
+                "valid_strategies": list_validated_strategies(b.title, _trading_strategy_store),
             }
             for b in _scheduler_plugin._book_store.list_all()
         ]

@@ -11,8 +11,10 @@ import pytest
 
 from cerebral.trading.books import (
     Book, BookStore, chunk_text, extract_claims_from_chunk, extract_full_text, ingest_book,
+    list_validated_strategies,
 )
 from cerebral.trading.discovery import DiscoveryWatchlist
+from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 
 
 def _watchlist(tmp_path):
@@ -385,3 +387,56 @@ async def test_ingest_book_uses_rank_fn_and_candidate_limit(tmp_path):
     )
 
     assert [c[1] for c in gauntlet.calls] == ["TSLA"]
+
+
+# ── list_validated_strategies (2026-08-27) ──────────────────────────────
+# "N strategies found" in the Books panel was actually every gauntlet
+# dispatch attempt (pass or fail) -- this is the real validated/persisted
+# count/list a book actually produced.
+
+def _save_book_strategy(store, strategy_id, symbol, book_title, chapter, hypothesis="a claim"):
+    store.save(
+        StrategySpec(strategy_id=strategy_id, symbol=symbol, code="def strategy(data):\n    return [0]\n"),
+        origin="discovered",
+        provenance_json={"source": f"book: {book_title} ch {chapter}"},
+        hypothesis=hypothesis,
+    )
+
+
+def test_list_validated_strategies_matches_on_book_provenance(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    _save_book_strategy(store, "s1", "AAPL", "Market Wizards", "chunk 3", hypothesis="claim one")
+    _save_book_strategy(store, "s2", "MSFT", "A Different Book", "chunk 1", hypothesis="unrelated")
+
+    results = list_validated_strategies("Market Wizards", store)
+
+    assert len(results) == 1
+    assert results[0]["symbol"] == "AAPL"
+    assert results[0]["hypothesis"] == "claim one"
+    assert results[0]["chapter"] == "chunk 3"
+
+
+def test_list_validated_strategies_excludes_non_book_origins(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(
+        StrategySpec(strategy_id="web1", symbol="TSLA", code="def strategy(data):\n    return [0]\n"),
+        origin="discovered", provenance_json={"source": "https://example.com/idea"},
+    )
+
+    assert list_validated_strategies("Market Wizards", store) == []
+
+
+def test_list_validated_strategies_returns_empty_for_a_book_with_no_hits(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    assert list_validated_strategies("Nonexistent Book", store) == []
+
+
+def test_list_validated_strategies_only_matches_this_books_exact_title(tmp_path):
+    """A book titled 'Market Wizards' must not also match strategies from
+    'New Market Wizards' -- the match is on the full `book: <title> ch `
+    prefix, not a loose substring."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    _save_book_strategy(store, "s1", "AAPL", "New Market Wizards", "chunk 1")
+
+    assert list_validated_strategies("Market Wizards", store) == []

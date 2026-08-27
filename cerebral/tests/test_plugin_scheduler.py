@@ -1092,11 +1092,15 @@ async def test_upload_book_extracts_and_dispatches_a_claim(tmp_path):
 
     await plugin._book_tasks[book_id]  # wait for the background ingestion to finish
 
-    books = json.loads(plugin._list_books({}).content)
+    books = json.loads(plugin._list_books({}, strategy_store=store).content)
     book = next(b for b in books if b["id"] == book_id)
     assert book["status"] == "done"
     assert book["processed_chunks"] == 1
     assert book["strategies_found"] == 1
+    # 2026-08-27: the real validated/persisted list, distinct from the
+    # dispatch-attempt count above.
+    assert len(book["valid_strategies"]) == 1
+    assert book["valid_strategies"][0]["symbol"] == "AAPL"
 
     specs = [s for s in store.list_all() if s.symbol == "AAPL"]
     assert len(specs) == 1
@@ -1130,29 +1134,35 @@ async def test_upload_book_rejects_a_file_with_no_extractable_text(tmp_path):
 
 
 async def test_upload_book_with_no_claims_still_completes(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
     router = BookRouter([])  # NONE every chunk
     plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
 
-    result = await plugin._upload_book({"filename": "empty.txt", "data_base64": _b64("Dry narrative, no claims here.")})
+    result = await plugin._upload_book(
+        {"filename": "empty.txt", "data_base64": _b64("Dry narrative, no claims here.")},
+        strategy_store=store,
+    )
     book_id = json.loads(result.content)["book_id"]
 
     await plugin._book_tasks[book_id]
 
-    books = json.loads(plugin._list_books({}).content)
+    books = json.loads(plugin._list_books({}, strategy_store=store).content)
     book = next(b for b in books if b["id"] == book_id)
     assert book["status"] == "done"
     assert book["strategies_found"] == 0
+    assert book["valid_strategies"] == []
 
 
 async def test_list_books_orders_newest_first(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
     plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=BookRouter([]))
 
-    r1 = await plugin._upload_book({"filename": "first.txt", "data_base64": _b64("first book text")})
+    r1 = await plugin._upload_book({"filename": "first.txt", "data_base64": _b64("first book text")}, strategy_store=store)
     await plugin._book_tasks[json.loads(r1.content)["book_id"]]
-    r2 = await plugin._upload_book({"filename": "second.txt", "data_base64": _b64("second book text")})
+    r2 = await plugin._upload_book({"filename": "second.txt", "data_base64": _b64("second book text")}, strategy_store=store)
     await plugin._book_tasks[json.loads(r2.content)["book_id"]]
 
-    titles = [b["title"] for b in json.loads(plugin._list_books({}).content)]
+    titles = [b["title"] for b in json.loads(plugin._list_books({}, strategy_store=store).content)]
 
     assert titles == ["second", "first"]
 

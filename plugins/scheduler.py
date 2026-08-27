@@ -25,7 +25,10 @@ from cerebral.trading.gauntlet import run_gauntlet
 from cerebral.trading.discovery import (
     DiscoveryAttempts, DiscoveryWatchlist, rank_for_day_trading, run_discovery_pass,
 )
-from cerebral.trading.books import BookStore, chunk_text, extract_claims_from_chunk, extract_full_text, ingest_book
+from cerebral.trading.books import (
+    BookStore, chunk_text, extract_claims_from_chunk, extract_full_text,
+    ingest_book, list_validated_strategies,
+)
 from cerebral.trading_ideas import Idea, judge_idea as _judge_idea
 from cerebral.settings import SettingsStore
 
@@ -1121,14 +1124,16 @@ class SchedulerPlugin:
             if self._on_trading_change is not None:
                 self._on_trading_change()
 
-    def _list_books(self, args: dict) -> ToolResult:
+    def _list_books(self, args: dict, *, strategy_store=None) -> ToolResult:
         books = self._book_store.list_all()
+        store = strategy_store if strategy_store is not None else StrategyStore()
         return ToolResult(content=json.dumps([
             {
                 "id": b.id, "title": b.title, "filename": b.filename, "status": b.status,
                 "total_chunks": b.total_chunks, "processed_chunks": b.processed_chunks,
                 "strategies_found": b.strategies_found, "created_at": b.created_at,
                 "error_message": b.error_message,
+                "valid_strategies": list_validated_strategies(b.title, store),
             }
             for b in books
         ]))
