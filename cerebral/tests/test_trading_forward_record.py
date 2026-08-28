@@ -154,3 +154,15 @@ def test_enough_trades_across_enough_distinct_days_is_sufficient():
     assert distinct_days == 30
     assert is_sufficient
     record.close()
+
+
+def test_get_total_pnl_grand_total():
+    """get_total_pnl returns the sum of PnL across all strategies, all-time."""
+    record = ForwardRecord()
+    record.add_fill("AAPL", "buy", 1.0, 100.0, pnl=10.0, strategy_id="strat_a")
+    record.add_fill("TSLA", "sell", 1.0, 200.0, pnl=20.0, strategy_id="strat_b")
+    record.add_fill("MSFT", "buy", 1.0, 150.0, pnl=-5.0, strategy_id="strat_a")
+    
+    total = record.get_total_pnl()
+    assert total == pytest.approx(25.0)  # 10.0 + 20.0 + -5.0
+    record.close()
