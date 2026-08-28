@@ -7,8 +7,9 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S34d -- #906 -- scheduler.py: start_trading/stop_trading
-  tools.
+- **Active:** none -- S34a-d (backend) all landed. Next up: hand-build
+  the tray/lib/trading-panel.js Start/Stop + capital control (guardrail
+  path, not self_dev), then spec + self_dev S35 (Overview sub-tab).
 - **Model:** sonnet
 
 ## Queue
@@ -222,7 +223,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   new starting-capital setting, gate `_scheduler_loop`'s dispatch on
   `trading_paper_enabled`, add a `paper_control` key to the
   `trading_update` broadcast.
-- [ ] S34d -- #906 -- scheduler.py only: `start_trading`/`stop_trading`
+- [x] S34d -- #906 -- scheduler.py only: `start_trading`/`stop_trading`
   tools (mirroring `start_discovery`/`stop_discovery`), with explicit
   `list_tools()` registration called out (S32/#898 missed this for its
   own two tools).
@@ -242,6 +243,23 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   tray/-touching piece in this campaign (guardrail path, always escalates
   to human review anyway). See #903/#904/#905/#906 for full acceptance
   criteria on each.
+
+  **All 4 landed same day, split confirmed the fix.** S34a/S34b: real
+  diffs, sandbox reported `tests_failed` but a full local run on each PR
+  branch was clean (5338-5339 passed) -- sandbox test-environment
+  flakiness, merged by hand as-is. S34c: a genuine bug -- the edit
+  referenced `_settings.get(...)` at its construction line (260), but
+  `_settings` itself isn't defined until line 355; fixed by hand (kept
+  the library-default `StubBrokerClient()` at 260, re-pointed it at the
+  real setting right after `_settings` exists). S34d: repeated the exact
+  gap the issue explicitly warned about -- `start_trading`/`stop_trading`
+  got dispatch routing and method bodies but never a `Tool(...)`
+  registration in `list_tools()` (same class of miss as S32/#898), caught
+  by the very test self_dev itself wrote
+  (`test_start_stop_trading_tools_exist_in_list_tools`) plus a second,
+  unrelated stale exhaustive-tool-name assertion in
+  `test_plugins_time_notes.py`; both fixed by hand. Full suite green
+  after all four merges (5342 passed, 7 skipped).
 
 - [ ] S35 -- #902 -- Portfolio Overview sub-tab: aggregate P&L, equity
   curve, cross-strategy fill log. Follow-up to S34 -- today's Trading
