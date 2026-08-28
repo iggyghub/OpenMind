@@ -3728,6 +3728,11 @@ async def _trading_broadcast() -> None:
         }
         total_pnl = _trading_forward_record.get_total_pnl()
         all_fills = [dict(f) for f in _trading_forward_record.get_all_fills()]
+        # S37d (#925): summary only (id/reset_at/total_pnl/trade_count/date
+        # range), not the archived fills themselves -- see
+        # ForwardRecord.get_paper_archive_fills for that, kept separate so
+        # this stays cheap to broadcast even with many past resets.
+        paper_archives = _trading_forward_record.list_paper_archives()
         # 2026-08-26: book ingestion progress -- read directly, same
         # pattern as discovery above, no round-trip through list_books'
         # ToolResult/json needed here. valid_strategies (2026-08-27) is the
@@ -3761,7 +3766,7 @@ async def _trading_broadcast() -> None:
                 "positions": positions, "alerts": alerts, "discovery": discovery,
                 "books": books, "books_model": books_model_label,
                 "paper_control": paper_control, "total_pnl": total_pnl,
-                "all_fills": all_fills,
+                "all_fills": all_fills, "paper_archives": paper_archives,
             },
         })
     except Exception as e:
