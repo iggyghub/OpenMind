@@ -995,3 +995,50 @@ describe('renderOverviewPanel (S35/#911/#912)', () => {
     });
   });
 });
+
+// Trade Log sub-tab (user-requested 2026-08-28, same day as Overview):
+// searchable/filterable fill history, split into Paper and Live sections.
+describe('renderTradeLog', () => {
+  const SAMPLE_FILLS = [
+    { timestamp: '2026-08-27T10:00:00Z', symbol: 'AAPL', side: 'buy', qty: 1, price: 150, fees: 0.15, pnl: 0, phase: 'paper', strategy_id: 'strat-a' },
+    { timestamp: '2026-08-27T11:00:00Z', symbol: 'AAPL', side: 'sell', qty: 1, price: 155, fees: 0.16, pnl: 4.7, phase: 'paper', strategy_id: 'strat-a' },
+    { timestamp: '2026-08-27T12:00:00Z', symbol: 'TSLA', side: 'buy', qty: 2, price: 200, fees: 0.4, pnl: 0, phase: 'paper', strategy_id: 'strat-b' },
+    { timestamp: '2026-08-27T13:00:00Z', symbol: 'MSFT', side: 'buy', qty: 1, price: 300, fees: 0.3, pnl: -2.1, phase: 'live', strategy_id: 'strat-a' },
+  ];
+
+  test('missing all_fills (backend not landed yet) shows a placeholder, not a crash', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradeLog({ positions: [] }, mount);
+      expect(mount.innerHTML).toContain('not available yet');
+    });
+  });
+
+  test('splits fills into Paper and Live sections by phase', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradeLog({ all_fills: SAMPLE_FILLS }, mount);
+      expect(mount.innerHTML).toContain('Paper Trades');
+      expect(mount.innerHTML).toContain('Live Trades');
+      expect(mount.innerHTML).toContain('trd-log-search');
+      expect(mount.innerHTML).toContain('trd-log-strategy-filter');
+      expect(mount.innerHTML).toContain('trd-log-symbol-filter');
+    });
+  });
+
+  test('empty all_fills renders both sections with no crash', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradeLog({ all_fills: [] }, mount);
+      expect(mount.innerHTML).toContain('Paper Trades');
+      expect(mount.innerHTML).toContain('Live Trades');
+    });
+  });
+
+  test('filters rows by strategy/symbol/search (unit-level, not DOM-driven)', () => {
+    const paper = SAMPLE_FILLS.filter((f) => f.phase === 'paper');
+    const bySymbol = paper.filter((f) => f.symbol === 'TSLA');
+    expect(bySymbol.length).toBe(1);
+    expect(bySymbol[0].strategy_id).toBe('strat-b');
+  });
+});

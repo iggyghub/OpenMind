@@ -6251,6 +6251,7 @@
         <button class="trd-tab" data-trd-tab="tickers" type="button">Tickers</button>
         <button class="trd-tab" data-trd-tab="books" type="button">Books</button>
         <button class="trd-tab" data-trd-tab="overview" type="button">Overview</button>
+        <button class="trd-tab" data-trd-tab="trades" type="button">Trade Log</button>
       </div>
 
       <div class="trd-panel" data-trd-panel="strategies">
@@ -6326,6 +6327,10 @@
 
       <div class="trd-panel" data-trd-panel="overview" hidden>
         <div id="trading-overview-mount"></div>
+      </div>
+
+      <div class="trd-panel" data-trd-panel="trades" hidden>
+        <div id="trading-log-mount"></div>
       </div>
     </section>
 
@@ -7093,6 +7098,10 @@
           // unhide -- a stale/blank canvas otherwise.
           lastTradingUpdateData = event.data;
           if (window.TradingPanelMod) window.TradingPanelMod.renderOverviewPanel(event.data, null);
+          // Trade Log -- same payload/cache, own mount. No canvas, so no
+          // redraw-on-hidden concern, but still reads lastTradingUpdateData
+          // on tab activation the same way Overview does (see below).
+          if (window.TradingPanelMod) window.TradingPanelMod.renderTradeLog(event.data, null);
           break;
         case 'trading_tickers_update':  // S29 (#892)
           if (window.TradingPanelMod) window.TradingPanelMod.renderTickersUpdate(event.data, null);
@@ -12191,7 +12200,7 @@
     // (Strategies / Tickers / Books). Plain click-driven, not hash-routed
     // like Settings' -- few tabs, no deep-linking requirement.
     function tradingActivateSub(sub) {
-      const KNOWN_SUBS = new Set(['strategies', 'tickers', 'books', 'overview']);
+      const KNOWN_SUBS = new Set(['strategies', 'tickers', 'books', 'overview', 'trades']);
       const target = KNOWN_SUBS.has(sub) ? sub : 'strategies';
       document.querySelectorAll('.trd-tab').forEach((btn) => {
         btn.classList.toggle('is-active', btn.dataset.trdTab === target);

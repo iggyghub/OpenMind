@@ -1486,6 +1486,184 @@ function renderOverviewPanel(data, container) {
   }
 }
 
+/* ── Trade Log sub-tab -- searchable/filterable fill history, split into
+ * Paper and Live sections (user-requested 2026-08-28, same day as
+ * Overview). Reuses data.all_fills (S35c/d) unchanged -- no new backend
+ * needed, this is entirely a client-side view over data already
+ * broadcast. Search/dropdown state is preserved across broadcasts (the
+ * skeleton is built once and updated in place, same lesson as
+ * renderOverviewPanel's own fix earlier this session) so typing a search
+ * term doesn't get wiped out by the next unrelated trading_update. ────── */
+
+function _tradeLogOptionsHtml(values, allLabel) {
+  return ['<option value="">' + allLabel + '</option>'].concat(
+    values.map((v) => `<option value="${v}">${v.length > 50 ? v.slice(0, 50) + '…' : v}</option>`)
+  ).join('');
+}
+
+/**
+ * Refreshes a `<select>`'s options from a fresh value list, preserving
+ * the current selection if it's still a valid option -- a broadcast
+ * landing mid-search must not silently reset a filter the user picked.
+ */
+function _refreshTradeLogSelect(select, values, allLabel) {
+  if (!select) return;
+  const prev = select.value;
+  select.innerHTML = _tradeLogOptionsHtml(values, allLabel);
+  const stillValid = values.indexOf(prev) !== -1;
+  select.value = stillValid ? prev : '';
+}
+
+function _tradeLogFilterRows(fills, searchVal, strategyVal, symbolVal) {
+  const search = (searchVal || '').toLowerCase();
+  return fills.filter((f) => {
+    if (strategyVal && f.strategy_id !== strategyVal) return false;
+    if (symbolVal && f.symbol !== symbolVal) return false;
+    if (search && (f.symbol + ' ' + f.strategy_id).toLowerCase().indexOf(search) === -1) return false;
+    return true;
+  });
+}
+
+function _renderTradeLogRows(section, fills) {
+  const tbody = section.querySelector('.trd-log-tbody');
+  const emptyEl = section.querySelector('.trd-log-empty');
+  if (!tbody) return;
+  const searchVal = section.querySelector('.trd-log-search').value;
+  const strategyVal = section.querySelector('.trd-log-strategy-filter').value;
+  const symbolVal = section.querySelector('.trd-log-symbol-filter').value;
+  // Newest first for a log -- all_fills itself is chronological oldest-first
+  // (S35c's own doc comment: needed that order to build a running curve).
+  const rows = _tradeLogFilterRows(fills, searchVal, strategyVal, symbolVal).slice().reverse();
+
+  if (rows.length === 0) {
+    tbody.innerHTML = '';
+    if (emptyEl) emptyEl.hidden = false;
+    return;
+  }
+  if (emptyEl) emptyEl.hidden = true;
+  tbody.innerHTML = rows.map((f) => `
+    <tr>
+      <td>${new Date(f.timestamp).toLocaleString()}</td>
+      <td>${f.symbol}</td>
+      <td class="trd-log-side-${f.side}">${f.side.toUpperCase()}</td>
+      <td>${f.qty}</td>
+      <td>$${f.price.toFixed(2)}</td>
+      <td>$${f.fees.toFixed(2)}</td>
+      <td class="${f.pnl >= 0 ? 'positive' : 'negative'}">$${f.pnl.toFixed(2)}</td>
+      <td class="trd-log-strategy-cell" title="${f.strategy_id}">${f.strategy_id.length > 40 ? f.strategy_id.slice(0, 40) + '…' : f.strategy_id}</td>
+    </tr>
+  `).join('');
+}
+
+function _buildTradeLogSection(sectionId, title) {
+  return `
+    <div class="trd-log-section" data-log-section="${sectionId}">
+      <h3 class="trd-overview-section-title">${title}</h3>
+      <div class="trd-log-filters">
+        <input type="text" class="trd-log-search" placeholder="Search symbol or strategy…">
+        <select class="trd-log-strategy-filter"><option value="">All strategies</option></select>
+        <select class="trd-log-symbol-filter"><option value="">All symbols</option></select>
+      </div>
+      <div class="trd-log-table-wrap">
+        <table class="trd-log-table">
+          <thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Fees</th><th>PnL</th><th>Strategy</th></tr></thead>
+          <tbody class="trd-log-tbody"></tbody>
+        </table>
+      </div>
+      <div class="trd-log-empty">No trades match.</div>
+    </div>
+  `;
+}
+
+function _wireTradeLogSection(mount, sectionId, getFills) {
+  const section = mount.querySelector('[data-log-section="' + sectionId + '"]');
+  if (!section) return;
+  const rerender = () => _renderTradeLogRows(section, getFills());
+  section.querySelector('.trd-log-search').addEventListener('input', rerender);
+  section.querySelector('.trd-log-strategy-filter').addEventListener('change', rerender);
+  section.querySelector('.trd-log-symbol-filter').addEventListener('change', rerender);
+}
+
+function _injectTradeLogStyles() {
+  const styleId = 'trading-log-styles';
+  if (document.getElementById(styleId)) return;
+  const style = document.createElement('style');
+  style.id = styleId;
+  style.textContent = `
+    .trd-log { padding: 12px; }
+    .trd-log-section { margin-bottom: 24px; }
+    .trd-log-filters { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    .trd-log-search { flex: 1; min-width: 160px; padding: 4px 8px; border: 1px solid var(--border, #ccc); border-radius: 4px; background: var(--bg, #fff); color: var(--text, #333); }
+    .trd-log-strategy-filter, .trd-log-symbol-filter { padding: 4px 8px; border: 1px solid var(--border, #ccc); border-radius: 4px; background: var(--bg, #fff); color: var(--text, #333); max-width: 220px; }
+    .trd-log-table-wrap { overflow-x: auto; }
+    .trd-log-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+    .trd-log-table th, .trd-log-table td { padding: 5px 8px; border-bottom: 1px solid var(--border, #eee); text-align: left; white-space: nowrap; }
+    .trd-log-side-buy { color: #2ecc71; }
+    .trd-log-side-sell { color: #e74c3c; }
+    .trd-log-strategy-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .trd-log-empty { padding: 12px; color: var(--text-muted); text-align: center; font-size: 0.9em; }
+  `;
+  document.head.appendChild(style);
+}
+
+/**
+ * Renders the Trade Log sub-tab: two searchable/filterable sections
+ * (Paper, Live) over data.all_fills, split by `phase`. Builds the
+ * skeleton once and updates rows/dropdown-options in place on later
+ * calls (trading_update fires often, for reasons unrelated to this tab)
+ * so an in-progress search isn't wiped out by an unrelated broadcast.
+ * @param {Object} data - trading_update's data
+ * @param {HTMLElement} [container] - defaults to #trading-log-mount
+ */
+function renderTradeLog(data, container) {
+  const mount = container || document.getElementById('trading-log-mount');
+  if (!mount) return;
+  _injectTradeLogStyles();
+  const allFills = (data && data.all_fills) || null;
+
+  if (allFills === null) {
+    if (typeof mount.querySelector !== 'function' || !mount.querySelector('.trd-log')) {
+      mount.innerHTML = '<div class="trd-log"><div class="trd-log-empty">Trade log not available yet.</div></div>';
+    }
+    return;
+  }
+
+  const paperFills = allFills.filter((f) => f.phase === 'paper');
+  const liveFills = allFills.filter((f) => f.phase === 'live');
+  mount._logPaperFills = paperFills;
+  mount._logLiveFills = liveFills;
+
+  const alreadyBuilt = typeof mount.querySelector === 'function' && mount.querySelector('.trd-log');
+  if (!alreadyBuilt) {
+    mount.innerHTML = `<div class="trd-log">
+      ${_buildTradeLogSection('paper', 'Paper Trades')}
+      ${_buildTradeLogSection('live', 'Live Trades')}
+    </div>`;
+    if (typeof mount.querySelector === 'function') {
+      _wireTradeLogSection(mount, 'paper', () => mount._logPaperFills || []);
+      _wireTradeLogSection(mount, 'live', () => mount._logLiveFills || []);
+    }
+  }
+
+  if (typeof mount.querySelector !== 'function') return;
+  const paperSection = mount.querySelector('[data-log-section="paper"]');
+  const liveSection = mount.querySelector('[data-log-section="live"]');
+  if (paperSection) {
+    _refreshTradeLogSelect(paperSection.querySelector('.trd-log-strategy-filter'),
+      Array.from(new Set(paperFills.map((f) => f.strategy_id))).sort(), 'All strategies');
+    _refreshTradeLogSelect(paperSection.querySelector('.trd-log-symbol-filter'),
+      Array.from(new Set(paperFills.map((f) => f.symbol))).sort(), 'All symbols');
+    _renderTradeLogRows(paperSection, paperFills);
+  }
+  if (liveSection) {
+    _refreshTradeLogSelect(liveSection.querySelector('.trd-log-strategy-filter'),
+      Array.from(new Set(liveFills.map((f) => f.strategy_id))).sort(), 'All strategies');
+    _refreshTradeLogSelect(liveSection.querySelector('.trd-log-symbol-filter'),
+      Array.from(new Set(liveFills.map((f) => f.symbol))).sort(), 'All symbols');
+    _renderTradeLogRows(liveSection, liveFills);
+  }
+}
+
 return {
   initTradingPanel:    initTradingPanel,
   renderTradingUpdate: renderTradingUpdate,
@@ -1497,6 +1675,7 @@ return {
   initTickersView:     initTickersView,
   renderTickersUpdate: renderTickersUpdate,
   renderOverviewPanel: renderOverviewPanel,
+  renderTradeLog: renderTradeLog,
   buildStartDiscoveryEvent: buildStartDiscoveryEvent,
   buildStopDiscoveryEvent: buildStopDiscoveryEvent,
   buildUploadBookEvent: buildUploadBookEvent,
