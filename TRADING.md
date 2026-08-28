@@ -329,8 +329,13 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   fixed by hand to assert exact gross P&L. Full suite green (5345
   passed, 7 skipped) before merge. See #920 for full acceptance criteria.
 
-- [ ] S37a -- #922 -- forward_record.py only: `ForwardRecord.reset_paper()`
-  -- deletes every paper-phase fill, leaves live fills alone.
+- [ ] S37a -- #922 -- forward_record.py only: `ForwardRecord.reset_paper()`.
+  **Revised same day:** archives current paper fills into a new
+  `paper_archives` table as one self-contained historical block (JSON
+  blob + summary columns), THEN clears the live table -- does not
+  destroy history. Also adds `list_paper_archives()` (summary, newest
+  first) and `get_paper_archive_fills(archive_id)` (one block's real
+  fills, for the Overview tab's collapsible history section).
 - [ ] S37b -- #923 -- broker.py only: `StubBrokerClient.reset()` -- clears
   positions/orders, resets account back to configured starting capital.
 - [ ] S37c -- #924 -- scheduler.py only: `reset_paper_trading` tool +
@@ -338,18 +343,24 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   existing post-construction-binding pattern).
 - [ ] S37d -- #925 -- main.py only: binds the seam -- calls
   `ForwardRecord.reset_paper()` + `StubBrokerClient.reset()` + a fresh
-  `_trading_broadcast()` so the UI reflects the reset immediately.
+  `_trading_broadcast()`. **Revised same day:** also adds a
+  `paper_archives` summary key to the broadcast payload for the
+  collapsible history section.
 
-  User-requested 2026-08-28 ("i should be able to reset the trading
-  paper charts") -- the Overview/Trade Log charts are pure views over
-  broadcast data, so a real reset has to clear the underlying fill
-  history AND the simulated broker's live position/cash state (leaving
-  either one stale would make the numbers inconsistent). Split
-  single-file (S34's proven pattern) since this spans 4 files. Land in
-  order: S37a, S37b, S37c, S37d (each later one depends on the file(s)
-  before it existing). A Reset button in the Trading panel is hand-built
-  once all 4 land -- guardrail path. See #922/#923/#924/#925 for full
-  acceptance criteria.
+  User-requested 2026-08-28, then refined same day: "i should be able to
+  reset the trading paper charts" -> then "each reset should be stored
+  as its own block of information, probably in overview collapsable" --
+  a reset must not destroy history, it archives it. The Overview/Trade
+  Log charts are pure views over broadcast data, so a real reset has to
+  clear the LIVE fill history AND the simulated broker's live
+  position/cash state (leaving either one stale would make the numbers
+  inconsistent), while preserving what was cleared as a queryable
+  archive. Split single-file (S34's proven pattern) since this spans 4
+  files. Land in order: S37a, S37b, S37c, S37d (each later one depends
+  on the file(s) before it existing). A Reset button + collapsible
+  per-archive history blocks on the Overview tab are hand-built once all
+  4 land -- guardrail path. See #922/#923/#924/#925 for full acceptance
+  criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
