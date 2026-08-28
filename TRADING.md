@@ -3,14 +3,15 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: active -- S37a-d all landed; nothing left in the self_dev queue.
-Next work (a Reset button + collapsible per-archive history on the
-Overview tab, and the #919 shared-broker-position design decision) is
-hand-built/human, not a self_dev slice -- see "Landed PRs" below.
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** none
+- **Active:** none -- S37a-d all landed; nothing left in the self_dev
+  queue. Next work (a Reset button + collapsible per-archive history on
+  the Overview tab, and the #919 shared-broker-position and #929
+  cash-never-updates design decisions) is hand-built/human, not a
+  self_dev slice.
 - **Model:** sonnet
 
 ## Queue
@@ -378,19 +379,35 @@ hand-built/human, not a self_dev slice -- see "Landed PRs" below.
   Added the new name to that snapshot (same pattern as the existing
   `# S34 (#901/#906)` entries in it). Full suite green (5349 passed, 7
   skipped, 1 unrelated pre-existing flaky test in
-  `test_sandboxed_eval.py`) before merge.
+  `test_sandboxed_eval.py`) before merge. **Notable: this fix landed via
+  Felix's own autonomous self-dev loop, running concurrently with (and
+  independently of) this same self_dev_campaign session** -- the first
+  real evidence this session that autonomous self-dev and a
+  campaign-driven session can both work the same driver file/PR at once.
+  It fixed the exhaustive-tool-list test on its own initiative and
+  merged before this session's own hand-review finished; this session's
+  review then found and fixed two things Felix's own pass hadn't: the
+  tool's description still said "Irreversible" (stale -- wrong once the
+  design became archive-then-clear), and zero behavioral test coverage
+  existed for the tool itself (added 4 tests: list_tools presence,
+  unwired-seam error, sync seam invoked, async seam invoked). Landed as
+  a direct hand-fix commit on master (no PR -- #930 was already merged
+  by the time this was ready). Full suite green (5360 passed, 7 skipped)
+  after.
 - [x] S37d -- #925 -- main.py only: binds the seam -- calls
   `ForwardRecord.reset_paper()` + `StubBrokerClient.reset()` + a fresh
   `_trading_broadcast()`. **Revised same day:** also adds a
   `paper_archives` summary key to the broadcast payload for the
-  collapsible history section. **Landed PR #931** -- generated code was
-  correct on the first attempt (no hand-fix needed); the sandbox's
-  "tests_failed" verdict was the same pre-existing unrelated flaky test
-  as S37a/S37c (`test_sandboxed_eval.py::test_workdir_is_cleaned_up_after_a_run`).
-  Full suite green otherwise (5349 passed, 7 skipped, 1 deselected) before
-  merge. All four S37 slices now landed; remaining work (Reset button +
-  collapsible history UI, and #919) is hand-built/human -- see TRADING.md
-  step 3/4 notes.
+  collapsible history section. **Landed PR #931 after one real hand-fix
+  -- self_dev's own diff only did HALF the issue:** it bound the reset
+  seam correctly but never added the `paper_archives` broadcast wiring
+  at all (the issue's second, equally-explicit ask) -- a same-file,
+  incomplete-scope miss, not the usual multi-file selection problem.
+  Added the missing `list_paper_archives()` call + broadcast dict key by
+  hand. Full suite green (5350 passed, 7 skipped) before merge, 5360
+  passed/7 skipped on master after. All four S37 slices now landed;
+  remaining work (Reset button + collapsible history UI, and #919/#929)
+  is hand-built/human -- see TRADING.md step 3/4 notes.
 
   User-requested 2026-08-28, then refined same day: "i should be able to
   reset the trading paper charts" -> then "each reset should be stored
