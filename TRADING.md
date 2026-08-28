@@ -3,11 +3,14 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: active
+## Status: active -- S37a-d all landed; nothing left in the self_dev queue.
+Next work (a Reset button + collapsible per-archive history on the
+Overview tab, and the #919 shared-broker-position design decision) is
+hand-built/human, not a self_dev slice -- see "Landed PRs" below.
 
 ## Next slice -- start here
 
-- **Active:** S37d -- #925 -- main.py: wire reset + broadcast paper_archives.
+- **Active:** none
 - **Model:** sonnet
 
 ## Queue
@@ -376,11 +379,18 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   `# S34 (#901/#906)` entries in it). Full suite green (5349 passed, 7
   skipped, 1 unrelated pre-existing flaky test in
   `test_sandboxed_eval.py`) before merge.
-- [ ] S37d -- #925 -- main.py only: binds the seam -- calls
+- [x] S37d -- #925 -- main.py only: binds the seam -- calls
   `ForwardRecord.reset_paper()` + `StubBrokerClient.reset()` + a fresh
   `_trading_broadcast()`. **Revised same day:** also adds a
   `paper_archives` summary key to the broadcast payload for the
-  collapsible history section.
+  collapsible history section. **Landed PR #931** -- generated code was
+  correct on the first attempt (no hand-fix needed); the sandbox's
+  "tests_failed" verdict was the same pre-existing unrelated flaky test
+  as S37a/S37c (`test_sandboxed_eval.py::test_workdir_is_cleaned_up_after_a_run`).
+  Full suite green otherwise (5349 passed, 7 skipped, 1 deselected) before
+  merge. All four S37 slices now landed; remaining work (Reset button +
+  collapsible history UI, and #919) is hand-built/human -- see TRADING.md
+  step 3/4 notes.
 
   User-requested 2026-08-28, then refined same day: "i should be able to
   reset the trading paper charts" -> then "each reset should be stored
