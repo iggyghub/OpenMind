@@ -1067,6 +1067,44 @@ def test_stop_trading_disables_paper_trading(tmp_path):
     assert plugin._settings.get("trading_paper_enabled") is False
 
 
+def test_reset_paper_trading_tool_exists_in_list_tools(tmp_path):
+    plugin = _plugin(tmp_path)
+    tool_names = [t.name for t in plugin.list_tools()]
+    assert "reset_paper_trading" in tool_names
+
+
+async def test_reset_paper_trading_unwired_returns_error(tmp_path):
+    plugin = _plugin(tmp_path)
+    assert plugin._reset_paper_fn is None
+    result = await plugin.call_tool("reset_paper_trading", {})
+    assert result.is_error
+
+
+async def test_reset_paper_trading_invokes_a_sync_seam(tmp_path):
+    plugin = _plugin(tmp_path)
+    calls = []
+    plugin._reset_paper_fn = lambda: calls.append(1) or {"archived": True, "fills": 3}
+    result = await plugin.call_tool("reset_paper_trading", {})
+    assert not result.is_error
+    assert calls == [1]
+    assert json.loads(result.content) == {"archived": True, "fills": 3}
+
+
+async def test_reset_paper_trading_invokes_an_async_seam(tmp_path):
+    plugin = _plugin(tmp_path)
+    calls = []
+
+    async def fake_reset():
+        calls.append(1)
+        return {"archived": True, "fills": 5}
+
+    plugin._reset_paper_fn = fake_reset
+    result = await plugin.call_tool("reset_paper_trading", {})
+    assert not result.is_error
+    assert calls == [1]
+    assert json.loads(result.content) == {"archived": True, "fills": 5}
+
+
 # ── 2026-08-26: book ingestion ───────────────────────────────────────────
 # Real _run_gauntlet, real compiled strategies, injected fetch/router --
 # same SAFETY discipline as the discovery section above. A book is just a

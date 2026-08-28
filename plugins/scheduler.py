@@ -436,11 +436,13 @@ class SchedulerPlugin:
             Tool(
                 name="reset_paper_trading",
                 description=(
-                    "Wipes all PAPER-phase trade history (fills, P&L, equity "
+                    "Clears the live paper-trading view (fills, P&L, equity "
                     "curves on the Overview/Trade Log tabs) and resets the "
                     "simulated paper account back to its configured starting "
                     "capital. Does not touch any 'live' fills or trading_live_arm. "
-                    "Irreversible."
+                    "Not destructive -- the cleared history is archived as its "
+                    "own block, viewable in the Overview tab's collapsible "
+                    "history section."
                 ),
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
