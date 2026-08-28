@@ -3710,6 +3710,7 @@ async def _trading_broadcast() -> None:
             "enabled": _settings.get("trading_paper_enabled"),
             "starting_capital": _settings.get("trading_paper_starting_capital"),
         }
+        total_pnl = _trading_forward_record.get_total_pnl()
         # 2026-08-26: book ingestion progress -- read directly, same
         # pattern as discovery above, no round-trip through list_books'
         # ToolResult/json needed here. valid_strategies (2026-08-27) is the
@@ -3742,7 +3743,7 @@ async def _trading_broadcast() -> None:
             "data": {
                 "positions": positions, "alerts": alerts, "discovery": discovery,
                 "books": books, "books_model": books_model_label,
-                "paper_control": paper_control,
+                "paper_control": paper_control, "total_pnl": total_pnl,
             },
         })
     except Exception as e:
