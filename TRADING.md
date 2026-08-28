@@ -7,7 +7,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S37b -- #923 -- broker.py: StubBrokerClient.reset().
+- **Active:** S37c -- #924 -- scheduler.py: reset_paper_trading tool + seam.
 - **Model:** sonnet
 
 ## Queue
@@ -354,8 +354,14 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   attempts; did not reproduce locally (5348 passed, 7 skipped, 1
   unrelated pre-existing flaky test) -- treated as sandbox-environment
   flakiness, not a real hang.
-- [ ] S37b -- #923 -- broker.py only: `StubBrokerClient.reset()` -- clears
+- [x] S37b -- #923 -- broker.py only: `StubBrokerClient.reset()` -- clears
   positions/orders, resets account back to configured starting capital.
+  **Landed PR #928** -- its own new test asserted cash decreases after a
+  buy, which `place_order` doesn't actually do (a separate, real gap:
+  `place_order` updates positions but never touches
+  `cash`/`equity`/`buying_power` at all, filed as #929). Fixed the test
+  to assert what `reset()` actually guarantees instead. Full suite green
+  (5350 passed, 7 skipped) before merge.
 - [ ] S37c -- #924 -- scheduler.py only: `reset_paper_trading` tool +
   `_reset_paper_fn` seam (mirrors `_lifecycle`/`_on_trading_change`'s
   existing post-construction-binding pattern).
