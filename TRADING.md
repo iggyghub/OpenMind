@@ -3,12 +3,12 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: done
+## Status: active
 
 ## Next slice -- start here
 
-- **Active:** none -- S32 is the last queued slice and it's landed. A
-  new campaign against this driver needs a fresh grill session first.
+- **Active:** S33 -- #900 -- Real book pause/resume (continue from
+  stop-chunk, not restart-from-0) + fix stop-on-done bug.
 - **Model:** sonnet
 
 ## Queue
@@ -188,6 +188,22 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   day, caught by a full-suite run (that feature's own commits only ran
   the scoped trading test files) -- fixed separately on master. See #898 for full acceptance
   criteria and the PR for the full bug account.
+
+- [ ] S33 -- #900 -- Real book pause/resume + fix stop-on-done bug. Today
+  Stop is a hard cancel and Redo always restarts a book from chunk 0 --
+  no way to pause overnight and continue without losing hours of
+  progress, which the user hit directly running real multi-hour book
+  ingestion. Adds `resume_book`: re-extracts + re-chunks the stored file
+  (deterministic given the same file + chunk_chars, no new persistence
+  needed), verifies the chunk count still matches before trusting the
+  index, then continues from `processed_chunks` with `_run_book_
+  ingestion` gaining a resume-offset seam so BookStore sees real
+  cumulative progress instead of a count that restarts low. Also fixes a
+  real bug found live this session: `stop_book`'s orphaned-book branch
+  blindly overwrote status to "stopped" with no check the book wasn't
+  already terminal -- two genuinely finished books got mislabeled by a
+  stray Stop click, hand-corrected via direct DB calls both times. See
+  #900 for full acceptance criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
