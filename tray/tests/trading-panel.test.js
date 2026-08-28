@@ -956,4 +956,42 @@ describe('renderOverviewPanel (S35/#911/#912)', () => {
       expect(mount.innerHTML).not.toContain('no fills yet');
     });
   });
+
+  // S35c/d: by-stock section, additive to the by-strategy one above.
+  describe('by-stock section', () => {
+    test('missing all_fills (backend not landed yet) shows a placeholder, not a crash', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        TradingPanel.renderOverviewPanel({ positions: TWO_STRATEGIES_WITH_CURVES, total_pnl: 3 }, mount);
+        expect(mount.innerHTML).toContain('By Stock');
+        expect(mount.innerHTML).toContain('not available yet');
+      });
+    });
+
+    test('empty all_fills shows "No fills yet", not a crash', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        TradingPanel.renderOverviewPanel({ positions: TWO_STRATEGIES_WITH_CURVES, total_pnl: 3, all_fills: [] }, mount);
+        expect(mount.innerHTML).toContain('No fills yet');
+      });
+    });
+
+    test('groups fills by symbol into one line + legend entry each', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        TradingPanel.renderOverviewPanel({
+          positions: TWO_STRATEGIES_WITH_CURVES, total_pnl: 3,
+          all_fills: [
+            { symbol: 'AAPL', pnl: 5 },
+            { symbol: 'TSLA', pnl: -2 },
+            { symbol: 'AAPL', pnl: 3 },
+          ],
+        }, mount);
+        expect(mount.innerHTML).toContain('trd-overview-canvas-symbol');
+        expect(mount.innerHTML).toContain('AAPL');
+        expect(mount.innerHTML).toContain('TSLA');
+        expect((mount.innerHTML.match(/trd-overview-legend-item/g) || []).length).toBe(4); // 2 strategies + 2 symbols
+      });
+    });
+  });
 });

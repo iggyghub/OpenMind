@@ -1210,6 +1210,8 @@ function _injectOverviewStyles() {
     .trd-overview-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 0.85em; }
     .trd-overview-legend-item { display: flex; align-items: center; gap: 4px; color: var(--text-muted); }
     .trd-overview-legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+    .trd-overview-section-title { margin: 20px 0 8px; font-size: 13px; color: var(--text-muted, #666); text-transform: uppercase; letter-spacing: 0.05em; }
+    .trd-overview-placeholder { padding: 16px; color: var(--text-muted); text-align: center; font-size: 0.9em; }
   `;
   document.head.appendChild(style);
 }
@@ -1221,6 +1223,31 @@ function _injectOverviewStyles() {
  * @param {Object} data - trading_update's data
  * @param {HTMLElement} [container] - defaults to #trading-overview-mount
  */
+/**
+ * Groups a flat, chronological fill list (S35c/d's `data.all_fills`,
+ * oldest first) into per-symbol running-P&L series -- reshaped into the
+ * exact same {name, status, equity_curve} shape _drawOverviewChart/
+ * _wireOverviewChartHover already expect, so the by-stock chart reuses
+ * both functions unchanged rather than duplicating them. `status` is
+ * repurposed here as a trade count (symbols don't have a lifecycle
+ * status the way strategies do) -- still shown in the same tooltip slot.
+ * @param {Array} allFills - [{symbol, pnl, ...}], oldest first
+ */
+function _groupFillsBySymbol(allFills) {
+  const bySymbol = {};
+  (allFills || []).forEach((f) => {
+    if (!bySymbol[f.symbol]) bySymbol[f.symbol] = { running: 0, curve: [] };
+    const entry = bySymbol[f.symbol];
+    entry.running += (f.pnl || 0);
+    entry.curve.push(entry.running);
+  });
+  return Object.keys(bySymbol).sort().map((symbol) => ({
+    name: symbol,
+    status: bySymbol[symbol].curve.length + (bySymbol[symbol].curve.length === 1 ? ' trade' : ' trades'),
+    equity_curve: bySymbol[symbol].curve,
+  }));
+}
+
 function renderOverviewPanel(data, container) {
   const mount = container || document.getElementById('trading-overview-mount');
   if (!mount) return;
@@ -1242,27 +1269,53 @@ function renderOverviewPanel(data, container) {
   // Only strategies with at least one recorded fill get a line -- keep the
   // legend consistent with what _drawOverviewChart actually draws (it
   // filters the same way), not a legend entry with no matching line.
-  const lines = strategies.filter((s) => s.equity_curve && s.equity_curve.length > 0);
-  const legend = lines.map((s, i) => `
+  const strategyLines = strategies.filter((s) => s.equity_curve && s.equity_curve.length > 0);
+  const strategyLegend = strategyLines.map((s, i) => `
     <span class="trd-overview-legend-item">
       <span class="trd-overview-legend-swatch" style="background:${_OVERVIEW_LINE_COLORS[i % _OVERVIEW_LINE_COLORS.length]}"></span>
       ${s.name}
     </span>
   `).join('');
 
+  // S35c/d: by-stock section. Degrades to a placeholder until all_fills
+  // exists on the broadcast (backend not landed yet) -- the by-strategy
+  // section above works fully already, this is purely additive.
+  const allFills = (data && data.all_fills) || null;
+  const symbolLines = allFills ? _groupFillsBySymbol(allFills) : [];
+  const symbolLegend = symbolLines.map((s, i) => `
+    <span class="trd-overview-legend-item">
+      <span class="trd-overview-legend-swatch" style="background:${_OVERVIEW_LINE_COLORS[i % _OVERVIEW_LINE_COLORS.length]}"></span>
+      ${s.name}
+    </span>
+  `).join('');
+  const symbolSectionHtml = allFills === null
+    ? '<div class="trd-overview-placeholder">Per-stock breakdown not available yet.</div>'
+    : symbolLines.length === 0
+      ? '<div class="trd-overview-placeholder">No fills yet.</div>'
+      : `<canvas class="trd-overview-canvas" id="trd-overview-canvas-symbol"></canvas>
+         <div class="trd-overview-legend">${symbolLegend}</div>`;
+
   mount.innerHTML = `<div class="trd-overview">
     <div class="trd-overview-total">Total across all trades: ${totalHtml}</div>
+    <h3 class="trd-overview-section-title">By Strategy</h3>
     <canvas class="trd-overview-canvas" id="trd-overview-canvas"></canvas>
-    <div class="trd-overview-legend">${legend}</div>
+    <div class="trd-overview-legend">${strategyLegend}</div>
+    <h3 class="trd-overview-section-title">By Stock</h3>
+    ${symbolSectionHtml}
   </div>`;
 
   // Same fake-DOM guard as the Tickers chart above -- no jsdom in this
   // repo's JS test suite, only innerHTML is exercised there.
   if (typeof mount.querySelector === 'function') {
-    const canvas = mount.querySelector('#trd-overview-canvas');
-    if (canvas) {
-      _drawOverviewChart(canvas, lines);
-      _wireOverviewChartHover(canvas);
+    const strategyCanvas = mount.querySelector('#trd-overview-canvas');
+    if (strategyCanvas) {
+      _drawOverviewChart(strategyCanvas, strategyLines);
+      _wireOverviewChartHover(strategyCanvas);
+    }
+    const symbolCanvas = mount.querySelector('#trd-overview-canvas-symbol');
+    if (symbolCanvas) {
+      _drawOverviewChart(symbolCanvas, symbolLines);
+      _wireOverviewChartHover(symbolCanvas);
     }
   }
 }
