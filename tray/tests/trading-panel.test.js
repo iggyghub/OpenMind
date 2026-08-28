@@ -445,6 +445,65 @@ describe('renderBooksPanel (2026-08-27, was "renderTradingUpdate books section")
   });
 });
 
+// 2026-08-28: once a handful of books finish, a flat list buries whatever's
+// still active. Finished books collapse into a native <details>, active
+// ones stay in the always-visible list.
+describe('renderBooksPanel finished-books collapsible section (2026-08-28)', () => {
+  const DONE_BOOK = { id: 1, title: 'Finished Book', filename: 'f.pdf', status: 'done', total_chunks: 10, processed_chunks: 10, strategies_found: 2, error_message: '' };
+  const ACTIVE_BOOK = { id: 2, title: 'Active Book', filename: 'a.pdf', status: 'processing', total_chunks: 10, processed_chunks: 3, strategies_found: 0, error_message: '' };
+
+  test('a done book is wrapped in the collapsible finished-books section', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderBooksPanel({ positions: [], alerts: [], books: [DONE_BOOK] }, mount);
+      expect(mount.innerHTML).toContain('books-done-section');
+      expect(mount.innerHTML).toContain('1 finished book<');
+      expect(mount.innerHTML).toContain('Finished Book');
+    });
+  });
+
+  test('an active book is not inside the collapsible section', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderBooksPanel({ positions: [], alerts: [], books: [ACTIVE_BOOK] }, mount);
+      expect(mount.innerHTML).not.toContain('books-done-section');
+      expect(mount.innerHTML).toContain('Active Book');
+    });
+  });
+
+  test('active and done books both render, done ones only inside the collapsible section', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderBooksPanel({ positions: [], alerts: [], books: [DONE_BOOK, ACTIVE_BOOK] }, mount);
+      expect(mount.innerHTML).toContain('Active Book');
+      expect(mount.innerHTML).toContain('Finished Book');
+      expect((mount.innerHTML.match(/book-row"/g) || []).length).toBe(2);
+      // Finished Book's row must appear AFTER the <details> opening tag,
+      // Active Book's must appear BEFORE it -- confirms which section each landed in.
+      const detailsIdx = mount.innerHTML.indexOf('books-done-section');
+      expect(mount.innerHTML.indexOf('Active Book')).toBeLessThan(detailsIdx);
+      expect(mount.innerHTML.indexOf('Finished Book')).toBeGreaterThan(detailsIdx);
+    });
+  });
+
+  test('multiple finished books share one summary count', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const second = { ...DONE_BOOK, id: 3, title: 'Second Finished Book' };
+      TradingPanel.renderBooksPanel({ positions: [], alerts: [], books: [DONE_BOOK, second] }, mount);
+      expect(mount.innerHTML).toContain('2 finished books<');
+    });
+  });
+
+  test('no finished books yet -- no collapsible section rendered at all', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderBooksPanel({ positions: [], alerts: [], books: [ACTIVE_BOOK] }, mount);
+      expect(mount.innerHTML).not.toContain('finished book');
+    });
+  });
+});
+
 describe('renderTradingUpdate no longer embeds the Books section (2026-08-27)', () => {
   test('the Strategies mount has no books UI even when books are present', () => {
     withFakeDocument(() => {

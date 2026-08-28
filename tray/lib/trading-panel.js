@@ -130,46 +130,63 @@ function buildStopDiscoveryEvent() {
  *   list should render open, not collapsed (persisted on the mount
  *   across re-renders -- see renderBooksPanel).
  */
+function _renderBookRow(b, expanded) {
+  const pct = b.total_chunks > 0 ? Math.round((b.processed_chunks / b.total_chunks) * 100) : 0;
+  const statusLabel = b.status === 'error' ? 'Error: ' + (b.error_message || 'unknown') : b.status;
+  const canStop = b.status === 'processing' || b.status === 'queued';
+  const validList = b.valid_strategies || [];
+  const isOpen = expanded.has(b.id);
+  const validListHtml = validList.length ? `
+    <ul class="book-valid-list" ${isOpen ? '' : 'hidden'}>
+      ${validList.map((s) => `
+        <li class="book-valid-item">
+          <span class="book-valid-symbol">${s.symbol}</span>
+          <span class="book-valid-hypothesis">${s.hypothesis}</span>
+          <span class="book-valid-chapter">(${s.chapter})</span>
+        </li>
+      `).join('')}
+    </ul>
+  ` : '';
+  return `
+    <div class="book-row" data-status="${b.status}" data-book-id="${b.id}">
+      <div class="book-row-title">${b.title}</div>
+      <div class="book-row-meta">
+        <span class="book-status book-status-${b.status}">${statusLabel}</span>
+        ${b.status === 'processing' ? `<span class="book-progress-text">${b.processed_chunks}/${b.total_chunks} chunks</span>` : ''}
+        <span class="book-dispatch-count">${b.strategies_found} dispatch${b.strategies_found === 1 ? '' : 'es'}</span>
+        <button class="book-valid-toggle" type="button" data-book-id="${b.id}" ${validList.length ? '' : 'disabled'}>
+          ${validList.length} valid strateg${validList.length === 1 ? 'y' : 'ies'}
+        </button>
+      </div>
+      ${b.status === 'processing' ? `<div class="book-progress-bar"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
+      ${validListHtml}
+      <div class="book-row-actions">
+        ${canStop ? `<button class="book-stop-btn" type="button" data-book-id="${b.id}">Stop</button>` : ''}
+        <button class="book-retry-btn" type="button" data-book-id="${b.id}">Redo</button>
+        <button class="book-delete-btn" type="button" data-book-id="${b.id}">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
 function _renderBooksSection(books, booksModel, expandedIds) {
   const expanded = expandedIds || new Set();
-  const rows = (books || []).map((b) => {
-    const pct = b.total_chunks > 0 ? Math.round((b.processed_chunks / b.total_chunks) * 100) : 0;
-    const statusLabel = b.status === 'error' ? 'Error: ' + (b.error_message || 'unknown') : b.status;
-    const canStop = b.status === 'processing' || b.status === 'queued';
-    const validList = b.valid_strategies || [];
-    const isOpen = expanded.has(b.id);
-    const validListHtml = validList.length ? `
-      <ul class="book-valid-list" ${isOpen ? '' : 'hidden'}>
-        ${validList.map((s) => `
-          <li class="book-valid-item">
-            <span class="book-valid-symbol">${s.symbol}</span>
-            <span class="book-valid-hypothesis">${s.hypothesis}</span>
-            <span class="book-valid-chapter">(${s.chapter})</span>
-          </li>
-        `).join('')}
-      </ul>
-    ` : '';
-    return `
-      <div class="book-row" data-status="${b.status}" data-book-id="${b.id}">
-        <div class="book-row-title">${b.title}</div>
-        <div class="book-row-meta">
-          <span class="book-status book-status-${b.status}">${statusLabel}</span>
-          ${b.status === 'processing' ? `<span class="book-progress-text">${b.processed_chunks}/${b.total_chunks} chunks</span>` : ''}
-          <span class="book-dispatch-count">${b.strategies_found} dispatch${b.strategies_found === 1 ? '' : 'es'}</span>
-          <button class="book-valid-toggle" type="button" data-book-id="${b.id}" ${validList.length ? '' : 'disabled'}>
-            ${validList.length} valid strateg${validList.length === 1 ? 'y' : 'ies'}
-          </button>
-        </div>
-        ${b.status === 'processing' ? `<div class="book-progress-bar"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
-        ${validListHtml}
-        <div class="book-row-actions">
-          ${canStop ? `<button class="book-stop-btn" type="button" data-book-id="${b.id}">Stop</button>` : ''}
-          <button class="book-retry-btn" type="button" data-book-id="${b.id}">Redo</button>
-          <button class="book-delete-btn" type="button" data-book-id="${b.id}">Delete</button>
-        </div>
-      </div>
-    `;
-  }).join('');
+  const all = books || [];
+  // Finished books collapse into their own <details> (2026-08-28) -- once
+  // a handful of books are done the flat list buries whatever's still
+  // active/needs attention. <details>/<summary> is native, collapsed by
+  // default, no JS toggle wiring needed for the open/close behavior itself.
+  const activeBooks = all.filter((b) => b.status !== 'done');
+  const doneBooks = all.filter((b) => b.status === 'done');
+
+  const activeHtml = activeBooks.map((b) => _renderBookRow(b, expanded)).join('');
+  const doneSection = doneBooks.length ? `
+    <details class="books-done-section">
+      <summary>${doneBooks.length} finished book${doneBooks.length === 1 ? '' : 's'}</summary>
+      <div class="books-list">${doneBooks.map((b) => _renderBookRow(b, expanded)).join('')}</div>
+    </details>
+  ` : '';
+
   return `
     <div class="books-section">
       <h3>Books ${booksModel ? `<span class="books-reading-model">reading with ${booksModel}</span>` : ''}</h3>
@@ -177,7 +194,9 @@ function _renderBooksSection(books, booksModel, expandedIds) {
         <input type="file" class="books-file-input" multiple accept=".pdf,.epub,.mobi,.azw,.azw3,.docx,.doc,.odt,.rtf,.txt,.md">
         <span class="books-upload-hint">Upload several at once -- each reads in full and processes in the background.</span>
       </div>
-      <div class="books-list">${rows || '<div class="books-empty">No books uploaded yet.</div>'}</div>
+      ${all.length === 0 ? '<div class="books-empty">No books uploaded yet.</div>' : ''}
+      <div class="books-list">${activeHtml}</div>
+      ${doneSection}
     </div>
   `;
 }
@@ -225,8 +244,10 @@ function buildResumeStrategyEvent(strategyId) {
  * Wires the multi-file input (reads each selected file as base64 and fires
  * one upload_book call per file, then polls once so the new queued row
  * appears without waiting for the first background progress tick) and the
- * per-row Stop/Redo/Delete buttons (event-delegated off .books-list since
- * rows re-render on every trading_update).
+ * per-row Stop/Redo/Delete buttons (event-delegated off .books-section,
+ * not just .books-list -- finished books live in a second .books-list
+ * nested inside the <details> collapsible, a sibling of the active one,
+ * so delegating off a single .books-list would miss clicks in there).
  */
 function _wireBooksSection(mount, sendEventFn) {
   const input = mount.querySelector('.books-file-input');
@@ -246,7 +267,7 @@ function _wireBooksSection(mount, sendEventFn) {
     });
   }
 
-  const list = mount.querySelector('.books-list');
+  const list = mount.querySelector('.books-section');
   if (!list) return;
   list.addEventListener('click', (e) => {
     const validBtn = e.target.closest('.book-valid-toggle');
@@ -474,6 +495,9 @@ function _injectTradingPanelStyles() {
     .books-upload-hint { font-size: 0.85em; color: var(--text-muted, #777); }
     .books-list { display: flex; flex-direction: column; gap: 8px; }
     .books-empty { color: var(--text-muted, #888); font-size: 0.9em; padding: 4px 0; }
+    .books-done-section { margin-top: 10px; }
+    .books-done-section > summary { cursor: pointer; font-size: 0.85em; color: var(--text-muted, #666); padding: 4px 0; user-select: none; }
+    .books-done-section > .books-list { margin-top: 8px; }
     .book-row { padding: 8px 10px; background: var(--bg, #fff); border: 1px solid var(--border, #eee); border-radius: 4px; }
     .book-row-title { font-weight: 500; color: var(--text, #333); margin-bottom: 4px; }
     .book-row-meta { display: flex; gap: 10px; align-items: center; font-size: 0.85em; color: var(--text-muted, #666); flex-wrap: wrap; }
