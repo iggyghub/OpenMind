@@ -327,6 +327,8 @@ class TestSchedulerPlugin:
             "run_discovery", "start_discovery", "stop_discovery", "get_discovery_status",
             "upload_book", "list_books", "stop_book", "retry_book", "resume_book", "delete_book",
             "halt_strategy", "resume_strategy",
+            # S34 (#901/#906)
+            "start_trading", "stop_trading",
         }
 
     # -----------------------------------------------------------------------

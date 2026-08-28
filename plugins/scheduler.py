@@ -414,6 +414,22 @@ class SchedulerPlugin:
                 schema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="start_trading",
+                description=(
+                    "S34/#901: enable the autonomous paper-trading dispatch loop "
+                    "(default already on -- this is for re-enabling after stop_trading). "
+                    "Does not affect trading_live_arm or any already-graduated live strategy."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="stop_trading",
+                description="S34/#901: pause the autonomous paper-trading dispatch loop.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
                 name="get_discovery_status",
                 description="S31/#896: current discovery enabled/stop_at/queries/interval state.",
                 plugin=PLUGIN_NAME,
