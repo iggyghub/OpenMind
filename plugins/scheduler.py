@@ -414,6 +414,22 @@ class SchedulerPlugin:
                 schema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="start_trading",
+                description=(
+                    "S34/#901: enable the autonomous paper-trading dispatch loop "
+                    "(default already on -- this is for re-enabling after stop_trading). "
+                    "Does not affect trading_live_arm or any already-graduated live strategy."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="stop_trading",
+                description="S34/#901: pause the autonomous paper-trading dispatch loop.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
                 name="get_discovery_status",
                 description="S31/#896: current discovery enabled/stop_at/queries/interval state.",
                 plugin=PLUGIN_NAME,
@@ -558,6 +574,10 @@ class SchedulerPlugin:
             return self._start_discovery(args)
         if tool_name == "stop_discovery":
             return self._stop_discovery(args)
+        if tool_name == "start_trading":
+            return self._start_trading(args)
+        if tool_name == "stop_trading":
+            return self._stop_trading(args)
         if tool_name == "get_discovery_status":
             return self._get_discovery_status(args)
         if tool_name == "get_strategy_code":
@@ -983,6 +1003,14 @@ class SchedulerPlugin:
     # ------------------------------------------------------------------
     # S31 (#896): manual discovery start/stop + duration
     # ------------------------------------------------------------------
+
+    def _start_trading(self, args: dict) -> ToolResult:
+        self._settings.set("trading_paper_enabled", True)
+        return ToolResult(content=json.dumps({"enabled": True}))
+
+    def _stop_trading(self, args: dict) -> ToolResult:
+        self._settings.set("trading_paper_enabled", False)
+        return ToolResult(content=json.dumps({"enabled": False}))
 
     def _start_discovery(self, args: dict) -> ToolResult:
         queries = args.get("queries") or []
