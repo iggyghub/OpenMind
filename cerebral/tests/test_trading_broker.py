@@ -86,3 +86,22 @@ def test_stub_commission_free():
     stub = StubBrokerClient()
     order = stub.place_order("AAPL", 10, "buy", "market")
     assert order.fees == 0.0
+
+
+def test_stub_reset():
+    """reset() clears positions/orders and restores starting cash."""
+    stub = StubBrokerClient()
+    stub.place_order("AAPL", 10, "buy", "market")
+    assert stub.get_account().cash < 10000.0
+    assert len(stub.list_positions()) > 0
+
+    stub.reset()
+    assert stub.get_account().cash == 10000.0
+    assert stub.list_positions() == []
+
+    # Non-default starting_cash
+    stub2 = StubBrokerClient({"starting_cash": 75000.0})
+    stub2.place_order("MSFT", 5, "buy", "market")
+    stub2.reset()
+    assert stub2.get_account().cash == 75000.0
+    assert stub2.list_positions() == []
