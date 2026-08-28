@@ -209,6 +209,20 @@ class StubBrokerClient:
             buying_power=starting_cash, day_trades_remaining=3
         )
 
+    def reset(self) -> None:
+        """Clears every simulated position/order and resets the account
+        back to its configured starting capital -- the paper-trading
+        equivalent of "restart the simulation." Does not touch
+        self.config, so a later reset uses the same starting_cash as the
+        original construction."""
+        self._orders = {}
+        self._positions = {}
+        starting_cash = float(self.config.get("starting_cash", 10000.0))
+        self._account = Account(
+            cash=starting_cash, equity=starting_cash, status="ACTIVE",
+            buying_power=starting_cash, day_trades_remaining=3
+        )
+
     def get_account(self) -> Account:
         return self._account
 
