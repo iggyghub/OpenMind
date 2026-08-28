@@ -1044,6 +1044,29 @@ def test_settings_injection_isolates_from_the_real_production_file(tmp_path):
     assert plugin._settings._path == tmp_path / "felix-settings.json"
 
 
+def test_start_stop_trading_tools_exist_in_list_tools(tmp_path):
+    plugin = _plugin(tmp_path)
+    tool_names = [t.name for t in plugin.list_tools()]
+    assert "start_trading" in tool_names
+    assert "stop_trading" in tool_names
+
+
+def test_start_trading_enables_paper_trading(tmp_path):
+    plugin = _plugin(tmp_path)
+    result = plugin._start_trading({})
+    assert not result.is_error
+    assert json.loads(result.content) == {"enabled": True}
+    assert plugin._settings.get("trading_paper_enabled") is True
+
+
+def test_stop_trading_disables_paper_trading(tmp_path):
+    plugin = _plugin(tmp_path)
+    result = plugin._stop_trading({})
+    assert not result.is_error
+    assert json.loads(result.content) == {"enabled": False}
+    assert plugin._settings.get("trading_paper_enabled") is False
+
+
 # ── 2026-08-26: book ingestion ───────────────────────────────────────────
 # Real _run_gauntlet, real compiled strategies, injected fetch/router --
 # same SAFETY discipline as the discovery section above. A book is just a

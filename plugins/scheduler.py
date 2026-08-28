@@ -558,6 +558,10 @@ class SchedulerPlugin:
             return self._start_discovery(args)
         if tool_name == "stop_discovery":
             return self._stop_discovery(args)
+        if tool_name == "start_trading":
+            return self._start_trading(args)
+        if tool_name == "stop_trading":
+            return self._stop_trading(args)
         if tool_name == "get_discovery_status":
             return self._get_discovery_status(args)
         if tool_name == "get_strategy_code":
@@ -983,6 +987,14 @@ class SchedulerPlugin:
     # ------------------------------------------------------------------
     # S31 (#896): manual discovery start/stop + duration
     # ------------------------------------------------------------------
+
+    def _start_trading(self, args: dict) -> ToolResult:
+        self._settings.set("trading_paper_enabled", True)
+        return ToolResult(content=json.dumps({"enabled": True}))
+
+    def _stop_trading(self, args: dict) -> ToolResult:
+        self._settings.set("trading_paper_enabled", False)
+        return ToolResult(content=json.dumps({"enabled": False}))
 
     def _start_discovery(self, args: dict) -> ToolResult:
         queries = args.get("queries") or []
