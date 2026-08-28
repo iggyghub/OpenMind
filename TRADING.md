@@ -3,12 +3,11 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: done
+## Status: active
 
 ## Next slice -- start here
 
-- **Active:** none -- S36 landed. A new campaign against this driver
-  needs a fresh grill session first.
+- **Active:** S37a -- #922 -- forward_record.py: ForwardRecord.reset_paper().
 - **Model:** sonnet
 
 ## Queue
@@ -329,6 +328,28 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   `test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl`) --
   fixed by hand to assert exact gross P&L. Full suite green (5345
   passed, 7 skipped) before merge. See #920 for full acceptance criteria.
+
+- [ ] S37a -- #922 -- forward_record.py only: `ForwardRecord.reset_paper()`
+  -- deletes every paper-phase fill, leaves live fills alone.
+- [ ] S37b -- #923 -- broker.py only: `StubBrokerClient.reset()` -- clears
+  positions/orders, resets account back to configured starting capital.
+- [ ] S37c -- #924 -- scheduler.py only: `reset_paper_trading` tool +
+  `_reset_paper_fn` seam (mirrors `_lifecycle`/`_on_trading_change`'s
+  existing post-construction-binding pattern).
+- [ ] S37d -- #925 -- main.py only: binds the seam -- calls
+  `ForwardRecord.reset_paper()` + `StubBrokerClient.reset()` + a fresh
+  `_trading_broadcast()` so the UI reflects the reset immediately.
+
+  User-requested 2026-08-28 ("i should be able to reset the trading
+  paper charts") -- the Overview/Trade Log charts are pure views over
+  broadcast data, so a real reset has to clear the underlying fill
+  history AND the simulated broker's live position/cash state (leaving
+  either one stale would make the numbers inconsistent). Split
+  single-file (S34's proven pattern) since this spans 4 files. Land in
+  order: S37a, S37b, S37c, S37d (each later one depends on the file(s)
+  before it existing). A Reset button in the Trading panel is hand-built
+  once all 4 land -- guardrail path. See #922/#923/#924/#925 for full
+  acceptance criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
