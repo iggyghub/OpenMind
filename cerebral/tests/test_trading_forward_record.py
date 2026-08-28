@@ -166,3 +166,27 @@ def test_get_total_pnl_grand_total():
     total = record.get_total_pnl()
     assert total == pytest.approx(25.0)  # 10.0 + 20.0 + -5.0
     record.close()
+
+
+def test_get_all_fills_cross_strategy():
+    """get_all_fills returns all fills across strategies, oldest first, and respects limit."""
+    record = ForwardRecord()
+    _add_fill_on_day(record, "2026-01-01", "AAPL", "buy", 1.0, 100.0, pnl=1.0, strategy_id="strat_a")
+    _add_fill_on_day(record, "2026-01-03", "GOOGL", "buy", 1.0, 2000.0, pnl=2.0, strategy_id="strat_b")
+    _add_fill_on_day(record, "2026-01-02", "AAPL", "sell", 1.0, 110.0, pnl=5.0, strategy_id="strat_a")
+    
+    all_fills = record.get_all_fills()
+    assert len(all_fills) == 3
+    # Oldest first check
+    assert all_fills[0]["timestamp"] < all_fills[1]["timestamp"] < all_fills[2]["timestamp"]
+    # Verify all strategies and symbols are present
+    assert all_fills[0]["strategy_id"] == "strat_a"
+    assert all_fills[1]["strategy_id"] == "strat_a"
+    assert all_fills[2]["strategy_id"] == "strat_b"
+    
+    # Test limit
+    limited_fills = record.get_all_fills(limit=2)
+    assert len(limited_fills) == 2
+    assert limited_fills[1]["timestamp"] == all_fills[1]["timestamp"]
+    
+    record.close()
