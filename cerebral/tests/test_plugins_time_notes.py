@@ -329,6 +329,8 @@ class TestSchedulerPlugin:
             "halt_strategy", "resume_strategy",
             # S34 (#901/#906)
             "start_trading", "stop_trading",
+            # S37c (#924)
+            "reset_paper_trading",
         }
 
     # -----------------------------------------------------------------------
