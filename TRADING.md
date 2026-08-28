@@ -7,7 +7,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S37a -- #922 -- forward_record.py: ForwardRecord.reset_paper().
+- **Active:** S37b -- #923 -- broker.py: StubBrokerClient.reset().
 - **Model:** sonnet
 
 ## Queue
@@ -329,13 +329,31 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   fixed by hand to assert exact gross P&L. Full suite green (5345
   passed, 7 skipped) before merge. See #920 for full acceptance criteria.
 
-- [ ] S37a -- #922 -- forward_record.py only: `ForwardRecord.reset_paper()`.
+- [x] S37a -- #922 -- forward_record.py only: `ForwardRecord.reset_paper()`.
   **Revised same day:** archives current paper fills into a new
   `paper_archives` table as one self-contained historical block (JSON
   blob + summary columns), THEN clears the live table -- does not
   destroy history. Also adds `list_paper_archives()` (summary, newest
   first) and `get_paper_archive_fills(archive_id)` (one block's real
-  fills, for the Overview tab's collapsible history section).
+  fills, for the Overview tab's collapsible history section). **Landed
+  PR #927** after a real detour: the FIRST attempt (before the design
+  revision) and even the retry against the revised spec both hit a
+  self_dev_campaign "resume" gotcha this campaign has hit before (see
+  the 2026-08-22 entry above) -- retrying a slice that already has ANY
+  recorded ledger step (even a failed one) replays the cached edit
+  instead of regenerating it, so my revised issue text was silently
+  ignored until the stale `chain_steps` rows for
+  `run_id='campaign-trading-s37a'` were purged by hand from
+  `cerebral/data/openmind.db` (plus the matching stale sandbox clone
+  dir) -- same remedy as the 2026-08-25 ledger-pollution incident.
+  Once genuinely fresh, the real generated code was correct but its own
+  new tests called the file's pre-existing `_add_fill_on_day` test
+  helper with a `phase=` kwarg it didn't support (hardcoded 'paper')
+  -- fixed by hand (optional `phase="paper"` param, existing callers
+  unaffected). Sandbox also reported a 600s test-run timeout on both
+  attempts; did not reproduce locally (5348 passed, 7 skipped, 1
+  unrelated pre-existing flaky test) -- treated as sandbox-environment
+  flakiness, not a real hang.
 - [ ] S37b -- #923 -- broker.py only: `StubBrokerClient.reset()` -- clears
   positions/orders, resets account back to configured starting capital.
 - [ ] S37c -- #924 -- scheduler.py only: `reset_paper_trading` tool +
