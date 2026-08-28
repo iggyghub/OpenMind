@@ -7,8 +7,8 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S34b -- #904 -- broker.py: StubBrokerClient honors config
-  starting_cash.
+- **Active:** S34c -- #905 -- main.py: wire trading_paper_enabled +
+  starting_capital + broadcast.
 - **Model:** sonnet
 
 ## Queue
@@ -215,7 +215,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 - [x] S34a -- #903 -- settings.py only: `trading_paper_enabled` (default
   True) + `trading_paper_starting_capital` settings keys.
-- [ ] S34b -- #904 -- broker.py only: `StubBrokerClient` honors
+- [x] S34b -- #904 -- broker.py only: `StubBrokerClient` honors
   `config["starting_cash"]` instead of a hardcoded `10000.0` in all three
   of cash/equity/buying_power.
 - [ ] S34c -- #905 -- main.py only: construct `_trading_broker` with the
