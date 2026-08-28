@@ -3347,6 +3347,22 @@ async def _record_activity(kind: str, content: dict) -> None:
 # their own setters once every closure they capture actually exists.
 _scheduler_plugin._record_activity_fn = _record_activity
 
+async def _reset_paper_trading() -> dict:
+    """Archives current paper-trading fills as a historical block (does
+    NOT delete anything -- see ForwardRecord.reset_paper()) and resets
+    the simulated broker's account -- the real logic behind
+    SchedulerPlugin's reset_paper_trading tool (#924), bound here (not
+    in plugins/scheduler.py) because it needs both
+    _trading_forward_record and _trading_broker, which live in this
+    module, not the plugin."""
+    result = _trading_forward_record.reset_paper()
+    _trading_broker.reset()
+    await _trading_broadcast()
+    return result
+
+
+_scheduler_plugin._reset_paper_fn = _reset_paper_trading
+
 
 def _conversation_turns_event(limit: int = 50) -> dict:
     """Snapshot of the active profile + active thread's last ``limit``
