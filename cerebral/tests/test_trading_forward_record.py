@@ -110,7 +110,7 @@ def test_zero_trades_ci():
     record.close()
 
 
-def _add_fill_on_day(record, day_iso, symbol, side, qty, price, pnl, strategy_id="global"):
+def _add_fill_on_day(record, day_iso, symbol, side, qty, price, pnl, strategy_id="global", phase="paper"):
     """Insert a fill with a controlled timestamp -- add_fill() always stamps
     "now", with no way to inject a date through the public API. Bypasses it
     with a direct insert instead of monkeypatching the datetime CLASS
@@ -120,8 +120,8 @@ def _add_fill_on_day(record, day_iso, symbol, side, qty, price, pnl, strategy_id
     the module, not just the one under test)."""
     record._con.execute(
         "INSERT INTO forward_fills (timestamp, phase, symbol, side, qty, price, fees, pnl, strategy_id) "
-        "VALUES (?, 'paper', ?, ?, ?, ?, 0.0, ?, ?)",
-        (f"{day_iso}T12:00:00+00:00", symbol, side, qty, price, pnl, strategy_id),
+        "VALUES (?, ?, ?, ?, ?, ?, 0.0, ?, ?)",
+        (f"{day_iso}T12:00:00+00:00", phase, symbol, side, qty, price, pnl, strategy_id),
     )
     record._con.commit()
 
@@ -188,5 +188,95 @@ def test_get_all_fills_cross_strategy():
     limited_fills = record.get_all_fills(limit=2)
     assert len(limited_fills) == 2
     assert limited_fills[1]["timestamp"] == all_fills[1]["timestamp"]
+    
+    record.close()
+
+
+def test_reset_paper_archives_only_paper_fills():
+    """reset_paper() on a mix of 'paper' and 'live' fills archives only the paper ones."""
+    record = ForwardRecord()
+    # Add paper fills
+    _add_fill_on_day(record, "2026-01-01", "AAPL", "buy", 1.0, 100.0, pnl=10.0, phase="paper")
+    _add_fill_on_day(record, "2026-01-02", "AAPL", "sell", 1.0, 110.0, pnl=9.0, phase="paper")
+    # Add live fill
+    _add_fill_on_day(record, "2026-01-03", "AAPL", "buy", 1.0, 105.0, pnl=5.0, phase="live")
+    
+    result = record.reset_paper()
+    assert result["archived"] is True
+    assert result["fills"] == 2
+    assert abs(result["total_pnl"] - 19.0) < 0.001
+    
+    # Only live fill should remain in live table
+    remaining = record.get_all_fills()
+    assert len(remaining) == 1
+    assert remaining[0]["phase"] == "live"
+    
+    # Check archive
+    archives = record.list_paper_archives()
+    assert len(archives) == 1
+    assert archives[0]["trade_count"] == 2
+    assert abs(archives[0]["total_pnl"] - 19.0) < 0.001
+    
+    archive_fills = record.get_paper_archive_fills(archives[0]["id"])
+    assert len(archive_fills) == 2
+    assert archive_fills[0]["pnl"] == 10.0
+    assert archive_fills[1]["pnl"] == 9.0
+    
+    record.close()
+
+
+def test_reset_paper_zero_paper_fills():
+    """reset_paper() with zero paper fills returns {"archived": False, ...} and creates no archive row."""
+    record = ForwardRecord()
+    _add_fill_on_day(record, "2026-01-01", "AAPL", "buy", 1.0, 100.0, pnl=10.0, phase="live")
+    
+    result = record.reset_paper()
+    assert result == {"archived": False, "fills": 0, "total_pnl": 0.0}
+    
+    archives = record.list_paper_archives()
+    assert len(archives) == 0
+    
+    record.close()
+
+
+def test_list_paper_archives_newest_first():
+    """list_paper_archives() returns archives newest-first with the right summary fields."""
+    record = ForwardRecord()
+    _add_fill_on_day(record, "2026-01-01", "X", "buy", 1.0, 100.0, pnl=10.0, phase="paper")
+    record.reset_paper()
+    
+    _add_fill_on_day(record, "2026-01-02", "Y", "buy", 1.0, 200.0, pnl=20.0, phase="paper")
+    record.reset_paper()
+    
+    archives = record.list_paper_archives()
+    assert len(archives) == 2
+    # Newest first by id (which is auto-increment, so last inserted is highest id)
+    assert archives[0]["id"] > archives[1]["id"]
+    assert "reset_at" in archives[0]
+    assert "total_pnl" in archives[0]
+    assert "trade_count" in archives[0]
+    assert "date_range_start" in archives[0]
+    assert "date_range_end" in archives[0]
+    
+    record.close()
+
+
+def test_get_paper_archive_fills_returns_exact_or_empty():
+    """get_paper_archive_fills(archive_id) returns the exact fills that were archived, and returns [] for a nonexistent id."""
+    record = ForwardRecord()
+    _add_fill_on_day(record, "2026-01-01", "Z", "buy", 1.0, 50.0, pnl=5.0, phase="paper")
+    record.reset_paper()
+    
+    archives = record.list_paper_archives()
+    archive_id = archives[0]["id"]
+    
+    fills = record.get_paper_archive_fills(archive_id)
+    assert len(fills) == 1
+    assert fills[0]["symbol"] == "Z"
+    assert fills[0]["pnl"] == 5.0
+    
+    # Nonexistent id
+    empty = record.get_paper_archive_fills(999999)
+    assert empty == []
     
     record.close()

@@ -5,6 +5,7 @@ and enforces a 30-trade minimum for "meaningful" records.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import math
 from dataclasses import dataclass, field
@@ -42,6 +43,15 @@ class ForwardRecord:
                     fees        REAL    NOT NULL DEFAULT 0.0,
                     pnl         REAL    NOT NULL DEFAULT 0.0,
                     strategy_id TEXT    NOT NULL DEFAULT 'global'
+                );
+                CREATE TABLE IF NOT EXISTS paper_archives (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    reset_at          TEXT    NOT NULL,
+                    fills_json        TEXT    NOT NULL,
+                    total_pnl         REAL    NOT NULL,
+                    trade_count       INTEGER NOT NULL,
+                    date_range_start  TEXT,
+                    date_range_end    TEXT
                 );
             """)
             self._con.commit()
@@ -81,6 +91,54 @@ class ForwardRecord:
             "SELECT COALESCE(SUM(pnl), 0.0) FROM forward_fills",
         ).fetchone()
         return float(row[0])
+
+    def reset_paper(self) -> dict:
+        """Archives every current PAPER-phase fill as one self-contained
+        historical block (for the Overview tab's collapsible history
+        section), then clears them from the live table. Existing read
+        methods (get_total_pnl, get_equity_curve, get_all_fills, etc.)
+        need NO changes -- they just see a smaller live table afterward.
+        Leaves any 'live' fills alone -- this is a paper-trading reset,
+        not a full wipe. Returns {"archived": bool, "fills": int,
+        "total_pnl": float} -- archived is False (no-op, nothing to
+        archive) if there were zero paper fills."""
+        rows = self._con.execute(
+            "SELECT * FROM forward_fills WHERE phase = 'paper' ORDER BY timestamp ASC"
+        ).fetchall()
+        if not rows:
+            return {"archived": False, "fills": 0, "total_pnl": 0.0}
+        fills = [dict(r) for r in rows]
+        total_pnl = sum(f["pnl"] for f in fills)
+        now = datetime.now(timezone.utc).isoformat()
+        self._con.execute(
+            "INSERT INTO paper_archives "
+            "(reset_at, fills_json, total_pnl, trade_count, date_range_start, date_range_end) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (now, json.dumps(fills), total_pnl, len(fills),
+             fills[0]["timestamp"], fills[-1]["timestamp"]),
+        )
+        self._con.execute("DELETE FROM forward_fills WHERE phase = 'paper'")
+        self._con.commit()
+        return {"archived": True, "fills": len(fills), "total_pnl": total_pnl}
+
+    def list_paper_archives(self) -> List[dict]:
+        """Summary of every past reset 'block', newest first -- for the
+        Overview tab's collapsible history section. Does NOT include the
+        fills themselves (fills_json) -- see get_paper_archive_fills for
+        that, kept separate so the summary list stays cheap to broadcast."""
+        rows = self._con.execute(
+            "SELECT id, reset_at, total_pnl, trade_count, date_range_start, date_range_end "
+            "FROM paper_archives ORDER BY id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_paper_archive_fills(self, archive_id: int) -> List[dict]:
+        """The actual fills inside one archived block, if the user expands
+        it on the Overview tab."""
+        row = self._con.execute(
+            "SELECT fills_json FROM paper_archives WHERE id = ?", (archive_id,)
+        ).fetchone()
+        return json.loads(row["fills_json"]) if row else []
 
     def get_live_fill_count(self, strategy_id: str = "global") -> int:
         return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE phase = 'live' AND strategy_id = ?", (strategy_id,)).fetchone()[0]
