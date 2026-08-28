@@ -3,12 +3,12 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: done
+## Status: active
 
 ## Next slice -- start here
 
-- **Active:** none -- S33 is the last queued slice and it's landed. A
-  new campaign against this driver needs a fresh grill session first.
+- **Active:** S34 -- #901 -- Global paper-trading start/stop + capital/risk
+  settings UI.
 - **Model:** sonnet
 
 ## Queue
@@ -212,6 +212,32 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   returned `resumed_from_chunk: 1` and finished at 2/2 -- continues from
   the real persisted offset, not 0. See #900 for full acceptance
   criteria.
+
+- [ ] S34 -- #901 -- Global paper-trading start/stop + capital/risk
+  settings UI. Found live 2026-08-28: all 61 book-sourced strategies
+  already paper-trade fully autonomously (5-minute recurring dispatch,
+  no toggle at all) with a hardcoded $10,000 simulated account
+  (`StubBrokerClient` ignores its own `config` param) and zero UI for the
+  risk settings (`max_per_trade_risk_pct`/`max_daily_loss_pct`/
+  `max_concurrent_positions`) that already exist in the settings store.
+  Adds `trading_paper_enabled` (default True, preserves current behavior)
+  + `trading_paper_starting_capital` settings, threads starting capital
+  into `StubBrokerClient`, gates `_scheduler_loop`'s dispatch on the new
+  enabled flag, adds `start_trading`/`stop_trading` tools (mirroring
+  `start_discovery`/`stop_discovery`) with explicit `list_tools()`
+  registration called out (S32/#898 missed this for its two tools), and a
+  matching Start/Stop + settings control in the Trading panel. See #901
+  for full acceptance criteria.
+
+- [ ] S35 -- #902 -- Portfolio Overview sub-tab: aggregate P&L, equity
+  curve, cross-strategy fill log. Follow-up to S34 -- today's Trading
+  panel only shows one strategy at a time, no portfolio-wide view exists.
+  Adds `ForwardRecord.get_total_pnl()` + a `strategy_id=None` "all
+  strategies" mode on `get_fills`, a new `overview` key on
+  `_trading_broadcast`'s payload (cash/equity/total P&L/today's P&L/trade
+  count/win rate/equity curve/recent fills), and a new leftmost "Overview"
+  sub-tab reusing the existing canvas equity-curve pattern from
+  `renderStrategyCard`. See #902 for full acceptance criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
