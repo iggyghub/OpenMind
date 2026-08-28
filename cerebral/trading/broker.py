@@ -248,7 +248,7 @@ class StubBrokerClient:
             id=order_id, symbol=symbol, qty=qty,
             filled_qty=filled_qty, side=side, type=type, status=status,
             price=simulated_price,
-            fees=round(qty * simulated_price * 0.001, 2),  # 0.1% simulated fee
+            fees=0.0,  # commission-free (Alpaca), no fee to simulate
         )
         self._orders[order_id] = order
 

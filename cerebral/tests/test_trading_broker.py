@@ -80,3 +80,9 @@ def test_stub_configurable_starting_cash():
     # omitting config still defaults to 10000.0 (existing behavior unchanged)
     stub_default = StubBrokerClient()
     assert stub_default.get_account().cash == 10000.0
+
+
+def test_stub_commission_free():
+    stub = StubBrokerClient()
+    order = stub.place_order("AAPL", 10, "buy", "market")
+    assert order.fees == 0.0
