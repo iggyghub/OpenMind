@@ -201,9 +201,12 @@ class StubBrokerClient:
         self._reject_order_id: Optional[str] = None
         self._partial_fill_symbol: Optional[str] = None
         self._partial_fill_ratio: float = 1.0
+        # S34 (#901): configurable simulated starting capital -- was
+        # hardcoded to 10000.0 in all three fields, ignoring self.config.
+        starting_cash = float(self.config.get("starting_cash", 10000.0))
         self._account = Account(
-            cash=10000.0, equity=10000.0, status="ACTIVE",
-            buying_power=10000.0, day_trades_remaining=3
+            cash=starting_cash, equity=starting_cash, status="ACTIVE",
+            buying_power=starting_cash, day_trades_remaining=3
         )
 
     def get_account(self) -> Account:

@@ -71,3 +71,12 @@ def test_stub_cancel_order():
 
 def test_stub_compliance_with_protocol():
     assert isinstance(StubBrokerClient(), BrokerClient)
+
+
+def test_stub_configurable_starting_cash():
+    # S34 (#901): honoring config starting_cash
+    stub = StubBrokerClient({"starting_cash": 5000.0})
+    assert stub.get_account().cash == 5000.0
+    # omitting config still defaults to 10000.0 (existing behavior unchanged)
+    stub_default = StubBrokerClient()
+    assert stub_default.get_account().cash == 10000.0
