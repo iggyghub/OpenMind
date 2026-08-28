@@ -7,8 +7,8 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S34a -- #903 -- settings.py: trading_paper_enabled +
-  trading_paper_starting_capital.
+- **Active:** S34b -- #904 -- broker.py: StubBrokerClient honors config
+  starting_cash.
 - **Model:** sonnet
 
 ## Queue
@@ -213,7 +213,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   the real persisted offset, not 0. See #900 for full acceptance
   criteria.
 
-- [ ] S34a -- #903 -- settings.py only: `trading_paper_enabled` (default
+- [x] S34a -- #903 -- settings.py only: `trading_paper_enabled` (default
   True) + `trading_paper_starting_capital` settings keys.
 - [ ] S34b -- #904 -- broker.py only: `StubBrokerClient` honors
   `config["starting_cash"]` instead of a hardcoded `10000.0` in all three
