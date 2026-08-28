@@ -1281,6 +1281,16 @@ function _wireOverviewChartHover(canvas) {
       if (dist < bestDist) { bestDist = dist; nearestLine = line; nearestY = y; }
     });
 
+    // Skip the repaint (a full clear + redraw of every line + gridlines)
+    // when the highlighted point hasn't meaningfully changed since the
+    // last mousemove -- raw mousemove can fire far more often than the
+    // cursor visibly moves, and a synchronous full repaint on every one
+    // of those is real jank on a big chart (61 strategies' worth of
+    // lines), which reads as its own kind of "glitchy."
+    const frameKey = nearestLine ? (nearestLine.name + '|' + Math.round(mx)) : null;
+    if (frameKey === canvas._overviewLastFrameKey) return;
+    canvas._overviewLastFrameKey = frameKey;
+
     if (nearestLine) {
       const gl = nearestLine.totalGainLoss;
       const glColor = gl >= 0 ? '#2ecc71' : '#e74c3c';
@@ -1298,6 +1308,7 @@ function _wireOverviewChartHover(canvas) {
     }
   });
   canvas.addEventListener('mouseleave', () => {
+    canvas._overviewLastFrameKey = null;
     tooltip.hidden = true;
     _paintOverviewChart(canvas);
   });
@@ -1324,13 +1335,6 @@ function _injectOverviewStyles() {
 }
 
 /**
- * Renders the Overview sub-tab from the same trading_update broadcast
- * payload every other Trading sub-tab reads (data.positions + the new
- * data.total_pnl from S35a/b). No separate poll/route needed.
- * @param {Object} data - trading_update's data
- * @param {HTMLElement} [container] - defaults to #trading-overview-mount
- */
-/**
  * Groups a flat, chronological fill list (S35c/d's `data.all_fills`,
  * oldest first) into per-symbol running-P&L series -- reshaped into the
  * exact same {name, status, equity_curve} shape _drawOverviewChart/
@@ -1355,6 +1359,25 @@ function _groupFillsBySymbol(allFills) {
   }));
 }
 
+/**
+ * Renders the Overview sub-tab from the same trading_update broadcast
+ * payload every other Trading sub-tab reads (data.positions/total_pnl/
+ * all_fills). No separate poll/route needed -- but trading_update fires
+ * often, for reasons unrelated to this tab (any trading activity at all,
+ * not just something the user is looking at). Rebuilding the whole
+ * innerHTML on every call -- the original approach -- destroys and
+ * recreates the canvas element each time, which silently killed any
+ * in-progress hover and any highlight mid-render: looked like random
+ * "glitchy" flicker, not tied cleanly to mouse movement, reported live
+ * 2026-08-28. Fix: only rebuild the DOM when the actual SHAPE of what's
+ * shown changes (which lines exist, empty vs populated, by-stock
+ * placeholder vs real chart) -- tracked via a structural key stashed on
+ * the mount element. An unchanged shape just updates the total's text
+ * and repaints the existing canvases in place, leaving their DOM nodes
+ * (and hover listeners) untouched.
+ * @param {Object} data - trading_update's data
+ * @param {HTMLElement} [container] - defaults to #trading-overview-mount
+ */
 function renderOverviewPanel(data, container) {
   const mount = container || document.getElementById('trading-overview-mount');
   if (!mount) return;
@@ -1365,6 +1388,52 @@ function renderOverviewPanel(data, container) {
     ? '<span class="trd-overview-total-value">—</span>'
     : `<span class="trd-overview-total-value ${totalPnl >= 0 ? 'positive' : 'negative'}">$${totalPnl.toFixed(2)}</span>`;
 
+  // Only strategies with at least one recorded fill get a line -- keep the
+  // legend consistent with what _drawOverviewChart actually draws (it
+  // filters the same way), not a legend entry with no matching line.
+  const strategyLines = strategies.filter((s) => s.equity_curve && s.equity_curve.length > 0);
+  // S35c/d: by-stock section. Degrades to a placeholder until all_fills
+  // exists on the broadcast (backend not landed yet) -- the by-strategy
+  // section above works fully already, this is purely additive.
+  const allFills = (data && data.all_fills) || null;
+  const symbolLines = allFills ? _groupFillsBySymbol(allFills) : [];
+
+  const structureKey = JSON.stringify({
+    empty: strategies.length === 0,
+    strategyNames: strategyLines.map((s) => s.name),
+    byStock: allFills === null ? 'placeholder' : symbolLines.length === 0 ? 'empty' : symbolLines.map((s) => s.name),
+  });
+  // Fake-DOM test harness (no jsdom) never matches an existing element
+  // here, so this always falls through to a full rebuild in tests --
+  // consistent with every existing test's assertions against fresh
+  // innerHTML output.
+  const canReuse = typeof mount.querySelector === 'function'
+    && mount._overviewStructureKey === structureKey
+    && mount.querySelector('.trd-overview-total');
+
+  if (canReuse) {
+    const totalEl = mount.querySelector('.trd-overview-total');
+    if (totalEl) totalEl.innerHTML = 'Total across all trades: ' + totalHtml;
+    // Redrawing can shift a line's pixel coordinates (new data point,
+    // rescaled axis) without moving the mouse -- force the next mousemove
+    // to repaint a highlight rather than skipping it as "unchanged" per
+    // _wireOverviewChartHover's own frame-dedupe (it would otherwise judge
+    // "same line name, same rounded x" as nothing to do, leaving a stale
+    // or just-cleared highlight on screen until the mouse actually moves).
+    const strategyCanvas = mount.querySelector('#trd-overview-canvas');
+    if (strategyCanvas) {
+      strategyCanvas._overviewLastFrameKey = null;
+      _drawOverviewChart(strategyCanvas, strategyLines);
+    }
+    const symbolCanvas = mount.querySelector('#trd-overview-canvas-symbol');
+    if (symbolCanvas) {
+      symbolCanvas._overviewLastFrameKey = null;
+      _drawOverviewChart(symbolCanvas, symbolLines);
+    }
+    return;
+  }
+  mount._overviewStructureKey = structureKey;
+
   if (strategies.length === 0) {
     mount.innerHTML = `<div class="trd-overview">
       <div class="trd-overview-total">Total across all trades: ${totalHtml}</div>
@@ -1373,22 +1442,12 @@ function renderOverviewPanel(data, container) {
     return;
   }
 
-  // Only strategies with at least one recorded fill get a line -- keep the
-  // legend consistent with what _drawOverviewChart actually draws (it
-  // filters the same way), not a legend entry with no matching line.
-  const strategyLines = strategies.filter((s) => s.equity_curve && s.equity_curve.length > 0);
   const strategyLegend = strategyLines.map((s, i) => `
     <span class="trd-overview-legend-item">
       <span class="trd-overview-legend-swatch" style="background:${_OVERVIEW_LINE_COLORS[i % _OVERVIEW_LINE_COLORS.length]}"></span>
       ${s.name}
     </span>
   `).join('');
-
-  // S35c/d: by-stock section. Degrades to a placeholder until all_fills
-  // exists on the broadcast (backend not landed yet) -- the by-strategy
-  // section above works fully already, this is purely additive.
-  const allFills = (data && data.all_fills) || null;
-  const symbolLines = allFills ? _groupFillsBySymbol(allFills) : [];
   const symbolLegend = symbolLines.map((s, i) => `
     <span class="trd-overview-legend-item">
       <span class="trd-overview-legend-swatch" style="background:${_OVERVIEW_LINE_COLORS[i % _OVERVIEW_LINE_COLORS.length]}"></span>
