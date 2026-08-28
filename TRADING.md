@@ -7,7 +7,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S35a -- #911 -- forward_record.py: ForwardRecord.get_total_pnl().
+- **Active:** S35b -- #912 -- forward_record.py: ForwardRecord.get_total_pnl().
 - **Model:** sonnet
 
 ## Queue
@@ -259,7 +259,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   `test_plugins_time_notes.py`; both fixed by hand. Full suite green
   after all four merges (5342 passed, 7 skipped).
 
-- [ ] S35a -- #911 -- forward_record.py only: `ForwardRecord.get_total_pnl()`
+- [x] S35a -- #911 -- forward_record.py only: `ForwardRecord.get_total_pnl()`
   -- realized P&L summed across every strategy, all-time.
 - [ ] S35b -- #912 -- main.py only: wire `total_pnl` into the
   `trading_update` broadcast payload.
@@ -1064,6 +1064,7 @@ S11b/S11c similarly reuse issue #852 across two slice labels.
   complete chain (gauntlet -> graduation -> arm -> live fill -> UI)
   actually found.
 
+- PR #913 -- S35a (auto-merged by self_dev_campaign)
 ### Live trading: what a full trace actually found (2026-08-23)
 
 Per this campaign's own standing rule (a slice's code existing is not
