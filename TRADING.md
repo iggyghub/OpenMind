@@ -7,8 +7,8 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S34 -- #901 -- Global paper-trading start/stop + capital/risk
-  settings UI.
+- **Active:** S34a -- #903 -- settings.py: trading_paper_enabled +
+  trading_paper_starting_capital.
 - **Model:** sonnet
 
 ## Queue
@@ -213,27 +213,35 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   the real persisted offset, not 0. See #900 for full acceptance
   criteria.
 
-- [ ] S34 -- #901 -- Backend: global paper-trading enabled flag +
-  capital/risk settings. Found live 2026-08-28: all 61 book-sourced
-  strategies already paper-trade fully autonomously (5-minute recurring
-  dispatch, no toggle at all) with a hardcoded $10,000 simulated account
-  (`StubBrokerClient` ignores its own `config` param). Adds
-  `trading_paper_enabled` (default True, preserves current behavior) +
-  `trading_paper_starting_capital` settings, threads starting capital into
-  `StubBrokerClient`, gates `_scheduler_loop`'s dispatch on the new
-  enabled flag, adds `start_trading`/`stop_trading` tools (mirroring
-  `start_discovery`/`stop_discovery`) with explicit `list_tools()`
-  registration called out (S32/#898 missed this for its two tools).
-  **Rescoped same day** after two straight self_dev "no commit" failures:
-  the original body asked self_dev to touch `tray/windows/main.html`,
-  which `_self_dev_edit`'s own candidate-file list explicitly excludes (too
-  large to round-trip) -- guaranteed SEARCH-anchor misses. Narrowed to
-  backend-only (this is what self_dev actually builds); the Start/Stop +
-  settings control in `tray/lib/trading-panel.js` (mirroring the existing
-  `_renderDiscoveryControl` pattern, no `main.html` changes needed at all)
-  is hand-built separately, same as every other tray/-touching piece in
-  this campaign (guardrail path, always escalates to human review anyway).
-  See #901 for full acceptance criteria.
+- [ ] S34a -- #903 -- settings.py only: `trading_paper_enabled` (default
+  True) + `trading_paper_starting_capital` settings keys.
+- [ ] S34b -- #904 -- broker.py only: `StubBrokerClient` honors
+  `config["starting_cash"]` instead of a hardcoded `10000.0` in all three
+  of cash/equity/buying_power.
+- [ ] S34c -- #905 -- main.py only: construct `_trading_broker` with the
+  new starting-capital setting, gate `_scheduler_loop`'s dispatch on
+  `trading_paper_enabled`, add a `paper_control` key to the
+  `trading_update` broadcast.
+- [ ] S34d -- #906 -- scheduler.py only: `start_trading`/`stop_trading`
+  tools (mirroring `start_discovery`/`stop_discovery`), with explicit
+  `list_tools()` registration called out (S32/#898 missed this for its
+  own two tools).
+
+  S34a-d supersede the original single-issue S34/#901 (closed) after 5
+  straight self_dev failures on it: 2 were real bugs in self_dev's own
+  edit tooling (fixed same day, see the self_dev_io.py commits), the
+  other 3 were "Edit step produced no commit" -- the file-planning step
+  wasn't reliably selecting all 4 needed backend files (and the original
+  body also mistakenly asked for a `tray/windows/main.html` edit, which
+  `_self_dev_edit`'s own candidate-file list excludes entirely --
+  guaranteed to miss). Split into one file per issue so each self_dev
+  attempt only has one file to plan against. The Start/Stop + settings
+  control in `tray/lib/trading-panel.js` (mirrors the existing
+  `_renderDiscoveryControl` pattern, no `main.html` changes needed) is
+  hand-built separately once S34a-d land, same as every other
+  tray/-touching piece in this campaign (guardrail path, always escalates
+  to human review anyway). See #903/#904/#905/#906 for full acceptance
+  criteria on each.
 
 - [ ] S35 -- #902 -- Portfolio Overview sub-tab: aggregate P&L, equity
   curve, cross-strategy fill log. Follow-up to S34 -- today's Trading
