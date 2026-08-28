@@ -7,9 +7,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** none -- S34a-d (backend) all landed. Next up: hand-build
-  the tray/lib/trading-panel.js Start/Stop + capital control (guardrail
-  path, not self_dev), then spec + self_dev S35 (Overview sub-tab).
+- **Active:** S35a -- #911 -- forward_record.py: ForwardRecord.get_total_pnl().
 - **Model:** sonnet
 
 ## Queue
@@ -261,15 +259,25 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   `test_plugins_time_notes.py`; both fixed by hand. Full suite green
   after all four merges (5342 passed, 7 skipped).
 
-- [ ] S35 -- #902 -- Portfolio Overview sub-tab: aggregate P&L, equity
-  curve, cross-strategy fill log. Follow-up to S34 -- today's Trading
-  panel only shows one strategy at a time, no portfolio-wide view exists.
-  Adds `ForwardRecord.get_total_pnl()` + a `strategy_id=None` "all
-  strategies" mode on `get_fills`, a new `overview` key on
-  `_trading_broadcast`'s payload (cash/equity/total P&L/today's P&L/trade
-  count/win rate/equity curve/recent fills), and a new leftmost "Overview"
-  sub-tab reusing the existing canvas equity-curve pattern from
-  `renderStrategyCard`. See #902 for full acceptance criteria.
+- [ ] S35a -- #911 -- forward_record.py only: `ForwardRecord.get_total_pnl()`
+  -- realized P&L summed across every strategy, all-time.
+- [ ] S35b -- #912 -- main.py only: wire `total_pnl` into the
+  `trading_update` broadcast payload.
+
+  Refined design per the user's 2026-08-28 request: a single Overview
+  sub-tab (leftmost) with one multi-line graph -- one hoverable line per
+  strategy, hover shows that strategy's current status + total gain/loss
+  -- plus one grand-total figure near the graph. Supersedes the original
+  single-issue S35/#902 (closed): most of what's needed
+  (`positions[i].equity_curve`/`status`/`name`) already exists on the
+  broadcast from S19, so the backend piece is now just the ONE missing
+  grand-total number, split single-file (S34's proven pattern) rather
+  than the earlier fill-table-heavy multi-file design. The actual
+  multi-line hover chart in `tray/lib/trading-panel.js` (canvas, no
+  charting library, extends the existing single-line equity-curve
+  pattern from `renderStrategyCard`) is hand-built once S35a/b land --
+  guardrail path, same division of labor as S34's Start/Stop control.
+  See #911/#912 for full acceptance criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
