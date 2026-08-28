@@ -72,6 +72,16 @@ class ForwardRecord:
         ).fetchone()
         return float(row[0])
 
+    def get_total_pnl(self) -> float:
+        """Total realized P&L across every strategy, all-time -- the grand
+        total for the (hand-built, tray/lib/trading-panel.js) Overview
+        tab's multi-strategy graph. Same query shape as get_daily_pnl
+        above, minus the date filter."""
+        row = self._con.execute(
+            "SELECT COALESCE(SUM(pnl), 0.0) FROM forward_fills",
+        ).fetchone()
+        return float(row[0])
+
     def get_live_fill_count(self, strategy_id: str = "global") -> int:
         return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE phase = 'live' AND strategy_id = ?", (strategy_id,)).fetchone()[0]
 
