@@ -121,6 +121,13 @@ def test_apply_search_replace_miss_is_skipped(tmp_path):
     assert fp.read_text(encoding="utf-8") == before  # untouched
 
 
+def test_apply_search_replace_none_reply_is_skipped(tmp_path):
+    """An intermittent Budd stall can return content=None from an HTTP 200
+    -- this used to crash re.finditer with 'expected string or bytes-like
+    object, got NoneType' instead of failing soft into "no commit"."""
+    assert io.apply_search_replace(tmp_path, None) == []
+
+
 def test_apply_search_replace_path_escape_guard(tmp_path):
     # A block targeting a path outside the clone is ignored.
     reply = ("<<<FILE: ../evil.py>>>\n<<<SEARCH>>>\na\n<<<REPLACE>>>\nb\n<<<END>>>")

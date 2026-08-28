@@ -44,6 +44,13 @@ def apply_search_replace(clone_dir: Path, text: str) -> "list[str]":
     clone_dir = Path(clone_dir)
     root = str(clone_dir.resolve())
     applied: list[str] = []
+    if not text:
+        # An intermittent model-server stall can return content=None from a
+        # valid HTTP 200 (same failure class as extract_json_value) -- this
+        # used to crash re.finditer outright ("expected string or
+        # bytes-like object, got 'NoneType'") instead of failing soft into
+        # the already-understood "no commit" path.
+        return applied
     for m in _SR_BLOCK.finditer(text):
         rel, search, replace = m.group(1).strip(), m.group(2), m.group(3)
         fp = (clone_dir / rel).resolve()
