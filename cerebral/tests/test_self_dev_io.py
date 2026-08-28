@@ -29,6 +29,12 @@ def test_extract_missing_returns_none():
     assert io.extract_json_value("no json here", "{") is None
 
 
+def test_extract_none_reply_returns_none():
+    """An intermittent Budd stall can return content=None from an HTTP 200
+    -- this used to crash with AttributeError instead of failing soft."""
+    assert io.extract_json_value(None, "[") is None
+
+
 # ── create_branch_and_commit: real git verbs, no shell ───────────────────────
 
 def test_create_branch_and_commit_true_on_success(monkeypatch):

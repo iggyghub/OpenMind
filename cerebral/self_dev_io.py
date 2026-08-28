@@ -74,7 +74,11 @@ def apply_search_replace(clone_dir: Path, text: str) -> "list[str]":
 def extract_json_value(text: str, opener: str):
     """First JSON value of the given kind ('[' or '{') in a model reply,
     tolerating ```json fences and surrounding prose. Returns the parsed value,
-    or None when nothing parseable is found."""
+    or None when nothing parseable is found (including a None/empty reply --
+    an intermittent Budd stall can return content=None from a valid HTTP 200,
+    which used to crash this function outright instead of failing soft)."""
+    if not text:
+        return None
     closer = "]" if opener == "[" else "}"
     start, end = text.find(opener), text.rfind(closer)
     if start == -1 or end == -1 or end < start:
