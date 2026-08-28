@@ -73,6 +73,12 @@ _DEFAULTS: dict[str, Any] = {
     "max_per_trade_risk_pct":    2.0,
     "max_daily_loss_pct":        6.0,
     "max_concurrent_positions":  10,
+    # S34 (#901): global paper-trading enabled flag (default True --
+    # preserves current always-on behavior; this is paper/simulated money,
+    # not the trading_live_arm gate above) + simulated starting capital for
+    # StubBrokerClient (currently hardcoded to $10,000 in broker.py).
+    "trading_paper_enabled":            True,
+    "trading_paper_starting_capital":   10000.0,
     # S23: Minimum distinct trading days required for graduation/graduation math.
     "distinct_days_floor":       30,
     # S31: manual discovery start/stop + duration. discovery_enabled defaults
@@ -120,6 +126,8 @@ _TYPES: dict[str, type] = {
     "max_per_trade_risk_pct":    float,
     "max_daily_loss_pct":        float,
     "max_concurrent_positions":  int,
+    "trading_paper_enabled":            bool,
+    "trading_paper_starting_capital":   float,
     "distinct_days_floor":       int,
     "discovery_enabled":         bool,
     "discovery_stop_at":         str,
