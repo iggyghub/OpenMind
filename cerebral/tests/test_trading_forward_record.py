@@ -110,7 +110,7 @@ def test_zero_trades_ci():
     record.close()
 
 
-def _add_fill_on_day(record, day_iso, symbol, side, qty, price, pnl, strategy_id="global"):
+def _add_fill_on_day(record, day_iso, symbol, side, qty, price, pnl, strategy_id="global", phase="paper"):
     """Insert a fill with a controlled timestamp -- add_fill() always stamps
     "now", with no way to inject a date through the public API. Bypasses it
     with a direct insert instead of monkeypatching the datetime CLASS
@@ -120,8 +120,8 @@ def _add_fill_on_day(record, day_iso, symbol, side, qty, price, pnl, strategy_id
     the module, not just the one under test)."""
     record._con.execute(
         "INSERT INTO forward_fills (timestamp, phase, symbol, side, qty, price, fees, pnl, strategy_id) "
-        "VALUES (?, 'paper', ?, ?, ?, ?, 0.0, ?, ?)",
-        (f"{day_iso}T12:00:00+00:00", symbol, side, qty, price, pnl, strategy_id),
+        "VALUES (?, ?, ?, ?, ?, ?, 0.0, ?, ?)",
+        (f"{day_iso}T12:00:00+00:00", phase, symbol, side, qty, price, pnl, strategy_id),
     )
     record._con.commit()
 
