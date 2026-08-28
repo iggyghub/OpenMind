@@ -7,7 +7,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S37c -- #924 -- scheduler.py: reset_paper_trading tool + seam.
+- **Active:** S37d -- #925 -- main.py: wire reset + broadcast paper_archives.
 - **Model:** sonnet
 
 ## Queue
@@ -362,9 +362,20 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   `cash`/`equity`/`buying_power` at all, filed as #929). Fixed the test
   to assert what `reset()` actually guarantees instead. Full suite green
   (5350 passed, 7 skipped) before merge.
-- [ ] S37c -- #924 -- scheduler.py only: `reset_paper_trading` tool +
+- [x] S37c -- #924 -- scheduler.py only: `reset_paper_trading` tool +
   `_reset_paper_fn` seam (mirrors `_lifecycle`/`_on_trading_change`'s
-  existing post-construction-binding pattern).
+  existing post-construction-binding pattern). **Landed PR #930** after
+  one hand-fix: the generated code and its own new tests (added to
+  `test_plugin_scheduler.py` as scoped) were both correct, but a
+  separate, pre-existing EXHAUSTIVE tool-list snapshot test in a
+  different file --
+  `test_plugins_time_notes.py::TestSchedulerPlugin::test_list_tools_exposes_all_scheduler_tools`
+  -- asserts the scheduler's full tool-name set and wasn't in the
+  issue's scope, so it broke on the new `reset_paper_trading` tool.
+  Added the new name to that snapshot (same pattern as the existing
+  `# S34 (#901/#906)` entries in it). Full suite green (5349 passed, 7
+  skipped, 1 unrelated pre-existing flaky test in
+  `test_sandboxed_eval.py`) before merge.
 - [ ] S37d -- #925 -- main.py only: binds the seam -- calls
   `ForwardRecord.reset_paper()` + `StubBrokerClient.reset()` + a fresh
   `_trading_broadcast()`. **Revised same day:** also adds a
