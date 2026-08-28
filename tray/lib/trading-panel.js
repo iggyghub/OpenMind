@@ -1105,50 +1105,126 @@ const _OVERVIEW_LINE_COLORS = [
  * @param {HTMLCanvasElement} canvas
  * @param {Array} strategies - data.positions (name/status/equity_curve)
  */
+/**
+ * Lays out every line's points in pixel space (with room reserved for
+ * axis labels) and does the static paint. Stores the layout on the
+ * canvas element (_overviewLines/_overviewScale) so _paintOverviewChart
+ * can repaint on every hover frame without recomputing scales, and so
+ * _wireOverviewChartHover can interpolate a line's y at any x, not just
+ * hit-test its raw vertices (raw-vertex hit-testing is what caused the
+ * "flashes instead of sticking to the line" bug -- with only a handful
+ * of trades, vertices can be tens of pixels apart, leaving dead gaps
+ * where nothing was ever within the old fixed hit radius).
+ */
 function _drawOverviewChart(canvas, strategies) {
   if (!canvas) return;
   const lines = (strategies || []).filter((s) => s.equity_curve && s.equity_curve.length > 0);
-  const ctx = canvas.getContext('2d');
   const w = canvas.width = canvas.clientWidth;
   const h = canvas.height = canvas.clientHeight;
-  ctx.clearRect(0, 0, w, h);
-  if (lines.length === 0) { canvas._overviewDots = []; return; }
+  canvas._overviewLines = [];
+  canvas._overviewScale = null;
+  if (lines.length === 0) { _paintOverviewChart(canvas); return; }
 
   const maxLen = Math.max(...lines.map((s) => s.equity_curve.length));
   const allValues = lines.reduce((acc, s) => acc.concat(s.equity_curve), [0]);
   const vMin = Math.min(...allValues), vMax = Math.max(...allValues);
   const vRange = (vMax - vMin) || 1;
-  const xFor = (i) => (maxLen > 1 ? (i / (maxLen - 1)) * w : w / 2);
-  const yFor = (v) => h - ((v - vMin) / vRange) * h;
+  // Left padding for $ axis labels, bottom padding for the x-axis label.
+  const padL = 44, padR = 6, padT = 6, padB = 16;
+  const plotW = Math.max(w - padL - padR, 1);
+  const plotH = Math.max(h - padT - padB, 1);
+  const xFor = (i) => padL + (maxLen > 1 ? (i / (maxLen - 1)) * plotW : plotW / 2);
+  const yFor = (v) => padT + plotH - ((v - vMin) / vRange) * plotH;
 
-  // Zero line -- makes "above/below break-even" legible at a glance.
-  if (vMin < 0 && vMax > 0) {
+  canvas._overviewScale = { vMin: vMin, vMax: vMax, plotW: plotW, plotH: plotH, padL: padL, padT: padT };
+  canvas._overviewLines = lines.map((s, li) => ({
+    name: s.name,
+    status: s.status,
+    color: _OVERVIEW_LINE_COLORS[li % _OVERVIEW_LINE_COLORS.length],
+    totalGainLoss: s.equity_curve[s.equity_curve.length - 1],
+    points: s.equity_curve.map((v, i) => ({ x: xFor(i), y: yFor(v) })),
+  }));
+
+  _paintOverviewChart(canvas);
+}
+
+/**
+ * The actual paint step -- clears and redraws from the layout
+ * _drawOverviewChart already computed, optionally with a hover highlight
+ * (a dot + a dashed vertical guide connecting it back down to the x-axis,
+ * the acceptance criterion: "a small dot that connects to show focus on
+ * where the line is"). Cheap enough to call on every mousemove -- these
+ * are short trade-count-bounded curves, not dense time-series data.
+ * @param {HTMLCanvasElement} canvas
+ * @param {Object} [highlight] - { x, y, color } in canvas pixel space
+ */
+function _paintOverviewChart(canvas, highlight) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const lines = canvas._overviewLines || [];
+  const scale = canvas._overviewScale;
+  if (lines.length === 0 || !scale) return;
+
+  // $ axis gridlines/labels -- the acceptance criterion: "no information
+  // on the graph itself to show what that represents."
+  const gridVals = [scale.vMax, (scale.vMax + scale.vMin) / 2, scale.vMin];
+  ctx.font = '10px sans-serif';
+  ctx.textBaseline = 'middle';
+  gridVals.forEach((v) => {
+    const y = scale.padT + scale.plotH - ((v - scale.vMin) / ((scale.vMax - scale.vMin) || 1)) * scale.plotH;
     ctx.beginPath();
-    ctx.moveTo(0, yFor(0));
-    ctx.lineTo(w, yFor(0));
+    ctx.moveTo(scale.padL, y);
+    ctx.lineTo(scale.padL + scale.plotW, y);
+    ctx.strokeStyle = 'rgba(128,128,128,0.15)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(128,128,128,0.8)';
+    ctx.textAlign = 'right';
+    ctx.fillText('$' + v.toFixed(0), scale.padL - 6, y);
+  });
+  // Zero line, distinct from the plain gridlines -- "above/below break-even" at a glance.
+  if (scale.vMin < 0 && scale.vMax > 0) {
+    const y0 = scale.padT + scale.plotH - ((0 - scale.vMin) / ((scale.vMax - scale.vMin) || 1)) * scale.plotH;
+    ctx.beginPath();
+    ctx.moveTo(scale.padL, y0);
+    ctx.lineTo(scale.padL + scale.plotW, y0);
     ctx.strokeStyle = 'rgba(128,128,128,0.4)';
     ctx.setLineDash([3, 3]);
-    ctx.lineWidth = 1;
     ctx.stroke();
     ctx.setLineDash([]);
   }
 
-  const dots = [];
-  lines.forEach((s, li) => {
-    const color = _OVERVIEW_LINE_COLORS[li % _OVERVIEW_LINE_COLORS.length];
-    const totalGainLoss = s.equity_curve[s.equity_curve.length - 1];
+  lines.forEach((line) => {
     ctx.beginPath();
-    s.equity_curve.forEach((v, i) => {
-      const x = xFor(i), y = yFor(v);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      dots.push({ x: x, y: y, name: s.name, status: s.status, totalGainLoss: totalGainLoss });
-    });
-    ctx.strokeStyle = color;
+    line.points.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+    ctx.strokeStyle = line.color;
     ctx.lineWidth = 2;
     ctx.stroke();
   });
 
-  canvas._overviewDots = dots;
+  ctx.fillStyle = 'rgba(128,128,128,0.8)';
+  ctx.textAlign = 'center';
+  ctx.fillText('Trade #', scale.padL + scale.plotW / 2, h - 4);
+
+  if (highlight) {
+    ctx.beginPath();
+    ctx.moveTo(highlight.x, scale.padT);
+    ctx.lineTo(highlight.x, scale.padT + scale.plotH);
+    ctx.strokeStyle = 'rgba(128,128,128,0.5)';
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.beginPath();
+    ctx.arc(highlight.x, highlight.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = highlight.color;
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
 }
 
 function _overviewTooltipEl() {
@@ -1164,36 +1240,67 @@ function _overviewTooltipEl() {
 }
 
 /**
- * Hovering any line shows that strategy's name, current status, and total
- * gain/loss (the acceptance criterion) -- nearest-point hit test, same
- * approach as _wireTickerChartHover.
+ * Hovering anywhere along a line (not just near a vertex) shows that
+ * strategy's name, current status, and total gain/loss, plus repaints a
+ * highlight dot on the line under the cursor. Interpolates each line's y
+ * at the cursor's x (clamped to that line's own x-range) rather than
+ * hit-testing raw vertices -- continuous coverage across the whole line,
+ * not just near its trade points, which is what the old fixed-radius
+ * per-vertex test left as dead gaps ("flashes instead of sticking").
  */
 function _wireOverviewChartHover(canvas) {
   const tooltip = _overviewTooltipEl();
   canvas.addEventListener('mousemove', (e) => {
-    const dots = canvas._overviewDots || [];
+    const lines = canvas._overviewLines || [];
+    const scale = canvas._overviewScale;
+    if (lines.length === 0 || !scale) return;
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    let nearest = null, bestDist = 10;
-    dots.forEach((d) => {
-      const dist = Math.hypot(d.x - mx, d.y - my);
-      if (dist < bestDist) { bestDist = dist; nearest = d; }
+
+    let nearestLine = null, nearestY = null, bestDist = 40; // px, vertical tolerance
+    lines.forEach((line) => {
+      const pts = line.points;
+      if (pts.length === 0) return;
+      let y;
+      if (mx <= pts[0].x) {
+        y = pts[0].y;
+      } else if (mx >= pts[pts.length - 1].x) {
+        y = pts[pts.length - 1].y;
+      } else {
+        y = pts[pts.length - 1].y;
+        for (let i = 0; i < pts.length - 1; i++) {
+          if (mx >= pts[i].x && mx <= pts[i + 1].x) {
+            const dx = pts[i + 1].x - pts[i].x;
+            const t = dx === 0 ? 0 : (mx - pts[i].x) / dx;
+            y = pts[i].y + t * (pts[i + 1].y - pts[i].y);
+            break;
+          }
+        }
+      }
+      const dist = Math.abs(my - y);
+      if (dist < bestDist) { bestDist = dist; nearestLine = line; nearestY = y; }
     });
-    if (nearest) {
-      const gl = nearest.totalGainLoss;
+
+    if (nearestLine) {
+      const gl = nearestLine.totalGainLoss;
       const glColor = gl >= 0 ? '#2ecc71' : '#e74c3c';
       tooltip.innerHTML =
-        '<strong>' + nearest.name + '</strong><br>' +
-        'Status: ' + nearest.status.toUpperCase() + '<br>' +
+        '<strong>' + nearestLine.name + '</strong><br>' +
+        'Status: ' + nearestLine.status + '<br>' +
         'Total gain/loss: <span style="color:' + glColor + '">$' + gl.toFixed(2) + '</span>';
       tooltip.style.left = (e.clientX + 12) + 'px';
       tooltip.style.top = (e.clientY + 12) + 'px';
       tooltip.hidden = false;
+      _paintOverviewChart(canvas, { x: mx, y: nearestY, color: nearestLine.color });
     } else {
       tooltip.hidden = true;
+      _paintOverviewChart(canvas);
     }
   });
-  canvas.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+  canvas.addEventListener('mouseleave', () => {
+    tooltip.hidden = true;
+    _paintOverviewChart(canvas);
+  });
 }
 
 function _injectOverviewStyles() {
