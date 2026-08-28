@@ -331,6 +331,9 @@ class TestSchedulerPlugin:
             "start_trading", "stop_trading",
             # S37c (#924)
             "reset_paper_trading",
+            # S37e (hand-built): read-only fetch for the Overview tab's
+            # collapsible archive history section.
+            "get_paper_archive_fills",
         }
 
     # -----------------------------------------------------------------------

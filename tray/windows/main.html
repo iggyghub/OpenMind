@@ -7097,7 +7097,7 @@
           // needs a genuine re-draw once it becomes visible, not just an
           // unhide -- a stale/blank canvas otherwise.
           lastTradingUpdateData = event.data;
-          if (window.TradingPanelMod) window.TradingPanelMod.renderOverviewPanel(event.data, null);
+          if (window.TradingPanelMod) window.TradingPanelMod.renderOverviewPanel(event.data, null, sendEvent);
           // Trade Log -- same payload/cache, own mount. No canvas, so no
           // redraw-on-hidden concern, but still reads lastTradingUpdateData
           // on tab activation the same way Overview does (see below).
@@ -7155,6 +7155,21 @@
                   : 'Result: ' + verdict;
                 statusEl.className = 'trd-create-status is-ok';
               }
+            }
+          }
+          // S37 (#920): Overview tab's collapsible archive history --
+          // expanding a row fetches its fills via get_paper_archive_fills;
+          // cache them and re-render from the last known broadcast payload
+          // (renderOverviewPanel's own structureKey picks up the new cache
+          // entry and rebuilds the now-open row).
+          if (event.data && event.data.name === 'get_paper_archive_fills' && window.TradingPanelMod) {
+            let fills = [];
+            if (!event.data.is_error) {
+              try { fills = JSON.parse(event.data.content).fills || []; } catch (_e) {}
+            }
+            window.TradingPanelMod.receiveArchiveFills(fills);
+            if (lastTradingUpdateData) {
+              window.TradingPanelMod.renderOverviewPanel(lastTradingUpdateData, null, sendEvent);
             }
           }
           break;
@@ -12215,7 +12230,7 @@
       if (target === 'overview' && window.TradingPanelMod && lastTradingUpdateData) {
         // Redraw, not just unhide -- the canvas was 0x0 while hidden if the
         // last broadcast arrived before this tab became active.
-        window.TradingPanelMod.renderOverviewPanel(lastTradingUpdateData, null);
+        window.TradingPanelMod.renderOverviewPanel(lastTradingUpdateData, null, sendEvent);
       }
     }
 

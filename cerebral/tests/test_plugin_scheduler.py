@@ -1105,6 +1105,37 @@ async def test_reset_paper_trading_invokes_an_async_seam(tmp_path):
     assert json.loads(result.content) == {"archived": True, "fills": 5}
 
 
+def test_get_paper_archive_fills_tool_exists_in_list_tools(tmp_path):
+    plugin = _plugin(tmp_path)
+    tool_names = [t.name for t in plugin.list_tools()]
+    assert "get_paper_archive_fills" in tool_names
+
+
+async def test_get_paper_archive_fills_unwired_returns_error(tmp_path):
+    plugin = _plugin(tmp_path)
+    assert plugin._get_paper_archive_fills_fn is None
+    result = await plugin.call_tool("get_paper_archive_fills", {"archive_id": 1})
+    assert result.is_error
+
+
+async def test_get_paper_archive_fills_requires_archive_id(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._get_paper_archive_fills_fn = lambda archive_id: []
+    result = await plugin.call_tool("get_paper_archive_fills", {})
+    assert result.is_error
+
+
+async def test_get_paper_archive_fills_invokes_seam_with_archive_id(tmp_path):
+    plugin = _plugin(tmp_path)
+    calls = []
+    fake_fills = [{"symbol": "AAPL", "qty": 1}]
+    plugin._get_paper_archive_fills_fn = lambda archive_id: calls.append(archive_id) or fake_fills
+    result = await plugin.call_tool("get_paper_archive_fills", {"archive_id": 7})
+    assert not result.is_error
+    assert calls == [7]
+    assert json.loads(result.content) == {"fills": fake_fills}
+
+
 # ── 2026-08-26: book ingestion ───────────────────────────────────────────
 # Real _run_gauntlet, real compiled strategies, injected fetch/router --
 # same SAFETY discipline as the discovery section above. A book is just a

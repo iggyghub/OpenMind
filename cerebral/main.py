@@ -3362,6 +3362,7 @@ async def _reset_paper_trading() -> dict:
 
 
 _scheduler_plugin._reset_paper_fn = _reset_paper_trading
+_scheduler_plugin._get_paper_archive_fills_fn = _trading_forward_record.get_paper_archive_fills
 
 
 def _conversation_turns_event(limit: int = 50) -> dict:

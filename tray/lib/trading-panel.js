@@ -1330,8 +1330,139 @@ function _injectOverviewStyles() {
     .trd-overview-legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
     .trd-overview-section-title { margin: 20px 0 8px; font-size: 13px; color: var(--text-muted, #666); text-transform: uppercase; letter-spacing: 0.05em; }
     .trd-overview-placeholder { padding: 16px; color: var(--text-muted); text-align: center; font-size: 0.9em; }
+    .trd-overview-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .trd-overview-reset-btn { padding: 4px 10px; font-size: 0.85em; }
+    .trd-archive-row { border: 1px solid var(--border-color, #333); border-radius: 4px; margin-bottom: 6px; overflow: hidden; }
+    .trd-archive-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; cursor: pointer; font-size: 0.9em; }
+    .trd-archive-summary:hover { background: var(--hover-bg, rgba(255,255,255,0.05)); }
+    .trd-archive-pnl.positive { color: #2ecc71; }
+    .trd-archive-pnl.negative { color: #e74c3c; }
+    .trd-archive-fills { padding: 8px 10px; border-top: 1px solid var(--border-color, #333); font-size: 0.85em; max-height: 240px; overflow-y: auto; }
+    .trd-archive-fills table { width: 100%; border-collapse: collapse; }
+    .trd-archive-fills th, .trd-archive-fills td { text-align: left; padding: 3px 6px; }
+    .trd-archive-fills th { color: var(--text-muted); font-weight: 500; }
   `;
   document.head.appendChild(style);
+}
+
+/* ── S37 (#920/#922-925) -- Reset paper trading + collapsible archive
+ * history on the Overview tab. Expand-to-fetch state lives at module
+ * scope (not per-mount) since there's only ever one Overview panel --
+ * survives renderOverviewPanel's own DOM rebuilds the same way
+ * _archiveExpanded's caller (the click handler) expects it to. ────────── */
+var _archiveExpanded = {};   // {archive_id: true} for rows currently open
+var _archiveFillsCache = {}; // {archive_id: fills[] | 'loading'}
+// get_paper_archive_fills' tool_result broadcast doesn't echo back which
+// archive_id it was for (cerebral/main.py's _dispatch_tray_call_tool only
+// broadcasts {name, content, is_error}) -- track request order here
+// instead, same single-flight-per-tool assumption every other tool_result
+// consumer in this file already makes (e.g. run_gauntlet's one status
+// element). Fine as long as requests resolve in the order sent, which a
+// single WS connection processing call_tool sequentially guarantees.
+var _archivePendingQueue = [];
+
+/**
+ * Called by main.html when a get_paper_archive_fills tool_result arrives.
+ * Caches the fills against the oldest still-pending request; caller is
+ * responsible for re-rendering the panel.
+ */
+function receiveArchiveFills(fills) {
+  const archiveId = _archivePendingQueue.shift();
+  if (archiveId === undefined) return;
+  _archiveFillsCache[archiveId] = fills || [];
+}
+
+function _renderArchiveFillsTable(fills) {
+  if (fills === 'loading') return '<div class="trd-overview-placeholder">Loading…</div>';
+  if (!fills || fills.length === 0) return '<div class="trd-overview-placeholder">No fills in this block.</div>';
+  const rows = fills.map((f) => `
+    <tr>
+      <td>${f.symbol || ''}</td>
+      <td>${f.side || ''}</td>
+      <td>${typeof f.qty === 'number' ? f.qty : ''}</td>
+      <td>${typeof f.pnl === 'number' ? '$' + f.pnl.toFixed(2) : ''}</td>
+      <td>${f.filled_at || f.timestamp || ''}</td>
+    </tr>
+  `).join('');
+  return `<table>
+    <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>P&amp;L</th><th>When</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+/**
+ * Collapsible history section built from data.paper_archives (S37d), one
+ * block per past reset_paper_trading call. Expanding a row that hasn't
+ * been fetched yet triggers get_paper_archive_fills via sendEventFn;
+ * receiveArchiveFills() + a re-render (main.html's tool_result handler)
+ * fills it in once the response arrives.
+ * @param {Array} archives - [{id, reset_at, total_pnl, trade_count,
+ *   date_range_start, date_range_end}], newest first
+ */
+function _renderArchiveHistory(archives) {
+  if (!archives || archives.length === 0) {
+    return '<div class="trd-overview-placeholder">No past resets yet.</div>';
+  }
+  return archives.map((a) => {
+    const isOpen = !!_archiveExpanded[a.id];
+    const pnl = typeof a.total_pnl === 'number' ? a.total_pnl : 0;
+    const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+    const range = (a.date_range_start || '?') + ' → ' + (a.date_range_end || '?');
+    return `<div class="trd-archive-row" data-archive-id="${a.id}">
+      <div class="trd-archive-summary" data-archive-toggle="${a.id}">
+        <span>${a.reset_at || ''} · ${a.trade_count || 0} trades · ${range}</span>
+        <span class="trd-archive-pnl ${pnlClass}">$${pnl.toFixed(2)}</span>
+      </div>
+      ${isOpen ? `<div class="trd-archive-fills">${_renderArchiveFillsTable(_archiveFillsCache[a.id])}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+/**
+ * Wires the Overview tab's Reset button (native confirm() -- irreversible
+ * from the live-view's perspective even though the backend archives
+ * rather than deletes, see reset_paper_trading's tool description) and
+ * archive-row expand/collapse (delegated, since rows are rebuilt on
+ * every structure-changing render).
+ */
+function _wireOverviewControls(mount, sendEventFn) {
+  const resetBtn = mount.querySelector('.trd-overview-reset-btn');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      if (!sendEventFn) return;
+      if (!window.confirm('Reset paper trading? Current fills/P&L will be archived into history and the simulated account restarts from its configured capital.')) return;
+      sendEventFn({ type: 'call_tool', data: { name: 'reset_paper_trading', args: {} } });
+    });
+  }
+  const historyMount = mount.querySelector('.trd-overview-history');
+  if (historyMount) {
+    historyMount.addEventListener('click', (ev) => {
+      const toggle = ev.target.closest('[data-archive-toggle]');
+      if (!toggle) return;
+      const archiveId = toggle.getAttribute('data-archive-toggle');
+      if (_archiveExpanded[archiveId]) {
+        delete _archiveExpanded[archiveId];
+      } else {
+        _archiveExpanded[archiveId] = true;
+        if (_archiveFillsCache[archiveId] === undefined && sendEventFn) {
+          _archiveFillsCache[archiveId] = 'loading';
+          _archivePendingQueue.push(archiveId);
+          sendEventFn({ type: 'call_tool', data: { name: 'get_paper_archive_fills', args: { archive_id: parseInt(archiveId, 10) } } });
+        }
+      }
+      // Structure changed (expanded set) -- force the caller to rebuild.
+      mount._overviewStructureKey = null;
+      _renderOverviewPanelCached(mount);
+    });
+  }
+}
+
+// Set by renderOverviewPanel on every call so the delegated click handler
+// above can re-render without needing its own copy of the last payload.
+var _lastOverviewRenderArgs = null;
+function _renderOverviewPanelCached(mount) {
+  if (!_lastOverviewRenderArgs) return;
+  renderOverviewPanel(_lastOverviewRenderArgs.data, mount, _lastOverviewRenderArgs.sendEventFn);
 }
 
 /**
@@ -1377,16 +1508,20 @@ function _groupFillsBySymbol(allFills) {
  * (and hover listeners) untouched.
  * @param {Object} data - trading_update's data
  * @param {HTMLElement} [container] - defaults to #trading-overview-mount
+ * @param {Function} [sendEventFn] - wires the Reset button + archive
+ *   expand-to-fetch (S37); omit for a read-only render (e.g. tests).
  */
-function renderOverviewPanel(data, container) {
+function renderOverviewPanel(data, container, sendEventFn) {
   const mount = container || document.getElementById('trading-overview-mount');
   if (!mount) return;
+  _lastOverviewRenderArgs = { data: data, sendEventFn: sendEventFn };
   _injectOverviewStyles();
   const strategies = (data && data.positions) || [];
   const totalPnl = (data && typeof data.total_pnl === 'number') ? data.total_pnl : null;
   const totalHtml = totalPnl === null
     ? '<span class="trd-overview-total-value">—</span>'
     : `<span class="trd-overview-total-value ${totalPnl >= 0 ? 'positive' : 'negative'}">$${totalPnl.toFixed(2)}</span>`;
+  const resetBtnHtml = '<button class="trd-overview-reset-btn">Reset</button>';
 
   // Only strategies with at least one recorded fill get a line -- keep the
   // legend consistent with what _drawOverviewChart actually draws (it
@@ -1397,11 +1532,17 @@ function renderOverviewPanel(data, container) {
   // section above works fully already, this is purely additive.
   const allFills = (data && data.all_fills) || null;
   const symbolLines = allFills ? _groupFillsBySymbol(allFills) : [];
+  // S37d: collapsible history of past reset_paper_trading blocks.
+  const archives = (data && data.paper_archives) || [];
+  const historyHtml = _renderArchiveHistory(archives);
 
   const structureKey = JSON.stringify({
     empty: strategies.length === 0,
     strategyNames: strategyLines.map((s) => s.name),
     byStock: allFills === null ? 'placeholder' : symbolLines.length === 0 ? 'empty' : symbolLines.map((s) => s.name),
+    archives: archives.map((a) => [a.id, a.total_pnl, a.trade_count]),
+    expanded: Object.keys(_archiveExpanded).sort(),
+    fillsLoaded: Object.keys(_archiveFillsCache).filter((id) => _archiveFillsCache[id] !== 'loading').sort(),
   });
   // Fake-DOM test harness (no jsdom) never matches an existing element
   // here, so this always falls through to a full rebuild in tests --
@@ -1436,9 +1577,15 @@ function renderOverviewPanel(data, container) {
 
   if (strategies.length === 0) {
     mount.innerHTML = `<div class="trd-overview">
-      <div class="trd-overview-total">Total across all trades: ${totalHtml}</div>
+      <div class="trd-overview-header">
+        <div class="trd-overview-total">Total across all trades: ${totalHtml}</div>
+        ${resetBtnHtml}
+      </div>
       <div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies yet.</div>
+      <h3 class="trd-overview-section-title">History</h3>
+      <div class="trd-overview-history">${historyHtml}</div>
     </div>`;
+    _wireOverviewControls(mount, sendEventFn);
     return;
   }
 
@@ -1462,12 +1609,17 @@ function renderOverviewPanel(data, container) {
          <div class="trd-overview-legend">${symbolLegend}</div>`;
 
   mount.innerHTML = `<div class="trd-overview">
-    <div class="trd-overview-total">Total across all trades: ${totalHtml}</div>
+    <div class="trd-overview-header">
+      <div class="trd-overview-total">Total across all trades: ${totalHtml}</div>
+      ${resetBtnHtml}
+    </div>
     <h3 class="trd-overview-section-title">By Strategy</h3>
     <canvas class="trd-overview-canvas" id="trd-overview-canvas"></canvas>
     <div class="trd-overview-legend">${strategyLegend}</div>
     <h3 class="trd-overview-section-title">By Stock</h3>
     ${symbolSectionHtml}
+    <h3 class="trd-overview-section-title">History</h3>
+    <div class="trd-overview-history">${historyHtml}</div>
   </div>`;
 
   // Same fake-DOM guard as the Tickers chart above -- no jsdom in this
@@ -1484,6 +1636,7 @@ function renderOverviewPanel(data, container) {
       _wireOverviewChartHover(symbolCanvas);
     }
   }
+  _wireOverviewControls(mount, sendEventFn);
 }
 
 /* ── Trade Log sub-tab -- searchable/filterable fill history, split into
@@ -1675,6 +1828,7 @@ return {
   initTickersView:     initTickersView,
   renderTickersUpdate: renderTickersUpdate,
   renderOverviewPanel: renderOverviewPanel,
+  receiveArchiveFills: receiveArchiveFills,
   renderTradeLog: renderTradeLog,
   buildStartDiscoveryEvent: buildStartDiscoveryEvent,
   buildStopDiscoveryEvent: buildStopDiscoveryEvent,

@@ -994,6 +994,54 @@ describe('renderOverviewPanel (S35/#911/#912)', () => {
       });
     });
   });
+
+  // S37 (#920/#922-925): Reset button + collapsible archive history.
+  describe('reset button + archive history', () => {
+    test('a Reset button is always rendered, even with no strategies yet', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        TradingPanel.renderOverviewPanel({ positions: [], total_pnl: 0 }, mount);
+        expect(mount.innerHTML).toContain('trd-overview-reset-btn');
+      });
+    });
+
+    test('no paper_archives shows "No past resets yet", not a crash', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        TradingPanel.renderOverviewPanel({ positions: TWO_STRATEGIES_WITH_CURVES, total_pnl: 3 }, mount);
+        expect(mount.innerHTML).toContain('No past resets yet');
+      });
+    });
+
+    test('renders one summary row per archive with its P&L and trade count', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        TradingPanel.renderOverviewPanel({
+          positions: TWO_STRATEGIES_WITH_CURVES, total_pnl: 3,
+          paper_archives: [
+            { id: 2, reset_at: '2026-08-28T20:00:00Z', total_pnl: -41.42, trade_count: 788, date_range_start: '2026-08-01', date_range_end: '2026-08-28' },
+            { id: 1, reset_at: '2026-08-20T10:00:00Z', total_pnl: 10.5, trade_count: 5, date_range_start: '2026-08-15', date_range_end: '2026-08-20' },
+          ],
+        }, mount);
+        expect(mount.innerHTML).toContain('data-archive-toggle="2"');
+        expect(mount.innerHTML).toContain('data-archive-toggle="1"');
+        expect(mount.innerHTML).toContain('788 trades');
+        expect(mount.innerHTML).toContain('$-41.42');
+        expect(mount.innerHTML).toContain('$10.50');
+      });
+    });
+  });
+
+  describe('receiveArchiveFills', () => {
+    // Click-driven wiring (_wireOverviewControls) isn't exercised by this
+    // suite -- consistent with every other confirm()-guarded button here
+    // (halt/delete strategy have no click-simulation tests either); verify
+    // those by hand in the app. This just guards the one edge case a stray
+    // or duplicate tool_result could hit.
+    test('a tool_result with no pending request does not throw', () => {
+      expect(() => TradingPanel.receiveArchiveFills([{ symbol: 'AAPL' }])).not.toThrow();
+    });
+  });
 });
 
 // Trade Log sub-tab (user-requested 2026-08-28, same day as Overview):

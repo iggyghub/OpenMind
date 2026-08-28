@@ -185,6 +185,7 @@ class SchedulerPlugin:
         # _trading_forward_record/_trading_broker, neither of which exist
         # yet at this constructor's own call time.
         self._reset_paper_fn = None
+        self._get_paper_archive_fills_fn = None
 
     def _init_schema(self) -> None:
         self._con.executescript("""
@@ -448,6 +449,20 @@ class SchedulerPlugin:
                 schema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="get_paper_archive_fills",
+                description=(
+                    "Read-only: the real fills for one archived paper-trading "
+                    "block created by reset_paper_trading, for the Overview "
+                    "tab's collapsible history section (expand-to-fetch)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"archive_id": {"type": "integer"}},
+                    "required": ["archive_id"],
+                },
+            ),
+            Tool(
                 name="get_discovery_status",
                 description="S31/#896: current discovery enabled/stop_at/queries/interval state.",
                 plugin=PLUGIN_NAME,
@@ -598,6 +613,8 @@ class SchedulerPlugin:
             return self._stop_trading(args)
         if tool_name == "reset_paper_trading":
             return await self._reset_paper_trading(args)
+        if tool_name == "get_paper_archive_fills":
+            return self._get_paper_archive_fills(args)
         if tool_name == "get_discovery_status":
             return self._get_discovery_status(args)
         if tool_name == "get_strategy_code":
@@ -1039,6 +1056,15 @@ class SchedulerPlugin:
         if hasattr(result, "__await__"):
             result = await result
         return ToolResult(content=json.dumps(result or {"reset": True}))
+
+    def _get_paper_archive_fills(self, args: dict) -> ToolResult:
+        if self._get_paper_archive_fills_fn is None:
+            return ToolResult(content="Not wired up yet.", is_error=True)
+        archive_id = args.get("archive_id")
+        if archive_id is None:
+            return ToolResult(content="archive_id is required.", is_error=True)
+        fills = self._get_paper_archive_fills_fn(int(archive_id))
+        return ToolResult(content=json.dumps({"fills": fills}))
 
     def _start_discovery(self, args: dict) -> ToolResult:
         queries = args.get("queries") or []
