@@ -213,21 +213,27 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   the real persisted offset, not 0. See #900 for full acceptance
   criteria.
 
-- [ ] S34 -- #901 -- Global paper-trading start/stop + capital/risk
-  settings UI. Found live 2026-08-28: all 61 book-sourced strategies
-  already paper-trade fully autonomously (5-minute recurring dispatch,
-  no toggle at all) with a hardcoded $10,000 simulated account
-  (`StubBrokerClient` ignores its own `config` param) and zero UI for the
-  risk settings (`max_per_trade_risk_pct`/`max_daily_loss_pct`/
-  `max_concurrent_positions`) that already exist in the settings store.
-  Adds `trading_paper_enabled` (default True, preserves current behavior)
-  + `trading_paper_starting_capital` settings, threads starting capital
-  into `StubBrokerClient`, gates `_scheduler_loop`'s dispatch on the new
+- [ ] S34 -- #901 -- Backend: global paper-trading enabled flag +
+  capital/risk settings. Found live 2026-08-28: all 61 book-sourced
+  strategies already paper-trade fully autonomously (5-minute recurring
+  dispatch, no toggle at all) with a hardcoded $10,000 simulated account
+  (`StubBrokerClient` ignores its own `config` param). Adds
+  `trading_paper_enabled` (default True, preserves current behavior) +
+  `trading_paper_starting_capital` settings, threads starting capital into
+  `StubBrokerClient`, gates `_scheduler_loop`'s dispatch on the new
   enabled flag, adds `start_trading`/`stop_trading` tools (mirroring
   `start_discovery`/`stop_discovery`) with explicit `list_tools()`
-  registration called out (S32/#898 missed this for its two tools), and a
-  matching Start/Stop + settings control in the Trading panel. See #901
-  for full acceptance criteria.
+  registration called out (S32/#898 missed this for its two tools).
+  **Rescoped same day** after two straight self_dev "no commit" failures:
+  the original body asked self_dev to touch `tray/windows/main.html`,
+  which `_self_dev_edit`'s own candidate-file list explicitly excludes (too
+  large to round-trip) -- guaranteed SEARCH-anchor misses. Narrowed to
+  backend-only (this is what self_dev actually builds); the Start/Stop +
+  settings control in `tray/lib/trading-panel.js` (mirroring the existing
+  `_renderDiscoveryControl` pattern, no `main.html` changes needed at all)
+  is hand-built separately, same as every other tray/-touching piece in
+  this campaign (guardrail path, always escalates to human review anyway).
+  See #901 for full acceptance criteria.
 
 - [ ] S35 -- #902 -- Portfolio Overview sub-tab: aggregate P&L, equity
   curve, cross-strategy fill log. Follow-up to S34 -- today's Trading
