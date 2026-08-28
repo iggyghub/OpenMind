@@ -409,6 +409,18 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   remaining work (Reset button + collapsible history UI, and #919/#929)
   is hand-built/human -- see TRADING.md step 3/4 notes.
 
+  **Live-verified end to end post-restart with real data, not just
+  tests.** Called the real `reset_paper_trading` tool via IPC: first
+  call returned `{"archived": false, "fills": 0}` (nothing to archive --
+  turned out something had ALREADY reset live paper trading for real
+  before this call, most likely Felix's own autonomous loop verifying
+  its own S37d merge). Confirmed via direct DB read: 1 real archive row
+  existed already (`id=1`, 788 real trades, `total_pnl=-41.42`, spanning
+  `2026-08-27T13:34` to `2026-08-28T20:00`) and the live `forward_fills`
+  table was genuinely empty. A fresh `trading_poll` broadcast confirmed
+  the full pipeline end to end: `total_pnl: 0.0`, `all_fills: []`,
+  `paper_archives` showing that exact real archived block.
+
   User-requested 2026-08-28, then refined same day: "i should be able to
   reset the trading paper charts" -> then "each reset should be stored
   as its own block of information, probably in overview collapsable" --
