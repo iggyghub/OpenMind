@@ -257,7 +257,7 @@ _scheduler_plugin = _SchedulerPlugin(router=_router)
 # Paper only, deliberately: a StubBrokerClient can't reach a real market, so
 # no code path from this loop can fire a live order. Live execution waits on
 # an explicit manual arm/disarm toggle that does not exist yet.
-_trading_broker = StubBrokerClient()
+_trading_broker = StubBrokerClient({"starting_cash": _settings.get("trading_paper_starting_capital")})
 _trading_forward_record = ForwardRecord()
 _alert_dispatcher = AlertDispatcher()
 _trading_lifecycle = StrategyLifecycle(alert_dispatcher=_alert_dispatcher)
@@ -3606,7 +3606,7 @@ async def _scheduler_loop() -> None:
             # market hours -- results stays [] and everything below already
             # no-ops on an empty list.
             results = []
-            if is_market_hours():
+            if is_market_hours() and _settings.get("trading_paper_enabled"):
                 results = await asyncio.to_thread(
                     _dispatch_due_events,
                     _scheduler_plugin, _trading_broker, _trading_forward_record,
@@ -3696,6 +3696,12 @@ async def _trading_broadcast() -> None:
             "queries": _scheduler_plugin._settings.get("discovery_queries"),
             "interval": _scheduler_plugin._settings.get("discovery_interval"),
         }
+        # S34 (#901): current paper-trading control state, for the (hand-
+        # built, tray/lib/trading-panel.js) Start/Stop + capital control.
+        paper_control = {
+            "enabled": _settings.get("trading_paper_enabled"),
+            "starting_capital": _settings.get("trading_paper_starting_capital"),
+        }
         # 2026-08-26: book ingestion progress -- read directly, same
         # pattern as discovery above, no round-trip through list_books'
         # ToolResult/json needed here. valid_strategies (2026-08-27) is the
@@ -3728,6 +3734,7 @@ async def _trading_broadcast() -> None:
             "data": {
                 "positions": positions, "alerts": alerts, "discovery": discovery,
                 "books": books, "books_model": books_model_label,
+                "paper_control": paper_control,
             },
         })
     except Exception as e:
