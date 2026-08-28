@@ -3,12 +3,12 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: active
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S33 -- #900 -- Real book pause/resume (continue from
-  stop-chunk, not restart-from-0) + fix stop-on-done bug.
+- **Active:** none -- S33 is the last queued slice and it's landed. A
+  new campaign against this driver needs a fresh grill session first.
 - **Model:** sonnet
 
 ## Queue
@@ -189,7 +189,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   the scoped trading test files) -- fixed separately on master. See #898 for full acceptance
   criteria and the PR for the full bug account.
 
-- [ ] S33 -- #900 -- Real book pause/resume + fix stop-on-done bug. Today
+- [x] S33 -- #900 -- Real book pause/resume + fix stop-on-done bug. Today
   Stop is a hard cancel and Redo always restarts a book from chunk 0 --
   no way to pause overnight and continue without losing hours of
   progress, which the user hit directly running real multi-hour book
@@ -202,8 +202,16 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   real bug found live this session: `stop_book`'s orphaned-book branch
   blindly overwrote status to "stopped" with no check the book wasn't
   already terminal -- two genuinely finished books got mislabeled by a
-  stray Stop click, hand-corrected via direct DB calls both times. See
-  #900 for full acceptance criteria.
+  stray Stop click, hand-corrected via direct DB calls both times.
+  self_dev's own edit tool crashed outright on this issue (`Edit failed:
+  expected string or bytes-like object, got 'NoneType'`, no commit
+  produced) -- landed by hand from the same near-diff-level spec instead,
+  same division of labor as S17-S19/S28-S30/S32. Full suite green (5342
+  passed, 7 skipped Python; 824/824 JS) before commit. Live-verified
+  post-restart: `resume_book` on a real stopped book (1/2 chunks)
+  returned `resumed_from_chunk: 1` and finished at 2/2 -- continues from
+  the real persisted offset, not 0. See #900 for full acceptance
+  criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
