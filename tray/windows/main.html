@@ -6250,6 +6250,7 @@
         <button class="trd-tab is-active" data-trd-tab="strategies" type="button">Strategies</button>
         <button class="trd-tab" data-trd-tab="tickers" type="button">Tickers</button>
         <button class="trd-tab" data-trd-tab="books" type="button">Books</button>
+        <button class="trd-tab" data-trd-tab="overview" type="button">Overview</button>
       </div>
 
       <div class="trd-panel" data-trd-panel="strategies">
@@ -6321,6 +6322,10 @@
 
       <div class="trd-panel" data-trd-panel="books" hidden>
         <div id="books-panel-mount"></div>
+      </div>
+
+      <div class="trd-panel" data-trd-panel="overview" hidden>
+        <div id="trading-overview-mount"></div>
       </div>
     </section>
 
@@ -6548,6 +6553,10 @@
     const hrnsTabsEl        = document.getElementById('hrns-tabs');
     const hrnsSkillsBodyEl  = document.getElementById('hrns-skills-body');
     let harnessActiveSub    = 'plugins';
+    // S35 (#911/#912) -- last trading_update payload, so tradingActivateSub
+    // can force-redraw the Overview canvas on activation (see its own
+    // comment in the trading_update handler for why this is needed).
+    let lastTradingUpdateData = null;
     const intDaemonDotEl   = document.getElementById('int-daemon-dot');
     const intDaemonTextEl  = document.getElementById('int-daemon-text');
     const intDaemonStartBtn   = document.getElementById('int-daemon-start');
@@ -7076,6 +7085,14 @@
           // no separate broadcast/poll needed (unlike Tickers below, which
           // has its own dedicated broadcast type).
           if (window.TradingPanelMod) window.TradingPanelMod.renderBooksPanel(event.data, null, sendEvent);
+          // Overview (S35/#911/#912) -- same payload too, own mount. Cached
+          // so tradingActivateSub can force a redraw on tab activation: its
+          // canvas is 0x0 while `hidden` (clientWidth/clientHeight read 0),
+          // so a broadcast that arrived while this tab wasn't the active one
+          // needs a genuine re-draw once it becomes visible, not just an
+          // unhide -- a stale/blank canvas otherwise.
+          lastTradingUpdateData = event.data;
+          if (window.TradingPanelMod) window.TradingPanelMod.renderOverviewPanel(event.data, null);
           break;
         case 'trading_tickers_update':  // S29 (#892)
           if (window.TradingPanelMod) window.TradingPanelMod.renderTickersUpdate(event.data, null);
@@ -12174,7 +12191,7 @@
     // (Strategies / Tickers / Books). Plain click-driven, not hash-routed
     // like Settings' -- few tabs, no deep-linking requirement.
     function tradingActivateSub(sub) {
-      const KNOWN_SUBS = new Set(['strategies', 'tickers', 'books']);
+      const KNOWN_SUBS = new Set(['strategies', 'tickers', 'books', 'overview']);
       const target = KNOWN_SUBS.has(sub) ? sub : 'strategies';
       document.querySelectorAll('.trd-tab').forEach((btn) => {
         btn.classList.toggle('is-active', btn.dataset.trdTab === target);
@@ -12185,6 +12202,11 @@
       if (target === 'tickers' && window.TradingPanelMod) {
         window.TradingPanelMod.initTickersView();
         sendEvent({ type: 'trading_tickers_poll' });
+      }
+      if (target === 'overview' && window.TradingPanelMod && lastTradingUpdateData) {
+        // Redraw, not just unhide -- the canvas was 0x0 while hidden if the
+        // last broadcast arrived before this tab became active.
+        window.TradingPanelMod.renderOverviewPanel(lastTradingUpdateData, null);
       }
     }
 

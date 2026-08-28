@@ -882,3 +882,78 @@ describe('renderTickersUpdate', () => {
     });
   });
 });
+
+// S35 (#911/#912): Overview sub-tab -- one multi-line graph across every
+// strategy, each line hoverable for status + total gain/loss, plus a
+// grand total near the graph.
+describe('renderOverviewPanel (S35/#911/#912)', () => {
+  const TWO_STRATEGIES_WITH_CURVES = [
+    { name: 'MA cross A', status: 'paper', equity_curve: [0, 5, 3, 8] },
+    { name: 'MA cross B', status: 'live', equity_curve: [0, -2, -5] },
+  ];
+
+  test('no strategies yet renders the empty state, not a crash', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderOverviewPanel({ positions: [], total_pnl: 0 }, mount);
+      expect(mount.innerHTML).toContain('No active strategies yet');
+    });
+  });
+
+  test('missing data entirely renders the empty state, not a crash', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderOverviewPanel(null, mount);
+      expect(mount.innerHTML).toContain('No active strategies yet');
+    });
+  });
+
+  test('renders a canvas + a legend entry per strategy', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderOverviewPanel({ positions: TWO_STRATEGIES_WITH_CURVES, total_pnl: 3 }, mount);
+      expect(mount.innerHTML).toContain('trd-overview-canvas');
+      expect(mount.innerHTML).toContain('MA cross A');
+      expect(mount.innerHTML).toContain('MA cross B');
+      expect((mount.innerHTML.match(/trd-overview-legend-item/g) || []).length).toBe(2);
+    });
+  });
+
+  test('renders the real total_pnl value, positive shown distinctly from negative', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderOverviewPanel({ positions: TWO_STRATEGIES_WITH_CURVES, total_pnl: 42.5 }, mount);
+      expect(mount.innerHTML).toContain('$42.50');
+      expect(mount.innerHTML).toContain('positive');
+    });
+  });
+
+  test('a negative total_pnl renders distinctly from positive', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderOverviewPanel({ positions: TWO_STRATEGIES_WITH_CURVES, total_pnl: -12.3 }, mount);
+      expect(mount.innerHTML).toContain('$-12.30');
+      expect(mount.innerHTML).toContain('negative');
+    });
+  });
+
+  test('missing total_pnl (backend not landed yet) renders a placeholder, not a crash', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderOverviewPanel({ positions: TWO_STRATEGIES_WITH_CURVES }, mount);
+      expect(mount.innerHTML).toContain('—');
+    });
+  });
+
+  test('a strategy with an empty equity_curve is skipped, not a crash', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderOverviewPanel({
+        positions: [{ name: 'no fills yet', status: 'paper', equity_curve: [] }],
+        total_pnl: 0,
+      }, mount);
+      expect(mount.innerHTML).toContain('trd-overview-canvas');
+      expect(mount.innerHTML).not.toContain('no fills yet');
+    });
+  });
+});

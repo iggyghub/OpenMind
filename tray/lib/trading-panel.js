@@ -1083,6 +1083,190 @@ function renderTickersUpdate(data, container) {
   _injectTickerStyles();
 }
 
+/* ── S35 (#911/#912) -- Overview sub-tab: one multi-line graph across every
+ * strategy at once, each line hoverable for that strategy's current status
+ * + total gain/loss, plus a grand total near the graph. Same canvas +
+ * shared-tooltip pattern as the Tickers chart above (_drawTickerChart/
+ * _wireTickerChartHover) -- flattened per-point hit-testing, not per-line
+ * interpolation, since equity_curve is index-based (no real timestamps),
+ * same as renderStrategyCard's own single-line canvas. ────────────────── */
+
+// Cycled by strategy index -- fixed palette, no charting library.
+const _OVERVIEW_LINE_COLORS = [
+  '#3498db', '#e74c3c', '#2ecc71', '#f1c40f', '#9b59b6',
+  '#1abc9c', '#e67e22', '#34495e', '#ff6b9d', '#00bcd4',
+];
+
+/**
+ * Draws every strategy's equity curve on one shared canvas, one colored
+ * line each, all sharing one x (curve index) / y ($) scale so they're
+ * directly comparable. Stores each point's screen position + owning
+ * strategy on the canvas element for _wireOverviewChartHover to hit-test.
+ * @param {HTMLCanvasElement} canvas
+ * @param {Array} strategies - data.positions (name/status/equity_curve)
+ */
+function _drawOverviewChart(canvas, strategies) {
+  if (!canvas) return;
+  const lines = (strategies || []).filter((s) => s.equity_curve && s.equity_curve.length > 0);
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = canvas.clientWidth;
+  const h = canvas.height = canvas.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  if (lines.length === 0) { canvas._overviewDots = []; return; }
+
+  const maxLen = Math.max(...lines.map((s) => s.equity_curve.length));
+  const allValues = lines.reduce((acc, s) => acc.concat(s.equity_curve), [0]);
+  const vMin = Math.min(...allValues), vMax = Math.max(...allValues);
+  const vRange = (vMax - vMin) || 1;
+  const xFor = (i) => (maxLen > 1 ? (i / (maxLen - 1)) * w : w / 2);
+  const yFor = (v) => h - ((v - vMin) / vRange) * h;
+
+  // Zero line -- makes "above/below break-even" legible at a glance.
+  if (vMin < 0 && vMax > 0) {
+    ctx.beginPath();
+    ctx.moveTo(0, yFor(0));
+    ctx.lineTo(w, yFor(0));
+    ctx.strokeStyle = 'rgba(128,128,128,0.4)';
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  const dots = [];
+  lines.forEach((s, li) => {
+    const color = _OVERVIEW_LINE_COLORS[li % _OVERVIEW_LINE_COLORS.length];
+    const totalGainLoss = s.equity_curve[s.equity_curve.length - 1];
+    ctx.beginPath();
+    s.equity_curve.forEach((v, i) => {
+      const x = xFor(i), y = yFor(v);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      dots.push({ x: x, y: y, name: s.name, status: s.status, totalGainLoss: totalGainLoss });
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+
+  canvas._overviewDots = dots;
+}
+
+function _overviewTooltipEl() {
+  let el = document.getElementById('trd-overview-tooltip');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'trd-overview-tooltip';
+    el.className = 'trd-ticker-tooltip'; // reuses the Tickers tooltip's own styling
+    el.hidden = true;
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+/**
+ * Hovering any line shows that strategy's name, current status, and total
+ * gain/loss (the acceptance criterion) -- nearest-point hit test, same
+ * approach as _wireTickerChartHover.
+ */
+function _wireOverviewChartHover(canvas) {
+  const tooltip = _overviewTooltipEl();
+  canvas.addEventListener('mousemove', (e) => {
+    const dots = canvas._overviewDots || [];
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    let nearest = null, bestDist = 10;
+    dots.forEach((d) => {
+      const dist = Math.hypot(d.x - mx, d.y - my);
+      if (dist < bestDist) { bestDist = dist; nearest = d; }
+    });
+    if (nearest) {
+      const gl = nearest.totalGainLoss;
+      const glColor = gl >= 0 ? '#2ecc71' : '#e74c3c';
+      tooltip.innerHTML =
+        '<strong>' + nearest.name + '</strong><br>' +
+        'Status: ' + nearest.status.toUpperCase() + '<br>' +
+        'Total gain/loss: <span style="color:' + glColor + '">$' + gl.toFixed(2) + '</span>';
+      tooltip.style.left = (e.clientX + 12) + 'px';
+      tooltip.style.top = (e.clientY + 12) + 'px';
+      tooltip.hidden = false;
+    } else {
+      tooltip.hidden = true;
+    }
+  });
+  canvas.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+}
+
+function _injectOverviewStyles() {
+  const styleId = 'trading-overview-styles';
+  if (document.getElementById(styleId)) return;
+  const style = document.createElement('style');
+  style.id = styleId;
+  style.textContent = `
+    .trd-overview { padding: 12px; }
+    .trd-overview-total { font-size: 1.4em; font-weight: 600; margin-bottom: 12px; }
+    .trd-overview-total .trd-overview-total-value.positive { color: #2ecc71; }
+    .trd-overview-total .trd-overview-total-value.negative { color: #e74c3c; }
+    .trd-overview-canvas { width: 100%; height: 320px; }
+    .trd-overview-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 0.85em; }
+    .trd-overview-legend-item { display: flex; align-items: center; gap: 4px; color: var(--text-muted); }
+    .trd-overview-legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  `;
+  document.head.appendChild(style);
+}
+
+/**
+ * Renders the Overview sub-tab from the same trading_update broadcast
+ * payload every other Trading sub-tab reads (data.positions + the new
+ * data.total_pnl from S35a/b). No separate poll/route needed.
+ * @param {Object} data - trading_update's data
+ * @param {HTMLElement} [container] - defaults to #trading-overview-mount
+ */
+function renderOverviewPanel(data, container) {
+  const mount = container || document.getElementById('trading-overview-mount');
+  if (!mount) return;
+  _injectOverviewStyles();
+  const strategies = (data && data.positions) || [];
+  const totalPnl = (data && typeof data.total_pnl === 'number') ? data.total_pnl : null;
+  const totalHtml = totalPnl === null
+    ? '<span class="trd-overview-total-value">—</span>'
+    : `<span class="trd-overview-total-value ${totalPnl >= 0 ? 'positive' : 'negative'}">$${totalPnl.toFixed(2)}</span>`;
+
+  if (strategies.length === 0) {
+    mount.innerHTML = `<div class="trd-overview">
+      <div class="trd-overview-total">Total across all trades: ${totalHtml}</div>
+      <div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies yet.</div>
+    </div>`;
+    return;
+  }
+
+  // Only strategies with at least one recorded fill get a line -- keep the
+  // legend consistent with what _drawOverviewChart actually draws (it
+  // filters the same way), not a legend entry with no matching line.
+  const lines = strategies.filter((s) => s.equity_curve && s.equity_curve.length > 0);
+  const legend = lines.map((s, i) => `
+    <span class="trd-overview-legend-item">
+      <span class="trd-overview-legend-swatch" style="background:${_OVERVIEW_LINE_COLORS[i % _OVERVIEW_LINE_COLORS.length]}"></span>
+      ${s.name}
+    </span>
+  `).join('');
+
+  mount.innerHTML = `<div class="trd-overview">
+    <div class="trd-overview-total">Total across all trades: ${totalHtml}</div>
+    <canvas class="trd-overview-canvas" id="trd-overview-canvas"></canvas>
+    <div class="trd-overview-legend">${legend}</div>
+  </div>`;
+
+  // Same fake-DOM guard as the Tickers chart above -- no jsdom in this
+  // repo's JS test suite, only innerHTML is exercised there.
+  if (typeof mount.querySelector === 'function') {
+    const canvas = mount.querySelector('#trd-overview-canvas');
+    if (canvas) {
+      _drawOverviewChart(canvas, lines);
+      _wireOverviewChartHover(canvas);
+    }
+  }
+}
+
 return {
   initTradingPanel:    initTradingPanel,
   renderTradingUpdate: renderTradingUpdate,
@@ -1093,6 +1277,7 @@ return {
   buildRunGauntletEvent: buildRunGauntletEvent,
   initTickersView:     initTickersView,
   renderTickersUpdate: renderTickersUpdate,
+  renderOverviewPanel: renderOverviewPanel,
   buildStartDiscoveryEvent: buildStartDiscoveryEvent,
   buildStopDiscoveryEvent: buildStopDiscoveryEvent,
   buildUploadBookEvent: buildUploadBookEvent,
