@@ -331,8 +331,8 @@ def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, m
     assert closed[0]["status"] == "closed"
     assert closed[0]["side"] == "sell"
     assert closed[0]["price"] == 55.0
-    exit_fees = round(4.0 * 55.0 * 0.001, 2)          # the broker's own 0.1% sim fee
-    expected_pnl = (55.0 - 50.0) * 4.0 - exit_fees    # 20.00 gross - 0.22 = 19.78
+    # StubBrokerClient is commission-free (Alpaca) -- pnl is exactly gross.
+    expected_pnl = (55.0 - 50.0) * 4.0
     assert closed[0]["pnl"] == pytest.approx(expected_pnl)
 
     open_rows = record.get_fills(strategy_id="penny breakout@v1")

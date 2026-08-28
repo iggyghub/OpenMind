@@ -206,12 +206,12 @@ def test_tick_closes_and_records_a_real_realized_pnl(tmp_path, monkeypatch):
     assert closed["status"] == "closed"
     assert closed["side"] == "sell"
     assert closed["price"] == 12.0
-    exit_fees = round(3.0 * 12.0 * 0.001, 2)  # StubBrokerClient's 0.1% sim fee
-    assert closed["pnl"] == pytest.approx((12.0 - 10.0) * 3.0 - exit_fees)
+    # StubBrokerClient is commission-free (Alpaca) -- no fee to subtract.
+    assert closed["pnl"] == pytest.approx((12.0 - 10.0) * 3.0)
     assert find_position(broker.list_positions(), "AAPL") is None  # flat again
 
     pnls = [f["pnl"] for f in record.get_fills(strategy_id="s1")]
-    assert sorted(pnls) == pytest.approx(sorted([0.0, 6.0 - exit_fees]))
+    assert sorted(pnls) == pytest.approx(sorted([0.0, 6.0]))
 
 
 def test_tick_closes_a_short_at_a_profit_when_price_falls(tmp_path, monkeypatch):
@@ -225,8 +225,8 @@ def test_tick_closes_a_short_at_a_profit_when_price_falls(tmp_path, monkeypatch)
                                broker, record, fetch=fetch)
 
     assert closed["status"] == "closed" and closed["side"] == "buy"
-    exit_fees = round(2.0 * 15.0 * 0.001, 2)
-    assert closed["pnl"] == pytest.approx((20.0 - 15.0) * 2.0 - exit_fees)
+    # StubBrokerClient is commission-free (Alpaca) -- no fee to subtract.
+    assert closed["pnl"] == pytest.approx((20.0 - 15.0) * 2.0)
 
 
 def test_tick_on_a_flat_signal_while_flat_places_no_order(tmp_path, monkeypatch):
