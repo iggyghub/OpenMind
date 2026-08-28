@@ -82,6 +82,15 @@ class ForwardRecord:
         ).fetchone()
         return float(row[0])
 
+    def reset_paper(self) -> int:
+        """Deletes every PAPER-phase fill (leaves any 'live' fills alone --
+        this is a paper-trading reset, not a full wipe). Returns the number
+        of rows deleted. Called from the (hand-built) Reset button on the
+        Overview tab via a new reset_paper_trading tool."""
+        cur = self._con.execute("DELETE FROM forward_fills WHERE phase = 'paper'")
+        self._con.commit()
+        return cur.rowcount
+
     def get_live_fill_count(self, strategy_id: str = "global") -> int:
         return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE phase = 'live' AND strategy_id = ?", (strategy_id,)).fetchone()[0]
 

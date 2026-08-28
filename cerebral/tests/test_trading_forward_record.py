@@ -190,3 +190,20 @@ def test_get_all_fills_cross_strategy():
     assert limited_fills[1]["timestamp"] == all_fills[1]["timestamp"]
     
     record.close()
+
+
+def test_reset_paper_clears_only_phase_paper():
+    """reset_paper() deletes only 'paper' phase fills, leaves 'live' alone, returns deleted count."""
+    record = ForwardRecord()
+    record.add_fill("AAPL", "buy", 10.0, 150.0, pnl=0.0, phase="paper")
+    record.add_fill("GOOGL", "buy", 5.0, 2800.0, pnl=0.0, phase="paper")
+    record.add_fill("TSLA", "sell", 1.0, 200.0, pnl=10.0, phase="live")
+    
+    deleted_count = record.reset_paper()
+    assert deleted_count == 2
+    
+    remaining = record.get_all_fills()
+    assert len(remaining) == 1
+    assert remaining[0]["symbol"] == "TSLA"
+    assert remaining[0]["phase"] == "live"
+    record.close()
