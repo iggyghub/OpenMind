@@ -3347,6 +3347,22 @@ async def _record_activity(kind: str, content: dict) -> None:
 # their own setters once every closure they capture actually exists.
 _scheduler_plugin._record_activity_fn = _record_activity
 
+async def _reset_paper_trading() -> dict:
+    """Archives current paper-trading fills as a historical block (does
+    NOT delete anything -- see ForwardRecord.reset_paper()) and resets
+    the simulated broker's account -- the real logic behind
+    SchedulerPlugin's reset_paper_trading tool (#924), bound here (not
+    in plugins/scheduler.py) because it needs both
+    _trading_forward_record and _trading_broker, which live in this
+    module, not the plugin."""
+    result = _trading_forward_record.reset_paper()
+    _trading_broker.reset()
+    await _trading_broadcast()
+    return result
+
+
+_scheduler_plugin._reset_paper_fn = _reset_paper_trading
+
 
 def _conversation_turns_event(limit: int = 50) -> dict:
     """Snapshot of the active profile + active thread's last ``limit``
@@ -3712,6 +3728,11 @@ async def _trading_broadcast() -> None:
         }
         total_pnl = _trading_forward_record.get_total_pnl()
         all_fills = [dict(f) for f in _trading_forward_record.get_all_fills()]
+        # S37d (#925): summary only (id/reset_at/total_pnl/trade_count/date
+        # range), not the archived fills themselves -- see
+        # ForwardRecord.get_paper_archive_fills for that, kept separate so
+        # this stays cheap to broadcast even with many past resets.
+        paper_archives = _trading_forward_record.list_paper_archives()
         # 2026-08-26: book ingestion progress -- read directly, same
         # pattern as discovery above, no round-trip through list_books'
         # ToolResult/json needed here. valid_strategies (2026-08-27) is the
@@ -3745,7 +3766,7 @@ async def _trading_broadcast() -> None:
                 "positions": positions, "alerts": alerts, "discovery": discovery,
                 "books": books, "books_model": books_model_label,
                 "paper_control": paper_control, "total_pnl": total_pnl,
-                "all_fills": all_fills,
+                "all_fills": all_fills, "paper_archives": paper_archives,
             },
         })
     except Exception as e:
