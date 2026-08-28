@@ -113,6 +113,72 @@ function buildStopDiscoveryEvent() {
 }
 
 /**
+ * Paper-trading control block (S34/#901) -- Start/Stop the autonomous
+ * paper-trade dispatch loop + a starting-capital input, mirroring the
+ * Discovery control above exactly. Rendered alongside it, above the
+ * strategy list/empty-state.
+ * @param {Object} [paperControl] - { enabled, starting_capital } from
+ *   cerebral/main.py's _trading_broadcast(); undefined/null renders as
+ *   running with the $10,000 default (matches the setting's own default).
+ */
+function _renderPaperControl(paperControl) {
+  const running = !paperControl || paperControl.enabled !== false;
+  const capital = (paperControl && paperControl.starting_capital != null)
+    ? paperControl.starting_capital : 10000;
+  return `
+    <div class="paper-control">
+      <h3>Paper Trading</h3>
+      <div class="paper-control-row">
+        <button class="paper-start-btn" ${running ? 'disabled' : ''}>Start</button>
+        <button class="paper-stop-btn" ${running ? '' : 'disabled'}>Stop</button>
+        <span class="paper-status">${running ? 'Running' : 'Stopped'}</span>
+      </div>
+      <div class="paper-control-row">
+        <label for="paper-capital-input">Starting capital ($, simulated)</label>
+        <input type="number" class="paper-capital-input" min="0" step="100" value="${capital}">
+        <button class="paper-capital-save-btn">Save</button>
+        <span class="paper-capital-hint">takes effect after next restart</span>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Wires the paper-trading control's Start/Stop buttons (call_tool, same
+ * pattern as _wireDiscoveryControl) and the capital input's Save button
+ * (set_setting -- a plain numeric setting, not voice/chat-reachable the
+ * way start_trading/stop_trading are, so no dedicated tool for it).
+ */
+function _wirePaperControl(mount, sendEventFn) {
+  const startBtn = mount.querySelector('.paper-start-btn');
+  const stopBtn = mount.querySelector('.paper-stop-btn');
+  const capitalInput = mount.querySelector('.paper-capital-input');
+  const capitalSaveBtn = mount.querySelector('.paper-capital-save-btn');
+  if (startBtn) {
+    startBtn.addEventListener('click', () => {
+      if (!sendEventFn) return;
+      sendEventFn({ type: 'call_tool', data: { name: 'start_trading', args: {} } });
+      sendEventFn({ type: 'trading_poll' });
+    });
+  }
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+      if (!sendEventFn) return;
+      sendEventFn({ type: 'call_tool', data: { name: 'stop_trading', args: {} } });
+      sendEventFn({ type: 'trading_poll' });
+    });
+  }
+  if (capitalSaveBtn && capitalInput) {
+    capitalSaveBtn.addEventListener('click', () => {
+      if (!sendEventFn) return;
+      const value = parseFloat(capitalInput.value);
+      if (isNaN(value) || value < 0) return;
+      sendEventFn({ type: 'set_setting', data: { key: 'trading_paper_starting_capital', value: value } });
+    });
+  }
+}
+
+/**
  * Books section (2026-08-26, own sub-tab since 2026-08-27): multi-file
  * upload -- Felix reads each book in full and pulls testable strategy
  * claims out of it, dispatching each through the same judge/screen/
@@ -349,17 +415,19 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const mount = container || document.getElementById('trading-panel-mount');
   if (!mount) return;
 
-  // S31 (#896): rendered (and wired) in both branches below -- discovery
-  // control is independent of whether any strategy exists yet, so it must
-  // not disappear behind the empty-state message. Styles injected here,
-  // unconditionally, so both branches have them (previously only the
-  // non-empty branch injected any styles at all).
+  // S31 (#896)/S34 (#901): rendered (and wired) in both branches below --
+  // both controls are independent of whether any strategy exists yet, so
+  // they must not disappear behind the empty-state message. Styles
+  // injected here, unconditionally, so both branches have them (previously
+  // only the non-empty branch injected any styles at all).
   const discoveryHtml = _renderDiscoveryControl(data && data.discovery);
+  const paperControlHtml = _renderPaperControl(data && data.paper_control);
   _injectTradingPanelStyles();
 
   if (!data || !data.positions || data.positions.length === 0) {
-    mount.innerHTML = discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+    mount.innerHTML = paperControlHtml + discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
     _wireDiscoveryControl(mount, sendEventFn);
+    _wirePaperControl(mount, sendEventFn);
     return;
   }
 
@@ -373,7 +441,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const state = mount._strategyState;
   const strategy = state.strategies[state.selectedIdx];
 
-  mount.innerHTML = discoveryHtml + `
+  mount.innerHTML = paperControlHtml + discoveryHtml + `
     <div class="trading-panel-layout">
       <div class="strategy-list">
         <h3>Strategies</h3>
@@ -422,6 +490,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   `;
 
   _wireDiscoveryControl(mount, sendEventFn);
+  _wirePaperControl(mount, sendEventFn);
 
   // Wire list selection
   mount.querySelectorAll('.strategy-list li').forEach(li => {
@@ -499,6 +568,19 @@ function _injectTradingPanelStyles() {
     .discovery-start-btn:disabled, .discovery-stop-btn:disabled { background: var(--border, #ccc); color: var(--text-muted, #888); cursor: default; }
     .discovery-status { font-size: 12px; color: var(--text-muted, #555); }
     .discovery-duration-input { width: 80px; padding: 3px 6px; border: 1px solid var(--border, #ccc); border-radius: 3px; background: var(--bg, #fff); color: var(--text, #333); }
+    .paper-control { margin-bottom: 16px; padding: 12px; background: var(--bg-elev, #f8f9fa); border-radius: 6px; border: 1px solid var(--border, #eee); font-family: sans-serif; }
+    .paper-control h3 { margin: 0 0 8px; font-size: 14px; color: var(--text, #333); }
+    .paper-control-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .paper-control-row:last-child { margin-bottom: 0; }
+    .paper-control label { color: var(--text-muted, #555); font-size: 0.9em; }
+    .paper-start-btn, .paper-stop-btn { padding: 4px 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; color: #fff; }
+    .paper-start-btn { background: #2ecc71; }
+    .paper-stop-btn { background: #e74c3c; }
+    .paper-start-btn:disabled, .paper-stop-btn:disabled { background: var(--border, #ccc); color: var(--text-muted, #888); cursor: default; }
+    .paper-status { font-size: 12px; color: var(--text-muted, #555); }
+    .paper-capital-input { width: 100px; padding: 3px 6px; border: 1px solid var(--border, #ccc); border-radius: 3px; background: var(--bg, #fff); color: var(--text, #333); }
+    .paper-capital-save-btn { padding: 3px 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; color: #fff; background: #3498db; }
+    .paper-capital-hint { font-size: 11px; color: var(--text-muted, #888); font-style: italic; }
     .books-section { margin-bottom: 16px; padding: 12px; background: var(--bg-elev, #f8f9fa); border-radius: 6px; border: 1px solid var(--border, #eee); font-family: sans-serif; }
     .books-section h3 { margin: 0 0 8px; font-size: 14px; color: var(--text, #333); }
     .books-reading-model { font-size: 0.75em; font-weight: normal; color: var(--text-muted, #777); margin-left: 6px; }

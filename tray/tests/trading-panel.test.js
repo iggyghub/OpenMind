@@ -280,6 +280,70 @@ describe('renderTradingUpdate discovery control (S31/#896)', () => {
   });
 });
 
+// S34 (#901): manual paper-trading start/stop + starting-capital control,
+// mirroring the Discovery control above. Same "must render on both
+// branches" discipline.
+describe('renderTradingUpdate paper-trading control (S34/#901)', () => {
+  test('renders even with zero strategies -- not hidden behind the empty state', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], paper_control: { enabled: true, starting_capital: 10000 } }, mount);
+      expect(mount.innerHTML).toContain('No active strategies');
+      expect(mount.innerHTML).toContain('Paper Trading');
+      expect(mount.innerHTML).toContain('paper-start-btn');
+      expect(mount.innerHTML).toContain('paper-stop-btn');
+    });
+  });
+
+  test('renders alongside a populated strategy list too', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: TWO_STRATEGIES, alerts: [], paper_control: { enabled: true, starting_capital: 10000 } }, mount);
+      expect(mount.innerHTML).toContain('Paper Trading');
+      expect(mount.innerHTML).toContain('MA cross A');
+    });
+  });
+
+  test('enabled shows Running, Start disabled, Stop enabled', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], paper_control: { enabled: true, starting_capital: 10000 } }, mount);
+      expect(mount.innerHTML).toContain('Running');
+      expect(mount.innerHTML).toContain('paper-start-btn" disabled>');
+      expect(mount.innerHTML).toContain('paper-stop-btn" >');
+    });
+  });
+
+  test('disabled shows Stopped, Start enabled, Stop disabled', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], paper_control: { enabled: false, starting_capital: 10000 } }, mount);
+      expect(mount.innerHTML).toContain('Stopped');
+      expect(mount.innerHTML).toContain('paper-start-btn" >');
+      expect(mount.innerHTML).toContain('paper-stop-btn" disabled>');
+    });
+  });
+
+  test('renders the current starting capital in the input value', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], paper_control: { enabled: true, starting_capital: 25000 } }, mount);
+      expect(mount.innerHTML).toContain('value="25000"');
+    });
+  });
+
+  // Opposite default polarity from Discovery (defaults OFF) is intentional
+  // -- trading_paper_enabled's own real settings default is True.
+  test('missing paper_control data entirely renders as running, not a crash', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('Paper Trading');
+      expect(mount.innerHTML).toContain('Running');
+    });
+  });
+});
+
 // 2026-08-27: Books moved out to its own Trading sub-tab (previously
 // embedded atop the Strategies sub-tab, see renderTradingUpdate below for
 // the "it's gone from there now" regression guard) -- renderBooksPanel
