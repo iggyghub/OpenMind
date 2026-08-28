@@ -257,7 +257,11 @@ _scheduler_plugin = _SchedulerPlugin(router=_router)
 # Paper only, deliberately: a StubBrokerClient can't reach a real market, so
 # no code path from this loop can fire a live order. Live execution waits on
 # an explicit manual arm/disarm toggle that does not exist yet.
-_trading_broker = StubBrokerClient({"starting_cash": _settings.get("trading_paper_starting_capital")})
+# S34 (#901): starting cash is settings-backed, but _settings itself isn't
+# constructed until further down this module (see `_settings = _SettingsStore()`)
+# -- built with the library default here and re-pointed at the real
+# starting-capital setting right after _settings exists, below.
+_trading_broker = StubBrokerClient()
 _trading_forward_record = ForwardRecord()
 _alert_dispatcher = AlertDispatcher()
 _trading_lifecycle = StrategyLifecycle(alert_dispatcher=_alert_dispatcher)
@@ -353,6 +357,10 @@ _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
 _settings = _SettingsStore()
+# S34 (#901): now that _settings exists, re-point _trading_broker at the
+# real configured starting capital instead of StubBrokerClient's own
+# library default.
+_trading_broker = StubBrokerClient({"starting_cash": _settings.get("trading_paper_starting_capital")})
 # S31 (#896): bind the real singleton, not SchedulerPlugin's own auto-
 # derived default -- both would point at the same felix-settings.json file
 # on disk but load it into two separate in-memory dicts, so a set() through
