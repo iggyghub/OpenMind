@@ -257,6 +257,10 @@ _scheduler_plugin = _SchedulerPlugin(router=_router)
 # Paper only, deliberately: a StubBrokerClient can't reach a real market, so
 # no code path from this loop can fire a live order. Live execution waits on
 # an explicit manual arm/disarm toggle that does not exist yet.
+# S34 (#901): starting cash is settings-backed, but _settings itself isn't
+# constructed until further down this module (see `_settings = _SettingsStore()`)
+# -- built with the library default here and re-pointed at the real
+# starting-capital setting right after _settings exists, below.
 _trading_broker = StubBrokerClient()
 _trading_forward_record = ForwardRecord()
 _alert_dispatcher = AlertDispatcher()
@@ -353,6 +357,10 @@ _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
 _settings = _SettingsStore()
+# S34 (#901): now that _settings exists, re-point _trading_broker at the
+# real configured starting capital instead of StubBrokerClient's own
+# library default.
+_trading_broker = StubBrokerClient({"starting_cash": _settings.get("trading_paper_starting_capital")})
 # S31 (#896): bind the real singleton, not SchedulerPlugin's own auto-
 # derived default -- both would point at the same felix-settings.json file
 # on disk but load it into two separate in-memory dicts, so a set() through
@@ -3606,7 +3614,7 @@ async def _scheduler_loop() -> None:
             # market hours -- results stays [] and everything below already
             # no-ops on an empty list.
             results = []
-            if is_market_hours():
+            if is_market_hours() and _settings.get("trading_paper_enabled"):
                 results = await asyncio.to_thread(
                     _dispatch_due_events,
                     _scheduler_plugin, _trading_broker, _trading_forward_record,
@@ -3696,6 +3704,12 @@ async def _trading_broadcast() -> None:
             "queries": _scheduler_plugin._settings.get("discovery_queries"),
             "interval": _scheduler_plugin._settings.get("discovery_interval"),
         }
+        # S34 (#901): current paper-trading control state, for the (hand-
+        # built, tray/lib/trading-panel.js) Start/Stop + capital control.
+        paper_control = {
+            "enabled": _settings.get("trading_paper_enabled"),
+            "starting_capital": _settings.get("trading_paper_starting_capital"),
+        }
         # 2026-08-26: book ingestion progress -- read directly, same
         # pattern as discovery above, no round-trip through list_books'
         # ToolResult/json needed here. valid_strategies (2026-08-27) is the
@@ -3728,6 +3742,7 @@ async def _trading_broadcast() -> None:
             "data": {
                 "positions": positions, "alerts": alerts, "discovery": discovery,
                 "books": books, "books_model": books_model_label,
+                "paper_control": paper_control,
             },
         })
     except Exception as e:
