@@ -181,6 +181,10 @@ class SchedulerPlugin:
         # unrelated broadcast or a manual trading_poll.
         self._on_trading_change = None
         self._lifecycle = None
+        # Wired post-construction by main.py -- closes over
+        # _trading_forward_record/_trading_broker, neither of which exist
+        # yet at this constructor's own call time.
+        self._reset_paper_fn = None
 
     def _init_schema(self) -> None:
         self._con.executescript("""
@@ -430,6 +434,18 @@ class SchedulerPlugin:
                 schema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="reset_paper_trading",
+                description=(
+                    "Wipes all PAPER-phase trade history (fills, P&L, equity "
+                    "curves on the Overview/Trade Log tabs) and resets the "
+                    "simulated paper account back to its configured starting "
+                    "capital. Does not touch any 'live' fills or trading_live_arm. "
+                    "Irreversible."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
                 name="get_discovery_status",
                 description="S31/#896: current discovery enabled/stop_at/queries/interval state.",
                 plugin=PLUGIN_NAME,
@@ -578,6 +594,8 @@ class SchedulerPlugin:
             return self._start_trading(args)
         if tool_name == "stop_trading":
             return self._stop_trading(args)
+        if tool_name == "reset_paper_trading":
+            return await self._reset_paper_trading(args)
         if tool_name == "get_discovery_status":
             return self._get_discovery_status(args)
         if tool_name == "get_strategy_code":
@@ -1011,6 +1029,14 @@ class SchedulerPlugin:
     def _stop_trading(self, args: dict) -> ToolResult:
         self._settings.set("trading_paper_enabled", False)
         return ToolResult(content=json.dumps({"enabled": False}))
+
+    async def _reset_paper_trading(self, args: dict) -> ToolResult:
+        if self._reset_paper_fn is None:
+            return ToolResult(content="Reset not wired up yet.", is_error=True)
+        result = self._reset_paper_fn()
+        if hasattr(result, "__await__"):
+            result = await result
+        return ToolResult(content=json.dumps(result or {"reset": True}))
 
     def _start_discovery(self, args: dict) -> ToolResult:
         queries = args.get("queries") or []
