@@ -495,6 +495,20 @@ class SchedulerPlugin:
                 },
             ),
             Tool(
+                name="resume_book",
+                description=(
+                    "2026-08-28: continues a stopped book's ingestion from the exact "
+                    "chunk it stopped at, instead of retry_book's from-scratch redo. "
+                    "Only valid on a book whose status is 'stopped'."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"book_id": {"type": "integer"}},
+                    "required": ["book_id"],
+                },
+            ),
+            Tool(
                 name="halt_strategy",
                 description=(
                     "2026-08-27: manually halts a strategy's autonomous dispatch "
@@ -558,6 +572,8 @@ class SchedulerPlugin:
             return self._stop_book(args)
         if tool_name == "retry_book":
             return await self._retry_book(args)
+        if tool_name == "resume_book":
+            return await self._resume_book(args)
         if tool_name == "delete_book":
             return self._delete_book(args)
         if tool_name == "halt_strategy":
@@ -1053,17 +1069,25 @@ class SchedulerPlugin:
 
     def _launch_book_ingestion(
         self, book_id: int, chunks: list, title: str, *, strategy_store=None, fetch=None,
+        resume_done_offset: int = 0, resume_dispatched_offset: int = 0,
     ) -> None:
-        """Shared by upload_book and retry_book: fires the background
-        ingestion task and registers it so stop_book/retry_book/
-        delete_book can find and cancel it later."""
+        """Shared by upload_book/retry_book/resume_book: fires the
+        background ingestion task and registers it so stop_book/
+        retry_book/resume_book/delete_book can find and cancel it later.
+        resume_done_offset/resume_dispatched_offset (2026-08-28) are
+        nonzero only for resume_book, whose `chunks` is a suffix of the
+        book's real chunk list -- see _run_book_ingestion."""
         task = asyncio.create_task(
-            self._run_book_ingestion(book_id, chunks, title, strategy_store=strategy_store, fetch=fetch)
+            self._run_book_ingestion(
+                book_id, chunks, title, strategy_store=strategy_store, fetch=fetch,
+                resume_done_offset=resume_done_offset, resume_dispatched_offset=resume_dispatched_offset,
+            )
         )
         self._book_tasks[book_id] = task
 
     async def _run_book_ingestion(
         self, book_id: int, chunks: list, title: str, *, strategy_store=None, fetch=None,
+        resume_done_offset: int = 0, resume_dispatched_offset: int = 0,
     ) -> None:
         """Runs in the background (asyncio.create_task, not awaited by the
         upload_book caller) -- a real book is many LLM passes and would
@@ -1115,7 +1139,13 @@ class SchedulerPlugin:
             )
 
         def on_progress(done: int, total: int, dispatched: int) -> None:
-            self._book_store.update_progress(book_id, done, dispatched)
+            # `done`/`dispatched` are LOCAL to this call's `chunks` list,
+            # which is a suffix of the book's real chunks when resuming --
+            # add the offsets so BookStore sees the book's real, cumulative
+            # progress, not a count that restarts low on every resume.
+            self._book_store.update_progress(
+                book_id, resume_done_offset + done, resume_dispatched_offset + dispatched,
+            )
             if self._on_trading_change is not None:
                 self._on_trading_change()
 
@@ -1185,13 +1215,22 @@ class SchedulerPlugin:
         task = self._book_tasks.get(book_id)
         if task is not None and not task.done():
             task.cancel()  # _run_book_ingestion's own handler sets STATUS_STOPPED
-        else:
-            # No live task -- e.g. a Cerebral restart mid-run orphaned this
-            # book at "processing" with nothing left to cancel. Mark it
-            # stopped directly so it isn't stuck forever.
-            self._book_store.set_stopped(book_id)
-            if self._on_trading_change is not None:
-                self._on_trading_change()
+            return ToolResult(content=json.dumps({"book_id": book_id, "status": "stopped"}))
+        if book.status in ("done", "error"):
+            # 2026-08-28: found live -- a stray Stop click on an already-
+            # terminal book used to silently overwrite "done"/"error" with
+            # "stopped", losing no data but showing wrong state until
+            # someone noticed and hand-corrected it via a direct DB call.
+            return ToolResult(
+                content=f"Book '{book.title}' is already {book.status} -- nothing to stop",
+                is_error=True,
+            )
+        # No live task, not already terminal -- e.g. a Cerebral restart
+        # mid-run orphaned this book at "processing" with nothing left to
+        # cancel. Mark it stopped directly so it isn't stuck forever.
+        self._book_store.set_stopped(book_id)
+        if self._on_trading_change is not None:
+            self._on_trading_change()
         return ToolResult(content=json.dumps({"book_id": book_id, "status": "stopped"}))
 
     async def _retry_book(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
@@ -1225,6 +1264,65 @@ class SchedulerPlugin:
 
         return ToolResult(content=json.dumps({
             "book_id": book_id, "title": book.title, "status": "queued", "total_chunks": len(chunks),
+        }))
+
+    async def _resume_book(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
+        book_id = args.get("book_id")
+        if not isinstance(book_id, int):
+            return ToolResult(content="book_id (integer) is required", is_error=True)
+        book = self._book_store.get(book_id)
+        if book is None:
+            return ToolResult(content=f"No book with id {book_id}", is_error=True)
+        if book.status != "stopped":
+            return ToolResult(
+                content=f"Book '{book.title}' is not stopped (status={book.status}) -- nothing to resume",
+                is_error=True,
+            )
+
+        path = Path(book.stored_path)
+        if not path.exists():
+            return ToolResult(
+                content=f"Original file for '{book.title}' is no longer on disk -- cannot resume",
+                is_error=True,
+            )
+        text = extract_full_text(path)
+        all_chunks = chunk_text(text)
+        if len(all_chunks) != book.total_chunks:
+            # Re-chunking produced a different count than when this book
+            # was first processed (extraction/chunking logic changed, or
+            # the stored file was somehow altered) -- resuming by index
+            # would misalign with what was actually already processed.
+            # Refuse rather than silently reprocess the wrong chunks;
+            # Redo is still available and always safe (starts clean).
+            return ToolResult(
+                content=(
+                    f"Chunk count for '{book.title}' changed since it was stopped "
+                    f"({book.total_chunks} -> {len(all_chunks)}) -- use Redo instead of Resume."
+                ),
+                is_error=True,
+            )
+        remaining = all_chunks[book.processed_chunks:]
+        if not remaining:
+            self._book_store.set_done(book_id)
+            if self._on_trading_change is not None:
+                self._on_trading_change()
+            return ToolResult(content=json.dumps({"book_id": book_id, "status": "done"}))
+
+        # set_total_chunks with the SAME total_chunks value is reused
+        # purely for its status-flip-to-"processing" side effect -- unlike
+        # reset() (which retry_book uses), it does not touch
+        # processed_chunks/strategies_found, which is the whole point:
+        # this feature exists to preserve that progress, not wipe it.
+        self._book_store.set_total_chunks(book_id, book.total_chunks)
+        self._launch_book_ingestion(
+            book_id, remaining, book.title, strategy_store=strategy_store, fetch=fetch,
+            resume_done_offset=book.processed_chunks, resume_dispatched_offset=book.strategies_found,
+        )
+        if self._on_trading_change is not None:
+            self._on_trading_change()
+        return ToolResult(content=json.dumps({
+            "book_id": book_id, "title": book.title, "status": "processing",
+            "resumed_from_chunk": book.processed_chunks, "total_chunks": book.total_chunks,
         }))
 
     def _delete_book(self, args: dict) -> ToolResult:

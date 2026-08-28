@@ -1298,6 +1298,150 @@ async def test_retry_book_is_not_clobbered_by_the_superseded_tasks_late_completi
     assert plugin._book_store.get(book_id).status == "done"
 
 
+# ── resume_book / stop-on-terminal-book guard (S33/#900, 2026-08-28) ────
+# Real pause/resume: Stop freezes progress, Resume continues from
+# processed_chunks instead of Redo's always-restart-from-0.
+
+def _multi_chunk_text(n=3, para_len=6500):
+    """Each paragraph exceeds chunk_text's default 6000-char chunk_chars,
+    so chunk_text's own documented behavior ("a paragraph longer than
+    chunk_chars becomes its own oversized chunk") gives exactly n chunks
+    without needing an absurd amount of test text."""
+    return "\n\n".join(f"Paragraph {i}: " + ("x" * para_len) for i in range(n))
+
+
+async def test_resume_book_continues_from_processed_chunks_not_zero(tmp_path):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    router = BookRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    result = await plugin._upload_book(
+        {"filename": "book.txt", "data_base64": _b64(_multi_chunk_text(3))},
+        strategy_store=store, fetch=fetch,
+    )
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+    assert plugin._book_store.get(book_id).total_chunks == 3
+    assert plugin._book_store.get(book_id).status == "done"
+
+    # Simulate "stopped after chunk 1 of 3" -- update_progress/set_stopped
+    # are the exact writes a real interruption mid-run would have made.
+    plugin._book_store.update_progress(book_id, 1, 1)
+    plugin._book_store.set_stopped(book_id)
+
+    resume_result = await plugin._resume_book({"book_id": book_id}, strategy_store=store, fetch=fetch)
+    assert not resume_result.is_error, resume_result.content
+    resumed = json.loads(resume_result.content)
+    assert resumed["resumed_from_chunk"] == 1
+
+    await plugin._book_tasks[book_id]
+
+    book = plugin._book_store.get(book_id)
+    assert book.status == "done"
+    assert book.processed_chunks == 3  # not reset, not restarted at 0
+    assert book.strategies_found == 3  # 1 already-known + 2 from the resumed chunks
+
+
+async def test_resume_book_rejects_a_book_that_is_not_stopped(tmp_path):
+    plugin = _plugin(tmp_path)
+    book = plugin._book_store.add("Active Book", "a.txt", "/a.txt")
+    plugin._book_store.set_total_chunks(book.id, 5)  # leaves status "processing"
+
+    result = await plugin._resume_book({"book_id": book.id})
+
+    assert result.is_error
+    assert "not stopped" in result.content
+
+
+async def test_resume_book_unknown_id_is_an_error(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    result = await plugin._resume_book({"book_id": 9999})
+
+    assert result.is_error
+
+
+async def test_resume_book_errors_when_the_stored_file_is_gone(tmp_path):
+    plugin = _plugin(tmp_path)
+    book = plugin._book_store.add("Missing File", "m.txt", str(tmp_path / "does_not_exist.txt"))
+    plugin._book_store.set_total_chunks(book.id, 3)
+    plugin._book_store.set_stopped(book.id)
+
+    result = await plugin._resume_book({"book_id": book.id})
+
+    assert result.is_error
+    assert "no longer on disk" in result.content
+
+
+async def test_resume_book_refuses_on_a_chunk_count_mismatch(tmp_path):
+    """If re-chunking the stored file today doesn't reproduce the same
+    total_chunks recorded when the book was first processed, resuming by
+    index would silently misalign -- must refuse, not guess."""
+    plugin = _plugin(tmp_path)
+    stored = tmp_path / "book.txt"
+    stored.write_bytes(_multi_chunk_text(3).encode("utf-8"))
+    book = plugin._book_store.add("Drifted Book", "book.txt", str(stored))
+    plugin._book_store.set_total_chunks(book.id, 99)  # doesn't match the real re-chunk of 3
+    plugin._book_store.set_stopped(book.id)
+
+    result = await plugin._resume_book({"book_id": book.id})
+
+    assert result.is_error
+    assert "changed since it was stopped" in result.content
+
+
+async def test_resume_book_with_nothing_remaining_marks_it_done(tmp_path):
+    """processed_chunks already >= total_chunks (shouldn't normally
+    happen, but a stray Stop click could land here) -- resume should just
+    settle the book as done, not launch a no-op ingestion task."""
+    plugin = _plugin(tmp_path)
+    stored = tmp_path / "book.txt"
+    stored.write_bytes(_multi_chunk_text(3).encode("utf-8"))
+    book = plugin._book_store.add("Fully Processed", "book.txt", str(stored))
+    plugin._book_store.set_total_chunks(book.id, 3)
+    plugin._book_store.update_progress(book.id, 3, 2)
+    plugin._book_store.set_stopped(book.id)
+
+    result = await plugin._resume_book({"book_id": book.id})
+
+    assert not result.is_error, result.content
+    assert json.loads(result.content)["status"] == "done"
+    assert plugin._book_store.get(book.id).status == "done"
+    assert book.id not in plugin._book_tasks
+
+
+async def test_stop_book_on_an_already_done_book_is_an_error_and_does_not_change_status(tmp_path):
+    """Regression: this used to silently overwrite a finished book's
+    status to 'stopped' -- found live 2026-08-27/28, hand-corrected via
+    direct DB calls both times it happened."""
+    plugin = _plugin(tmp_path)
+    book = plugin._book_store.add("Finished Book", "f.txt", "/f.txt")
+    plugin._book_store.set_total_chunks(book.id, 5)
+    plugin._book_store.update_progress(book.id, 5, 3)
+    plugin._book_store.set_done(book.id)
+
+    result = plugin._stop_book({"book_id": book.id})
+
+    assert result.is_error
+    assert "already done" in result.content
+    assert plugin._book_store.get(book.id).status == "done"
+
+
+async def test_stop_book_on_an_already_errored_book_is_an_error_and_does_not_change_status(tmp_path):
+    plugin = _plugin(tmp_path)
+    book = plugin._book_store.add("Errored Book", "e.txt", "/e.txt")
+    plugin._book_store.set_error(book.id, "some failure")
+
+    result = plugin._stop_book({"book_id": book.id})
+
+    assert result.is_error
+    assert plugin._book_store.get(book.id).status == "error"
+
+
 async def test_delete_book_removes_the_record_and_the_stored_file(tmp_path):
     router = BookRouter([])
     plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)

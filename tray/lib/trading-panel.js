@@ -162,6 +162,7 @@ function _renderBookRow(b, expanded) {
       ${validListHtml}
       <div class="book-row-actions">
         ${canStop ? `<button class="book-stop-btn" type="button" data-book-id="${b.id}">Stop</button>` : ''}
+        ${b.status === 'stopped' ? `<button class="book-resume-btn" type="button" data-book-id="${b.id}">Resume</button>` : ''}
         <button class="book-retry-btn" type="button" data-book-id="${b.id}">Redo</button>
         <button class="book-delete-btn" type="button" data-book-id="${b.id}">Delete</button>
       </div>
@@ -223,6 +224,11 @@ function buildStopBookEvent(bookId) {
 /** Redoes a book's ingestion from scratch (re-extracts + re-chunks the stored file). */
 function buildRetryBookEvent(bookId) {
   return { type: 'call_tool', data: { name: 'retry_book', args: { book_id: bookId } } };
+}
+
+/** Continues a stopped book from the exact chunk it stopped at (2026-08-28) -- not a redo. */
+function buildResumeBookEvent(bookId) {
+  return { type: 'call_tool', data: { name: 'resume_book', args: { book_id: bookId } } };
 }
 
 /** Removes a book's record and stored file (strategies already dispatched are kept). */
@@ -287,6 +293,11 @@ function _wireBooksSection(mount, sendEventFn) {
     const stopBtn = e.target.closest('.book-stop-btn');
     if (stopBtn) {
       sendEventFn(buildStopBookEvent(parseInt(stopBtn.dataset.bookId, 10)));
+      return;
+    }
+    const resumeBtn = e.target.closest('.book-resume-btn');
+    if (resumeBtn) {
+      sendEventFn(buildResumeBookEvent(parseInt(resumeBtn.dataset.bookId, 10)));
       return;
     }
     const retryBtn = e.target.closest('.book-retry-btn');
@@ -1005,6 +1016,7 @@ return {
   buildUploadBookEvent: buildUploadBookEvent,
   buildStopBookEvent: buildStopBookEvent,
   buildRetryBookEvent: buildRetryBookEvent,
+  buildResumeBookEvent: buildResumeBookEvent,
   buildDeleteBookEvent: buildDeleteBookEvent,
   buildHaltStrategyEvent: buildHaltStrategyEvent,
   buildResumeStrategyEvent: buildResumeStrategyEvent,

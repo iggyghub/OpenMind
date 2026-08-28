@@ -428,6 +428,42 @@ describe('renderBooksPanel (2026-08-27, was "renderTradingUpdate books section")
     });
   });
 
+  // S33/#900 (2026-08-28): real pause/resume -- Resume continues from
+  // processed_chunks, distinct from Redo's always-restart-from-0.
+  test('a stopped book shows a Resume button alongside Redo', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderBooksPanel({
+        positions: [], alerts: [],
+        books: [{ id: 5, title: 'Paused Book', filename: 'p.pdf', status: 'stopped', total_chunks: 20, processed_chunks: 8, strategies_found: 1, error_message: '' }],
+      }, mount);
+      expect(mount.innerHTML).toContain('book-resume-btn');
+      expect(mount.innerHTML).toContain('book-retry-btn');
+    });
+  });
+
+  test('a processing book has no Resume button (nothing to resume yet)', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderBooksPanel({
+        positions: [], alerts: [],
+        books: [{ id: 5, title: 'Active Book', filename: 'a.pdf', status: 'processing', total_chunks: 20, processed_chunks: 8, strategies_found: 1, error_message: '' }],
+      }, mount);
+      expect(mount.innerHTML).not.toContain('book-resume-btn');
+    });
+  });
+
+  test('a done book has no Resume button', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderBooksPanel({
+        positions: [], alerts: [],
+        books: [{ id: 5, title: 'Done Book', filename: 'd.pdf', status: 'done', total_chunks: 5, processed_chunks: 5, strategies_found: 2, error_message: '' }],
+      }, mount);
+      expect(mount.innerHTML).not.toContain('book-resume-btn');
+    });
+  });
+
   test('multiple books each render their own row', () => {
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
@@ -552,6 +588,12 @@ describe('buildStopBookEvent / buildRetryBookEvent / buildDeleteBookEvent (2026-
   test('retry_book carries the book id', () => {
     expect(TradingPanel.buildRetryBookEvent(7)).toEqual({
       type: 'call_tool', data: { name: 'retry_book', args: { book_id: 7 } },
+    });
+  });
+
+  test('resume_book carries the book id', () => {
+    expect(TradingPanel.buildResumeBookEvent(7)).toEqual({
+      type: 'call_tool', data: { name: 'resume_book', args: { book_id: 7 } },
     });
   });
 
