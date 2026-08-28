@@ -139,6 +139,18 @@ class ForwardRecord:
             query += f" LIMIT {limit}"
         return self._con.execute(query, (strategy_id,)).fetchall()
 
+    def get_all_fills(self, limit: Optional[int] = None) -> List[sqlite3.Row]:
+        """Every fill across every strategy, chronological (oldest first --
+        unlike get_fills' newest-first "recent activity" ordering, this
+        feeds a per-symbol running/cumulative chart, which needs oldest-
+        first to build correctly). No strategy_id filter at all -- for the
+        (hand-built, tray/lib/trading-panel.js) Overview tab's by-symbol
+        chart, which groups these client-side by `symbol`."""
+        query = "SELECT * FROM forward_fills ORDER BY timestamp ASC"
+        if limit:
+            query += f" LIMIT {limit}"
+        return self._con.execute(query).fetchall()
+
     def trade_count(self, strategy_id: str = "global") -> int:
         return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE strategy_id = ?", (strategy_id,)).fetchone()[0]
 
