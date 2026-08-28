@@ -3,11 +3,13 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: active
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S35d -- #915 -- forward_record.py: ForwardRecord.get_all_fills().
+- **Active:** none -- S35a-d all landed, hand-built UI (By Strategy +
+  By Stock charts, hover fix) shipped and live-verified. A new campaign
+  against this driver needs a fresh grill session first.
 - **Model:** sonnet
 
 ## Queue
@@ -265,7 +267,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   `trading_update` broadcast payload.
 - [x] S35c -- #914 -- forward_record.py only: `ForwardRecord.get_all_fills()`
   -- every fill across every strategy, chronological, no strategy_id filter.
-- [ ] S35d -- #915 -- main.py only: wire `all_fills` into the
+- [x] S35d -- #915 -- main.py only: wire `all_fills` into the
   `trading_update` broadcast payload.
 
   Refined design per the user's 2026-08-28 request: a single Overview
@@ -297,6 +299,19 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   cursor's x, added a highlight dot + guide line, and added $/trade-#
   axis labels the chart previously had none of. See #911/#912/#914/#915
   for full acceptance criteria.
+
+  **All 4 backend slices auto-merged cleanly** (S35a/#913, S35c/#917,
+  S35d/#918 -- first real string of clean auto-merges all session; S35b
+  needed one retry after a transient git-push race with concurrent
+  hand-git-work, not a real bug). Each auto-merge restarted Felix itself
+  (the SD-2/SD-3 self_dev_load flow) -- explains the dropped WS
+  connections on the firing scripts each time, expected behavior, not an
+  error. Live-verified end to end post-restart: `total_pnl: -28.55`,
+  `paper_control: {enabled: true, starting_capital: 10000.0}`,
+  `all_fills` carrying 432 real fills with symbol/pnl/timestamp, all on
+  one real `trading_update` broadcast. Full suite green (5349 passed, 7
+  skipped, 1 unrelated flaky test in `test_sandboxed_eval.py` that
+  passed in isolation -- not touched by anything in this campaign).
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
@@ -1085,6 +1100,7 @@ S11b/S11c similarly reuse issue #852 across two slice labels.
 
 - PR #913 -- S35a (auto-merged by self_dev_campaign)
 - PR #917 -- S35c (auto-merged by self_dev_campaign)
+- PR #918 -- S35d (auto-merged by self_dev_campaign)
 ### Live trading: what a full trace actually found (2026-08-23)
 
 Per this campaign's own standing rule (a slice's code existing is not
