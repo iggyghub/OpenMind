@@ -3,12 +3,12 @@
 Design: ADR-0026 (not written yet).
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: active
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S36 -- #920 -- broker.py: remove StubBrokerClient's
-  simulated 0.1% commission (Alpaca is commission-free).
+- **Active:** none -- S36 landed. A new campaign against this driver
+  needs a fresh grill session first.
 - **Model:** sonnet
 
 ## Queue
@@ -312,14 +312,23 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   skipped, 1 unrelated flaky test in `test_sandboxed_eval.py` that
   passed in isolation -- not touched by anything in this campaign).
 
-- [ ] S36 -- #920 -- broker.py only: `StubBrokerClient.place_order`
+- [x] S36 -- #920 -- broker.py only: `StubBrokerClient.place_order`
   hardcodes a 0.1% simulated commission on every fill -- Alpaca (the real
   broker this campaign targets) is commission-free for US stock trades,
   found live 2026-08-28 ("get rid of fees, i should be trading on
   commissionless platform"). One-line change: `fees=0.0` instead of the
   computed 0.1%. `realized_pnl` already subtracts `fees` from gross, so
   this alone makes paper P&L exactly gross with no code change needed
-  elsewhere. See #920 for full acceptance criteria.
+  elsewhere. **Landed same day (PR #921)** -- first attempt hit a
+  transient bonsai 502 (retried per the standing bonsai-outage policy,
+  succeeded on retry #2). The one-line fix itself was correct, but its
+  own sandbox test run surfaced 3 real pre-existing tests that had
+  hardcoded the OLD 0.1%-fee math into their expected P&L values
+  (`test_tick_closes_and_records_a_real_realized_pnl`,
+  `test_tick_closes_a_short_at_a_profit_when_price_falls`,
+  `test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl`) --
+  fixed by hand to assert exact gross P&L. Full suite green (5345
+  passed, 7 skipped) before merge. See #920 for full acceptance criteria.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
