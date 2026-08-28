@@ -7,7 +7,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S35c -- #914 -- forward_record.py: ForwardRecord.get_all_fills().
+- **Active:** S35d -- #915 -- forward_record.py: ForwardRecord.get_all_fills().
 - **Model:** sonnet
 
 ## Queue
@@ -263,7 +263,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   -- realized P&L summed across every strategy, all-time.
 - [x] S35b -- #912 -- main.py only: wire `total_pnl` into the
   `trading_update` broadcast payload.
-- [ ] S35c -- #914 -- forward_record.py only: `ForwardRecord.get_all_fills()`
+- [x] S35c -- #914 -- forward_record.py only: `ForwardRecord.get_all_fills()`
   -- every fill across every strategy, chronological, no strategy_id filter.
 - [ ] S35d -- #915 -- main.py only: wire `all_fills` into the
   `trading_update` broadcast payload.
@@ -1084,6 +1084,7 @@ S11b/S11c similarly reuse issue #852 across two slice labels.
   actually found.
 
 - PR #913 -- S35a (auto-merged by self_dev_campaign)
+- PR #917 -- S35c (auto-merged by self_dev_campaign)
 ### Live trading: what a full trace actually found (2026-08-23)
 
 Per this campaign's own standing rule (a slice's code existing is not
