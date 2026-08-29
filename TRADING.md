@@ -7,17 +7,18 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S41 -- #935 -- wire the Tally into judge_idea/to_strategy
-  prompts + discovery_candidate_limit bias. S38-S40 all landed same day
-  (S38 and S40 had real hand-fixed bugs; S39 was clean -- see Landed
-  PRs). All three hit the sandbox's 600s full-suite timeout at the merge
-  gate, three in a row, confirmed each time not to reproduce locally --
-  treat a `tests_failed` gate result on this campaign as "check the real
-  diff by hand", not "the slice is broken". This campaign's own
-  self_dev_campaign tool writes `Status: blocked` into this file on that
-  gate result regardless of whether the substance is fine, so **always
-  check/reset this Status line after a hand-verified landing** -- it does
-  not reset itself. S42 needs S38+S39 (both done); S43 needs S38 (done).
+- **Active:** S42 -- #936 -- ticker expansion tool (expand_strategy_ticker).
+  S38-S41 all landed same day (S38, S40, S41 all had real hand-fixed
+  bugs/gaps -- S41's was the biggest, a permanent stub that made the
+  whole slice dead code, see Landed PRs; S39 was the only clean one).
+  All four hit the sandbox's 600s full-suite timeout at the merge gate,
+  confirmed every time not to reproduce locally -- treat a `tests_failed`
+  gate result on this campaign as "check the real diff by hand", not "the
+  slice is broken". This campaign's own self_dev_campaign tool writes
+  `Status: blocked` into this file on that gate result regardless of
+  whether the substance is fine, so **always check/reset this Status
+  line after a hand-verified landing** -- it does not reset itself.
+  S38-S41 all done; S43 needs S38 (done) and is independent of S42.
 - **Model:** sonnet
 
 ## Queue
@@ -459,7 +460,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   (suffix-stripped claim text), top-5 nearest-neighbor query, and a
   simple win/loss Tally over the neighbors' confidence weight sign. No
   consumers yet.
-- [ ] S41 -- #935 -- Wire the Tally into judge_idea/to_strategy prompts
+- [x] S41 -- #935 -- Wire the Tally into judge_idea/to_strategy prompts
   (one summary sentence) and a +/-1 discovery_candidate_limit bias for
   that dispatch only (>=60% positive = +1, <=40% = -1, floor 1).
   Conservative-continue if retrieval fails. Depends on S40.
@@ -2910,6 +2911,50 @@ against this driver needs a fresh grill session first.
   test for bug 1 that fails against the hardcoded name and passes with the
   injectable one. 8/8 claim_store tests pass; issue #934 closed via the
   fix commit.
+
+- PR #941 -- S41 -- wire the Tally into judge_idea/to_strategy + the
+  candidate_limit bias, opened by self_dev_campaign against the real diff
+  (097d841, based cleanly on master post-S40). Closed unmerged in favor
+  of a hand-verified merge (commit c01350f fast-forwarded onto master).
+  Fourth consecutive slice today to hit the identical sandbox gate
+  failure (`tests_failed`, 600s full-suite timeout at ~6% collection) --
+  confidently an infrastructure issue by now, not a per-slice one (this
+  diff touches trading_ideas.py/discovery.py, S40 touched chromadb,
+  S38/S39 touched neither -- no common thread except the sandbox
+  environment). Flagged, not investigated further this session; scoped
+  local runs and a 323-test broader trading sweep both clean.
+
+  **This one was a much bigger miss than a hygiene nit.** `_run_tally`
+  was left as a permanent stub always returning `(False, 0, 0)` -- it
+  never called S40's real `TradingStrategies` retrieval or S38's
+  `compute_confidence_weight` at all. The prompt-injection and
+  candidate_limit bias code built around that stub was correctly written
+  but entirely dead in production: the tally success flag could never be
+  `True`, so this slice shipped zero actual behavior change despite
+  looking complete in a diff review. The PR also added zero tests --
+  only 2 non-test files were touched -- so none of the issue's own
+  explicit acceptance criteria (prompt text present/absent, bias math at
+  the thresholds and floor, retrieval exception swallowed) were exercised
+  anywhere. Same "looks done, isn't wired" failure class as S37d and S6's
+  auto-promote scheduling.
+
+  Fixed by implementing `_run_tally` for real (self-contained
+  `TradingStrategies()` + `ForwardRecord()` construction, matching
+  `judge_idea`/`to_strategy`'s own unchanged no-injection signatures;
+  broad try/except -> `(False, 0, 0)`, matching their established
+  conservative-continue convention). A real bug my own first new test
+  caught immediately: the generated code called
+  `TradingStrategies.compute_tally(...)` on the class instead of the
+  `store` instance -- works by accident in production (`compute_tally`
+  is a real `@staticmethod`) but breaks the moment the class is
+  mocked/injected, which is exactly what testing it requires. Fixed to
+  call it on the instance. Added the full set of tests the issue asked
+  for: prompt-sentence present/absent for both `to_strategy` and
+  `judge_idea`, candidate_limit bias at >=60%/<=40%/between-thresholds/
+  floor-at-1/unavailable, and three direct `_run_tally` tests (empty
+  retrieval, exception swallowed, real positive-count computation from
+  confidence weight). 66 new/touched tests pass; issue #935 closed via
+  the fix commit.
 
 ## What's next
 
