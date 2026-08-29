@@ -13,6 +13,7 @@ subsystem, and cerebral/ must not depend on plugins/ (seam rule #153/#385).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,7 +28,6 @@ _DB_PATH = data_dir() / "strategy_specs.db"
 _VALID_ORIGINS = ('generated', 'user_edited', 'mixed', 'discovered')
 
 # S39: Convention for expanded strategy_ids
-import re
 _SUFFIX_RE = re.compile(r"^(.+) @\S+$")
 
 def mint_expansion_strategy_id(claim: str, symbol: str) -> str:
@@ -36,7 +36,7 @@ def mint_expansion_strategy_id(claim: str, symbol: str) -> str:
     return f"{claim} @{symbol}"
 
 def strip_expansion_suffix(strategy_id: str) -> str:
-    """Strip the trailing ` @SYMBOL` suffix if present, recovering the bare claim.
+    r"""Strip the trailing ` @SYMBOL` suffix if present, recovering the bare claim.
     Lossless for claims containing `@` elsewhere; only matches a trailing
     ` @\S+` pattern."""
     m = _SUFFIX_RE.match(strategy_id)
