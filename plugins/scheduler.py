@@ -23,7 +23,7 @@ from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.gauntlet import run_gauntlet
 from cerebral.trading.discovery import (
-    DiscoveryAttempts, DiscoveryWatchlist, rank_for_day_trading, run_discovery_pass,
+    DiscoveryAttempts, DiscoveryWatchlist, _KNOWN_TICKERS, rank_for_day_trading, run_discovery_pass,
 )
 from cerebral.trading.books import (
     BookStore, chunk_text, extract_claims_from_chunk, extract_full_text,
@@ -332,6 +332,24 @@ class SchedulerPlugin:
                 },
             ),
             Tool(
+                name="expand_strategy_ticker",
+                description=(
+                    "Expands a validated strategy to new candidate tickers by running the full "
+                    "validation gauntlet. Requires the strategy's confidence weight to be positive. "
+                    "Candidate tickers are drawn from the known liquid universe, ranked by "
+                    "day-trading suitability, and capped by the discovery candidate limit. "
+                    "Each successful candidate registers as a new strategy row suffixed with @SYMBOL."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "strategy_id": {"type": "string", "description": "The strategy to expand"},
+                    },
+                    "required": ["strategy_id"],
+                },
+            ),
+            Tool(
                 name="mix_strategies",
                 description=(
                     "Combines multiple validated strategies into a single composite strategy. "
@@ -619,6 +637,8 @@ class SchedulerPlugin:
             return self._get_discovery_status(args)
         if tool_name == "get_strategy_code":
             return self._get_strategy_code(args)
+        if tool_name == "expand_strategy_ticker":
+            return await self._expand_strategy_ticker(args)
         if tool_name == "mix_strategies":
             return await self._run_mix_strategies(args)
         if tool_name == "upload_book":
@@ -1498,6 +1518,57 @@ class SchedulerPlugin:
         version_row = store.get_current_version(strategy_id)
         provenance = store.render_provenance(version_row) if version_row is not None else "unknown"
         return ToolResult(content=json.dumps({"code": spec.code, "provenance": provenance}))
+
+    async def _expand_strategy_ticker(self, args: dict) -> ToolResult:
+        """S42: expand a validated strategy to new candidate tickers via the gauntlet."""
+        strategy_id = args.get("strategy_id", "").strip()
+        if not strategy_id:
+            return ToolResult(content="strategy_id is required", is_error=True)
+
+        store = StrategyStore()
+        spec = store.get(strategy_id)
+        if spec is None:
+            return ToolResult(content=f"No strategy '{strategy_id}' found", is_error=True)
+
+        confidence = getattr(spec, 'confidence', None) or getattr(spec, 'weight', 0)
+        if confidence is None or confidence <= 0:
+            return ToolResult(
+                content=f"Strategy '{strategy_id}' has non-positive confidence weight ({confidence}). Cannot expand.",
+                is_error=True,
+            )
+
+        current_symbol = spec.symbol
+        candidate_limit = self._settings.get("discovery_candidate_limit") or 3
+        
+        # Filter out current symbol and rank using the same logic discovery already uses
+        candidates = [t for t in _KNOWN_TICKERS if t != current_symbol]
+        ranked_candidates = rank_for_day_trading(candidates)
+        candidates = ranked_candidates[:candidate_limit]
+
+        results = []
+        for candidate in candidates:
+            new_id = f"{strategy_id}@{candidate}"
+            gauntlet_args = {
+                "code": spec.code,
+                "symbol": candidate,
+                "hypothesis": spec.hypothesis or f"Expanded from {strategy_id} for {candidate}",
+                "provenance": f"Expanded from {strategy_id} for {candidate}",
+            }
+            result = await self._run_gauntlet(
+                gauntlet_args, 
+                strategy_store=store, 
+                strategy_id=new_id,
+            )
+            results.append({
+                "ticker": candidate, 
+                "new_id": new_id, 
+                "verdict": json.loads(result.content).get("verdict", "ERROR")
+            })
+
+        return ToolResult(content=json.dumps({
+            "original_id": strategy_id,
+            "attempts": results,
+        }))
 
     async def _run_mix_strategies(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
         component_ids = args.get("component_ids", [])
