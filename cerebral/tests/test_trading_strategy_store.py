@@ -7,7 +7,9 @@ strategy_versions: the append-only history alongside it.
 """
 import json
 
-from cerebral.trading.strategy_store import StrategyStore, StrategySpec
+from cerebral.trading.strategy_store import (
+    StrategyStore, StrategySpec, mint_expansion_strategy_id, strip_expansion_suffix,
+)
 
 
 def _store(tmp_path):
@@ -204,6 +206,48 @@ def test_migration_drops_the_check_constraint(tmp_path):
         "SELECT sql FROM sqlite_master WHERE name='strategy_versions'"
     ).fetchone()[0]
     assert "CHECK" not in ddl
+
+
+# ── S39: strategy identity fix (expansion suffix helpers) ─────────────
+
+def test_suffix_mint_and_strip_round_trip(tmp_path):
+    """Minting a suffixed id and stripping it must recover the original claim."""
+    claim = "Buy when RSI < 30"
+    symbol = "TSLA"
+    full_id = mint_expansion_strategy_id(claim, symbol)
+    assert full_id == "Buy when RSI < 30 @TSLA"
+    assert strip_expansion_suffix(full_id) == claim
+
+
+def test_strip_preserves_literal_at_in_claim(tmp_path):
+    """A claim containing `@` elsewhere must not be mangled by strip()."""
+    claim = "Buy @ when RSI < 30"
+    symbol = "AAPL"
+    full_id = mint_expansion_strategy_id(claim, symbol)
+    assert full_id == "Buy @ when RSI < 30 @AAPL"
+    # strip should only remove the trailing suffix
+    assert strip_expansion_suffix(full_id) == claim
+
+
+def test_save_suffixed_and_bare_dont_collide(tmp_path):
+    """A bare `strategy_id` (original symbol) and a suffixed one (expanded)
+    must occupy separate PK rows in strategy_specs."""
+    store = _store(tmp_path)
+    bare_id = "Buy when RSI < 30"
+    expanded_id = mint_expansion_strategy_id("Buy when RSI < 30", "MSFT")
+
+    store.save(StrategySpec(bare_id, "AAPL", "code_aapl"))
+    store.save(StrategySpec(expanded_id, "MSFT", "code_msft"))
+
+    # Both must be retrievable by their exact IDs
+    assert store.get(bare_id) is not None
+    assert store.get(bare_id).symbol == "AAPL"
+    assert store.get(expanded_id) is not None
+    assert store.get(expanded_id).symbol == "MSFT"
+
+    # List should contain both
+    all_specs = store.list_all()
+    assert len(all_specs) == 2
 
 
 def test_migration_preserves_pre_existing_rows(tmp_path):
