@@ -251,3 +251,28 @@ class ForwardRecord:
     def close(self) -> None:
         if self._con:
             self._con.close()
+
+    def compute_confidence_weight(self, strategy_id: str = "global") -> float:
+        """Computes a continuous confidence weight for a strategy based on paper + live fills.
+
+        Reuses `compute_expectancy_ci` and `compute_live_expectancy_ci`.
+        Live results are weighted higher than paper results.
+        Trade count scales the weight continuously toward the raw expectancy mean,
+        never snapping to a hard 0 or 1 gate.
+        Returns a float weight.
+        """
+        paper_mean, _, _, _, paper_n, _ = self.compute_expectancy_ci(strategy_id)
+        live_mean, _, _, _, live_n, _ = self.compute_live_expectancy_ci(strategy_id)
+
+        if paper_n == 0 and live_n == 0:
+            return 0.0
+
+        # Paper trades are the total minus the live subset
+        paper_trades = max(0, paper_n - live_n)
+        live_weight = 2.0  # Live fills count double for confidence purposes
+        denom = paper_trades + live_n * live_weight
+
+        weighted_mean = (paper_trades * paper_mean + live_n * live_mean * live_weight) / denom
+        # Continuous scaling: magnitude approaches raw expectancy as count hits the 30-trade floor
+        scale = max(1e-4, min(1.0, (paper_n + live_n) / 30.0))
+        return weighted_mean * scale

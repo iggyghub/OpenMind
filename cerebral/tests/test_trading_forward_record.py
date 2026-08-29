@@ -280,3 +280,76 @@ def test_get_paper_archive_fills_returns_exact_or_empty():
     assert empty == []
     
     record.close()
+
+
+def test_confidence_weight_zero_fills():
+    """Zero fills must return exactly 0.0, not a NaN or error."""
+    record = ForwardRecord()
+    assert record.compute_confidence_weight() == 0.0
+    record.close()
+
+
+def test_confidence_weight_paper_only_positive():
+    """Paper-only fills with positive expectancy produce a small nonzero weight."""
+    record = ForwardRecord()
+    for i in range(5):
+        _add_fill_on_day(record, "2026-07-01", "AAPL", "buy", 1.0, 100.0 + i, pnl=10.0)
+    
+    w = record.compute_confidence_weight()
+    assert w > 0.0
+    # With 5 trades, scale is 5/30 ≈ 0.167, so weight should be ~16.7% of expectancy
+    record.close()
+
+
+def test_confidence_weight_paper_only_negative():
+    """Paper-only fills with negative expectancy produce a negative weight."""
+    record = ForwardRecord()
+    for i in range(5):
+        _add_fill_on_day(record, "2026-07-01", "AAPL", "buy", 1.0, 100.0 + i, pnl=-10.0)
+    
+    w = record.compute_confidence_weight()
+    assert w < 0.0
+    record.close()
+
+
+def test_confidence_weight_live_only():
+    """Live-only fills should still produce a weight, weighted more heavily than paper for same N."""
+    record = ForwardRecord()
+    for i in range(5):
+        record.add_live_fill("TSLA", "buy", 1.0, 200.0 + i, pnl=15.0)
+    
+    w = record.compute_confidence_weight()
+    assert w > 0.0
+    record.close()
+
+
+def test_confidence_weight_mixed_paper_live():
+    """Mixed paper + live fills blend correctly with live taking more influence."""
+    record = ForwardRecord()
+    # 3 paper trades @ +5 pnl
+    for i in range(3):
+        _add_fill_on_day(record, "2026-07-01", "AAPL", "buy", 1.0, 100.0, pnl=5.0)
+    # 3 live trades @ +5 pnl
+    for i in range(3):
+        record.add_live_fill("AAPL", "buy", 1.0, 110.0, pnl=5.0)
+    
+    w = record.compute_confidence_weight()
+    assert w > 0.0
+    # Scale should be 6/30 = 0.2, weighted mean is 5.0
+    assert abs(w - 5.0 * 0.2) < 0.01
+    record.close()
+
+
+def test_confidence_weight_near_sufficiency_floor():
+    """At 30 trades across 30 days, scale should cap at ~1.0, making weight ≈ raw expectancy."""
+    record = ForwardRecord()
+    for i in range(30):
+        _add_fill_on_day(record, f"2026-07-{1 + i // 28:02d}", "AAPL", "buy", 1.0, 100.0 + i, pnl=2.0)
+    
+    mean, _, _, _, n, _ = record.compute_expectancy_ci(floor=30)
+    w = record.compute_confidence_weight()
+    
+    # 30 trades -> scale = 1.0. All paper -> weighted_mean = mean.
+    assert abs(w - mean) < 0.01
+    assert n == 30
+    record.close()
