@@ -7,16 +7,16 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S46a -- #946 -- Backend: confidence_weight + is_expansion
-  on the trading_update broadcast. S44 landed clean; S45's implementation
-  was also correct but shipped with zero tests, added by hand (see Landed
-  PRs). S46a is the last self_dev slice in this queue -- **S46b
-  (#947, tray render) is explicitly NOT a self_dev slice**, this campaign
-  has never let self_dev touch tray/ and always hand-reviews it anyway
-  (S34/S35 precedent); hand-build it once S46a lands. This campaign's own
-  self_dev_campaign tool writes `Status: blocked` into this file on a
-  `tests_failed` gate result and never resets it -- **always check/reset
-  this Status line after a hand-verified landing.**
+- **Active:** S46b -- #947 -- tray: confidence-weight + expansion badges
+  on the Strategies list. **Hand-build, not self_dev** -- this campaign
+  has never let self_dev touch tray/. The last piece of the S38-S46
+  learning-loop queue; S46a's backend fields (`confidence_weight`,
+  `is_expansion` on the `trading_update` broadcast) already landed, so
+  this is unblocked. S46a needed 2 real "Edit step produced no commit"
+  failures before an exact-quoted-snippet reword (same fix as S17) got a
+  real diff through -- worth remembering as the standard remedy if a
+  future slice gets stuck the same way, rather than blind retries.
+- **Model:** sonnet
 - **Model:** sonnet
 
 ## Queue
@@ -485,7 +485,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   bias decision in process_idea: one entry when the tally is available
   (positive/total counts, candidate_limit before/after), none when
   unavailable. No interdependency.
-- [ ] S46a -- #946 -- Backend: confidence_weight (S38) + is_expansion
+- [x] S46a -- #946 -- Backend: confidence_weight (S38) + is_expansion
   (S39's strip_expansion_suffix) added to _trading_broadcast's positions
   payload. Does NOT attempt to distinguish auto-combined (S43) from
   hand-mixed (S18) composites -- not reliably derivable without touching
@@ -3102,6 +3102,38 @@ against this driver needs a fresh grill session first.
   other independent "accepted" entry). 47/47 discovery tests pass;
   445-test broader sweep clean. Same sandbox 600s timeout as every slice
   today -- confirmed environmental. Issue #945 closed via the fix commit.
+
+- PR #950 -- S46a -- backend confidence_weight + is_expansion on the
+  trading_update broadcast. **Needed 2 straight "Edit step produced no
+  commit" failures (no PR opened either time) before landing** -- the
+  original prose-described issue was likely too hard to anchor in
+  `cerebral/main.py`, the first file this whole S38-S46 queue touched
+  that's thousands of lines rather than a few hundred. Reworded with an
+  exact quoted before/after snippet (same fix technique that unstuck
+  S17), purged the stale ledger row + sandbox clone for
+  `campaign-trading-s46a` before retrying (the S37a-documented "resume
+  replays a cached failed step" gotcha), and it landed clean on the third
+  real attempt (commit 992bb3b, opened as PR #950, closed unmerged in
+  favor of a local master merge -- same reasoning as every slice today).
+
+  Diff matched the quoted snippet exactly, byte for byte -- no bugs.
+  **Real gap found instead:** the issue's own acceptance criteria assumed
+  `_trading_broadcast` already had test seams other tests in this repo
+  use for it -- it doesn't; this function has never had a direct unit
+  test at all, and its dependencies
+  (`_trading_lifecycle`/`_trading_forward_record`/`_trading_strategy_store`)
+  are `cerebral.main` module-level globals built with real,
+  non-injectable connections at import time. Building the first-ever test
+  harness for it was judged a disproportionately bigger lift than this
+  small slice warrants -- the new logic itself is 2 lines composing
+  `compute_confidence_weight` (S38, 21+ existing tests of its own) and
+  `strip_expansion_suffix` (S39, existing round-trip tests). Manually
+  verified the composition instead of skipping verification entirely: a
+  strategy with real fills produces a nonzero `confidence_weight`, a
+  suffixed id correctly reports `is_expansion: true`, a bare one `false`.
+  **Disclosed, not silently skipped** -- a real `_trading_broadcast` test
+  harness is worth its own future slice if this function keeps growing.
+  Issue #946 closed via the merge commit.
 
 ## What's next
 
