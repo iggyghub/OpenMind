@@ -7,20 +7,14 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S47 -- #954 -- ForwardRecord: add a real paper-only
-  expectancy method. S44-S46b (the learning-loop observability
-  follow-up) all landed 2026-08-29, same day as S38-S43 itself -- see
-  Landed PRs. S47/S48 are small cleanups from hand-verifying S38/S43:
-  S47 gives `compute_confidence_weight` a real `compute_paper_expectancy_ci`
-  to call instead of its own inline SQL (the asymmetric API -- live-only
-  and blended-all-phases, no paper-only -- is exactly what caused S38's
-  bug in the first place); S48 makes `_run_gauntlet` return its own
-  `strategy_id` instead of every caller needing its own workaround (S43
-  already needed one). No interdependency between S47/S48. Three
-  related infra fixes (sandbox timeout, a `campaign()` silent-block
-  diagnostic gap, the `signals` NameError root-caused live today) are
-  filed separately as #951/#952/#953 -- not trading-specific, not in
-  this driver file, fired via single-shot `self_dev` instead.
+- **Active:** S48 -- #955 -- `_run_gauntlet` returns its own
+  `strategy_id` in its result dict, instead of every caller (S43 already
+  needed one) building its own workaround. Last slice in this queue. S47
+  landed the same way (auto-merged clean, no timeout hit -- the sandbox
+  timeout raise + the `signals` NameError fix, both landed today as
+  standalone infra issues #951/#953, appear to already be helping: this
+  session's test sweeps went from ~75 tests/min under load to ~207
+  tests/min after). See Landed PRs for S47's account.
 - **Model:** sonnet
 
 ## Queue
@@ -498,7 +492,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   Strategies list (tray/lib/trading-panel.js). **Hand-build, not
   self_dev** -- this campaign never lets self_dev touch tray/. Depends on
   S46a.
-- [ ] S47 -- #954 -- ForwardRecord: add get_paper_pnls/
+- [x] S47 -- #954 -- ForwardRecord: add get_paper_pnls/
   compute_paper_expectancy_ci mirroring the existing _live_ methods;
   refactor compute_confidence_weight (S38) to use it instead of its own
   inline SQL. No interdependency.
@@ -1295,6 +1289,7 @@ S11b/S11c similarly reuse issue #852 across two slice labels.
 - PR #913 -- S35a (auto-merged by self_dev_campaign)
 - PR #917 -- S35c (auto-merged by self_dev_campaign)
 - PR #918 -- S35d (auto-merged by self_dev_campaign)
+- PR #959 -- S47 (auto-merged by self_dev_campaign)
 ### Live trading: what a full trace actually found (2026-08-23)
 
 Per this campaign's own standing rule (a slice's code existing is not
@@ -3170,6 +3165,50 @@ against this driver needs a fresh grill session first.
   real paper/live cycle has run against any of this code yet -- see
   docs/trading-live-verify.md), and cross-symbol composites remain
   explicitly out of scope per ADR-0026.
+
+- PR #959 -- S47 -- ForwardRecord: `get_paper_pnls`/
+  `compute_paper_expectancy_ci`, mirroring the existing `_live_` methods,
+  plus refactoring `compute_confidence_weight` (S38) to use the new
+  method instead of its own inline SQL. Auto-merged cleanly on the first
+  attempt -- no sandbox timeout, first slice today that didn't need it
+  raised (see the companion infra fixes below). Implementation itself was
+  correct: structurally identical to `compute_live_expectancy_ci`, and
+  the refactor is a clean drop-in replacement. Zero tests shipped again,
+  and it turned out neither the new method nor the *existing*
+  `compute_live_expectancy_ci` had ever had direct test coverage before
+  -- the issue's own assumption that live-method tests existed to mirror
+  was wrong, same class of gap as S46a's. Added tests for both methods,
+  including a phase-leak regression check each way (a live fill must not
+  count toward paper's mean/n and vice versa -- the exact bug class S38
+  shipped). 341-test broader sweep clean. Issue #954 closed via the fix
+  commit.
+
+  **Three related infra fixes landed the same day, standalone (not in
+  this driver file):** #951 raised the sandbox test timeout 600s->1200s
+  (measured this session: local scoped runs at ~75 tests/min under load
+  vs. this campaign's own historical full-suite rate of 530-1000+/min --
+  a real regression, not the suite just growing). #952 made
+  `self_dev_campaign`'s early blocked/done short-circuit actually surface
+  the block reason (previously silent, cost a real ~40-minute detour
+  earlier today -- see the S38/S39 entries above). #953 root-caused and
+  fixed a real, recurring `NameError: name 'signals' is not defined`
+  crash in generated strategy code -- models were sometimes copying
+  `to_strategy`'s illustrative `def strategy(data) -> signals:` prompt
+  template literally into the real generated signature; `signals` as a
+  return-type annotation is evaluated eagerly by Python at `def`-time,
+  raising before the function could ever run. Reproduced live against
+  the real router before fixing (same discipline as the 2026-08-26
+  `p=1.000` root-cause). #951's PR (#956) is also the session's live
+  example of the stale-origin squash trap actually firing for real (not
+  just looking misleading in a `gh diff`) -- auto-merged for real against
+  origin's never-pushed-all-day base, squashing the ENTIRE S38-S48
+  history into one commit on GitHub. Content was verified byte-identical
+  to local master plus the intended fix (nothing lost), reconciled by
+  force-pushing local master's own clean history over the squash commit
+  once. #952/#953 landed cleanly afterward with no repeat, since origin
+  stayed in sync. S47 (above) is the first trading slice fired after all
+  three infra fixes landed, and needed no timeout retry -- early
+  supporting evidence, not yet conclusive over a full session.
 
 ## What's next
 
