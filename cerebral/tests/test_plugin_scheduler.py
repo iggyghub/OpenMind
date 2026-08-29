@@ -1809,6 +1809,40 @@ async def test_auto_combine_strategies_deletes_the_losing_composite(tmp_path, mo
     assert store.get("mixed_loser") is None  # actually deleted, not silently kept
 
 
+async def test_run_gauntlet_returns_explicit_strategy_id(tmp_path, monkeypatch):
+    """S48: _run_gauntlet returns the strategy_id passed to it."""
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    result = await plugin._run_gauntlet(
+        {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "Test", "strategy_id": "explicit_id"},
+        strategy_store=store, fetch=fetch,
+    )
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["strategy_id"] == "explicit_id"
+
+
+async def test_run_gauntlet_returns_derived_strategy_id(tmp_path, monkeypatch):
+    """S48: _run_gauntlet derives strategy_id from hypothesis when none is passed."""
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    result = await plugin._run_gauntlet(
+        {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "Derived Hypothesis Text"},
+        strategy_store=store, fetch=fetch,
+    )
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["strategy_id"] == "Derived Hypothesis Text"
+
+
 # ── S44: Activity Log entries for expand_strategy_ticker / auto_combine_strategies ──
 
 async def test_expand_strategy_ticker_logs_one_activity_entry_on_dispatch(tmp_path, monkeypatch):

@@ -922,6 +922,7 @@ class SchedulerPlugin:
             "verdict": card.verdict,
             "sharpe": card.sharpe,
             "total_return": card.total_return,
+            "strategy_id": card.strategy_name,
             "gates": [
                 {"name": g.name, "passed": bool(g.passed), "details": g.details}
                 for g in card.gates
@@ -1680,7 +1681,7 @@ class SchedulerPlugin:
         components = [{"id": cid, "provenance": p} for cid, p in zip(component_ids, provenances)]
         provenance_str = f"Mixed strategy ({mode}) of {len(component_ids)} components: {', '.join(component_ids)}"
 
-        result = await self._run_gauntlet(
+        return await self._run_gauntlet(
             {
                 "code": composite_code,
                 "symbol": symbol,
@@ -1690,15 +1691,6 @@ class SchedulerPlugin:
             strategy_store=store, fetch=fetch,
             origin="mixed", strategy_id=new_id, components_json=components,
         )
-        # The composite's own generated strategy_id is otherwise invisible to
-        # the caller -- _run_gauntlet's return shape doesn't include it, and
-        # it's needed by anything (S43's auto-discovery) that has to address
-        # this specific composite afterward, e.g. to delete a losing one.
-        if not result.is_error:
-            data = json.loads(result.content)
-            data["strategy_id"] = new_id
-            result = ToolResult(content=json.dumps(data), is_error=False)
-        return result
 
     async def _run_auto_combine_strategies(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
         """S43: Same-symbol composite auto-discovery tool. Selects top-3 by confidence,
