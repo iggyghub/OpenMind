@@ -1,17 +1,19 @@
 # TRADING.md -- Stock trading campaign driver
 
-Design: ADR-0026 (not written yet).
+Design: ADR-0026 (docs/adr/0026-trading-feedback-loop.md), grill closed 2026-08-29.
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: done
+## Status: active
 
 ## Next slice -- start here
 
-- **Active:** none -- S37a-d all landed; nothing left in the self_dev
-  queue. Next work (a Reset button + collapsible per-archive history on
-  the Overview tab, and the #919 shared-broker-position and #929
-  cash-never-updates design decisions) is hand-built/human, not a
-  self_dev slice.
+- **Active:** S38 -- #932 -- confidence weight computation. S38-S43 are
+  the learning-loop queue from the 2026-08-29 grill (ADR-0026): S38-S40
+  have no interdependency and can land in any order; S41 needs S40; S42
+  needs S38+S39; S43 needs S38 only. Fired via self_dev_campaign,
+  hand-verified per slice same as every prior slice in this campaign --
+  see "Landed PRs" for the account of what self_dev actually got right vs.
+  wrong on each one.
 - **Model:** sonnet
 
 ## Queue
@@ -435,6 +437,42 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   per-archive history blocks on the Overview tab are hand-built once all
   4 land -- guardrail path. See #922/#923/#924/#925 for full acceptance
   criteria.
+
+- [ ] S38 -- #932 -- Confidence weight: phase-weighted, continuously-scaled
+  score per strategy, wrapping ForwardRecord.compute_expectancy_ci/
+  compute_live_expectancy_ci (no new metric). is_sufficient is a scaling
+  input, not a hard gate -- a low-trade strategy still produces a small
+  nonzero weight. No consumers yet, computation + tests only.
+- [ ] S39 -- #933 -- Strategy identity fix: strategy_id is the literal
+  claim text and strategy_specs' PRIMARY KEY (StrategyStore.save() does
+  INSERT OR REPLACE) -- expanding to a new ticker without a distinct id
+  would silently clobber the original symbol's row. Adds an @SYMBOL-
+  suffix mint/strip convention for expansions only; the 121 existing rows
+  are untouched, no schema migration.
+- [ ] S40 -- #934 -- Similar-claim retrieval + Tally: new Chroma
+  collection (default embedding function, same pattern as
+  cerebral/memory/manager.py), one entry per validated strategy
+  (suffix-stripped claim text), top-5 nearest-neighbor query, and a
+  simple win/loss Tally over the neighbors' confidence weight sign. No
+  consumers yet.
+- [ ] S41 -- #935 -- Wire the Tally into judge_idea/to_strategy prompts
+  (one summary sentence) and a +/-1 discovery_candidate_limit bias for
+  that dispatch only (>=60% positive = +1, <=40% = -1, floor 1).
+  Conservative-continue if retrieval fails. Depends on S40.
+- [ ] S42 -- #936 -- Ticker expansion tool (expand_strategy_ticker,
+  on-demand, not automatic): eligibility = positive confidence weight,
+  candidates = _KNOWN_TICKERS minus current symbol ranked by
+  rank_for_day_trading, capped at discovery_candidate_limit. Each
+  candidate dispatches through the existing gauntlet using S39's
+  @SYMBOL-suffixed id. Depends on S38 + S39.
+- [ ] S43 -- #937 -- Same-symbol composite auto-discovery tool
+  (auto_combine_strategies, on-demand): top-3 strategies per symbol by
+  confidence weight (all positive), fires the EXISTING mix_strategies
+  path for both unanimous and majority, keeps whichever backtests
+  better. Cross-symbol composites explicitly out of scope (compose_
+  strategies' generated code assumes one shared symbol's data across all
+  components -- a structurally different, deferred feature). Depends on
+  S38 only.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section

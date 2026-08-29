@@ -169,6 +169,28 @@ PWA serving from Cerebral (a local HTTP server + service-worker shell) is **out 
 
 **Claim graph** — typed relations (`supports`/`contradicts`/`depends_on`/`supported_by`/`derived_from`) between claims, evidence, and assumptions across the corpus. When two claims contradict, Felix surfaces both with sources — it does not pick a winner. _Avoid_: any "most authoritative author wins" resolution logic; ADR-0025 rules it out explicitly.
 
+### Trading
+
+**Strategy** (`StrategySpec`) — one validated, runnable trading idea: a symbol, a `def strategy(data) -> signals` function, quantity, and interval, persisted in `strategy_specs`. Identified by `strategy_id`, which is the literal claim/hypothesis text, not a generated id — `strategy_id` is the table's primary key. _Avoid_: assuming `strategy_id` is an opaque identifier; it is content-addressed.
+
+**Expansion** — dispatching an already-validated Strategy against additional tickers, on demand, ranked by the same candidate pool discovery uses. Creates a *new* Strategy per new symbol rather than overwriting the original — since `strategy_id` is the raw claim text and is the primary key, an expansion's `strategy_id` gets a `@SYMBOL` suffix to avoid colliding with (and silently replacing) the strategy's original row. The original symbol's Strategy keeps its bare claim-text id, never migrated. See ADR-0026. _Avoid_: assuming every Strategy is single-symbol forever, or that expansion is automatic — it's an on-demand tool, not a background loop.
+
+**Lifecycle status** — a Strategy's real-money standing: `paper` (default; simulated fills only) → `live` (graduated; trading real fills) → `halted` (demoted out of live on failure; resumes to `paper`, never straight back to `live`). Tracked in `StrategyLifecycle`. _Avoid_: calling `live` "graduated" as if it were a separate status — graduation *is* the paper→live transition, not a fourth state.
+
+**Fill** — one executed trade, simulated (`phase="paper"`) or real (`phase="live"`), recorded in `ForwardRecord` and tagged with the Strategy's `strategy_id` and symbol. The ground truth every performance number is computed from.
+
+**Confidence weight** — a continuous measure (not a pass/fail gate) of how much a Strategy's real Fills should be trusted, derived from `ForwardRecord.compute_expectancy_ci`/`compute_live_expectancy_ci` (mean P&L, 95% CI, trade count), phase-weighted so `live` Fills count more than `paper` Fills, and scaling toward full trust as the existing `is_sufficient` significance bar (≥30 trades, ≥30 distinct days) is approached rather than snapping to zero below it. Powers Expansion eligibility, Same-symbol composite selection, and the Tally. See ADR-0026. _Avoid_: treating `is_sufficient` as a hard gate on any of these — it never was one for this design; a low-trade Strategy still nudges, just weakly.
+
+**Similar-claim retrieval** — given a new claim, the top-5 nearest neighbors by embedding distance over past Strategies' claim text (their `strategy_id`, with any `@SYMBOL` Expansion suffix stripped first), stored in a Chroma collection the same way Long-term memory embeds facts. Runs before judging every new claim. See ADR-0026.
+
+**Tally** — the simple win/loss count over one claim's Similar-claim retrieval results (e.g. "3 of 5 similar past claims had positive Confidence weight") — the single aggregate both the judging prompt and the discovery-ranking bias read. _Avoid_: expanding this into per-component reasoning text; the design deliberately keeps it a plain count, not a summarized rationale.
+
+**Composite strategy** — a Strategy built by `unanimous`/`majority` vote over 2+ component Strategies' signals, via `mix_strategies`. Requires every component to share one symbol — the generated code evaluates all components against the same price data and votes element-wise, so this is not a validation nicety, it's the shape of the generated code. _Avoid_: assuming components can span symbols; a cross-symbol composite is a structurally different (and unbuilt) code shape, deliberately out of scope. See ADR-0026.
+
+**Same-symbol composite** — the auto-discovered case of a Composite strategy: the top-3 Confidence-weighted Strategies on one symbol, combined both `unanimous` and `majority`, whichever backtests better kept. On demand, not automatic. See ADR-0026.
+
+**Gauntlet** (`_run_gauntlet`) — the one dispatch pipeline every idea source (web discovery, book claims, Expansion, Composite strategy) converges through: judge the claim, generate strategy code, sandboxed-backtest it, and save it as a validated Strategy on success. _Avoid_: adding a second pipeline for a new idea source — every source, however it originates a claim, ends at the Gauntlet.
+
 ---
 
 ## Architecture
