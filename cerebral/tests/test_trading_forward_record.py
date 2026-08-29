@@ -340,6 +340,28 @@ def test_confidence_weight_mixed_paper_live():
     record.close()
 
 
+def test_confidence_weight_paper_and_live_differ():
+    """Paper and live means must be blended from their OWN phase's fills, not
+    from compute_expectancy_ci's blended-all-phases mean. Regression test for a
+    real bug found hand-verifying PR #938: compute_expectancy_ci queries every
+    fill regardless of phase, so using its mean as "paper_mean" silently double-
+    counts live fills' influence. This fails against that formula (would assert
+    2.5) and passes against the phase-filtered fix (1.33...)."""
+    record = ForwardRecord()
+    # 3 paper trades @ 0 pnl, 3 live trades @ +10 pnl -- deliberately different
+    # so a blended-mean bug is visible instead of masked.
+    for i in range(3):
+        record.add_fill("AAPL", "buy", 1.0, 100.0, pnl=0.0)
+    for i in range(3):
+        record.add_live_fill("AAPL", "buy", 1.0, 100.0, pnl=10.0)
+
+    w = record.compute_confidence_weight()
+    # true paper_mean=0, true live_mean=10, live weighted 2x, n=6 -> scale=0.2
+    expected = ((3 * 0.0 * 1 + 3 * 10.0 * 2) / (3 * 1 + 3 * 2)) * (6 / 30)
+    assert abs(w - expected) < 0.01
+    record.close()
+
+
 def test_confidence_weight_near_sufficiency_floor():
     """At 30 trades across 30 days, scale should cap at ~1.0, making weight ≈ raw expectancy."""
     record = ForwardRecord()

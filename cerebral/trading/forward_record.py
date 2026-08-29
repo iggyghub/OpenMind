@@ -255,24 +255,35 @@ class ForwardRecord:
     def compute_confidence_weight(self, strategy_id: str = "global") -> float:
         """Computes a continuous confidence weight for a strategy based on paper + live fills.
 
-        Reuses `compute_expectancy_ci` and `compute_live_expectancy_ci`.
+        Reuses `compute_live_expectancy_ci` for the live half. `compute_expectancy_ci`
+        is NOT reused for the paper half -- it queries every fill regardless of
+        `phase` (see its own docstring/implementation), so its mean is the blended
+        paper+live mean, not a paper-only one. Using it here would double-count
+        live fills' influence and mislabel the blend as "paper". Paper-only stats
+        are computed directly, phase-filtered, the same way compute_live_expectancy_ci
+        already does for the live side.
+
         Live results are weighted higher than paper results.
         Trade count scales the weight continuously toward the raw expectancy mean,
         never snapping to a hard 0 or 1 gate.
         Returns a float weight.
         """
-        paper_mean, _, _, _, paper_n, _ = self.compute_expectancy_ci(strategy_id)
         live_mean, _, _, _, live_n, _ = self.compute_live_expectancy_ci(strategy_id)
+
+        paper_rows = self._con.execute(
+            "SELECT pnl FROM forward_fills WHERE strategy_id = ? AND phase = 'paper'",
+            (strategy_id,),
+        ).fetchall()
+        paper_n = len(paper_rows)
+        paper_mean = float(np.mean([r["pnl"] for r in paper_rows])) if paper_n else 0.0
 
         if paper_n == 0 and live_n == 0:
             return 0.0
 
-        # Paper trades are the total minus the live subset
-        paper_trades = max(0, paper_n - live_n)
         live_weight = 2.0  # Live fills count double for confidence purposes
-        denom = paper_trades + live_n * live_weight
+        denom = paper_n + live_n * live_weight
 
-        weighted_mean = (paper_trades * paper_mean + live_n * live_mean * live_weight) / denom
+        weighted_mean = (paper_n * paper_mean + live_n * live_mean * live_weight) / denom
         # Continuous scaling: magnitude approaches raw expectancy as count hits the 30-trade floor
         scale = max(1e-4, min(1.0, (paper_n + live_n) / 30.0))
         return weighted_mean * scale
