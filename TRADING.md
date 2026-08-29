@@ -7,16 +7,17 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S40 -- #934 -- similar-claim retrieval + Tally. S38, S39
-  landed same day (S38: hand-fixed real bug; S39: clean, small hygiene
-  fixes only -- see Landed PRs). Both hit the sandbox's 600s full-suite
-  timeout at the merge gate -- confirmed environmental both times (scoped
-  test files pass clean locally in seconds), not a real hang; this
-  campaign's own self_dev_campaign tool writes `Status: blocked` into
-  this file on that gate result regardless of whether the substance is
-  fine, so **always check/reset this Status line after a hand-verified
-  landing** -- it does not reset itself. S38-S40 have no interdependency;
-  S41 needs S40; S42 needs S38+S39; S43 needs S38 only.
+- **Active:** S41 -- #935 -- wire the Tally into judge_idea/to_strategy
+  prompts + discovery_candidate_limit bias. S38-S40 all landed same day
+  (S38 and S40 had real hand-fixed bugs; S39 was clean -- see Landed
+  PRs). All three hit the sandbox's 600s full-suite timeout at the merge
+  gate, three in a row, confirmed each time not to reproduce locally --
+  treat a `tests_failed` gate result on this campaign as "check the real
+  diff by hand", not "the slice is broken". This campaign's own
+  self_dev_campaign tool writes `Status: blocked` into this file on that
+  gate result regardless of whether the substance is fine, so **always
+  check/reset this Status line after a hand-verified landing** -- it does
+  not reset itself. S42 needs S38+S39 (both done); S43 needs S38 (done).
 - **Model:** sonnet
 
 ## Queue
@@ -452,7 +453,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   would silently clobber the original symbol's row. Adds an @SYMBOL-
   suffix mint/strip convention for expansions only; the 121 existing rows
   are untouched, no schema migration.
-- [ ] S40 -- #934 -- Similar-claim retrieval + Tally: new Chroma
+- [x] S40 -- #934 -- Similar-claim retrieval + Tally: new Chroma
   collection (default embedding function, same pattern as
   cerebral/memory/manager.py), one entry per validated strategy
   (suffix-stripped claim text), top-5 nearest-neighbor query, and a
@@ -2868,6 +2869,47 @@ against this driver needs a fresh grill session first.
   (a stale Status line, not a real hang) was found. Reset by hand both
   times; added an explicit reminder in "Next slice" above so this
   doesn't repeat silently on S40+.
+
+- PR #940 -- S40 -- similar-claim retrieval + Tally, opened by
+  self_dev_campaign against the real diff (56d7c91, based cleanly on
+  master post-S39). Closed unmerged in favor of a hand-verified merge
+  (commit 7a9a666 fast-forwarded onto master). Third consecutive slice
+  today to hit the identical sandbox gate failure (`tests_failed`, 600s
+  full-suite timeout at ~6% collection) -- this diff has no plausible
+  connection to it (chromadb is new here; S38/S39 never touched it and
+  hit the exact same wall), so this is confidently an infrastructure/
+  environment issue, not a per-slice one. Flagged, not investigated
+  further this session -- the scoped test file and a 311-test broader
+  trading sweep both ran clean and fast locally every time, which is
+  what actually matters for landing.
+
+  Two real bugs found hand-verifying, both confirmed empirically before
+  fixing (not assumed from reading):
+  1. Two separate `chromadb.EphemeralClient()` instances in one process
+     share state via a fixed collection name -- proved directly (`c2 =
+     chromadb.EphemeralClient(); c2.get_or_create_collection("x").count()`
+     saw rows a completely separate `c1` had already inserted into the
+     same-named collection). The PR's own test suite hit this for real,
+     not hypothetically: `test_suffix_stripped_text_is_embedded` passed
+     alone, failed in file order, because the preceding test's `strat0/1/2`
+     rows leaked in. `.reset()` is disabled by default
+     (`AuthorizationError: Reset is disabled by config`), so the fix is a
+     unique `collection_name` per instance, not a client-level workaround
+     -- added as an injectable constructor param (default
+     `"trading_strategies"` for production, a unique per-test name in the
+     fixture).
+  2. `TradingStrategies` defaulted to a cwd-relative
+     `PersistentClient(path="./chroma_data/trading_strategies")` instead of
+     the `data_dir()`-anchored path every other persistent store in this
+     repo uses (`cerebral/memory/manager.py`'s `CHROMA_PATH`) -- real data
+     would have landed in a different place depending on where the process
+     happened to be launched from. Fixed to
+     `data_dir() / "chroma_trading_strategies"`.
+
+  Added `test_separate_instances_do_not_share_a_collection`, a regression
+  test for bug 1 that fails against the hardcoded name and passes with the
+  injectable one. 8/8 claim_store tests pass; issue #934 closed via the
+  fix commit.
 
 ## What's next
 
