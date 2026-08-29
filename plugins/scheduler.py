@@ -19,7 +19,7 @@ import pandas as pd
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.trading.live_tick import run_strategy_tick
-from cerebral.trading.strategy_store import StrategySpec, StrategyStore
+from cerebral.trading.strategy_store import StrategySpec, StrategyStore, mint_expansion_strategy_id
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.gauntlet import run_gauntlet
 from cerebral.trading.discovery import (
@@ -1519,50 +1519,77 @@ class SchedulerPlugin:
         provenance = store.render_provenance(version_row) if version_row is not None else "unknown"
         return ToolResult(content=json.dumps({"code": spec.code, "provenance": provenance}))
 
-    async def _expand_strategy_ticker(self, args: dict) -> ToolResult:
-        """S42: expand a validated strategy to new candidate tickers via the gauntlet."""
+    async def _expand_strategy_ticker(
+        self, args: dict, *, strategy_store=None, fetch=None, confidence_fn=None,
+    ) -> ToolResult:
+        """S42: expand a validated strategy to new candidate tickers via the gauntlet.
+
+        `strategy_store`/`fetch` are test-only injection seams, matching
+        `_run_gauntlet`'s own convention. `confidence_fn` likewise (defaults to
+        S38's real ForwardRecord.compute_confidence_weight) -- a strategy_id
+        string in, a float weight out.
+        """
         strategy_id = args.get("strategy_id", "").strip()
         if not strategy_id:
             return ToolResult(content="strategy_id is required", is_error=True)
 
-        store = StrategyStore()
+        store = strategy_store if strategy_store is not None else StrategyStore()
         spec = store.get(strategy_id)
         if spec is None:
             return ToolResult(content=f"No strategy '{strategy_id}' found", is_error=True)
 
-        confidence = getattr(spec, 'confidence', None) or getattr(spec, 'weight', 0)
-        if confidence is None or confidence <= 0:
+        if confidence_fn is not None:
+            confidence = confidence_fn(strategy_id)
+        else:
+            from cerebral.trading.forward_record import ForwardRecord
+            confidence = ForwardRecord().compute_confidence_weight(strategy_id=strategy_id)
+
+        if confidence <= 0:
             return ToolResult(
                 content=f"Strategy '{strategy_id}' has non-positive confidence weight ({confidence}). Cannot expand.",
                 is_error=True,
             )
 
+        version_row = store.get_current_version(strategy_id)
+        hypothesis = (version_row["hypothesis"] if version_row is not None else "") or f"Hypothesis from {strategy_id}"
+
         current_symbol = spec.symbol
         candidate_limit = self._settings.get("discovery_candidate_limit") or 3
-        
+
+        fetch_fn = fetch
+        if fetch_fn is None:
+            from cerebral.trading_data import fetch_ohlcv as fetch_fn
+
         # Filter out current symbol and rank using the same logic discovery already uses
         candidates = [t for t in _KNOWN_TICKERS if t != current_symbol]
-        ranked_candidates = rank_for_day_trading(candidates)
+        ranked_candidates = rank_for_day_trading(candidates, fetch_fn)
         candidates = ranked_candidates[:candidate_limit]
 
         results = []
         for candidate in candidates:
-            new_id = f"{strategy_id}@{candidate}"
+            new_id = mint_expansion_strategy_id(strategy_id, candidate)
             gauntlet_args = {
                 "code": spec.code,
                 "symbol": candidate,
-                "hypothesis": spec.hypothesis or f"Expanded from {strategy_id} for {candidate}",
+                "hypothesis": hypothesis,
                 "provenance": f"Expanded from {strategy_id} for {candidate}",
             }
-            result = await self._run_gauntlet(
-                gauntlet_args, 
-                strategy_store=store, 
-                strategy_id=new_id,
-            )
+            try:
+                result = await self._run_gauntlet(
+                    gauntlet_args,
+                    strategy_store=store,
+                    fetch=fetch,
+                    origin="discovered",
+                    strategy_id=new_id,
+                )
+                verdict = json.loads(result.content).get("verdict", "ERROR") if not result.is_error else "ERROR"
+            except Exception as exc:
+                verdict = "ERROR"
+                logger.exception("[scheduler] expand_strategy_ticker gauntlet dispatch failed for %s", candidate)
             results.append({
-                "ticker": candidate, 
-                "new_id": new_id, 
-                "verdict": json.loads(result.content).get("verdict", "ERROR")
+                "ticker": candidate,
+                "new_id": new_id,
+                "verdict": verdict,
             })
 
         return ToolResult(content=json.dumps({

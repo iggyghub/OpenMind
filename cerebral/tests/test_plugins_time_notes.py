@@ -334,6 +334,8 @@ class TestSchedulerPlugin:
             # S37e (hand-built): read-only fetch for the Overview tab's
             # collapsible archive history section.
             "get_paper_archive_fills",
+            # S42 (#936)
+            "expand_strategy_ticker",
         }
 
     # -----------------------------------------------------------------------
