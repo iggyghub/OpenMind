@@ -1001,8 +1001,15 @@ class SelfDevPlugin:
             status = parse_driver_status(text)
 
             if status in ("done", "blocked"):
+                reason = None
+                for line in text.splitlines():
+                    m = re.match(r'^(?:#+\s*)?Status:\s*(\S+)(?:\s*--\s*(.*))\s*$', line, re.IGNORECASE)
+                    if m:
+                        reason = m.group(2).strip() if m.group(2) else None
+                        break
                 return ToolResult(content=json.dumps({
                     "status": status,
+                    "reason": reason,
                     "slices_run": len(results),
                     "results": results,
                 }))
