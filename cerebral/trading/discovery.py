@@ -340,12 +340,23 @@ async def process_idea(
 
     # S41: discovery candidate limit bias
     tally_success, tally_pos, tally_total = _run_tally(idea.claim_text)
+    candidate_limit_before = candidate_limit
     if tally_success and tally_total > 0:
         pct = tally_pos / tally_total
         if pct >= 0.6:
             candidate_limit += 1
         elif pct <= 0.4:
             candidate_limit = max(1, candidate_limit - 1)
+
+    if tally_success and record_activity_fn is not None:
+        await record_activity_fn("activity", {
+            "source": "trading_tally",
+            "claim": idea.claim_text,
+            "positive": tally_pos,
+            "total": tally_total,
+            "candidate_limit_before": candidate_limit_before,
+            "candidate_limit_after": candidate_limit,
+        })
 
     results: List[dict] = []
     for candidate in watchlist.prefilter_candidates(idea, limit=candidate_limit, rank_fn=rank_fn):
