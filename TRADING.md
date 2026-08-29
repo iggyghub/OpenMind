@@ -7,12 +7,16 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S39 -- #933 -- strategy identity fix. S38 landed same day
-  (hand-fixed real bug, see Landed PRs). S38-S40 have no interdependency
-  and can land in any order; S41 needs S40; S42 needs S38+S39; S43 needs
-  S38 only. Fired via self_dev_campaign, hand-verified per slice same as
-  every prior slice in this campaign -- see "Landed PRs" for the account
-  of what self_dev actually got right vs. wrong on each one.
+- **Active:** S40 -- #934 -- similar-claim retrieval + Tally. S38, S39
+  landed same day (S38: hand-fixed real bug; S39: clean, small hygiene
+  fixes only -- see Landed PRs). Both hit the sandbox's 600s full-suite
+  timeout at the merge gate -- confirmed environmental both times (scoped
+  test files pass clean locally in seconds), not a real hang; this
+  campaign's own self_dev_campaign tool writes `Status: blocked` into
+  this file on that gate result regardless of whether the substance is
+  fine, so **always check/reset this Status line after a hand-verified
+  landing** -- it does not reset itself. S38-S40 have no interdependency;
+  S41 needs S40; S42 needs S38+S39; S43 needs S38 only.
 - **Model:** sonnet
 
 ## Queue
@@ -442,7 +446,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   compute_live_expectancy_ci (no new metric). is_sufficient is a scaling
   input, not a hard gate -- a low-trade strategy still produces a small
   nonzero weight. No consumers yet, computation + tests only.
-- [ ] S39 -- #933 -- Strategy identity fix: strategy_id is the literal
+- [x] S39 -- #933 -- Strategy identity fix: strategy_id is the literal
   claim text and strategy_specs' PRIMARY KEY (StrategyStore.save() does
   INSERT OR REPLACE) -- expanding to a new ticker without a distinct id
   would silently clobber the original symbol's row. Adds an @SYMBOL-
@@ -2825,6 +2829,45 @@ against this driver needs a fresh grill session first.
   regression test that fails against the old formula and passes against
   the fix. 21/21 forward_record tests pass; issue #932 closed via the
   fix commit.
+
+- PR #939 -- S39 -- strategy identity fix, opened by self_dev_campaign
+  against the real diff (e62663f, based cleanly on master post-S38).
+  Closed unmerged in favor of a hand-verified merge (commit 3927331
+  fast-forwarded onto master) -- same pattern as S38/#938, including the
+  exact same sandbox gate failure: `tests_failed`, a 600s full-suite
+  timeout at ~6% collection. Same as S37a and S38, did not reproduce
+  locally -- the scoped `test_trading_strategy_store.py` run (16 tests)
+  passed clean in ~2s. Two consecutive same-day, same-symptom timeouts
+  makes this look less like one-off flakiness and more like a real
+  property of the sandboxed full-suite run under this machine's current
+  load (the always-on discovery loop) -- worth investigating on its own
+  if a third slice hits it, but not blocking as long as scoped local
+  runs keep confirming the real diff is fine.
+
+  Unlike S38, the implementation itself was correct as generated:
+  `mint_expansion_strategy_id`/`strip_expansion_suffix` round-trip
+  correctly, a literal `@` inside a claim survives stripping unmangled,
+  and a bare vs. `@SYMBOL`-suffixed id for the same base claim save as
+  two distinct rows with no collision -- all verified directly, not just
+  from passing tests. Two small hygiene fixes only: a mid-file `import
+  re` moved to the module's normal import block, and
+  `strip_expansion_suffix`'s docstring made a raw string (it contains
+  `\S`, firing a `SyntaxWarning` as a plain string). Issue #933 closed
+  via the fix commit.
+
+  **Also found while landing this:** `self_dev_campaign` writes
+  `Status: blocked` into this file's own `## Status:` line whenever the
+  sandbox gate reports `tests_failed`, and nothing ever resets it back --
+  including after a hand-verified landing fixes the real problem. S38's
+  landing left it stuck at `blocked` silently; the very next campaign
+  call for S39 correctly (per its own code) refused to run anything
+  against a driver file that still said blocked, returning
+  `slices_run: 0` with no diagnostic reason attached (that early-return
+  branch in `plugins/self_dev.py`'s `campaign()` doesn't include one).
+  Cost about 40 minutes of a stuck-looking wait before the real cause
+  (a stale Status line, not a real hang) was found. Reset by hand both
+  times; added an explicit reminder in "Next slice" above so this
+  doesn't repeat silently on S40+.
 
 ## What's next
 
