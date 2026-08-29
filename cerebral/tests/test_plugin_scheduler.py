@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from plugins.scheduler import SchedulerPlugin
+from cerebral.mcp.orchestrator import ToolResult
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
@@ -1652,6 +1653,114 @@ def test_resume_strategy_goes_back_to_paper(tmp_path):
 
     assert not result.is_error, result.content
     assert lifecycle.get_state("s1").status == "paper"
+
+
+# ── S43 (#932 blocked): auto_combine_strategies ──────────────────────────────
+
+async def test_auto_combine_strategies_fewer_than_2_eligible(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
+    store.save(StrategySpec("S2", "AAPL", ALWAYS_LONG, qty=1.0))
+
+    monkeypatch.setattr(
+        "cerebral.trading.forward_record.ForwardRecord.compute_confidence_weight",
+        lambda self, strategy_id: 0.1 if "S1" in strategy_id else 0.0
+    )
+
+    result = await plugin._run_auto_combine_strategies({"symbol": "AAPL"}, strategy_store=store)
+    assert "not_enough_strategies" in result.content
+    assert "eligible_count" in result.content
+    assert json.loads(result.content)["eligible_count"] == 1
+
+
+async def test_auto_combine_strategies_selects_top_3_by_weight(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("S_low", "AAPL", ALWAYS_LONG, qty=1.0))
+    store.save(StrategySpec("S_mid", "AAPL", ALWAYS_LONG, qty=1.0))
+    store.save(StrategySpec("S_high", "AAPL", ALWAYS_LONG, qty=1.0))
+    store.save(StrategySpec("S_neg", "AAPL", ALWAYS_LONG, qty=1.0))
+
+    def mock_conf(strategy_id):
+        if "high" in strategy_id: return 0.9
+        if "mid" in strategy_id: return 0.5
+        if "low" in strategy_id: return 0.1
+        return -0.1
+
+    monkeypatch.setattr(
+        "cerebral.trading.forward_record.ForwardRecord.compute_confidence_weight",
+        mock_conf
+    )
+
+    mix_calls = []
+    async def fake_mix(args, **kwargs):
+        mix_calls.append(args)
+        return ToolResult(content=json.dumps({"verdict": "VALIDATED", "total_return": 10.0}))
+
+    plugin._run_mix_strategies = fake_mix
+    result = await plugin._run_auto_combine_strategies({"symbol": "AAPL"}, strategy_store=store)
+
+    assert len(mix_calls) == 2
+    ids = [c["component_ids"] for c in mix_calls]
+    assert ids[0] == ["S_high", "S_mid", "S_low"]
+    assert ids[1] == ["S_high", "S_mid", "S_low"]
+
+
+async def test_auto_combine_strategies_keeps_better_mode(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
+    store.save(StrategySpec("S2", "AAPL", ALWAYS_LONG, qty=1.0))
+
+    monkeypatch.setattr(
+        "cerebral.trading.forward_record.ForwardRecord.compute_confidence_weight",
+        lambda self, strategy_id: 0.5
+    )
+
+    mix_results = {
+        "unanimous": ToolResult(content=json.dumps({"verdict": "VALIDATED", "total_return": 5.0})),
+        "majority": ToolResult(content=json.dumps({"verdict": "VALIDATED", "total_return": 12.0})),
+    }
+
+    async def fake_mix(args, **kwargs):
+        return mix_results[args.get("mode")]
+
+    plugin._run_mix_strategies = fake_mix
+    result = await plugin._run_auto_combine_strategies({"symbol": "AAPL"}, strategy_store=store)
+
+    data = json.loads(result.content)
+    assert data["winner_mode"] == "majority"
+    assert data["winner_return"] == 12.0
+    assert data["loser_mode"] == "unanimous"
+
+
+async def test_auto_combine_strategies_prefers_validated_over_return(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
+    store.save(StrategySpec("S2", "AAPL", ALWAYS_LONG, qty=1.0))
+
+    monkeypatch.setattr(
+        "cerebral.trading.forward_record.ForwardRecord.compute_confidence_weight",
+        lambda self, strategy_id: 0.5
+    )
+
+    mix_results = {
+        "unanimous": ToolResult(content=json.dumps({"verdict": "VALIDATED", "total_return": 5.0})),
+        "majority": ToolResult(content=json.dumps({"verdict": "UNVALIDATED", "total_return": 50.0})),
+    }
+
+    async def fake_mix(args, **kwargs):
+        return mix_results[args.get("mode")]
+
+    plugin._run_mix_strategies = fake_mix
+    result = await plugin._run_auto_combine_strategies({"symbol": "AAPL"}, strategy_store=store)
+
+    data = json.loads(result.content)
+    # Unvalidated majority should not win even with higher return
+    assert data["winner_mode"] == "unanimous"
+    assert data["winner_verdict"] == "VALIDATED"
 
 
 async def test_halt_and_resume_strategy_are_reachable_via_call_tool(tmp_path):

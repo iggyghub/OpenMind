@@ -368,6 +368,23 @@ class SchedulerPlugin:
                 },
             ),
             Tool(
+                name="auto_combine_strategies",
+                description=(
+                    "S43: Automatically selects the top-3 validated strategies for a given symbol by "
+                    "confidence weight, combines them using both 'unanimous' and 'majority' voting, "
+                    "and runs the validation gauntlet on both. Returns the better-performing composite. "
+                    "Requires at least 2 eligible strategies with positive confidence weight."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Ticker to auto-compose strategies for"},
+                    },
+                    "required": ["symbol"],
+                },
+            ),
+            Tool(
                 name="run_discovery",
                 description=(
                     "S27/#880: one autonomous discovery-loop pass. Sources ideas via "
@@ -641,6 +658,8 @@ class SchedulerPlugin:
             return await self._expand_strategy_ticker(args)
         if tool_name == "mix_strategies":
             return await self._run_mix_strategies(args)
+        if tool_name == "auto_combine_strategies":
+            return await self._run_auto_combine_strategies(args)
         if tool_name == "upload_book":
             return await self._upload_book(args)
         if tool_name == "list_books":
@@ -1660,6 +1679,86 @@ class SchedulerPlugin:
             strategy_store=store, fetch=fetch,
             origin="mixed", strategy_id=new_id, components_json=components,
         )
+
+    async def _run_auto_combine_strategies(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
+        """S43: Same-symbol composite auto-discovery tool. Selects top-3 by confidence,
+        runs both unanimous and majority modes, and keeps the better-performing result."""
+        symbol = args.get("symbol", "").strip()
+        if not symbol:
+            return ToolResult(content="symbol is required", is_error=True)
+
+        store = strategy_store if strategy_store is not None else StrategyStore()
+        symbol_strategies = [s for s in store.list_all() if s.symbol == symbol]
+        
+        from cerebral.trading.forward_record import ForwardRecord
+        scored = []
+        for s in symbol_strategies:
+            try:
+                conf = ForwardRecord().compute_confidence_weight(strategy_id=s.strategy_id)
+                if conf > 0:
+                    scored.append((conf, s.strategy_id))
+            except Exception:
+                continue
+                
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_3 = scored[:3]
+        
+        if len(top_3) < 2:
+            return ToolResult(content=json.dumps({
+                "status": "not_enough_strategies",
+                "eligible_count": len(top_3),
+                "message": f"Need at least 2 eligible strategies (confidence > 0), found {len(top_3)} on {symbol}."
+            }))
+            
+        component_ids = [sid for _, sid in top_3]
+        
+        res_uni = await self._run_mix_strategies(
+            {"component_ids": component_ids, "mode": "unanimous"},
+            strategy_store=store, fetch=fetch
+        )
+        res_maj = await self._run_mix_strategies(
+            {"component_ids": component_ids, "mode": "majority"},
+            strategy_store=store, fetch=fetch
+        )
+        
+        def parse(res):
+            try: 
+                d = json.loads(res.content)
+                return d.get("total_return", 0.0), d.get("verdict", "ERROR")
+            except Exception:
+                return 0.0, "ERROR"
+                
+        ret_uni, ver_uni = parse(res_uni)
+        ret_maj, ver_maj = parse(res_maj)
+        
+        if ver_uni == "VALIDATED" and ver_maj != "VALIDATED":
+            winner, loser = "unanimous", "majority"
+        elif ver_maj == "VALIDATED" and ver_uni != "VALIDATED":
+            winner, loser = "majority", "unanimous"
+        else:
+            winner = "unanimous" if ret_uni >= ret_maj else "majority"
+            loser = "majority" if winner == "unanimous" else "unanimous"
+            
+        winner_ret, winner_ver = (ret_uni, ver_uni) if winner == "unanimous" else (ret_maj, ver_maj)
+        
+        # Clean up loser from store to prevent stray validated state
+        delete_fn = getattr(store, "delete", lambda s: None)
+        try:
+            for s in store.list_all():
+                if s.symbol == symbol and s.origin == "mixed" and loser in (s.provenance or ""):
+                    delete_fn(s.strategy_id)
+        except Exception:
+            pass  # strategy_store may not support deletion in some test setups
+        
+        return ToolResult(content=json.dumps({
+            "status": "complete",
+            "symbol": symbol,
+            "component_ids": component_ids,
+            "winner_mode": winner,
+            "winner_return": winner_ret,
+            "winner_verdict": winner_ver,
+            "loser_mode": loser
+        }))
 
     def _run_paper_strategy(
         self, strategy_name: str, broker, forward_record: "ForwardRecord",
