@@ -1810,7 +1810,14 @@ async def test_auto_combine_strategies_deletes_the_losing_composite(tmp_path, mo
 
 
 async def test_run_gauntlet_returns_explicit_strategy_id(tmp_path, monkeypatch):
-    """S48: _run_gauntlet returns the strategy_id passed to it."""
+    """S48: _run_gauntlet returns the strategy_id passed to it.
+
+    strategy_id is a real keyword parameter of _run_gauntlet itself (see
+    _run_mix_strategies' own call site: strategy_id=new_id), not a key
+    inside the args dict -- the PR's own version of this test put it in
+    args, which _run_gauntlet never reads, so it silently exercised the
+    derived-from-hypothesis path instead of the explicit one it claimed to
+    test. Fixed to match the function's real calling convention."""
     plugin = _plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
@@ -1818,8 +1825,8 @@ async def test_run_gauntlet_returns_explicit_strategy_id(tmp_path, monkeypatch):
         return _trend_prices()
 
     result = await plugin._run_gauntlet(
-        {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "Test", "strategy_id": "explicit_id"},
-        strategy_store=store, fetch=fetch,
+        {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "Test"},
+        strategy_store=store, fetch=fetch, strategy_id="explicit_id",
     )
     assert not result.is_error
     data = json.loads(result.content)

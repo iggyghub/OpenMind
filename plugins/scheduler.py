@@ -922,7 +922,11 @@ class SchedulerPlugin:
             "verdict": card.verdict,
             "sharpe": card.sharpe,
             "total_return": card.total_return,
-            "strategy_id": card.strategy_name,
+            # StrategyCard has no strategy_name field -- mirror the exact same
+            # derivation cerebral.trading.gauntlet.run_gauntlet uses internally
+            # (strategy_name = strategy_id or hypothesis or provenance) so the
+            # reported value matches whatever store.save() actually used.
+            "strategy_id": strategy_id or hypothesis or provenance,
             "gates": [
                 {"name": g.name, "passed": bool(g.passed), "details": g.details}
                 for g in card.gates
