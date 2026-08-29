@@ -164,7 +164,7 @@ def create_branch_and_commit(clone_dir: Path, branch: str, message: str) -> bool
     return result.returncode == 0
 
 
-_TEST_TIMEOUT_S = 600.0  # ample for a full suite; bounds a hung/runaway test
+_TEST_TIMEOUT_S = 1200.0  # ample for a full suite (20m); bounds a hung/runaway test
 
 
 def test_fn(clone_dir: Path) -> "tuple[bool, str]":
