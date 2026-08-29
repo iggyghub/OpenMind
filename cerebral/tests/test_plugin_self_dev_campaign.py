@@ -419,6 +419,9 @@ async def test_campaign_done_status_short_circuits(tmp_path):
     data = json.loads(result.content)
     assert data["status"] == "done"
     assert data["slices_run"] == 0
+    # A bare "Status: done" (no " -- reason" suffix) must not crash the
+    # reason-extraction regex -- no match, no exception, reason stays None.
+    assert data.get("reason") is None
 
 
 async def test_campaign_blocked_status_short_circuits(tmp_path):
@@ -430,6 +433,28 @@ async def test_campaign_blocked_status_short_circuits(tmp_path):
     data = json.loads(result.content)
     assert data["status"].startswith("blocked")
     assert data["slices_run"] == 0
+    # 2026-08-29 (#952): a stale "blocked" driver from an earlier gate
+    # failure used to short-circuit with zero diagnostic info, indistinguishable
+    # from a hang -- cost a real ~40 minute detour investigating a suspected
+    # event-loop stall (see TRADING.md's S38/S39 Landed PRs). The reason must
+    # now be surfaced, matching every other blocked-return branch in this file.
+    assert data["reason"] == "PR #900 escalated"
+
+
+async def test_campaign_blocked_status_with_no_reason_does_not_crash(tmp_path):
+    """A bare 'Status: blocked' with no ' -- reason' suffix (no one has ever
+    written one by hand, but nothing prevents it) must not raise -- the
+    reason-extraction regex requires the '--' separator to match at all, so
+    it simply finds nothing and reason stays None, same as the done case."""
+    driver = tmp_path / "BOOKS.md"
+    bare_blocked = _DRIVER_BOOKS.replace("## Status: ready", "## Status: blocked")
+    driver.write_text(bare_blocked, encoding="utf-8")
+    plugin = _make_plugin(tmp_path, [])
+    result = await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver)})
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["status"] == "blocked"
+    assert data.get("reason") is None
 
 
 async def test_campaign_auto_merge_advances_and_loops(tmp_path):
