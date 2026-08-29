@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, List, Optional
 
 from cerebral.paths import data_dir
-from cerebral.trading_ideas import Idea
+from cerebral.trading_ideas import Idea, _run_tally
 
 logger = logging.getLogger(__name__)
 
@@ -337,6 +337,15 @@ async def process_idea(
     if not accepted:
         logger.info("[discovery] rejected idea (%s): %s", idea.source_url, reason)
         return []
+
+    # S41: discovery candidate limit bias
+    tally_success, tally_pos, tally_total = _run_tally(idea.claim_text)
+    if tally_success and tally_total > 0:
+        pct = tally_pos / tally_total
+        if pct >= 0.6:
+            candidate_limit += 1
+        elif pct <= 0.4:
+            candidate_limit = max(1, candidate_limit - 1)
 
     results: List[dict] = []
     for candidate in watchlist.prefilter_candidates(idea, limit=candidate_limit, rank_fn=rank_fn):

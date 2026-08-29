@@ -8,6 +8,12 @@ from typing import List, Optional, Callable, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+
+def _run_tally(claim_text: str) -> tuple[bool, int, int]:
+    """Stub for S40's retrieval + tally. Returns (success, positive_count, total_count).
+    Tests stub this function to control retrieval outcomes."""
+    return False, 0, 0
+
 _CODE_FENCE_RE = re.compile(r"```(?:python)?\s*\n?(.*?)```", re.DOTALL)
 
 
@@ -125,12 +131,17 @@ async def to_strategy(idea: Idea, llm: Optional[Any] = None, router=None) -> str
     """
     claim = idea.author_claim_text or f"Author claims: {idea.claim_text}"
 
+    tally_success, tally_pos, tally_total = _run_tally(idea.claim_text)
+    tally_sentence = ""
+    if tally_success and tally_total > 0:
+        tally_sentence = f" Tally: {tally_total} similar past claims: {tally_pos} had positive real-world performance, {tally_total - tally_pos} did not."
+
     prompt = (
         "You are a rigorous quant researcher. Generate a Python strategy function "
         "that implements the following hypothesis.\n"
         "HONESTY RULE: The code must treat the claim as a testable hypothesis, "
         "not as market fact. Never assert 'X is true'. Encode logic that tests 'X'.\n"
-        "Claim: {claim}\n\n"
+        f"Claim: {claim}{tally_sentence}\n\n"
         # The live dispatcher's contract, spelled out -- see
         # cerebral/trading/live_tick.py. Left vague, generated code read
         # data.get('close') (lowercase) and produced no signals at all.
@@ -144,7 +155,7 @@ async def to_strategy(idea: Idea, llm: Optional[Any] = None, router=None) -> str
         "Return ONLY valid Python code for:\n"
         "def strategy(data) -> signals:\n"
         "    ..."
-    ).format(claim=claim)
+    )
 
     if llm:
         return _extract_code(llm.generate(prompt))
@@ -175,6 +186,11 @@ async def judge_idea(idea: Idea, llm: Optional[Any] = None, router=None) -> "tup
     """
     claim = idea.author_claim_text or f"Author claims: {idea.claim_text}"
 
+    tally_success, tally_pos, tally_total = _run_tally(idea.claim_text)
+    tally_sentence = ""
+    if tally_success and tally_total > 0:
+        tally_sentence = f" Tally: {tally_total} similar past claims: {tally_pos} had positive real-world performance, {tally_total - tally_pos} did not."
+
     prompt = (
         "You are a skeptical quant researcher screening trading hypotheses "
         "before expensive backtesting. A TESTABLE claim names a specific, "
@@ -182,7 +198,7 @@ async def judge_idea(idea: Idea, llm: Optional[Any] = None, router=None) -> "tup
         "threshold, an event reaction) that could be encoded as "
         "`def strategy(data) -> signals`. A VAGUE claim makes no falsifiable "
         "prediction (e.g. 'the market is efficient', 'good companies go up').\n"
-        f"Claim: {claim}\n\n"
+        f"Claim: {claim}{tally_sentence}\n\n"
         "Respond with exactly one line: either 'ACCEPT' or "
         "'REJECT: <one-sentence reason>'."
     )
