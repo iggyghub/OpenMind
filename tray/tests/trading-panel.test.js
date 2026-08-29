@@ -180,6 +180,62 @@ describe('renderTradingUpdate trade-count badge (S32/#898)', () => {
   });
 });
 
+// S46b (2026-08-29): S46a added confidence_weight/is_expansion to the
+// broadcast (built on S38's compute_confidence_weight / S39's expansion
+// suffix) -- this campaign's own observability follow-up to the S38-S43
+// learning-loop queue, since neither was surfaced anywhere before.
+describe('renderTradingUpdate confidence-weight + expansion badges (S46b)', () => {
+  test('shows the confidence weight, styled positive', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const strategies = [{ ...TWO_STRATEGIES[0], confidence_weight: 0.42 }];
+      TradingPanel.renderTradingUpdate({ positions: strategies, alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('0.42');
+      expect(mount.innerHTML).toContain('confidence-badge positive');
+    });
+  });
+
+  test('a negative confidence weight is styled negative, not positive', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const strategies = [{ ...TWO_STRATEGIES[0], confidence_weight: -0.15 }];
+      TradingPanel.renderTradingUpdate({ positions: strategies, alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('-0.15');
+      expect(mount.innerHTML).toContain('confidence-badge negative');
+      expect(mount.innerHTML).not.toContain('confidence-badge positive');
+    });
+  });
+
+  test('a missing confidence_weight field defaults to 0.00 neutral rather than rendering undefined', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: TWO_STRATEGIES, alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('0.00');
+      expect(mount.innerHTML).toContain('confidence-badge neutral');
+      expect(mount.innerHTML).not.toContain('undefined');
+    });
+  });
+
+  test('an expanded strategy (is_expansion: true) shows the expansion badge', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const strategies = [{ ...TWO_STRATEGIES[0], is_expansion: true }];
+      TradingPanel.renderTradingUpdate({ positions: strategies, alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('expansion-badge');
+      expect(mount.innerHTML).toContain('expanded');
+    });
+  });
+
+  test('a non-expansion strategy shows no expansion badge', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const strategies = [{ ...TWO_STRATEGIES[0], is_expansion: false }];
+      TradingPanel.renderTradingUpdate({ positions: strategies, alerts: [] }, mount);
+      expect(mount.innerHTML).not.toContain('expansion-badge');
+    });
+  });
+});
+
 describe('buildHaltStrategyEvent / buildResumeStrategyEvent (S32/#898)', () => {
   test('halt_strategy carries the strategy id', () => {
     expect(TradingPanel.buildHaltStrategyEvent('my strategy@v1')).toEqual({

@@ -448,9 +448,15 @@ function renderTradingUpdate(data, container, sendEventFn) {
         <ul>
           ${state.strategies.map((s, i) => {
             const trades = s.live_trades || 0;
+            // S46b: confidence_weight/is_expansion added to the broadcast by
+            // S46a -- optional-chained since an older cached broadcast (or a
+            // strategy predating S38) may not carry them yet.
+            const cw = typeof s.confidence_weight === 'number' ? s.confidence_weight : 0;
+            const cwClass = cw > 0 ? 'positive' : cw < 0 ? 'negative' : 'neutral';
+            const expansionBadge = s.is_expansion ? '<span class="expansion-badge">expanded</span> ' : '';
             return `
             <li class="${i === state.selectedIdx ? 'selected' : ''}" data-idx="${i}">
-              ${s.name} <span class="status-badge">${s.status.toUpperCase()}</span> <span class="trade-count-badge">${trades} trade${trades === 1 ? '' : 's'}</span>
+              ${expansionBadge}${s.name} <span class="status-badge">${s.status.toUpperCase()}</span> <span class="trade-count-badge">${trades} trade${trades === 1 ? '' : 's'}</span> <span class="confidence-badge ${cwClass}">${cw.toFixed(2)}</span>
             </li>
           `;
           }).join('')}
@@ -549,6 +555,11 @@ function _injectTradingPanelStyles() {
     .save-strategy-btn:hover { background: #2980b9; }
     .halt-resume-btn { margin-top: 8px; padding: 6px 12px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; }
     .trade-count-badge { font-size: 0.7em; padding: 2px 5px; border-radius: 3px; background: #e0e0e0; margin-left: 6px; }
+    .confidence-badge { font-size: 0.7em; padding: 2px 5px; border-radius: 3px; margin-left: 6px; font-weight: bold; }
+    .confidence-badge.positive { background: #e8f5e9; color: #2e7d32; }
+    .confidence-badge.negative { background: #ffebee; color: #c62828; }
+    .confidence-badge.neutral { background: #eee; color: #666; }
+    .expansion-badge { font-size: 0.7em; padding: 2px 5px; border-radius: 3px; background: #ede7f6; color: #5e35b1; }
     .fill-list, .alerts-box { margin-top: 16px; }
     .fills-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
     .fills-table th, .fills-table td { padding: 4px 6px; border: 1px solid #eee; text-align: left; }
