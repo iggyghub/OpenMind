@@ -3,18 +3,17 @@
 Design: ADR-0026 (docs/adr/0026-trading-feedback-loop.md), grill closed 2026-08-29.
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: active
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S48 -- #955 -- `_run_gauntlet` returns its own
-  `strategy_id` in its result dict, instead of every caller (S43 already
-  needed one) building its own workaround. Last slice in this queue. S47
-  landed the same way (auto-merged clean, no timeout hit -- the sandbox
-  timeout raise + the `signals` NameError fix, both landed today as
-  standalone infra issues #951/#953, appear to already be helping: this
-  session's test sweeps went from ~75 tests/min under load to ~207
-  tests/min after). See Landed PRs for S47's account.
+- **Active:** none -- S47/S48 (the hand-review follow-ups from S38/S43)
+  both landed 2026-08-29, closing out the whole learning-loop arc
+  started by the morning's grill. See Landed PRs for the full account,
+  including S48's real bug: `_run_gauntlet`'s own generated
+  `strategy_id` addition referenced a field that didn't exist on
+  `StrategyCard` at all, which would have crashed every single
+  `_run_gauntlet` call had it landed as generated.
 - **Model:** sonnet
 
 ## Queue
@@ -496,7 +495,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   compute_paper_expectancy_ci mirroring the existing _live_ methods;
   refactor compute_confidence_weight (S38) to use it instead of its own
   inline SQL. No interdependency.
-- [ ] S48 -- #955 -- _run_gauntlet returns its own strategy_id in its
+- [x] S48 -- #955 -- _run_gauntlet returns its own strategy_id in its
   result dict (explicit or internally-derived); simplify
   _run_mix_strategies' own S43-added wrapper now that the underlying
   method does it directly. No interdependency.
@@ -3209,6 +3208,56 @@ against this driver needs a fresh grill session first.
   stayed in sync. S47 (above) is the first trading slice fired after all
   three infra fixes landed, and needed no timeout retry -- early
   supporting evidence, not yet conclusive over a full session.
+
+- PR #960 -- S48 -- `_run_gauntlet` returns its own `strategy_id`. The
+  last slice of the whole 2026-08-29 arc. Opened by self_dev_campaign
+  against the real diff (790df0c, based cleanly on master post-S47).
+  Closed unmerged in favor of a hand-verified merge (commit ff420a8
+  fast-forwarded onto master). Hit the sandbox timeout again despite
+  #951/#953 -- the reduction in contention is real but partial, this
+  session's evidence is not conclusive that it's fully resolved.
+
+  **A severe bug, worse than any single-feature gap today:**
+  `"strategy_id": card.strategy_name` referenced a field that does not
+  exist on `StrategyCard` at all (real fields: hypothesis/provenance/
+  gates/equity_curve/sharpe/total_return/verdict/
+  survivorship_bias_caveat -- no `strategy_name`). This is not a
+  narrow-feature miss -- `_run_gauntlet` is the one convergence point
+  every idea source in this entire campaign dispatches through
+  (discovery, book ingestion, mix_strategies, expand_strategy_ticker,
+  auto_combine_strategies). Had this landed as generated, it would have
+  crashed every single successful gauntlet run, validated or not, system-
+  wide. Confirmed by running the PR's own 2 new tests locally: both
+  failed immediately with `AttributeError: 'StrategyCard' object has no
+  attribute 'strategy_name'` -- the sandbox gate's own "tests_failed"
+  verdict this time may genuinely have reflected this real failure, not
+  just the usual timeout (its truncated dot-percentage output looks the
+  same either way, impossible to tell apart without running locally).
+
+  Fixed by deriving the value the same way `cerebral.trading.gauntlet.
+  run_gauntlet` does internally (`strategy_name = strategy_id or
+  hypothesis or provenance`) directly in `_run_gauntlet`'s own return,
+  using the `strategy_id`/`hypothesis`/`provenance` locals already in
+  scope -- no new `StrategyCard` field needed. **A second, independent
+  bug in the PR's own test:** `test_run_gauntlet_returns_explicit_
+  strategy_id` embedded `strategy_id` inside the `args` dict instead of
+  passing it as `_run_gauntlet`'s real `strategy_id=` keyword parameter
+  (the actual convention every real caller uses, e.g.
+  `_run_mix_strategies`' own `strategy_id=new_id`) -- so even before the
+  `AttributeError`, this test was silently exercising the derived-from-
+  hypothesis path while claiming to test the explicit one. Corrected to
+  match the real calling convention. The `_run_mix_strategies`
+  simplification (dropping S43's own JSON-reparse wrapper, now
+  redundant) was correct as generated, no changes needed there. 117-test
+  scoped sweep + 454-test broader trading/scheduler sweep both clean.
+  Issue #955 closed via the fix commit.
+
+  **The full 2026-08-29 arc is now complete: the grill (ADR-0026),
+  S38-S43 (the feedback loop itself), S44-S46b (making it visible), and
+  S47/S48 (hand-review follow-ups) -- 10 slices plus 3 standalone infra
+  fixes, all landed the same day.** TRADING.md's queue is empty again;
+  see "What's next" below for what's genuinely left (live-verification,
+  cross-symbol composites).
 
 ## What's next
 
