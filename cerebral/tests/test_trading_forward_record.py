@@ -66,6 +66,55 @@ def test_compute_expectancy_ci():
     record.close()
 
 
+def test_compute_live_expectancy_ci():
+    """S47: neither compute_live_expectancy_ci nor compute_paper_expectancy_ci
+    had any direct test before this -- the issue that added the paper-only
+    method assumed tests to mirror already existed for the live one; they
+    didn't. Covering both here, mirroring test_compute_expectancy_ci's shape."""
+    record = ForwardRecord()
+    for i in range(10):
+        record.add_live_fill("TSLA", "buy", 1.0, 100.0 + i, pnl=i * 5.0)
+
+    mean, lower, upper, sufficient, n, distinct_days = record.compute_live_expectancy_ci(floor=1)
+    assert not sufficient
+    assert mean == 22.5
+    assert n == 10
+
+    # A paper fill for the same strategy_id must NOT be counted here.
+    record.add_fill("TSLA", "buy", 1.0, 100.0, pnl=999.0)
+    mean2, _, _, _, n2, _ = record.compute_live_expectancy_ci(floor=1)
+    assert n2 == 10  # unchanged -- the paper fill didn't leak in
+    assert mean2 == 22.5
+    record.close()
+
+
+def test_compute_paper_expectancy_ci():
+    record = ForwardRecord()
+    for i in range(10):
+        record.add_fill("TSLA", "buy", 1.0, 100.0 + i, pnl=i * 5.0)
+
+    mean, lower, upper, sufficient, n, distinct_days = record.compute_paper_expectancy_ci(floor=1)
+    assert not sufficient
+    assert mean == 22.5
+    assert n == 10
+
+    # A live fill for the same strategy_id must NOT be counted here -- this
+    # is the exact bug S38 shipped: reusing an unfiltered/wrong-phase mean
+    # as if it were paper-only.
+    record.add_live_fill("TSLA", "buy", 1.0, 100.0, pnl=999.0)
+    mean2, _, _, _, n2, _ = record.compute_paper_expectancy_ci(floor=1)
+    assert n2 == 10  # unchanged -- the live fill didn't leak in
+    assert mean2 == 22.5
+    record.close()
+
+
+def test_compute_paper_expectancy_ci_zero_fills():
+    record = ForwardRecord()
+    mean, lower, upper, sufficient, n, distinct_days = record.compute_paper_expectancy_ci()
+    assert (mean, lower, upper, sufficient, n, distinct_days) == (0.0, 0.0, 0.0, False, 0, 0)
+    record.close()
+
+
 def test_equity_curve():
     """get_equity_curve returns chronological cumulative PnL."""
     record = ForwardRecord()
