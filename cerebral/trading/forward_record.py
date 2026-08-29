@@ -147,11 +147,36 @@ class ForwardRecord:
         rows = self._con.execute("SELECT pnl FROM forward_fills WHERE phase = 'live' AND strategy_id = ? ORDER BY timestamp ASC", (strategy_id,)).fetchall()
         return [r["pnl"] for r in rows]
 
+    def get_paper_pnls(self, strategy_id: str = "global") -> list[float]:
+        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE phase = 'paper' AND strategy_id = ? ORDER BY timestamp ASC", (strategy_id,)).fetchall()
+        return [r["pnl"] for r in rows]
+
     def compute_live_expectancy_ci(
         self, strategy_id: str = "global", floor: Optional[int] = None,
     ) -> tuple[float, float, float, bool, int, int]:
         """Same as compute_expectancy_ci but restricted to live trades."""
         pnls = self.get_live_pnls(strategy_id)
+        n = len(pnls)
+        if n == 0:
+            return 0.0, 0.0, 0.0, False, 0, 0
+
+        mean = float(np.mean(pnls))
+        se = float(np.std(pnls, ddof=1) / math.sqrt(n)) if n > 1 else 0.0
+        lower = mean - 1.96 * se
+        upper = mean + 1.96 * se
+
+        distinct_days = self.get_distinct_days(strategy_id)
+        if floor is None:
+            floor = self._distinct_days_floor()
+
+        is_sufficient = n >= 30 and distinct_days >= floor
+        return mean, lower, upper, is_sufficient, n, distinct_days
+
+    def compute_paper_expectancy_ci(
+        self, strategy_id: str = "global", floor: Optional[int] = None,
+    ) -> tuple[float, float, float, bool, int, int]:
+        """Same as compute_expectancy_ci but restricted to paper trades."""
+        pnls = self.get_paper_pnls(strategy_id)
         n = len(pnls)
         if n == 0:
             return 0.0, 0.0, 0.0, False, 0, 0
@@ -269,13 +294,7 @@ class ForwardRecord:
         Returns a float weight.
         """
         live_mean, _, _, _, live_n, _ = self.compute_live_expectancy_ci(strategy_id)
-
-        paper_rows = self._con.execute(
-            "SELECT pnl FROM forward_fills WHERE strategy_id = ? AND phase = 'paper'",
-            (strategy_id,),
-        ).fetchall()
-        paper_n = len(paper_rows)
-        paper_mean = float(np.mean([r["pnl"] for r in paper_rows])) if paper_n else 0.0
+        paper_mean, _, _, _, paper_n, _ = self.compute_paper_expectancy_ci(strategy_id)
 
         if paper_n == 0 and live_n == 0:
             return 0.0
