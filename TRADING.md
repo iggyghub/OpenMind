@@ -3,17 +3,16 @@
 Design: ADR-0026 (docs/adr/0026-trading-feedback-loop.md), grill closed 2026-08-29.
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: active
+## Status: blocked -- PR https://github.com/iggyghub/OpenMind/pull/938 not merged (tests_failed): test run timed out after 600s -- killed ........................................................................ [ 1%] ........................................................................ [ 2%] ........................................................................ [ 3%] ........................................................................ [ 5%] ........................................................................ [ 6%] ............................................................
 
 ## Next slice -- start here
 
-- **Active:** S38 -- #932 -- confidence weight computation. S38-S43 are
-  the learning-loop queue from the 2026-08-29 grill (ADR-0026): S38-S40
-  have no interdependency and can land in any order; S41 needs S40; S42
-  needs S38+S39; S43 needs S38 only. Fired via self_dev_campaign,
-  hand-verified per slice same as every prior slice in this campaign --
-  see "Landed PRs" for the account of what self_dev actually got right vs.
-  wrong on each one.
+- **Active:** S39 -- #933 -- strategy identity fix. S38 landed same day
+  (hand-fixed real bug, see Landed PRs). S38-S40 have no interdependency
+  and can land in any order; S41 needs S40; S42 needs S38+S39; S43 needs
+  S38 only. Fired via self_dev_campaign, hand-verified per slice same as
+  every prior slice in this campaign -- see "Landed PRs" for the account
+  of what self_dev actually got right vs. wrong on each one.
 - **Model:** sonnet
 
 ## Queue
@@ -438,7 +437,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   4 land -- guardrail path. See #922/#923/#924/#925 for full acceptance
   criteria.
 
-- [ ] S38 -- #932 -- Confidence weight: phase-weighted, continuously-scaled
+- [x] S38 -- #932 -- Confidence weight: phase-weighted, continuously-scaled
   score per strategy, wrapping ForwardRecord.compute_expectancy_ci/
   compute_live_expectancy_ci (no new metric). is_sufficient is a scaling
   input, not a hard gate -- a low-trade strategy still produces a small
@@ -2794,6 +2793,38 @@ against this driver needs a fresh grill session first.
   (`test_plugins_time_notes.py`, tied to separately-lost WIP -- see
   `.learnings/ERRORS.md`'s 2026-08-25 entry); tray jest 30 suites / 788
   tests, 0 failed. Landed as commit 5df740c.
+
+- PR #938 -- S38 -- confidence weight computation, opened by
+  self_dev_campaign against the real diff (df2f9ec, based cleanly on
+  local master post-ADR-0026). Closed unmerged in favor of a
+  hand-verified merge (commit 03d91b5 fast-forwarded onto master) -- same
+  pattern as PRs #849/#851/#899/#900. The sandbox's own merge gate
+  reported `tests_failed`: a 600s test-run timeout on the full suite,
+  only ~6% through collection -- this campaign hit that exact false
+  alarm before (S37a) and it didn't reproduce locally either: the
+  trading/lifecycle/gauntlet/compose/forward_record slice ran clean
+  (344 passed) in 187s.
+
+  Hand-review found a real bug the gate's timeout never got far enough
+  to catch anyway: `compute_confidence_weight` used
+  `compute_expectancy_ci`'s mean as the "paper" half of its weighted
+  average, but that method queries every fill regardless of `phase`
+  (paper+live blended) -- confirmed by reading its own implementation,
+  it has no phase filter at all. So the "paper_mean" variable was
+  silently the blended all-fills mean, double-counting live fills'
+  influence under a paper label. Confirmed empirically before touching
+  the fix: 3 paper fills @ pnl=0.0 + 3 live fills @ pnl=10.0 produced
+  weight 2.5 against the PR's own formula, versus 1.33 for the
+  phase-correct one. Every one of the PR's own 5 new tests happened to
+  use identical paper/live pnl values, which is exactly why it passed
+  anyway -- the same "test doesn't distinguish the code paths" failure
+  class this campaign has caught repeatedly (S17-S19, S28). Fixed by
+  querying `phase='paper'` fills directly instead of reusing
+  `compute_expectancy_ci`, and added
+  `test_confidence_weight_paper_and_live_differ`, a differentiating
+  regression test that fails against the old formula and passes against
+  the fix. 21/21 forward_record tests pass; issue #932 closed via the
+  fix commit.
 
 ## What's next
 
