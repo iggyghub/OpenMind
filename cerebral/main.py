@@ -3690,6 +3690,7 @@ async def _trading_broadcast() -> None:
                     _trading_strategy_store.render_provenance(version_row)
                     if version_row is not None else ""
                 )
+                from cerebral.trading.strategy_store import strip_expansion_suffix
                 p = {
                     "name": name, "status": state.status, "live_trades": state.live_trade_count,
                     "promoted_at": state.promoted_at.isoformat() if state.promoted_at else None,
@@ -3697,6 +3698,8 @@ async def _trading_broadcast() -> None:
                     "version": version_row["version"] if version_row is not None else 0,
                     "provenance": provenance,
                     "code": spec.code if spec is not None else "",
+                    "confidence_weight": _trading_forward_record.compute_confidence_weight(strategy_id=name),
+                    "is_expansion": strip_expansion_suffix(base_id) != base_id,
                 }
                 fills = _trading_forward_record.get_fills(limit=5, strategy_id=name)
                 p["recent_fills"] = [{"symbol": f["symbol"], "side": f["side"], "pnl": f["pnl"], "phase": f["phase"]} for f in fills]
