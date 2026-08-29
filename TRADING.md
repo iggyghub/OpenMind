@@ -7,20 +7,17 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S44 -- #944 -- Activity Log entries for
-  expand_strategy_ticker/auto_combine_strategies. S44-S46b close the
-  observability gap the 2026-08-29 learning-loop queue (S38-S43,
-  ADR-0026) left behind: the Tally/confidence-weight/expansion machinery
-  it built is entirely invisible today -- no persisted record of a nudge,
-  no confidence weight shown anywhere, no visual distinction for an
-  expanded or auto-combined strategy. S44/S45/S46a have no
-  interdependency; S46b needs S46a's broadcast fields to exist first.
-  **S46b is explicitly NOT a self_dev slice** -- this campaign has never
-  let self_dev touch tray/ and always hand-reviews it anyway (S34/S35
-  precedent); fire self_dev_campaign through S46a, then hand-build S46b
-  separately once it lands. This campaign's own self_dev_campaign tool
-  writes `Status: blocked` into this file on a `tests_failed` gate result
-  and never resets it -- **always check/reset this Status line after a
+- **Active:** S45 -- #945 -- Activity Log entry for the Tally/
+  candidate_limit bias decision in process_idea. S44 landed clean (see
+  Landed PRs) -- the first slice in this whole campaign to need zero
+  hand-fixes. S45/S46a have no interdependency with each other; S46b
+  needs S46a's broadcast fields to exist first. **S46b is explicitly NOT
+  a self_dev slice** -- this campaign has never let self_dev touch tray/
+  and always hand-reviews it anyway (S34/S35 precedent); fire
+  self_dev_campaign through S46a, then hand-build S46b separately once it
+  lands. This campaign's own self_dev_campaign tool writes
+  `Status: blocked` into this file on a `tests_failed` gate result and
+  never resets it -- **always check/reset this Status line after a
   hand-verified landing.**
 - **Model:** sonnet
 
@@ -482,7 +479,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   components -- a structurally different, deferred feature). Depends on
   S38 only.
 
-- [ ] S44 -- #944 -- Activity Log entries for expand_strategy_ticker/
+- [x] S44 -- #944 -- Activity Log entries for expand_strategy_ticker/
   auto_combine_strategies: one entry per real dispatch (none on an
   early-return), using the already-wired self._record_activity_fn seam.
   No interdependency.
@@ -3076,6 +3073,19 @@ against this driver needs a fresh grill session first.
   scope per ADR-0026. Nothing in this queue has been live-verified end to
   end yet (no real paper/live cycle has run against the new code) -- see
   docs/trading-live-verify.md.
+
+- PR #948 -- S44 -- Activity Log entries for expand_strategy_ticker/
+  auto_combine_strategies, opened by self_dev_campaign against the real
+  diff (83cf8f7, based cleanly on master post-S43). Closed unmerged in
+  favor of a local master merge (fast-forwarded, no fix commit needed --
+  origin/master being stale from never being pushed is the only reason
+  for the close/local-merge pattern here, not a substance problem).
+  **First slice of the whole S38-S44 run needing zero hand-fixes.** Both
+  activity-log calls placed correctly (after a real dispatch only, never
+  on an early-return), all 4 new tests plus the 5 pre-existing S42/S43
+  tests pass, 441-test broader sweep clean. Same sandbox 600s timeout as
+  every slice before it -- confirmed environmental, not investigated
+  further. Issue #944 closed via the merge commit.
 
 ## What's next
 
