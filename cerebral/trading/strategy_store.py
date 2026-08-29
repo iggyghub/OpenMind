@@ -200,5 +200,21 @@ class StrategyStore:
             for r in rows
         ]
 
+    def delete(self, strategy_id: str) -> None:
+        """Remove a strategy's spec and its full version history.
+
+        Only safe to call on a strategy nothing else has ever referenced
+        (no forward_fills, no StrategyLifecycle state) -- those are owned
+        by separate stores this class knows nothing about. S43's own use
+        (discarding the losing auto_combine_strategies composite the
+        moment after it was created, before any paper/live trading could
+        possibly have run against it) is the only caller today; a future
+        caller deleting an in-use strategy would need to clean up those
+        other stores too, which this method deliberately does not attempt.
+        """
+        self._con.execute("DELETE FROM strategy_specs WHERE strategy_id = ?", (strategy_id,))
+        self._con.execute("DELETE FROM strategy_versions WHERE strategy_id = ?", (strategy_id,))
+        self._con.commit()
+
     def close(self) -> None:
         self._con.close()

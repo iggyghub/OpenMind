@@ -336,6 +336,8 @@ class TestSchedulerPlugin:
             "get_paper_archive_fills",
             # S42 (#936)
             "expand_strategy_ticker",
+            # S43 (#937)
+            "auto_combine_strategies",
         }
 
     # -----------------------------------------------------------------------

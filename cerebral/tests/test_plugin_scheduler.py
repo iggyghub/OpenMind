@@ -1682,7 +1682,7 @@ async def test_auto_combine_strategies_selects_top_3_by_weight(tmp_path, monkeyp
     store.save(StrategySpec("S_high", "AAPL", ALWAYS_LONG, qty=1.0))
     store.save(StrategySpec("S_neg", "AAPL", ALWAYS_LONG, qty=1.0))
 
-    def mock_conf(strategy_id):
+    def mock_conf(self, strategy_id):
         if "high" in strategy_id: return 0.9
         if "mid" in strategy_id: return 0.5
         if "low" in strategy_id: return 0.1
@@ -1761,6 +1761,52 @@ async def test_auto_combine_strategies_prefers_validated_over_return(tmp_path, m
     # Unvalidated majority should not win even with higher return
     assert data["winner_mode"] == "unanimous"
     assert data["winner_verdict"] == "VALIDATED"
+
+
+async def test_auto_combine_strategies_deletes_the_losing_composite(tmp_path, monkeypatch):
+    """Hand-added: the generated cleanup logic matched on StrategySpec.origin/
+    .provenance, neither of which exists on StrategySpec (origin/provenance
+    live on strategy_versions, read via get_current_version), and called
+    store.delete via getattr(store, "delete", no-op) -- StrategyStore never
+    had a delete method at all. Both silently swallowed by a bare except, so
+    the loser was never actually removed; only the acceptance criterion this
+    covers. Now real: _run_mix_strategies surfaces its own strategy_id, and
+    StrategyStore.delete really removes the row."""
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
+    store.save(StrategySpec("S2", "AAPL", ALWAYS_LONG, qty=1.0))
+
+    monkeypatch.setattr(
+        "cerebral.trading.forward_record.ForwardRecord.compute_confidence_weight",
+        lambda self, strategy_id: 0.5,
+    )
+
+    # Register both composites as if _run_gauntlet had really saved them
+    # (mirrors what a VALIDATED verdict does in production), so there is a
+    # real row to delete -- not just a string the old logic never matched.
+    store.save(StrategySpec("mixed_winner", "AAPL", ALWAYS_LONG, qty=1.0))
+    store.save(StrategySpec("mixed_loser", "AAPL", ALWAYS_LONG, qty=1.0))
+
+    mix_results = {
+        "unanimous": ToolResult(content=json.dumps(
+            {"verdict": "VALIDATED", "total_return": 12.0, "strategy_id": "mixed_winner"})),
+        "majority": ToolResult(content=json.dumps(
+            {"verdict": "VALIDATED", "total_return": 5.0, "strategy_id": "mixed_loser"})),
+    }
+
+    async def fake_mix(args, **kwargs):
+        return mix_results[args.get("mode")]
+
+    plugin._run_mix_strategies = fake_mix
+    result = await plugin._run_auto_combine_strategies({"symbol": "AAPL"}, strategy_store=store)
+
+    data = json.loads(result.content)
+    assert data["winner_mode"] == "unanimous"
+    assert data["winner_strategy_id"] == "mixed_winner"
+
+    assert store.get("mixed_winner") is not None
+    assert store.get("mixed_loser") is None  # actually deleted, not silently kept
 
 
 async def test_halt_and_resume_strategy_are_reachable_via_call_tool(tmp_path):

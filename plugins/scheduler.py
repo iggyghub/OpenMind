@@ -1669,7 +1669,7 @@ class SchedulerPlugin:
         components = [{"id": cid, "provenance": p} for cid, p in zip(component_ids, provenances)]
         provenance_str = f"Mixed strategy ({mode}) of {len(component_ids)} components: {', '.join(component_ids)}"
 
-        return await self._run_gauntlet(
+        result = await self._run_gauntlet(
             {
                 "code": composite_code,
                 "symbol": symbol,
@@ -1679,6 +1679,15 @@ class SchedulerPlugin:
             strategy_store=store, fetch=fetch,
             origin="mixed", strategy_id=new_id, components_json=components,
         )
+        # The composite's own generated strategy_id is otherwise invisible to
+        # the caller -- _run_gauntlet's return shape doesn't include it, and
+        # it's needed by anything (S43's auto-discovery) that has to address
+        # this specific composite afterward, e.g. to delete a losing one.
+        if not result.is_error:
+            data = json.loads(result.content)
+            data["strategy_id"] = new_id
+            result = ToolResult(content=json.dumps(data), is_error=False)
+        return result
 
     async def _run_auto_combine_strategies(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
         """S43: Same-symbol composite auto-discovery tool. Selects top-3 by confidence,
@@ -1722,15 +1731,15 @@ class SchedulerPlugin:
         )
         
         def parse(res):
-            try: 
+            try:
                 d = json.loads(res.content)
-                return d.get("total_return", 0.0), d.get("verdict", "ERROR")
+                return d.get("total_return", 0.0), d.get("verdict", "ERROR"), d.get("strategy_id")
             except Exception:
-                return 0.0, "ERROR"
-                
-        ret_uni, ver_uni = parse(res_uni)
-        ret_maj, ver_maj = parse(res_maj)
-        
+                return 0.0, "ERROR", None
+
+        ret_uni, ver_uni, id_uni = parse(res_uni)
+        ret_maj, ver_maj, id_maj = parse(res_maj)
+
         if ver_uni == "VALIDATED" and ver_maj != "VALIDATED":
             winner, loser = "unanimous", "majority"
         elif ver_maj == "VALIDATED" and ver_uni != "VALIDATED":
@@ -1738,26 +1747,31 @@ class SchedulerPlugin:
         else:
             winner = "unanimous" if ret_uni >= ret_maj else "majority"
             loser = "majority" if winner == "unanimous" else "unanimous"
-            
+
         winner_ret, winner_ver = (ret_uni, ver_uni) if winner == "unanimous" else (ret_maj, ver_maj)
-        
-        # Clean up loser from store to prevent stray validated state
-        delete_fn = getattr(store, "delete", lambda s: None)
-        try:
-            for s in store.list_all():
-                if s.symbol == symbol and s.origin == "mixed" and loser in (s.provenance or ""):
-                    delete_fn(s.strategy_id)
-        except Exception:
-            pass  # strategy_store may not support deletion in some test setups
-        
+        loser_id = id_maj if winner == "unanimous" else id_uni
+
+        # Only the winner may end up persisted as a validated strategy --
+        # run_gauntlet only saves a StrategySpec when its own verdict is
+        # VALIDATED (cerebral/trading/gauntlet.py), so this is a real delete
+        # when the loser also validated, and a harmless no-op (nothing to
+        # delete) when it didn't. Both branches were previously reached via
+        # a store.get/getattr('origin'/'provenance') lookup that doesn't
+        # exist on StrategySpec, silently swallowed by a bare except -- this
+        # uses the loser's own real strategy_id instead, surfaced by
+        # _run_mix_strategies above.
+        if loser_id is not None:
+            store.delete(loser_id)
+
         return ToolResult(content=json.dumps({
             "status": "complete",
             "symbol": symbol,
             "component_ids": component_ids,
             "winner_mode": winner,
+            "winner_strategy_id": id_uni if winner == "unanimous" else id_maj,
             "winner_return": winner_ret,
             "winner_verdict": winner_ver,
-            "loser_mode": loser
+            "loser_mode": loser,
         }))
 
     def _run_paper_strategy(
