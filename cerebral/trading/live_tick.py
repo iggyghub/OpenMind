@@ -240,7 +240,7 @@ def run_strategy_tick(
     # own qty regardless, so a ramped strategy still exits its full size.
     open_qty = spec.qty * size_pct
 
-    position = find_position(broker.list_positions(), spec.symbol)
+    position = find_position(broker.list_positions(strategy_id=strategy_id), spec.symbol)
     action = decide_action(signal, position, open_qty)
     if action is None:
         return {"status": "hold", "signal": signal, "symbol": spec.symbol}
@@ -280,7 +280,7 @@ def run_strategy_tick(
             if not corr_res.allowed:
                 return {"status": "blocked", "blocked_by": corr_res.blocked_by}
 
-    order = broker.place_order(symbol=spec.symbol, qty=qty, side=side, type="market")
+    order = broker.place_order(symbol=spec.symbol, qty=qty, side=side, type="market", strategy_id=strategy_id)
     if order.status not in ("FILLED", "PARTIALLY_FILLED"):
         return {"status": "unfilled", "signal": signal, "symbol": spec.symbol,
                 "order_status": order.status}

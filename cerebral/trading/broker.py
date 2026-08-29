@@ -42,10 +42,11 @@ class Order:
 @runtime_checkable
 class BrokerClient(Protocol):
     def get_account(self) -> Account: ...
-    def list_positions(self) -> List[Position]: ...
+    def list_positions(self, strategy_id: Optional[str] = None) -> List[Position]: ...
     def place_order(
         self, symbol: str, qty: float, side: Side, type: OrderType,
         limit_price: Optional[float] = None,
+        strategy_id: Optional[str] = None,
     ) -> Order: ...
     def cancel_order(self, order_id: str) -> None: ...
     def get_order(self, order_id: str) -> Order: ...
@@ -115,7 +116,7 @@ class AlpacaBrokerClient:
             day_trades_remaining=acc.day_trades_remaining,
         )
 
-    def list_positions(self) -> List[Position]:
+    def list_positions(self, strategy_id: Optional[str] = None) -> List[Position]:
         self._connect()
         positions = self._client.list_positions()
         result = []
@@ -134,6 +135,7 @@ class AlpacaBrokerClient:
     def place_order(
         self, symbol: str, qty: float, side: Side, type: OrderType,
         limit_price: Optional[float] = None,
+        strategy_id: Optional[str] = None,
     ) -> Order:
         self._connect()
         from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
@@ -197,7 +199,7 @@ class StubBrokerClient:
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         self.config = config or {}
         self._orders: Dict[str, Order] = {}
-        self._positions: Dict[str, Position] = {}
+        self._positions: Dict[tuple[str, str], Position] = {}  # (strategy_id, symbol)
         self._reject_order_id: Optional[str] = None
         self._partial_fill_symbol: Optional[str] = None
         self._partial_fill_ratio: float = 1.0

@@ -657,6 +657,38 @@ def test_risk_settings_keys_readable_and_writable(tmp_path):
     assert store.get("max_concurrent_positions") == 5
 
 
+def test_tick_strategy_id_isolation(tmp_path, monkeypatch):
+    """Two calls to run_strategy_tick with different strategy_ids on the same
+    spec.symbol should each maintain their own position, without closing the
+    other's position."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0, 20.0, 10.0, 5.0])  # A open@10, A close@20, B open@10, B close@5
+    long_spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=2.0)
+    flat_spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=2.0)
+    short_spec = StrategySpec("s2", "AAPL", ALWAYS_SHORT, qty=2.0)
+    fetch = fixed_fetch(make_bars())
+
+    # Strategy A opens long
+    res_a_open = run_strategy_tick("strat_a", long_spec, broker, record, fetch=fetch)
+    assert res_a_open["status"] == "opened"
+    assert find_position(broker.list_positions(strategy_id="strat_a"), "AAPL").qty == 2.0
+    assert find_position(broker.list_positions(strategy_id="strat_b"), "AAPL") is None
+
+    # Strategy B opens short (should not interfere with A)
+    res_b_open = run_strategy_tick("strat_b", short_spec, broker, record, fetch=fetch)
+    assert res_b_open["status"] == "opened"
+    assert find_position(broker.list_positions(strategy_id="strat_a"), "AAPL").qty == 2.0
+    assert find_position(broker.list_positions(strategy_id="strat_b"), "AAPL").qty == -2.0
+
+    # Strategy A closes (flat signal)
+    res_a_close = run_strategy_tick("strat_a", flat_spec, broker, record, fetch=fetch)
+    assert res_a_close["status"] == "closed"
+    # A should be flat now
+    assert find_position(broker.list_positions(strategy_id="strat_a"), "AAPL") is None
+    # B should still be short
+    assert find_position(broker.list_positions(strategy_id="strat_b"), "AAPL").qty == -2.0
+
+
 def test_risk_manager_reads_live_settings_store_values(tmp_path):
     """main.py wires RiskManager with settings_store=_settings so a user's
     Settings-panel change actually changes live risk behavior -- constructing

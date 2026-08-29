@@ -82,6 +82,34 @@ def test_stub_configurable_starting_cash():
     assert stub_default.get_account().cash == 10000.0
 
 
+def test_stub_positions_isolated_by_strategy_id():
+    """Two strategies trading the same symbol should not clobber each other's positions."""
+    stub = StubBrokerClient()
+    # Strategy A opens long 10 AAPL
+    stub.place_order("AAPL", 10, "buy", "market", strategy_id="strat_a")
+    # Strategy B opens short 5 AAPL
+    stub.place_order("AAPL", 5, "sell", "market", strategy_id="strat_b")
+
+    # Each strategy should see only its own position
+    pos_a = find_position(stub.list_positions(strategy_id="strat_a"), "AAPL")
+    pos_b = find_position(stub.list_positions(strategy_id="strat_b"), "AAPL")
+    
+    assert pos_a is not None and pos_a.qty == 10.0
+    assert pos_b is not None and pos_b.qty == -5.0
+    
+    # Aggregate view should sum them
+    aggregated = stub.list_positions()
+    agg_aap = find_position(aggregated, "AAPL")
+    assert agg_aap is not None and agg_aap.qty == 5.0
+    
+    # Closing B's position should not affect A's
+    stub.place_order("AAPL", 5, "buy", "market", strategy_id="strat_b")
+    pos_a_after = find_position(stub.list_positions(strategy_id="strat_a"), "AAPL")
+    pos_b_after = find_position(stub.list_positions(strategy_id="strat_b"), "AAPL")
+    assert pos_a_after is not None and pos_a_after.qty == 10.0
+    assert pos_b_after is None  # B is flat
+
+
 def test_stub_commission_free():
     stub = StubBrokerClient()
     order = stub.place_order("AAPL", 10, "buy", "market")
