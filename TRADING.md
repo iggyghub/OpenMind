@@ -3,27 +3,25 @@
 Design: ADR-0026 (docs/adr/0026-trading-feedback-loop.md), grill closed 2026-08-29.
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: done
+## Status: active
 
 ## Next slice -- start here
 
-- **Active:** none -- S38-S43 (the full 2026-08-29 learning-loop queue,
-  ADR-0026) all landed the same day. Every one of the six hit the
-  sandbox's 600s full-suite timeout at the merge gate, confirmed every
-  time not to reproduce locally -- an infrastructure/environment issue,
-  never a real hang. Five of six shipped with real, hand-caught bugs
-  (S39 was the only clean one) -- S42 was the most broken (effectively
-  non-functional as generated, 6 separate issues), S41 the biggest scope
-  miss (a permanent stub left the entire slice dead code in production).
-  See Landed PRs for the full account of each. This campaign's own
-  self_dev_campaign tool writes `Status: blocked` into this file on a
-  `tests_failed` gate result regardless of whether the substance is fine,
+- **Active:** S44 -- #944 -- Activity Log entries for
+  expand_strategy_ticker/auto_combine_strategies. S44-S46b close the
+  observability gap the 2026-08-29 learning-loop queue (S38-S43,
+  ADR-0026) left behind: the Tally/confidence-weight/expansion machinery
+  it built is entirely invisible today -- no persisted record of a nudge,
+  no confidence weight shown anywhere, no visual distinction for an
+  expanded or auto-combined strategy. S44/S45/S46a have no
+  interdependency; S46b needs S46a's broadcast fields to exist first.
+  **S46b is explicitly NOT a self_dev slice** -- this campaign has never
+  let self_dev touch tray/ and always hand-reviews it anyway (S34/S35
+  precedent); fire self_dev_campaign through S46a, then hand-build S46b
+  separately once it lands. This campaign's own self_dev_campaign tool
+  writes `Status: blocked` into this file on a `tests_failed` gate result
   and never resets it -- **always check/reset this Status line after a
-  hand-verified landing.** Next real work here is either a fresh design
-  pass (cross-symbol composites, explicitly deferred by ADR-0026) or
-  live-verifying this queue's actual behavior once real paper/live data
-  exists to feed it -- neither started; see docs/trading-live-verify.md
-  for the live-verify convention this campaign uses.
+  hand-verified landing.**
 - **Model:** sonnet
 
 ## Queue
@@ -483,6 +481,24 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   strategies' generated code assumes one shared symbol's data across all
   components -- a structurally different, deferred feature). Depends on
   S38 only.
+
+- [ ] S44 -- #944 -- Activity Log entries for expand_strategy_ticker/
+  auto_combine_strategies: one entry per real dispatch (none on an
+  early-return), using the already-wired self._record_activity_fn seam.
+  No interdependency.
+- [ ] S45 -- #945 -- Activity Log entry for the Tally/candidate_limit
+  bias decision in process_idea: one entry when the tally is available
+  (positive/total counts, candidate_limit before/after), none when
+  unavailable. No interdependency.
+- [ ] S46a -- #946 -- Backend: confidence_weight (S38) + is_expansion
+  (S39's strip_expansion_suffix) added to _trading_broadcast's positions
+  payload. Does NOT attempt to distinguish auto-combined (S43) from
+  hand-mixed (S18) composites -- not reliably derivable without touching
+  S43 again, disclosed out of scope. No interdependency.
+- [ ] S46b -- #947 -- Tray: confidence-weight + expansion badges on the
+  Strategies list (tray/lib/trading-panel.js). **Hand-build, not
+  self_dev** -- this campaign never lets self_dev touch tray/. Depends on
+  S46a.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
