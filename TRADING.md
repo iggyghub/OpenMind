@@ -3,19 +3,24 @@
 Design: ADR-0026 (docs/adr/0026-trading-feedback-loop.md), grill closed 2026-08-29.
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: done
+## Status: active
 
 ## Next slice -- start here
 
-- **Active:** none -- S44-S46b (the learning-loop observability
-  follow-up) all landed 2026-08-29, same day as S38-S43 itself. The
-  Tally, confidence weight, and expansion machinery S38-S43 built is now
-  actually visible: Activity Log entries for every expand/combine
-  dispatch and every biased judging decision, plus confidence-weight and
-  expansion badges on the Strategies list. See Landed PRs for the full
-  account, including S46a's 2 "no commit" failures and the exact-quoted-
-  snippet reword that fixed them (same technique as S17 -- worth
-  remembering if a future slice gets stuck the same way).
+- **Active:** S47 -- #954 -- ForwardRecord: add a real paper-only
+  expectancy method. S44-S46b (the learning-loop observability
+  follow-up) all landed 2026-08-29, same day as S38-S43 itself -- see
+  Landed PRs. S47/S48 are small cleanups from hand-verifying S38/S43:
+  S47 gives `compute_confidence_weight` a real `compute_paper_expectancy_ci`
+  to call instead of its own inline SQL (the asymmetric API -- live-only
+  and blended-all-phases, no paper-only -- is exactly what caused S38's
+  bug in the first place); S48 makes `_run_gauntlet` return its own
+  `strategy_id` instead of every caller needing its own workaround (S43
+  already needed one). No interdependency between S47/S48. Three
+  related infra fixes (sandbox timeout, a `campaign()` silent-block
+  diagnostic gap, the `signals` NameError root-caused live today) are
+  filed separately as #951/#952/#953 -- not trading-specific, not in
+  this driver file, fired via single-shot `self_dev` instead.
 - **Model:** sonnet
 
 ## Queue
@@ -493,6 +498,14 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   Strategies list (tray/lib/trading-panel.js). **Hand-build, not
   self_dev** -- this campaign never lets self_dev touch tray/. Depends on
   S46a.
+- [ ] S47 -- #954 -- ForwardRecord: add get_paper_pnls/
+  compute_paper_expectancy_ci mirroring the existing _live_ methods;
+  refactor compute_confidence_weight (S38) to use it instead of its own
+  inline SQL. No interdependency.
+- [ ] S48 -- #955 -- _run_gauntlet returns its own strategy_id in its
+  result dict (explicit or internally-derived); simplify
+  _run_mix_strategies' own S43-added wrapper now that the underlying
+  method does it directly. No interdependency.
 
 Per-slice model: sonnet unless the queue entry says otherwise. This checklist is
 what `self_dev_campaign` parses to tick/advance -- the "Phased slices" section
