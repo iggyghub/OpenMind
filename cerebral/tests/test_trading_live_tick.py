@@ -657,6 +657,38 @@ def test_risk_settings_keys_readable_and_writable(tmp_path):
     assert store.get("max_concurrent_positions") == 5
 
 
+def test_tick_strategy_id_isolation(tmp_path, monkeypatch):
+    """Two calls to run_strategy_tick with different strategy_ids on the same
+    spec.symbol should each maintain their own position, without closing the
+    other's position."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0, 20.0, 10.0, 5.0])  # A open@10, A close@20, B open@10, B close@5
+    long_spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=2.0)
+    flat_spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=2.0)
+    short_spec = StrategySpec("s2", "AAPL", ALWAYS_SHORT, qty=2.0)
+    fetch = fixed_fetch(make_bars())
+
+    # Strategy A opens long
+    res_a_open = run_strategy_tick("strat_a", long_spec, broker, record, fetch=fetch)
+    assert res_a_open["status"] == "opened"
+    assert find_position(broker.list_positions(strategy_id="strat_a"), "AAPL").qty == 2.0
+    assert find_position(broker.list_positions(strategy_id="strat_b"), "AAPL") is None
+
+    # Strategy B opens short (should not interfere with A)
+    res_b_open = run_strategy_tick("strat_b", short_spec, broker, record, fetch=fetch)
+    assert res_b_open["status"] == "opened"
+    assert find_position(broker.list_positions(strategy_id="strat_a"), "AAPL").qty == 2.0
+    assert find_position(broker.list_positions(strategy_id="strat_b"), "AAPL").qty == -2.0
+
+    # Strategy A closes (flat signal)
+    res_a_close = run_strategy_tick("strat_a", flat_spec, broker, record, fetch=fetch)
+    assert res_a_close["status"] == "closed"
+    # A should be flat now
+    assert find_position(broker.list_positions(strategy_id="strat_a"), "AAPL") is None
+    # B should still be short
+    assert find_position(broker.list_positions(strategy_id="strat_b"), "AAPL").qty == -2.0
+
+
 def test_risk_manager_reads_live_settings_store_values(tmp_path):
     """main.py wires RiskManager with settings_store=_settings so a user's
     Settings-panel change actually changes live risk behavior -- constructing
@@ -692,11 +724,12 @@ def test_tick_blocks_high_correlation_open(tmp_path, monkeypatch):
     max_correlation threshold is blocked and broker.place_order is never called."""
     record = make_record(tmp_path, monkeypatch)
     broker = StubBrokerClient()
-    # Pre-fill AAPL position
-    broker._positions["AAPL"] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
-    
+    # Pre-fill AAPL position under some other strategy -- the correlation
+    # check reads the aggregate whole-book view (#961), so any strategy_id works.
+    broker._positions[(None, "AAPL")] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
+
     aapl_df, corx_df = _make_correlated_bars()
-    
+
     def fixture_fetch(symbol, start, end, interval="1d"):
         if symbol == "AAPL":
             return aapl_df
@@ -715,11 +748,12 @@ def test_tick_does_not_block_closing_trade_due_to_correlation(tmp_path, monkeypa
     """A closing trade is never blocked by correlation (only opens are checked)."""
     record = make_record(tmp_path, monkeypatch)
     broker = StubBrokerClient()
-    # Pre-fill AAPL position
-    broker._positions["AAPL"] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
-    
+    # Pre-fill AAPL position under strategy "s1" -- run_strategy_tick("s1", ...)
+    # below looks up ITS OWN position by strategy_id (#961), so the key must match.
+    broker._positions[("s1", "AAPL")] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
+
     aapl_df, corx_df = _make_correlated_bars()
-    
+
     def fixture_fetch(symbol, start, end, interval="1d"):
         if symbol == "AAPL":
             return aapl_df

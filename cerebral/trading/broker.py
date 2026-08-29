@@ -42,10 +42,11 @@ class Order:
 @runtime_checkable
 class BrokerClient(Protocol):
     def get_account(self) -> Account: ...
-    def list_positions(self) -> List[Position]: ...
+    def list_positions(self, strategy_id: Optional[str] = None) -> List[Position]: ...
     def place_order(
         self, symbol: str, qty: float, side: Side, type: OrderType,
         limit_price: Optional[float] = None,
+        strategy_id: Optional[str] = None,
     ) -> Order: ...
     def cancel_order(self, order_id: str) -> None: ...
     def get_order(self, order_id: str) -> Order: ...
@@ -115,7 +116,7 @@ class AlpacaBrokerClient:
             day_trades_remaining=acc.day_trades_remaining,
         )
 
-    def list_positions(self) -> List[Position]:
+    def list_positions(self, strategy_id: Optional[str] = None) -> List[Position]:
         self._connect()
         positions = self._client.list_positions()
         result = []
@@ -134,6 +135,7 @@ class AlpacaBrokerClient:
     def place_order(
         self, symbol: str, qty: float, side: Side, type: OrderType,
         limit_price: Optional[float] = None,
+        strategy_id: Optional[str] = None,
     ) -> Order:
         self._connect()
         from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
@@ -197,7 +199,7 @@ class StubBrokerClient:
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         self.config = config or {}
         self._orders: Dict[str, Order] = {}
-        self._positions: Dict[str, Position] = {}
+        self._positions: Dict[tuple[str, str], Position] = {}  # (strategy_id, symbol)
         self._reject_order_id: Optional[str] = None
         self._partial_fill_symbol: Optional[str] = None
         self._partial_fill_ratio: float = 1.0
@@ -232,12 +234,41 @@ class StubBrokerClient:
         -- the default is constant per symbol, so entry always equals exit)."""
         return 100.0 + (abs(hash(symbol)) % 500) / 10.0
 
-    def list_positions(self) -> List[Position]:
-        return list(self._positions.values())
+    def list_positions(self, strategy_id: Optional[str] = None) -> List[Position]:
+        """`strategy_id` given: only that strategy's own rows. Omitted
+        (default): the aggregate whole-book view, one Position per symbol
+        summing qty across every strategy holding it -- what RiskManager's
+        concurrent-position-count and correlation checks want (#961: the
+        risk gates are deliberately one shared account-level budget, not
+        per-strategy)."""
+        if strategy_id is not None:
+            return [p for (sid, sym), p in self._positions.items() if sid == strategy_id]
+        by_symbol: Dict[str, List[Position]] = {}
+        for (sid, sym), p in self._positions.items():
+            by_symbol.setdefault(sym, []).append(p)
+        aggregated: List[Position] = []
+        for sym, rows in by_symbol.items():
+            net_qty = sum(r.qty for r in rows)
+            if abs(net_qty) < 1e-9:
+                continue
+            avg_entry = (
+                sum(abs(r.qty) * r.avg_entry_price for r in rows)
+                / sum(abs(r.qty) for r in rows)
+            )
+            current_price = rows[0].current_price  # deterministic per symbol
+            aggregated.append(Position(
+                symbol=sym, qty=net_qty, avg_entry_price=avg_entry,
+                side="buy" if net_qty > 0 else "sell",
+                market_value=net_qty * current_price,
+                unrealized_pl=(current_price - avg_entry) * net_qty,
+                current_price=current_price,
+            ))
+        return aggregated
 
     def place_order(
         self, symbol: str, qty: float, side: Side, type: OrderType,
         limit_price: Optional[float] = None,
+        strategy_id: Optional[str] = None,
     ) -> Order:
         if self._reject_order_id and symbol == self._reject_order_id:
             raise RuntimeError(f"Rejected order for {symbol}")
@@ -272,14 +303,20 @@ class StubBrokerClient:
         # to be the price this stub actually filled at -- it used to be a
         # hardcoded 100.0 while the fill happened at simulated_price, making
         # any P&L computed from it wrong by the whole hash-derived offset.
-        prev = self._positions.get(symbol)
+        # Keyed by (strategy_id, symbol), not symbol alone (#961) -- two
+        # strategies trading the same symbol used to read/write the SAME
+        # row, so one strategy's close could silently net against another
+        # strategy's open. strategy_id=None (a caller that doesn't pass it)
+        # behaves exactly like the old symbol-only keying.
+        key = (strategy_id, symbol)
+        prev = self._positions.get(key)
         prev_qty = float(prev.qty) if prev else 0.0
         net_qty = prev_qty + (float(qty) if side == "buy" else -float(qty))
 
         if abs(net_qty) < 1e-9:
             # Flat: drop the row rather than leave a qty=0 ghost every caller
             # then has to special-case.
-            self._positions.pop(symbol, None)
+            self._positions.pop(key, None)
         else:
             if prev is None or prev_qty == 0.0 or (prev_qty > 0) != (net_qty > 0):
                 avg_entry = simulated_price          # opening, or flipping through flat
@@ -289,7 +326,7 @@ class StubBrokerClient:
                 ) / abs(net_qty)
             else:
                 avg_entry = prev.avg_entry_price      # partial reduction keeps the entry
-            self._positions[symbol] = Position(
+            self._positions[key] = Position(
                 symbol=symbol, qty=net_qty, avg_entry_price=avg_entry,
                 side="buy" if net_qty > 0 else "sell",
                 market_value=net_qty * simulated_price,

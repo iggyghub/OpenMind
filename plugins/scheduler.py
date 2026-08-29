@@ -1833,6 +1833,7 @@ class SchedulerPlugin:
             result = run_strategy_tick(
                 dispatch_id or strategy_name, spec, broker, forward_record, fetch=fetch, phase=phase,
                 risk=risk, size_pct=size_pct,  # S20
+                position_key=strategy_name,  # #961: broker position survives a version bump
             )
             logger.info(f"Paper tick for {strategy_name}: {result}")
             return result
