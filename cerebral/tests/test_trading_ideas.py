@@ -9,6 +9,7 @@ from cerebral.trading_ideas import (
     judge_idea,
     Idea,
     _compile_strategy as compile_strategy,
+    _extract_code,
     _run_tally,
 )
 
@@ -372,6 +373,25 @@ class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
             success, pos, total = _run_tally("some claim")
 
         self.assertEqual((success, pos, total), (True, 2, 3))
+
+
+class TestExtractCode(unittest.TestCase):
+    def test_strips_bogus_return_annotation(self):
+        code = _extract_code("def strategy(data) -> signals:\n    return []")
+        self.assertEqual(code, "def strategy(data):\n    return []")
+
+    def test_strips_type_hint_return_annotation(self):
+        code = _extract_code("def strategy(data) -> int:\n    return []")
+        self.assertEqual(code, "def strategy(data):\n    return []")
+
+    def test_leaves_bare_def_untouched(self):
+        code = _extract_code("def strategy(data):\n    return []")
+        self.assertEqual(code, "def strategy(data):\n    return []")
+
+    def test_handles_markdown_fence_with_bogus_annotation(self):
+        reply = "Here's the code:\n```python\ndef strategy(data) -> signals:\n    return [1, 2, 3]\n```\nDone."
+        code = _extract_code(reply)
+        self.assertEqual(code, "def strategy(data):\n    return [1, 2, 3]")
 
 
 if __name__ == "__main__":
