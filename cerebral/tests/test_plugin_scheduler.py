@@ -1809,6 +1809,125 @@ async def test_auto_combine_strategies_deletes_the_losing_composite(tmp_path, mo
     assert store.get("mixed_loser") is None  # actually deleted, not silently kept
 
 
+# ── S44: Activity Log entries for expand_strategy_ticker / auto_combine_strategies ──
+
+async def test_expand_strategy_ticker_logs_one_activity_entry_on_dispatch(tmp_path, monkeypatch):
+    """S44: _expand_strategy_ticker records one activity entry per invocation
+    (not per candidate) with strategy_id, attempted tickers, and their verdicts."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
+    
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    monkeypatch.setattr(
+        "cerebral.trading.forward_record.ForwardRecord.compute_confidence_weight",
+        lambda self, strategy_id: 0.5
+    )
+
+    plugin = _plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+    
+    # Mock _run_gauntlet to avoid real network/backtest time
+    async def fake_gauntlet(*args, **kwargs):
+        return ToolResult(content=json.dumps({"verdict": "VALIDATED"}))
+    plugin._run_gauntlet = fake_gauntlet
+
+    result = await plugin._expand_strategy_ticker({"strategy_id": "S1"}, strategy_store=store)
+    
+    assert not result.is_error, result.content
+    assert len(logged) == 1
+    entry = logged[0]
+    assert entry["source"] == "expand_strategy_ticker"
+    assert entry["strategy_id"] == "S1"
+    assert len(entry["tickers"]) > 0
+    assert all(v in entry["verdicts"].values() for v in ["VALIDATED"])
+
+
+async def test_expand_strategy_ticker_logs_no_entry_on_zero_confidence(tmp_path, monkeypatch):
+    """S44: No activity entry when the tool returns early (non-positive confidence)."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
+    
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    monkeypatch.setattr(
+        "cerebral.trading.forward_record.ForwardRecord.compute_confidence_weight",
+        lambda self, strategy_id: 0.0
+    )
+
+    plugin = _plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+
+    result = await plugin._expand_strategy_ticker({"strategy_id": "S1"}, strategy_store=store)
+    
+    assert "non-positive" in result.content
+    assert len(logged) == 0
+
+
+async def test_auto_combine_strategies_logs_one_activity_entry_on_dispatch(tmp_path, monkeypatch):
+    """S44: _run_auto_combine_strategies records one activity entry per invocation
+    with symbol, component ids, winner_mode, winner_strategy_id, winner_verdict."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
+    store.save(StrategySpec("S2", "AAPL", ALWAYS_LONG, qty=1.0))
+    
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    monkeypatch.setattr(
+        "cerebral.trading.forward_record.ForwardRecord.compute_confidence_weight",
+        lambda self, strategy_id: 0.5
+    )
+
+    plugin = _plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+    
+    mix_calls = []
+    async def fake_mix(args, **kwargs):
+        mix_calls.append(args)
+        return ToolResult(content=json.dumps({"verdict": "VALIDATED", "total_return": 10.0, "strategy_id": f"mixed_{args['mode']}"}))
+    plugin._run_mix_strategies = fake_mix
+
+    result = await plugin._run_auto_combine_strategies({"symbol": "AAPL"}, strategy_store=store)
+    
+    assert not result.is_error, result.content
+    assert len(logged) == 1
+    entry = logged[0]
+    assert entry["source"] == "auto_combine_strategies"
+    assert entry["symbol"] == "AAPL"
+    assert len(entry["component_ids"]) == 2
+    assert entry["winner_mode"] in ("unanimous", "majority")
+    assert entry["winner_verdict"] == "VALIDATED"
+
+
+async def test_auto_combine_strategies_logs_no_entry_on_insufficient_strategies(tmp_path, monkeypatch):
+    """S44: No activity entry when the tool returns early (<2 eligible strategies)."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
+    
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    monkeypatch.setattr(
+        "cerebral.trading.forward_record.ForwardRecord.compute_confidence_weight",
+        lambda self, strategy_id: 0.5
+    )
+
+    plugin = _plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+
+    result = await plugin._run_auto_combine_strategies({"symbol": "AAPL"}, strategy_store=store)
+    
+    assert "not_enough_strategies" in result.content
+    assert len(logged) == 0
+
+
 async def test_halt_and_resume_strategy_are_reachable_via_call_tool(tmp_path):
     plugin = _plugin(tmp_path)
     lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")

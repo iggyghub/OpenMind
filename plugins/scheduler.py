@@ -1611,6 +1611,17 @@ class SchedulerPlugin:
                 "verdict": verdict,
             })
 
+        if self._record_activity_fn is not None:
+            await self._record_activity_fn(
+                "activity",
+                {
+                    "source": "expand_strategy_ticker",
+                    "strategy_id": strategy_id,
+                    "tickers": [r["ticker"] for r in results],
+                    "verdicts": {r["ticker"]: r["verdict"] for r in results},
+                }
+            )
+
         return ToolResult(content=json.dumps({
             "original_id": strategy_id,
             "attempts": results,
@@ -1762,6 +1773,19 @@ class SchedulerPlugin:
         # _run_mix_strategies above.
         if loser_id is not None:
             store.delete(loser_id)
+
+        if self._record_activity_fn is not None:
+            await self._record_activity_fn(
+                "activity",
+                {
+                    "source": "auto_combine_strategies",
+                    "symbol": symbol,
+                    "component_ids": component_ids,
+                    "winner_mode": winner,
+                    "winner_strategy_id": id_uni if winner == "unanimous" else id_maj,
+                    "winner_verdict": winner_ver,
+                }
+            )
 
         return ToolResult(content=json.dumps({
             "status": "complete",
