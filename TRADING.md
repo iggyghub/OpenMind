@@ -7,18 +7,16 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
 
 ## Next slice -- start here
 
-- **Active:** S45 -- #945 -- Activity Log entry for the Tally/
-  candidate_limit bias decision in process_idea. S44 landed clean (see
-  Landed PRs) -- the first slice in this whole campaign to need zero
-  hand-fixes. S45/S46a have no interdependency with each other; S46b
-  needs S46a's broadcast fields to exist first. **S46b is explicitly NOT
-  a self_dev slice** -- this campaign has never let self_dev touch tray/
-  and always hand-reviews it anyway (S34/S35 precedent); fire
-  self_dev_campaign through S46a, then hand-build S46b separately once it
-  lands. This campaign's own self_dev_campaign tool writes
-  `Status: blocked` into this file on a `tests_failed` gate result and
-  never resets it -- **always check/reset this Status line after a
-  hand-verified landing.**
+- **Active:** S46a -- #946 -- Backend: confidence_weight + is_expansion
+  on the trading_update broadcast. S44 landed clean; S45's implementation
+  was also correct but shipped with zero tests, added by hand (see Landed
+  PRs). S46a is the last self_dev slice in this queue -- **S46b
+  (#947, tray render) is explicitly NOT a self_dev slice**, this campaign
+  has never let self_dev touch tray/ and always hand-reviews it anyway
+  (S34/S35 precedent); hand-build it once S46a lands. This campaign's own
+  self_dev_campaign tool writes `Status: blocked` into this file on a
+  `tests_failed` gate result and never resets it -- **always check/reset
+  this Status line after a hand-verified landing.**
 - **Model:** sonnet
 
 ## Queue
@@ -483,7 +481,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   auto_combine_strategies: one entry per real dispatch (none on an
   early-return), using the already-wired self._record_activity_fn seam.
   No interdependency.
-- [ ] S45 -- #945 -- Activity Log entry for the Tally/candidate_limit
+- [x] S45 -- #945 -- Activity Log entry for the Tally/candidate_limit
   bias decision in process_idea: one entry when the tally is available
   (positive/total counts, candidate_limit before/after), none when
   unavailable. No interdependency.
@@ -3086,6 +3084,24 @@ against this driver needs a fresh grill session first.
   tests pass, 441-test broader sweep clean. Same sandbox 600s timeout as
   every slice before it -- confirmed environmental, not investigated
   further. Issue #944 closed via the merge commit.
+
+- PR #949 -- S45 -- Activity Log entry for the Tally/candidate_limit bias
+  decision, opened by self_dev_campaign against the real diff (936ebde,
+  based cleanly on master post-S44). Closed unmerged in favor of a
+  hand-verified merge (commit bfa8156 fast-forwarded onto master). The
+  implementation itself (`cerebral/trading/discovery.py`, 11 lines) was
+  correct as generated -- `candidate_limit_before` captured before
+  mutation, logs only when `tally_success` and `record_activity_fn` are
+  both truthy, content shape matches the issue exactly -- but zero tests
+  were added, despite the issue explicitly asking for coverage at each
+  bias tier. Added 4 tests to `test_trading_discovery.py`, reusing S41's
+  existing `_run_tally`-patching pattern plus the `RecordingActivity`
+  fixture: available tally at the >=60%/<=40%/between-thresholds tiers
+  logs the correct before/after, unavailable tally logs no
+  `trading_tally`-sourced entry (filtered out from `RecordingActivity`'s
+  other independent "accepted" entry). 47/47 discovery tests pass;
+  445-test broader sweep clean. Same sandbox 600s timeout as every slice
+  today -- confirmed environmental. Issue #945 closed via the fix commit.
 
 ## What's next
 
