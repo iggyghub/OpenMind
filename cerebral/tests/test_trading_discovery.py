@@ -356,6 +356,90 @@ async def test_unavailable_tally_does_not_bias_candidate_limit(tmp_path):
     assert len(results) == 2  # unchanged, same as the real stub's default behavior
 
 
+# ── process_idea: S45 Activity Log entry for the Tally/bias decision ────
+# S45's own PR left this untested -- only cerebral/trading/discovery.py was
+# touched, no test file. Hand-added, covering the issue's own acceptance
+# criteria: available tally logs the entry with correct before/after
+# values at each bias tier, unavailable tally logs nothing.
+
+async def test_available_tally_logs_activity_entry_with_before_after(tmp_path):
+    wl = _watchlist(tmp_path)
+    _populate(wl, 5)
+    gauntlet = RecordingGauntlet()
+    judge = FixedJudge(accepted=True)
+    activity = RecordingActivity()
+
+    with patch("cerebral.trading.discovery._run_tally", return_value=(True, 3, 5)):  # 60% -> +1
+        await process_idea(
+            _pattern_idea(), wl, gauntlet, judge_idea_fn=judge,
+            record_activity_fn=activity, candidate_limit=2,
+        )
+
+    tally_entries = [c for c in activity.calls if c[1].get("source") == "trading_tally"]
+    assert len(tally_entries) == 1
+    entry = tally_entries[0][1]
+    assert entry["positive"] == 3
+    assert entry["total"] == 5
+    assert entry["candidate_limit_before"] == 2
+    assert entry["candidate_limit_after"] == 3
+
+
+async def test_available_tally_at_low_tier_logs_correct_before_after(tmp_path):
+    wl = _watchlist(tmp_path)
+    _populate(wl, 5)
+    gauntlet = RecordingGauntlet()
+    judge = FixedJudge(accepted=True)
+    activity = RecordingActivity()
+
+    with patch("cerebral.trading.discovery._run_tally", return_value=(True, 1, 5)):  # 20% -> -1
+        await process_idea(
+            _pattern_idea(), wl, gauntlet, judge_idea_fn=judge,
+            record_activity_fn=activity, candidate_limit=2,
+        )
+
+    tally_entries = [c for c in activity.calls if c[1].get("source") == "trading_tally"]
+    assert len(tally_entries) == 1
+    entry = tally_entries[0][1]
+    assert entry["candidate_limit_before"] == 2
+    assert entry["candidate_limit_after"] == 1
+
+
+async def test_available_tally_between_thresholds_logs_unchanged_before_after(tmp_path):
+    wl = _watchlist(tmp_path)
+    _populate(wl, 5)
+    gauntlet = RecordingGauntlet()
+    judge = FixedJudge(accepted=True)
+    activity = RecordingActivity()
+
+    with patch("cerebral.trading.discovery._run_tally", return_value=(True, 2, 4)):  # 50% -- no bias
+        await process_idea(
+            _pattern_idea(), wl, gauntlet, judge_idea_fn=judge,
+            record_activity_fn=activity, candidate_limit=2,
+        )
+
+    tally_entries = [c for c in activity.calls if c[1].get("source") == "trading_tally"]
+    assert len(tally_entries) == 1
+    entry = tally_entries[0][1]
+    assert entry["candidate_limit_before"] == entry["candidate_limit_after"] == 2
+
+
+async def test_unavailable_tally_logs_no_activity_entry(tmp_path):
+    wl = _watchlist(tmp_path)
+    _populate(wl, 5)
+    gauntlet = RecordingGauntlet()
+    judge = FixedJudge(accepted=True)
+    activity = RecordingActivity()
+
+    with patch("cerebral.trading.discovery._run_tally", return_value=(False, 0, 0)):
+        await process_idea(
+            _pattern_idea(), wl, gauntlet, judge_idea_fn=judge,
+            record_activity_fn=activity, candidate_limit=2,
+        )
+
+    tally_entries = [c for c in activity.calls if c[1].get("source") == "trading_tally"]
+    assert tally_entries == []
+
+
 # ── run_discovery_pass ────────────────────────────────────────────────────
 
 async def test_run_discovery_pass_processes_every_idea(tmp_path):
