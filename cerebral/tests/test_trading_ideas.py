@@ -1,5 +1,6 @@
 import unittest
 import datetime
+from unittest.mock import patch
 from cerebral.trading_ideas import (
     extract_from_url,
     from_prose,
@@ -8,6 +9,7 @@ from cerebral.trading_ideas import (
     judge_idea,
     Idea,
     _compile_strategy as compile_strategy,
+    _run_tally,
 )
 
 
@@ -243,6 +245,133 @@ class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
         accepted, reason = await judge_idea(idea)
 
         self.assertTrue(accepted)
+
+    # ── S41: Tally wired into judge_idea/to_strategy prompts ────────────
+    # S41's own PR left _run_tally as a permanent stub always returning
+    # (False, 0, 0) -- never actually calling S40's retrieval or S38's
+    # confidence weight -- and shipped with zero tests for either the real
+    # wiring or the prompt/bias behavior it exists to drive. Both fixed
+    # here: _run_tally now does the real S40+S38 call, and this section
+    # covers what the original issue's acceptance criteria asked for.
+
+    async def test_to_strategy_includes_tally_sentence_when_available(self):
+        idea = from_prose("Buy when RSI < 30")
+
+        class FakeRouter:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(self, prompt: str, task_type: str) -> str:
+                self.calls.append(prompt)
+                return "def strategy(data):\n    return [1]"
+
+        router = FakeRouter()
+        with patch("cerebral.trading_ideas._run_tally", return_value=(True, 3, 5)):
+            await to_strategy(idea, router=router)
+
+        self.assertIn("Tally: 5 similar past claims: 3 had positive", router.calls[0])
+
+    async def test_to_strategy_omits_tally_sentence_when_unavailable(self):
+        idea = from_prose("Buy when RSI < 30")
+
+        class FakeRouter:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(self, prompt: str, task_type: str) -> str:
+                self.calls.append(prompt)
+                return "def strategy(data):\n    return [1]"
+
+        router = FakeRouter()
+        with patch("cerebral.trading_ideas._run_tally", return_value=(False, 0, 0)):
+            await to_strategy(idea, router=router)
+
+        self.assertNotIn("Tally:", router.calls[0])
+
+    async def test_judge_idea_includes_tally_sentence_when_available(self):
+        idea = from_prose("RSI below 30 predicts a bounce within 5 days.")
+
+        class FakeRouter:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(self, prompt: str, task_type: str) -> str:
+                self.calls.append(prompt)
+                return "ACCEPT"
+
+        router = FakeRouter()
+        with patch("cerebral.trading_ideas._run_tally", return_value=(True, 1, 4)):
+            await judge_idea(idea, router=router)
+
+        self.assertIn("Tally: 4 similar past claims: 1 had positive", router.calls[0])
+
+    async def test_judge_idea_omits_tally_sentence_when_unavailable(self):
+        idea = from_prose("RSI below 30 predicts a bounce within 5 days.")
+
+        class FakeRouter:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(self, prompt: str, task_type: str) -> str:
+                self.calls.append(prompt)
+                return "ACCEPT"
+
+        router = FakeRouter()
+        with patch("cerebral.trading_ideas._run_tally", return_value=(False, 0, 0)):
+            await judge_idea(idea, router=router)
+
+        self.assertNotIn("Tally:", router.calls[0])
+
+    def test_run_tally_empty_retrieval_returns_unavailable(self):
+        """No similar claims retrieved -> (False, 0, 0), not (True, 0, 0) --
+        callers gate on the success flag, not just total > 0, but this keeps
+        both consistent."""
+        class EmptyStore:
+            def retrieve_top5(self, claim_text):
+                return {"ids": [[]]}
+
+        with patch("cerebral.trading.claim_store.TradingStrategies", return_value=EmptyStore()):
+            success, pos, total = _run_tally("some claim")
+
+        self.assertFalse(success)
+        self.assertEqual((pos, total), (0, 0))
+
+    def test_run_tally_swallows_retrieval_failure(self):
+        """Conservative-continue: a real chromadb/embedding failure must not
+        raise out of _run_tally -- matches judge_idea/to_strategy's own
+        established failure convention for every other nudge input."""
+        class FailingStore:
+            def retrieve_top5(self, claim_text):
+                raise RuntimeError("chromadb unavailable")
+
+        with patch("cerebral.trading.claim_store.TradingStrategies", return_value=FailingStore()):
+            success, pos, total = _run_tally("some claim")
+
+        self.assertEqual((success, pos, total), (False, 0, 0))
+
+    def test_run_tally_computes_real_positive_count_from_confidence_weight(self):
+        """The real S40 (retrieval) + S38 (confidence weight) wiring, not a
+        stub: 3 retrieved ids, 2 with positive weight, 1 with negative."""
+        class FakeStore:
+            def retrieve_top5(self, claim_text):
+                return {"ids": [["a", "b", "c"]]}
+
+            @staticmethod
+            def compute_tally(strategy_ids, weights):
+                pos = sum(1 for sid in strategy_ids if weights.get(sid, 0) > 0)
+                return (pos, len(strategy_ids))
+
+        class FakeRecord:
+            _weights = {"a": 1.5, "b": -0.3, "c": 0.2}
+
+            def compute_confidence_weight(self, strategy_id):
+                return self._weights[strategy_id]
+
+        with patch("cerebral.trading.claim_store.TradingStrategies", return_value=FakeStore()), \
+             patch("cerebral.trading.forward_record.ForwardRecord", return_value=FakeRecord()):
+            success, pos, total = _run_tally("some claim")
+
+        self.assertEqual((success, pos, total), (True, 2, 3))
 
 
 if __name__ == "__main__":

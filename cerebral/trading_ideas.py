@@ -10,9 +10,41 @@ logger = logging.getLogger(__name__)
 
 
 def _run_tally(claim_text: str) -> tuple[bool, int, int]:
-    """Stub for S40's retrieval + tally. Returns (success, positive_count, total_count).
-    Tests stub this function to control retrieval outcomes."""
-    return False, 0, 0
+    """Real S40/S38 wiring: retrieve the top-5 claims similar to `claim_text`
+    (S40's TradingStrategies) and tally how many had a positive S38 confidence
+    weight. Returns (success, positive_count, total_count).
+
+    Self-contained (constructs its own store/record, no injected params) --
+    judge_idea/to_strategy call this with only a claim string, matching their
+    own existing signatures which this slice does not change. Conservative-
+    continue: any failure (chromadb unavailable, embedding call fails, etc.)
+    returns (False, 0, 0) so a nudge computation never blocks a real idea,
+    matching this campaign's established judge_idea/to_strategy failure
+    convention. Tests stub this function directly to control outcomes."""
+    try:
+        from cerebral.trading.claim_store import TradingStrategies
+        from cerebral.trading.forward_record import ForwardRecord
+
+        store = TradingStrategies()
+        res = store.retrieve_top5(claim_text)
+        ids = res.get("ids", [[]])[0]
+        if not ids:
+            return False, 0, 0
+
+        record = ForwardRecord()
+        # Chroma ids are always the bare (suffix-stripped) claim text -- S40's
+        # upsert_strategy strips `@SYMBOL` before using it as the id. Looking
+        # up confidence weight by that same bare id is correct for every
+        # strategy_id in forward_fills today (S42's @SYMBOL-suffixed
+        # expansions don't exist in production data yet); once expansions are
+        # real, a retrieved id may need checking under both its bare and
+        # suffixed forms to find every phase's fills.
+        weights = {sid: record.compute_confidence_weight(strategy_id=sid) for sid in ids}
+        pos, total = store.compute_tally(ids, weights)
+        return True, pos, total
+    except Exception:
+        logger.exception("[trading_ideas] _run_tally failed, continuing without a nudge")
+        return False, 0, 0
 
 _CODE_FENCE_RE = re.compile(r"```(?:python)?\s*\n?(.*?)```", re.DOTALL)
 

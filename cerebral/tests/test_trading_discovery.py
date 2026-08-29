@@ -4,6 +4,7 @@ Pure and duck-typed -- every external call (run_gauntlet, judge_idea,
 Activity Log) is injected. No network, no real LLM, no real sandbox.
 """
 import pytest
+from unittest.mock import patch
 
 from cerebral.trading.discovery import (
     DiscoveryAttempts,
@@ -279,6 +280,80 @@ async def test_no_judge_configured_accepts_by_default(tmp_path):
     results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=None, candidate_limit=1)
 
     assert len(results) == 1
+
+
+# ── process_idea: S41 Tally candidate_limit bias ────────────────────────
+# S41's own PR left _run_tally (imported here from trading_ideas) as a
+# permanent stub always returning (False, 0, 0) -- this bias code path was
+# dead in production and had zero test coverage. Patch the name as bound
+# in THIS module (`from ... import _run_tally` copies the reference at
+# import time, so patching trading_ideas._run_tally would not reach here).
+
+def _populate(wl, n):
+    symbols = ["AAPL", "MSFT", "GOOGL", "TSLA", "NVDA", "META"][:n]
+    for sym in symbols:
+        wl.upsert(sym)
+    return symbols
+
+
+async def test_high_tally_biases_candidate_limit_up(tmp_path):
+    wl = _watchlist(tmp_path)
+    _populate(wl, 5)
+    gauntlet = RecordingGauntlet()
+    judge = FixedJudge(accepted=True)
+
+    with patch("cerebral.trading.discovery._run_tally", return_value=(True, 3, 5)):  # 60% positive
+        results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=judge, candidate_limit=2)
+
+    assert len(results) == 3  # 2 + 1
+
+
+async def test_low_tally_biases_candidate_limit_down(tmp_path):
+    wl = _watchlist(tmp_path)
+    _populate(wl, 5)
+    gauntlet = RecordingGauntlet()
+    judge = FixedJudge(accepted=True)
+
+    with patch("cerebral.trading.discovery._run_tally", return_value=(True, 1, 5)):  # 20% positive
+        results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=judge, candidate_limit=2)
+
+    assert len(results) == 1  # 2 - 1
+
+
+async def test_low_tally_bias_floors_at_one_not_zero(tmp_path):
+    wl = _watchlist(tmp_path)
+    _populate(wl, 5)
+    gauntlet = RecordingGauntlet()
+    judge = FixedJudge(accepted=True)
+
+    with patch("cerebral.trading.discovery._run_tally", return_value=(True, 0, 5)):  # 0% positive
+        results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=judge, candidate_limit=1)
+
+    assert len(results) == 1  # max(1, 1 - 1) == 1, never 0
+
+
+async def test_mid_tally_does_not_bias_candidate_limit(tmp_path):
+    wl = _watchlist(tmp_path)
+    _populate(wl, 5)
+    gauntlet = RecordingGauntlet()
+    judge = FixedJudge(accepted=True)
+
+    with patch("cerebral.trading.discovery._run_tally", return_value=(True, 2, 4)):  # 50% -- between thresholds
+        results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=judge, candidate_limit=2)
+
+    assert len(results) == 2  # unchanged
+
+
+async def test_unavailable_tally_does_not_bias_candidate_limit(tmp_path):
+    wl = _watchlist(tmp_path)
+    _populate(wl, 5)
+    gauntlet = RecordingGauntlet()
+    judge = FixedJudge(accepted=True)
+
+    with patch("cerebral.trading.discovery._run_tally", return_value=(False, 0, 0)):
+        results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=judge, candidate_limit=2)
+
+    assert len(results) == 2  # unchanged, same as the real stub's default behavior
 
 
 # ── run_discovery_pass ────────────────────────────────────────────────────
