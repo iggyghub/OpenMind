@@ -8,8 +8,12 @@ class TestClaimStore:
         return chromadb.EphemeralClient()
 
     @pytest.fixture
-    def store(self, client):
-        return TradingStrategies(chroma_client=client)
+    def store(self, client, request):
+        # A fixed collection name is NOT isolated across separate EphemeralClient()
+        # instances within one process (confirmed live -- two EphemeralClient()s both
+        # see the same named collection's rows), so each test needs its own name, not
+        # just its own client, or state leaks between tests in file/class order.
+        return TradingStrategies(chroma_client=client, collection_name=f"test_{request.node.name}")
 
     def test_suffix_stripping(self):
         assert strip_symbol_suffix("algo@BTC") == "algo"
@@ -51,3 +55,16 @@ class TestClaimStore:
         store.upsert_strategy("my_algo@ETH", "my_algo claim")
         res = store.retrieve_top5("my_algo claim")
         assert res["ids"][0] == ["my_algo"]
+
+    def test_separate_instances_do_not_share_a_collection(self, client):
+        """Regression test: two TradingStrategies built on separate EphemeralClient()s
+        (or the same one, with distinct collection_name) must not see each other's
+        rows. Fails against the pre-fix hardcoded collection name, passes with an
+        injectable one -- two bare `chromadb.EphemeralClient()`s were confirmed to
+        share state via a fixed collection name within one process."""
+        store_a = TradingStrategies(chroma_client=chromadb.EphemeralClient(), collection_name="isolation_test_a")
+        store_b = TradingStrategies(chroma_client=chromadb.EphemeralClient(), collection_name="isolation_test_b")
+
+        store_a.upsert_strategy("only_in_a", "claim only in a")
+        res = store_b.retrieve_top5("claim only in a")
+        assert len(res["ids"][0]) == 0

@@ -2,16 +2,27 @@ import chromadb
 import re
 from typing import Optional
 
+from cerebral.paths import data_dir
+
+_CHROMA_PATH = data_dir() / "chroma_trading_strategies"
+
+
 def strip_symbol_suffix(text: str) -> str:
     """Remove trailing @SYMBOL suffix (e.g., @BTC, @ETH) from a strategy ID or claim."""
     return re.sub(r'@[\w]+$', '', text)
 
 class TradingStrategies:
-    def __init__(self, chroma_client: Optional[chromadb.Client] = None):
-        # Follows cerebral/memory/manager.py convention: injectable client, defaults to PersistentClient
-        self.chroma_client = chroma_client or chromadb.PersistentClient(path="./chroma_data/trading_strategies")
+    def __init__(self, chroma_client: Optional[chromadb.Client] = None, collection_name: str = "trading_strategies"):
+        # Follows cerebral/memory/manager.py convention: injectable client, defaults to
+        # PersistentClient anchored under data_dir() (not a cwd-relative path -- a relative
+        # path here would put real data wherever the process happened to be launched from).
+        self.chroma_client = chroma_client or chromadb.PersistentClient(path=str(_CHROMA_PATH))
+        # collection_name is injectable too: chromadb.EphemeralClient() instances do NOT
+        # isolate a fixed collection name from each other within one process (confirmed --
+        # two separately-constructed EphemeralClient()s both see the same "trading_strategies"
+        # collection's rows), so tests need a unique name per instance, not just a fresh client.
         self.collection = self.chroma_client.get_or_create_collection(
-            name="trading_strategies",
+            name=collection_name,
             embedding_function=chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
         )
 
