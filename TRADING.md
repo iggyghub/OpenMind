@@ -3,20 +3,19 @@
 Design: ADR-0026 (docs/adr/0026-trading-feedback-loop.md), grill closed 2026-08-29.
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: active
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S46b -- #947 -- tray: confidence-weight + expansion badges
-  on the Strategies list. **Hand-build, not self_dev** -- this campaign
-  has never let self_dev touch tray/. The last piece of the S38-S46
-  learning-loop queue; S46a's backend fields (`confidence_weight`,
-  `is_expansion` on the `trading_update` broadcast) already landed, so
-  this is unblocked. S46a needed 2 real "Edit step produced no commit"
-  failures before an exact-quoted-snippet reword (same fix as S17) got a
-  real diff through -- worth remembering as the standard remedy if a
-  future slice gets stuck the same way, rather than blind retries.
-- **Model:** sonnet
+- **Active:** none -- S44-S46b (the learning-loop observability
+  follow-up) all landed 2026-08-29, same day as S38-S43 itself. The
+  Tally, confidence weight, and expansion machinery S38-S43 built is now
+  actually visible: Activity Log entries for every expand/combine
+  dispatch and every biased judging decision, plus confidence-weight and
+  expansion badges on the Strategies list. See Landed PRs for the full
+  account, including S46a's 2 "no commit" failures and the exact-quoted-
+  snippet reword that fixed them (same technique as S17 -- worth
+  remembering if a future slice gets stuck the same way).
 - **Model:** sonnet
 
 ## Queue
@@ -490,7 +489,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   payload. Does NOT attempt to distinguish auto-combined (S43) from
   hand-mixed (S18) composites -- not reliably derivable without touching
   S43 again, disclosed out of scope. No interdependency.
-- [ ] S46b -- #947 -- Tray: confidence-weight + expansion badges on the
+- [x] S46b -- #947 -- Tray: confidence-weight + expansion badges on the
   Strategies list (tray/lib/trading-panel.js). **Hand-build, not
   self_dev** -- this campaign never lets self_dev touch tray/. Depends on
   S46a.
@@ -3134,6 +3133,30 @@ against this driver needs a fresh grill session first.
   **Disclosed, not silently skipped** -- a real `_trading_broadcast` test
   harness is worth its own future slice if this function keeps growing.
   Issue #946 closed via the merge commit.
+
+- Commit dd361ec -- S46b -- tray confidence-weight + expansion badges on
+  the Strategies list. Hand-built directly, not via self_dev_campaign
+  (guardrail path, tray/ -- never once let self_dev touch it this whole
+  campaign, S34/S35 precedent). Consumes S46a's `confidence_weight`/
+  `is_expansion` broadcast fields in `renderTradingUpdate`'s strategy
+  `<li>`: a confidence-badge (positive/negative/neutral styled) next to
+  the existing status/trade-count badges, an expansion-badge shown only
+  when `is_expansion` is true. Both default gracefully (`0.00` neutral,
+  no badge) when the fields are absent, so an older cached broadcast or a
+  strategy predating S38 doesn't render "undefined". 5 new tests in
+  `trading-panel.test.js`; full JS suite green (853 passed). Issue #947
+  closed via this commit.
+
+  **The full S38-S46b learning-loop arc (ADR-0026 + its observability
+  follow-up) is now complete, landed 2026-08-29.** `judge_idea`/
+  `to_strategy` factor in similar past claims' real performance, a
+  strategy can expand to new tickers or auto-combine into a composite on
+  demand, and all of it -- the nudge decisions, the dispatches, the
+  confidence numbers -- is now actually visible instead of being silent
+  machinery. Still true: nothing has been live-verified end to end (no
+  real paper/live cycle has run against any of this code yet -- see
+  docs/trading-live-verify.md), and cross-symbol composites remain
+  explicitly out of scope per ADR-0026.
 
 ## What's next
 
