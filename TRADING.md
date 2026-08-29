@@ -3,25 +3,27 @@
 Design: ADR-0026 (docs/adr/0026-trading-feedback-loop.md), grill closed 2026-08-29.
 Scaffolded 2026-08-21, grill closed 2026-08-22.
 
-## Status: active
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S43 -- #937 -- same-symbol composite auto-discovery tool
-  (auto_combine_strategies). The last slice in the 2026-08-29 learning-
-  loop queue -- S38-S42 all landed same day (S38, S40, S41, S42 all had
-  real hand-fixed bugs/gaps -- S42 was the most broken, effectively
-  non-functional as generated; S41's was the biggest scope miss, a
-  permanent stub that made the whole slice dead code; S39 was the only
-  clean one -- see Landed PRs). All five hit the sandbox's 600s
-  full-suite timeout at the merge gate, confirmed every time not to
-  reproduce locally -- treat a `tests_failed` gate result on this
-  campaign as "check the real diff by hand", not "the slice is broken".
-  This campaign's own self_dev_campaign tool writes `Status: blocked`
-  into this file on that gate result regardless of whether the substance
-  is fine, so **always check/reset this Status line after a
-  hand-verified landing** -- it does not reset itself. S43 depends only
-  on S38 (done).
+- **Active:** none -- S38-S43 (the full 2026-08-29 learning-loop queue,
+  ADR-0026) all landed the same day. Every one of the six hit the
+  sandbox's 600s full-suite timeout at the merge gate, confirmed every
+  time not to reproduce locally -- an infrastructure/environment issue,
+  never a real hang. Five of six shipped with real, hand-caught bugs
+  (S39 was the only clean one) -- S42 was the most broken (effectively
+  non-functional as generated, 6 separate issues), S41 the biggest scope
+  miss (a permanent stub left the entire slice dead code in production).
+  See Landed PRs for the full account of each. This campaign's own
+  self_dev_campaign tool writes `Status: blocked` into this file on a
+  `tests_failed` gate result regardless of whether the substance is fine,
+  and never resets it -- **always check/reset this Status line after a
+  hand-verified landing.** Next real work here is either a fresh design
+  pass (cross-symbol composites, explicitly deferred by ADR-0026) or
+  live-verifying this queue's actual behavior once real paper/live data
+  exists to feed it -- neither started; see docs/trading-live-verify.md
+  for the live-verify convention this campaign uses.
 - **Model:** sonnet
 
 ## Queue
@@ -473,7 +475,7 @@ Scaffolded 2026-08-21, grill closed 2026-08-22.
   rank_for_day_trading, capped at discovery_candidate_limit. Each
   candidate dispatches through the existing gauntlet using S39's
   @SYMBOL-suffixed id. Depends on S38 + S39.
-- [ ] S43 -- #937 -- Same-symbol composite auto-discovery tool
+- [x] S43 -- #937 -- Same-symbol composite auto-discovery tool
   (auto_combine_strategies, on-demand): top-3 strategies per symbol by
   confidence weight (all positive), fires the EXISTING mix_strategies
   path for both unanimous and majority, keeps whichever backtests
@@ -3009,6 +3011,55 @@ against this driver needs a fresh grill session first.
   `test_plugins_time_notes.py`'s exhaustive scheduler tool-list snapshot
   -- didn't know about the new tool name, the same gap this campaign has
   hit on S32/S34d/S37c. Issue #936 closed via the fix commit.
+
+- PR #943 -- S43 -- same-symbol composite auto-discovery tool
+  (`auto_combine_strategies`), the last slice of the queue, opened by
+  self_dev_campaign against the real diff (b747377, based cleanly on
+  master post-S42). Closed unmerged in favor of a hand-verified merge
+  (commit 5724637 fast-forwarded onto master). Sixth and last slice
+  today to hit the sandbox's 600s timeout -- confirmed environmental
+  across all six, never once reproduced locally.
+
+  **The only PR of the six with real test coverage from the start** (4
+  tests), and the selection/dispatch logic itself -- top-3 by confidence
+  weight, both `mix_strategies` modes, pick winner by verdict-then-return
+  -- was correct. But the explicit acceptance criterion "only the
+  better-performing composite is persisted" was silently unmet: the
+  cleanup step matched on `s.origin`/`s.provenance`, neither of which
+  exists on `StrategySpec` (both live on `strategy_versions`), and called
+  `getattr(store, "delete", no-op)` -- `StrategyStore` never had a
+  `delete` method at all. Both failures were swallowed by a bare
+  `except: pass`, so the losing composite was silently kept as a real
+  validated `strategy_specs` row every time, indistinguishable from the
+  winner -- a quieter version of S42's "looks done, does nothing"
+  pattern, since the *winner* half worked fine and only the *cleanup*
+  half was dead.
+
+  Fixed by adding a real `StrategyStore.delete(strategy_id)` (removes the
+  spec + its full version history; safe here since S43's use is the only
+  caller, discarding a composite within the same call that just created
+  it, before any paper/live trading could have touched it), making
+  `_run_mix_strategies` surface the `strategy_id` it generates in its own
+  return JSON (previously invisible to every caller), and rewiring
+  cleanup to use that real id -- `run_gauntlet` only ever saves a spec on
+  a `VALIDATED` verdict, so this is a genuine delete when the loser also
+  validated, a harmless no-op when it didn't. Also fixed a `self`-missing
+  bug in one of the PR's own four test mocks (inconsistent with the
+  other three, which had it correctly), and the same exhaustive
+  tool-list snapshot gap as S42/#942 (and S32/S34d/S37c before both).
+  Added `test_auto_combine_strategies_deletes_the_losing_composite`,
+  which fails against the pre-fix logic and passes with the real delete.
+  437-test broader sweep clean; issue #937 closed via the fix commit.
+
+  **All six slices of the 2026-08-29 learning-loop queue (ADR-0026) are
+  now landed.** Real production behavior change: `judge_idea`/
+  `to_strategy` now factor in similar past claims' real performance
+  (S38/S40/S41), a validated strategy can expand to new tickers on demand
+  (S39/S42), and same-symbol composites can be auto-discovered instead of
+  hand-named (S43). Cross-symbol composites remain explicitly out of
+  scope per ADR-0026. Nothing in this queue has been live-verified end to
+  end yet (no real paper/live cycle has run against the new code) -- see
+  docs/trading-live-verify.md.
 
 ## What's next
 
