@@ -60,7 +60,13 @@ def _extract_code(reply: str) -> str:
     first fenced block when present; otherwise assume the reply is already
     bare code (matches every existing stub/test double)."""
     match = _CODE_FENCE_RE.search(reply)
-    return match.group(1).strip() if match else reply.strip()
+    code = match.group(1).strip() if match else reply.strip()
+    # Strip bogus return-type annotation from the generated function signature.
+    # Models sometimes copy the prompt's illustrative `-> signals` literally
+    # into the generated function's real signature, causing NameError at
+    # exec-time. Match any bareword or simple type-hint annotation.
+    code = re.sub(r"^(\s*def strategy\(data\))\s*->\s*[^:\n]+\s*:", r"\1:", code, flags=re.MULTILINE)
+    return code
 
 
 @dataclass
