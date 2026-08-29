@@ -1,5 +1,6 @@
 import pytest
 from cerebral.trading.broker import StubBrokerClient, BrokerClient, Side, OrderType
+from cerebral.trading.live_tick import find_position
 
 
 def test_stub_place_order_buy():

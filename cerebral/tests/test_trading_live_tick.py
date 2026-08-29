@@ -724,11 +724,12 @@ def test_tick_blocks_high_correlation_open(tmp_path, monkeypatch):
     max_correlation threshold is blocked and broker.place_order is never called."""
     record = make_record(tmp_path, monkeypatch)
     broker = StubBrokerClient()
-    # Pre-fill AAPL position
-    broker._positions["AAPL"] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
-    
+    # Pre-fill AAPL position under some other strategy -- the correlation
+    # check reads the aggregate whole-book view (#961), so any strategy_id works.
+    broker._positions[(None, "AAPL")] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
+
     aapl_df, corx_df = _make_correlated_bars()
-    
+
     def fixture_fetch(symbol, start, end, interval="1d"):
         if symbol == "AAPL":
             return aapl_df
@@ -747,11 +748,12 @@ def test_tick_does_not_block_closing_trade_due_to_correlation(tmp_path, monkeypa
     """A closing trade is never blocked by correlation (only opens are checked)."""
     record = make_record(tmp_path, monkeypatch)
     broker = StubBrokerClient()
-    # Pre-fill AAPL position
-    broker._positions["AAPL"] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
-    
+    # Pre-fill AAPL position under strategy "s1" -- run_strategy_tick("s1", ...)
+    # below looks up ITS OWN position by strategy_id (#961), so the key must match.
+    broker._positions[("s1", "AAPL")] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
+
     aapl_df, corx_df = _make_correlated_bars()
-    
+
     def fixture_fetch(symbol, start, end, interval="1d"):
         if symbol == "AAPL":
             return aapl_df
