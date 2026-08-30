@@ -12,10 +12,16 @@ the issue specifies, opens a per-issue PR (`Closes #N`), and this file's
 
 ## Status: ready
 
+<!-- 2026-08-30: previous run reported "blocked" citing branch selfdev/8c02b75a's
+     push -- that branch is S3's own (PR #978), which merged successfully.
+     Hand-verified S3 landed correctly; reset to ready per the known
+     self_dev_campaign reason-surfacing bug (#952). -->
+
+
 ## Next slice -- start here
 
-- **Active:** S1 -- #963
-- **Model:** sonnet
+- **Active:** S4 -- #966
+- **Model:** sonnet)
 
 ## Queue
 
@@ -24,9 +30,9 @@ ahead of it. S8-S13 (the shape-scale sweep) all depend on S1 only, not on
 each other or on S2-S7, and may run in any order or in parallel once S1 is
 merged.
 
-- [ ] S1 -- #963 -- UI tokens: shape/elevation/semantic-color custom properties (Model: sonnet)
-- [ ] S2 -- #964 -- Floating-shadow sweep: standardize popovers on --shadow-floating (Model: sonnet)
-- [ ] S3 -- #965 -- Transition-duration sweep: standardize to 150ms (Model: sonnet)
+- [x] S1 -- #963 -- UI tokens: shape/elevation/semantic-color custom properties (Model: sonnet)
+- [x] S2 -- #964 -- Floating-shadow sweep: standardize popovers on --shadow-floating (Model: sonnet)
+- [x] S3 -- #965 -- Transition-duration sweep: standardize to 150ms (Model: sonnet)
 - [ ] S4 -- #966 -- Icon sweep: replace remaining glyph icons (Model: sonnet)
 - [ ] S5 -- #967 -- Semantic color sweep: health/state colors onto named tokens (Model: sonnet)
 - [ ] S6 -- #968 -- Global focus-visible ring (Model: opus)
@@ -48,6 +54,9 @@ the next entry's model on the `Model:` line above if it differs from sonnet.
 
 (none yet)
 
+- PR #976 -- S1 (auto-merged by self_dev_campaign)
+- PR #977 -- S2 (auto-merged by self_dev_campaign)
+- PR #978 -- S3 (auto-merged by self_dev_campaign)
 ## SAFETY
 
 Highest priority; overrides the issue if they ever conflict.
