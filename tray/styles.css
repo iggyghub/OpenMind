@@ -1,0 +1,30 @@
+/* S6: Global focus-visible ring: flat to hover-shadow to focus-glow */
+.nav-item,
+.queue-badge,
+.send,
+.att-attach-btn,
+.state-pill,
+.stop-turn,
+button {
+  /* flat at rest */
+}
+
+.nav-item:hover,
+.queue-badge:hover,
+.send:hover,
+.att-attach-btn:hover,
+.state-pill:hover,
+.stop-turn:hover,
+button:hover {
+  box-shadow: var(--shadow-raised);
+}
+
+.nav-item:focus-visible,
+.queue-badge:focus-visible,
+.send:focus-visible,
+.att-attach-btn:focus-visible,
+.state-pill:focus-visible,
+.stop-turn:focus-visible,
+button:focus-visible {
+  box-shadow: var(--shadow-floating), 0 0 10px rgba(124, 92, 252, 0.25);
+}
