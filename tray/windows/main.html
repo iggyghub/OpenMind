@@ -616,9 +616,9 @@
       user-select: none;
     }
 
-    .state-pill[data-state="thinking"] { color: var(--state-thinking); border-color: var(--state-thinking); }
+    .state-pill[data-state="thinking"] { color: var(--color-warning); border-color: var(--color-warning); }
     .state-pill[data-state="speaking"] { color: var(--state-speaking); border-color: var(--state-speaking); }
-    .state-pill[data-state="active"]   { color: var(--state-active);   border-color: var(--state-active);   }
+    .state-pill[data-state="active"]   { color: var(--color-success); border-color: var(--color-success);   }
 
     /* ── health dot + panel ─────────────────────────────────── */
     .health {
@@ -636,9 +636,9 @@
       cursor: pointer;
       transition: background .15s, box-shadow .15s;
     }
-    .health-dot[data-health="ok"]    { background: #4bd49a; box-shadow: 0 0 6px #4bd49a88; }
-    .health-dot[data-health="stale"] { background: #d4b04b; box-shadow: 0 0 6px #d4b04b88; }
-    .health-dot[data-health="down"]  { background: #c44b4b; box-shadow: 0 0 6px #c44b4b88; }
+    .health-dot[data-health="ok"]    { background: var(--color-success); box-shadow: 0 0 6px var(--color-success); }
+    .health-dot[data-health="stale"] { background: var(--color-warning); box-shadow: 0 0 6px var(--color-warning); }
+    .health-dot[data-health="down"]  { background: var(--color-danger);  box-shadow: 0 0 6px var(--color-danger);  }
     /* Connecting: red-to-green conic swirl while the WS bridge (re)connects,
        e.g. the ~30s Cerebral boot after a restart. */
     .health-dot[data-health="connecting"] {
