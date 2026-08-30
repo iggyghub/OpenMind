@@ -23,6 +23,18 @@
       --state-thinking: #d4b04b;
       --state-speaking: #7c5cfc;
       --state-active:   #4bd49a;
+
+      /* UI tokens: shape / elevation / semantic color */
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+
+      --shadow-raised: 0 1px 3px rgba(0, 0, 0, 0.35);
+      --shadow-floating: 0 8px 24px rgba(0, 0, 0, 0.4);
+
+      --color-success: #4bd49a;
+      --color-warning: #d4b04b;
+      --color-danger: #c44b4b;
     }
 
     body {
@@ -333,7 +345,7 @@
       align-items: center;
       gap: 6px;
       background: var(--bg-elev);
-      border-radius: 10px;
+      border-radius: var(--radius-md);
       padding: 4px 8px;
       flex-shrink: 0;
       transition: box-shadow 0.15s ease;
@@ -345,7 +357,7 @@
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
     }
     .hdr-group:focus-within {
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 10px rgba(124, 92, 252, 0.25);
+      box-shadow: var(--shadow-floating), 0 0 10px rgba(124, 92, 252, 0.25);
     }
 
     /* ── header ─────────────────────────────────────────────── */
@@ -462,7 +474,7 @@
     .hdr-mic-seg {
       background: transparent;
       border: none;
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       color: var(--text-muted);
       font-family: inherit;
       font-size: 11px;
@@ -489,7 +501,7 @@
     .hdr-tts-mute {
       background: transparent;
       border: none;
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       color: var(--text-muted);
       font-family: inherit;
       font-size: 11px;
@@ -4917,7 +4929,7 @@
     .prof-switcher-btn {
       background: transparent;
       border: none;
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       color: var(--text-muted);
       font-family: inherit;
       font-size: 11px;
