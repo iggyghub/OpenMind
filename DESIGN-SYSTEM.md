@@ -12,22 +12,10 @@ the issue specifies, opens a per-issue PR (`Closes #N`), and this file's
 
 ## Status: ready
 
-<!-- 2026-08-30: S6's first attempt (PR #981) was a real failure, not a false
-     positive -- it wrote rules into a new tray/styles.css that main.html
-     never links, and used a bare `button` selector. Closed #981, posted
-     corrected instructions on #968, reset to ready to retry. -->
-
-
-<!-- 2026-08-30: previous run reported "blocked" citing branch selfdev/8c02b75a's
-     push -- that branch is S3's own (PR #978), which merged successfully.
-     Hand-verified S3 landed correctly; reset to ready per the known
-     self_dev_campaign reason-surfacing bug (#952). -->
-
-
 ## Next slice -- start here
 
-- **Active:** S6 -- #968
-- **Model:** opus)
+- **Active:** S7 -- #969
+- **Model:** opus
 
 ## Queue
 
@@ -41,7 +29,7 @@ merged.
 - [x] S3 -- #965 -- Transition-duration sweep: standardize to 150ms (Model: sonnet)
 - [x] S4 -- #966 -- Icon sweep: replace remaining glyph icons (Model: sonnet)
 - [x] S5 -- #967 -- Semantic color sweep: health/state colors onto named tokens (Model: sonnet)
-- [ ] S6 -- #968 -- Global focus-visible ring (Model: opus)
+- [x] S6 -- #968 -- Global focus-visible ring (Model: opus)
 - [ ] S7 -- #969 -- Adaptive header density via container queries (Model: opus)
 - [ ] S8 -- #970 -- Shape scale: Harness + Library panes (Model: sonnet)
 - [ ] S9 -- #971 -- Shape scale: Trading + Log panes (Model: sonnet)
@@ -58,13 +46,23 @@ the next entry's model on the `Model:` line above if it differs from sonnet.
 
 ## Landed PRs
 
-(none yet)
-
 - PR #976 -- S1 (auto-merged by self_dev_campaign)
 - PR #977 -- S2 (auto-merged by self_dev_campaign)
 - PR #978 -- S3 (auto-merged by self_dev_campaign)
 - PR #979 -- S4 (auto-merged by self_dev_campaign)
 - PR #980 -- S5 (auto-merged by self_dev_campaign)
+- PR #982 -- S6, run_id `design-system-s6-v2` (retried after PR #981 was closed for two mistakes: wrote to a new `tray/styles.css` main.html never links, and used a bare `button` selector). #982 itself auto-merged with tests green but landed a corrupted CSS rule (its insertion split `.pane[data-route="harness"]`'s block in two, nesting the new selectors inside it -- passing jest tests don't cover CSS parse structure). Hand-fixed directly in a follow-up commit; verified via a fresh `npx jest` run (853/853 pass) and a live DOM check confirming `.nav-item:focus-visible` etc. is a proper top-level rule and the harness pane's own rule is intact.
+
+## Landed via self_dev_campaign's own deterministic-run_id ledger (issue #780): a
+slice whose run_id already has a recorded "pr" phase will resume by reporting
+that same recorded result rather than re-attempting the edit, even after the
+PR is closed and the issue is corrected. If a slice needs a genuine do-over
+after its first PR is closed, call the plain `self_dev` tool directly with an
+explicit fresh `run_id` (e.g. `design-system-s6-v2`) and the corrected
+change_description, rather than re-invoking `self_dev_campaign` and expecting
+it to retry -- it won't. Update this file by hand afterward; `self_dev`
+(unlike `self_dev_campaign`) has no knowledge of this driver file.
+
 ## SAFETY
 
 Highest priority; overrides the issue if they ever conflict.
@@ -86,7 +84,12 @@ Highest priority; overrides the issue if they ever conflict.
 4. **Gate on tests:** `npx jest` in `tray/` must pass before opening the PR.
    This campaign has no backend/Python surface, so `pytest` is not expected
    to be affected -- if a slice somehow touches `cerebral/`, that is out of
-   scope (see rule 1) and the run should stop rather than proceed.
+   scope (see rule 1) and the run should stop rather than proceed. **Passing
+   jest is necessary, not sufficient** -- S6 proved a CSS edit can land with
+   a corrupted rule structure (a new rule nested inside an unrelated existing
+   one) while every jest test still passes, since none of them parse CSS
+   structure. Spot-check a slice's actual diff when the change touches
+   existing rule boundaries, not just new standalone rules.
 5. **No new dependency.** Every slice in this queue is achievable in plain
    CSS/inline SVG/vanilla JS already used elsewhere in the file. Adding an
    icon library, a CSS framework, or any `tray/package.json` entry is out of

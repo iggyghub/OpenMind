@@ -5041,6 +5041,9 @@
     .pane[data-route="harness"] {
       position: relative;
       background: var(--bg);
+      display: flex;
+      flex-direction: column;
+    }
 
     /* ── S6 -- global focus-visible ring: flat -> hover-shadow -> focus-glow ── */
     .nav-item:focus-visible,
@@ -5050,9 +5053,6 @@
     .state-pill:focus-visible,
     .stop-turn:focus-visible {
       box-shadow: var(--shadow-floating), 0 0 10px rgba(124, 92, 252, 0.25);
-    }
-      display: flex;
-      flex-direction: column;
     }
 
     /* ── Trading pane (promoted to top-level route, S19 follow-up) ──── */
