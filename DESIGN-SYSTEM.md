@@ -12,6 +12,12 @@ the issue specifies, opens a per-issue PR (`Closes #N`), and this file's
 
 ## Status: ready
 
+<!-- 2026-08-30: S6's first attempt (PR #981) was a real failure, not a false
+     positive -- it wrote rules into a new tray/styles.css that main.html
+     never links, and used a bare `button` selector. Closed #981, posted
+     corrected instructions on #968, reset to ready to retry. -->
+
+
 <!-- 2026-08-30: previous run reported "blocked" citing branch selfdev/8c02b75a's
      push -- that branch is S3's own (PR #978), which merged successfully.
      Hand-verified S3 landed correctly; reset to ready per the known
@@ -20,8 +26,8 @@ the issue specifies, opens a per-issue PR (`Closes #N`), and this file's
 
 ## Next slice -- start here
 
-- **Active:** S4 -- #966
-- **Model:** sonnet)
+- **Active:** S6 -- #968
+- **Model:** opus)
 
 ## Queue
 
@@ -33,8 +39,8 @@ merged.
 - [x] S1 -- #963 -- UI tokens: shape/elevation/semantic-color custom properties (Model: sonnet)
 - [x] S2 -- #964 -- Floating-shadow sweep: standardize popovers on --shadow-floating (Model: sonnet)
 - [x] S3 -- #965 -- Transition-duration sweep: standardize to 150ms (Model: sonnet)
-- [ ] S4 -- #966 -- Icon sweep: replace remaining glyph icons (Model: sonnet)
-- [ ] S5 -- #967 -- Semantic color sweep: health/state colors onto named tokens (Model: sonnet)
+- [x] S4 -- #966 -- Icon sweep: replace remaining glyph icons (Model: sonnet)
+- [x] S5 -- #967 -- Semantic color sweep: health/state colors onto named tokens (Model: sonnet)
 - [ ] S6 -- #968 -- Global focus-visible ring (Model: opus)
 - [ ] S7 -- #969 -- Adaptive header density via container queries (Model: opus)
 - [ ] S8 -- #970 -- Shape scale: Harness + Library panes (Model: sonnet)
@@ -57,6 +63,8 @@ the next entry's model on the `Model:` line above if it differs from sonnet.
 - PR #976 -- S1 (auto-merged by self_dev_campaign)
 - PR #977 -- S2 (auto-merged by self_dev_campaign)
 - PR #978 -- S3 (auto-merged by self_dev_campaign)
+- PR #979 -- S4 (auto-merged by self_dev_campaign)
+- PR #980 -- S5 (auto-merged by self_dev_campaign)
 ## SAFETY
 
 Highest priority; overrides the issue if they ever conflict.
