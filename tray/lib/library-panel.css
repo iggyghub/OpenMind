@@ -1,0 +1,19 @@
+/* Library pane styles */
+/* Scope: .pane[data-route="library"] and descendants (.lib-*) */
+/* Border-radius tokens mapped per ADR-0027 S8 #970 */
+
+.lib-badge {
+  border-radius: var(--radius-lg);
+}
+
+.lib-card {
+  border-radius: var(--radius-md);
+}
+
+.lib-btn {
+  border-radius: var(--radius-md);
+}
+
+.lib-chip {
+  border-radius: var(--radius-sm);
+}
