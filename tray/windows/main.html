@@ -5073,6 +5073,7 @@
     .att-attach-btn:focus-visible,
     .state-pill:focus-visible,
     .stop-turn:focus-visible {
+      outline: none;
       box-shadow: var(--shadow-floating), 0 0 10px rgba(124, 92, 252, 0.25);
     }
     /* Catch-all so every other button (pane-local actions like
@@ -5080,6 +5081,7 @@
        visible keyboard-focus ring. Lower specificity than the class rules
        above and below, so those still take precedence where present. */
     button:focus-visible {
+      outline: none;
       box-shadow: var(--shadow-floating), 0 0 10px rgba(124, 92, 252, 0.25);
     }
 
