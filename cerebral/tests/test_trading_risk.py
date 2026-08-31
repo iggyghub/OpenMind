@@ -82,6 +82,22 @@ class TestFailureHandling:
         assert order.filled_qty == 5.0
         assert order.status == "PARTIALLY_FILLED"
 
+    def test_bearish_sentiment_blocks_new_open(self):
+        mgr = RiskManager()
+        res = mgr.check_sentiment("AAPL", "BEARISH")
+        assert not res.allowed
+        assert res.blocked_by == "market_sentiment"
+
+    def test_neutral_and_bullish_sentiment_pass(self):
+        mgr = RiskManager()
+        assert mgr.check_sentiment("AAPL", "NEUTRAL").allowed
+        assert mgr.check_sentiment("AAPL", "BULLISH").allowed
+
+    def test_no_sentiment_reading_passes(self):
+        """None -- gate off, or no reading yet -- never blocks."""
+        mgr = RiskManager()
+        assert mgr.check_sentiment("AAPL", None).allowed
+
 class TestAlerts:
     def test_alert_dispatcher_emits_structured_event(self):
         dispatcher = AlertDispatcher()

@@ -154,6 +154,33 @@ function _renderPaperControl(paperControl) {
 }
 
 /**
+ * Read-only market-sentiment badge (2026-08-31) -- what's currently gating
+ * new paper opens, sourced from cerebral/trading/sentiment.py's
+ * MarketSentimentGate via _trading_broadcast's "sentiment" key. No
+ * controls here (v1, informational only) -- toggling the gate itself is
+ * via set_setting the same way trading_paper_enabled was toggled, not a
+ * dedicated button yet.
+ * @param {Object} [sentiment] - {label, reason, updated_at, enabled}
+ */
+function _renderSentimentBadge(sentiment) {
+  if (!sentiment || !sentiment.enabled) {
+    return '';
+  }
+  const label = sentiment.label || 'NEUTRAL';
+  const cls = label === 'BEARISH' ? 'negative' : label === 'BULLISH' ? 'positive' : 'neutral';
+  const reason = sentiment.reason || '';
+  return `
+    <div class="paper-control sentiment-badge">
+      <h3>Market Sentiment</h3>
+      <div class="paper-control-row">
+        <span class="sentiment-label ${cls}">${label}</span>
+        <span class="sentiment-reason">${reason}</span>
+      </div>
+    </div>
+  `;
+}
+
+/**
  * Wires the paper-trading control's Start/Stop buttons (call_tool, same
  * pattern as _wireDiscoveryControl) and the capital input's Save button
  * (set_setting -- a plain numeric setting, not voice/chat-reachable the
@@ -432,10 +459,11 @@ function renderTradingUpdate(data, container, sendEventFn) {
   // only the non-empty branch injected any styles at all).
   const discoveryHtml = _renderDiscoveryControl(data && data.discovery);
   const paperControlHtml = _renderPaperControl(data && data.paper_control);
+  const sentimentHtml = _renderSentimentBadge(data && data.sentiment);
   _injectTradingPanelStyles();
 
   if (!data || !data.positions || data.positions.length === 0) {
-    mount.innerHTML = paperControlHtml + discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+    mount.innerHTML = paperControlHtml + sentimentHtml + discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
     _wireDiscoveryControl(mount, sendEventFn);
     _wirePaperControl(mount, sendEventFn);
     return;
@@ -451,7 +479,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const state = mount._strategyState;
   const strategy = state.strategies[state.selectedIdx];
 
-  mount.innerHTML = paperControlHtml + discoveryHtml + `
+  mount.innerHTML = paperControlHtml + sentimentHtml + discoveryHtml + `
     <div class="trading-panel-layout">
       <div class="strategy-list">
         <h3>Strategies</h3>

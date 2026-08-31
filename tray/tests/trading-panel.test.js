@@ -425,6 +425,57 @@ describe('renderTradingUpdate paper-trading control (S34/#901)', () => {
   });
 });
 
+// 2026-08-31: market-wide sentiment gate on new paper opens, read-only
+// badge next to the Paper Trading control (see cerebral/trading/
+// sentiment.py's MarketSentimentGate, threaded through _trading_broadcast's
+// "sentiment" key).
+describe('renderTradingUpdate sentiment badge (2026-08-31)', () => {
+  test('renders the current label and reason when the gate is enabled', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [],
+        sentiment: { label: 'BEARISH', reason: 'inflation data spooked investors', enabled: true },
+      }, mount);
+      expect(mount.innerHTML).toContain('Market Sentiment');
+      expect(mount.innerHTML).toContain('BEARISH');
+      expect(mount.innerHTML).toContain('inflation data spooked investors');
+    });
+  });
+
+  test('renders alongside a populated strategy list too', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: TWO_STRATEGIES, alerts: [],
+        sentiment: { label: 'BULLISH', reason: 'broad gains', enabled: true },
+      }, mount);
+      expect(mount.innerHTML).toContain('Market Sentiment');
+      expect(mount.innerHTML).toContain('MA cross A');
+    });
+  });
+
+  test('renders nothing when the gate is disabled', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({
+        positions: [], alerts: [],
+        sentiment: { label: 'NEUTRAL', reason: 'no strong signal', enabled: false },
+      }, mount);
+      expect(mount.innerHTML).not.toContain('Market Sentiment');
+    });
+  });
+
+  test('missing sentiment data entirely renders fine, not a crash', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [] }, mount);
+      expect(mount.innerHTML).not.toContain('Market Sentiment');
+      expect(mount.innerHTML).toContain('Paper Trading');
+    });
+  });
+});
+
 // 2026-08-27: Books moved out to its own Trading sub-tab (previously
 // embedded atop the Strategies sub-tab, see renderTradingUpdate below for
 // the "it's gone from there now" regression guard) -- renderBooksPanel

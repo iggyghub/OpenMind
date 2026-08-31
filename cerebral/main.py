@@ -252,6 +252,8 @@ from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.discovery import VettedTickers
 from cerebral.trading.market_hours import is_market_hours
 from cerebral.trading.books import list_validated_strategies
+from cerebral.trading.sentiment import MarketSentimentGate
+from plugins.rss_monitor import RSSMonitorPlugin
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
 # Paper only, deliberately: env="paper" is Alpaca's own paper-trading
@@ -276,6 +278,21 @@ _trading_lifecycle = StrategyLifecycle(alert_dispatcher=_alert_dispatcher)
 _scheduler_plugin._lifecycle = _trading_lifecycle
 _trading_strategy_store = StrategyStore()
 _vetted_tickers = VettedTickers()  # S28 (#881)
+# Market-wide sentiment gate on new paper opens (2026-08-31), sourced from
+# general market-news RSS feeds via the existing RSSMonitorPlugin, same
+# openmind.db table the tray's own rss_subscribe/rss_check tools read/write
+# -- feeds subscribed once via that plugin are what this reads too.
+# Instantiated directly here, not routed through _orc.call_tool -- that
+# applies capability/ACL/consent gating meant for user-initiated tool
+# calls, not a background scheduler tick; same "Felix's own autonomous
+# decision" precedent as _fundamentals_red_flag_scan below. Known,
+# accepted edge case: the separate opt-in RSS poller further down this
+# file (_rss_poll_once, off by default, RSS_POLL_INTERVAL_SECONDS) goes
+# through _orc and would race this on the same per-feed cursor if a user
+# ever turns it on -- whichever caller reaches rss_check first consumes
+# the new items. Not engineered around since it's inactive by default.
+_sentiment_gate = MarketSentimentGate()
+_rss_monitor = RSSMonitorPlugin()
 
 
 def _latest_10q_10k_accession(symbol: str) -> "str | None":
@@ -3661,6 +3678,17 @@ async def _scheduler_loop() -> None:
                 paper_broker = _trading_broker if paper_ok else _trading_broker_fallback
                 if not paper_ok:
                     logger.info(f"[cerebral] Alpaca paper preflight failed, using StubBrokerClient: {paper_reason}")
+                # Market-wide sentiment gate: refresh is cheap when nothing's
+                # new (no LLM call, see MarketSentimentGate.refresh) so this
+                # is safe to call every tick. Fails open internally -- a
+                # bad tick here never blocks the dispatch below, it just
+                # means sentiment_label carries the last-known reading.
+                sentiment_label = None
+                if _settings.get("trading_sentiment_gate_enabled"):
+                    reading = await _sentiment_gate.refresh(
+                        _rss_monitor, lambda p: _router.complete(p, task_type="coding")
+                    )
+                    sentiment_label = reading.label
                 results = await asyncio.to_thread(
                     _dispatch_due_events,
                     _scheduler_plugin, paper_broker, _trading_forward_record,
@@ -3671,6 +3699,7 @@ async def _scheduler_loop() -> None:
                     latest_accession_fn=_latest_10q_10k_accession,
                     fundamentals_scan_fn=_fundamentals_red_flag_scan,
                     vetted_tickers=_vetted_tickers,
+                    sentiment_label=sentiment_label,
                 )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")
@@ -3803,6 +3832,13 @@ async def _trading_broadcast() -> None:
             (m["label"] for m in _router.list_models() if m["id"] == books_task_model_id),
             books_task_model_id,
         )
+        sentiment_reading = _sentiment_gate.current
+        sentiment = {
+            "label": sentiment_reading.label,
+            "reason": sentiment_reading.reason,
+            "updated_at": sentiment_reading.updated_at.isoformat() if sentiment_reading.updated_at else None,
+            "enabled": _settings.get("trading_sentiment_gate_enabled"),
+        }
         await _broadcast({
             "type": "trading_update",
             "data": {
@@ -3810,6 +3846,7 @@ async def _trading_broadcast() -> None:
                 "books": books, "books_model": books_model_label,
                 "paper_control": paper_control, "total_pnl": total_pnl,
                 "all_fills": all_fills, "paper_archives": paper_archives,
+                "sentiment": sentiment,
             },
         })
     except Exception as e:

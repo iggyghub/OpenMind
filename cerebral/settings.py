@@ -79,6 +79,12 @@ _DEFAULTS: dict[str, Any] = {
     # StubBrokerClient (currently hardcoded to $10,000 in broker.py).
     "trading_paper_enabled":            True,
     "trading_paper_starting_capital":   10000.0,
+    # 2026-08-31: market-wide sentiment gate on new paper opens, sourced
+    # from general market-news RSS feeds (cerebral/trading/sentiment.py).
+    # Default True (unlike trading_live_arm) -- this only ever gates paper
+    # opens and fails open on any RSS/LLM error, no real-money reason to
+    # default it off.
+    "trading_sentiment_gate_enabled":   True,
     # S23: Minimum distinct trading days required for graduation/graduation math.
     "distinct_days_floor":       30,
     # S31: manual discovery start/stop + duration. discovery_enabled defaults
@@ -128,6 +134,7 @@ _TYPES: dict[str, type] = {
     "max_concurrent_positions":  int,
     "trading_paper_enabled":            bool,
     "trading_paper_starting_capital":   float,
+    "trading_sentiment_gate_enabled":   bool,
     "distinct_days_floor":       int,
     "discovery_enabled":         bool,
     "discovery_stop_at":         str,

@@ -107,6 +107,18 @@ class RiskManager:
                 return RiskEvaluation(allowed=False, reason=reason, blocked_by="correlation")
         return RiskEvaluation(allowed=True)
 
+    def check_sentiment(self, symbol: str, sentiment_label: Optional[str]) -> RiskEvaluation:
+        """Blocks a new open only on a market-wide BEARISH reading.
+        `None` (gate off / no reading yet) and NEUTRAL/BULLISH all pass --
+        this is deliberately a coarse market-wide gate (decision: general
+        market feeds, not per-symbol), not a per-symbol veto."""
+        if sentiment_label == "BEARISH":
+            reason = f"Market sentiment is BEARISH -- blocking new open for {symbol}"
+            logger.warning(f"[risk] Blocked {symbol}: {reason}")
+            self._emit_alert("warning", "sentiment_block", reason, {"blocked_by": "market_sentiment", "symbol": symbol})
+            return RiskEvaluation(allowed=False, reason=reason, blocked_by="market_sentiment")
+        return RiskEvaluation(allowed=True)
+
     def record_daily_loss(self, loss: float) -> None:
         if loss > 0:
             self._daily_loss_accrued += loss

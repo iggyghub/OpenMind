@@ -210,6 +210,7 @@ def run_strategy_tick(
     risk: Optional[Any] = None,
     size_pct: float = 1.0,
     position_key: Optional[str] = None,
+    sentiment_label: Optional[str] = None,
 ) -> dict:
     """Evaluate one strategy against fresh data and act on the result.
 
@@ -294,6 +295,17 @@ def run_strategy_tick(
             if not corr_res.allowed:
                 return {"status": "blocked", "blocked_by": corr_res.blocked_by}
 
+    # Market-wide sentiment gate (opens only, same reasoning as the two
+    # checks above: never trap a losing position open by blocking its
+    # exit). sentiment_label is None when the gate is off or no reading
+    # exists yet -- check_sentiment already passes None/NEUTRAL/BULLISH
+    # through, this just skips the call entirely when there's no risk
+    # manager to route it through.
+    if risk is not None and not is_close and sentiment_label is not None:
+        sent_res = risk.check_sentiment(spec.symbol, sentiment_label)
+        if not sent_res.allowed:
+            return {"status": "blocked", "blocked_by": sent_res.blocked_by}
+
     order = broker.place_order(symbol=spec.symbol, qty=qty, side=side, type="market", strategy_id=position_key)
     if order.status not in ("FILLED", "PARTIALLY_FILLED"):
         return {"status": "unfilled", "signal": signal, "symbol": spec.symbol,
@@ -340,6 +352,7 @@ def dispatch_due_events(
     latest_accession_fn: Optional[Callable] = None,
     fundamentals_scan_fn: Optional[Callable] = None,
     vetted_tickers: Optional[Any] = None,
+    sentiment_label: Optional[str] = None,
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
 
@@ -406,6 +419,7 @@ def dispatch_due_events(
             name, current_broker, forward_record, {}, store=store, fetch=fetch,
             phase="live" if is_live else "paper", dispatch_id=dispatch_id,
             risk=risk, size_pct=size_pct * ramp_pct,  # S20
+            sentiment_label=sentiment_label,
         )
         # Marked regardless of outcome: a persistently failing strategy should
         # retry at its own interval, not spam every tick.

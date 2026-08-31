@@ -1799,6 +1799,7 @@ class SchedulerPlugin:
         config: dict | None = None, store=None, fetch=None, phase: str = "paper",
         dispatch_id: str | None = None,
         risk=None, size_pct: float = 1.0,  # S20
+        sentiment_label: str | None = None,
     ) -> dict:
         """Runs one paper-trading tick for the given strategy. Pure trade
         execution -- event bookkeeping (marking a due event as dispatched)
@@ -1834,6 +1835,7 @@ class SchedulerPlugin:
                 dispatch_id or strategy_name, spec, broker, forward_record, fetch=fetch, phase=phase,
                 risk=risk, size_pct=size_pct,  # S20
                 position_key=strategy_name,  # #961: broker position survives a version bump
+                sentiment_label=sentiment_label,
             )
             logger.info(f"Paper tick for {strategy_name}: {result}")
             return result
