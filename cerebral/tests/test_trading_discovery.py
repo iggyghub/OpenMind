@@ -147,6 +147,44 @@ def test_watchlist_prefilter_candidates_never_duplicates_a_watchlist_symbol_alre
     assert candidates.count("AAPL") == 1
 
 
+def test_watchlist_prefilter_candidates_keeps_widening_once_watchlist_exceeds_limit(tmp_path):
+    """Real bug, live-observed (2026-08-31): the 2026-08-26 overflow fix
+    only helps while len(watchlist) < limit -- universe[:limit] silently
+    becomes existing[:limit] the moment the watchlist grows past `limit`,
+    permanently excluding known-liquid overflow again (same failure mode
+    as the bug that fix was supposed to close, just delayed). A real
+    watchlist reached 14 entries within days and then stayed at exactly
+    those 14 for three more days straight."""
+    from cerebral.trading.discovery import _KNOWN_TICKERS
+    wl = _watchlist(tmp_path)
+    for sym in ["PLTR", "SNOW", "DDOG", "NET", "SHOP"]:  # 5 >= limit(3), none in _KNOWN_TICKERS
+        wl.upsert(sym)
+
+    candidates = wl.prefilter_candidates(_pattern_idea(), limit=3)
+
+    assert len(candidates) == 3
+    assert candidates[:2] == ["SHOP", "NET"]  # most-recently-screened watchlist entries, unchanged
+    assert candidates[2] in _KNOWN_TICKERS  # the last slot still introduces something new
+    assert candidates[2] not in ("PLTR", "SNOW", "DDOG", "NET", "SHOP")
+
+
+def test_watchlist_prefilter_candidates_widening_slot_advances_as_overflow_gets_adopted(tmp_path):
+    """Each newly-adopted overflow symbol moves from overflow into
+    existing, so the next call's widening slot offers the NEXT unseen
+    known-liquid symbol, not the same one forever."""
+    wl = _watchlist(tmp_path)
+    for sym in ["PLTR", "SNOW", "DDOG"]:
+        wl.upsert(sym)
+
+    first = wl.prefilter_candidates(_pattern_idea(), limit=3)
+    newly_adopted = first[2]
+    wl.upsert(newly_adopted)  # what process_idea would do on dispatch
+
+    second = wl.prefilter_candidates(_pattern_idea(), limit=3)
+
+    assert second[2] != newly_adopted
+
+
 # ── extract_ticker ────────────────────────────────────────────────────────
 
 def test_extract_ticker_recognizes_a_known_symbol():
@@ -240,7 +278,13 @@ async def test_rejected_idea_logs_to_the_activity_log(tmp_path):
 
 async def test_accepted_pattern_idea_only_dispatches_the_prefiltered_candidates(tmp_path):
     """Only the watchlist's pre-filtered candidates reach run_gauntlet --
-    not an unbounded universe sweep."""
+    not an unbounded universe sweep. Bounded to _KNOWN_TICKERS (watchlist
+    entries are always known-liquid too here), not asserting the exact 2
+    symbols -- the 2026-08-31 widening fix legitimately swaps the last
+    slot for a not-yet-seen known ticker once the watchlist reaches
+    candidate_limit, which is exactly what this test's own watchlist size
+    (2) does at candidate_limit=2."""
+    from cerebral.trading.discovery import _KNOWN_TICKERS
     wl = _watchlist(tmp_path)
     for sym in ["AAPL", "MSFT"]:
         wl.upsert(sym)
@@ -250,7 +294,8 @@ async def test_accepted_pattern_idea_only_dispatches_the_prefiltered_candidates(
     results = await process_idea(_pattern_idea(), wl, gauntlet, judge_idea_fn=judge, candidate_limit=2)
 
     dispatched_tickers = {c[1] for c in gauntlet.calls}
-    assert dispatched_tickers == {"AAPL", "MSFT"}
+    assert dispatched_tickers <= _KNOWN_TICKERS
+    assert len(dispatched_tickers) == 2
     assert len(results) == 2
 
 
@@ -553,6 +598,11 @@ async def test_ticker_specific_dispatch_records_the_attempt(tmp_path):
 
 
 async def test_prefiltered_dispatch_records_an_attempt_per_candidate(tmp_path):
+    """One attempt recorded per prefiltered candidate -- not asserting the
+    exact 2 symbols (see test_accepted_pattern_idea_only_dispatches_the_
+    prefiltered_candidates for why the widening fix legitimately swaps
+    one of them at this watchlist-size/candidate_limit)."""
+    from cerebral.trading.discovery import _KNOWN_TICKERS
     wl = _watchlist(tmp_path)
     for sym in ["AAPL", "MSFT"]:
         wl.upsert(sym)
@@ -562,7 +612,9 @@ async def test_prefiltered_dispatch_records_an_attempt_per_candidate(tmp_path):
     await process_idea(_pattern_idea(), wl, RecordingGauntlet(), judge_idea_fn=judge,
                         record_attempt_fn=attempt, candidate_limit=2)
 
-    assert {c["symbol"] for c in attempt.calls} == {"AAPL", "MSFT"}
+    symbols = {c["symbol"] for c in attempt.calls}
+    assert len(symbols) == 2
+    assert symbols <= _KNOWN_TICKERS
 
 
 async def test_unvalidated_dispatch_records_the_failed_gates_reason(tmp_path):

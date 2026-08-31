@@ -108,6 +108,18 @@ class DiscoveryWatchlist:
         overflow after. A rank_fn that returns nothing (e.g. every
         candidate failed its liquidity floor) falls back to the unranked
         universe rather than returning zero candidates.
+
+        Fix (2026-08-31): the 2026-08-26 fix above stopped helping the
+        moment the watchlist grew past `limit` entries -- `universe[:limit]`
+        is just `existing[:limit]` once len(existing) >= limit, so overflow
+        became permanently unreachable again, silently. Confirmed live: a
+        watchlist that reached 14 entries within days stayed at exactly
+        those 14 for the following three, every idea's top candidates
+        being whichever 3 watchlist symbols were screened most recently.
+        Reserving the LAST slot for the next un-seen known-liquid symbol
+        (only once existing has filled every other slot) keeps the pool
+        widening a little every pass without diluting the existing
+        symbols' own priority -- they still fill every slot but the last.
         """
         existing = self.symbols()
         overflow = sorted(_KNOWN_TICKERS - set(existing))
@@ -116,6 +128,12 @@ class DiscoveryWatchlist:
             ranked = rank_fn(universe)
             if ranked:
                 return ranked[:limit]
+        if overflow and limit > 1 and len(existing) >= limit:
+            # limit > 1, not >= 1: at limit=1 there's no way to reserve an
+            # overflow slot without dropping the watchlist's own top entry
+            # entirely, which would invert "watchlist entries first" rather
+            # than just widening around the edges of it.
+            return existing[:limit - 1] + overflow[:1]
         return universe[:limit]
 
     def close(self) -> None:
