@@ -65,3 +65,18 @@ def test_get_bars_returns_capitalised_ohlcv_columns():
     client = _client_with_fakes()
     df = client.get_bars("AAPL", "2026-01-01", "2026-01-10", "1d")
     assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
+
+
+def test_get_bars_collapses_the_multiindex_to_a_plain_date_index():
+    """Real bug, live-observed: get_stock_bars always returns a MultiIndex
+    (symbol, timestamp), even for one symbol. df.index.name = "Date"
+    silently no-ops on a MultiIndex (nothing raises, but the index keeps
+    its (symbol, timestamp) shape) -- fetch_ohlcv's documented contract
+    (a single DatetimeIndex named "Date", matching yfinance's shape) was
+    never actually met once Alpaca credentials existed to take this path
+    for real."""
+    client = _client_with_fakes()
+    df = client.get_bars("AAPL", "2026-01-01", "2026-01-10", "1d")
+    assert df.index.nlevels == 1
+    assert df.index.name == "Date"
+    assert df.index[0] == pd.Timestamp("2026-01-01")

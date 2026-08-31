@@ -115,11 +115,18 @@ class AlpacaBrokerClient:
         # day PDT limit (not the >$25k-equity exemption); nothing in this
         # codebase gates on day_trades_remaining today, so this is display
         # only -- revisit if a risk check ever starts reading it.
+        # Pre-existing bug: cash/equity/buying_power are typed str on
+        # TradeAccount (Alpaca's REST API returns account financials as
+        # strings), not float -- passed through unconverted, this made
+        # every arithmetic use downstream (e.g. RiskManager.check_order's
+        # account_equity * pct) raise "can't multiply sequence by
+        # non-int of type 'float'". Live-observed against the real paper
+        # account on the first day trading_paper_enabled was turned on.
         return Account(
-            cash=acc.cash,
-            equity=acc.equity,
+            cash=float(acc.cash),
+            equity=float(acc.equity),
             status=acc.status.value,
-            buying_power=acc.buying_power,
+            buying_power=float(acc.buying_power),
             day_trades_remaining=max(0, 3 - (acc.daytrade_count or 0)),
         )
 
@@ -206,12 +213,16 @@ class AlpacaBrokerClient:
     def get_order(self, order_id: str) -> Order:
         self._connect()
         o = self._client.get_order_by_id(order_id)
-        # Populate fill price from Alpaca's confirmed fill_avg_price
-        fill_price = float(o.fill_avg_price) if o.fill_avg_price else 0.0
+        # Pre-existing bugs, both raised AttributeError (caught upstream by
+        # _run_paper_strategy's broad except, so silent until traced): the
+        # field is filled_avg_price, not fill_avg_price; and Order has no
+        # fees field at all -- Alpaca is commission-free, there's nothing
+        # to read (matches StubBrokerClient's own "no fee to simulate").
+        fill_price = float(o.filled_avg_price) if o.filled_avg_price else 0.0
         return Order(
-            id=o.id,
+            id=str(o.id),
             symbol=o.symbol,
-            qty=o.qty,
+            qty=float(o.qty),
             filled_qty=float(o.filled_qty),
             side=o.side.value,
             type=o.type.value,
@@ -221,7 +232,7 @@ class AlpacaBrokerClient:
             # compares against the Stub's casing.
             status=o.status.value.upper(),
             price=fill_price,
-            fees=float(o.fees) if o.fees else 0.0,
+            fees=0.0,
         )
 
 
@@ -450,6 +461,15 @@ class AlpacaMarketDataClient:
             raise ValueError(f"Missing columns in Alpaca response for {symbol}")
 
         df = df[required_cols]
+        # Pre-existing bug: get_stock_bars always returns a MultiIndex
+        # (symbol, timestamp), even for one symbol -- the df.index.name =
+        # "Date" below silently no-ops on a MultiIndex (nothing raises,
+        # but the index keeps its (symbol, timestamp) shape), so every
+        # caller relying on fetch_ohlcv's documented contract (a single
+        # DatetimeIndex named "Date", matching yfinance's shape) got a
+        # raw MultiIndex instead. Drop the symbol level to match it.
+        if df.index.nlevels > 1:
+            df = df.droplevel("symbol")
         df.columns = ["Open", "High", "Low", "Close", "Volume"]
         df = df.sort_index()
         df.index.name = "Date"

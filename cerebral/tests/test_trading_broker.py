@@ -11,8 +11,15 @@ class _FakeEnumVal:
 
 
 class _FakeAlpacaOrder:
-    def __init__(self, id="o1", symbol="AAPL", qty=10, filled_qty=0,
-                 side="buy", type="market", status="new", fill_avg_price=None, fees=None):
+    """__slots__ deliberately excludes any field not on the real (pydantic)
+    Order model -- e.g. no `fees` -- so a broker.py access to a field that
+    doesn't actually exist raises AttributeError here too, the same way it
+    does against the real alpaca-py model. Field types (str qty/prices)
+    match what the real API returns, not what would be convenient."""
+    __slots__ = ("id", "symbol", "qty", "filled_qty", "side", "type", "status", "filled_avg_price")
+
+    def __init__(self, id="o1", symbol="AAPL", qty="10", filled_qty="0",
+                 side="buy", type="market", status="new", filled_avg_price=None):
         self.id = id
         self.symbol = symbol
         self.qty = qty
@@ -20,8 +27,7 @@ class _FakeAlpacaOrder:
         self.side = _FakeEnumVal(side)
         self.type = _FakeEnumVal(type)
         self.status = _FakeEnumVal(status)
-        self.fill_avg_price = fill_avg_price
-        self.fees = fees
+        self.filled_avg_price = filled_avg_price
 
 
 class _FakeAlpacaClient:
@@ -41,8 +47,8 @@ class _FakeAlpacaClient:
         status = self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
         return _FakeAlpacaOrder(
             id=order_id, status=status,
-            filled_qty=10 if status in ("filled", "partially_filled") else 0,
-            fill_avg_price=101.5 if status in ("filled", "partially_filled") else None,
+            filled_qty="10" if status in ("filled", "partially_filled") else "0",
+            filled_avg_price="101.5" if status in ("filled", "partially_filled") else None,
         )
 
 
@@ -86,11 +92,13 @@ def test_alpaca_place_order_polls_until_filled(monkeypatch):
 
 class _FakeAlpacaAccount:
     """alpaca-py's TradeAccount -- day-trade info is daytrade_count (a used
-    count), there is no day_trades_remaining attribute."""
+    count), there is no day_trades_remaining attribute. cash/equity/
+    buying_power are strings on the real API -- not floats -- so these
+    are too, to actually exercise get_account()'s float() casts."""
     def __init__(self, daytrade_count=0, status="ACTIVE"):
-        self.cash = 1000.0
-        self.equity = 1000.0
-        self.buying_power = 1000.0
+        self.cash = "1000.0"
+        self.equity = "1000.0"
+        self.buying_power = "1000.0"
         self.status = _FakeEnumVal(status)
         self.daytrade_count = daytrade_count
 
@@ -102,6 +110,20 @@ def test_alpaca_get_account_maps_daytrade_count_to_remaining():
     acc = broker.get_account()
     assert acc.day_trades_remaining == 2
     assert acc.status == "ACTIVE"
+
+
+def test_alpaca_get_account_casts_financials_to_float():
+    """Real bug, live-observed: cash/equity/buying_power come back as
+    strings from Alpaca's API. Passed through unconverted, RiskManager's
+    account_equity * pct math raised "can't multiply sequence by
+    non-int of type 'float'" on every strategy that reached a risk
+    check, the first day paper trading actually ran for real."""
+    broker = AlpacaBrokerClient(env="paper")
+    broker._connected = True
+    broker._client = type("C", (), {"get_account": lambda self: _FakeAlpacaAccount()})()
+    acc = broker.get_account()
+    assert acc.equity == 1000.0 and isinstance(acc.equity, float)
+    assert acc.equity * 0.02 == 20.0  # would raise a TypeError before the fix
 
 
 def test_alpaca_get_account_day_trades_remaining_floors_at_zero():

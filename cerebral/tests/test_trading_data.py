@@ -28,6 +28,21 @@ def isolated_cache_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(trading_data, "_CACHE_DIR", str(tmp_path))
 
 
+@pytest.fixture(autouse=True)
+def no_alpaca_market_data(monkeypatch):
+    """fetch_ohlcv tries AlpacaMarketDataClient first, falling back to
+    yfinance only on exception -- these tests are specifically exercising
+    the yfinance path (mocking yf.Ticker), so once real Alpaca paper
+    credentials exist in keyring, every test here silently started making
+    a real network call to Alpaca instead of ever touching the mock. Force
+    the Alpaca branch to fail so it falls through, restoring the "no real
+    network requests" contract in this file's own module docstring."""
+    class _AlwaysFails:
+        def __init__(self, *a, **kw):
+            raise RuntimeError("Alpaca disabled in trading_data tests")
+    monkeypatch.setattr("cerebral.trading.broker.AlpacaMarketDataClient", _AlwaysFails)
+
+
 @pytest.fixture
 def mock_ohlcv_df():
     """Return a realistic OHLCV DataFrame for testing."""
