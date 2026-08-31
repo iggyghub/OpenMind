@@ -3165,7 +3165,7 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
     edit_raw = await _router.complete(edit_prompt, task_type="self_dev")
 
     # 4. Apply the edits (confined to the clone) and commit on a new branch.
-    written = _sdio.apply_search_replace(clone_dir, edit_raw)
+    written = _sdio.apply_search_replace(clone_dir, edit_raw, allowed=set(wanted))
 
     branch = f"selfdev/{uuid.uuid4().hex[:8]}"
     committed = bool(written) and _sdio.create_branch_and_commit(

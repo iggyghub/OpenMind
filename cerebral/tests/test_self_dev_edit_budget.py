@@ -51,7 +51,7 @@ def _patch_sdio(monkeypatch, written=None, committed=True):
     apply_search_replace/create_branch_and_commit never touch real git."""
     calls = {"apply": [], "commit": []}
 
-    def fake_apply(clone_dir, text):
+    def fake_apply(clone_dir, text, allowed=None):
         calls["apply"].append(text)
         return written if written is not None else []
 

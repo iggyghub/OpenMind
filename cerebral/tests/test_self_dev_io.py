@@ -161,6 +161,31 @@ def test_apply_newfile_path_escape_guard(tmp_path):
     assert not (tmp_path.parent / "evil.py").exists()
 
 
+def test_apply_search_replace_rejects_files_outside_allowed(tmp_path):
+    """#986: an edit-step reply touching a file the planning step never
+    named must be inert, even though the anchor matches and the path is
+    genuinely inside the clone -- this is the guard against a wrong/
+    unrelated model reply getting written and committed."""
+    fp = _write(tmp_path, "cerebral/trading/broker.py", "X = 1\n")
+    reply = (
+        "<<<FILE: cerebral/trading/broker.py>>>\n<<<SEARCH>>>\nX = 1\n"
+        "<<<REPLACE>>>\nX = 2\n<<<END>>>"
+    )
+    assert io.apply_search_replace(tmp_path, reply, allowed={"tray/lib/harness-panel.css"}) == []
+    assert fp.read_text(encoding="utf-8") == "X = 1\n"  # untouched
+
+    # The same reply is applied normally once the path is actually allowed.
+    applied = io.apply_search_replace(tmp_path, reply, allowed={"cerebral/trading/broker.py"})
+    assert applied == ["cerebral/trading/broker.py"]
+    assert fp.read_text(encoding="utf-8") == "X = 2\n"
+
+
+def test_apply_newfile_rejects_paths_outside_allowed(tmp_path):
+    reply = "<<<NEWFILE: cerebral/new_mod.py>>>\nVALUE = 2\n<<<END>>>"
+    assert io.apply_search_replace(tmp_path, reply, allowed={"other.py"}) == []
+    assert not (tmp_path / "cerebral/new_mod.py").exists()
+
+
 def test_apply_mixed_edit_and_newfile(tmp_path):
     fp = _write(tmp_path, "cerebral/router.py", "X = 1\n")
     reply = (

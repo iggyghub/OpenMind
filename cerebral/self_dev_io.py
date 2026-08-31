@@ -35,10 +35,23 @@ _NEWFILE_BLOCK = re.compile(
 )
 
 
-def apply_search_replace(clone_dir: Path, text: str) -> "list[str]":
+def apply_search_replace(
+    clone_dir: Path, text: str, allowed: "set[str] | None" = None
+) -> "list[str]":
     """Apply search/replace blocks from a model reply to files under clone_dir.
     Exact match only; a miss is skipped (fail-safe -> no commit -> gate escalates).
     Returns the list of repo-relative paths actually changed.
+
+    `allowed`, when given, restricts writes to that exact set of repo-relative
+    paths (the file-planning step's own answer for "which files will this
+    touch") -- issue #986: an edit-step reply that comes back wrong/unrelated
+    (observed: a CSS-only task produced a 1000+-line diff across unrelated
+    trading files, byte-identical across two independent runs -- root cause
+    not pinned down, but not reproducible in this codebase's own request
+    handling) would otherwise still get written and committed as long as its
+    paths existed and its SEARCH anchors happened to match. This guard makes
+    that class of reply inert instead of merely relying on the test gate to
+    catch it downstream.
     # ponytail: exact match only; add whitespace-lenient matching if local
     # models miss the anchor too often."""
     clone_dir = Path(clone_dir)
@@ -53,6 +66,8 @@ def apply_search_replace(clone_dir: Path, text: str) -> "list[str]":
         return applied
     for m in _SR_BLOCK.finditer(text):
         rel, search, replace = m.group(1).strip(), m.group(2), m.group(3)
+        if allowed is not None and rel not in allowed:
+            continue  # not a file the planning step said it would touch
         fp = (clone_dir / rel).resolve()
         if not str(fp).startswith(root) or not fp.is_file() or not search:
             continue  # path-escape guard / missing file / empty anchor
@@ -65,6 +80,8 @@ def apply_search_replace(clone_dir: Path, text: str) -> "list[str]":
     # can't blank a real source file.
     for m in _NEWFILE_BLOCK.finditer(text):
         rel, content = m.group(1).strip(), m.group(2)
+        if allowed is not None and rel not in allowed:
+            continue  # not a file the planning step said it would touch
         fp = (clone_dir / rel).resolve()
         if not str(fp).startswith(root) or fp.exists():
             continue  # path-escape guard / never overwrite an existing file
