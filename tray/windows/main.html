@@ -5075,6 +5075,13 @@
     .stop-turn:focus-visible {
       box-shadow: var(--shadow-floating), 0 0 10px rgba(124, 92, 252, 0.25);
     }
+    /* Catch-all so every other button (pane-local actions like
+       .trd-create-toggle, never individually listed above) still gets a
+       visible keyboard-focus ring. Lower specificity than the class rules
+       above and below, so those still take precedence where present. */
+    button:focus-visible {
+      box-shadow: var(--shadow-floating), 0 0 10px rgba(124, 92, 252, 0.25);
+    }
 
     /* ── Trading pane (promoted to top-level route, S19 follow-up) ──── */
     .pane[data-route="trading"] {
@@ -5109,9 +5116,6 @@
     .trd-tab.is-active {
       background: var(--accent);
       color: var(--bg);
-    }
-    .trd-tab:focus-visible {
-      box-shadow: var(--shadow-floating), 0 0 10px rgba(124, 92, 252, 0.25);
     }
     .trd-create-section {
       border-bottom: 1px solid var(--border);
