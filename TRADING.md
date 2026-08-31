@@ -3259,6 +3259,39 @@ against this driver needs a fresh grill session first.
   see "What's next" below for what's genuinely left (live-verification,
   cross-symbol composites).
 
+**2026-08-31 (Monday) -- live-verification actually happened, as a
+direct hand-driven session outside this driver file's own queue (no
+slice numbers, no self_dev_campaign involvement). Landed, in order:**
+Alpaca preflight/env fixes; `_trading_broker` now really is
+`AlpacaBrokerClient(env="paper")` against a real Alpaca paper account,
+falling back to `StubBrokerClient` per-tick only when preflight fails
+(commit 37655a4 -- also fixed 6 dead-on-arrival Alpaca bugs found live,
+including `Side` vs `OrderSide` and lowercase-status mismatches); 3 more
+live-observed Alpaca bugs (33fe161); starting-capital UI no longer lies
+once Alpaca is active (2a10299); discovery candidate pool capped at
+watchlist size (71d3366); a market-wide sentiment gate on new paper
+opens (e8b0afa); confidence sizing + symbol-claim arbitration + a
+bear-case veto (8a476df). None of these are logged as numbered slices
+above -- this paragraph is the only record of them in this file. A
+concurrent, unrelated self-dev "shape scale" UI campaign (S8-S13,
+#970-#975) also landed the same afternoon, interleaved in git log but
+not part of this campaign.
+
+**#929 (cash/equity/buying_power frozen at starting capital forever)
+fixed same day**, `cerebral/trading/broker.py`'s
+`StubBrokerClient.place_order`: a buy now debits `cash` by
+`filled_qty * fill_price`, a sell credits it back, `equity` is
+recomputed as `cash + sum(open position market value)`, and
+`buying_power` mirrors `cash` (no margin modeling -- this is the paper-
+simulation fallback path, not the real Alpaca account, which already
+reports its own real numbers). Matters most for the fallback window
+during an Alpaca outage, since `RiskManager` reads `get_account().equity`
+for its risk-limit math. New test
+`test_stub_place_order_updates_cash_equity` in
+`cerebral/tests/test_trading_broker.py`; old `test_stub_reset` comment
+documenting the bug as known-and-accepted removed since it's now fixed.
+21/21 broker tests pass.
+
 ## What's next
 
 The S13-S19 blueprint is code-complete and hand-verified, the same way

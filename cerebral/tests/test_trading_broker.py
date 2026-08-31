@@ -260,14 +260,10 @@ def test_stub_commission_free():
 
 
 def test_stub_reset():
-    """reset() clears positions/orders and restores starting cash.
-
-    Note: place_order never actually deducts trade cost from cash (a
-    separate, pre-existing gap -- StubBrokerClient tracks positions but
-    never adjusts cash/equity/buying_power from trading activity), so
-    this only asserts on what reset() actually needs to guarantee:
-    positions/orders are cleared and cash ends up at the configured
-    starting value, not that cash visibly changed beforehand."""
+    """reset() clears positions/orders and restores starting cash/equity/
+    buying_power to the configured starting value (#929 fixed place_order
+    to actually move them off that value on a real fill -- see
+    test_stub_place_order_updates_cash_equity below)."""
     stub = StubBrokerClient()
     stub.place_order("AAPL", 10, "buy", "market")
     assert len(stub.list_positions()) > 0
@@ -282,3 +278,25 @@ def test_stub_reset():
     stub2.reset()
     assert stub2.get_account().cash == 75000.0
     assert stub2.list_positions() == []
+
+
+def test_stub_place_order_updates_cash_equity():
+    """#929: place_order used to leave cash/equity/buying_power frozen at
+    starting capital forever. A buy must reduce cash by the fill cost; a
+    later sell must return proceeds; equity must track cash + open
+    position market value."""
+    stub = StubBrokerClient({"starting_cash": 10000.0})
+    price = stub._simulated_price("AAPL")
+
+    order = stub.place_order("AAPL", 10, "buy", "market")
+    acc = stub.get_account()
+    assert order.filled_qty == 10.0
+    assert acc.cash == pytest.approx(10000.0 - 10 * price)
+    assert acc.buying_power == acc.cash
+    assert acc.equity == pytest.approx(10000.0)  # cash spent == position value gained
+
+    stub.place_order("AAPL", 10, "sell", "market")
+    acc = stub.get_account()
+    assert acc.cash == pytest.approx(10000.0)
+    assert acc.equity == pytest.approx(10000.0)
+    assert stub.list_positions() == []

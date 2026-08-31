@@ -375,6 +375,17 @@ class StubBrokerClient:
                 unrealized_pl=(simulated_price - avg_entry) * net_qty,
                 current_price=simulated_price,
             )
+
+        # #929: cash/equity/buying_power used to stay frozen at starting
+        # capital forever -- a buy/sell never touched them. No margin
+        # modeling (this is the paper-simulation fallback, not the real
+        # Alpaca account): buying_power just mirrors cash.
+        trade_cost = filled_qty * simulated_price
+        self._account.cash += -trade_cost if side == "buy" else trade_cost
+        self._account.equity = self._account.cash + sum(
+            p.market_value for p in self._positions.values()
+        )
+        self._account.buying_power = self._account.cash
         return order
 
     def cancel_order(self, order_id: str) -> None:
