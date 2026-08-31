@@ -41,7 +41,7 @@ Setup / verify / diagnostic scripts under `scripts/*.ps1` are run by the end use
 
 Doesn't apply to scripts meant only for CI / chaining — those need a clean exit code with no prompt. If a script serves both audiences, use a `-NoPause` switch.
 
-3. **Never spawn powershell.exe from Node/Electron with `detached: true`.** On this box, PowerShell 5.1 started under `DETACHED_PROCESS` exits 0 **without executing the `-File` script** — no error, no output, pid returned (bit us in #519: "Restart Felix" silently never rebooted Cerebral). Use `{ stdio: 'ignore', windowsHide: true }` instead; verified to work from both Node and Electron.
+3. **Never spawn powershell.exe from Node/Electron with `detached: true`.** On this box, PowerShell 5.1 started under `DETACHED_PROCESS` exits 0 **without executing the `-File` script** — no error, no output, pid returned (bit us in #519: "Restart Felix" silently never rebooted Cerebral). Use `{ stdio: 'ignore', windowsHide: true }` instead; verified to work from both Node and Electron. The same silent-no-op reproduces from a plain PowerShell `Start-Process powershell -ArgumentList '-File',...` wrapper too (confirmed 2026-08-31 running `scripts/launch-felix.ps1` this way from a Claude Code session) — exit code 0, zero new `launcher.log` lines. Invoke a launcher script directly (`& .\scripts\launch-felix.ps1`, no `Start-Process` wrapper) instead; that reliably runs the body.
 
 ## Cerebral's real logs are at the repo root, not `.claude/tmp/`
 
