@@ -1,0 +1,22 @@
+/* Prevent the flex-wrap fallback that caused the header to drop to a second row */
+.hdr {
+  flex-wrap: nowrap;
+  container-type: inline-size;
+  container-name: header;
+}
+
+/* Comfortable tier (≥ 640px): today's header, unchanged */
+
+/* Compact tier (460px ≤ width < 640px) */
+@container header (max-width: 639px) {
+  .hdr-tts-vol {
+    display: none;
+  }
+}
+
+/* Icon rail tier (< 460px) */
+@container header (max-width: 459px) {
+  .hdr-mic-seg:not(.is-active) {
+    display: none;
+  }
+}
