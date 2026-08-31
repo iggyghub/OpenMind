@@ -119,6 +119,23 @@ class RiskManager:
             return RiskEvaluation(allowed=False, reason=reason, blocked_by="market_sentiment")
         return RiskEvaluation(allowed=True)
 
+    def check_symbol_claim(self, symbol: str, claimed_this_tick: set) -> RiskEvaluation:
+        """Scoped-down portfolio-manager arbitration (2026-08-31):
+        first-come-first-served within one dispatch pass, not confidence-
+        ranked reconciliation -- blocks a second strategy's open on a
+        symbol another strategy already opened THIS tick. Added after a
+        real collision (`insufficient qty available for order`, UBER) --
+        the real Alpaca account has one position per symbol, nothing
+        stopped two strategies from both trying to claim it the same
+        tick. `claimed_this_tick` is the caller's set, mutated by the
+        caller on a successful open -- this method only reads it."""
+        if symbol in claimed_this_tick:
+            reason = f"{symbol} already claimed by another strategy this tick"
+            logger.warning(f"[risk] Blocked {symbol}: {reason}")
+            self._emit_alert("warning", "symbol_claim_block", reason, {"blocked_by": "symbol_claimed", "symbol": symbol})
+            return RiskEvaluation(allowed=False, reason=reason, blocked_by="symbol_claimed")
+        return RiskEvaluation(allowed=True)
+
     def record_daily_loss(self, loss: float) -> None:
         if loss > 0:
             self._daily_loss_accrued += loss

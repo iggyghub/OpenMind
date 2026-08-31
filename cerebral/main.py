@@ -362,6 +362,21 @@ def _fundamentals_red_flag_scan(symbol: str) -> "tuple[bool, str]":
     except Exception as exc:
         return True, f"red-flag scan failed: {exc}"
 
+
+def _bear_case_fn(symbol: str, code: str, signal: int) -> "tuple[bool, str]":
+    """Sync bridge over cerebral.trading.bear_case.assess (async) -- same
+    asyncio.run() pattern as _fundamentals_red_flag_scan/_latest_10q_10k_
+    accession above, safe here for the same reason: this function's only
+    caller (run_strategy_tick) always runs inside _scheduler_loop's
+    asyncio.to_thread offload, never the main event loop."""
+    import asyncio as _asyncio
+    from cerebral.trading.bear_case import assess
+    try:
+        return _asyncio.run(assess(symbol, code, signal, lambda p: _router.complete(p, task_type="coding")))
+    except Exception:
+        logger.warning("[cerebral] bear_case_fn failed, proceeding", exc_info=True)
+        return False, ""
+
 # Video pipeline routes local-only (no Budd/OpenClaw dependency for a long
 # unattended batch); falls through to the active model if no local model exists.
 _video_default = _router.seed_video_default()
@@ -3700,6 +3715,11 @@ async def _scheduler_loop() -> None:
                     fundamentals_scan_fn=_fundamentals_red_flag_scan,
                     vetted_tickers=_vetted_tickers,
                     sentiment_label=sentiment_label,
+                    # Off by default (real per-trade LLM latency, unlike
+                    # the cached market-wide sentiment gate) -- passing
+                    # None makes bear_case_fn a true no-op in live_tick.py,
+                    # not just an always-PROCEED verdict.
+                    bear_case_fn=_bear_case_fn if _settings.get("trading_bear_case_gate_enabled") else None,
                 )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")

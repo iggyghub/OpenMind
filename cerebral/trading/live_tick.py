@@ -211,6 +211,8 @@ def run_strategy_tick(
     size_pct: float = 1.0,
     position_key: Optional[str] = None,
     sentiment_label: Optional[str] = None,
+    claimed_symbols: Optional[set] = None,
+    bear_case_fn: Optional[Callable[[str, str, int], "tuple[bool, str]"]] = None,
 ) -> dict:
     """Evaluate one strategy against fresh data and act on the result.
 
@@ -265,6 +267,24 @@ def run_strategy_tick(
     entry_price = float(position.avg_entry_price) if is_close else 0.0
     direction = position_direction(position) if is_close else 0
 
+    # Confidence-scaled sizing (2026-08-31), opens only -- computed here,
+    # not above, so a hold/close never pays for a compute_confidence_weight
+    # query it doesn't need. compute_confidence_weight already exists for
+    # the UI badge and auto_combine_strategies' top-3 selection -- reused
+    # here so a strategy with a real proven edge sizes up, a struggling one
+    # sizes down, rather than every strategy trading the same flat qty
+    # regardless of track record. Clamped to [0.5, 1.5] (never zeroed out
+    # -- a struggling strategy still gets a chance to prove out, just
+    # smaller) and disclosed as a starting point, not a Kelly-derived
+    # figure: compute_confidence_weight alone doesn't carry the return-
+    # variance a real Kelly sizing would need. The existing
+    # max_per_trade_risk_pct gate a few lines below is the real backstop
+    # -- this can only shrink/grow qty within it, never bypass it.
+    if not is_close:
+        confidence = forward_record.compute_confidence_weight(strategy_id=strategy_id)
+        size_multiplier = max(0.5, min(1.5, 1.0 + confidence * 5.0))
+        qty = qty * size_multiplier
+
     # Risk limits gate NEW exposure, never an exit -- a per-trade-risk cap
     # or daily-loss halt blocking a close would trap a losing position open
     # exactly when it needs to get out. Correlation is opens-only for the
@@ -295,6 +315,18 @@ def run_strategy_tick(
             if not corr_res.allowed:
                 return {"status": "blocked", "blocked_by": corr_res.blocked_by}
 
+    # Scoped-down portfolio-manager arbitration (opens only): first strategy
+    # to claim a symbol THIS dispatch pass wins it, a second strategy
+    # trying the same symbol the same tick is blocked rather than racing
+    # the first one's order against the real broker's one-position-per-
+    # symbol reality. claimed_symbols is None when the caller doesn't pass
+    # one (e.g. a direct run_strategy_tick call outside dispatch_due_
+    # events) -- skips the check entirely, same as sentiment_label=None.
+    if risk is not None and not is_close and claimed_symbols is not None:
+        claim_res = risk.check_symbol_claim(spec.symbol, claimed_symbols)
+        if not claim_res.allowed:
+            return {"status": "blocked", "blocked_by": claim_res.blocked_by}
+
     # Market-wide sentiment gate (opens only, same reasoning as the two
     # checks above: never trap a losing position open by blocking its
     # exit). sentiment_label is None when the gate is off or no reading
@@ -305,6 +337,16 @@ def run_strategy_tick(
         sent_res = risk.check_sentiment(spec.symbol, sentiment_label)
         if not sent_res.allowed:
             return {"status": "blocked", "blocked_by": sent_res.blocked_by}
+
+    # Bear-case veto (opens only), placed LAST -- after every cheaper check
+    # above, so a trade already blocked by something free never wastes the
+    # LLM call this one costs. bear_case_fn is None unless the caller has
+    # trading_bear_case_gate_enabled on (default off, see settings.py).
+    if not is_close and bear_case_fn is not None:
+        veto, veto_reason = bear_case_fn(spec.symbol, spec.code, signal)
+        if veto:
+            logger.info(f"[bear_case] Vetoed {spec.symbol}: {veto_reason}")
+            return {"status": "blocked", "blocked_by": "bear_case", "reason": veto_reason}
 
     order = broker.place_order(symbol=spec.symbol, qty=qty, side=side, type="market", strategy_id=position_key)
     if order.status not in ("FILLED", "PARTIALLY_FILLED"):
@@ -329,6 +371,8 @@ def run_strategy_tick(
         price=float(order.price), fees=float(order.fees), pnl=pnl,
         phase=phase, strategy_id=strategy_id,
     )
+    if not is_close and claimed_symbols is not None:
+        claimed_symbols.add(spec.symbol)
     return {
         "status": "closed" if is_close else "opened",
         "signal": signal, "symbol": spec.symbol, "side": order.side,
@@ -353,6 +397,7 @@ def dispatch_due_events(
     fundamentals_scan_fn: Optional[Callable] = None,
     vetted_tickers: Optional[Any] = None,
     sentiment_label: Optional[str] = None,
+    bear_case_fn: Optional[Callable[[str, str, int], "tuple[bool, str]"]] = None,
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
 
@@ -370,6 +415,11 @@ def dispatch_due_events(
     existed.
     """
     results: List[dict] = []
+    # Scoped-down portfolio-manager arbitration: one claim set per dispatch
+    # pass, not persisted -- a claim only matters within the strategies
+    # being evaluated together right now, see check_symbol_claim's own
+    # docstring for why.
+    claimed_symbols: set = set()
     for evt in scheduler.list_due_events():
         name = evt["title"]
         # S17 (#862): the versioned identity used for forward-record/lifecycle
@@ -420,6 +470,8 @@ def dispatch_due_events(
             phase="live" if is_live else "paper", dispatch_id=dispatch_id,
             risk=risk, size_pct=size_pct * ramp_pct,  # S20
             sentiment_label=sentiment_label,
+            claimed_symbols=claimed_symbols,
+            bear_case_fn=bear_case_fn,
         )
         # Marked regardless of outcome: a persistently failing strategy should
         # retry at its own interval, not spam every tick.

@@ -278,6 +278,8 @@ class FakeScheduler:
         self.dispatch_ids = []  # S17: the `dispatch_id` dispatch_due_events actually passed, per call
         self.size_pcts = []  # S20: the `size_pct` dispatch_due_events actually passed, per call
         self.sentiment_labels = []  # 2026-08-31: the `sentiment_label` dispatch_due_events actually passed, per call
+        self.claimed_symbols_seen = []  # 2026-08-31: the `claimed_symbols` object passed, per call
+        self.bear_case_fns = []  # 2026-08-31: the `bear_case_fn` passed, per call
 
     def list_due_events(self):
         return self.events
@@ -286,13 +288,16 @@ class FakeScheduler:
         self.marked.append(event_id)
 
     def _run_paper_strategy(self, name, broker, record, config, store=None, fetch=None, phase="paper",
-                             dispatch_id=None, risk=None, size_pct=1.0, sentiment_label=None):
+                             dispatch_id=None, risk=None, size_pct=1.0, sentiment_label=None,
+                             claimed_symbols=None, bear_case_fn=None):
         self.ran.append(name)
         self.brokers.append(broker)
         self.phases.append(phase)
         self.dispatch_ids.append(dispatch_id)
         self.size_pcts.append(size_pct)
         self.sentiment_labels.append(sentiment_label)
+        self.claimed_symbols_seen.append(claimed_symbols)
+        self.bear_case_fns.append(bear_case_fn)
         return dict(self.tick_result)
 
 
@@ -819,5 +824,184 @@ def test_tick_not_blocked_when_sentiment_label_is_none(tmp_path, monkeypatch):
     spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
 
     result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result["status"] == "opened"
+
+
+# ── 2026-08-31: confidence-scaled sizing ────────────────────────────────────
+
+class _ScriptedConfidenceRecord:
+    """Wraps a real ForwardRecord (so add_fill/get_daily_pnl still work)
+    but returns a scripted compute_confidence_weight, isolating the
+    sizing-multiplier math from needing real seeded fill history."""
+    def __init__(self, real_record, confidence):
+        self._real = real_record
+        self._confidence = confidence
+
+    def compute_confidence_weight(self, strategy_id="global"):
+        return self._confidence
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_zero_confidence_sizes_at_the_baseline_qty(tmp_path, monkeypatch):
+    record = _ScriptedConfidenceRecord(make_record(tmp_path, monkeypatch), confidence=0.0)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()))
+
+    assert result["qty"] == 5.0  # 1.0x multiplier, unchanged behavior
+
+
+def test_positive_confidence_scales_qty_up_clamped_at_1_5x(tmp_path, monkeypatch):
+    record = _ScriptedConfidenceRecord(make_record(tmp_path, monkeypatch), confidence=10.0)  # huge, must clamp
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()))
+
+    assert result["qty"] == 7.5  # 5.0 * 1.5
+
+
+def test_negative_confidence_scales_qty_down_clamped_at_0_5x(tmp_path, monkeypatch):
+    record = _ScriptedConfidenceRecord(make_record(tmp_path, monkeypatch), confidence=-10.0)  # huge, must clamp
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()))
+
+    assert result["qty"] == 2.5  # 5.0 * 0.5
+
+
+def test_confidence_weight_not_queried_on_a_hold(tmp_path, monkeypatch):
+    """Only opens pay for compute_confidence_weight -- a hold must never
+    call it (see the live regression this guards: it used to run
+    unconditionally and broke a fake record with no such method)."""
+    class _ExplodingRecord:
+        def compute_confidence_weight(self, strategy_id="global"):
+            raise AssertionError("must not be called on a hold")
+
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, _ExplodingRecord(), fetch=fixed_fetch(make_bars()))
+
+    assert result["status"] == "hold"
+
+
+# ── 2026-08-31: symbol-claim arbitration ────────────────────────────────────
+
+def test_symbol_claim_blocks_a_second_strategys_open_on_the_same_symbol(tmp_path, monkeypatch):
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager()
+    claimed: set = {"AAPL"}
+    spec = StrategySpec("s2", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s2", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, claimed_symbols=claimed)
+
+    assert result == {"status": "blocked", "blocked_by": "symbol_claimed"}
+
+
+def test_symbol_claim_does_not_block_a_closing_trade(tmp_path, monkeypatch):
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    broker._positions[("s1", "AAPL")] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
+    risk = RiskManager()
+    claimed: set = {"AAPL"}
+    spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=10.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, claimed_symbols=claimed)
+
+    assert result["status"] == "closed"
+
+
+def test_successful_open_adds_its_symbol_to_the_claimed_set(tmp_path, monkeypatch):
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager()
+    claimed: set = set()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, claimed_symbols=claimed)
+
+    assert result["status"] == "opened"
+    assert claimed == {"AAPL"}
+
+
+def test_claimed_symbols_none_is_a_no_op(tmp_path, monkeypatch):
+    """Default behavior for every existing caller that doesn't pass
+    claimed_symbols is unchanged."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result["status"] == "opened"
+
+
+def test_dispatch_does_not_carry_claims_between_separate_calls(tmp_path, monkeypatch):
+    """dispatch_due_events owns a fresh claim set per call -- a symbol
+    claimed on one pass must not still be blocked on the next."""
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    dispatch_due_events(sched, StubBrokerClient(), make_record(tmp_path, monkeypatch),
+                         lifecycle=StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite"))
+    first_claims = sched.claimed_symbols_seen[0]
+
+    dispatch_due_events(sched, StubBrokerClient(), make_record(tmp_path, monkeypatch),
+                         lifecycle=StrategyLifecycle(db_path=tmp_path / "lifecycle2.sqlite"))
+    second_claims = sched.claimed_symbols_seen[1]
+
+    assert first_claims is not second_claims
+
+
+# ── 2026-08-31: bear-case veto gate ──────────────────────────────────────────
+
+def test_bear_case_veto_blocks_a_new_open(tmp_path, monkeypatch):
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    def bear_case_fn(symbol, code, signal):
+        return True, "earnings report due tomorrow"
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                bear_case_fn=bear_case_fn)
+
+    assert result == {"status": "blocked", "blocked_by": "bear_case", "reason": "earnings report due tomorrow"}
+    assert broker._orders == {}
+
+
+def test_bear_case_never_blocks_a_closing_trade(tmp_path, monkeypatch):
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    broker._positions[("s1", "AAPL")] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
+    spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=10.0)
+
+    def bear_case_fn(symbol, code, signal):
+        raise AssertionError("must not be called for a close")
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                bear_case_fn=bear_case_fn)
+
+    assert result["status"] == "closed"
+
+
+def test_bear_case_fn_none_is_a_no_op(tmp_path, monkeypatch):
+    """Default (bear_case_fn=None, matches trading_bear_case_gate_enabled's
+    default-off) -- unchanged behavior for every existing caller."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()))
 
     assert result["status"] == "opened"

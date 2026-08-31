@@ -1800,6 +1800,8 @@ class SchedulerPlugin:
         dispatch_id: str | None = None,
         risk=None, size_pct: float = 1.0,  # S20
         sentiment_label: str | None = None,
+        claimed_symbols: set | None = None,
+        bear_case_fn=None,
     ) -> dict:
         """Runs one paper-trading tick for the given strategy. Pure trade
         execution -- event bookkeeping (marking a due event as dispatched)
@@ -1836,6 +1838,8 @@ class SchedulerPlugin:
                 risk=risk, size_pct=size_pct,  # S20
                 position_key=strategy_name,  # #961: broker position survives a version bump
                 sentiment_label=sentiment_label,
+                claimed_symbols=claimed_symbols,
+                bear_case_fn=bear_case_fn,
             )
             logger.info(f"Paper tick for {strategy_name}: {result}")
             return result

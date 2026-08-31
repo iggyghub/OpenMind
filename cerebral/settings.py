@@ -85,6 +85,11 @@ _DEFAULTS: dict[str, Any] = {
     # opens and fails open on any RSS/LLM error, no real-money reason to
     # default it off.
     "trading_sentiment_gate_enabled":   True,
+    # 2026-08-31: per-trade LLM veto gate (cerebral/trading/bear_case.py).
+    # Default False (unlike the sentiment gate) -- this runs per open-
+    # attempt per strategy, not market-wide-and-cached, so it's real
+    # per-trade LLM latency the user should opt into after seeing the cost.
+    "trading_bear_case_gate_enabled":   False,
     # S23: Minimum distinct trading days required for graduation/graduation math.
     "distinct_days_floor":       30,
     # S31: manual discovery start/stop + duration. discovery_enabled defaults
@@ -135,6 +140,7 @@ _TYPES: dict[str, type] = {
     "trading_paper_enabled":            bool,
     "trading_paper_starting_capital":   float,
     "trading_sentiment_gate_enabled":   bool,
+    "trading_bear_case_gate_enabled":   bool,
     "distinct_days_floor":       int,
     "discovery_enabled":         bool,
     "discovery_stop_at":         str,

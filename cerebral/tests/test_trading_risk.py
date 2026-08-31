@@ -98,6 +98,21 @@ class TestFailureHandling:
         mgr = RiskManager()
         assert mgr.check_sentiment("AAPL", None).allowed
 
+    def test_symbol_claim_blocks_when_already_claimed(self):
+        mgr = RiskManager()
+        res = mgr.check_symbol_claim("AAPL", {"AAPL", "MSFT"})
+        assert not res.allowed
+        assert res.blocked_by == "symbol_claimed"
+
+    def test_symbol_claim_passes_when_not_claimed(self):
+        mgr = RiskManager()
+        res = mgr.check_symbol_claim("AAPL", {"MSFT"})
+        assert res.allowed
+
+    def test_symbol_claim_passes_on_empty_set(self):
+        mgr = RiskManager()
+        assert mgr.check_symbol_claim("AAPL", set()).allowed
+
 class TestAlerts:
     def test_alert_dispatcher_emits_structured_event(self):
         dispatcher = AlertDispatcher()
