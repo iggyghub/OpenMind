@@ -12,6 +12,13 @@ the issue specifies, opens a per-issue PR (`Closes #N`), and this file's
 
 ## Status: ready
 
+<!-- 2026-08-30: S7's first attempt aborted with "Edit step produced no
+     commit" -- no PR/branch was created, so nothing to clean up. Unlike S6,
+     this run_id's edit phase was never recorded in the ledger, so a plain
+     retry should actually re-attempt the edit rather than resume-skip.
+     Reset to ready to retry as-is before assuming the issue needs rewriting. -->
+
+
 ## Next slice -- start here
 
 - **Active:** S7 -- #969
