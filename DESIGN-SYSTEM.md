@@ -10,12 +10,12 @@ Each slice reads this file + its issue, implements that ONE slice exactly as
 the issue specifies, opens a per-issue PR (`Closes #N`), and this file's
 "Next slice" block gets rewritten. This file is the only memory between runs.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S13 -- #975
-- **Model:** sonnet
+- **Active:** (all thirteen slices landed, plus an unplanned extension sweep -- see below)
+- **Model:** n/a
 
 ## Queue
 
@@ -36,7 +36,7 @@ merged.
 - [x] S10 -- #972 -- Shape scale: Settings + Profiles panes (Model: sonnet) -- hand-implemented
 - [x] S11 -- #973 -- Shape scale: Credentials + Permissions + Integrations panes (Model: sonnet) -- hand-implemented
 - [x] S12 -- #974 -- Shape scale: Memory + Insights + Recipes + Queue panes (Model: sonnet) -- hand-implemented
-- [ ] S13 -- #975 -- Shape scale: remaining panes (Model: sonnet)
+- [x] S13 -- #975 -- Shape scale: remaining panes (Model: sonnet) -- hand-implemented, then extended (see below)
 
 ## Landed PRs
 
@@ -52,8 +52,9 @@ merged.
 - (no PR) -- S10, hand-implemented (same pattern). Settings (`.set-*`): 21 declarations mapped by role. Profiles (`.prof-*`, excluding `.prof-switcher-*`/`.prof-sw-*` which are header-scoped, already covered by S1/S2): 9 declarations. Left unchanged: scrollbar-thumb radii, the radio-button and toggle-thumb circles (50%), and the toggle-track's pill shape (kept as a literal px value tied to its own height, not bound to a scale token, same reasoning as the circles) -- all chrome conventions outside the shape-scale system. Verified via jest (859/859).
 - (no PR) -- S11, hand-implemented (same pattern). Integrations (`.int-*`): 5 declarations. Credentials (`.cred-*`): 4. Permissions (`.perm-*`): 11, including a genuine badge (`.perm-plugin-row .perm-badge` -> lg). Left `.perm-fullauto-badge`'s `999px` unchanged (already a fully-rounded pill, not part of the discrete scale) and two status-dot circles (50%). Verified via jest (859/859).
 - (no PR) -- S12, hand-implemented (same pattern). 8 declarations across `.q-*` (2), `.ins-*` (2), `.mem-*` (2), `.rcp-*` (2) -- edit-inputs and primary action buttons -> md, secondary/clear buttons and small feedback messages -> sm. Scrollbar-thumb radii (x4) unchanged. Verified via jest (859/859).
+- (no PR) -- S13, hand-implemented, then extended past its own scope. First landed the four named panes: Job-search (`.jobs-*`, 16 declarations), Documents (`.docs-*`, 4), Conversations pane (`.conv-thread-*`/`.conv-list-*`/`.conv-project-*`, 9), Quick Ask (`.qa-*`, 2). That completed all six originally-issued shape-scale slices -- but checking this issue's own acceptance bar (`grep -c "border-radius: [0-9]"` returns 0) revealed the original S8-S13 cluster plan, built off the nav sidebar's routes, never accounted for several real UI surfaces that don't live on the nav bar. Swept those too, in the same session: the Conversation pane's own core elements (`.input`, `.send`, `.stop-turn`, `.turn` message bubbles, `.att-*` attachments -- 9 declarations), remaining header/nav/workspace odds-and-ends (`.nav-item` itself, `.hdr-search-*`, `.state-pill`, `.health-panel`, `.ws-tab*` -- 9), the legacy Plugins pane superseded by Harness (`.plug-*`, 3), a Discord-settings sub-panel (`.dsc-*`, 3), the self-dev/campaign status panel (`.camp-*`, 4), the consent modal (`.consent-*`, 4), profile-switcher dropdown stragglers never caught by S1/S2 (`.prof-switcher-dropdown`, `.prof-sw-switch`, 2), and the Videos panel's group/cluster widgets (`.ps-*`, 4) -- 38 more declarations across 8 previously-unaccounted-for surfaces. The file now has genuinely zero literal `border-radius` values outside deliberate exceptions: scrollbar-thumb radii, circular elements (status dots, toggle thumbs, radio buttons, a loading spinner), and two fully-rounded pill tracks (`999px`, and one `10px` toggle-track sized to its own height rather than bound to a scale token). Verified via `npx jest` (859/859) after every batch, plus a final live DOM check confirming `var(--radius-md)`/`var(--radius-lg)` resolve to real pixel values (10px/14px) rather than sitting unresolved.
 
-## Lessons from S6, S7, and S8, for whoever picks up S9-S13
+## Lessons from this campaign
 
 1. **This app has zero external stylesheets.** Every slice edits `main.html`'s
    own inline `<style>` block. Twice now (S6's first attempt, S7's only
@@ -94,6 +95,19 @@ merged.
    once more with a fresh run_id or, if that also fails oddly, hand-implement
    the slice directly rather than continuing to retry against a possibly-
    broken edit path.
+6. **Scoping a file-wide sweep off the nav sidebar's routes misses real
+   surfaces.** The original S8-S13 cluster plan was built from the nav
+   bar's routes and missed the Conversation pane's own core elements, two
+   modals, a legacy pane, and three smaller panels with no nav entry of
+   their own. A slice like this needs its completion checked against the
+   actual acceptance grep, not just "every named pane is done."
+7. **A commit that lands on `master` restarts Cerebral, and the restart
+   defer logic only knows about Felix's conversational idle state**
+   (`felixState === 'idle'`, set on the WS `'passive'` event in
+   `tray/main.js`) -- it has no visibility into an independently-scheduled
+   background loop (e.g. live trading). If such a loop is running, batch
+   commits and push once at the end rather than after every slice, so a
+   restart can't land mid-operation in a process the idle check can't see.
 
 ## SAFETY
 
