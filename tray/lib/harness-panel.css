@@ -1,0 +1,39 @@
+/* Harness pane styles */
+/* Scope: .pane[data-route="harness"] and descendants (.hrns-*) */
+/* Border-radius tokens mapped per ADR-0027 S8 #970:
+ *   Small  (~2-6px):  .hrns-cap-tag, .hrns-filter-btn, .hrns-toggle
+ *   Medium (~7-10px): .hrns-card, .hrns-test-input, .hrns-test-btn
+ *   Large  (~11px+):   .hrns-badge
+ */
+
+.hrns-badge {
+  border-radius: var(--radius-lg);
+}
+
+.hrns-badge-trusted {
+  border-radius: var(--radius-lg);
+}
+
+.hrns-cap-tag {
+  border-radius: var(--radius-sm);
+}
+
+.hrns-filter-btn {
+  border-radius: var(--radius-sm);
+}
+
+.hrns-toggle {
+  border-radius: var(--radius-lg);
+}
+
+.hrns-card {
+  border-radius: var(--radius-md);
+}
+
+.hrns-test-input {
+  border-radius: var(--radius-md);
+}
+
+.hrns-test-btn {
+  border-radius: var(--radius-md);
+}
