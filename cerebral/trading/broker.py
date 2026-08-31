@@ -108,17 +108,26 @@ class AlpacaBrokerClient:
     def get_account(self) -> Account:
         self._connect()
         acc = self._client.get_account()
+        # Pre-existing bug: alpaca-py's TradeAccount has no
+        # day_trades_remaining attribute (this always raised) -- the real
+        # field is daytrade_count, a used-count toward the PDT limit, not a
+        # remaining count. ponytail: assumes the standard 3-per-5-trading-
+        # day PDT limit (not the >$25k-equity exemption); nothing in this
+        # codebase gates on day_trades_remaining today, so this is display
+        # only -- revisit if a risk check ever starts reading it.
         return Account(
             cash=acc.cash,
             equity=acc.equity,
             status=acc.status.value,
             buying_power=acc.buying_power,
-            day_trades_remaining=acc.day_trades_remaining,
+            day_trades_remaining=max(0, 3 - (acc.daytrade_count or 0)),
         )
 
     def list_positions(self, strategy_id: Optional[str] = None) -> List[Position]:
         self._connect()
-        positions = self._client.list_positions()
+        # Pre-existing bug: TradingClient has no list_positions method --
+        # this always raised AttributeError. Real name: get_all_positions.
+        positions = self._client.get_all_positions()
         result = []
         for p in positions:
             result.append(Position(
@@ -139,7 +148,10 @@ class AlpacaBrokerClient:
     ) -> Order:
         self._connect()
         from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
-        from alpaca.trading.enums import Side as AlpacaSide
+        # Pre-existing bug: the installed alpaca-py names this enum
+        # OrderSide, not Side -- this import has always raised ImportError,
+        # so place_order has never actually worked against a real account.
+        from alpaca.trading.enums import OrderSide as AlpacaSide
 
         qty_val = float(qty)
         side_enum = AlpacaSide.BUY if side == "buy" else AlpacaSide.SELL
@@ -159,22 +171,37 @@ class AlpacaBrokerClient:
         else:
             raise ValueError(f"Unsupported order type: {type}")
 
-        filled_order = self._client.submit_order(req)
-        return Order(
-            id=filled_order.id,
-            symbol=filled_order.symbol,
-            qty=filled_order.qty,
-            filled_qty=0.0,
-            side=filled_order.side.value,
-            type=filled_order.type.value,
-            status=filled_order.status.value,
-            price=0.0,  # Live fill price populated on status update
-            fees=0.0,
-        )
+        submitted = self._client.submit_order(req)
+        # Alpaca fills market orders asynchronously -- the object submit_order
+        # returns is a "new"/"accepted" snapshot, never a fill. A caller
+        # (run_strategy_tick) reads status/filled_qty/price off the object
+        # place_order returns and does not itself poll get_order, so without
+        # this the paper-trade dispatcher would treat every real order as
+        # unfilled and never record it. Regular-hours market orders on Alpaca
+        # paper fill in well under a second in practice.
+        return self._poll_until_terminal(submitted.id)
+
+    _TERMINAL_ORDER_STATUSES = {
+        "FILLED", "PARTIALLY_FILLED", "CANCELED", "REJECTED", "EXPIRED", "DONE_FOR_DAY",
+    }
+
+    def _poll_until_terminal(self, order_id: str, timeout: float = 10.0, interval: float = 0.5) -> Order:
+        # ponytail: fixed poll ceiling, not a websocket fill stream -- bump
+        # timeout/interval if paper fills ever run slower than this during
+        # regular market hours.
+        import time
+        deadline = time.monotonic() + timeout
+        order = self.get_order(order_id)
+        while order.status not in self._TERMINAL_ORDER_STATUSES and time.monotonic() < deadline:
+            time.sleep(interval)
+            order = self.get_order(order_id)
+        return order
 
     def cancel_order(self, order_id: str) -> None:
         self._connect()
-        self._client.cancel_order(order_id)
+        # Pre-existing bug: TradingClient has no cancel_order method --
+        # this always raised AttributeError. Real name: cancel_order_by_id.
+        self._client.cancel_order_by_id(order_id)
 
     def get_order(self, order_id: str) -> Order:
         self._connect()
@@ -188,7 +215,11 @@ class AlpacaBrokerClient:
             filled_qty=float(o.filled_qty),
             side=o.side.value,
             type=o.type.value,
-            status=o.status.value,
+            # Uppercased to match StubBrokerClient's contract ("FILLED", not
+            # alpaca-py's lowercase "filled") -- every caller (run_strategy_
+            # tick's status check, the broker Protocol's implicit contract)
+            # compares against the Stub's casing.
+            status=o.status.value.upper(),
             price=fill_price,
             fees=float(o.fees) if o.fees else 0.0,
         )

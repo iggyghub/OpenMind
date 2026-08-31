@@ -1,6 +1,126 @@
 import pytest
-from cerebral.trading.broker import StubBrokerClient, BrokerClient, Side, OrderType
+from cerebral.trading.broker import StubBrokerClient, AlpacaBrokerClient, BrokerClient, Side, OrderType
 from cerebral.trading.live_tick import find_position
+
+
+class _FakeEnumVal:
+    """Mimics alpaca-py's enum fields (o.status.value) without depending on
+    the real package -- the broker only ever reads .value off these."""
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakeAlpacaOrder:
+    def __init__(self, id="o1", symbol="AAPL", qty=10, filled_qty=0,
+                 side="buy", type="market", status="new", fill_avg_price=None, fees=None):
+        self.id = id
+        self.symbol = symbol
+        self.qty = qty
+        self.filled_qty = filled_qty
+        self.side = _FakeEnumVal(side)
+        self.type = _FakeEnumVal(type)
+        self.status = _FakeEnumVal(status)
+        self.fill_avg_price = fill_avg_price
+        self.fees = fees
+
+
+class _FakeAlpacaClient:
+    """Stands in for alpaca.trading.client.TradingClient: submit_order
+    returns the just-submitted (unfilled) snapshot; get_order_by_id replays
+    a scripted status sequence, one call each -- the real fill's async
+    delay compressed to "next call sees the next state"."""
+    def __init__(self, statuses_after_submit):
+        self._statuses = list(statuses_after_submit)
+        self.get_order_by_id_calls = 0
+
+    def submit_order(self, req):
+        return _FakeAlpacaOrder(status="new")
+
+    def get_order_by_id(self, order_id):
+        self.get_order_by_id_calls += 1
+        status = self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
+        return _FakeAlpacaOrder(
+            id=order_id, status=status,
+            filled_qty=10 if status in ("filled", "partially_filled") else 0,
+            fill_avg_price=101.5 if status in ("filled", "partially_filled") else None,
+        )
+
+
+def _connected_alpaca_client(statuses_after_submit):
+    broker = AlpacaBrokerClient(env="paper")
+    broker._connected = True
+    broker._client = _FakeAlpacaClient(statuses_after_submit)
+    return broker
+
+
+def test_alpaca_get_order_uppercases_status():
+    """alpaca-py reports lowercase status values ("filled"); the broker
+    Protocol's contract (and every caller, e.g. run_strategy_tick's status
+    check) uses StubBrokerClient's uppercase convention."""
+    broker = _connected_alpaca_client(["filled"])
+    order = broker.get_order("o1")
+    assert order.status == "FILLED"
+
+
+def test_alpaca_place_order_returns_immediately_once_already_filled(monkeypatch):
+    """The common case: a regular-hours market order is already filled by
+    the first poll -- no sleep needed."""
+    sleep_calls = []
+    monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
+    broker = _connected_alpaca_client(["filled"])
+    order = broker.place_order("AAPL", 10, "buy", "market")
+    assert order.status == "FILLED"
+    assert order.price == 101.5
+    assert sleep_calls == []
+
+
+def test_alpaca_place_order_polls_until_filled(monkeypatch):
+    """An order that isn't filled on the first read gets polled again
+    rather than being reported back to the caller as unfilled."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    broker = _connected_alpaca_client(["new", "new", "filled"])
+    order = broker.place_order("AAPL", 10, "buy", "market")
+    assert order.status == "FILLED"
+    assert broker._client.get_order_by_id_calls == 3
+
+
+class _FakeAlpacaAccount:
+    """alpaca-py's TradeAccount -- day-trade info is daytrade_count (a used
+    count), there is no day_trades_remaining attribute."""
+    def __init__(self, daytrade_count=0, status="ACTIVE"):
+        self.cash = 1000.0
+        self.equity = 1000.0
+        self.buying_power = 1000.0
+        self.status = _FakeEnumVal(status)
+        self.daytrade_count = daytrade_count
+
+
+def test_alpaca_get_account_maps_daytrade_count_to_remaining():
+    broker = AlpacaBrokerClient(env="paper")
+    broker._connected = True
+    broker._client = type("C", (), {"get_account": lambda self: _FakeAlpacaAccount(daytrade_count=1)})()
+    acc = broker.get_account()
+    assert acc.day_trades_remaining == 2
+    assert acc.status == "ACTIVE"
+
+
+def test_alpaca_get_account_day_trades_remaining_floors_at_zero():
+    broker = AlpacaBrokerClient(env="paper")
+    broker._connected = True
+    broker._client = type("C", (), {"get_account": lambda self: _FakeAlpacaAccount(daytrade_count=5)})()
+    acc = broker.get_account()
+    assert acc.day_trades_remaining == 0
+
+
+def test_alpaca_get_account_handles_none_daytrade_count():
+    """A fresh paper account with zero recorded day trades reports
+    daytrade_count as None, not 0 -- observed live against a real new
+    Alpaca paper account, not just guessed."""
+    broker = AlpacaBrokerClient(env="paper")
+    broker._connected = True
+    broker._client = type("C", (), {"get_account": lambda self: _FakeAlpacaAccount(daytrade_count=None)})()
+    acc = broker.get_account()
+    assert acc.day_trades_remaining == 3
 
 
 def test_stub_place_order_buy():

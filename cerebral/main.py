@@ -242,7 +242,7 @@ _quality_default = _router.seed_quality_default()
 # happened to run, would call _scheduler_loop before its def is reached
 # later in this file -- both real bugs a fresh self-dev edit hit).
 from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
-from cerebral.trading.broker import StubBrokerClient
+from cerebral.trading.broker import StubBrokerClient, AlpacaBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
 from cerebral.trading.alerts import AlertDispatcher
@@ -254,14 +254,22 @@ from cerebral.trading.market_hours import is_market_hours
 from cerebral.trading.books import list_validated_strategies
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
-# Paper only, deliberately: a StubBrokerClient can't reach a real market, so
-# no code path from this loop can fire a live order. Live execution waits on
-# an explicit manual arm/disarm toggle that does not exist yet.
-# S34 (#901): starting cash is settings-backed, but _settings itself isn't
-# constructed until further down this module (see `_settings = _SettingsStore()`)
-# -- built with the library default here and re-pointed at the real
-# starting-capital setting right after _settings exists, below.
-_trading_broker = StubBrokerClient()
+# Paper only, deliberately: env="paper" is Alpaca's own paper-trading
+# account (real fills against real market data, fake money), so no code
+# path from this loop can fire a LIVE order. Live execution waits on an
+# explicit manual arm/disarm toggle (trading_live_arm, default False).
+# _trading_broker_fallback (a StubBrokerClient) is used instead, per tick,
+# whenever _trading_broker.preflight() fails -- e.g. no Alpaca paper API
+# key set yet -- so paper trading keeps producing data on the in-process
+# simulator rather than going dark until credentials land. See
+# _scheduler_loop's own preflight check.
+# S34 (#901): fallback's starting cash is settings-backed, but _settings
+# itself isn't constructed until further down this module (see
+# `_settings = _SettingsStore()`) -- built with the library default here
+# and re-pointed at the real starting-capital setting right after
+# _settings exists, below.
+_trading_broker = AlpacaBrokerClient(env="paper")
+_trading_broker_fallback = StubBrokerClient()
 _trading_forward_record = ForwardRecord()
 _alert_dispatcher = AlertDispatcher()
 _trading_lifecycle = StrategyLifecycle(alert_dispatcher=_alert_dispatcher)
@@ -357,10 +365,11 @@ _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
 _settings = _SettingsStore()
-# S34 (#901): now that _settings exists, re-point _trading_broker at the
-# real configured starting capital instead of StubBrokerClient's own
-# library default.
-_trading_broker = StubBrokerClient({"starting_cash": _settings.get("trading_paper_starting_capital")})
+# S34 (#901): now that _settings exists, re-point _trading_broker_fallback
+# at the real configured starting capital instead of StubBrokerClient's
+# own library default. _trading_broker (Alpaca) has no equivalent knob --
+# its account cash is whatever the real Alpaca paper account holds.
+_trading_broker_fallback = StubBrokerClient({"starting_cash": _settings.get("trading_paper_starting_capital")})
 # S31 (#896): bind the real singleton, not SchedulerPlugin's own auto-
 # derived default -- both would point at the same felix-settings.json file
 # on disk but load it into two separate in-memory dicts, so a set() through
@@ -2866,22 +2875,27 @@ def _browser_logins_state() -> dict[str, dict[str, object]]:
 _ALPACA_KEYRING_SERVICE = "cerebral_alpaca"  # matches cerebral/trading/broker.py exactly
 
 
-def _alpaca_credentials_state() -> dict[str, str]:
-    """{status} for the live Alpaca broker credentials.
+def _alpaca_credentials_state() -> dict[str, dict[str, str]]:
+    """{"live": {status}, "paper": {status}} for the Alpaca broker
+    credentials -- broker.py reads env-specific keyring entries
+    (alpaca_{env}_key/secret), so live and paper are set/cleared
+    independently.
 
     Deliberately NOT part of _static_tokens_state()/CredentialStore: Alpaca
     trading is one brokerage account per Felix instance, not a per-profile
     connected account, and cerebral/trading/broker.py already reads these
-    two values from a dedicated, profile-agnostic keyring service
+    values from a dedicated, profile-agnostic keyring service
     ("cerebral_alpaca") independent of the active profile. This mirrors
     that directly rather than routing through CredentialStore and forcing
     broker.py to become profile-aware for no real behavioural gain. Never
     returns the key/secret values -- same write-only contract as the
     static-token providers."""
     import keyring
-    key = keyring.get_password(_ALPACA_KEYRING_SERVICE, "alpaca_live_key")
-    secret = keyring.get_password(_ALPACA_KEYRING_SERVICE, "alpaca_live_secret")
-    return {"status": "connected" if (key and secret) else "not configured"}
+    def _status(env: str) -> dict[str, str]:
+        key = keyring.get_password(_ALPACA_KEYRING_SERVICE, f"alpaca_{env}_key")
+        secret = keyring.get_password(_ALPACA_KEYRING_SERVICE, f"alpaca_{env}_secret")
+        return {"status": "connected" if (key and secret) else "not configured"}
+    return {"live": _status("live"), "paper": _status("paper")}
 
 
 def _static_tokens_state() -> dict[str, dict[str, str]]:
@@ -3354,9 +3368,15 @@ async def _reset_paper_trading() -> dict:
     SchedulerPlugin's reset_paper_trading tool (#924), bound here (not
     in plugins/scheduler.py) because it needs both
     _trading_forward_record and _trading_broker, which live in this
-    module, not the plugin."""
+    module, not the plugin.
+
+    _trading_broker.reset() only exists on StubBrokerClient -- a real
+    Alpaca paper account has no in-app "zero it out" equivalent (Alpaca's
+    own dashboard offers that), so AlpacaBrokerClient is left untouched
+    here; only the local forward-record history gets archived."""
     result = _trading_forward_record.reset_paper()
-    _trading_broker.reset()
+    if hasattr(_trading_broker, "reset"):
+        _trading_broker.reset()
     await _trading_broadcast()
     return result
 
@@ -3620,21 +3640,30 @@ async def _scheduler_loop() -> None:
             # The whole pass -- due-event lookup, per-strategy signal
             # evaluation, position diff, order, realized P&L, then
             # graduation/ramp/retirement checks -- lives in live_tick so it's
-            # testable without importing main. _trading_broker (a
-            # StubBrokerClient) is only ever used when the S11 Part 2 arm
-            # toggle is off or the strategy hasn't graduated -- dispatch_due_
-            # events swaps in a real AlpacaBrokerClient(env="live") itself
-            # when both conditions hold (Part 4). Offloaded to a thread
-            # (S14/#859): each strategy now costs a real sandbox spawn on
-            # top of the yfinance fetch, and this loop must not block the
-            # event loop for that long. S31 (#896): skipped entirely outside
-            # market hours -- results stays [] and everything below already
+            # testable without importing main. The paper broker passed in is
+            # only ever used when the S11 Part 2 arm toggle is off or the
+            # strategy hasn't graduated -- dispatch_due_events swaps in a
+            # real AlpacaBrokerClient(env="live") itself when both
+            # conditions hold (Part 4). Offloaded to a thread (S14/#859):
+            # each strategy now costs a real sandbox spawn on top of the
+            # yfinance fetch, and this loop must not block the event loop
+            # for that long. S31 (#896): skipped entirely outside market
+            # hours -- results stays [] and everything below already
             # no-ops on an empty list.
             results = []
             if is_market_hours() and _settings.get("trading_paper_enabled"):
+                # Preflight every tick (cheap -- one account call), not just
+                # once at startup: lets paper trading pick up real Alpaca
+                # keys the moment they're added to keyring, no restart
+                # needed, while staying on the Stub simulator (rather than
+                # going dark) for every tick before that.
+                paper_ok, paper_reason = _trading_broker.preflight()
+                paper_broker = _trading_broker if paper_ok else _trading_broker_fallback
+                if not paper_ok:
+                    logger.info(f"[cerebral] Alpaca paper preflight failed, using StubBrokerClient: {paper_reason}")
                 results = await asyncio.to_thread(
                     _dispatch_due_events,
-                    _scheduler_plugin, _trading_broker, _trading_forward_record,
+                    _scheduler_plugin, paper_broker, _trading_forward_record,
                     lifecycle=_trading_lifecycle, store=_trading_strategy_store,
                     arm=_settings.get("trading_live_arm"),
                     risk=_risk_mgr,
@@ -5304,6 +5333,31 @@ async def _handle_message(msg: dict) -> None:
             except Exception:
                 pass  # keyring.errors.PasswordDeleteError if already absent -- fine
         logger.info("[cerebral] Alpaca live credentials cleared")
+        await _broadcast(_credentials_state_event())
+
+    elif t == "set_alpaca_paper_credentials":
+        # Same contract as set_alpaca_credentials, env="paper" instead of
+        # "live" -- used by AlpacaMarketDataClient/AlpacaBrokerClient(env="paper").
+        import keyring
+        d = msg.get("data") or {}
+        key = (d.get("key") or "").strip()
+        secret = (d.get("secret") or "").strip()
+        if not key or not secret:
+            logger.warning("[cerebral] set_alpaca_paper_credentials missing key or secret")
+            return
+        keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_paper_key", key)
+        keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_paper_secret", secret)
+        logger.info("[cerebral] Alpaca paper credentials set")
+        await _broadcast(_credentials_state_event())
+
+    elif t == "clear_alpaca_paper_credentials":
+        import keyring
+        for field in ("alpaca_paper_key", "alpaca_paper_secret"):
+            try:
+                keyring.delete_password(_ALPACA_KEYRING_SERVICE, field)
+            except Exception:
+                pass  # keyring.errors.PasswordDeleteError if already absent -- fine
+        logger.info("[cerebral] Alpaca paper credentials cleared")
         await _broadcast(_credentials_state_event())
 
     elif t == "set_discord_user_token":
