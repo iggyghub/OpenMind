@@ -5083,6 +5083,36 @@
       flex-direction: column;
       overflow-y: auto;
     }
+    .trd-tabs {
+      display: flex;
+      gap: 2px;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elev);
+      flex-shrink: 0;
+      overflow-x: auto;
+    }
+    .trd-tab {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      color: var(--text-dim);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .trd-tab:hover { background: var(--bg); color: var(--text); }
+    .trd-tab.is-active {
+      background: var(--accent);
+      color: var(--bg);
+    }
+    .trd-tab:focus-visible {
+      box-shadow: var(--shadow-floating), 0 0 10px rgba(124, 92, 252, 0.25);
+    }
     .trd-create-section {
       border-bottom: 1px solid var(--border);
       padding: 10px 14px;
