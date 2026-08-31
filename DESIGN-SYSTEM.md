@@ -12,17 +12,10 @@ the issue specifies, opens a per-issue PR (`Closes #N`), and this file's
 
 ## Status: ready
 
-<!-- 2026-08-30: S7's first attempt aborted with "Edit step produced no
-     commit" -- no PR/branch was created, so nothing to clean up. Unlike S6,
-     this run_id's edit phase was never recorded in the ledger, so a plain
-     retry should actually re-attempt the edit rather than resume-skip.
-     Reset to ready to retry as-is before assuming the issue needs rewriting. -->
-
-
 ## Next slice -- start here
 
-- **Active:** S7 -- #969
-- **Model:** opus
+- **Active:** S8 -- #970
+- **Model:** sonnet
 
 ## Queue
 
@@ -37,7 +30,7 @@ merged.
 - [x] S4 -- #966 -- Icon sweep: replace remaining glyph icons (Model: sonnet)
 - [x] S5 -- #967 -- Semantic color sweep: health/state colors onto named tokens (Model: sonnet)
 - [x] S6 -- #968 -- Global focus-visible ring (Model: opus)
-- [ ] S7 -- #969 -- Adaptive header density via container queries (Model: opus)
+- [x] S7 -- #969 -- Adaptive header density via container queries (Model: opus)
 - [ ] S8 -- #970 -- Shape scale: Harness + Library panes (Model: sonnet)
 - [ ] S9 -- #971 -- Shape scale: Trading + Log panes (Model: sonnet)
 - [ ] S10 -- #972 -- Shape scale: Settings + Profiles panes (Model: sonnet)
@@ -45,11 +38,9 @@ merged.
 - [ ] S12 -- #974 -- Shape scale: Memory + Insights + Recipes + Queue panes (Model: sonnet)
 - [ ] S13 -- #975 -- Shape scale: remaining panes (Model: sonnet)
 
-Per-slice model: sonnet unless the queue entry says otherwise. S6 and S7 are
-marked opus because they involve more judgment (finding every unguarded
-interactive control; getting three responsive tiers right) than the
-mostly-mechanical find/replace slices around them. When ticking a slice, set
-the next entry's model on the `Model:` line above if it differs from sonnet.
+All seven foundation slices are done. Only the shape-scale sweep (S8-S13)
+remains -- six mechanical, single-file CSS slices with no new logic, no new
+interactivity. These should be the most reliable slices left in the queue.
 
 ## Landed PRs
 
@@ -58,17 +49,37 @@ the next entry's model on the `Model:` line above if it differs from sonnet.
 - PR #978 -- S3 (auto-merged by self_dev_campaign)
 - PR #979 -- S4 (auto-merged by self_dev_campaign)
 - PR #980 -- S5 (auto-merged by self_dev_campaign)
-- PR #982 -- S6, run_id `design-system-s6-v2` (retried after PR #981 was closed for two mistakes: wrote to a new `tray/styles.css` main.html never links, and used a bare `button` selector). #982 itself auto-merged with tests green but landed a corrupted CSS rule (its insertion split `.pane[data-route="harness"]`'s block in two, nesting the new selectors inside it -- passing jest tests don't cover CSS parse structure). Hand-fixed directly in a follow-up commit; verified via a fresh `npx jest` run (853/853 pass) and a live DOM check confirming `.nav-item:focus-visible` etc. is a proper top-level rule and the harness pane's own rule is intact.
+- PR #982 -- S6, run_id `design-system-s6-v2` (retried after PR #981 was closed for writing to an unlinked `tray/styles.css` + a bare `button` selector). #982 auto-merged with tests green but nested the new rule inside `.pane[data-route="harness"]`'s block -- hand-fixed in a follow-up commit, verified via jest + a live DOM check.
+- PR #983 -- S7, run_id `design-system-s7-v2` (original spec asked for new click-to-reveal/click-to-open interactivity + linked an external artifact URL the sandbox can't fetch; two attempts under the original spec produced no commit at all. Scaled back to pure CSS visibility toggles, corrected on #969, then succeeded). #983 auto-merged with tests green but had two more bugs: it wrote to a new unlinked `tray/styles/header-container.css` (same dead-file mistake as #981) AND targeted a nonexistent `.hdr` class instead of the real `.header`, so it would have done nothing even if wired up. It also silently changed `.header`'s `flex-wrap` from `wrap` to `nowrap`, which broke an existing regression test guarding against a past incident (#325, header items bleeding past the content clip). Hand-fixed: moved the rules into `main.html`'s own `<style>` block under `.header`, restored `flex-wrap: wrap` as a last-resort fallback beneath the new container-query tiers, deleted the orphan file. Verified via jest (853/853) and a live resize check (header hides `.hdr-tts-vol`/inactive `.hdr-mic-seg` at narrow widths, shows everything at wide widths).
 
-## Landed via self_dev_campaign's own deterministic-run_id ledger (issue #780): a
-slice whose run_id already has a recorded "pr" phase will resume by reporting
-that same recorded result rather than re-attempting the edit, even after the
-PR is closed and the issue is corrected. If a slice needs a genuine do-over
-after its first PR is closed, call the plain `self_dev` tool directly with an
-explicit fresh `run_id` (e.g. `design-system-s6-v2`) and the corrected
-change_description, rather than re-invoking `self_dev_campaign` and expecting
-it to retry -- it won't. Update this file by hand afterward; `self_dev`
-(unlike `self_dev_campaign`) has no knowledge of this driver file.
+## Lessons from S6 and S7, for whoever picks up S8-S13
+
+1. **This app has zero external stylesheets.** Every slice edits `main.html`'s
+   own inline `<style>` block. Twice now (S6's first attempt, S7's only
+   attempt) the model instead created a new `.css` file that nothing links,
+   producing a merged PR with zero actual effect. If a slice's own PR touches
+   any path under `tray/styles/`, that is a bug -- there is no such directory
+   in this app's real architecture.
+2. **`self_dev_campaign` uses a deterministic run_id per slice** (issue #780's
+   ledger). A slice whose run_id already has a recorded "pr" phase will
+   resume by reporting that same recorded result rather than re-attempting
+   the edit -- even after the PR is closed and the issue corrected. A genuine
+   do-over needs a fresh run_id via the plain `self_dev` tool (not
+   `self_dev_campaign`), and this file needs updating by hand afterward,
+   since `self_dev` has no knowledge of this driver file.
+3. **Passing jest is necessary, not sufficient.** Neither S6's mis-nested
+   rule nor S7's wrong class name nor its silently-changed `flex-wrap`
+   tripped a single test, because none of the 853 tests parse CSS selector
+   structure or diff computed styles against a baseline. Spot-check any
+   slice's actual diff against the real file, especially when it touches an
+   existing rule's boundaries rather than only adding new standalone rules.
+4. **"Edit step produced no commit" is a different failure than a bad merge.**
+   It means the model attempted nothing, most often because the ask exceeded
+   what a mechanical CSS-sweep slice should require (new interactive JS, a
+   reference the sandbox can't fetch since it has no network access during
+   editing). If a slice fails this way, the fix is almost always to narrow
+   the ask, not to just retry the same instructions again -- a same-run_id
+   retry with unchanged instructions failed identically both times for S7.
 
 ## SAFETY
 
@@ -77,7 +88,9 @@ Highest priority; overrides the issue if they ever conflict.
 1. **Every slice is scoped to `tray/windows/main.html` only.** No slice in
    this queue touches `cerebral/`, `plugins/`, credentials, or the ADR-0005
    gate. If an issue's own scope ever seems to require touching something
-   outside that file, stop and escalate rather than expanding scope.
+   outside that file, stop and escalate rather than expanding scope. This
+   includes never creating a new file under `tray/styles/` or anywhere else
+   -- see "Lessons" item 1 above.
 2. **Never remove or rename an existing `id` or class a script references.**
    Grep the file's own `<script>` block for `getElementById`/
    `querySelector`/`classList` before touching a selector that has JS
@@ -92,11 +105,9 @@ Highest priority; overrides the issue if they ever conflict.
    This campaign has no backend/Python surface, so `pytest` is not expected
    to be affected -- if a slice somehow touches `cerebral/`, that is out of
    scope (see rule 1) and the run should stop rather than proceed. **Passing
-   jest is necessary, not sufficient** -- S6 proved a CSS edit can land with
-   a corrupted rule structure (a new rule nested inside an unrelated existing
-   one) while every jest test still passes, since none of them parse CSS
-   structure. Spot-check a slice's actual diff when the change touches
-   existing rule boundaries, not just new standalone rules.
+   jest is necessary, not sufficient** -- see "Lessons" item 3 above. Spot-
+   check a slice's actual diff when the change touches existing rule
+   boundaries, not just new standalone rules.
 5. **No new dependency.** Every slice in this queue is achievable in plain
    CSS/inline SVG/vanilla JS already used elsewhere in the file. Adding an
    icon library, a CSS framework, or any `tray/package.json` entry is out of

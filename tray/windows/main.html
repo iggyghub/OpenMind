@@ -368,13 +368,34 @@
       align-items: center;
       gap: 12px;
       /* F2 (#325): header items wrap to a second row at narrow widths instead
-         of bleeding past the .content clip and detaching the column below. */
+         of bleeding past the .content clip and detaching the column below.
+         S7 adds container-query density below as the primary adaptive
+         mechanism; flex-wrap stays as the last-resort fallback for cases
+         the three tiers don't cover. */
       flex-wrap: wrap;
       row-gap: 8px;
       flex-shrink: 0;
       background: var(--bg);
       position: relative;
       min-width: 0;
+      container-type: inline-size;
+      container-name: header;
+    }
+
+    /* Comfortable tier (>= 640px): today's header, unchanged */
+
+    /* Compact tier (460px <= width < 640px) */
+    @container header (max-width: 639px) {
+      .hdr-tts-vol {
+        display: none;
+      }
+    }
+
+    /* Icon rail tier (< 460px) */
+    @container header (max-width: 459px) {
+      .hdr-mic-seg:not(.is-active) {
+        display: none;
+      }
     }
 
     /* ── federated search shell (S4 -- #287) ─────────────────── */
@@ -5753,6 +5774,26 @@
 
             <div class="cred-card" id="cred-card-alpaca">
               <div class="cred-card-title">
+                Trading (Alpaca paper)
+                <span class="cred-token-row-pill" id="cred-alpaca-paper-pill"></span>
+              </div>
+              <div class="cred-token-row-actions">
+                <input type="password" autocomplete="off" id="cred-alpaca-paper-key"
+                       placeholder="Paper API key (write-only)" />
+                <input type="password" autocomplete="off" id="cred-alpaca-paper-secret"
+                       placeholder="Paper API secret (write-only)" />
+                <button class="cred-btn cred-btn-secondary" id="cred-alpaca-paper-set">Set</button>
+                <button class="cred-btn cred-btn-danger" id="cred-alpaca-paper-clear">Clear</button>
+              </div>
+              <div class="cred-hint">
+                Free Alpaca paper-trading account (dashboard &gt; API Keys,
+                "Generate Paper" toggle on). Used for both paper order fills
+                and intraday market data; stored in its own OS keyring entry.
+              </div>
+            </div>
+
+            <div class="cred-card" id="cred-card-alpaca-live">
+              <div class="cred-card-title">
                 Trading (Alpaca live)
                 <span class="cred-token-row-pill" id="cred-alpaca-pill"></span>
               </div>
@@ -6584,6 +6625,11 @@
     const credAlpacaSecretEl = document.getElementById('cred-alpaca-secret');
     const credAlpacaSetBtn   = document.getElementById('cred-alpaca-set');
     const credAlpacaClearBtn = document.getElementById('cred-alpaca-clear');
+    const credAlpacaPaperPillEl   = document.getElementById('cred-alpaca-paper-pill');
+    const credAlpacaPaperKeyEl    = document.getElementById('cred-alpaca-paper-key');
+    const credAlpacaPaperSecretEl = document.getElementById('cred-alpaca-paper-secret');
+    const credAlpacaPaperSetBtn   = document.getElementById('cred-alpaca-paper-set');
+    const credAlpacaPaperClearBtn = document.getElementById('cred-alpaca-paper-clear');
     const credBrowserLoginsListEl = document.getElementById('cred-browser-logins-list');
     const credDiscordStatusEl     = document.getElementById('cred-discord-status');
     const credDiscordStatusTextEl = document.getElementById('cred-discord-status-text');
@@ -9633,12 +9679,20 @@
     }
 
     function renderCredentialsAlpaca(alpaca) {
-      if (!credAlpacaPillEl) return;
-      const status = (alpaca || {}).status || 'not configured';
-      const isSet = status === 'connected';
-      credAlpacaPillEl.className = 'cred-token-row-pill' + (isSet ? ' is-token-set-keyring' : '');
-      credAlpacaPillEl.textContent = isSet ? 'Set' : 'Not set';
-      if (credAlpacaClearBtn) credAlpacaClearBtn.disabled = !isSet;
+      const live  = (alpaca || {}).live  || {};
+      const paper = (alpaca || {}).paper || {};
+      if (credAlpacaPillEl) {
+        const isSet = live.status === 'connected';
+        credAlpacaPillEl.className = 'cred-token-row-pill' + (isSet ? ' is-token-set-keyring' : '');
+        credAlpacaPillEl.textContent = isSet ? 'Set' : 'Not set';
+        if (credAlpacaClearBtn) credAlpacaClearBtn.disabled = !isSet;
+      }
+      if (credAlpacaPaperPillEl) {
+        const isSet = paper.status === 'connected';
+        credAlpacaPaperPillEl.className = 'cred-token-row-pill' + (isSet ? ' is-token-set-keyring' : '');
+        credAlpacaPaperPillEl.textContent = isSet ? 'Set' : 'Not set';
+        if (credAlpacaPaperClearBtn) credAlpacaPaperClearBtn.disabled = !isSet;
+      }
     }
 
     function renderCredentialsBrowserLogins(browserLogins) {
@@ -9764,6 +9818,19 @@
 
     credAlpacaClearBtn.addEventListener('click', () => {
       sendEvent({ type: 'clear_alpaca_credentials' });
+    });
+
+    credAlpacaPaperSetBtn.addEventListener('click', () => {
+      const key    = credAlpacaPaperKeyEl.value.trim();
+      const secret = credAlpacaPaperSecretEl.value.trim();
+      if (!key || !secret) return;
+      sendEvent({ type: 'set_alpaca_paper_credentials', data: { key, secret } });
+      credAlpacaPaperKeyEl.value = '';
+      credAlpacaPaperSecretEl.value = '';   // never keep either value in the DOM
+    });
+
+    credAlpacaPaperClearBtn.addEventListener('click', () => {
+      sendEvent({ type: 'clear_alpaca_paper_credentials' });
     });
 
     credBrowserLoginsListEl.addEventListener('click', (ev) => {
