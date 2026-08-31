@@ -14,7 +14,7 @@ the issue specifies, opens a per-issue PR (`Closes #N`), and this file's
 
 ## Next slice -- start here
 
-- **Active:** S8 -- #970
+- **Active:** S9 -- #971
 - **Model:** sonnet
 
 ## Queue
@@ -31,16 +31,12 @@ merged.
 - [x] S5 -- #967 -- Semantic color sweep: health/state colors onto named tokens (Model: sonnet)
 - [x] S6 -- #968 -- Global focus-visible ring (Model: opus)
 - [x] S7 -- #969 -- Adaptive header density via container queries (Model: opus)
-- [ ] S8 -- #970 -- Shape scale: Harness + Library panes (Model: sonnet)
+- [x] S8 -- #970 -- Shape scale: Harness + Library panes (Model: sonnet) -- hand-implemented, self_dev unreliable for this slice (see Lessons item 5)
 - [ ] S9 -- #971 -- Shape scale: Trading + Log panes (Model: sonnet)
 - [ ] S10 -- #972 -- Shape scale: Settings + Profiles panes (Model: sonnet)
 - [ ] S11 -- #973 -- Shape scale: Credentials + Permissions + Integrations panes (Model: sonnet)
 - [ ] S12 -- #974 -- Shape scale: Memory + Insights + Recipes + Queue panes (Model: sonnet)
 - [ ] S13 -- #975 -- Shape scale: remaining panes (Model: sonnet)
-
-All seven foundation slices are done. Only the shape-scale sweep (S8-S13)
-remains -- six mechanical, single-file CSS slices with no new logic, no new
-interactivity. These should be the most reliable slices left in the queue.
 
 ## Landed PRs
 
@@ -51,15 +47,16 @@ interactivity. These should be the most reliable slices left in the queue.
 - PR #980 -- S5 (auto-merged by self_dev_campaign)
 - PR #982 -- S6, run_id `design-system-s6-v2` (retried after PR #981 was closed for writing to an unlinked `tray/styles.css` + a bare `button` selector). #982 auto-merged with tests green but nested the new rule inside `.pane[data-route="harness"]`'s block -- hand-fixed in a follow-up commit, verified via jest + a live DOM check.
 - PR #983 -- S7, run_id `design-system-s7-v2` (original spec asked for new click-to-reveal/click-to-open interactivity + linked an external artifact URL the sandbox can't fetch; two attempts under the original spec produced no commit at all. Scaled back to pure CSS visibility toggles, corrected on #969, then succeeded). #983 auto-merged with tests green but had two more bugs: it wrote to a new unlinked `tray/styles/header-container.css` (same dead-file mistake as #981) AND targeted a nonexistent `.hdr` class instead of the real `.header`, so it would have done nothing even if wired up. It also silently changed `.header`'s `flex-wrap` from `wrap` to `nowrap`, which broke an existing regression test guarding against a past incident (#325, header items bleeding past the content clip). Hand-fixed: moved the rules into `main.html`'s own `<style>` block under `.header`, restored `flex-wrap: wrap` as a last-resort fallback beneath the new container-query tiers, deleted the orphan file. Verified via jest (853/853) and a live resize check (header hides `.hdr-tts-vol`/inactive `.hdr-mic-seg` at narrow widths, shows everything at wide widths).
+- (no PR) -- S8, hand-implemented directly. Two `self_dev` attempts (fresh run_ids `design-system-s8-v2`, `design-system-s8-v3`, the second after confirming the trading campaign had finished) both produced an identical, unrelated 1041-line diff touching `cerebral/trading/*`, `plugins/scheduler.py`, and `scripts/toggle-openclaw-gateway.ps1` -- tests correctly failed both times so nothing merged, but the failure was reproducible and not explained by staleness or concurrency (see Lessons item 5, and tracking issue #986). Implemented the actual sweep by hand instead: 15 `border-radius` declarations across `.hrns-*` (Harness pane) mapped onto the three tokens by role (secondary buttons/inputs -> sm, the toolbar search + card -> md, badge/tag pills -> lg); Library pane's own `.lib-*` rules have zero `border-radius` today, nothing to change there. Scrollbar-thumb radii (2px, three of them) and the one perfect-circle dot (50%) were deliberately left alone -- chrome conventions, not part of the shape-scale system. Verified via jest (859/859).
 
-## Lessons from S6 and S7, for whoever picks up S8-S13
+## Lessons from S6, S7, and S8, for whoever picks up S9-S13
 
 1. **This app has zero external stylesheets.** Every slice edits `main.html`'s
    own inline `<style>` block. Twice now (S6's first attempt, S7's only
    attempt) the model instead created a new `.css` file that nothing links,
    producing a merged PR with zero actual effect. If a slice's own PR touches
-   any path under `tray/styles/`, that is a bug -- there is no such directory
-   in this app's real architecture.
+   any path under `tray/styles/` or `tray/lib/*.css`, that is a bug -- there
+   is no such file in this app's real architecture.
 2. **`self_dev_campaign` uses a deterministic run_id per slice** (issue #780's
    ledger). A slice whose run_id already has a recorded "pr" phase will
    resume by reporting that same recorded result rather than re-attempting
@@ -69,7 +66,7 @@ interactivity. These should be the most reliable slices left in the queue.
    since `self_dev` has no knowledge of this driver file.
 3. **Passing jest is necessary, not sufficient.** Neither S6's mis-nested
    rule nor S7's wrong class name nor its silently-changed `flex-wrap`
-   tripped a single test, because none of the 853 tests parse CSS selector
+   tripped a single test, because none of the tests parse CSS selector
    structure or diff computed styles against a baseline. Spot-check any
    slice's actual diff against the real file, especially when it touches an
    existing rule's boundaries rather than only adding new standalone rules.
@@ -80,6 +77,19 @@ interactivity. These should be the most reliable slices left in the queue.
    editing). If a slice fails this way, the fix is almost always to narrow
    the ask, not to just retry the same instructions again -- a same-run_id
    retry with unchanged instructions failed identically both times for S7.
+5. **A slice can also produce a large, entirely unrelated diff, reproducibly.**
+   S8 hit this twice with two different fresh run_ids: an identical
+   1000+-line diff touching unrelated trading/backend code instead of the
+   actual CSS task, both times with `tests_failed` (so nothing merged) and
+   `guardrail_hit` on `cerebral/main.py`. Confirmed NOT caused by a stale
+   clone (base commit verified as current master) or a concurrently-running
+   campaign (the trading campaign was confirmed finished before the second
+   attempt). Root cause unknown -- tracked in issue #986 for later
+   investigation. If a slice's PR touches files nowhere near its own scope,
+   don't try to salvage or merge any part of it -- close it and either retry
+   once more with a fresh run_id or, if that also fails oddly, hand-implement
+   the slice directly rather than continuing to retry against a possibly-
+   broken edit path.
 
 ## SAFETY
 
@@ -90,7 +100,10 @@ Highest priority; overrides the issue if they ever conflict.
    gate. If an issue's own scope ever seems to require touching something
    outside that file, stop and escalate rather than expanding scope. This
    includes never creating a new file under `tray/styles/` or anywhere else
-   -- see "Lessons" item 1 above.
+   -- see "Lessons" item 1 above. If a run's own diff touches `cerebral/` or
+   `plugins/` unprompted, treat it as broken (Lessons item 5) -- never merge
+   or cherry-pick any part of it, regardless of what the CSS portion looks
+   like.
 2. **Never remove or rename an existing `id` or class a script references.**
    Grep the file's own `<script>` block for `getElementById`/
    `querySelector`/`classList` before touching a selector that has JS
