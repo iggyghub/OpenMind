@@ -398,6 +398,31 @@ describe('renderTradingUpdate paper-trading control (S34/#901)', () => {
       expect(mount.innerHTML).toContain('Running');
     });
   });
+
+  // Live incident 2026-08-31: a user set starting_capital expecting it to
+  // control what the next session actually trades with -- it only ever
+  // affects the StubBrokerClient fallback, and once real Alpaca paper
+  // credentials exist that's not what's placing orders. The input must
+  // say so, not silently no-op.
+  test('broker "alpaca" disables the capital input and explains why', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], paper_control: { enabled: true, starting_capital: 10000, broker: 'alpaca' } }, mount);
+      expect(mount.innerHTML).toContain('paper-capital-input" min="0" step="100" value="10000" disabled>');
+      expect(mount.innerHTML).toContain('paper-capital-save-btn" disabled>');
+      expect(mount.innerHTML).toContain('not used -- trading against your real Alpaca paper account balance');
+    });
+  });
+
+  test('broker "stub" (or missing) keeps the capital input editable with the restart hint', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate({ positions: [], alerts: [], paper_control: { enabled: true, starting_capital: 10000, broker: 'stub' } }, mount);
+      expect(mount.innerHTML).toContain('paper-capital-input" min="0" step="100" value="10000" >');
+      expect(mount.innerHTML).toContain('paper-capital-save-btn" >');
+      expect(mount.innerHTML).toContain('takes effect after next restart');
+    });
+  });
 });
 
 // 2026-08-27: Books moved out to its own Trading sub-tab (previously

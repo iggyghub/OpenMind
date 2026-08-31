@@ -3755,9 +3755,19 @@ async def _trading_broadcast() -> None:
         }
         # S34 (#901): current paper-trading control state, for the (hand-
         # built, tray/lib/trading-panel.js) Start/Stop + capital control.
+        # "broker": a credentials-only check (no network call -- this
+        # broadcasts often), not the real .preflight(), so it's a cheap
+        # proxy for which broker _scheduler_loop is actually dispatching
+        # against, not a live guarantee. Added because starting_capital
+        # ONLY affects _trading_broker_fallback (StubBrokerClient) -- once
+        # real Alpaca paper credentials exist, this setting silently stops
+        # doing anything to the broker actually placing orders, and the
+        # UI had no way to say so (confirmed live 2026-08-31: a user set
+        # this expecting it to control the real paper account's balance).
         paper_control = {
             "enabled": _settings.get("trading_paper_enabled"),
             "starting_capital": _settings.get("trading_paper_starting_capital"),
+            "broker": "alpaca" if _alpaca_credentials_state()["paper"]["status"] == "connected" else "stub",
         }
         total_pnl = _trading_forward_record.get_total_pnl()
         all_fills = [dict(f) for f in _trading_forward_record.get_all_fills()]

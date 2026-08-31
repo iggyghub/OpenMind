@@ -117,14 +117,24 @@ function buildStopDiscoveryEvent() {
  * paper-trade dispatch loop + a starting-capital input, mirroring the
  * Discovery control above exactly. Rendered alongside it, above the
  * strategy list/empty-state.
- * @param {Object} [paperControl] - { enabled, starting_capital } from
- *   cerebral/main.py's _trading_broadcast(); undefined/null renders as
- *   running with the $10,000 default (matches the setting's own default).
+ * @param {Object} [paperControl] - { enabled, starting_capital, broker }
+ *   from cerebral/main.py's _trading_broadcast(); undefined/null renders
+ *   as running with the $10,000 default (matches the setting's own
+ *   default) and broker "stub" (matches no Alpaca creds configured yet).
+ *   broker: "alpaca" once real paper credentials exist -- at that point
+ *   starting_capital no longer controls what's actually trading (that's
+ *   a real Alpaca account balance, set on Alpaca's own dashboard, not
+ *   here); "stub" while it's still the in-process simulator, where this
+ *   input is the real, only source of truth for the starting balance.
  */
 function _renderPaperControl(paperControl) {
   const running = !paperControl || paperControl.enabled !== false;
   const capital = (paperControl && paperControl.starting_capital != null)
     ? paperControl.starting_capital : 10000;
+  const onAlpaca = !!(paperControl && paperControl.broker === 'alpaca');
+  const capitalHint = onAlpaca
+    ? 'not used -- trading against your real Alpaca paper account balance (set on Alpaca\'s own dashboard, not here)'
+    : 'takes effect after next restart';
   return `
     <div class="paper-control">
       <h3>Paper Trading</h3>
@@ -135,9 +145,9 @@ function _renderPaperControl(paperControl) {
       </div>
       <div class="paper-control-row">
         <label for="paper-capital-input">Starting capital ($, simulated)</label>
-        <input type="number" class="paper-capital-input" min="0" step="100" value="${capital}">
-        <button class="paper-capital-save-btn">Save</button>
-        <span class="paper-capital-hint">takes effect after next restart</span>
+        <input type="number" class="paper-capital-input" min="0" step="100" value="${capital}" ${onAlpaca ? 'disabled' : ''}>
+        <button class="paper-capital-save-btn" ${onAlpaca ? 'disabled' : ''}>Save</button>
+        <span class="paper-capital-hint">${capitalHint}</span>
       </div>
     </div>
   `;
