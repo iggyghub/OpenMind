@@ -285,3 +285,9 @@ running.
       proposal is raised; Felix uses the time tool or replies in text.
 - [ ] Tell Felix "I like jazz". Approve the proposal. Ask Felix "what music
       do I like?" -- it should recall "jazz" from memory in its answer.
+
+## UI1 S1 (#969) -- Header responsive tiers via container queries
+- [ ] Resize the Main window (or the workspace secondary panel opening beside Conversation) through all three widths and confirm the header adapts without wrapping to a second row.
+- [ ] Verify the TTS volume slider (.hdr-tts-vol) hides when the available width drops below 640px.
+- [ ] Verify the mic-mode segmented control's inactive segments (.hdr-mic-seg:not(.is-active)) hide when the available width drops below 460px.
+- [ ] Confirm the state pill's text label (Passive/Thinking/Speaking/Active) remains visible and never compresses at any tested width.
