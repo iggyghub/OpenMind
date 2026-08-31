@@ -14,7 +14,7 @@ the issue specifies, opens a per-issue PR (`Closes #N`), and this file's
 
 ## Next slice -- start here
 
-- **Active:** S11 -- #973
+- **Active:** S12 -- #974
 - **Model:** sonnet
 
 ## Queue
@@ -34,7 +34,7 @@ merged.
 - [x] S8 -- #970 -- Shape scale: Harness + Library panes (Model: sonnet) -- hand-implemented, self_dev unreliable for this slice (see Lessons item 5)
 - [x] S9 -- #971 -- Shape scale: Trading + Log panes (Model: sonnet) -- hand-implemented
 - [x] S10 -- #972 -- Shape scale: Settings + Profiles panes (Model: sonnet) -- hand-implemented
-- [ ] S11 -- #973 -- Shape scale: Credentials + Permissions + Integrations panes (Model: sonnet)
+- [x] S11 -- #973 -- Shape scale: Credentials + Permissions + Integrations panes (Model: sonnet) -- hand-implemented
 - [ ] S12 -- #974 -- Shape scale: Memory + Insights + Recipes + Queue panes (Model: sonnet)
 - [ ] S13 -- #975 -- Shape scale: remaining panes (Model: sonnet)
 
@@ -50,6 +50,7 @@ merged.
 - (no PR) -- S8, hand-implemented directly. Two `self_dev` attempts (fresh run_ids `design-system-s8-v2`, `design-system-s8-v3`, the second after confirming the trading campaign had finished) both produced an identical, unrelated 1041-line diff touching `cerebral/trading/*`, `plugins/scheduler.py`, and `scripts/toggle-openclaw-gateway.ps1` -- tests correctly failed both times so nothing merged, but the failure was reproducible and not explained by staleness or concurrency (see Lessons item 5, and tracking issue #986). Implemented the actual sweep by hand instead: 15 `border-radius` declarations across `.hrns-*` (Harness pane) mapped onto the three tokens by role (secondary buttons/inputs -> sm, the toolbar search + card -> md, badge/tag pills -> lg); Library pane's own `.lib-*` rules have zero `border-radius` today, nothing to change there. Scrollbar-thumb radii (2px, three of them) and the one perfect-circle dot (50%) were deliberately left alone -- chrome conventions, not part of the shape-scale system. Verified via jest (859/859).
 - (no PR) -- S9, hand-implemented (same pattern as S8, self_dev not retried given the confirmed pattern). Trading pane (`.trd-*`): 3 declarations mapped to md (create-toggle button, form inputs, submit button). Also found: `.trd-tabs`/`.trd-tab`/`.trd-panel`/`.trd-activity-section` (the actual tab bar and content panels) have **zero** CSS styling anywhere in the file -- they render as bare unstyled buttons/divs. Out of scope for a radius sweep (nothing to remap), but worth its own future issue if the Trading pane's tab bar should look like every other pane's. Log pane (`<div id="activity-log-mount">`, rendered by `tray/lib/activity-log.js`) has no dedicated CSS in `main.html` and zero `border-radius` usage in its own JS file -- nothing to change. Verified via jest (859/859).
 - (no PR) -- S10, hand-implemented (same pattern). Settings (`.set-*`): 21 declarations mapped by role. Profiles (`.prof-*`, excluding `.prof-switcher-*`/`.prof-sw-*` which are header-scoped, already covered by S1/S2): 9 declarations. Left unchanged: scrollbar-thumb radii, the radio-button and toggle-thumb circles (50%), and the toggle-track's pill shape (kept as a literal px value tied to its own height, not bound to a scale token, same reasoning as the circles) -- all chrome conventions outside the shape-scale system. Verified via jest (859/859).
+- (no PR) -- S11, hand-implemented (same pattern). Integrations (`.int-*`): 5 declarations. Credentials (`.cred-*`): 4. Permissions (`.perm-*`): 11, including a genuine badge (`.perm-plugin-row .perm-badge` -> lg). Left `.perm-fullauto-badge`'s `999px` unchanged (already a fully-rounded pill, not part of the discrete scale) and two status-dot circles (50%). Verified via jest (859/859).
 
 ## Lessons from S6, S7, and S8, for whoever picks up S9-S13
 
