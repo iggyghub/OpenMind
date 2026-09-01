@@ -57,6 +57,7 @@ def _make(tmp_path: Path, **overrides) -> SelfDevPlugin:
         # _default_diff_fn failure against a fake PR happened to escalate
         # and stop the run before merge was ever attempted).
         "diff_fn": lambda url: ["plugins/weather.py"],
+        "local_diff_fn": lambda clone_dir, branch: "+ placeholder diff\n",
         "merge_fn": lambda url: None,
         "pull_fn": lambda root: (True, "fast-forward"),
         "restart_fn": _noop_restart,
@@ -381,6 +382,126 @@ async def test_retest_phase_is_resumable(tmp_path):
     data = json.loads(result.content)
     assert data["test_passed"] is True
     assert data["merge_decision"] == "auto_merge"
+
+
+# ---------------------------------------------------------------------------
+# S28: pre-merge code review gate
+# ---------------------------------------------------------------------------
+
+async def test_no_review_fn_wired_behaves_exactly_as_before(tmp_path):
+    """review_fn is additive -- unwired (the default), a green run auto-merges
+    exactly as it did before this gate existed."""
+    plugin = _make(tmp_path)
+    result = await plugin.call_tool("self_dev", {"change_description": "Add a comment"})
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["merge_decision"] == "auto_merge"
+    assert data["review_feedback"] == ""
+
+
+async def test_review_fn_receives_local_diff_and_description(tmp_path):
+    calls = []
+
+    async def review_fn(diff, description):
+        calls.append((diff, description))
+        return True, ""
+
+    diff_calls = []
+    plugin = _make(
+        tmp_path,
+        review_fn=review_fn,
+        local_diff_fn=lambda clone_dir, branch: diff_calls.append((clone_dir, branch)) or "+added line",
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": "Add a bye print"})
+
+    assert not result.is_error, result.content
+    assert len(calls) == 1
+    assert calls[0] == ("+added line", "Add a bye print")
+    assert len(diff_calls) == 1
+
+
+async def test_review_fn_flags_change_blocks_merge(tmp_path):
+    merge_calls = []
+    plugin = _make(
+        tmp_path,
+        review_fn=lambda diff, desc: (False, "renames a public function with no callers updated"),
+        merge_fn=lambda url: merge_calls.append(url),
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": "Rename a helper"})
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["test_passed"] is True
+    assert data["merge_decision"] == "review_flagged"
+    assert "renames a public function" in data["review_feedback"]
+    assert merge_calls == [], "a flagged review must not merge"
+
+
+async def test_review_skipped_when_tests_already_failed(tmp_path):
+    """No point reviewing a change already declined for red tests -- and the
+    review_fn must not fire at all in that case."""
+    review_calls = []
+    plugin = _make(
+        tmp_path,
+        test_fn=lambda d: (False, "still failing"),
+        review_fn=lambda diff, desc: review_calls.append(1) or (False, "irrelevant"),
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": "Broken change"})
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["merge_decision"] == "tests_failed"
+    assert review_calls == []
+
+
+async def test_broken_review_fn_fails_open(tmp_path):
+    """A review_fn that raises must not block an otherwise-green run."""
+    merge_calls = []
+
+    async def boom(diff, desc):
+        raise RuntimeError("review model unreachable")
+
+    plugin = _make(tmp_path, review_fn=boom, merge_fn=lambda url: merge_calls.append(url))
+    result = await plugin.call_tool("self_dev", {"change_description": "Add a comment"})
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["merge_decision"] == "auto_merge"
+    assert merge_calls == [_PR_URL]
+
+
+async def test_review_phase_is_resumable(tmp_path):
+    """A crash after the review is recorded replays the outcome instead of
+    calling review_fn again."""
+    run_id = "post-review-crash"
+    ledger = StepLedger(db_path=tmp_path / "ledger.db")
+    ledger.record(run_id, "clone", {"name": "clone", "args": {}, "result": {}, "is_error": False})
+    ledger.record(run_id, "edit", {
+        "name": "edit", "args": {},
+        "result": {"branch": "selfdev/x", "committed": True}, "is_error": False,
+    })
+    ledger.record(run_id, "test", {
+        "name": "test", "args": {}, "result": {"passed": True, "summary": "1 passed"}, "is_error": False,
+    })
+    ledger.record(run_id, "review", {
+        "name": "review", "args": {},
+        "result": {"ok": False, "feedback": "recorded feedback"}, "is_error": False,
+    })
+
+    review_calls = []
+    plugin = _make(
+        tmp_path,
+        ledger=ledger,
+        review_fn=lambda diff, desc: review_calls.append(1) or (True, "should-not-run"),
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": "x", "run_id": run_id})
+
+    assert not result.is_error, result.content
+    assert review_calls == [], "the recorded review result must be reused, not re-attempted"
+    data = json.loads(result.content)
+    assert data["merge_decision"] == "review_flagged"
+    assert data["review_feedback"] == "recorded feedback"
 
 
 # ---------------------------------------------------------------------------

@@ -48,6 +48,16 @@ surfaced (red PRs sitting unmerged for a human to look at): most red runs
 are single mistakes an immediate second pass fixes, so this catches those
 before they ever become a pending-review PR.
 
+S28 adds an optional pre-merge review gate, additive to the test-status gate
+above: once tests pass, an injectable review_fn checks the local diff (git
+diff inside the clone, no network round trip) against two axes -- does it
+faithfully implement the task (Spec), and does it have an obvious problem
+tests wouldn't catch (Standards). A flagged review blocks merge the same way
+failed tests do (merge_decision "review_flagged"), and it's resumable via a
+"review" ledger phase. Unlike edit_fn/restart_fn, an unwired review_fn is not
+an error -- it fails open (skips the gate), since this is an additional net,
+not a replacement for the test-status gate.
+
 S5 (#807) adds self_dev_campaign: drives the existing _run() internals in a
 loop against a campaign driver file (Status: / - **Active:** Sx -- #N /
 - **Model:** / ## Queue / ## Landed PRs). Same driver-file format as the
@@ -347,6 +357,8 @@ RollbackFn = Callable[[], "Awaitable[None]"]   # async -- broadcasts self_dev_ma
 IssueFn = Callable[[int], str]                 # (issue_number) -> "# Title\n\nBody"
 RecordTurnFn = Callable[[str, dict], "Awaitable[None]"]  # (kind, content) -> None
 PrStateFn = Callable[[str], str]               # (pr_url) -> "OPEN"/"MERGED"/"CLOSED"
+LocalDiffFn = Callable[[Path, str], str]       # (clone_dir, branch) -> unified diff text
+ReviewFn = Callable[[str, str], "Awaitable[tuple[bool, str]]"]  # (diff, description) -> (ok, feedback)
 
 
 # git/gh/pytest I/O lives in cerebral/self_dev_io.py (NOT scanned by the
@@ -363,6 +375,7 @@ _default_merge_fn = _io.merge_fn
 _default_pull_fn = _io.pull_fn
 _default_issue_fn = _io.issue_fn
 _default_pr_state_fn = _io.pr_state_fn
+_default_local_diff_fn = _io.local_diff_fn
 
 
 def _default_edit_fn(clone_dir: Path, description: str) -> dict:
@@ -393,6 +406,11 @@ _rollback_fn = None
 # activity" thread instead, for the Activity Log -- a different destination
 # for the same event, not a replacement.
 _record_activity_fn = None
+# S28 -- review_fn is additive, not load-bearing: unlike edit_fn/restart_fn
+# (which raise if unwired), an unwired review_fn just skips the pre-merge
+# review gate, leaving every existing run byte-identical to before this gate
+# existed. None (the default) means "not wired".
+_review_fn = None
 
 
 def set_edit_fn(fn) -> None:
@@ -418,6 +436,11 @@ def set_rollback_fn(fn) -> None:
 def set_record_activity_fn(fn) -> None:
     global _record_activity_fn
     _record_activity_fn = fn
+
+
+def set_review_fn(fn) -> None:
+    global _review_fn
+    _review_fn = fn
 
 
 async def _default_record_turn_fn(kind: str, content: dict) -> None:
@@ -481,6 +504,8 @@ class SelfDevPlugin:
         record_turn_fn: RecordTurnFn | None = None,
         record_activity_fn: RecordTurnFn | None = None,
         pr_state_fn: PrStateFn | None = None,
+        local_diff_fn: LocalDiffFn | None = None,
+        review_fn: ReviewFn | None = None,
         repo_url: str | None = None,
         sandbox_root: Path | None = None,
         live_root: Path | None = None,
@@ -497,6 +522,7 @@ class SelfDevPlugin:
         # pr_state_fn (#810), like merge_fn/diff_fn/pull_fn, needs no main.py
         # closure -- the default just works standalone.
         self._pr_state_fn = pr_state_fn or _default_pr_state_fn
+        self._local_diff = local_diff_fn or _default_local_diff_fn
         # #780 -- unlike edit_fn/restart_fn, StepLedger needs no main.py
         # wiring (no model router / tray closure to capture): it's
         # self-sufficient against the shared openmind.db, so the default
@@ -511,6 +537,7 @@ class SelfDevPlugin:
         self._rollback_override = rollback_fn
         self._record_turn_override = record_turn_fn
         self._record_activity_override = record_activity_fn
+        self._review_override = review_fn
         self._repo_url = repo_url or str(_REPO_ROOT)
         self._sandbox_root = sandbox_root or (data_dir() / "sandbox" / "self_dev")
         self._live_root = live_root or _REPO_ROOT
@@ -523,6 +550,9 @@ class SelfDevPlugin:
 
     def _resolve_rollback(self) -> RollbackFn:
         return self._rollback_override or _rollback_fn or _default_rollback_fn
+
+    def _resolve_review(self) -> "ReviewFn | None":
+        return self._review_override or _review_fn
 
     def _resolve_record_turn(self) -> RecordTurnFn:
         return self._record_turn_override or _record_turn_fn or _default_record_turn_fn
@@ -852,8 +882,47 @@ class SelfDevPlugin:
         except Exception as exc:
             escalation_reason = f"diff check failed: {exc}"
 
-        if guardrail_hit or not test_passed:
-            reason = escalation_reason or ("tests did not pass" if not test_passed else "")
+        # 5b. Pre-merge code review (S28): an additional gate beyond test
+        #     status, catching what tests don't cover (off-spec changes,
+        #     obvious smells). Skipped when tests already failed (no point
+        #     reviewing a change already declined) or when no review_fn is
+        #     wired (fail-open -- additive, not a replacement for the
+        #     test-status gate). Resumable via the "review" phase.
+        review_ok, review_feedback = True, ""
+        review_fn = self._resolve_review()
+        if test_passed and review_fn is not None:
+            if "review" in resumed:
+                logger.info("[self_dev] run %r: resuming -- review already recorded", run_id)
+                review_result = resumed["review"]["result"] or {}
+                review_ok = bool(review_result.get("ok", True))
+                review_feedback = str(review_result.get("feedback") or "")
+            else:
+                try:
+                    diff_text = self._local_diff(clone_dir, branch)
+                    review_result = review_fn(diff_text, description)
+                    if inspect.isawaitable(review_result):
+                        review_result = await review_result
+                    review_ok, review_feedback = review_result
+                except Exception as exc:
+                    # Fail-open: a broken review_fn must not block a run that
+                    # would otherwise merge cleanly.
+                    review_ok, review_feedback = True, f"review skipped: {exc}"
+                self._ledger.record(run_id, "review", {
+                    "name": "review",
+                    "args": {},
+                    "result": {"ok": review_ok, "feedback": review_feedback},
+                    "is_error": False,
+                })
+
+        if guardrail_hit or not test_passed or not review_ok:
+            reasons = []
+            if not test_passed:
+                reasons.append("tests did not pass")
+            if not review_ok:
+                reasons.append(f"review: {review_feedback}" if review_feedback else "review flagged this change")
+            if guardrail_hit:
+                reasons.append(escalation_reason)
+            reason = "; ".join(reasons)
             try:
                 await self._resolve_record_turn()("system_event", {
                     "kind": "self_dev_pr_auto_merged",
@@ -900,7 +969,24 @@ class SelfDevPlugin:
                 "guardrail_reason": escalation_reason,
             }))
 
-        # 6. Auto-merge (tests passed; guardrail hits remain informational).
+        if not review_ok:
+            # Same posture as tests_failed: the run succeeded, tests passed,
+            # but the review gate says this isn't safe to merge as-is -- PR
+            # stays open for a human.
+            return ToolResult(content=json.dumps({
+                "run_id": run_id,
+                "clone_dir": str(clone_dir),
+                "branch": branch,
+                "test_passed": test_passed,
+                "test_summary": test_output[:500],
+                "pr_url": pr_url,
+                "merge_decision": "review_flagged",
+                "review_feedback": review_feedback,
+                "guardrail_hit": guardrail_hit,
+                "guardrail_reason": escalation_reason,
+            }))
+
+        # 6. Auto-merge (tests passed, review passed; guardrail hits remain informational).
         try:
             self._merge(pr_url)
         except Exception as exc:
@@ -927,6 +1013,7 @@ class SelfDevPlugin:
                 "merge_decision": "auto_merge",
                 "guardrail_hit": guardrail_hit,
                 "guardrail_reason": escalation_reason,
+                "review_feedback": review_feedback,
                 "load": load_data,
             })
         )

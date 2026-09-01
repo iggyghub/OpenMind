@@ -3174,6 +3174,30 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
     return {"branch": branch, "committed": committed, "written": written}
 
 
+async def _self_dev_review(diff: str, description: str) -> "tuple[bool, str]":
+    """self_dev review_fn (S28): one-shot Standards+Spec check on the diff
+    before merge, catching what a bare test pass/fail misses. Fails open
+    (returns ok=True) on an empty diff or an unparseable model reply -- this
+    gate is additive to the test-status gate, never a replacement for it."""
+    from cerebral import self_dev_io as _sdio
+
+    if not diff.strip():
+        return True, ""
+
+    prompt = (
+        "You are reviewing a code change before it merges. Check two things:\n"
+        "1. SPEC -- does the diff actually implement the task, completely?\n"
+        "2. STANDARDS -- any obvious bug, dead code, or change that could "
+        "break something the tests don't cover?\n\n"
+        f"TASK: {description}\n\nDIFF:\n{diff[:6000]}\n\n"
+        "Reply with ONLY a JSON object: "
+        '{"ok": true or false, "feedback": "one sentence, empty string if ok"}'
+    )
+    raw = await _router.complete(prompt, task_type="self_dev")
+    parsed = _sdio.extract_json_value(raw, "{") or {}
+    return bool(parsed.get("ok", True)), str(parsed.get("feedback") or "")
+
+
 async def _self_dev_restart() -> None:
     """self_dev restart_fn -- tell the tray to relaunch (SD-2 / #555)."""
     await _broadcast({"type": "restart_felix"})
@@ -7644,6 +7668,7 @@ def _wire_plugin_seams() -> None:
         ("self_dev", "set_rollback_fn", _self_dev_rollback),                         # #813 manual rollback
         ("self_dev", "set_record_turn_fn", _record_turn),                           # #810 pending-review card
         ("self_dev", "set_record_activity_fn", _record_activity),                   # S26 #879 Activity Log
+        ("self_dev", "set_review_fn", _self_dev_review),                            # S28 pre-merge review gate
         ("computer_use", "set_driving_fn", _computer_use_driving),                   # S2 #576 (ADR-0016 (c))
         ("computer_use", "set_vision_ground_fn", _computer_use_vision_ground),       # S5 #578 (ADR-0016 sec 5)
         ("computer_use", "set_attended_handoff_fn", _computer_use_attended_handoff), # S6 #579 (ADR-0016 sec 6)

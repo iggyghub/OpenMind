@@ -259,6 +259,20 @@ def diff_fn(pr_url: str) -> "list[str]":
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def local_diff_fn(clone_dir: Path, branch: str) -> str:
+    """Unified diff of `branch` against master, read locally inside the clone
+    -- no network round trip (unlike diff_fn, which asks gh about a live PR).
+    Used by the pre-merge review gate, which needs the actual patch text, not
+    just changed paths."""
+    result = subprocess.run(
+        ["git", "-C", str(clone_dir), "diff", f"master..{branch}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git diff failed:\n{result.stderr.strip()}")
+    return result.stdout
+
+
 def merge_fn(pr_url: str) -> None:
     """Squash-merge a PR and delete its branch via gh CLI."""
     result = subprocess.run(

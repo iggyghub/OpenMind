@@ -66,6 +66,38 @@ def test_create_branch_and_commit_false_when_nothing_to_commit(monkeypatch):
     assert io.create_branch_and_commit("/clone", "selfdev/abc", "msg") is False
 
 
+def test_local_diff_fn_reads_git_diff_locally(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        class R:
+            returncode = 0
+            stdout = "+added line\n"
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert io.local_diff_fn("/clone", "selfdev/abc") == "+added line\n"
+    assert calls == [["git", "-C", "/clone", "diff", "master..selfdev/abc"]]
+
+
+def test_local_diff_fn_raises_on_git_failure(monkeypatch):
+    def fake_run(cmd, **kw):
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = "fatal: not a git repository"
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    try:
+        io.local_diff_fn("/clone", "selfdev/abc")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "not a git repository" in str(exc)
+
+
 def test_pr_fn_caps_title_at_256_and_uses_first_line(monkeypatch):
     calls = []
 
