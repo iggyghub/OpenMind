@@ -5,6 +5,11 @@ Wraps the S1 planner in a loop so Felix can chain tool calls: pick a tool,
 run it through the gate, feed the result back, pick the next tool or return
 final text, repeat.  Stops when the planner returns text (done) or the step
 cap is reached.
+
+A failed tool call does NOT end the chain: the error is fed back to the
+planner (via prior_steps, same as a success) so it can retry with different
+args or a different tool, bounded by the failed_sigs guard (an identical
+retry gives up immediately) and by max_steps overall.
 """
 
 import json
@@ -85,6 +90,10 @@ class ChainEngine:
         # reading the result back as a tool message -- see Planner.finalize);
         # break the loop and force a text answer instead of spinning to the cap.
         completed_sigs: set[str] = set()
+        # Signatures that have already failed once, mapped to their error
+        # text. A retry with the SAME signature means the model isn't
+        # progressing -- give up instead of repeating the failure to the cap.
+        failed_sigs: dict[str, str] = {}
 
         # Crash-resume (harness improvement C): steps already recorded for this
         # run_id are replayed from the ledger instead of re-executed, so a
@@ -143,6 +152,13 @@ class ChainEngine:
                 logger.info("[chain] repeated call %r -- finalizing from results", result.name)
                 return await self._planner.finalize(transcript, prior_steps)
 
+            if sig in failed_sigs:
+                logger.info(
+                    "[chain] step %d: '%s' failed again with unchanged args -- giving up",
+                    step_num + 1, result.name,
+                )
+                return f"The tool {result.name} encountered an error: {failed_sigs[sig]}"
+
             # Surface the tool call as a Conversation turn before gating
             await self._record_fn(KIND_TOOL_CALL, {"name": result.name, "args": result.args})
 
@@ -192,14 +208,17 @@ class ChainEngine:
             )
 
             if tool_result.is_error:
-                return f"The tool {result.name} encountered an error: {tool_result.content}"
+                # Let the planner see the failure (it's already in prior_steps)
+                # and try something different next step, instead of giving up
+                # on the very first error.
+                failed_sigs[sig] = tool_result.content
+                continue
 
-            if not tool_result.is_error:
-                completed_sigs.add(sig)
-                # Persist the completed step so a crash before the chain ends
-                # can replay it instead of re-executing (harness improvement C).
-                if ledger is not None and run_id:
-                    ledger.record(run_id, sig, prior_steps[-1])
+            completed_sigs.add(sig)
+            # Persist the completed step so a crash before the chain ends
+            # can replay it instead of re-executing (harness improvement C).
+            if ledger is not None and run_id:
+                ledger.record(run_id, sig, prior_steps[-1])
 
         # Hit the step cap -- answer from whatever results we gathered rather
         # than the robotic "I completed N steps" summary.

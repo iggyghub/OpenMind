@@ -304,7 +304,8 @@ async def test_immediate_text_response_skips_tool():
 # ---------------------------------------------------------------------------
 
 async def test_tool_error_stops_chain():
-    """A tool returning is_error=True stops the chain and reports the error."""
+    """A tool that fails identically twice in a row stops the chain and
+    reports the error -- the planner isn't making progress."""
     backend = AsyncMock()
     backend.complete_with_tools.return_value = ToolCall(
         name="gmail_search", args={"query": "from:Sarah"}
@@ -320,6 +321,32 @@ async def test_tool_error_stops_chain():
     response = await engine.run("...", _TOOLS)
     assert "error" in response.lower()
     assert "auth failed" in response
+
+
+async def test_tool_error_lets_planner_retry_with_different_args():
+    """A failed tool call does not end the chain -- the planner sees the
+    error (via prior_steps) and can retry with different args, succeeding
+    in the same chain."""
+    backend = AsyncMock()
+    backend.complete_with_tools.side_effect = [
+        ToolCall(name="gmail_search", args={"query": "from:Sarah"}),
+        ToolCall(name="gmail_search", args={"query": "from:sarah@example.com"}),
+        "Done! Found it on retry.",
+    ]
+    planner = Planner(backend)
+
+    engine, _ = _make_engine(
+        planner,
+        gate_decisions=[Decision.SILENT, Decision.SILENT],
+        tool_results=[
+            ToolResult(content="query malformed", is_error=True),
+            ToolResult(content="Email from Sarah found.", is_error=False),
+        ],
+    )
+
+    response = await engine.run("Find email from Sarah", _TOOLS)
+    assert response == "Done! Found it on retry."
+    assert backend.complete_with_tools.call_count == 3
 
 
 # ---------------------------------------------------------------------------
