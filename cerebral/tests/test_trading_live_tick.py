@@ -229,6 +229,39 @@ def test_tick_closes_a_short_at_a_profit_when_price_falls(tmp_path, monkeypatch)
     assert closed["pnl"] == pytest.approx((20.0 - 15.0) * 2.0)
 
 
+def test_tick_does_not_open_a_short_with_fractional_qty(tmp_path, monkeypatch):
+    """Fractional shares can't be shorted -- a structural broker/regulatory
+    limitation (no locate/borrow mechanism for fractional inventory), not
+    specific to Alpaca or fixable by switching brokers (confirmed
+    2026-09-01). A short OPEN at a fractional qty is treated as a hold
+    instead of repeatedly failing against the real broker every tick."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_SHORT, qty=0.5)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()))
+
+    assert result["status"] == "hold"
+    assert broker._orders == {}
+    assert find_position(broker.list_positions(), "AAPL") is None
+
+
+def test_tick_still_closes_a_fractional_long_on_a_short_signal(tmp_path, monkeypatch):
+    """The fractional-short guard only applies to OPENING a fresh short --
+    closing an existing long is a normal sell, never a short, and must
+    reach decide_action unchanged."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0, 12.0])
+    fetch = fixed_fetch(make_bars())
+
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=0.5),
+                       broker, record, fetch=fetch)
+    closed = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_SHORT, qty=0.5),
+                                broker, record, fetch=fetch)
+
+    assert closed["status"] == "closed" and closed["side"] == "sell"
+
+
 def test_tick_on_a_flat_signal_while_flat_places_no_order(tmp_path, monkeypatch):
     record = make_record(tmp_path, monkeypatch)
     broker = StubBrokerClient()

@@ -258,6 +258,21 @@ def run_strategy_tick(
     open_qty = spec.qty * size_pct
 
     position = find_position(broker.list_positions(strategy_id=position_key), spec.symbol)
+
+    # Fractional shares can't be shorted -- a structural broker/regulatory
+    # limitation (no locate/borrow mechanism exists for fractional
+    # inventory under Reg SHO), confirmed 2026-09-01 across every broker
+    # researched, not an Alpaca-specific restriction or fixable by
+    # switching brokers. A short OPEN at a fractional qty would just be
+    # rejected by the real broker every tick forever -- treat it the same
+    # as any other "can't act on this" case (evaluate_signal's own
+    # convention above) rather than fail silently and repeatedly. Only
+    # matters when opening fresh (position is None): closing an existing
+    # LONG on a short signal is a normal sell, never a short, and must
+    # reach decide_action unchanged.
+    if signal == SIGNAL_SHORT and position is None and not float(open_qty).is_integer():
+        signal = SIGNAL_FLAT
+
     action = decide_action(signal, position, open_qty)
     if action is None:
         return {"status": "hold", "signal": signal, "symbol": spec.symbol}
