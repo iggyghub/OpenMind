@@ -226,6 +226,47 @@ async def test_plan_prompt_offers_skills_docs_and_scripts(tmp_path, monkeypatch)
     assert "cerebral/a.py" in plan_prompt
 
 
+# ── S28: _self_dev_review (pre-merge review gate) ────────────────────────────
+
+async def test_review_parses_ok_verdict(monkeypatch):
+    router = _FakeRouter(context_window=8192, responses=['{"ok": true, "feedback": ""}'])
+    monkeypatch.setattr(main_mod, "_router", router)
+
+    ok, feedback = await main_mod._self_dev_review("+added line\n", "add a line")
+    assert ok is True
+    assert feedback == ""
+    assert router.calls[0][1] == "self_dev"
+
+
+async def test_review_parses_flagged_verdict(monkeypatch):
+    router = _FakeRouter(
+        context_window=8192,
+        responses=['{"ok": false, "feedback": "renamed a public function with no callers updated"}'],
+    )
+    monkeypatch.setattr(main_mod, "_router", router)
+
+    ok, feedback = await main_mod._self_dev_review("-def foo():\n+def bar():\n", "rename foo")
+    assert ok is False
+    assert "renamed a public function" in feedback
+
+
+async def test_review_fails_open_on_unparseable_reply(monkeypatch):
+    router = _FakeRouter(context_window=8192, responses=["I cannot review this."])
+    monkeypatch.setattr(main_mod, "_router", router)
+
+    ok, feedback = await main_mod._self_dev_review("+x = 1\n", "add x")
+    assert ok is True
+
+
+async def test_review_skips_model_call_on_empty_diff(monkeypatch):
+    router = _FakeRouter(context_window=8192, responses=[])
+    monkeypatch.setattr(main_mod, "_router", router)
+
+    ok, feedback = await main_mod._self_dev_review("", "no-op")
+    assert ok is True
+    assert router.calls == []
+
+
 async def test_candidate_list_skips_node_modules(tmp_path, monkeypatch):
     """A vendored tree would blow the planner prompt; keep it excluded."""
     (tmp_path / "cerebral").mkdir()
