@@ -21,7 +21,7 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.trading.live_tick import run_strategy_tick
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore, mint_expansion_strategy_id
 from cerebral.trading.broker import StubBrokerClient
-from cerebral.trading.gauntlet import run_gauntlet
+from cerebral.trading.gauntlet import run_gauntlet, compute_max_holding_days
 from cerebral.trading.discovery import (
     DiscoveryAttempts, DiscoveryWatchlist, _KNOWN_TICKERS, rank_for_day_trading, run_discovery_pass,
 )
@@ -898,7 +898,29 @@ class SchedulerPlugin:
             position = signals.shift(1).fillna(0.0)
             daily_returns = position * bars["Close"].pct_change().fillna(0.0)
             equity = 100.0 * (1.0 + daily_returns).cumprod()
-            return list(equity), {}
+            # "Most trades daily, max hold a month" (user policy decision):
+            # feeds run_gauntlet's max_holding_period gate (#961 follow-up).
+            max_holding_days = compute_max_holding_days(position, interval)
+            return list(equity), {"max_holding_days": max_holding_days}
+
+        # Fractional-share sizing at registration (found live 2026-09-01):
+        # position_qty used to be a hardcoded 1.0 regardless of price or
+        # account size -- 1 share of any $100+ stock instantly blew past
+        # RiskManager's 2%-of-equity per-trade cap on the real (small)
+        # paper account, silently blocking almost every real signal
+        # forever. Alpaca and StubBrokerClient both already accept
+        # fractional qty; nothing previously computed one. Sized to 80% of
+        # the exact risk budget (not 100%) so ordinary price drift between
+        # registration and the strategy's first live dispatch tick doesn't
+        # immediately re-trigger the same block. Deliberately NOT touched:
+        # the ramp (25%/50%/100%) and confidence-weight multiplier in
+        # live_tick.py's run_strategy_tick, which multiply this registered
+        # qty at dispatch time -- those are separate, already-tested
+        # mechanisms this only feeds a sane starting value into.
+        last_price = float(prices["Close"].iloc[-1]) if "Close" in prices.columns and len(prices) else 0.0
+        risk_pct = self._settings.get("max_per_trade_risk_pct") or 2.0
+        starting_capital = self._settings.get("trading_paper_starting_capital") or 10000.0
+        position_qty = (starting_capital * (risk_pct / 100.0) * 0.8) / last_price if last_price > 0 else 1.0
 
         try:
             # ponytail: benchmark is the strategy's own buy-and-hold, not a
@@ -910,7 +932,7 @@ class SchedulerPlugin:
                 hypothesis=hypothesis, provenance=provenance,
                 scheduler=self, paper_broker=StubBrokerClient(),
                 symbol=symbol, strategy_code=code,
-                strategy_store=strategy_store, position_qty=1.0,
+                strategy_store=strategy_store, position_qty=position_qty,
                 origin=origin, parent_version=parent_version, strategy_id=strategy_id,
                 components_json=components_json, interval=interval,
             )

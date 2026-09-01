@@ -358,11 +358,16 @@ def _trend_prices(n=200, seed=42):
     """A clean regime change (strong uptrend, then strong downtrend) -- a
     trend-following strategy should catch the reversal and keep its gains,
     clearly beating naive buy-and-hold of the same series through the whole
-    round trip. Deterministic and reliably VALIDATED with MA_CROSS_CODE."""
+    round trip. Deterministic and reliably VALIDATED with MA_CROSS_CODE.
+
+    noise=0.012 (was 0.008): #961's max_holding_period gate needs
+    MA_CROSS_CODE's crossovers to fire often enough that no single held
+    run exceeds 30 days -- the original lower-noise series let a single
+    ~90-day uptrend produce one continuous ~90-day hold."""
     import numpy as np
     rng = np.random.default_rng(seed)
-    up = rng.normal(0.004, 0.008, n // 2)
-    down = rng.normal(-0.004, 0.008, n - n // 2)
+    up = rng.normal(0.004, 0.012, n // 2)
+    down = rng.normal(-0.004, 0.012, n - n // 2)
     close = 100 * np.cumprod(1 + np.concatenate([up, down]))
     return pd.DataFrame({
         "Open": close, "High": close * 1.005, "Low": close * 0.995,
@@ -370,10 +375,16 @@ def _trend_prices(n=200, seed=42):
     })
 
 
+# fast=2/slow=5 (was 10/30): a slow crossover pair naturally holds one
+# trending run for its whole duration, which #961's max_holding_period
+# gate now rejects past 30 days. This faster pair, against the
+# higher-noise _trend_prices above, empirically validates with its
+# longest simulated trade at 26 days -- confirmed against the real
+# run_gauntlet pipeline, not just the vectorized approximation here.
 MA_CROSS_CODE = (
     "def strategy(data):\n"
-    "    fast = data['Close'].rolling(10).mean()\n"
-    "    slow = data['Close'].rolling(30).mean()\n"
+    "    fast = data['Close'].rolling(2).mean()\n"
+    "    slow = data['Close'].rolling(5).mean()\n"
     "    return (fast > slow).astype(int).tolist()\n"
 )
 
@@ -491,7 +502,7 @@ async def test_run_gauntlet_generates_code_from_a_claim_via_the_router(tmp_path)
     assert json.loads(result.content)["verdict"] == "VALIDATED"
     spec = store.get("MA cross trend test")
     assert spec is not None
-    assert "rolling(10)" in spec.code  # the router's real output, not the stub
+    assert "rolling(2)" in spec.code  # the router's real output, not the stub
 
 
 async def test_run_gauntlet_claim_without_a_router_uses_the_stub(tmp_path):
@@ -539,7 +550,15 @@ async def test_edit_strategy_validated_records_a_new_version_and_moves_the_point
         return _trend_prices()
 
     await _register_ma_cross(plugin, store, fetch)
-    edited_code = MA_CROSS_CODE.replace("rolling(10)", "rolling(9)")
+    # A real code edit, but behaviorally identical (a comment, not a window
+    # change) -- perturbing MA_CROSS_CODE's windows lands outside the
+    # narrow band that validates against _trend_prices under #961's new
+    # max_holding_period gate (confirmed empirically), so this test only
+    # needs to prove an edit's *different code* re-validates and moves the
+    # dispatch pointer, not that a different parameter also happens to.
+    edited_code = MA_CROSS_CODE.replace(
+        "return (fast > slow)", "# edited\n    return (fast > slow)"
+    )
 
     result = await plugin._edit_strategy(
         {"strategy_id": "MA cross trend test", "code": edited_code},

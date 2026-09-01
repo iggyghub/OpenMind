@@ -94,12 +94,16 @@ async def test_mix_strategies_provenance_includes_components():
 def _trend_prices(n=200, seed=42):
     """Same fixture cerebral/tests/test_plugin_scheduler.py's S11c tests use --
     a clean regime change a trend-following MA-cross strategy reliably clears
-    the full gauntlet against."""
+    the full gauntlet against. noise=0.012 (was 0.008), MA_CROSS_CODE
+    fast=2/slow=5 (was 10/30): #961's max_holding_period gate needs
+    crossovers frequent enough that no single held run exceeds 30 days --
+    see test_plugin_scheduler.py's own _trend_prices/MA_CROSS_CODE for the
+    full account of why."""
     import numpy as np
     import pandas as pd
     rng = np.random.default_rng(seed)
-    up = rng.normal(0.004, 0.008, n // 2)
-    down = rng.normal(-0.004, 0.008, n - n // 2)
+    up = rng.normal(0.004, 0.012, n // 2)
+    down = rng.normal(-0.004, 0.012, n - n // 2)
     close = 100 * np.cumprod(1 + np.concatenate([up, down]))
     return pd.DataFrame({
         "Open": close, "High": close * 1.005, "Low": close * 0.995,
@@ -109,8 +113,8 @@ def _trend_prices(n=200, seed=42):
 
 MA_CROSS_CODE = (
     "def strategy(data):\n"
-    "    fast = data['Close'].rolling(10).mean()\n"
-    "    slow = data['Close'].rolling(30).mean()\n"
+    "    fast = data['Close'].rolling(2).mean()\n"
+    "    slow = data['Close'].rolling(5).mean()\n"
     "    return (fast > slow).astype(int).tolist()\n"
 )
 

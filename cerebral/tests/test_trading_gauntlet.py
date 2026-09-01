@@ -90,7 +90,7 @@ def test_gate_result_structure():
 import numpy as np
 import pandas as pd
 
-from cerebral.trading.gauntlet import run_gauntlet, StrategyCard
+from cerebral.trading.gauntlet import run_gauntlet, StrategyCard, compute_max_holding_days
 
 
 def make_prices(n=200, seed=42):
@@ -386,3 +386,74 @@ class TestBarsPerYear:
 
     def test_unknown_interval_falls_back_to_daily(self):
         assert _bars_per_year("bogus") == 252.0
+
+
+class TestMaxHoldingDays:
+    """"Most trades daily, nothing held past a month" -- a user policy
+    decision, not a data-derived threshold. See TRADING.md's #961
+    follow-up entry."""
+
+    def test_flat_series_holds_zero_days(self):
+        assert compute_max_holding_days([0, 0, 0, 0], "1d") == 0.0
+
+    def test_one_continuous_run_on_daily_bars(self):
+        # 10 consecutive held bars on daily data == 10 days (1 bar/day).
+        position = [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]
+        assert compute_max_holding_days(position, "1d") == pytest.approx(10.0)
+
+    def test_direction_flip_without_flat_is_one_continuous_hold(self):
+        # Long then short with no flat bar between them is still one
+        # unbroken holding run at the broker -- the position is never
+        # actually closed in between.
+        position = [1, 1, 1, -1, -1, -1]
+        assert compute_max_holding_days(position, "1d") == pytest.approx(6.0)
+
+    def test_takes_the_longest_run_not_the_total(self):
+        position = [1, 1, 0, 1, 1, 1, 1, 1, 0, 1]
+        assert compute_max_holding_days(position, "1d") == pytest.approx(5.0)
+
+    def test_intraday_bars_compress_to_fewer_days(self):
+        # 78 consecutive 5-minute bars is one full 6.5h trading day, not
+        # 78 days -- must scale by the interval's own bars-per-day.
+        position = [1] * 78
+        assert compute_max_holding_days(position, "5m") == pytest.approx(1.0, rel=0.05)
+
+
+class TestMaxHoldingPeriodGate:
+    def test_skipped_when_backtest_func_reports_no_holding_metric(self):
+        # make_backtest (this file's default fixture) never sets
+        # metrics["max_holding_days"] -- the gate must not appear at all,
+        # not silently pass. Matches TestPassesAllGates' existing
+        # len(card.gates) == 6 assertion.
+        card = run_gauntlet(
+            make_backtest, make_prices(), make_params(), make_benchmark_prices(),
+            make_positions(), seed=42,
+        )
+        assert "max_holding_period" not in [g.name for g in card.gates]
+
+    def test_fails_when_longest_trade_exceeds_the_limit(self):
+        def long_hold_backtest(prices, params):
+            eq, metrics = make_backtest(prices, params)
+            metrics["max_holding_days"] = 45.0
+            return eq, metrics
+
+        card = run_gauntlet(
+            long_hold_backtest, make_prices(), make_params(), make_benchmark_prices(),
+            make_positions(), seed=42, max_holding_days=30.0,
+        )
+        gate = next(g for g in card.gates if g.name == "max_holding_period")
+        assert gate.passed is False
+        assert card.verdict == "UNVALIDATED"
+
+    def test_passes_when_longest_trade_is_within_the_limit(self):
+        def short_hold_backtest(prices, params):
+            eq, metrics = make_backtest(prices, params)
+            metrics["max_holding_days"] = 5.0
+            return eq, metrics
+
+        card = run_gauntlet(
+            short_hold_backtest, make_prices(), make_params(), make_benchmark_prices(),
+            make_positions(), seed=42, max_holding_days=30.0,
+        )
+        gate = next(g for g in card.gates if g.name == "max_holding_period")
+        assert gate.passed is True
