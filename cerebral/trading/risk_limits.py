@@ -74,7 +74,13 @@ class RiskManager:
 
         # 2. Per-trade risk (max loss = % of account)
         max_per_trade_loss = account_equity * (self._config.max_per_trade_risk_pct / 100.0)
-        if trade_value > max_per_trade_loss:
+        # A cent of float slop, not a safety margin: qty is registered as
+        # budget/price and re-priced at dispatch as qty*price, so a trade
+        # sized to exactly the cap (2026-09-01, no headroom by user choice)
+        # can round a fraction of a cent over it on floating-point noise
+        # alone -- live-observed blocking real trades within seconds of the
+        # 0.8-headroom removal landing.
+        if trade_value > max_per_trade_loss + 0.01:
             reason = f"Per-trade risk {trade_value:.2f} exceeds {self._config.max_per_trade_risk_pct}% of account ({max_per_trade_loss:.2f})"
             logger.warning(f"[risk] Blocked order for {symbol}: {reason}")
             self._emit_alert("warning", "order_blocked", reason, {"blocked_by": "per_trade_risk"})

@@ -18,6 +18,17 @@ class TestRiskLimits:
         res = mgr.check_order(10000.0, 0, 0.0, 150.0, "AAPL", 1.5)
         assert res.allowed
 
+    def test_per_trade_risk_tolerates_a_cent_of_float_slop_at_the_cap(self):
+        """qty sized to exactly the risk budget (no headroom, 2026-09-01
+        user choice) re-prices at dispatch as qty*price, which can round a
+        fraction of a cent over the cap on float noise alone -- live-observed
+        blocking real trades. A whole cent over must still reject."""
+        mgr = RiskManager(RiskConfig(max_per_trade_risk_pct=10.0))
+        just_over = mgr.check_order(100.0, 0, 0.0, 10.0 + 1e-9, "AAPL", 1.0)
+        a_cent_over = mgr.check_order(100.0, 0, 0.0, 10.011, "AAPL", 1.0)
+        assert just_over.allowed
+        assert not a_cent_over.allowed
+
     def test_daily_loss_halts_trades(self):
         mgr = RiskManager(RiskConfig(max_daily_loss_pct=6.0))
         # 6% of 10000 = 600. Current loss 600 -> reject
