@@ -906,21 +906,23 @@ class SchedulerPlugin:
         # Fractional-share sizing at registration (found live 2026-09-01):
         # position_qty used to be a hardcoded 1.0 regardless of price or
         # account size -- 1 share of any $100+ stock instantly blew past
-        # RiskManager's 2%-of-equity per-trade cap on the real (small)
-        # paper account, silently blocking almost every real signal
-        # forever. Alpaca and StubBrokerClient both already accept
-        # fractional qty; nothing previously computed one. Sized to 80% of
-        # the exact risk budget (not 100%) so ordinary price drift between
-        # registration and the strategy's first live dispatch tick doesn't
-        # immediately re-trigger the same block. Deliberately NOT touched:
-        # the ramp (25%/50%/100%) and confidence-weight multiplier in
-        # live_tick.py's run_strategy_tick, which multiply this registered
-        # qty at dispatch time -- those are separate, already-tested
-        # mechanisms this only feeds a sane starting value into.
+        # RiskManager's per-trade-risk cap on the real (small) paper
+        # account, silently blocking almost every real signal forever.
+        # Alpaca and StubBrokerClient both already accept fractional qty;
+        # nothing previously computed one. Sized to the FULL risk budget
+        # (user call, 2026-09-01: ~$10/stock across a $100/10-position
+        # account, no headroom margin) -- a struggling strategy re-sizes on
+        # its next registration, so drift between registration and first
+        # dispatch tick isn't worth trading off against hitting the target
+        # size exactly. Deliberately NOT touched: the ramp (25%/50%/100%)
+        # and confidence-weight multiplier in live_tick.py's
+        # run_strategy_tick, which multiply this registered qty at dispatch
+        # time -- those are separate, already-tested mechanisms this only
+        # feeds a sane starting value into.
         last_price = float(prices["Close"].iloc[-1]) if "Close" in prices.columns and len(prices) else 0.0
         risk_pct = self._settings.get("max_per_trade_risk_pct") or 2.0
         starting_capital = self._settings.get("trading_paper_starting_capital") or 10000.0
-        position_qty = (starting_capital * (risk_pct / 100.0) * 0.8) / last_price if last_price > 0 else 1.0
+        position_qty = (starting_capital * (risk_pct / 100.0)) / last_price if last_price > 0 else 1.0
 
         try:
             # ponytail: benchmark is the strategy's own buy-and-hold, not a

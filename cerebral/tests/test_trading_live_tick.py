@@ -16,6 +16,9 @@ from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
 from cerebral.trading.risk_limits import RiskConfig, RiskManager
 from cerebral.trading.live_tick import (
+    STOP_LOSS_PCT,
+    TAKE_PROFIT_PCT,
+    check_tp_sl_breach,
     decide_action,
     dispatch_due_events,
     evaluate_signal,
@@ -179,7 +182,11 @@ def test_tick_opens_a_position_on_a_long_signal(tmp_path, monkeypatch):
 
 def test_tick_holds_when_the_broker_already_shows_the_target_position(tmp_path, monkeypatch):
     record = make_record(tmp_path, monkeypatch)
-    broker = StubBrokerClient()
+    # ScriptedPriceBroker, not the default hash-derived StubBrokerClient price:
+    # the TP/SL backstop (2026-09-01) compares the fill price against the
+    # fetched bars' close, so the two need to be in the same ballpark, same
+    # as a real fill would be against real market data.
+    broker = ScriptedPriceBroker([14.0])  # matches make_bars()'s last Close
     spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=2.0)
     fetch = fixed_fetch(make_bars())
 
@@ -260,6 +267,69 @@ def test_tick_still_closes_a_fractional_long_on_a_short_signal(tmp_path, monkeyp
                                 broker, record, fetch=fetch)
 
     assert closed["status"] == "closed" and closed["side"] == "sell"
+
+
+# ── TP/SL backstop (2026-09-01) ─────────────────────────────────────────────
+
+def test_check_tp_sl_breach_pure():
+    long_pos = Position(symbol="AAPL", qty=1.0, avg_entry_price=10.0, side="buy",
+                         market_value=10.0, unrealized_pl=0.0, current_price=10.0)
+    short_pos = Position(symbol="AAPL", qty=-1.0, avg_entry_price=10.0, side="sell",
+                          market_value=-10.0, unrealized_pl=0.0, current_price=10.0)
+
+    # Inside both bands -> no opinion.
+    assert check_tp_sl_breach(long_pos, 10.5) is None
+    assert check_tp_sl_breach(None, 13.5) is None
+
+    # Long: up TAKE_PROFIT_PCT or more, or down STOP_LOSS_PCT or more.
+    assert check_tp_sl_breach(long_pos, 10.0 * (1 + TAKE_PROFIT_PCT)) == 0
+    assert check_tp_sl_breach(long_pos, 10.0 * (1 - STOP_LOSS_PCT)) == 0
+
+    # Short: gain/loss direction flips.
+    assert check_tp_sl_breach(short_pos, 10.0 * (1 - TAKE_PROFIT_PCT)) == 0
+    assert check_tp_sl_breach(short_pos, 10.0 * (1 + STOP_LOSS_PCT)) == 0
+
+
+def test_tick_force_closes_a_long_on_a_take_profit_breach_overriding_the_signal(tmp_path, monkeypatch):
+    """The strategy's own signal still says LONG -- the backstop must win."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0])  # opens at 10
+    fetch = fixed_fetch(make_bars())  # last Close = 14.0, +40% -- past TAKE_PROFIT_PCT
+
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+    result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+
+    assert result["status"] == "closed"
+    assert find_position(broker.list_positions(), "AAPL") is None
+
+
+def test_tick_force_closes_a_long_on_a_stop_loss_breach(tmp_path, monkeypatch):
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0])  # opens at 10
+    dropped = pd.DataFrame(
+        {"Open": [10.0, 9.0], "High": [10.0, 9.0], "Low": [9.0, 8.5],
+         "Close": [10.0, 9.0], "Volume": [1000, 1000]},  # -10%, past STOP_LOSS_PCT
+        index=pd.date_range("2026-01-01", periods=2, freq="D"),
+    )
+
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fixed_fetch(make_bars(2)))
+    result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fixed_fetch(dropped))
+
+    assert result["status"] == "closed"
+    assert result["side"] == "sell"
+
+
+def test_tick_does_not_force_close_within_the_backstop_band(tmp_path, monkeypatch):
+    """A strategy with its own tighter exit never reaches the backstop --
+    same code path, just never crosses the threshold."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0])
+    fetch = fixed_fetch(make_bars(2))  # last Close = 11.0, +10% -- inside both bands
+
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+    result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+
+    assert result["status"] == "hold"  # strategy still wants long, already long
 
 
 def test_tick_on_a_flat_signal_while_flat_places_no_order(tmp_path, monkeypatch):

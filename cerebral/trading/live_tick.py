@@ -50,6 +50,18 @@ SIGNAL_LONG = 1
 SIGNAL_FLAT = 0
 SIGNAL_SHORT = -1
 
+# 30% take-profit / 5% stop-loss backstop (2026-09-01, user policy decision):
+# a ceiling on how much any single position can gain or lose before it's
+# force-closed, independent of the strategy's own exit logic. Deliberately a
+# BACKSTOP, not a universal override that fires early on every strategy: a
+# strategy whose own signal already exits tighter than 5% simply never
+# reaches this threshold, so applying the same check unconditionally on
+# every tick gives backstop semantics for free, with no per-strategy
+# inspection needed. Fixed global constants per that same decision -- add
+# per-strategy overrides only if a real need for different thresholds shows up.
+TAKE_PROFIT_PCT = 0.30
+STOP_LOSS_PCT = 0.05
+
 # ponytail: one fixed window rather than asking the strategy how much history
 # it wants. 180 calendar days is ~124 trading bars for daily data.
 # For intraday intervals, 180 days is excessive and lookup is replaced by
@@ -117,6 +129,24 @@ def find_position(positions: List[Position], symbol: str) -> Optional[Position]:
     for p in positions:
         if p.symbol == symbol and float(p.qty) != 0.0:
             return p
+    return None
+
+
+def check_tp_sl_breach(position: Optional[Position], last_close: float) -> Optional[int]:
+    """SIGNAL_FLAT if `position` has crossed the TP/SL backstop, else None.
+
+    `None` means "no opinion" -- the caller falls through to the strategy's
+    own signal, exactly like evaluate_signal's own convention for garbage
+    output. Uses the broker's own avg_entry_price, not a fabricated one.
+    """
+    if position is None or not position.avg_entry_price or last_close <= 0:
+        return None
+    direction = position_direction(position)
+    if direction == 0:
+        return None
+    pnl_pct = direction * (last_close - float(position.avg_entry_price)) / float(position.avg_entry_price)
+    if pnl_pct >= TAKE_PROFIT_PCT or pnl_pct <= -STOP_LOSS_PCT:
+        return SIGNAL_FLAT
     return None
 
 
@@ -246,19 +276,27 @@ def run_strategy_tick(
     start = end - timedelta(days=_lookback_days(spec.interval))
     data = fetch(spec.symbol, start.isoformat(), end.isoformat(), interval=spec.interval)
 
-    # Re-evaluated per tick rather than cached: a sandbox spawn is cheap
-    # next to a data fetch, and it means a re-registered spec takes effect
-    # immediately. evaluate_signal's existing None/empty/garbage handling
-    # is reused via a lambda rather than duplicated inline.
-    signals = evaluate_signals(spec.code, data)
-    signal = evaluate_signal(lambda d: signals, data)
-
     # StrategySpec is frozen -- ramp the local open-qty, not spec.qty itself.
     # Only the OPEN side reads this; decide_action closes at the position's
     # own qty regardless, so a ramped strategy still exits its full size.
     open_qty = spec.qty * size_pct
 
     position = find_position(broker.list_positions(strategy_id=position_key), spec.symbol)
+
+    # TP/SL backstop, checked BEFORE the strategy's own signal: a breach
+    # forces SIGNAL_FLAT (decide_action then closes at the position's real
+    # qty, same as any other flat signal) and skips evaluating the
+    # strategy's code entirely this tick -- the position is leaving
+    # regardless of what it would have said.
+    last_close = float(data["Close"].iloc[-1]) if "Close" in data.columns and len(data) else 0.0
+    signal = check_tp_sl_breach(position, last_close)
+    if signal is None:
+        # Re-evaluated per tick rather than cached: a sandbox spawn is cheap
+        # next to a data fetch, and it means a re-registered spec takes
+        # effect immediately. evaluate_signal's existing None/empty/garbage
+        # handling is reused via a lambda rather than duplicated inline.
+        signals = evaluate_signals(spec.code, data)
+        signal = evaluate_signal(lambda d: signals, data)
 
     # Fractional shares can't be shorted -- a structural broker/regulatory
     # limitation (no locate/borrow mechanism exists for fractional
