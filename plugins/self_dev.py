@@ -795,8 +795,12 @@ class SelfDevPlugin:
                 test_output = str(retest_result.get("summary") or "")
             else:
                 fix_description = (
-                    "The previous change failed the test suite. Fix the code "
-                    "so the tests pass, then commit.\n\nOriginal task:\n"
+                    "The previous change failed the test suite. Before rewriting "
+                    "anything, read the failure output below and identify the "
+                    "SPECIFIC line or assertion that broke and why -- then make "
+                    "the smallest fix that addresses that cause (not a rewrite). "
+                    "Update or add a test that would have caught it, then "
+                    "commit.\n\nOriginal task:\n"
                     f"{description}\n\nTest failure output:\n{test_output[:2000]}"
                 )
                 try:

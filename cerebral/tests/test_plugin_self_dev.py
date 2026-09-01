@@ -327,6 +327,7 @@ async def test_failing_tests_get_one_fix_attempt_that_succeeds(tmp_path):
     assert data["merge_decision"] == "auto_merge"
     assert len(edit_calls) == 2, "edit_fn must run again with the failure context"
     assert "Test failure output" in edit_calls[1]
+    assert "smallest fix" in edit_calls[1], "fix attempt must ask for root-cause, not a rewrite"
     assert "1 failed" in edit_calls[1]
     assert len(test_calls) == 2, "tests must re-run once after the fix attempt"
     assert merge_calls == [_PR_URL]
