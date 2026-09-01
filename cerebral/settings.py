@@ -90,6 +90,12 @@ _DEFAULTS: dict[str, Any] = {
     # attempt per strategy, not market-wide-and-cached, so it's real
     # per-trade LLM latency the user should opt into after seeing the cost.
     "trading_bear_case_gate_enabled":   False,
+    # 2026-09-01: per-symbol sentiment gate (cerebral/trading/sentiment.py
+    # StockSentimentGate), sourced from a symbol-scoped web search rather
+    # than general market news. Default False -- like the bear-case gate,
+    # this is real per-symbol web_search + LLM cost (cached with a TTL,
+    # not free like the RSS-backed market-wide gate), opt in explicitly.
+    "trading_stock_sentiment_gate_enabled": False,
     # S23: Minimum distinct trading days required for graduation/graduation math.
     "distinct_days_floor":       30,
     # S31: manual discovery start/stop + duration. discovery_enabled defaults
@@ -141,6 +147,7 @@ _TYPES: dict[str, type] = {
     "trading_paper_starting_capital":   float,
     "trading_sentiment_gate_enabled":   bool,
     "trading_bear_case_gate_enabled":   bool,
+    "trading_stock_sentiment_gate_enabled": bool,
     "distinct_days_floor":       int,
     "discovery_enabled":         bool,
     "discovery_stop_at":         str,

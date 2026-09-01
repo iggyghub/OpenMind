@@ -107,16 +107,25 @@ class RiskManager:
                 return RiskEvaluation(allowed=False, reason=reason, blocked_by="correlation")
         return RiskEvaluation(allowed=True)
 
-    def check_sentiment(self, symbol: str, sentiment_label: Optional[str]) -> RiskEvaluation:
-        """Blocks a new open only on a market-wide BEARISH reading.
-        `None` (gate off / no reading yet) and NEUTRAL/BULLISH all pass --
-        this is deliberately a coarse market-wide gate (decision: general
-        market feeds, not per-symbol), not a per-symbol veto."""
+    def check_sentiment(
+        self, symbol: str, sentiment_label: Optional[str],
+        stock_sentiment_label: Optional[str] = None,
+    ) -> RiskEvaluation:
+        """Blocks a new open on either a market-wide BEARISH reading or
+        this specific symbol's own BEARISH reading (2026-09-01 follow-up
+        -- penny stocks move on stock-specific news more than broad market
+        mood). `None` for either (gate off / no reading yet) and
+        NEUTRAL/BULLISH all pass through that check."""
         if sentiment_label == "BEARISH":
             reason = f"Market sentiment is BEARISH -- blocking new open for {symbol}"
             logger.warning(f"[risk] Blocked {symbol}: {reason}")
             self._emit_alert("warning", "sentiment_block", reason, {"blocked_by": "market_sentiment", "symbol": symbol})
             return RiskEvaluation(allowed=False, reason=reason, blocked_by="market_sentiment")
+        if stock_sentiment_label == "BEARISH":
+            reason = f"{symbol}'s own sentiment is BEARISH -- blocking new open"
+            logger.warning(f"[risk] Blocked {symbol}: {reason}")
+            self._emit_alert("warning", "sentiment_block", reason, {"blocked_by": "stock_sentiment", "symbol": symbol})
+            return RiskEvaluation(allowed=False, reason=reason, blocked_by="stock_sentiment")
         return RiskEvaluation(allowed=True)
 
     def check_symbol_claim(self, symbol: str, claimed_this_tick: set) -> RiskEvaluation:

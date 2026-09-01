@@ -211,6 +211,7 @@ def run_strategy_tick(
     size_pct: float = 1.0,
     position_key: Optional[str] = None,
     sentiment_label: Optional[str] = None,
+    stock_sentiment_labels: Optional[dict] = None,
     claimed_symbols: Optional[set] = None,
     bear_case_fn: Optional[Callable[[str, str, int], "tuple[bool, str]"]] = None,
 ) -> dict:
@@ -342,14 +343,18 @@ def run_strategy_tick(
         if not claim_res.allowed:
             return {"status": "blocked", "blocked_by": claim_res.blocked_by}
 
-    # Market-wide sentiment gate (opens only, same reasoning as the two
-    # checks above: never trap a losing position open by blocking its
-    # exit). sentiment_label is None when the gate is off or no reading
-    # exists yet -- check_sentiment already passes None/NEUTRAL/BULLISH
-    # through, this just skips the call entirely when there's no risk
-    # manager to route it through.
-    if risk is not None and not is_close and sentiment_label is not None:
-        sent_res = risk.check_sentiment(spec.symbol, sentiment_label)
+    # Market-wide + per-symbol sentiment gates (opens only, same reasoning
+    # as the two checks above: never trap a losing position open by
+    # blocking its exit). stock_sentiment_labels is a {symbol: label} dict
+    # (2026-09-01 follow-up) -- looked up here, not passed pre-resolved,
+    # since spec.symbol is only known once this far into the function.
+    # Either label is None when its gate is off or no reading exists yet
+    # -- check_sentiment already passes None/NEUTRAL/BULLISH through both
+    # checks; this just skips the call entirely when there's no risk
+    # manager to route it through, or neither label is set.
+    stock_sentiment_label = (stock_sentiment_labels or {}).get(spec.symbol)
+    if risk is not None and not is_close and (sentiment_label is not None or stock_sentiment_label is not None):
+        sent_res = risk.check_sentiment(spec.symbol, sentiment_label, stock_sentiment_label)
         if not sent_res.allowed:
             return {"status": "blocked", "blocked_by": sent_res.blocked_by}
 
@@ -412,6 +417,7 @@ def dispatch_due_events(
     fundamentals_scan_fn: Optional[Callable] = None,
     vetted_tickers: Optional[Any] = None,
     sentiment_label: Optional[str] = None,
+    stock_sentiment_labels: Optional[dict] = None,
     bear_case_fn: Optional[Callable[[str, str, int], "tuple[bool, str]"]] = None,
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
@@ -485,6 +491,7 @@ def dispatch_due_events(
             phase="live" if is_live else "paper", dispatch_id=dispatch_id,
             risk=risk, size_pct=size_pct * ramp_pct,  # S20
             sentiment_label=sentiment_label,
+            stock_sentiment_labels=stock_sentiment_labels,
             claimed_symbols=claimed_symbols,
             bear_case_fn=bear_case_fn,
         )

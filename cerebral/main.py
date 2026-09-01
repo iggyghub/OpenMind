@@ -252,7 +252,7 @@ from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.discovery import VettedTickers
 from cerebral.trading.market_hours import is_market_hours
 from cerebral.trading.books import list_validated_strategies
-from cerebral.trading.sentiment import MarketSentimentGate
+from cerebral.trading.sentiment import MarketSentimentGate, StockSentimentGate
 from plugins.rss_monitor import RSSMonitorPlugin
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
@@ -292,6 +292,7 @@ _vetted_tickers = VettedTickers()  # S28 (#881)
 # ever turns it on -- whichever caller reaches rss_check first consumes
 # the new items. Not engineered around since it's inactive by default.
 _sentiment_gate = MarketSentimentGate()
+_stock_sentiment_gate = StockSentimentGate()
 _rss_monitor = RSSMonitorPlugin()
 
 
@@ -3704,6 +3705,41 @@ async def _scheduler_loop() -> None:
                         _rss_monitor, lambda p: _router.complete(p, task_type="coding")
                     )
                     sentiment_label = reading.label
+                # Per-symbol sentiment (2026-09-01): unlike the market-wide
+                # gate above, there's no free "nothing new" RSS check for a
+                # symbol-scoped web search, so this only refreshes symbols
+                # that actually have a due dispatch this tick (StockSentiment
+                # Gate's own TTL then keeps repeat refreshes cheap within an
+                # hour). Precomputed here, in the async loop, because the
+                # actual dispatch below runs in a thread and can't itself
+                # await a web_search + LLM call per symbol.
+                stock_sentiment_labels = None
+                if _settings.get("trading_stock_sentiment_gate_enabled"):
+                    due_symbols = set()
+                    for evt in _scheduler_plugin.list_due_events():
+                        if evt["title"] == _scheduler_plugin.DISCOVERY_EVENT_TITLE:
+                            continue
+                        spec = _trading_strategy_store.get(evt["title"])
+                        if spec is not None:
+                            due_symbols.add(spec.symbol)
+                    if due_symbols:
+                        from plugins.browser import BrowserPlugin
+                        browser = BrowserPlugin()
+
+                        async def _stock_web_search(query: str) -> list:
+                            result = await browser.call_tool("web_search", {"query": query, "max_results": 3})
+                            if result.is_error:
+                                return []
+                            data = json.loads(result.content)
+                            hits = data.get("results", data) if isinstance(data, dict) else data
+                            return hits if isinstance(hits, list) else []
+
+                        stock_sentiment_labels = {}
+                        for sym in due_symbols:
+                            reading = await _stock_sentiment_gate.refresh(
+                                sym, _stock_web_search, lambda p: _router.complete(p, task_type="coding")
+                            )
+                            stock_sentiment_labels[sym] = reading.label
                 results = await asyncio.to_thread(
                     _dispatch_due_events,
                     _scheduler_plugin, paper_broker, _trading_forward_record,
@@ -3715,6 +3751,7 @@ async def _scheduler_loop() -> None:
                     fundamentals_scan_fn=_fundamentals_red_flag_scan,
                     vetted_tickers=_vetted_tickers,
                     sentiment_label=sentiment_label,
+                    stock_sentiment_labels=stock_sentiment_labels,
                     # Off by default (real per-trade LLM latency, unlike
                     # the cached market-wide sentiment gate) -- passing
                     # None makes bear_case_fn a true no-op in live_tick.py,

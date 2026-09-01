@@ -98,6 +98,26 @@ class TestFailureHandling:
         mgr = RiskManager()
         assert mgr.check_sentiment("AAPL", None).allowed
 
+    def test_bearish_stock_sentiment_blocks_new_open_even_when_market_is_not(self):
+        """A stock's own BEARISH reading blocks independently of the
+        market-wide reading -- penny stocks move on stock-specific news."""
+        mgr = RiskManager()
+        res = mgr.check_sentiment("PENNY", "NEUTRAL", stock_sentiment_label="BEARISH")
+        assert not res.allowed
+        assert res.blocked_by == "stock_sentiment"
+
+    def test_bearish_market_sentiment_still_blocks_when_stock_is_bullish(self):
+        """The market-wide check runs first -- a bullish single stock
+        doesn't override a bearish overall market."""
+        mgr = RiskManager()
+        res = mgr.check_sentiment("PENNY", "BEARISH", stock_sentiment_label="BULLISH")
+        assert not res.allowed
+        assert res.blocked_by == "market_sentiment"
+
+    def test_no_stock_sentiment_reading_passes(self):
+        mgr = RiskManager()
+        assert mgr.check_sentiment("AAPL", "NEUTRAL", stock_sentiment_label=None).allowed
+
     def test_symbol_claim_blocks_when_already_claimed(self):
         mgr = RiskManager()
         res = mgr.check_symbol_claim("AAPL", {"AAPL", "MSFT"})

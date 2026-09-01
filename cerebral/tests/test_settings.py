@@ -73,6 +73,7 @@ class TestSettingsStore:
             "scheduler_heartbeat",
             "trading_sentiment_gate_enabled",
             "trading_bear_case_gate_enabled",
+            "trading_stock_sentiment_gate_enabled",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):

@@ -31,6 +31,20 @@ _KNOWN_TICKERS = frozenset({
     "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AMD",
     "NFLX", "INTC", "IBM", "ORCL", "CRM", "ADBE", "PYPL", "UBER", "ABNB",
     "SPY", "QQQ", "DIA",
+    # Low-priced/liquid additions (2026-09-01): the original set was
+    # entirely $75-580/share mega-caps -- TRADING.md's own first decision
+    # was "penny stocks first," never acted on. Fractional-share sizing
+    # (#961 follow-up) means price no longer blocks a trade from
+    # executing at any capital level, but a genuinely cheap, liquid name
+    # still matters for whatever techniques specifically target low-float/
+    # low-price behavior. Verified real and liquid (10-60M avg daily
+    # volume) against live data the same day this was added, not guessed:
+    # F ($13.94), NIO ($4.23), SOFI ($17.88), AAL ($13.43), SNAP ($5.55),
+    # PLUG ($2.16), RIOT ($19.00), MARA ($10.77), VALE ($15.09),
+    # ITUB ($7.61), GRAB ($3.54), BBD ($3.28), PBR ($19.35), RIG ($5.81),
+    # LYFT ($16.90), PARA ($1.10).
+    "F", "NIO", "SOFI", "AAL", "SNAP", "PLUG", "RIOT", "MARA", "VALE",
+    "ITUB", "GRAB", "BBD", "PBR", "RIG", "LYFT", "PARA",
 })
 
 

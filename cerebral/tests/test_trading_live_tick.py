@@ -311,6 +311,7 @@ class FakeScheduler:
         self.dispatch_ids = []  # S17: the `dispatch_id` dispatch_due_events actually passed, per call
         self.size_pcts = []  # S20: the `size_pct` dispatch_due_events actually passed, per call
         self.sentiment_labels = []  # 2026-08-31: the `sentiment_label` dispatch_due_events actually passed, per call
+        self.stock_sentiment_labels_seen = []  # 2026-09-01: the `stock_sentiment_labels` dict passed, per call
         self.claimed_symbols_seen = []  # 2026-08-31: the `claimed_symbols` object passed, per call
         self.bear_case_fns = []  # 2026-08-31: the `bear_case_fn` passed, per call
 
@@ -322,13 +323,14 @@ class FakeScheduler:
 
     def _run_paper_strategy(self, name, broker, record, config, store=None, fetch=None, phase="paper",
                              dispatch_id=None, risk=None, size_pct=1.0, sentiment_label=None,
-                             claimed_symbols=None, bear_case_fn=None):
+                             stock_sentiment_labels=None, claimed_symbols=None, bear_case_fn=None):
         self.ran.append(name)
         self.brokers.append(broker)
         self.phases.append(phase)
         self.dispatch_ids.append(dispatch_id)
         self.size_pcts.append(size_pct)
         self.sentiment_labels.append(sentiment_label)
+        self.stock_sentiment_labels_seen.append(stock_sentiment_labels)
         self.claimed_symbols_seen.append(claimed_symbols)
         self.bear_case_fns.append(bear_case_fn)
         return dict(self.tick_result)
@@ -354,6 +356,17 @@ def test_dispatch_threads_sentiment_label_through_to_each_strategy(tmp_path, mon
                          sentiment_label="BEARISH")
 
     assert sched.sentiment_labels == ["BEARISH", "BEARISH"]
+
+
+def test_dispatch_threads_stock_sentiment_labels_through_to_each_strategy(tmp_path, monkeypatch):
+    sched = FakeScheduler([{"id": 1, "title": "s1"}, {"id": 2, "title": "s2"}])
+    labels = {"AAPL": "BEARISH", "MSFT": "BULLISH"}
+
+    dispatch_due_events(sched, StubBrokerClient(), make_record(tmp_path, monkeypatch),
+                         lifecycle=StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite"),
+                         stock_sentiment_labels=labels)
+
+    assert sched.stock_sentiment_labels_seen == [labels, labels]
 
 
 def test_dispatch_skips_a_halted_strategy_but_still_marks_it(tmp_path, monkeypatch):
@@ -859,6 +872,49 @@ def test_tick_not_blocked_when_sentiment_label_is_none(tmp_path, monkeypatch):
     result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
 
     assert result["status"] == "opened"
+
+
+def test_tick_blocks_new_open_on_bearish_stock_sentiment(tmp_path, monkeypatch):
+    """A symbol's OWN sentiment blocks independently of the market-wide
+    reading -- looked up from stock_sentiment_labels by spec.symbol."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, stock_sentiment_labels={"AAPL": "BEARISH"})
+
+    assert result == {"status": "blocked", "blocked_by": "stock_sentiment"}
+    assert broker._orders == {}
+
+
+def test_tick_uses_the_right_symbols_own_label_not_a_different_symbols(tmp_path, monkeypatch):
+    """stock_sentiment_labels is a dict of every due symbol's reading --
+    only THIS strategy's own spec.symbol should be looked up."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, stock_sentiment_labels={"MSFT": "BEARISH"})
+
+    assert result["status"] == "opened"  # AAPL's own reading is absent, MSFT's doesn't apply
+
+
+def test_tick_does_not_block_closing_trade_on_bearish_stock_sentiment(tmp_path, monkeypatch):
+    """Only opens are gated -- a close must never be trapped by sentiment."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    broker._positions[("s1", "AAPL")] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
+    risk = RiskManager()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=10.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, stock_sentiment_labels={"AAPL": "BEARISH"})
+
+    assert result["status"] == "closed"
 
 
 # ── 2026-08-31: confidence-scaled sizing ────────────────────────────────────
