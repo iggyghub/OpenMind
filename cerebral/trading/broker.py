@@ -69,6 +69,9 @@ class AlpacaBrokerClient:
         self.env = env
         self._client = None
         self._connected = False
+        # Local ledger for per-strategy position tracking. Mirrors StubBrokerClient.
+        # Resets on restart, same accepted limitation as the stub.
+        self._positions: Dict[Tuple[str, str], Position] = {}
 
     def _connect(self) -> None:
         if self._connected:
@@ -132,6 +135,11 @@ class AlpacaBrokerClient:
 
     def list_positions(self, strategy_id: Optional[str] = None) -> List[Position]:
         self._connect()
+        if strategy_id is not None:
+            # Local ledger is in-memory only and resets on process restart.
+            # That's the same accepted limitation StubBrokerClient has.
+            return [p for (sid, sym), p in self._positions.items() if sid == strategy_id]
+        
         # Pre-existing bug: TradingClient has no list_positions method --
         # this always raised AttributeError. Real name: get_all_positions.
         positions = self._client.get_all_positions()
@@ -186,7 +194,31 @@ class AlpacaBrokerClient:
         # this the paper-trade dispatcher would treat every real order as
         # unfilled and never record it. Regular-hours market orders on Alpaca
         # paper fill in well under a second in practice.
-        return self._poll_until_terminal(submitted.id)
+        order = self._poll_until_terminal(submitted.id)
+        
+        # Mirror StubBrokerClient's per-(strategy_id, symbol) ledger.
+        key = (strategy_id, symbol)
+        prev = self._positions.get(key)
+        prev_qty = float(prev.qty) if prev else 0.0
+        filled = float(order.filled_qty) or float(order.qty)
+        net_qty = prev_qty + (filled if side == "buy" else -filled)
+        if abs(net_qty) < 1e-9:
+            self._positions.pop(key, None)
+        else:
+            if prev is None or prev_qty == 0.0 or (prev_qty > 0) != (net_qty > 0):
+                avg_entry = float(order.price)
+            elif abs(net_qty) > abs(prev_qty):
+                avg_entry = (abs(prev_qty) * prev.avg_entry_price + filled * float(order.price)) / abs(net_qty)
+            else:
+                avg_entry = prev.avg_entry_price
+            self._positions[key] = Position(
+                symbol=symbol, qty=net_qty, avg_entry_price=avg_entry,
+                side="buy" if net_qty > 0 else "sell",
+                market_value=net_qty * float(order.price),
+                unrealized_pl=(float(order.price) - avg_entry) * net_qty,
+                current_price=float(order.price),
+            )
+        return order
 
     _TERMINAL_ORDER_STATUSES = {
         "FILLED", "PARTIALLY_FILLED", "CANCELED", "REJECTED", "EXPIRED", "DONE_FOR_DAY",

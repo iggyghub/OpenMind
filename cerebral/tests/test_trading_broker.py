@@ -259,6 +259,32 @@ def test_stub_commission_free():
     assert order.fees == 0.0
 
 
+def test_alpaca_positions_isolated_by_strategy_id(monkeypatch):
+    """Two strategies trading the same symbol should not clobber each other's positions."""
+    broker = _connected_alpaca_client(["filled"])
+    # Mock get_all_positions to avoid real API calls or data leakage from the fake client.
+    broker._client.get_all_positions = lambda: []
+
+    # Strategy A opens long 10 AAPL
+    broker.place_order("AAPL", 10, "buy", "market", strategy_id="strat_a")
+    # Strategy B opens short 5 AAPL
+    broker.place_order("AAPL", 5, "sell", "market", strategy_id="strat_b")
+
+    # Each strategy should see only its own position
+    pos_a = find_position(broker.list_positions(strategy_id="strat_a"), "AAPL")
+    pos_b = find_position(broker.list_positions(strategy_id="strat_b"), "AAPL")
+    
+    assert pos_a is not None and pos_a.qty == 10.0
+    assert pos_b is not None and pos_b.qty == -5.0
+    
+    # Closing B's position should not affect A's
+    broker.place_order("AAPL", 5, "buy", "market", strategy_id="strat_b")
+    pos_a_after = find_position(broker.list_positions(strategy_id="strat_a"), "AAPL")
+    pos_b_after = find_position(broker.list_positions(strategy_id="strat_b"), "AAPL")
+    assert pos_a_after is not None and pos_a_after.qty == 10.0
+    assert pos_b_after is None  # B is flat
+
+
 def test_stub_reset():
     """reset() clears positions/orders and restores starting cash/equity/
     buying_power to the configured starting value (#929 fixed place_order
