@@ -30,10 +30,13 @@ def _record(tmp_path, monkeypatch):
 
 def _bars():
     import pandas as pd
+    # Anchored to end at today, not a hardcoded past date -- AF11/#1005's
+    # stale-data guard rejects a fresh open when the last bar is >3 days
+    # old, and a fixed past anchor drifts out of that window over time.
     return pd.DataFrame(
         {"Open": [10.0] * 3, "High": [11.0] * 3, "Low": [9.0] * 3,
          "Close": [10.0, 11.0, 12.0], "Volume": [100] * 3},
-        index=pd.date_range("2026-01-01", periods=3, freq="D"),
+        index=pd.date_range(end=pd.Timestamp.today().normalize(), periods=3, freq="D"),
     )
 
 

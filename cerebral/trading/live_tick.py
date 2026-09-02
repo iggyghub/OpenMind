@@ -318,6 +318,19 @@ def run_strategy_tick(
         return {"status": "hold", "signal": signal, "symbol": spec.symbol}
 
     side, qty, is_close = action
+
+    # Stale-data guard, opens only (AF11/#1005): block a fresh open when the
+    # last fetched bar is >3 calendar days old -- never trap a losing
+    # position open by refusing its exit on the same stale data (matches
+    # every other opens-only gate's reasoning in this function, e.g. the
+    # risk-limit checks below). Checked here, after decide_action, so a
+    # close/hold never pays for or is affected by this check.
+    if not is_close and len(data) > 0:
+        last_bar_date = data.index[-1].date() if hasattr(data.index[-1], "date") else None
+        if last_bar_date is not None and (end - last_bar_date).days > 3:
+            return {"status": "hold", "signal": signal, "symbol": spec.symbol,
+                    "reason": "stale_market_data"}
+
     # Captured BEFORE the order: placing it mutates the broker's position.
     entry_price = float(position.avg_entry_price) if is_close else 0.0
     direction = position_direction(position) if is_close else 0

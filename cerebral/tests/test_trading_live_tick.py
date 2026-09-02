@@ -36,12 +36,19 @@ ALWAYS_SHORT = "def strategy(data):\n    return [-1] * len(data)"
 
 
 def make_bars(n=5):
+    # Anchored to end AT today (not a hardcoded past date) so the last bar
+    # is always fresh -- AF11/#1005's stale-data guard rejects a fresh open
+    # when the last bar is >3 days old, and a fixed past anchor would drift
+    # out of that window as real time passes (already true by the time this
+    # comment was written: the original 2026-01-01 anchor was ~8 months
+    # stale). Callers testing staleness itself pass their own fetch/today.
+    end = pd.Timestamp.today().normalize()
     return pd.DataFrame(
         {
             "Open": [10.0] * n, "High": [11.0] * n, "Low": [9.0] * n,
             "Close": [10.0 + i for i in range(n)], "Volume": [1000] * n,
         },
-        index=pd.date_range("2026-01-01", periods=n, freq="D"),
+        index=pd.date_range(end=end, periods=n, freq="D"),
     )
 
 
@@ -268,6 +275,41 @@ def test_tick_still_closes_a_fractional_long_on_a_short_signal(tmp_path, monkeyp
                                 broker, record, fetch=fetch)
 
     assert closed["status"] == "closed" and closed["side"] == "sell"
+
+
+def test_tick_holds_on_stale_market_data(tmp_path, monkeypatch):
+    """Stale market data (>3 days old) must block new opens but not block closes."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=2.0)
+    
+    from datetime import date
+    
+    # Create bars ending 5 days before today
+    today = date(2026, 7, 5)
+    stale_data = pd.DataFrame(
+        {"Open": [10.0], "High": [11.0], "Low": [9.0], "Close": [10.5], "Volume": [1000]},
+        index=pd.date_range("2026-07-01", periods=1, freq="D"),
+    )
+    fetch_stale = lambda symbol, start, end, interval="1d": stale_data
+
+    # New open should be blocked due to stale data
+    result_open = run_strategy_tick("s1", spec, broker, record, fetch=fetch_stale, today=today)
+    assert result_open["status"] == "hold"
+    assert result_open["reason"] == "stale_market_data"
+    assert broker._orders == {}
+    
+    # Now open a position so we can test closing
+    # We'll use a non-stale fetch to open it, then switch to stale fetch to close
+    fresh_data = make_bars()
+    fetch_fresh = lambda symbol, start, end, interval="1d": fresh_data
+    run_strategy_tick("s1", spec, broker, record, fetch=fetch_fresh, today=today)
+    
+    # Close with stale data should still work (don't trap a loss)
+    flat_spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=2.0)
+    result_close = run_strategy_tick("s1", flat_spec, broker, record, fetch=fetch_stale, today=today)
+    assert result_close["status"] == "closed"
+    assert find_position(broker.list_positions(), "AAPL") is None
 
 
 # ── TP/SL backstop (2026-09-01) ─────────────────────────────────────────────
@@ -963,7 +1005,9 @@ def _make_correlated_bars(corr=0.95):
     idio_b = rng.randn(n) * 0.005
     returns_a = shared + idio_a
     returns_b = corr * shared + (1 - corr ** 2) ** 0.5 * idio_b
-    idx = pd.date_range("2026-05-01", periods=n, freq="D")
+    # Anchored to end at today, not a hardcoded past date -- see make_bars'
+    # own comment (AF11/#1005's stale-data guard needs a fresh last bar).
+    idx = pd.date_range(end=pd.Timestamp.today().normalize(), periods=n, freq="D")
     base = pd.DataFrame({"Close": 100.0 * np.cumprod(1 + returns_a)}, index=idx)
     corx = pd.DataFrame({"Close": 100.0 * np.cumprod(1 + returns_b)}, index=idx)
     return base, corx
