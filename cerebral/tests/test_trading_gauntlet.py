@@ -538,3 +538,22 @@ def test_sharpe_annualization_uses_sqrt():
     recovered_returns = np.diff(eq) / eq[:-1]
     expected_sharpe = float(np.mean(recovered_returns) / np.std(recovered_returns) * np.sqrt(252))
     assert card.sharpe == pytest.approx(expected_sharpe)
+
+
+def test_noise_perturbation_preserves_ohlc_invariants():
+    """Noise must be applied per-bar to preserve OHLC invariants and leave Volume untouched."""
+    prices = make_prices(n=1000)
+    noise_pct = 0.015
+    for seed in range(5):
+        rng = np.random.default_rng(seed)
+        noise = 1 + rng.normal(0, noise_pct, size=len(prices))
+        noisy_prices = prices.copy()
+        for col in ("Open", "High", "Low", "Close"):
+            if col in noisy_prices.columns:
+                noisy_prices[col] = noisy_prices[col] * noise
+
+        assert (noisy_prices["Low"] <= noisy_prices["Open"]).all()
+        assert (noisy_prices["Low"] <= noisy_prices["Close"]).all()
+        assert (noisy_prices["High"] >= noisy_prices["Open"]).all()
+        assert (noisy_prices["High"] >= noisy_prices["Close"]).all()
+        assert (noisy_prices["Volume"] == prices["Volume"]).all()

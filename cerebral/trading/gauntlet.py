@@ -312,7 +312,11 @@ def run_gauntlet(
     gates.append(vs_bench_gate)
 
     # 4. Noise test
-    noisy_prices = prices * (1 + rng.normal(0, noise_pct, size=prices.shape))
+    noise = 1 + rng.normal(0, noise_pct, size=len(prices))  # one draw per bar, not per column
+    noisy_prices = prices.copy()
+    for col in ("Open", "High", "Low", "Close"):
+        if col in noisy_prices.columns:
+            noisy_prices[col] = noisy_prices[col] * noise
     _, noisy_metrics = backtest_func(noisy_prices, params)
     noisy_sharpe = noisy_metrics.get("sharpe", sharpe)
     max_allowed_drop = 0.5 * sharpe if sharpe >= 0 else 0.0
