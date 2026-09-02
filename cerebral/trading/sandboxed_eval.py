@@ -54,7 +54,7 @@ _RUNNER = (
     "exec(code, ns)\n"
     "signals = ns['strategy'](bars)\n"
     "with open(signals_path, 'w') as f:\n"
-    "    json.dump(signals, f)\n"
+    "    json.dump([int(s) for s in list(signals)], f)\n"
     "print('OK')\n"
 )
 
@@ -95,8 +95,11 @@ def evaluate_signals(code: str, bars: pd.DataFrame) -> List[int]:
             return [0] * len(bars)
 
         signals = json.loads(signals_path.read_text())
+        if len(signals) == 0:
+            logger.warning("[sandboxed_eval] empty signal list -- degrading to flat")
+            return [0] * len(bars)
         if not isinstance(signals, list) or not all(
-            isinstance(s, int) and s in (1, 0, -1) for s in signals
+            isinstance(s, (int, float)) and int(s) in (1, 0, -1) for s in signals
         ):
             logger.warning("[sandboxed_eval] malformed signal output %r -- degrading to flat", signals)
             return [0] * len(bars)
