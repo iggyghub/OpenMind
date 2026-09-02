@@ -558,6 +558,9 @@ def dispatch_due_events(
         result["strategy"] = name
         results.append(result)
 
+        if lifecycle is not None and is_live and result.get("status") == "closed":
+            lifecycle.update_live_fill(dispatch_id, result.get("pnl", 0.0))
+
         if lifecycle is not None:
             _apply_lifecycle(
                 lifecycle, dispatch_id, forward_record, result,
