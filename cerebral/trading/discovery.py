@@ -267,7 +267,7 @@ def rank_for_day_trading(
     symbols: List[str],
     fetch_ohlcv_fn: FetchOhlcvFn,
     lookback_days: int = 20,
-    min_price: float = 5.0,
+    min_price: float = 1.0,
     min_dollar_volume: float = 5_000_000,
 ) -> List[str]:
     """Ranks candidate symbols by day-trading fitness: liquid enough to

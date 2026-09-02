@@ -738,3 +738,13 @@ def test_prefilter_candidates_falls_back_to_universe_if_rank_fn_returns_nothing(
 
     assert candidates[0] == "AAPL"
     assert len(candidates) == 2
+
+def test_rank_for_day_trading_allows_sub_five_prices_with_default_min_price():
+    """A sub-$5 liquid ticker should pass the default price floor once
+    it's lowered to $1.0 instead of $5.0."""
+    from cerebral.trading.discovery import rank_for_day_trading
+    bars = {"CHEAP": _bars(price=2.50, dollar_range_pct=0.10, volume=10_000_000)}
+
+    ranked = rank_for_day_trading(list(bars), lambda sym, *a, **kw: bars[sym])
+
+    assert ranked == ["CHEAP"]
