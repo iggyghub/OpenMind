@@ -299,20 +299,6 @@ def run_strategy_tick(
         signals = evaluate_signals(spec.code, data)
         signal = evaluate_signal(lambda d: signals, data)
 
-    # Fractional shares can't be shorted -- a structural broker/regulatory
-    # limitation (no locate/borrow mechanism exists for fractional
-    # inventory under Reg SHO), confirmed 2026-09-01 across every broker
-    # researched, not an Alpaca-specific restriction or fixable by
-    # switching brokers. A short OPEN at a fractional qty would just be
-    # rejected by the real broker every tick forever -- treat it the same
-    # as any other "can't act on this" case (evaluate_signal's own
-    # convention above) rather than fail silently and repeatedly. Only
-    # matters when opening fresh (position is None): closing an existing
-    # LONG on a short signal is a normal sell, never a short, and must
-    # reach decide_action unchanged.
-    if signal == SIGNAL_SHORT and position is None and not float(open_qty).is_integer():
-        signal = SIGNAL_FLAT
-
     action = decide_action(signal, position, open_qty)
     if action is None:
         return {"status": "hold", "signal": signal, "symbol": spec.symbol}
@@ -352,6 +338,22 @@ def run_strategy_tick(
         confidence = forward_record.compute_confidence_weight(strategy_id=strategy_id)
         size_multiplier = max(0.5, min(1.5, 1.0 + confidence * 5.0))
         qty = qty * size_multiplier
+
+    # Fractional shares can't be shorted -- a structural broker/regulatory
+    # limitation (no locate/borrow mechanism exists for fractional
+    # inventory under Reg SHO), confirmed 2026-09-01 across every broker
+    # researched, not an Alpaca-specific restriction or fixable by
+    # switching brokers. Checked HERE (AF13/#1007), after the confidence
+    # multiplier above, not before decide_action: the multiplier can turn
+    # an integer open_qty into a fractional final qty, and a check on the
+    # pre-multiplier value would miss exactly that case -- the broker sees
+    # the multiplied qty, not open_qty. `side == "sell"` combined with
+    # `not is_close` (the enclosing block's condition) uniquely identifies
+    # a fresh short open per decide_action's own contract; a normal sell
+    # closing an existing long is a different branch (is_close=True) and
+    # must reach the broker unchanged.
+    if side == "sell" and not is_close and not float(qty).is_integer():
+        return {"status": "hold", "signal": signal, "symbol": spec.symbol}
 
     # Risk limits gate NEW exposure, never an exit -- a per-trade-risk cap
     # or daily-loss halt blocking a close would trap a losing position open
