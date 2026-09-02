@@ -8,8 +8,21 @@ _CHROMA_PATH = data_dir() / "chroma_trading_strategies"
 
 
 def strip_symbol_suffix(text: str) -> str:
-    """Remove trailing @SYMBOL suffix (e.g., @BTC, @ETH) from a strategy ID or claim."""
-    return re.sub(r'@[\w]+$', '', text)
+    """Remove trailing @SYMBOL suffix (e.g., @BTC, @ETH) from a strategy ID or claim.
+
+    NOT the same delimiter convention as strategy_store.strip_expansion_suffix
+    (which requires a leading SPACE before "@", matching
+    mint_expansion_strategy_id's "claim @SYMBOL" format) -- this module's own
+    real usage (upsert_strategy, and its own pre-existing tests) has no
+    space, e.g. "algo@BTC". Delegating to strategy_store's function would
+    silently stop stripping every real claim_store id. Handles BOTH: an
+    optional single space before "@" (`\\s?`) so "claim text @BRK.B" ->
+    "claim text" (no trailing space) same as strategy_store's own callers
+    would expect, and widened from `[\\w]+$` to `[\\w.]+$` to also handle
+    dotted tickers like "algo@BRK.B" (AF18/#1012, the original bug this
+    exists to fix) -- without changing the no-space convention this module
+    actually uses for its own ids."""
+    return re.sub(r'\s?@[\w.]+$', '', text)
 
 class TradingStrategies:
     def __init__(self, chroma_client: Optional[chromadb.Client] = None, collection_name: str = "trading_strategies"):

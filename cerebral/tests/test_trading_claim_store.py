@@ -19,6 +19,7 @@ class TestClaimStore:
         assert strip_symbol_suffix("algo@BTC") == "algo"
         assert strip_symbol_suffix("algo@ETH_USD") == "algo"
         assert strip_symbol_suffix("algo") == "algo"
+        assert strip_symbol_suffix("claim text @BRK.B") == "claim text"
 
     def test_empty_collection_retrieval(self, store):
         res = store.retrieve_top5("test query")
