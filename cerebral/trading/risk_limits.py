@@ -40,7 +40,6 @@ class RiskManager:
         self._settings = settings_store
         self._alert_dispatcher = alert_dispatcher
         self._config = self._load_config()
-        self._daily_loss_accrued: float = 0.0
 
     def _load_config(self) -> RiskConfig:
         if self._explicit_config is not None:
@@ -150,10 +149,6 @@ class RiskManager:
             self._emit_alert("warning", "symbol_claim_block", reason, {"blocked_by": "symbol_claimed", "symbol": symbol})
             return RiskEvaluation(allowed=False, reason=reason, blocked_by="symbol_claimed")
         return RiskEvaluation(allowed=True)
-
-    def record_daily_loss(self, loss: float) -> None:
-        if loss > 0:
-            self._daily_loss_accrued += loss
 
     def _emit_alert(self, severity: str, event_type: str, message: str, context: Optional[dict] = None) -> None:
         if self._alert_dispatcher:
