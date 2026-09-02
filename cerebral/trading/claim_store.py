@@ -3,13 +3,14 @@ import re
 from typing import Optional
 
 from cerebral.paths import data_dir
+from cerebral.trading.strategy_store import strip_expansion_suffix
 
 _CHROMA_PATH = data_dir() / "chroma_trading_strategies"
 
 
 def strip_symbol_suffix(text: str) -> str:
     """Remove trailing @SYMBOL suffix (e.g., @BTC, @ETH) from a strategy ID or claim."""
-    return re.sub(r'@[\w]+$', '', text)
+    return strip_expansion_suffix(text)
 
 class TradingStrategies:
     def __init__(self, chroma_client: Optional[chromadb.Client] = None, collection_name: str = "trading_strategies"):
