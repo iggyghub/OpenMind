@@ -270,6 +270,41 @@ def test_tick_still_closes_a_fractional_long_on_a_short_signal(tmp_path, monkeyp
     assert closed["status"] == "closed" and closed["side"] == "sell"
 
 
+def test_tick_holds_on_stale_market_data(tmp_path, monkeypatch):
+    """Stale market data (>3 days old) must block new opens but not block closes."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=2.0)
+    
+    from datetime import date
+    
+    # Create bars ending 5 days before today
+    today = date(2026, 7, 5)
+    stale_data = pd.DataFrame(
+        {"Open": [10.0], "High": [11.0], "Low": [9.0], "Close": [10.5], "Volume": [1000]},
+        index=pd.date_range("2026-07-01", periods=1, freq="D"),
+    )
+    fetch_stale = lambda symbol, start, end, interval="1d": stale_data
+
+    # New open should be blocked due to stale data
+    result_open = run_strategy_tick("s1", spec, broker, record, fetch=fetch_stale, today=today)
+    assert result_open["status"] == "hold"
+    assert result_open["reason"] == "stale_market_data"
+    assert broker._orders == {}
+    
+    # Now open a position so we can test closing
+    # We'll use a non-stale fetch to open it, then switch to stale fetch to close
+    fresh_data = make_bars()
+    fetch_fresh = lambda symbol, start, end, interval="1d": fresh_data
+    run_strategy_tick("s1", spec, broker, record, fetch=fetch_fresh, today=today)
+    
+    # Close with stale data should still work (don't trap a loss)
+    flat_spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=2.0)
+    result_close = run_strategy_tick("s1", flat_spec, broker, record, fetch=fetch_stale, today=today)
+    assert result_close["status"] == "closed"
+    assert find_position(broker.list_positions(), "AAPL") is None
+
+
 # ── TP/SL backstop (2026-09-01) ─────────────────────────────────────────────
 
 def test_check_tp_sl_breach_pure():

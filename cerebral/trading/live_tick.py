@@ -277,6 +277,14 @@ def run_strategy_tick(
     start = end - timedelta(days=_lookback_days(spec.interval))
     data = fetch(spec.symbol, start.isoformat(), end.isoformat(), interval=spec.interval)
 
+    # Stale data guard: block new opens if the last bar is >3 days older than today,
+    # but do not block existing position exits.
+    if len(data) > 0:
+        last_bar_date = data.index[-1].date() if hasattr(data.index[-1], "date") else None
+        if last_bar_date is not None and (end - last_bar_date).days > 3:
+            return {"status": "hold", "signal": SIGNAL_FLAT, "symbol": spec.symbol,
+                    "reason": "stale_market_data"}
+
     # StrategySpec is frozen -- ramp the local open-qty, not spec.qty itself.
     # Only the OPEN side reads this; decide_action closes at the position's
     # own qty regardless, so a ramped strategy still exits its full size.
