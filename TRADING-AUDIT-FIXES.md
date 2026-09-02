@@ -31,10 +31,10 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF4 -- #998
+- **Active:** AF13 -- #1007
 - **Model:** sonnet
 
-13 of 21 slices landed 2026-09-02 (details in Landed PRs). Being run live/attended (the scheduled
+14 of 21 slices landed 2026-09-02 (details in Landed PRs). Being run live/attended (the scheduled
 1am unattended run never started at all; separately, mid-campaign, live-reproduced what's probably
 the real cause -- the whole asyncio event loop can stall completely, CPU-idle, heartbeats included
 -- see project_trading_campaign memory, not yet root-caused to an exact call site).
@@ -68,7 +68,7 @@ a 5%/30% move.
 - [x] AF10 -- #1004 -- StrategyLifecycle.update_live_fill is never called -- ramp stuck at 25%, live auto-retirement can never fire
 - [x] AF11 -- #1005 -- no guard against trading on stale/frozen market data
 - [x] AF12 -- #1006 -- expectancy/confidence math counts opening fills as real trades, live distinct-days not phase-filtered
-- [ ] AF4 -- #998 -- capacity_liquidity gauntlet gate fed a hardcoded position_sizes=1.0 instead of the real registered qty
+- [x] AF4 -- #998 -- capacity_liquidity gauntlet gate fed a hardcoded position_sizes=1.0 instead of the real registered qty
 - [ ] AF13 -- #1007 -- fractional-short guard is checked before the confidence-weight multiplier is applied
 - [ ] AF20 -- #1014 -- noise_sensitivity gate's independent per-column price noise violates OHLC bar invariants
 - [ ] AF18 -- #1012 -- claim_store's suffix-stripping regex diverges from strategy_store's and fails on dotted tickers
@@ -189,5 +189,10 @@ PRs historically:
   on 0.0 -- now silently excluded as an "opening fill", shifting n/mean. Shifted each formula off
   zero; one test needed a real value change since ALL its "paper" fills were deliberately pnl=0.0,
   collapsing to 0 paper trades once excluded).
+- PR #1030 -- AF4 (self_dev generated, hand-fixed: the one-line production fix was correct as
+  generated. Its own new test mocked `cerebral.trading.gauntlet.run_gauntlet` instead of
+  `plugins.scheduler.run_gauntlet` -- scheduler.py's own module-level `from ... import run_gauntlet`
+  binds a separate reference in its own namespace, so patching the origin left it untouched and
+  the mock was never called. Fixed the patch target).
 - PR #1026 -- AF21 (auto-merged by self_dev_campaign)
 - PR #1027 -- AF10 (auto-merged by self_dev_campaign)
