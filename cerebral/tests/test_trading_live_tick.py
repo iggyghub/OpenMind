@@ -837,6 +837,34 @@ def test_risk_manager_reads_live_settings_store_values(tmp_path):
     assert res.allowed  # would be blocked at the 2.0% default
 
 
+def test_build_correlation_matrix_uses_returns_not_levels():
+    """Correlation should be computed on percent-change returns, not raw closes.
+    Two assets that drift together over time (high level-correlation) but have 
+    independent day-to-day moves should score low on return-correlation."""
+    from cerebral.trading.live_tick import _build_correlation_matrix
+    
+    dates = pd.date_range("2026-05-01", periods=65, freq="D")
+    
+    # s1: steady uptrend
+    s1_vals = [100.0 + i for i in range(65)]
+    # s2: same steady uptrend, but alternating daily moves (high level corr, low return corr)
+    s2_vals = [100.0 + i + (5.0 if i % 2 == 0 else -5.0) for i in range(65)]
+    
+    df1 = pd.DataFrame({"Close": s1_vals}, index=dates)
+    df2 = pd.DataFrame({"Close": s2_vals}, index=dates)
+    
+    def fixture_fetch(symbol, start, end, interval="1d"):
+        if symbol == "S1":
+            return df1
+        return df2
+
+    corr = _build_correlation_matrix(["S1", "S2"], fixture_fetch)
+    return_corr = corr.loc["S1", "S2"]
+    
+    # Level-based would be ~0.99. Return-based should be near 0.
+    assert abs(return_corr) < 0.3, f"Return correlation should be low, got {return_corr}"
+
+
 # ── S21b (#874): correlation gate ──────────────────────────────────────────
 
 def _make_correlated_bars(corr=0.8):
