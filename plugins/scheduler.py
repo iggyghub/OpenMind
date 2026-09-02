@@ -922,6 +922,11 @@ class SchedulerPlugin:
         last_price = float(prices["Close"].iloc[-1]) if "Close" in prices.columns and len(prices) else 0.0
         risk_pct = self._settings.get("max_per_trade_risk_pct") or 2.0
         starting_capital = self._settings.get("trading_paper_starting_capital") or 10000.0
+        # FIXME: SchedulerPlugin doesn't expose self._trading_broker yet. If/when it does,
+        # prefer it here to avoid drift with the app setting:
+        #   if self._trading_broker is not None:
+        #       try: starting_capital = self._trading_broker.get_account().equity
+        #       except Exception: pass
         position_qty = (starting_capital * (risk_pct / 100.0)) / last_price if last_price > 0 else 1.0
 
         try:
