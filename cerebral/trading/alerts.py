@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List
 
@@ -17,7 +18,7 @@ class AlertDispatcher:
     """Collects and forwards structured alerts for the S6 alerting system."""
     def __init__(self) -> None:
         self._listeners: List[Callable[[StructuredAlert], None]] = []
-        self._history: List[StructuredAlert] = []
+        self._history: deque = deque(maxlen=500)
 
     def register_listener(self, fn: Callable[[StructuredAlert], None]) -> None:
         self._listeners.append(fn)
