@@ -529,6 +529,12 @@ def test_sharpe_annualization_uses_sqrt():
         make_positions(n=n),
         seed=42,
     )
-    # Expected Sharpe from fallback: mean / std * sqrt(252)
-    expected_sharpe = float(np.mean(daily_ret) / np.std(daily_ret) * np.sqrt(252))
+    # Expected Sharpe from fallback: mean / std * sqrt(252), computed from
+    # the SAME returns run_gauntlet itself recovers (np.diff(eq)/eq[:-1]),
+    # not the original daily_ret array -- diff-based reconstruction drops
+    # the first return (eq's first value already embeds daily_ret[0]), so
+    # recomputing from daily_ret directly compares against a different,
+    # off-by-one sample and was failing even with the correct sqrt fix.
+    recovered_returns = np.diff(eq) / eq[:-1]
+    expected_sharpe = float(np.mean(recovered_returns) / np.std(recovered_returns) * np.sqrt(252))
     assert card.sharpe == pytest.approx(expected_sharpe)
