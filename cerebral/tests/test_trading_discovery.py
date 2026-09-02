@@ -691,12 +691,30 @@ def test_rank_for_day_trading_drops_illiquid_symbols_outright():
 
 
 def test_rank_for_day_trading_drops_penny_stocks_below_min_price():
+    """#1002: min_price lowered 5.0 -> 1.0 so real, liquid cheap tickers
+    (PARA ~$1.10, PLUG ~$2.16, etc.) aren't silently dropped -- $1.50 used
+    to be below the floor and is now legitimately rankable. The floor
+    itself still needs to drop something below IT (now $1.00, not $5.00)."""
     from cerebral.trading.discovery import rank_for_day_trading
-    bars = {"PENNY": _bars(price=1.5, dollar_range_pct=0.20, volume=10_000_000)}
+    bars = {"PENNY": _bars(price=0.50, dollar_range_pct=0.20, volume=10_000_000)}
 
     ranked = rank_for_day_trading(list(bars), lambda sym, *a, **kw: bars[sym])
 
     assert ranked == []
+
+
+def test_rank_for_day_trading_keeps_liquid_stocks_above_the_new_lower_floor():
+    """A real gap this audit found: the OLD $5.00 floor silently dropped
+    every cheap ticker added to _KNOWN_TICKERS the same day (PARA, PLUG,
+    BBD, GRAB, NIO -- all under $5) despite clearing the real liquidity
+    test (min_dollar_volume) comfortably. $1.50, high volume, must now be
+    ranked, not dropped."""
+    from cerebral.trading.discovery import rank_for_day_trading
+    bars = {"CHEAP": _bars(price=1.5, dollar_range_pct=0.20, volume=10_000_000)}
+
+    ranked = rank_for_day_trading(list(bars), lambda sym, *a, **kw: bars[sym])
+
+    assert ranked == ["CHEAP"]
 
 
 def test_rank_for_day_trading_skips_symbols_whose_fetch_fails():
