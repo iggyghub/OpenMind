@@ -160,3 +160,16 @@ class TestAlerts:
         assert len(received) == 1
         assert received[0].severity == "warning"
         assert received[0].context == {"key": "val"}
+
+    def test_alert_dispatcher_history_is_bounded_to_500(self):
+        dispatcher = AlertDispatcher()
+        first_alert = StructuredAlert(severity="info", event_type="test", message="first")
+        dispatcher.emit(first_alert)
+
+        for i in range(500):
+            dispatcher.emit(StructuredAlert(severity="info", event_type="test", message=f"alert-{i}"))
+
+        pending = dispatcher.get_pending()
+        assert len(pending) == 500
+        # Oldest alert should have been evicted
+        assert pending[0].message != "first"
