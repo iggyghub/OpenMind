@@ -45,12 +45,20 @@ _WORKDIR_ROOT = Path(r"C:\Users\Public\OpenMind-sbx\trading")
 _RUNNER = (
     "import sys, io, json\n"
     "import pandas as pd\n"
+    "import numpy as np\n"
     "payload = json.load(sys.stdin)\n"
     "code = payload['code']\n"
     "bars_csv = payload['bars_csv']\n"
     "signals_path = sys.argv[1]\n"
     "bars = pd.read_csv(io.StringIO(bars_csv), index_col=0, parse_dates=True)\n"
-    "ns = {}\n"
+    # `pd`/`np` seeded into the exec namespace: strategy code isn't guaranteed
+    # to self-import them (a real LLM-generated `def strategy(data): ...` body
+    # is prompted for the function only, not a full module), and this is the
+    # same numpy/pandas signal-type mismatch AF7/#1001 exists to fix -- a
+    # strategy using pd.Series/np.where internally without importing either
+    # would otherwise NameError and silently degrade to all-flat, same as
+    # the return-type bug itself.
+    "ns = {'pd': pd, 'np': np}\n"
     "exec(code, ns)\n"
     "signals = ns['strategy'](bars)\n"
     "with open(signals_path, 'w') as f:\n"

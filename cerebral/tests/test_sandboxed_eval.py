@@ -154,10 +154,28 @@ def test_numpy_int64_signal_roundtrips():
 
 
 def test_pandas_series_signal_roundtrips():
-    """Strategies returning a pandas Series of ints must round-trip, not degrade to flat."""
+    """Strategies returning a pandas Series of ints must round-trip, not degrade to flat.
+
+    Deliberately does NOT self-import pandas -- a real LLM-generated
+    `def strategy(data): ...` body is prompted for the function only, so
+    `pd`/`np` must already be available in the exec namespace rather than
+    relying on the strategy importing them itself."""
     code = (
         "def strategy(data):\n"
         "    return pd.Series([1, 0, -1], dtype='int64')\n"
+    )
+    bars = _bars(3)
+    result = evaluate_signals(code, bars)
+    assert result == [1, 0, -1]
+
+
+def test_numpy_signal_without_self_import_roundtrips():
+    """Same as test_numpy_int64_signal_roundtrips, but without the strategy
+    self-importing numpy -- proves np is seeded into the exec namespace,
+    not just working by coincidence because the other test imports it."""
+    code = (
+        "def strategy(data):\n"
+        "    return np.array([1, 0, -1], dtype=np.int64)\n"
     )
     bars = _bars(3)
     result = evaluate_signals(code, bars)
