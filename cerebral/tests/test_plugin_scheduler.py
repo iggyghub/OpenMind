@@ -538,7 +538,12 @@ async def test_run_gauntlet_uses_computed_position_qty_instead_of_hardcoded_1_0(
     def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
-    with patch("cerebral.trading.gauntlet.run_gauntlet") as mock_gauntlet:
+    # Patch where it's USED (plugins.scheduler already did `from
+    # cerebral.trading.gauntlet import run_gauntlet` at module load, binding
+    # its own name in its own namespace), not where it's defined -- patching
+    # the origin module leaves scheduler.py's already-bound reference
+    # untouched, so the mock is never actually called.
+    with patch("plugins.scheduler.run_gauntlet") as mock_gauntlet:
         mock_gauntlet.return_value = type("Card", (), {"verdict": "VALIDATED", "sharpe": 0.5, "total_return": 1.0, "gates": []})()
 
         await plugin._run_gauntlet(
