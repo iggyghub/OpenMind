@@ -320,6 +320,34 @@ def test_tick_force_closes_a_long_on_a_stop_loss_breach(tmp_path, monkeypatch):
     assert result["side"] == "sell"
 
 
+def test_tick_does_not_force_close_when_live_price_is_within_band(tmp_path, monkeypatch):
+    """The TP/SL backstop must use the position's live `current_price`, not 
+    the stale bar close. If the bar close breaches but the live price hasn't, 
+    the position should NOT be force-closed."""
+    record = make_record(tmp_path, monkeypatch)
+    # Open at 10.0. `current_price` on position will be 10.0.
+    broker = ScriptedPriceBroker([10.0])
+    fetch_bars = make_bars()  # closes: 10, 11, 12, 13, 14
+    # Second tick returns a bar with close=14.0 (+40%, past TAKE_PROFIT_PCT),
+    # but position.current_price remains 10.0 (within band).
+    stale_bars = pd.DataFrame(
+        {"Open": [10.0], "High": [15.0], "Low": [9.0], "Close": [14.0], "Volume": [1000]},
+        index=pd.date_range("2026-01-02", periods=1, freq="D"),
+    )
+
+    fetch_count = [0]
+    def spy_fetch(symbol, start, end, interval="1d"):
+        fetch_count[0] += 1
+        return stale_bars if fetch_count[0] == 2 else fetch_bars
+
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=spy_fetch)
+    # Second tick: bar close is 14.0 (+40%, past TAKE_PROFIT_PCT), but current_price is 10.0.
+    result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=spy_fetch)
+    
+    assert result["status"] == "hold"  # Not closed because live price (10.0) is within band
+    assert find_position(broker.list_positions(), "AAPL") is not None
+
+
 def test_tick_does_not_force_close_within_the_backstop_band(tmp_path, monkeypatch):
     """A strategy with its own tighter exit never reaches the backstop --
     same code path, just never crosses the threshold."""

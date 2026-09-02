@@ -290,7 +290,7 @@ def run_strategy_tick(
     # strategy's code entirely this tick -- the position is leaving
     # regardless of what it would have said.
     last_close = float(data["Close"].iloc[-1]) if "Close" in data.columns and len(data) else 0.0
-    signal = check_tp_sl_breach(position, last_close)
+    signal = check_tp_sl_breach(position, float(position.current_price) if position is not None else 0.0)
     if signal is None:
         # Re-evaluated per tick rather than cached: a sandbox spawn is cheap
         # next to a data fetch, and it means a re-registered spec takes
