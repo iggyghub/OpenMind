@@ -261,6 +261,21 @@ def test_tick_does_not_open_a_short_with_fractional_qty(tmp_path, monkeypatch):
     assert find_position(broker.list_positions(), "AAPL") is None
 
 
+def test_tick_does_not_open_a_short_becoming_fractional_after_confidence_multiplier(tmp_path, monkeypatch):
+    """The confidence multiplier can turn an integer open_qty into a fractional
+    final qty. The fractional-short guard now runs AFTER the multiplier,
+    catching this case which the old pre-decide_action placement missed."""
+    record = _ScriptedConfidenceRecord(make_record(tmp_path, monkeypatch), confidence=0.3)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_SHORT, qty=1.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()))
+
+    assert result["status"] == "hold"
+    assert broker._orders == {}
+    assert find_position(broker.list_positions(), "AAPL") is None
+
+
 def test_tick_still_closes_a_fractional_long_on_a_short_signal(tmp_path, monkeypatch):
     """The fractional-short guard only applies to OPENING a fresh short --
     closing an existing long is a normal sell, never a short, and must
