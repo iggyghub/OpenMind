@@ -526,6 +526,42 @@ async def test_run_gauntlet_claim_without_a_router_uses_the_stub(tmp_path):
     assert store.get("always flat") is None
 
 
+async def test_run_gauntlet_uses_computed_position_qty_instead_of_hardcoded_1_0(tmp_path, monkeypatch):
+    """S11b regression: capacity_liquidity gate previously received position_sizes=pd.Series([1.0]),
+    testing a notional wildly larger than the actual fractional order size. It must use the real
+    position_qty computed from max_per_trade_risk_pct / starting_capital / price."""
+    from unittest.mock import patch
+
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    with patch("cerebral.trading.gauntlet.run_gauntlet") as mock_gauntlet:
+        mock_gauntlet.return_value = type("Card", (), {"verdict": "VALIDATED", "sharpe": 0.5, "total_return": 1.0, "gates": []})()
+
+        await plugin._run_gauntlet(
+            {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "Test position qty"},
+            strategy_store=store, fetch=fetch,
+        )
+
+        mock_gauntlet.assert_called_once()
+        position_sizes = mock_gauntlet.call_args.kwargs["position_sizes"]
+        
+        # Should be the computed fractional qty, not 1.0
+        expected_qty = position_sizes.iloc[0]
+        assert expected_qty != 1.0, f"position_sizes should be fractional, got {expected_qty}"
+        
+        # Verify it matches the exact computation in _run_gauntlet:
+        # (starting_capital * (risk_pct / 100.0)) / last_price
+        last_price = float(_trend_prices()["Close"].iloc[-1])
+        risk_pct = 2.0
+        starting_capital = 10000.0
+        expected = (starting_capital * (risk_pct / 100.0)) / last_price
+        assert expected == pytest.approx(expected_qty)
+
+
 # ── S17 (#862): edit_strategy / get_strategy_code ────────────────────────────
 # edit_strategy delegates entirely to _run_gauntlet's existing auto-promote
 # path (origin/parent_version/strategy_id, added for exactly this call) --
