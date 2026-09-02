@@ -31,10 +31,17 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF21 -- #1015
+- **Active:** AF12 -- #1006
 - **Model:** sonnet
 
-AF9, AF7, AF5, AF6, AF16, AF1, AF3, AF2, AF8 landed 2026-09-02 (details in Landed PRs). Being run
+AF9, AF7, AF5, AF6, AF16, AF1, AF3, AF2, AF8, AF21, AF10, AF11 landed 2026-09-02 (details in
+Landed PRs). AF21 and AF10 auto-merged cleanly (first clean landings this campaign) -- both
+independently re-verified by hand anyway, genuinely correct. AF11 needed the most serious hand-fix
+so far: the generated stale-data guard fired unconditionally BEFORE the position lookup, blocking
+CLOSES too, not just opens, directly contradicting the issue's own explicit requirement -- broke
+33 of 75 tests. Moved to fire opens-only (mirroring every other opens-only gate's placement in the
+same function); also had to fix three test fixtures across two files that hardcoded a fixed past
+date, now permanently "stale" by definition once a real staleness check existed. Being run
 live/attended (the scheduled 1am unattended run never started at all; separately, mid-campaign,
 live-reproduced what's probably the real cause -- the whole asyncio event loop can stall
 completely, CPU-idle, heartbeats included -- see project_trading_campaign memory, not yet
@@ -65,9 +72,9 @@ a 5%/30% move.
 - [x] AF3 -- #997 -- vs_random gauntlet gate is an off-by-one that always returns 0.0
 - [x] AF2 -- #996 -- Sharpe ratio annualized by ann_factor instead of sqrt(ann_factor)
 - [x] AF8 -- #1002 -- rank_for_day_trading's $5 price floor drops the cheap tickers added for penny-stock coverage
-- [ ] AF21 -- #1015 -- discovery only introduces one new known-liquid ticker per pass, badly throttling how fast new symbols enter the watchlist
-- [ ] AF10 -- #1004 -- StrategyLifecycle.update_live_fill is never called -- ramp stuck at 25%, live auto-retirement can never fire
-- [ ] AF11 -- #1005 -- no guard against trading on stale/frozen market data
+- [x] AF21 -- #1015 -- discovery only introduces one new known-liquid ticker per pass, badly throttling how fast new symbols enter the watchlist
+- [x] AF10 -- #1004 -- StrategyLifecycle.update_live_fill is never called -- ramp stuck at 25%, live auto-retirement can never fire
+- [x] AF11 -- #1005 -- no guard against trading on stale/frozen market data
 - [ ] AF12 -- #1006 -- expectancy/confidence math counts opening fills as real trades, live distinct-days not phase-filtered
 - [ ] AF4 -- #998 -- capacity_liquidity gauntlet gate fed a hardcoded position_sizes=1.0 instead of the real registered qty
 - [ ] AF13 -- #1007 -- fractional-short guard is checked before the confidence-weight multiplier is applied
@@ -172,3 +179,18 @@ PRs historically:
   $5 floor -- fixed its fixture to a genuinely-below-the-new-floor price, and added a new test for
   the actual positive case: a $1.50 liquid stock, representative of the real PARA/PLUG/etc tickers
   this was silently dropping, now gets ranked).
+- PR #1026 -- AF21 (self_dev generated, **auto-merged, first clean landing this campaign** --
+  independently re-verified by hand anyway: real diff matched the issue exactly, tests re-run
+  locally, genuinely correct).
+- PR #1027 -- AF10 (self_dev generated, **auto-merged** -- independently re-verified by hand:
+  matched the issue's exact wiring spec, tests re-run locally, genuinely correct).
+- PR #1028 -- AF11 (self_dev generated, hand-fixed -- the most serious bug found so far this
+  campaign: the stale-data guard fired unconditionally before the position lookup, blocking
+  CLOSES too, directly contradicting the issue's explicit "never trap a losing position open"
+  requirement, breaking 33/75 tests. Moved to fire opens-only, mirroring every other opens-only
+  gate's placement in the same function. Also fixed three test fixtures across two files
+  (`make_bars`, `_make_correlated_bars`, scheduler's `_bars`) that hardcoded a fixed past date --
+  harmless until a real staleness check existed, at which point every default-fixture test looked
+  permanently stale. Anchored all three to end at `date.today()` instead).
+- PR #1026 -- AF21 (auto-merged by self_dev_campaign)
+- PR #1027 -- AF10 (auto-merged by self_dev_campaign)
