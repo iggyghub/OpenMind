@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import keyring
-from typing import Protocol, List, Optional, Literal, Dict, Any, runtime_checkable
+from typing import Protocol, List, Optional, Literal, Dict, Any, runtime_checkable, Tuple
 from dataclasses import dataclass
 
 # Public types
@@ -69,6 +69,9 @@ class AlpacaBrokerClient:
         self.env = env
         self._client = None
         self._connected = False
+        # In-memory ledger for per-(strategy_id, symbol) position isolation.
+        # Alpaca itself has no per-strategy position concept, so this lives here.
+        self._positions: Dict[Tuple[str, str], Position] = {}
         # Local ledger for per-strategy position tracking. Mirrors StubBrokerClient.
         # Resets on restart, same accepted limitation as the stub.
         self._positions: Dict[Tuple[str, str], Position] = {}
