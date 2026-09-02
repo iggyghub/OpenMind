@@ -31,20 +31,13 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF5 -- #999
+- **Active:** AF6 -- #1000
 - **Model:** sonnet
 
-AF9 and AF7 both landed 2026-09-02 -- both hand-fixed, neither auto-merged as generated (see
-Landed PRs). AF7's hand-fix went a level deeper than the generated diff: the sandboxed strategy
-exec namespace was empty (`ns = {}`), so ANY strategy using `pd`/`np` internally without
-self-importing them would NameError and silently degrade to all-flat -- the exact symptom #1001
-exists to fix, one layer further down. Worth re-checking discovery's validation rate in a day or
-two now that both AF9 and AF7 are live.
-
-**The scheduled 1am unattended run never actually started** (zero ledger/sandbox activity before
-it was manually re-fired ~05:35 EDT, despite Cerebral running healthy the whole time) -- root
-cause not found. Firing it while actively watching (interactive session, `call_tool` over the IPC
-bridge) works reliably; that's how this campaign is being run now.
+AF9, AF7, AF5 landed 2026-09-02 -- all three hand-fixed after `tests_failed`, none auto-merged as
+generated (details in Landed PRs). Every one so far has needed a hand-fix, same as this campaign's
+whole history -- keep hand-verifying, don't trust a green OR red sandbox verdict alone. Being run
+live/attended (the scheduled 1am unattended run never started at all, root cause not found).
 
 ## Queue
 
@@ -64,7 +57,7 @@ a 5%/30% move.
 
 - [x] AF9 -- #1003 -- AlpacaBrokerClient.list_positions ignores strategy_id, every strategy shares one position pool
 - [x] AF7 -- #1001 -- sandboxed strategy evaluation silently degrades to all-flat on numpy/pandas signal types
-- [ ] AF5 -- #999 -- correlation risk gate computed on price levels instead of returns
+- [x] AF5 -- #999 -- correlation risk gate computed on price levels instead of returns
 - [ ] AF6 -- #1000 -- correlation matrix rebuilt from scratch on every strategy open instead of once per dispatch pass
 - [ ] AF16 -- #1010 -- registration-time position sizing and the live risk cap read two different equity numbers
 - [ ] AF1 -- #995 -- TP/SL backstop compares live price against yesterday's bar close
@@ -145,3 +138,7 @@ PRs historically:
   test proved the exec namespace strategy code runs in was empty -- seeded `pd`/`np` into it so
   any strategy using them internally works even without self-importing, not just ones whose
   return value happens to serialize cleanly).
+- PR #1019 -- AF5 (self_dev generated, hand-fixed: the one-line production fix was correct as
+  generated, but the pre-existing `test_tick_blocks_high_correlation_open` test's fixture built
+  two symbols correlated on price LEVEL trend, not actual returns -- rebuilt the fixture to
+  construct genuinely return-correlated series; added a direct unit test for the fix itself).
