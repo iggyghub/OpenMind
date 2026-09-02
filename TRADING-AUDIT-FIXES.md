@@ -31,13 +31,13 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF3 -- #997
+- **Active:** AF2 -- #996
 - **Model:** sonnet
 
-AF9, AF7, AF5, AF6, AF16, AF1 landed 2026-09-02 (details in Landed PRs). Being run live/attended
-(the scheduled 1am unattended run never started at all; separately, mid-campaign, live-reproduced
-what's probably the real cause -- the whole asyncio event loop can stall completely, CPU-idle,
-heartbeats included, not just scheduler dispatch -- see project_trading_campaign memory, not yet
+AF9, AF7, AF5, AF6, AF16, AF1, AF3 landed 2026-09-02 (details in Landed PRs). Being run
+live/attended (the scheduled 1am unattended run never started at all; separately, mid-campaign,
+live-reproduced what's probably the real cause -- the whole asyncio event loop can stall
+completely, CPU-idle, heartbeats included -- see project_trading_campaign memory, not yet
 root-caused to an exact call site).
 
 ## Queue
@@ -62,7 +62,7 @@ a 5%/30% move.
 - [x] AF6 -- #1000 -- correlation matrix rebuilt from scratch on every strategy open instead of once per dispatch pass
 - [x] AF16 -- #1010 -- registration-time position sizing and the live risk cap read two different equity numbers
 - [x] AF1 -- #995 -- TP/SL backstop compares live price against yesterday's bar close
-- [ ] AF3 -- #997 -- vs_random gauntlet gate is an off-by-one that always returns 0.0
+- [x] AF3 -- #997 -- vs_random gauntlet gate is an off-by-one that always returns 0.0
 - [ ] AF2 -- #996 -- Sharpe ratio annualized by ann_factor instead of sqrt(ann_factor)
 - [ ] AF8 -- #1002 -- rank_for_day_trading's $5 price floor drops the cheap tickers added for penny-stock coverage
 - [ ] AF21 -- #1015 -- discovery only introduces one new known-liquid ticker per pass, badly throttling how fast new symbols enter the watchlist
@@ -156,3 +156,9 @@ PRs historically:
   its own new test. Broke two PRE-EXISTING TP/SL tests from earlier the same day, which relied on
   `StubBrokerClient`'s `current_price` staying frozen between ticks (only updates on a fill) --
   fixed by directly nudging the broker's position state to simulate a real price move).
+- PR #1023 -- AF3 (self_dev generated, hand-fixed: the one-line off-by-one fix was correct as
+  generated. Broke a pre-existing test whose fixture relied on the OLD bug -- a perfectly flat 0%
+  strategy trivially "beating" a benchmark that used to always be exactly 0.0 -- gave it real
+  growth instead, which surfaced a second, unrelated pre-existing bug in the same fixture
+  (parameter_sensitivity comparing real curve profitability against a hardcoded, params-ignoring
+  metrics dict). Added a direct regression test for the actual fix).
