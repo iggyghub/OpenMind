@@ -1827,6 +1827,7 @@ class SchedulerPlugin:
         stock_sentiment_labels: dict | None = None,
         claimed_symbols: set | None = None,
         bear_case_fn=None,
+        correlation_matrix: pd.DataFrame | None = None,
     ) -> dict:
         """Runs one paper-trading tick for the given strategy. Pure trade
         execution -- event bookkeeping (marking a due event as dispatched)
@@ -1866,6 +1867,7 @@ class SchedulerPlugin:
                 stock_sentiment_labels=stock_sentiment_labels,
                 claimed_symbols=claimed_symbols,
                 bear_case_fn=bear_case_fn,
+                correlation_matrix=correlation_matrix,
             )
             logger.info(f"Paper tick for {strategy_name}: {result}")
             return result

@@ -244,6 +244,7 @@ def run_strategy_tick(
     stock_sentiment_labels: Optional[dict] = None,
     claimed_symbols: Optional[set] = None,
     bear_case_fn: Optional[Callable[[str, str, int], "tuple[bool, str]"]] = None,
+    correlation_matrix: Optional[pd.DataFrame] = None,
 ) -> dict:
     """Evaluate one strategy against fresh data and act on the result.
 
@@ -364,7 +365,10 @@ def run_strategy_tick(
     if risk is not None and not is_close:
         existing = [p.symbol for p in broker.list_positions() if p.symbol != spec.symbol]
         if existing:
-            matrix = _build_correlation_matrix([spec.symbol] + existing, fetch)
+            if correlation_matrix is None:
+                matrix = _build_correlation_matrix([spec.symbol] + existing, fetch)
+            else:
+                matrix = correlation_matrix.loc[[spec.symbol] + existing, [spec.symbol] + existing]
             corr_res = risk.check_correlation_limit(spec.symbol, existing, matrix)
             if not corr_res.allowed:
                 return {"status": "blocked", "blocked_by": corr_res.blocked_by}
@@ -457,6 +461,7 @@ def dispatch_due_events(
     sentiment_label: Optional[str] = None,
     stock_sentiment_labels: Optional[dict] = None,
     bear_case_fn: Optional[Callable[[str, str, int], "tuple[bool, str]"]] = None,
+    correlation_matrix: Optional[pd.DataFrame] = None,
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
 
@@ -479,7 +484,16 @@ def dispatch_due_events(
     # being evaluated together right now, see check_symbol_claim's own
     # docstring for why.
     claimed_symbols: set = set()
-    for evt in scheduler.list_due_events():
+    due_events = scheduler.list_due_events()
+    if correlation_matrix is None:
+        all_symbols: list[str] = [p.symbol for p in broker.list_positions()]
+        for evt in due_events:
+            spec = store.get(evt["title"]) if store is not None else None
+            if spec:
+                all_symbols.append(spec.symbol)
+        if all_symbols:
+            correlation_matrix = _build_correlation_matrix(all_symbols, fetch)
+    for evt in due_events:
         name = evt["title"]
         # S17 (#862): the versioned identity used for forward-record/lifecycle
         # state, so an edited strategy's paper/live record restarts clean
@@ -532,6 +546,7 @@ def dispatch_due_events(
             stock_sentiment_labels=stock_sentiment_labels,
             claimed_symbols=claimed_symbols,
             bear_case_fn=bear_case_fn,
+            correlation_matrix=correlation_matrix,
         )
         # Marked regardless of outcome: a persistently failing strategy should
         # retry at its own interval, not spam every tick.
