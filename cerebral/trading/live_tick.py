@@ -492,7 +492,11 @@ def dispatch_due_events(
             if spec:
                 all_symbols.append(spec.symbol)
         if all_symbols:
-            correlation_matrix = _build_correlation_matrix(all_symbols, fetch)
+            # Dedup -- a due event's own symbol often already appears in the
+            # broker's current positions (that's what makes it correlation-
+            # relevant), and _build_correlation_matrix's own fetch loop has
+            # no dedup of its own.
+            correlation_matrix = _build_correlation_matrix(sorted(set(all_symbols)), fetch)
     for evt in due_events:
         name = evt["title"]
         # S17 (#862): the versioned identity used for forward-record/lifecycle

@@ -385,6 +385,7 @@ class FakeScheduler:
         self.stock_sentiment_labels_seen = []  # 2026-09-01: the `stock_sentiment_labels` dict passed, per call
         self.claimed_symbols_seen = []  # 2026-08-31: the `claimed_symbols` object passed, per call
         self.bear_case_fns = []  # 2026-08-31: the `bear_case_fn` passed, per call
+        self.correlation_matrices_seen = []  # 2026-09-02: the `correlation_matrix` passed, per call
 
     def list_due_events(self):
         return self.events
@@ -394,7 +395,8 @@ class FakeScheduler:
 
     def _run_paper_strategy(self, name, broker, record, config, store=None, fetch=None, phase="paper",
                              dispatch_id=None, risk=None, size_pct=1.0, sentiment_label=None,
-                             stock_sentiment_labels=None, claimed_symbols=None, bear_case_fn=None):
+                             stock_sentiment_labels=None, claimed_symbols=None, bear_case_fn=None,
+                             correlation_matrix=None):
         self.ran.append(name)
         self.brokers.append(broker)
         self.phases.append(phase)
@@ -404,6 +406,7 @@ class FakeScheduler:
         self.stock_sentiment_labels_seen.append(stock_sentiment_labels)
         self.claimed_symbols_seen.append(claimed_symbols)
         self.bear_case_fns.append(bear_case_fn)
+        self.correlation_matrices_seen.append(correlation_matrix)
         return dict(self.tick_result)
 
 
@@ -417,6 +420,48 @@ def test_dispatch_runs_and_marks_each_due_event(tmp_path, monkeypatch):
     assert sched.ran == ["s1", "s2"]
     assert sched.marked == [1, 2]
     assert [r["strategy"] for r in results] == ["s1", "s2"]
+
+
+def test_dispatch_builds_the_correlation_matrix_at_most_once_per_pass(tmp_path, monkeypatch):
+    """AF6/#1000: the correlation matrix used to be rebuilt from scratch
+    inside run_strategy_tick for every strategy that reached an open --
+    redundant refetching within one dispatch pass. Now built once (if at
+    all) in dispatch_due_events and threaded through, regardless of how
+    many due events share the same pass."""
+    class _FakeSpec:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+    class _FakeStore:
+        def get(self, name):
+            return _FakeSpec({"s1": "AAPL", "s2": "MSFT"}.get(name))
+
+        def get_current_version(self, name):
+            return None
+
+    sched = FakeScheduler([{"id": 1, "title": "s1"}, {"id": 2, "title": "s2"}])
+    broker = StubBrokerClient()
+    broker._positions[(None, "AAPL")] = _pos(symbol="AAPL")
+
+    fetch_calls = []
+
+    def counting_fetch(symbol, start, end, interval="1d"):
+        fetch_calls.append(symbol)
+        return make_bars()
+
+    dispatch_due_events(sched, broker, make_record(tmp_path, monkeypatch),
+                        lifecycle=StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite"),
+                        store=_FakeStore(), fetch=counting_fetch)
+
+    # Both due events saw the SAME matrix object -- built once for the whole
+    # pass, not once per strategy (the pre-fix behavior would have called
+    # _build_correlation_matrix, and therefore fetch, again for s2).
+    assert sched.correlation_matrices_seen[0] is sched.correlation_matrices_seen[1]
+    assert sched.correlation_matrices_seen[0] is not None
+    # One fetch per distinct symbol for the whole pass -- AAPL appears both
+    # as an existing position and as s1's own symbol, deduplicated before
+    # the fetch loop runs.
+    assert sorted(fetch_calls) == ["AAPL", "MSFT"]
 
 
 def test_dispatch_threads_sentiment_label_through_to_each_strategy(tmp_path, monkeypatch):
