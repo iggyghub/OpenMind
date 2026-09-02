@@ -31,17 +31,20 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF7 -- #1001
+- **Active:** AF5 -- #999
 - **Model:** sonnet
 
-AF9 landed 2026-09-02 (see Landed PRs) -- hand-fixed, not auto-merged as generated. self_dev's
-diff for it also had a real self_dev-pipeline bug worth knowing about: the run produced TWO
-near-identical PRs (#1016, #1017) six seconds apart from one campaign() call -- not investigated
-further, #1016 closed as a duplicate. **The scheduled 1am unattended run never actually started**
-(zero ledger/sandbox activity of any kind before this was manually re-fired around 05:35 EDT,
-despite Cerebral running healthy and uninterrupted the whole time) -- root cause not found, worth
-investigating before trusting another unattended overnight campaign run. Firing it while actively
-watching (interactive session, `call_tool` over the IPC bridge) works reliably.
+AF9 and AF7 both landed 2026-09-02 -- both hand-fixed, neither auto-merged as generated (see
+Landed PRs). AF7's hand-fix went a level deeper than the generated diff: the sandboxed strategy
+exec namespace was empty (`ns = {}`), so ANY strategy using `pd`/`np` internally without
+self-importing them would NameError and silently degrade to all-flat -- the exact symptom #1001
+exists to fix, one layer further down. Worth re-checking discovery's validation rate in a day or
+two now that both AF9 and AF7 are live.
+
+**The scheduled 1am unattended run never actually started** (zero ledger/sandbox activity before
+it was manually re-fired ~05:35 EDT, despite Cerebral running healthy the whole time) -- root
+cause not found. Firing it while actively watching (interactive session, `call_tool` over the IPC
+bridge) works reliably; that's how this campaign is being run now.
 
 ## Queue
 
@@ -60,7 +63,7 @@ yet; not worth the review time until AF9 is fixed and positions actually live lo
 a 5%/30% move.
 
 - [x] AF9 -- #1003 -- AlpacaBrokerClient.list_positions ignores strategy_id, every strategy shares one position pool
-- [ ] AF7 -- #1001 -- sandboxed strategy evaluation silently degrades to all-flat on numpy/pandas signal types
+- [x] AF7 -- #1001 -- sandboxed strategy evaluation silently degrades to all-flat on numpy/pandas signal types
 - [ ] AF5 -- #999 -- correlation risk gate computed on price levels instead of returns
 - [ ] AF6 -- #1000 -- correlation matrix rebuilt from scratch on every strategy open instead of once per dispatch pass
 - [ ] AF16 -- #1010 -- registration-time position sizing and the live risk cap read two different equity numbers
@@ -138,3 +141,7 @@ PRs historically:
   regardless of what was actually ordered -- the production `AlpacaBrokerClient` change itself was
   correct as generated). A duplicate PR (#1016, same run, six seconds apart) closed unmerged.
   Commit d3efff2 on master.
+- PR #1018 -- AF7 (self_dev generated, hand-fixed: the generated diff was correct but its own new
+  test proved the exec namespace strategy code runs in was empty -- seeded `pd`/`np` into it so
+  any strategy using them internally works even without self-importing, not just ones whose
+  return value happens to serialize cleanly).
