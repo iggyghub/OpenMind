@@ -1736,10 +1736,11 @@ class SchedulerPlugin:
         symbol_strategies = [s for s in store.list_all() if s.symbol == symbol]
         
         from cerebral.trading.forward_record import ForwardRecord
+        record = ForwardRecord()
         scored = []
         for s in symbol_strategies:
             try:
-                conf = ForwardRecord().compute_confidence_weight(strategy_id=s.strategy_id)
+                conf = record.compute_confidence_weight(strategy_id=s.strategy_id)
                 if conf > 0:
                     scored.append((conf, s.strategy_id))
             except Exception:

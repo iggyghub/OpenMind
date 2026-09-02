@@ -32,6 +32,7 @@ def _run_tally(claim_text: str) -> tuple[bool, int, int]:
             return False, 0, 0
 
         record = ForwardRecord()
+        weights = {}
         # Chroma ids are always the bare (suffix-stripped) claim text -- S40's
         # upsert_strategy strips `@SYMBOL` before using it as the id. Looking
         # up confidence weight by that same bare id is correct for every
@@ -39,7 +40,8 @@ def _run_tally(claim_text: str) -> tuple[bool, int, int]:
         # expansions don't exist in production data yet); once expansions are
         # real, a retrieved id may need checking under both its bare and
         # suffixed forms to find every phase's fills.
-        weights = {sid: record.compute_confidence_weight(strategy_id=sid) for sid in ids}
+        for sid in ids:
+            weights[sid] = record.compute_confidence_weight(strategy_id=sid)
         pos, total = store.compute_tally(ids, weights)
         return True, pos, total
     except Exception:
