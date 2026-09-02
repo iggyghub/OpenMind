@@ -261,7 +261,7 @@ def run_gauntlet(
     equity_curve, metrics = backtest_func(prices, params)
     daily_returns = np.diff(equity_curve) / equity_curve[:-1] if len(equity_curve) > 1 else np.array([0.0])
     ann_factor = _bars_per_year(interval)
-    sharpe = metrics.get("sharpe", float(np.mean(daily_returns) / np.std(daily_returns) * ann_factor)) if np.std(daily_returns) > 0 else 0.0
+    sharpe = metrics.get("sharpe", float(np.mean(daily_returns) / np.std(daily_returns) * np.sqrt(ann_factor))) if np.std(daily_returns) > 0 else 0.0
     total_return = (equity_curve[-1] / equity_curve[0]) - 1 if equity_curve[0] != 0 else 0.0
 
     gates: List[GauntletGateResult] = []

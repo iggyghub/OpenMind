@@ -508,3 +508,33 @@ def test_random_entry_returns_nonzero_on_uptrend():
     )
     vs_rand_gate = card.gates[1]
     assert vs_rand_gate.threshold > 0.0, "p95_random should be > 0.0 on an uptrend"
+
+
+def test_sharpe_annualization_uses_sqrt():
+    """Regression test for Sharpe annualisation: should multiply by sqrt(ann_factor), not ann_factor."""
+    n = 100
+    rng = np.random.default_rng(42)
+    # Create equity curve with known returns
+    daily_ret = rng.normal(0.001, 0.01, n - 1)
+    eq = 100 * np.cumprod(1 + daily_ret)
+    # Return metrics without "sharpe" so the fallback formula is used
+    def dummy_backtest(prices, params):
+        return list(eq), {}
+
+    card = run_gauntlet(
+        dummy_backtest,
+        make_prices(n=n),
+        make_params(),
+        make_benchmark_prices(n=n),
+        make_positions(n=n),
+        seed=42,
+    )
+    # Expected Sharpe from fallback: mean / std * sqrt(252), computed from
+    # the SAME returns run_gauntlet itself recovers (np.diff(eq)/eq[:-1]),
+    # not the original daily_ret array -- diff-based reconstruction drops
+    # the first return (eq's first value already embeds daily_ret[0]), so
+    # recomputing from daily_ret directly compares against a different,
+    # off-by-one sample and was failing even with the correct sqrt fix.
+    recovered_returns = np.diff(eq) / eq[:-1]
+    expected_sharpe = float(np.mean(recovered_returns) / np.std(recovered_returns) * np.sqrt(252))
+    assert card.sharpe == pytest.approx(expected_sharpe)
