@@ -31,13 +31,16 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF13 -- #1007
+- **Active:** AF20 -- #1014
 - **Model:** sonnet
 
-14 of 21 slices landed 2026-09-02 (details in Landed PRs). Being run live/attended (the scheduled
-1am unattended run never started at all; separately, mid-campaign, live-reproduced what's probably
-the real cause -- the whole asyncio event loop can stall completely, CPU-idle, heartbeats included
--- see project_trading_campaign memory, not yet root-caused to an exact call site).
+15 of 21 slices landed 2026-09-02 (details in Landed PRs). AF13 needed the second-most-serious
+hand-fix so far: self_dev wrote a correct, well-targeted new test but never touched the actual
+production file at all -- implemented the fix by hand per the issue's own spec. Being run
+live/attended (the scheduled 1am unattended run never started at all; separately, mid-campaign,
+live-reproduced what's probably the real cause -- the whole asyncio event loop can stall
+completely, CPU-idle, heartbeats included -- see project_trading_campaign memory, not yet
+root-caused to an exact call site).
 
 ## Queue
 
@@ -69,7 +72,7 @@ a 5%/30% move.
 - [x] AF11 -- #1005 -- no guard against trading on stale/frozen market data
 - [x] AF12 -- #1006 -- expectancy/confidence math counts opening fills as real trades, live distinct-days not phase-filtered
 - [x] AF4 -- #998 -- capacity_liquidity gauntlet gate fed a hardcoded position_sizes=1.0 instead of the real registered qty
-- [ ] AF13 -- #1007 -- fractional-short guard is checked before the confidence-weight multiplier is applied
+- [x] AF13 -- #1007 -- fractional-short guard is checked before the confidence-weight multiplier is applied
 - [ ] AF20 -- #1014 -- noise_sensitivity gate's independent per-column price noise violates OHLC bar invariants
 - [ ] AF18 -- #1012 -- claim_store's suffix-stripping regex diverges from strategy_store's and fails on dotted tickers
 - [ ] AF19 -- #1013 -- extract_ticker's single-letter regex now false-positives on the word F in prose
@@ -194,5 +197,11 @@ PRs historically:
   `plugins.scheduler.run_gauntlet` -- scheduler.py's own module-level `from ... import run_gauntlet`
   binds a separate reference in its own namespace, so patching the origin left it untouched and
   the mock was never called. Fixed the patch target).
+- PR #1031 -- AF13 (self_dev wrote a correct, well-targeted new test but never touched
+  `cerebral/trading/live_tick.py` at all -- the actual production fix was simply never written,
+  "no commit" for the code specifically. Implemented it by hand per the issue's own spec: moved
+  the fractional-short guard from before `decide_action` -- testing the pre-multiplier `open_qty`
+  -- to after the confidence-weight multiplier, testing the final qty that actually reaches the
+  broker).
 - PR #1026 -- AF21 (auto-merged by self_dev_campaign)
 - PR #1027 -- AF10 (auto-merged by self_dev_campaign)
