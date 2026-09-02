@@ -457,3 +457,24 @@ class TestMaxHoldingPeriodGate:
         )
         gate = next(g for g in card.gates if g.name == "max_holding_period")
         assert gate.passed is True
+
+
+def test_random_entry_returns_nonzero_on_uptrend():
+    """vs_random gate must compute non-zero random-entry returns instead of
+    degenerating to 0.0 (off-by-one bug where start/end were the same bar)."""
+    n = 200
+    close = np.arange(1, n + 1, dtype=float)
+    prices = pd.DataFrame({
+        "Open": close, "High": close + 0.1, "Low": close - 0.1,
+        "Close": close, "Volume": np.ones(n) * 1000,
+    })
+
+    card = run_gauntlet(
+        lambda p, pr: ([100.0] * len(p), {"sharpe": 0.0, "total_return": 0.0}),
+        prices,
+        make_params(),
+        benchmark_prices=None,
+        seed=42,
+    )
+    vs_rand_gate = card.gates[1]
+    assert vs_rand_gate.threshold > 0.0, "p95_random should be > 0.0 on an uptrend"

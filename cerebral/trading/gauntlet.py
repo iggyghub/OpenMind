@@ -289,8 +289,8 @@ def run_gauntlet(
         entries = rng.integers(0, len(prices) - holding_period - 1, size=20)
         port_rets = []
         for e in entries:
-            end = min(e + holding_period, len(prices))
-            pr = prices["Close"].iloc[end - 1] / prices["Close"].iloc[e] - 1
+            end = min(e + holding_period, len(prices) - 1)
+            pr = prices["Close"].iloc[end] / prices["Close"].iloc[e] - 1
             port_rets.append(pr)
         random_port_returns.append(np.mean(port_rets) if port_rets else 0.0)
     p95_random = np.percentile(random_port_returns, 95)
