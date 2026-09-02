@@ -42,21 +42,23 @@ def test_add_fill_persists_data():
 def test_compute_expectancy_ci():
     """CI correctly computes mean, bounds, and sufficient flag."""
     record = ForwardRecord()
-    # Add 10 trades
+    # Add 10 trades. (i+1), not i, so no fill lands on exactly pnl=0.0 --
+    # AF12/#1006 excludes pnl==0.0 fills (the opening-fill proxy), and i=0
+    # would otherwise silently drop one of these "real" trades from n.
     for i in range(10):
-        record.add_fill("TSLA", "buy", 1.0, 100.0 + i, pnl=i * 5.0)
-    
+        record.add_fill("TSLA", "buy", 1.0, 100.0 + i, pnl=(i + 1) * 5.0)
+
     # floor=1: isolate the trade-count check this test targets -- all fills
     # land "now" (one real distinct day), so the default floor of 30 would
     # fail this on the distinct-days axis instead of the one being tested.
     mean, lower, upper, sufficient, n, distinct_days = record.compute_expectancy_ci(floor=1)
     assert not sufficient
-    assert mean == 22.5  # avg of 0,5,10,...,45
+    assert mean == 27.5  # avg of 5,10,...,50
     assert n == 10
 
     # Add more to reach threshold
     for i in range(20):
-        record.add_fill("NVDA", "buy", 1.0, 500.0 + i, pnl=i * 2.0)
+        record.add_fill("NVDA", "buy", 1.0, 500.0 + i, pnl=(i + 1) * 2.0)
 
     mean2, lower2, upper2, sufficient2, n2, distinct_days2 = record.compute_expectancy_ci(floor=1)
     assert sufficient2
@@ -72,30 +74,32 @@ def test_compute_live_expectancy_ci():
     method assumed tests to mirror already existed for the live one; they
     didn't. Covering both here, mirroring test_compute_expectancy_ci's shape."""
     record = ForwardRecord()
+    # (i+1), not i -- AF12/#1006 excludes pnl==0.0 fills, and i=0 would
+    # otherwise silently drop one of these "real" trades from n.
     for i in range(10):
-        record.add_live_fill("TSLA", "buy", 1.0, 100.0 + i, pnl=i * 5.0)
+        record.add_live_fill("TSLA", "buy", 1.0, 100.0 + i, pnl=(i + 1) * 5.0)
 
     mean, lower, upper, sufficient, n, distinct_days = record.compute_live_expectancy_ci(floor=1)
     assert not sufficient
-    assert mean == 22.5
+    assert mean == 27.5
     assert n == 10
 
     # A paper fill for the same strategy_id must NOT be counted here.
     record.add_fill("TSLA", "buy", 1.0, 100.0, pnl=999.0)
     mean2, _, _, _, n2, _ = record.compute_live_expectancy_ci(floor=1)
     assert n2 == 10  # unchanged -- the paper fill didn't leak in
-    assert mean2 == 22.5
+    assert mean2 == 27.5
     record.close()
 
 
 def test_compute_paper_expectancy_ci():
     record = ForwardRecord()
     for i in range(10):
-        record.add_fill("TSLA", "buy", 1.0, 100.0 + i, pnl=i * 5.0)
+        record.add_fill("TSLA", "buy", 1.0, 100.0 + i, pnl=(i + 1) * 5.0)
 
     mean, lower, upper, sufficient, n, distinct_days = record.compute_paper_expectancy_ci(floor=1)
     assert not sufficient
-    assert mean == 22.5
+    assert mean == 27.5
     assert n == 10
 
     # A live fill for the same strategy_id must NOT be counted here -- this
@@ -104,7 +108,7 @@ def test_compute_paper_expectancy_ci():
     record.add_live_fill("TSLA", "buy", 1.0, 100.0, pnl=999.0)
     mean2, _, _, _, n2, _ = record.compute_paper_expectancy_ci(floor=1)
     assert n2 == 10  # unchanged -- the live fill didn't leak in
-    assert mean2 == 22.5
+    assert mean2 == 27.5
     record.close()
 
 
@@ -180,8 +184,10 @@ def test_intraday_cluster_fails_distinct_days_floor():
     distinct-days floor. Old trade-count-only logic would have wrongly
     passed this -- every fill lands on the same calendar date."""
     record = ForwardRecord()
+    # (i+1), not i -- AF12/#1006 excludes pnl==0.0 fills, and i=0 would
+    # otherwise silently drop one of these "real" trades from n.
     for i in range(35):
-        _add_fill_on_day(record, "2026-07-19", "AAPL", "buy", 1.0, 100.0 + i, pnl=i * 2.0)
+        _add_fill_on_day(record, "2026-07-19", "AAPL", "buy", 1.0, 100.0 + i, pnl=(i + 1) * 2.0)
 
     mean, lower, upper, is_sufficient, n, distinct_days = record.compute_expectancy_ci()
     assert n == 35
@@ -194,9 +200,12 @@ def test_enough_trades_across_enough_distinct_days_is_sufficient():
     """Unchanged from today's behavior for a real daily-bar strategy: 30
     trades spread across 30 distinct days passes, same as before S23."""
     record = ForwardRecord()
+    # i - 14.5, not i - 15.0 -- AF12/#1006 excludes pnl==0.0 fills, and
+    # i=15 would otherwise land exactly on 0.0 and silently drop a "real"
+    # trade from n. No integer i lands on -14.5 exactly.
     for i in range(30):
         _add_fill_on_day(record, f"2026-0{1 + i // 28}-{1 + i % 28:02d}", "AAPL", "buy", 1.0,
-                          100.0 + i, pnl=i - 15.0)
+                          100.0 + i, pnl=i - 14.5)
 
     mean, lower, upper, is_sufficient, n, distinct_days = record.compute_expectancy_ci(floor=30)
     assert n == 30
@@ -397,16 +406,20 @@ def test_confidence_weight_paper_and_live_differ():
     counts live fills' influence. This fails against that formula (would assert
     2.5) and passes against the phase-filtered fix (1.33...)."""
     record = ForwardRecord()
-    # 3 paper trades @ 0 pnl, 3 live trades @ +10 pnl -- deliberately different
-    # so a blended-mean bug is visible instead of masked.
+    # 3 paper trades @ +4 pnl, 3 live trades @ +10 pnl -- deliberately
+    # different so a blended-mean bug is visible instead of masked. Paper
+    # pnl is 4.0, not 0.0: AF12/#1006 excludes pnl==0.0 fills (the
+    # opening-fill proxy), which would otherwise drop every paper fill here
+    # and reduce this to "0 paper trades vs 3 live", not the paper-vs-live
+    # blend this test exists to check.
     for i in range(3):
-        record.add_fill("AAPL", "buy", 1.0, 100.0, pnl=0.0)
+        record.add_fill("AAPL", "buy", 1.0, 100.0, pnl=4.0)
     for i in range(3):
         record.add_live_fill("AAPL", "buy", 1.0, 100.0, pnl=10.0)
 
     w = record.compute_confidence_weight()
-    # true paper_mean=0, true live_mean=10, live weighted 2x, n=6 -> scale=0.2
-    expected = ((3 * 0.0 * 1 + 3 * 10.0 * 2) / (3 * 1 + 3 * 2)) * (6 / 30)
+    # true paper_mean=4, true live_mean=10, live weighted 2x, n=6 -> scale=0.2
+    expected = ((3 * 4.0 * 1 + 3 * 10.0 * 2) / (3 * 1 + 3 * 2)) * (6 / 30)
     assert abs(w - expected) < 0.01
     record.close()
 
