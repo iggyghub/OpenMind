@@ -27,14 +27,16 @@ reword-and-purge-ledger remedy.
 **None of these fixes require touching `tray/`.** Standard practice for this whole project: never
 send `tray/` to self_dev.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** AF15 -- #1009
-- **Model:** sonnet
+- **Active:** none -- queue fully landed 2026-09-02
 
-20 of 21 slices landed 2026-09-02 (details in Landed PRs). AF17 auto-merged cleanly; independently
+All 21 of 21 slices landed 2026-09-02 (details in Landed PRs). AF15 auto-merged cleanly;
+independently re-verified by hand -- diff matched the issue's own near-diff spec exactly
+(`deque(maxlen=500)`, one new test), full suite green locally (5518 passed, 7 skipped -- one more
+than the prior slice's count, exactly the new test added). AF17 auto-merged cleanly; independently
 re-verified by hand -- the real fix (hoisting `ForwardRecord()` above the loop in
 `plugins/scheduler.py`) is correct, but the issue's second claimed site
 (`cerebral/trading_ideas.py`) was already correct before this PR (`record = ForwardRecord()` was
@@ -43,14 +45,15 @@ a real fix. AF14 landed UNCHANGED -- clean dead-code deletion matching the issue
 remaining references confirmed by grep, full suite green locally (5517 passed, 7 skipped) after
 the campaign's own `tests_failed` verdict, confirmed as the same known environmental sandbox flake
 seen on AF19/AF16/AF1 etc (cut off mid-pytest-collection at ~7%). **A real, unrelated finding this
-slice: the IPC `restart felix` command (`user_text_command` text match) has regressed to silently
+run: the IPC `restart felix` command (`user_text_command` text match) has regressed to silently
 no-op'ing again** -- two attempts this session left the same pre-session PID alive for 55+ minutes
 despite `health.py` reporting healthy both times (a health check only proves *a* process answers,
 not that it's the *new* one -- verify via `Get-CimInstance Win32_Process`'s `CreationDate` on
-`cerebral.main`, not just a health ping). Worked around by killing the stale PID and invoking
+`cerebral.main`, not just a health ping). Worked around twice by killing the stale PID and invoking
 `scripts/launch-felix.ps1 -Restart -CerebralOnly` directly (confirmed via a fresh PID + a
-`cerebral.err.log` truncated to 0 lines) -- same known-good workaround as the 2026-08-28 incident,
-not yet root-caused. Remaining: AF15 (1 slice).
+`cerebral.err.log` truncated to 0 lines each time) -- same known-good workaround as the 2026-08-28
+incident, not yet root-caused; worth a real fix in a future session (see reference_felix_ipc_bridge
+memory for the mechanics).
 
 ## Queue
 
@@ -88,7 +91,7 @@ a 5%/30% move.
 - [x] AF19 -- #1013 -- extract_ticker's single-letter regex now false-positives on the word F in prose
 - [x] AF17 -- #1011 -- ForwardRecord() constructed inside loops leaks sqlite connections
 - [x] AF14 -- #1008 -- dead code: RiskManager.record_daily_loss and _daily_loss_accrued are never called
-- [ ] AF15 -- #1009 -- AlertDispatcher._history grows unbounded in a long-lived process
+- [x] AF15 -- #1009 -- AlertDispatcher._history grows unbounded in a long-lived process
 
 ## What today's real data changed (2026-09-01 evening, 159 fills reviewed)
 
@@ -142,6 +145,9 @@ PRs historically:
 
 ## Landed PRs
 
+- PR #1037 -- AF15 (self_dev generated, **auto-merged** -- independently re-verified by hand:
+  diff matched the issue's own near-diff spec exactly (`deque(maxlen=500)` + one new eviction
+  test), full suite re-run locally clean, 5518 passed/7 skipped).
 - PR #1036 -- AF14 (self_dev generated, landed UNCHANGED -- clean deletion of
   `record_daily_loss`/`_daily_loss_accrued`, matched the issue exactly, zero remaining references
   confirmed by grep. Campaign's own `tests_failed` verdict confirmed as the known environmental
@@ -239,3 +245,4 @@ PRs historically:
 - PR #1027 -- AF10 (auto-merged by self_dev_campaign)
 - PR #1032 -- AF20 (auto-merged by self_dev_campaign)
 - PR #1035 -- AF17 (auto-merged by self_dev_campaign)
+- PR #1037 -- AF15 (auto-merged by self_dev_campaign)
