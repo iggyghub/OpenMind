@@ -36,12 +36,19 @@ ALWAYS_SHORT = "def strategy(data):\n    return [-1] * len(data)"
 
 
 def make_bars(n=5):
+    # Anchored to end AT today (not a hardcoded past date) so the last bar
+    # is always fresh -- AF11/#1005's stale-data guard rejects a fresh open
+    # when the last bar is >3 days old, and a fixed past anchor would drift
+    # out of that window as real time passes (already true by the time this
+    # comment was written: the original 2026-01-01 anchor was ~8 months
+    # stale). Callers testing staleness itself pass their own fetch/today.
+    end = pd.Timestamp.today().normalize()
     return pd.DataFrame(
         {
             "Open": [10.0] * n, "High": [11.0] * n, "Low": [9.0] * n,
             "Close": [10.0 + i for i in range(n)], "Volume": [1000] * n,
         },
-        index=pd.date_range("2026-01-01", periods=n, freq="D"),
+        index=pd.date_range(end=end, periods=n, freq="D"),
     )
 
 
@@ -998,7 +1005,9 @@ def _make_correlated_bars(corr=0.95):
     idio_b = rng.randn(n) * 0.005
     returns_a = shared + idio_a
     returns_b = corr * shared + (1 - corr ** 2) ** 0.5 * idio_b
-    idx = pd.date_range("2026-05-01", periods=n, freq="D")
+    # Anchored to end at today, not a hardcoded past date -- see make_bars'
+    # own comment (AF11/#1005's stale-data guard needs a fresh last bar).
+    idx = pd.date_range(end=pd.Timestamp.today().normalize(), periods=n, freq="D")
     base = pd.DataFrame({"Close": 100.0 * np.cumprod(1 + returns_a)}, index=idx)
     corx = pd.DataFrame({"Close": 100.0 * np.cumprod(1 + returns_b)}, index=idx)
     return base, corx
