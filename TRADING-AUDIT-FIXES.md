@@ -31,10 +31,10 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF2 -- #996
+- **Active:** AF8 -- #1002
 - **Model:** sonnet
 
-AF9, AF7, AF5, AF6, AF16, AF1, AF3 landed 2026-09-02 (details in Landed PRs). Being run
+AF9, AF7, AF5, AF6, AF16, AF1, AF3, AF2 landed 2026-09-02 (details in Landed PRs). Being run
 live/attended (the scheduled 1am unattended run never started at all; separately, mid-campaign,
 live-reproduced what's probably the real cause -- the whole asyncio event loop can stall
 completely, CPU-idle, heartbeats included -- see project_trading_campaign memory, not yet
@@ -63,7 +63,7 @@ a 5%/30% move.
 - [x] AF16 -- #1010 -- registration-time position sizing and the live risk cap read two different equity numbers
 - [x] AF1 -- #995 -- TP/SL backstop compares live price against yesterday's bar close
 - [x] AF3 -- #997 -- vs_random gauntlet gate is an off-by-one that always returns 0.0
-- [ ] AF2 -- #996 -- Sharpe ratio annualized by ann_factor instead of sqrt(ann_factor)
+- [x] AF2 -- #996 -- Sharpe ratio annualized by ann_factor instead of sqrt(ann_factor)
 - [ ] AF8 -- #1002 -- rank_for_day_trading's $5 price floor drops the cheap tickers added for penny-stock coverage
 - [ ] AF21 -- #1015 -- discovery only introduces one new known-liquid ticker per pass, badly throttling how fast new symbols enter the watchlist
 - [ ] AF10 -- #1004 -- StrategyLifecycle.update_live_fill is never called -- ramp stuck at 25%, live auto-retirement can never fire
@@ -162,3 +162,8 @@ PRs historically:
   growth instead, which surfaced a second, unrelated pre-existing bug in the same fixture
   (parameter_sensitivity comparing real curve profitability against a hardcoded, params-ignoring
   metrics dict). Added a direct regression test for the actual fix).
+- PR #1024 -- AF2 (self_dev generated, hand-fixed: the one-line `sqrt()` fix was correct as
+  generated. Its own new regression test had an off-by-one in its OWN expected-value math --
+  recomputed "expected" Sharpe from a 99-return array while `run_gauntlet` itself only recovers 98
+  via diff-based reconstruction, comparing against the wrong sample. Fixed to recompute from the
+  same recovered returns the production code actually uses).
