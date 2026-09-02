@@ -31,19 +31,14 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF1 -- #995
+- **Active:** AF3 -- #997
 - **Model:** sonnet
 
-AF9, AF7, AF5, AF6, AF16 landed 2026-09-02 (details in Landed PRs). AF16 was the first slice to
-land its generated diff UNCHANGED -- correctly took the issue's own permitted fallback (a FIXME
-comment, no code change) since `SchedulerPlugin` doesn't expose a broker reference inside
-`_run_gauntlet` without a larger refactor; `tests_failed` on a comment-only diff was confirmed the
-known environmental sandbox flake (104/104 + full suite green locally). Every other slice so far
-has needed a real hand-fix. Being run live/attended (the scheduled 1am unattended run never
-started at all; separately, mid-campaign, live-reproduced what's probably the real cause -- the
-whole asyncio event loop can stall completely, CPU-idle, heartbeats included, not just scheduler
-dispatch -- see project_trading_campaign memory for the full account, not yet root-caused to an
-exact call site, worth its own debugging session).
+AF9, AF7, AF5, AF6, AF16, AF1 landed 2026-09-02 (details in Landed PRs). Being run live/attended
+(the scheduled 1am unattended run never started at all; separately, mid-campaign, live-reproduced
+what's probably the real cause -- the whole asyncio event loop can stall completely, CPU-idle,
+heartbeats included, not just scheduler dispatch -- see project_trading_campaign memory, not yet
+root-caused to an exact call site).
 
 ## Queue
 
@@ -66,7 +61,7 @@ a 5%/30% move.
 - [x] AF5 -- #999 -- correlation risk gate computed on price levels instead of returns
 - [x] AF6 -- #1000 -- correlation matrix rebuilt from scratch on every strategy open instead of once per dispatch pass
 - [x] AF16 -- #1010 -- registration-time position sizing and the live risk cap read two different equity numbers
-- [ ] AF1 -- #995 -- TP/SL backstop compares live price against yesterday's bar close
+- [x] AF1 -- #995 -- TP/SL backstop compares live price against yesterday's bar close
 - [ ] AF3 -- #997 -- vs_random gauntlet gate is an off-by-one that always returns 0.0
 - [ ] AF2 -- #996 -- Sharpe ratio annualized by ann_factor instead of sqrt(ann_factor)
 - [ ] AF8 -- #1002 -- rank_for_day_trading's $5 price floor drops the cheap tickers added for penny-stock coverage
@@ -156,3 +151,8 @@ PRs historically:
   permitted fallback, a FIXME comment documenting the drift rather than forcing a broker-reference
   plumbing change `_run_gauntlet` doesn't have easy access to. `tests_failed` on a comment-only
   diff confirmed the known environmental sandbox flake, not a real failure).
+- PR #1022 -- AF1 (self_dev generated, hand-fixed: the one-line production fix -- read
+  `position.current_price` instead of the stale bar close -- was correct as generated, including
+  its own new test. Broke two PRE-EXISTING TP/SL tests from earlier the same day, which relied on
+  `StubBrokerClient`'s `current_price` staying frozen between ticks (only updates on a fill) --
+  fixed by directly nudging the broker's position state to simulate a real price move).
