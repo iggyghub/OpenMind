@@ -18,6 +18,7 @@ from cerebral.trading.risk_limits import RiskConfig, RiskManager
 from cerebral.trading.live_tick import (
     STOP_LOSS_PCT,
     TAKE_PROFIT_PCT,
+    _build_correlation_matrix,
     check_tp_sl_breach,
     decide_action,
     dispatch_due_events,
@@ -837,19 +838,78 @@ def test_risk_manager_reads_live_settings_store_values(tmp_path):
     assert res.allowed  # would be blocked at the 2.0% default
 
 
+def test_build_correlation_matrix_uses_returns_not_levels():
+    """Correlation should be computed on percent-change returns, not raw closes.
+    Two assets that drift together over time (high level-correlation) but have 
+    independent day-to-day moves should score low on return-correlation."""
+    from cerebral.trading.live_tick import _build_correlation_matrix
+    
+    dates = pd.date_range("2026-05-01", periods=65, freq="D")
+    
+    # s1: steady uptrend
+    s1_vals = [100.0 + i for i in range(65)]
+    # s2: same steady uptrend, but alternating daily moves (high level corr, low return corr)
+    s2_vals = [100.0 + i + (5.0 if i % 2 == 0 else -5.0) for i in range(65)]
+    
+    df1 = pd.DataFrame({"Close": s1_vals}, index=dates)
+    df2 = pd.DataFrame({"Close": s2_vals}, index=dates)
+    
+    def fixture_fetch(symbol, start, end, interval="1d"):
+        if symbol == "S1":
+            return df1
+        return df2
+
+    corr = _build_correlation_matrix(["S1", "S2"], fixture_fetch)
+    return_corr = corr.loc["S1", "S2"]
+    
+    # Level-based would be ~0.99. Return-based should be near 0.
+    assert abs(return_corr) < 0.3, f"Return correlation should be low, got {return_corr}"
+
+
 # ── S21b (#874): correlation gate ──────────────────────────────────────────
 
-def _make_correlated_bars(corr=0.8):
-    """Create two symbols with high correlation for fixture data."""
-    base = pd.DataFrame(
-        {"Close": [100.0 + i for i in range(65)]},
-        index=pd.date_range("2026-05-01", periods=65, freq="D"),
-    )
-    # CORX moves 0.8 * AAPL + noise
-    noise = np.random.RandomState(42).randn(len(base)) * 2
-    corx = base.copy()
-    corx["Close"] = (base["Close"] * 0.8 + noise * 2).values
+def _make_correlated_bars(corr=0.95):
+    """Create two symbols whose DAILY RETURNS are correlated (not just their
+    price levels) -- the correlation gate compares returns (#999), so a
+    fixture built from two series sharing a common LEVEL trend (e.g. both
+    trending +1/day) can look highly correlated on price alone while their
+    day-to-day returns are only weakly related, no longer exercising "these
+    are really correlated, block the trade" once the gate reads returns.
+    Constructs each symbol's returns as corr * shared_returns +
+    sqrt(1-corr^2) * idiosyncratic_noise, the standard way to build two
+    series with a target Pearson correlation, tuned (corr=0.95 with small
+    idiosyncratic noise) to reliably land the SAMPLE return correlation
+    above the 0.7 threshold, not just its theoretical expectation."""
+    rng = np.random.RandomState(42)
+    n = 65
+    shared = rng.randn(n) * 0.01
+    idio_a = rng.randn(n) * 0.005
+    idio_b = rng.randn(n) * 0.005
+    returns_a = shared + idio_a
+    returns_b = corr * shared + (1 - corr ** 2) ** 0.5 * idio_b
+    idx = pd.date_range("2026-05-01", periods=n, freq="D")
+    base = pd.DataFrame({"Close": 100.0 * np.cumprod(1 + returns_a)}, index=idx)
+    corx = pd.DataFrame({"Close": 100.0 * np.cumprod(1 + returns_b)}, index=idx)
     return base, corx
+
+
+def test_correlation_matrix_uses_returns_not_price_levels():
+    """Two symbols that merely trend the same direction (high level
+    correlation) but have unrelated day-to-day returns must NOT score as
+    correlated -- the pre-fix bug (#999): corr = df.corr() on raw Close
+    measured shared drift, not real co-movement."""
+    idx = pd.date_range("2026-05-01", periods=65, freq="D")
+    # Both trend +1/day (near-perfect level correlation) but with
+    # independent random noise dominating the actual day-to-day returns.
+    rng = np.random.RandomState(7)
+    a = pd.DataFrame({"Close": 100.0 + np.arange(65) + rng.randn(65) * 0.01}, index=idx)
+    b = pd.DataFrame({"Close": 200.0 + np.arange(65) + rng.randn(65) * 5.0}, index=idx)
+
+    def fetch(symbol, start, end, interval="1d"):
+        return a if symbol == "TRENDA" else b
+
+    matrix = _build_correlation_matrix(["TRENDA", "TRENDB"], fetch)
+    assert matrix.loc["TRENDA", "TRENDB"] < 0.7
 
 
 def test_tick_blocks_high_correlation_open(tmp_path, monkeypatch):

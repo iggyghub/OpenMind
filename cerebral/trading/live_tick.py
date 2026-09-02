@@ -216,7 +216,7 @@ def _build_correlation_matrix(symbols: List[str], fetch: Callable, days: int = 6
     if df.empty:
         return pd.DataFrame(0.0, index=symbols, columns=symbols)
 
-    corr = df.corr()
+    corr = df.pct_change().dropna().corr()
     corr = corr.fillna(0.0)
         
     for sym in symbols:
