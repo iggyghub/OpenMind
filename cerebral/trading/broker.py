@@ -70,10 +70,9 @@ class AlpacaBrokerClient:
         self._client = None
         self._connected = False
         # In-memory ledger for per-(strategy_id, symbol) position isolation.
-        # Alpaca itself has no per-strategy position concept, so this lives here.
-        self._positions: Dict[Tuple[str, str], Position] = {}
-        # Local ledger for per-strategy position tracking. Mirrors StubBrokerClient.
-        # Resets on restart, same accepted limitation as the stub.
+        # Alpaca itself has no per-strategy position concept, so this lives
+        # here, mirroring StubBrokerClient's own ledger. Resets on restart --
+        # same accepted limitation the stub already has.
         self._positions: Dict[Tuple[str, str], Position] = {}
 
     def _connect(self) -> None:

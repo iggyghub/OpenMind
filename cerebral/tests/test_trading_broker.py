@@ -34,20 +34,32 @@ class _FakeAlpacaClient:
     """Stands in for alpaca.trading.client.TradingClient: submit_order
     returns the just-submitted (unfilled) snapshot; get_order_by_id replays
     a scripted status sequence, one call each -- the real fill's async
-    delay compressed to "next call sees the next state"."""
+    delay compressed to "next call sees the next state".
+
+    Each submitted order gets its own id and remembers its own requested
+    qty (previously every fake fill hardcoded "10" regardless of what was
+    actually ordered -- harmless while every test only ever ordered 10
+    shares, but wrong the moment a test submits two different quantities,
+    e.g. one strategy buying 10 and another selling 5 in the same test)."""
     def __init__(self, statuses_after_submit):
         self._statuses = list(statuses_after_submit)
         self.get_order_by_id_calls = 0
+        self._order_qtys: dict = {}
+        self._next_id = 0
 
     def submit_order(self, req):
-        return _FakeAlpacaOrder(status="new")
+        self._next_id += 1
+        order_id = f"o{self._next_id}"
+        self._order_qtys[order_id] = str(req.qty)
+        return _FakeAlpacaOrder(id=order_id, qty=str(req.qty), status="new")
 
     def get_order_by_id(self, order_id):
         self.get_order_by_id_calls += 1
         status = self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
+        qty = self._order_qtys.get(order_id, "10")
         return _FakeAlpacaOrder(
-            id=order_id, status=status,
-            filled_qty="10" if status in ("filled", "partially_filled") else "0",
+            id=order_id, status=status, qty=qty,
+            filled_qty=qty if status in ("filled", "partially_filled") else "0",
             filled_avg_price="101.5" if status in ("filled", "partially_filled") else None,
         )
 
