@@ -935,7 +935,7 @@ class SchedulerPlugin:
             # *some* series; wiring a shared SPY fetch is a separate slice.
             card = run_gauntlet(
                 backtest, prices, {}, prices.copy(),
-                position_sizes=pd.Series([1.0] * len(prices), index=prices.index),
+                position_sizes=pd.Series([position_qty] * len(prices), index=prices.index),
                 hypothesis=hypothesis, provenance=provenance,
                 scheduler=self, paper_broker=StubBrokerClient(),
                 symbol=symbol, strategy_code=code,
