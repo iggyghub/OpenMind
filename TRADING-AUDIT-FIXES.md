@@ -31,16 +31,19 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF20 -- #1014
+- **Active:** AF19 -- #1013
 - **Model:** sonnet
 
-15 of 21 slices landed 2026-09-02 (details in Landed PRs). AF13 needed the second-most-serious
-hand-fix so far: self_dev wrote a correct, well-targeted new test but never touched the actual
-production file at all -- implemented the fix by hand per the issue's own spec. Being run
-live/attended (the scheduled 1am unattended run never started at all; separately, mid-campaign,
-live-reproduced what's probably the real cause -- the whole asyncio event loop can stall
-completely, CPU-idle, heartbeats included -- see project_trading_campaign memory, not yet
-root-caused to an exact call site).
+17 of 21 slices landed 2026-09-02 (details in Landed PRs). AF20 auto-merged cleanly, independently
+re-verified by hand anyway (genuinely correct). AF18 needed a real hand-fix: self_dev delegated
+claim_store's suffix-stripping to strategy_store's version, but the two modules use genuinely
+different id delimiter conventions (space-before-@ vs none) -- delegating broke every real
+claim_store id. Widened claim_store's own regex instead. **Cerebral has NOT been restarted since
+AF13 landed** -- AF20 and AF18 are merged to master but not yet live; restart before/while
+continuing. Remaining: AF19, AF17, AF14, AF15 (4 slices). Being run live/attended (the scheduled
+1am unattended run never started at all; separately, mid-campaign, live-reproduced what's probably
+the real cause -- the whole asyncio event loop can stall completely, CPU-idle, heartbeats included
+-- see project_trading_campaign memory, not yet root-caused to an exact call site).
 
 ## Queue
 
@@ -73,8 +76,8 @@ a 5%/30% move.
 - [x] AF12 -- #1006 -- expectancy/confidence math counts opening fills as real trades, live distinct-days not phase-filtered
 - [x] AF4 -- #998 -- capacity_liquidity gauntlet gate fed a hardcoded position_sizes=1.0 instead of the real registered qty
 - [x] AF13 -- #1007 -- fractional-short guard is checked before the confidence-weight multiplier is applied
-- [ ] AF20 -- #1014 -- noise_sensitivity gate's independent per-column price noise violates OHLC bar invariants
-- [ ] AF18 -- #1012 -- claim_store's suffix-stripping regex diverges from strategy_store's and fails on dotted tickers
+- [x] AF20 -- #1014 -- noise_sensitivity gate's independent per-column price noise violates OHLC bar invariants
+- [x] AF18 -- #1012 -- claim_store's suffix-stripping regex diverges from strategy_store's and fails on dotted tickers
 - [ ] AF19 -- #1013 -- extract_ticker's single-letter regex now false-positives on the word F in prose
 - [ ] AF17 -- #1011 -- ForwardRecord() constructed inside loops leaks sqlite connections
 - [ ] AF14 -- #1008 -- dead code: RiskManager.record_daily_loss and _daily_loss_accrued are never called
@@ -132,6 +135,14 @@ PRs historically:
 
 ## Landed PRs
 
+- PR #1032 -- AF20 (self_dev generated, **auto-merged** -- independently re-verified by hand:
+  matched the issue exactly, including a new test proving the OHLC invariant fix; tests re-run
+  locally, genuinely correct).
+- PR #1033 -- AF18 (self_dev generated, hand-fixed -- delegated to `strategy_store.strip_expansion_suffix`,
+  but claim_store and strategy_store use genuinely different id delimiter conventions (no space vs
+  a required leading space) -- delegating broke every real claim_store id, confirmed by 2
+  pre-existing tests. Reverted the delegation; widened claim_store's own regex instead, handling
+  both delimiter shapes and the dotted-ticker case the issue was actually about).
 - PR #1017 -- AF9 (self_dev generated, hand-fixed: deduped a doubled field declaration and fixed
   a pre-existing test-double bug in `_FakeAlpacaClient` that hardcoded every fill's qty to 10
   regardless of what was actually ordered -- the production `AlpacaBrokerClient` change itself was
@@ -205,3 +216,4 @@ PRs historically:
   broker).
 - PR #1026 -- AF21 (auto-merged by self_dev_campaign)
 - PR #1027 -- AF10 (auto-merged by self_dev_campaign)
+- PR #1032 -- AF20 (auto-merged by self_dev_campaign)
