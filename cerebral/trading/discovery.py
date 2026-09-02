@@ -251,9 +251,13 @@ def extract_ticker(idea: Idea) -> Optional[str]:
     all-caps token is NOT assumed to be a ticker -- screen by default
     rather than guess."""
     text = f"{idea.claim_text or ''} {idea.page_title or ''}"
-    for match in re.finditer(r"\b[A-Z]{1,5}\b", text):
-        if match.group(0) in _KNOWN_TICKERS:
-            return match.group(0)
+    for match in re.finditer(r"\$?\b[A-Z]{2,5}\b", text):
+        symbol = match.group(0).lstrip("$")
+        if symbol in _KNOWN_TICKERS:
+            return symbol
+    for match in re.finditer(r"\$([A-Z])\b", text):
+        if match.group(1) in _KNOWN_TICKERS:
+            return match.group(1)
     return None
 
 

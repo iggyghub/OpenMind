@@ -221,6 +221,20 @@ def test_extract_ticker_does_not_guess_an_unknown_all_caps_word():
     assert extract_ticker(idea) is None
 
 
+def test_extract_ticker_falls_through_on_bare_single_letter_F():
+    """A standalone capital 'F' in prose (e.g. grade, variable, word start)
+    must NOT be mistaken for the Ford ticker. Only the cashtag `$F` counts."""
+    idea = Idea(claim_text="The student received an F on the test.")
+    assert extract_ticker(idea) is None
+
+
+def test_extract_ticker_handles_cashtag_F():
+    """Single-letter tickers should only match when explicitly prefixed
+    with a cashtag ($), matching the stricter signal requirement."""
+    idea = Idea(claim_text="Investors are buying $F ahead of earnings.")
+    assert extract_ticker(idea) == "F"
+
+
 # ── process_idea: ticker-specific path (decision #36) ────────────────────
 
 async def test_ticker_specific_idea_skips_the_judge_entirely(tmp_path):
