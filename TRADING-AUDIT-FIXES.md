@@ -31,15 +31,26 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF17 -- #1011
+- **Active:** AF15 -- #1009
 - **Model:** sonnet
 
-18 of 21 slices landed 2026-09-02 (details in Landed PRs). AF19 landed UNCHANGED -- diff matched
-the issue's own near-diff spec exactly (both regex loops, both new tests), full suite green
-locally (5517 passed, 7 skipped) after the campaign's own `tests_failed` verdict, confirmed as the
-known environmental sandbox flake (cut off mid-pytest-collection at 7%, same signature as prior
-occurrences this campaign). Cerebral was restarted before this slice (AF20/AF18 now live).
-Remaining: AF17, AF14, AF15 (3 slices).
+20 of 21 slices landed 2026-09-02 (details in Landed PRs). AF17 auto-merged cleanly; independently
+re-verified by hand -- the real fix (hoisting `ForwardRecord()` above the loop in
+`plugins/scheduler.py`) is correct, but the issue's second claimed site
+(`cerebral/trading_ideas.py`) was already correct before this PR (`record = ForwardRecord()` was
+never inside the loop there), so self_dev's change to that file is a harmless no-op refactor, not
+a real fix. AF14 landed UNCHANGED -- clean dead-code deletion matching the issue exactly, zero
+remaining references confirmed by grep, full suite green locally (5517 passed, 7 skipped) after
+the campaign's own `tests_failed` verdict, confirmed as the same known environmental sandbox flake
+seen on AF19/AF16/AF1 etc (cut off mid-pytest-collection at ~7%). **A real, unrelated finding this
+slice: the IPC `restart felix` command (`user_text_command` text match) has regressed to silently
+no-op'ing again** -- two attempts this session left the same pre-session PID alive for 55+ minutes
+despite `health.py` reporting healthy both times (a health check only proves *a* process answers,
+not that it's the *new* one -- verify via `Get-CimInstance Win32_Process`'s `CreationDate` on
+`cerebral.main`, not just a health ping). Worked around by killing the stale PID and invoking
+`scripts/launch-felix.ps1 -Restart -CerebralOnly` directly (confirmed via a fresh PID + a
+`cerebral.err.log` truncated to 0 lines) -- same known-good workaround as the 2026-08-28 incident,
+not yet root-caused. Remaining: AF15 (1 slice).
 
 ## Queue
 
@@ -75,8 +86,8 @@ a 5%/30% move.
 - [x] AF20 -- #1014 -- noise_sensitivity gate's independent per-column price noise violates OHLC bar invariants
 - [x] AF18 -- #1012 -- claim_store's suffix-stripping regex diverges from strategy_store's and fails on dotted tickers
 - [x] AF19 -- #1013 -- extract_ticker's single-letter regex now false-positives on the word F in prose
-- [ ] AF17 -- #1011 -- ForwardRecord() constructed inside loops leaks sqlite connections
-- [ ] AF14 -- #1008 -- dead code: RiskManager.record_daily_loss and _daily_loss_accrued are never called
+- [x] AF17 -- #1011 -- ForwardRecord() constructed inside loops leaks sqlite connections
+- [x] AF14 -- #1008 -- dead code: RiskManager.record_daily_loss and _daily_loss_accrued are never called
 - [ ] AF15 -- #1009 -- AlertDispatcher._history grows unbounded in a long-lived process
 
 ## What today's real data changed (2026-09-01 evening, 159 fills reviewed)
@@ -131,6 +142,16 @@ PRs historically:
 
 ## Landed PRs
 
+- PR #1036 -- AF14 (self_dev generated, landed UNCHANGED -- clean deletion of
+  `record_daily_loss`/`_daily_loss_accrued`, matched the issue exactly, zero remaining references
+  confirmed by grep. Campaign's own `tests_failed` verdict confirmed as the known environmental
+  sandbox flake -- full suite re-run locally clean, 5517 passed/7 skipped).
+- PR #1035 -- AF17 (self_dev generated, **auto-merged** -- independently re-verified by hand: the
+  real fix, hoisting `ForwardRecord()` above the loop in `plugins/scheduler.py`, is correct. The
+  issue's second claimed site, `cerebral/trading_ideas.py`, was already correct before this PR
+  (`record = ForwardRecord()` was never actually inside the loop there, confirmed via `git show`
+  on the pre-PR file) -- self_dev's change there is a harmless no-op refactor, not a regression.
+  Targeted tests re-run locally clean, 132 passed).
 - PR #1034 -- AF19 (self_dev generated, landed UNCHANGED -- diff matched the issue's own near-diff
   spec exactly: the two-loop regex split and both new tests. Campaign's own `tests_failed` verdict
   confirmed as the known environmental sandbox flake -- full suite re-run locally clean, 5517
@@ -217,3 +238,4 @@ PRs historically:
 - PR #1026 -- AF21 (auto-merged by self_dev_campaign)
 - PR #1027 -- AF10 (auto-merged by self_dev_campaign)
 - PR #1032 -- AF20 (auto-merged by self_dev_campaign)
+- PR #1035 -- AF17 (auto-merged by self_dev_campaign)
