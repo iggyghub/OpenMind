@@ -147,7 +147,8 @@ class DiscoveryWatchlist:
             # overflow slot without dropping the watchlist's own top entry
             # entirely, which would invert "watchlist entries first" rather
             # than just widening around the edges of it.
-            return existing[:limit - 1] + overflow[:1]
+            overflow_slots = max(1, limit // 3)
+            return existing[:limit - overflow_slots] + overflow[:overflow_slots]
         return universe[:limit]
 
     def close(self) -> None:

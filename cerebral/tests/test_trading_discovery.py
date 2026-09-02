@@ -185,6 +185,23 @@ def test_watchlist_prefilter_candidates_widening_slot_advances_as_overflow_gets_
     assert second[2] != newly_adopted
 
 
+def test_watchlist_prefilter_candidates_reserves_multiple_overflow_slots_at_limit_10(tmp_path):
+    """At limit=10, overflow_slots = max(1, 10 // 3) = 3.
+    Asserts that MORE than one never-seen known-liquid symbol appears in the result,
+    scaling the reservation width instead of hardcoding a single slot."""
+    from cerebral.trading.discovery import _KNOWN_TICKERS
+    wl = _watchlist(tmp_path)
+    # Seed watchlist to >= limit(10)
+    for sym in [f"DUMMY{i}" for i in range(10)]:
+        wl.upsert(sym)
+
+    candidates = wl.prefilter_candidates(_pattern_idea(), limit=10)
+
+    overflow_in_result = [c for c in candidates if c in _KNOWN_TICKERS]
+    assert len(overflow_in_result) > 1
+    assert len(overflow_in_result) == 3
+
+
 # ── extract_ticker ────────────────────────────────────────────────────────
 
 def test_extract_ticker_recognizes_a_known_symbol():
