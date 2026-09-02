@@ -31,13 +31,14 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF6 -- #1000
+- **Active:** AF16 -- #1010
 - **Model:** sonnet
 
-AF9, AF7, AF5 landed 2026-09-02 -- all three hand-fixed after `tests_failed`, none auto-merged as
-generated (details in Landed PRs). Every one so far has needed a hand-fix, same as this campaign's
-whole history -- keep hand-verifying, don't trust a green OR red sandbox verdict alone. Being run
-live/attended (the scheduled 1am unattended run never started at all, root cause not found).
+AF9, AF7, AF5, AF6 landed 2026-09-02 -- all four hand-fixed after `tests_failed`, none
+auto-merged as generated (details in Landed PRs). Every one so far has needed a hand-fix, same as
+this campaign's whole history -- keep hand-verifying, don't trust a green OR red sandbox verdict
+alone. Being run live/attended (the scheduled 1am unattended run never started at all, root cause
+not found).
 
 ## Queue
 
@@ -58,7 +59,7 @@ a 5%/30% move.
 - [x] AF9 -- #1003 -- AlpacaBrokerClient.list_positions ignores strategy_id, every strategy shares one position pool
 - [x] AF7 -- #1001 -- sandboxed strategy evaluation silently degrades to all-flat on numpy/pandas signal types
 - [x] AF5 -- #999 -- correlation risk gate computed on price levels instead of returns
-- [ ] AF6 -- #1000 -- correlation matrix rebuilt from scratch on every strategy open instead of once per dispatch pass
+- [x] AF6 -- #1000 -- correlation matrix rebuilt from scratch on every strategy open instead of once per dispatch pass
 - [ ] AF16 -- #1010 -- registration-time position sizing and the live risk cap read two different equity numbers
 - [ ] AF1 -- #995 -- TP/SL backstop compares live price against yesterday's bar close
 - [ ] AF3 -- #997 -- vs_random gauntlet gate is an off-by-one that always returns 0.0
@@ -142,3 +143,7 @@ PRs historically:
   generated, but the pre-existing `test_tick_blocks_high_correlation_open` test's fixture built
   two symbols correlated on price LEVEL trend, not actual returns -- rebuilt the fixture to
   construct genuinely return-correlated series; added a direct unit test for the fix itself).
+- PR #1020 -- AF6 (self_dev generated, hand-fixed: the production diff was correct but 15
+  pre-existing tests broke because `FakeScheduler`, a test double, didn't accept the new
+  `correlation_matrix` kwarg -- same class of gap as AF9/AF5. Also found and fixed a real
+  duplicate-fetch bug while verifying: the once-per-pass symbol list wasn't deduplicated).
