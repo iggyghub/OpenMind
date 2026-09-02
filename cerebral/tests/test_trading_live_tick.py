@@ -295,9 +295,15 @@ def test_tick_force_closes_a_long_on_a_take_profit_breach_overriding_the_signal(
     """The strategy's own signal still says LONG -- the backstop must win."""
     record = make_record(tmp_path, monkeypatch)
     broker = ScriptedPriceBroker([10.0])  # opens at 10
-    fetch = fixed_fetch(make_bars())  # last Close = 14.0, +40% -- past TAKE_PROFIT_PCT
+    fetch = fixed_fetch(make_bars())
 
     run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+    # AF1/#995: the backstop now reads the position's live current_price, not
+    # the bar close -- StubBrokerClient only updates current_price on a fill,
+    # so a real price move between ticks (this test's whole point) needs a
+    # direct nudge, the same way other tests here poke broker._positions
+    # directly to set up broker-side state a fill alone can't express.
+    broker._positions[("s1", "AAPL")].current_price = 14.0  # +40%, past TAKE_PROFIT_PCT
     result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
 
     assert result["status"] == "closed"
@@ -307,14 +313,11 @@ def test_tick_force_closes_a_long_on_a_take_profit_breach_overriding_the_signal(
 def test_tick_force_closes_a_long_on_a_stop_loss_breach(tmp_path, monkeypatch):
     record = make_record(tmp_path, monkeypatch)
     broker = ScriptedPriceBroker([10.0])  # opens at 10
-    dropped = pd.DataFrame(
-        {"Open": [10.0, 9.0], "High": [10.0, 9.0], "Low": [9.0, 8.5],
-         "Close": [10.0, 9.0], "Volume": [1000, 1000]},  # -10%, past STOP_LOSS_PCT
-        index=pd.date_range("2026-01-01", periods=2, freq="D"),
-    )
+    fetch = fixed_fetch(make_bars())
 
-    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fixed_fetch(make_bars(2)))
-    result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fixed_fetch(dropped))
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+    broker._positions[("s1", "AAPL")].current_price = 9.0  # -10%, past STOP_LOSS_PCT
+    result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
 
     assert result["status"] == "closed"
     assert result["side"] == "sell"
