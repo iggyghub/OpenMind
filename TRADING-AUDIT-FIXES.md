@@ -31,10 +31,10 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF8 -- #1002
+- **Active:** AF21 -- #1015
 - **Model:** sonnet
 
-AF9, AF7, AF5, AF6, AF16, AF1, AF3, AF2 landed 2026-09-02 (details in Landed PRs). Being run
+AF9, AF7, AF5, AF6, AF16, AF1, AF3, AF2, AF8 landed 2026-09-02 (details in Landed PRs). Being run
 live/attended (the scheduled 1am unattended run never started at all; separately, mid-campaign,
 live-reproduced what's probably the real cause -- the whole asyncio event loop can stall
 completely, CPU-idle, heartbeats included -- see project_trading_campaign memory, not yet
@@ -64,7 +64,7 @@ a 5%/30% move.
 - [x] AF1 -- #995 -- TP/SL backstop compares live price against yesterday's bar close
 - [x] AF3 -- #997 -- vs_random gauntlet gate is an off-by-one that always returns 0.0
 - [x] AF2 -- #996 -- Sharpe ratio annualized by ann_factor instead of sqrt(ann_factor)
-- [ ] AF8 -- #1002 -- rank_for_day_trading's $5 price floor drops the cheap tickers added for penny-stock coverage
+- [x] AF8 -- #1002 -- rank_for_day_trading's $5 price floor drops the cheap tickers added for penny-stock coverage
 - [ ] AF21 -- #1015 -- discovery only introduces one new known-liquid ticker per pass, badly throttling how fast new symbols enter the watchlist
 - [ ] AF10 -- #1004 -- StrategyLifecycle.update_live_fill is never called -- ramp stuck at 25%, live auto-retirement can never fire
 - [ ] AF11 -- #1005 -- no guard against trading on stale/frozen market data
@@ -167,3 +167,8 @@ PRs historically:
   recomputed "expected" Sharpe from a 99-return array while `run_gauntlet` itself only recovers 98
   via diff-based reconstruction, comparing against the wrong sample. Fixed to recompute from the
   same recovered returns the production code actually uses).
+- PR #1025 -- AF8 (self_dev generated, hand-fixed: the one-line default change (`min_price`
+  5.0 -> 1.0) was correct as generated. Broke a pre-existing test whose entire premise was the old
+  $5 floor -- fixed its fixture to a genuinely-below-the-new-floor price, and added a new test for
+  the actual positive case: a $1.50 liquid stock, representative of the real PARA/PLUG/etc tickers
+  this was silently dropping, now gets ranked).
