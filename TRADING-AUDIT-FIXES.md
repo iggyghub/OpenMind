@@ -31,14 +31,19 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF16 -- #1010
+- **Active:** AF1 -- #995
 - **Model:** sonnet
 
-AF9, AF7, AF5, AF6 landed 2026-09-02 -- all four hand-fixed after `tests_failed`, none
-auto-merged as generated (details in Landed PRs). Every one so far has needed a hand-fix, same as
-this campaign's whole history -- keep hand-verifying, don't trust a green OR red sandbox verdict
-alone. Being run live/attended (the scheduled 1am unattended run never started at all, root cause
-not found).
+AF9, AF7, AF5, AF6, AF16 landed 2026-09-02 (details in Landed PRs). AF16 was the first slice to
+land its generated diff UNCHANGED -- correctly took the issue's own permitted fallback (a FIXME
+comment, no code change) since `SchedulerPlugin` doesn't expose a broker reference inside
+`_run_gauntlet` without a larger refactor; `tests_failed` on a comment-only diff was confirmed the
+known environmental sandbox flake (104/104 + full suite green locally). Every other slice so far
+has needed a real hand-fix. Being run live/attended (the scheduled 1am unattended run never
+started at all; separately, mid-campaign, live-reproduced what's probably the real cause -- the
+whole asyncio event loop can stall completely, CPU-idle, heartbeats included, not just scheduler
+dispatch -- see project_trading_campaign memory for the full account, not yet root-caused to an
+exact call site, worth its own debugging session).
 
 ## Queue
 
@@ -60,7 +65,7 @@ a 5%/30% move.
 - [x] AF7 -- #1001 -- sandboxed strategy evaluation silently degrades to all-flat on numpy/pandas signal types
 - [x] AF5 -- #999 -- correlation risk gate computed on price levels instead of returns
 - [x] AF6 -- #1000 -- correlation matrix rebuilt from scratch on every strategy open instead of once per dispatch pass
-- [ ] AF16 -- #1010 -- registration-time position sizing and the live risk cap read two different equity numbers
+- [x] AF16 -- #1010 -- registration-time position sizing and the live risk cap read two different equity numbers
 - [ ] AF1 -- #995 -- TP/SL backstop compares live price against yesterday's bar close
 - [ ] AF3 -- #997 -- vs_random gauntlet gate is an off-by-one that always returns 0.0
 - [ ] AF2 -- #996 -- Sharpe ratio annualized by ann_factor instead of sqrt(ann_factor)
@@ -147,3 +152,7 @@ PRs historically:
   pre-existing tests broke because `FakeScheduler`, a test double, didn't accept the new
   `correlation_matrix` kwarg -- same class of gap as AF9/AF5. Also found and fixed a real
   duplicate-fetch bug while verifying: the once-per-pass symbol list wasn't deduplicated).
+- PR #1021 -- AF16 (self_dev generated, landed UNCHANGED -- correctly used the issue's own
+  permitted fallback, a FIXME comment documenting the drift rather than forcing a broker-reference
+  plumbing change `_run_gauntlet` doesn't have easy access to. `tests_failed` on a comment-only
+  diff confirmed the known environmental sandbox flake, not a real failure).
