@@ -31,21 +31,13 @@ send `tray/` to self_dev.
 
 ## Next slice -- start here
 
-- **Active:** AF12 -- #1006
+- **Active:** AF4 -- #998
 - **Model:** sonnet
 
-AF9, AF7, AF5, AF6, AF16, AF1, AF3, AF2, AF8, AF21, AF10, AF11 landed 2026-09-02 (details in
-Landed PRs). AF21 and AF10 auto-merged cleanly (first clean landings this campaign) -- both
-independently re-verified by hand anyway, genuinely correct. AF11 needed the most serious hand-fix
-so far: the generated stale-data guard fired unconditionally BEFORE the position lookup, blocking
-CLOSES too, not just opens, directly contradicting the issue's own explicit requirement -- broke
-33 of 75 tests. Moved to fire opens-only (mirroring every other opens-only gate's placement in the
-same function); also had to fix three test fixtures across two files that hardcoded a fixed past
-date, now permanently "stale" by definition once a real staleness check existed. Being run
-live/attended (the scheduled 1am unattended run never started at all; separately, mid-campaign,
-live-reproduced what's probably the real cause -- the whole asyncio event loop can stall
-completely, CPU-idle, heartbeats included -- see project_trading_campaign memory, not yet
-root-caused to an exact call site).
+13 of 21 slices landed 2026-09-02 (details in Landed PRs). Being run live/attended (the scheduled
+1am unattended run never started at all; separately, mid-campaign, live-reproduced what's probably
+the real cause -- the whole asyncio event loop can stall completely, CPU-idle, heartbeats included
+-- see project_trading_campaign memory, not yet root-caused to an exact call site).
 
 ## Queue
 
@@ -75,7 +67,7 @@ a 5%/30% move.
 - [x] AF21 -- #1015 -- discovery only introduces one new known-liquid ticker per pass, badly throttling how fast new symbols enter the watchlist
 - [x] AF10 -- #1004 -- StrategyLifecycle.update_live_fill is never called -- ramp stuck at 25%, live auto-retirement can never fire
 - [x] AF11 -- #1005 -- no guard against trading on stale/frozen market data
-- [ ] AF12 -- #1006 -- expectancy/confidence math counts opening fills as real trades, live distinct-days not phase-filtered
+- [x] AF12 -- #1006 -- expectancy/confidence math counts opening fills as real trades, live distinct-days not phase-filtered
 - [ ] AF4 -- #998 -- capacity_liquidity gauntlet gate fed a hardcoded position_sizes=1.0 instead of the real registered qty
 - [ ] AF13 -- #1007 -- fractional-short guard is checked before the confidence-weight multiplier is applied
 - [ ] AF20 -- #1014 -- noise_sensitivity gate's independent per-column price noise violates OHLC bar invariants
@@ -192,5 +184,10 @@ PRs historically:
   (`make_bars`, `_make_correlated_bars`, scheduler's `_bars`) that hardcoded a fixed past date --
   harmless until a real staleness check existed, at which point every default-fixture test looked
   permanently stale. Anchored all three to end at `date.today()` instead).
+- PR #1029 -- AF12 (self_dev generated, hand-fixed: the production diff matched the near-diff spec
+  exactly. Broke 6 tests whose pnl fixtures (`i * 5.0`, `i - 15.0`, etc.) landed one fill exactly
+  on 0.0 -- now silently excluded as an "opening fill", shifting n/mean. Shifted each formula off
+  zero; one test needed a real value change since ALL its "paper" fills were deliberately pnl=0.0,
+  collapsing to 0 paper trades once excluded).
 - PR #1026 -- AF21 (auto-merged by self_dev_campaign)
 - PR #1027 -- AF10 (auto-merged by self_dev_campaign)
