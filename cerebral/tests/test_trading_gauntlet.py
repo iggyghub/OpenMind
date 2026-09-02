@@ -172,6 +172,23 @@ class TestFailsEachGate:
         assert card.gates[0].passed is False
         assert card.verdict == "UNVALIDATED"
 
+    def test_vs_random_benchmark_is_not_always_exactly_zero(self):
+        """#997: the random-entry benchmark used to be an off-by-one that
+        compared each simulated entry bar's price to itself
+        (iloc[end-1]/iloc[e] where end==e+1 at the default holding_period=1),
+        so p95_random was always exactly 0.0 regardless of the real price
+        series -- the vs_random gate silently degenerated to "don't lose
+        money" instead of "beat a random entry at p95". On a genuinely
+        trending price series, the real p95 must be a real (here, positive)
+        number, not exactly 0.0."""
+        card = run_gauntlet(
+            lambda p, pr: ([100.0] * len(p), {"sharpe": 0, "total_return": 0}),
+            make_prices(), make_params(), make_benchmark_prices(), make_positions(), seed=42,
+        )
+        vs_random_gate = card.gates[1]
+        assert vs_random_gate.name == "vs_random"
+        assert vs_random_gate.threshold != 0.0
+
     def test_fails_vs_random(self):
         card = run_gauntlet(
             make_failing_backtest, make_prices(), make_params(), make_benchmark_prices(), make_positions(), seed=42
@@ -227,9 +244,22 @@ class TestFailsEachGate:
 
 class TestConfigurableThresholds:
     def test_all_thresholds_configurable(self):
-        # With loose threshold, constant returns should pass MC
+        # With a loose p_value_threshold, a genuinely growing equity curve
+        # should pass MC. A perfectly FLAT curve (the original fixture here)
+        # can no longer validate post-#997 -- vs_random's p95 benchmark is a
+        # real number now (make_prices' own positive drift), not the
+        # pre-fix bug's always-0.0, and 0% return can never beat a real
+        # positive benchmark. Real growth clearly ahead of make_prices'
+        # ~0.0005/day drift keeps this test about threshold configurability,
+        # not accidentally re-testing vs_random itself.
+        # parameter_sensitivity compares this real curve's profitability
+        # (True) against each perturbed call's declared metrics -- this
+        # lambda ignores its params argument entirely (deliberately, it's a
+        # fixed backtest for testing threshold plumbing, not parameter
+        # response), so its metrics must say "profitable" too or every
+        # perturbation reads as a false "flipped to losing".
         card = run_gauntlet(
-            lambda p, pr: ([100.0] * len(p), {"sharpe": 0, "total_return": 0}),
+            lambda p, pr: ([100.0 * (1.002 ** i) for i in range(len(p))], {"sharpe": 0, "total_return": 0.5}),
             make_prices(),
             make_params(),
             make_benchmark_prices(),
