@@ -57,17 +57,24 @@ page-killing SyntaxError that the Node test suite cannot catch.
 
 ## Next slice -- start here
 
-- **Active:** HELP1 -- #1045 (RESCOPED -- PR #1053 landed only the CSS + router entry; the
-  nav button, pane markup and tab handler are still missing. Issue body updated to match.)
+- **Active:** HELP2 -- #1046
 - **Model:** sonnet
 
-Fresh campaign, nothing landed yet.
+HELP1 landed 2026-09-03 (PR #1058, on top of the partial #1053). self_dev's edit step twice
+failed to complete this slice cleanly -- first attempt (#1053) did 1 of 4 edits, second
+attempt (#1058) did 1 of 3 but malformed it (split the Log button's opening tag in half).
+Both times the sandbox test gate (pytest-only, no jest) passed the PR through anyway. Hand-
+finished #1058: fixed the broken nav markup, added the missing pane and click handler, added
+the 7th-nav-item case to render-smoke.test.js, verified 30/30 suites locally AND by clicking
+through Guide/Capabilities in a live-served copy of main.html before merging. See "Slices
+must be small" below -- HELP4 as originally scoped has six main.html edits in one slice and
+will need the same splitting treatment before it's fired.
 
 ## Queue
 
 Strict chain: each slice adds the thing the next one calls. Do not skip ahead.
 
-- [ ] HELP1 -- #1045 -- `help` route + nav button + empty pane shell with its own tab prefix
+- [x] HELP1 -- #1045 -- `help` route + nav button + empty pane shell with its own tab prefix
 - [ ] HELP2 -- #1046 -- `tray/lib/help-panel.js` pure render/search functions + jest tests
 - [ ] HELP3 -- #1047 -- `tray/lib/help-content.js` -- encyclopedia topics 1-9 + the authoring header
 - [ ] HELP4 -- #1048 -- wire the Guide sub-tab into main.html; federated-search provider
@@ -77,7 +84,10 @@ Strict chain: each slice adds the thing the next one calls. Do not skip ahead.
 
 ## Landed PRs
 
-(none yet)
+- PR #1053 -- HELP1 partial (CSS + router entry only; auto-merged by self_dev_campaign
+  despite being incomplete -- pytest-only sandbox gate couldn't see the missing JS/HTML)
+- PR #1058 -- HELP1 completed (nav button, pane, click handler; self_dev's edit malformed
+  the nav markup, hand-fixed before merge)
 
 ## Design summary (hand-review context, not part of any single issue)
 
