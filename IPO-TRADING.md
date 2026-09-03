@@ -28,7 +28,7 @@ on all five of the others already being on master (it imports from `ipo_strategy
 
 ## Next slice -- start here
 
-- **Active:** IPO3 -- #1040
+- **Active:** IPO4 -- #1041
 - **Model:** sonnet
 
 IPO1 (PR #1044) and IPO2 (cherry-picked to master directly as commit 91b7985, original
@@ -45,7 +45,10 @@ was run without checking `git status`/stashing first, discarding a small uncommi
 edit to HELP.md that was never committed anywhere (unrecoverable via reflog).** Likely a minor
 Felix wording tweak, not large, but a real process violation worth remembering: always
 `git status` before any reset when this repo's working directory might have someone else's
-concurrent uncommitted work in it. Remaining: IPO3, IPO4, IPO5, IPO6 (4 slices).
+concurrent uncommitted work in it. IPO3 (PR #1054) also auto-merged, needed a hand-added test
+(the issue's own test requirement was skipped) and hit a second, smaller instance of the same
+contamination risk (a stray line appeared mid-edit in a shared test file, caught before
+committing). Remaining: IPO4, IPO5, IPO6 (3 slices).
 
 ## Queue
 
@@ -54,7 +57,7 @@ Ordered by dependency chain, not severity (unlike TRADING-AUDIT-FIXES.md's queue
 
 - [x] IPO1 -- #1038 -- StrategySpec gains a nullable risk_override_pct column (strategy_store.py)
 - [x] IPO2 -- #1039 -- RiskManager.check_order honors a per-call risk-pct override (risk_limits.py)
-- [ ] IPO3 -- #1040 -- live_tick.py threads spec.risk_override_pct into check_order
+- [x] IPO3 -- #1040 -- live_tick.py threads spec.risk_override_pct into check_order
 - [ ] IPO4 -- #1041 -- hand-written IPO pop-then-fade strategy code (new ipo_strategy.py)
 - [ ] IPO5 -- #1042 -- free IPO-calendar fetcher, no API key (new ipo_calendar.py)
 - [ ] IPO6 -- #1043 -- wire it all together: weekly calendar refresh + per-tick dispatch (scheduler.py + main.py)
@@ -104,3 +107,13 @@ rest of the Trading panel's activity already uses, not a new alert path.
   proactively also fixed `list_all()` to include the new field. Campaign's own `tests_failed`
   verdict confirmed as the known environmental sandbox flake -- full suite re-run locally
   clean modulo one unrelated flaky openclaw-CLI test, 5518 passed/7 skipped).
+- PR #1054 -- IPO3 (self_dev generated, **auto-merged** -- independently re-verified by hand:
+  the one-line production fix (threading `spec.risk_override_pct` into `check_order`) was
+  correct as generated, but its own new test was skipped entirely despite the issue explicitly
+  asking for one. Added two tests by hand (commit c5716b3): an override allows a trade the
+  tight global cap alone would block, and the `None` default still uses the global cap
+  unchanged. Full `test_trading_live_tick.py` re-run locally clean, 78 passed. **Also hit a
+  second instance of the shared-working-directory contamination**: while hand-editing this
+  test file, a line I never wrote (`assert len(broker._orders) == 1`, logically wrong for a
+  blocked-order test) appeared mid-edit -- almost certainly Felix's own concurrent process
+  touching the same file. Caught and corrected before committing.)
