@@ -28,15 +28,24 @@ on all five of the others already being on master (it imports from `ipo_strategy
 
 ## Next slice -- start here
 
-- **Active:** IPO2 -- #1039
+- **Active:** IPO3 -- #1040
 - **Model:** sonnet
 
-IPO1 landed clean 2026-09-02 as PR #1044 -- diff matched the issue exactly (and proactively
-fixed `list_all()` too, a spot the issue didn't explicitly call out but should have). Campaign's
-own `tests_failed` verdict was the known environmental sandbox flake. Full local suite run
-caught one unrelated flaky test (`test_default_run_cli_invokes_real_openclaw_web_search`,
-passes clean in isolation -- an openclaw-CLI subprocess timing flake under full-suite load, not
-a real regression from this diff). Remaining: IPO2, IPO3, IPO4, IPO5, IPO6 (5 slices).
+IPO1 (PR #1044) and IPO2 (cherry-picked to master directly as commit 91b7985, original
+PR #1052 closed unmerged) both landed clean. **Real incident found and worked around on IPO2:**
+this repo's shared local working directory (`C:\OpenMind`) is used concurrently by Felix's own
+autonomous self_dev loop, which was running an entirely separate "Help tab" campaign
+(`HELP.md`, issues #1045-1051) AT THE SAME TIME as this campaign, committing directly onto the
+same local `master` branch self_dev_campaign's sandbox clones branch from. IPO2's PR (#1052)
+came back with an unrelated `HELP.md` file bundled into its diff as a result. Content was
+byte-identical to what later legitimately landed on origin/master via Felix's own PR (#1053),
+so no real conflict -- fixed by resetting local master to origin's state and cherry-picking only
+the real IPO2 commit on top. **One real mistake made recovering from this: a `git reset --hard`
+was run without checking `git status`/stashing first, discarding a small uncommitted in-progress
+edit to HELP.md that was never committed anywhere (unrecoverable via reflog).** Likely a minor
+Felix wording tweak, not large, but a real process violation worth remembering: always
+`git status` before any reset when this repo's working directory might have someone else's
+concurrent uncommitted work in it. Remaining: IPO3, IPO4, IPO5, IPO6 (4 slices).
 
 ## Queue
 
@@ -44,7 +53,7 @@ Ordered by dependency chain, not severity (unlike TRADING-AUDIT-FIXES.md's queue
 "Ordering matters" above.
 
 - [x] IPO1 -- #1038 -- StrategySpec gains a nullable risk_override_pct column (strategy_store.py)
-- [ ] IPO2 -- #1039 -- RiskManager.check_order honors a per-call risk-pct override (risk_limits.py)
+- [x] IPO2 -- #1039 -- RiskManager.check_order honors a per-call risk-pct override (risk_limits.py)
 - [ ] IPO3 -- #1040 -- live_tick.py threads spec.risk_override_pct into check_order
 - [ ] IPO4 -- #1041 -- hand-written IPO pop-then-fade strategy code (new ipo_strategy.py)
 - [ ] IPO5 -- #1042 -- free IPO-calendar fetcher, no API key (new ipo_calendar.py)
@@ -86,6 +95,11 @@ rest of the Trading panel's activity already uses, not a new alert path.
 
 ## Landed PRs
 
+- Commit 91b7985 -- IPO2 (self_dev generated via PR #1052, landed UNCHANGED but merged by
+  direct cherry-pick to master instead of `gh pr merge` -- the PR's branch had an unrelated
+  `HELP.md` file bundled in from Felix's own concurrent autonomous campaign sharing this same
+  local working directory. The actual self_dev commit (risk_limits.py + test) matched the
+  issue exactly on its own; PR #1052 closed unmerged with an explanatory comment).
 - PR #1044 -- IPO1 (self_dev generated, landed UNCHANGED -- diff matched the issue exactly,
   proactively also fixed `list_all()` to include the new field. Campaign's own `tests_failed`
   verdict confirmed as the known environmental sandbox flake -- full suite re-run locally
