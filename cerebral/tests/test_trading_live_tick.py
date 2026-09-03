@@ -832,7 +832,37 @@ def test_tick_allows_a_within_limit_order_with_risk_gate(tmp_path, monkeypatch):
     result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
 
     assert result["status"] == "opened"
-    assert len(broker._orders) == 1
+
+
+# ── IPO3 (#1040): spec.risk_override_pct threaded into check_order ────────
+
+def test_tick_uses_spec_risk_override_pct_to_allow_a_trade_the_global_cap_blocks(tmp_path, monkeypatch):
+    """A strategy's own risk_override_pct must reach RiskManager.check_order
+    as max_per_trade_risk_pct_override -- a trade the tight global 2% cap
+    alone would block must be allowed once the spec's 25% override applies."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()  # equity 10000
+    risk = RiskManager(RiskConfig(max_per_trade_risk_pct=2.0))  # 2% cap = 200
+    # qty=150 * last close 14.0 = 2100 -- over the 2% cap (200), under 25% (2500)
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=150.0, risk_override_pct=25.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result["status"] == "opened"
+
+
+def test_tick_without_risk_override_pct_still_uses_the_global_cap(tmp_path, monkeypatch):
+    """The default risk_override_pct=None must not change today's behavior --
+    the same trade as above, without an override, still hits the global cap."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager(RiskConfig(max_per_trade_risk_pct=2.0))
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=150.0)  # risk_override_pct defaults to None
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result == {"status": "blocked", "blocked_by": "per_trade_risk"}
+    assert broker._orders == {}
 
 
 def test_tick_daily_loss_halt_reads_real_accrued_pnl_not_a_fabricated_zero(tmp_path, monkeypatch):
