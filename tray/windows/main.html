@@ -5387,8 +5387,8 @@
       <button class="nav-item" data-route="harness"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"/></svg></span><span class="nav-label">Harness</span></button>
       <button class="nav-item" data-route="library"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="16" width="18" height="4" rx="1"/></svg></span><span class="nav-label">Library</span></button>
       <button class="nav-item" data-route="trading"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/></svg></span><span class="nav-label">Trading</span></button>
-      <button class="nav-item" data-route="log">
-    <button class="nav-item" data-route="help"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12" y2="17"/></svg></span><span class="nav-label">Help</span></button><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/></svg></span><span class="nav-label">Log</span></button>
+      <button class="nav-item" data-route="log"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/></svg></span><span class="nav-label">Log</span></button>
+      <button class="nav-item" data-route="help"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12" y2="17"/></svg></span><span class="nav-label">Help</span></button>
       <button class="nav-item" data-route="settings"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span><span class="nav-label">Settings</span></button>
     </nav>
   </aside>
@@ -6530,6 +6530,22 @@
 
       <div class="trd-panel" data-trd-panel="trades" hidden>
         <div id="trading-log-mount"></div>
+      </div>
+    </section>
+
+    <!-- Help pane (HELP campaign, #1045). Own help-tab/help-sub class prefix on
+         purpose: the Library pane's tab code queries .lib-tab/.lib-sub globally
+         across the document, so reusing those names here would break it. -->
+    <section class="pane" data-route="help" hidden>
+      <div class="help-tabs" id="help-tabs">
+        <button class="help-tab is-active" data-help-tab="guide" type="button">Guide</button>
+        <button class="help-tab" data-help-tab="capabilities" type="button">Capabilities</button>
+      </div>
+      <div class="help-sub is-active" data-help-tab="guide">
+        <div class="ps-empty" id="help-guide-empty">Help content loads here.</div>
+      </div>
+      <div class="help-sub" data-help-tab="capabilities">
+        <div class="ps-empty" id="help-caps-empty">Capability index loads here.</div>
       </div>
     </section>
 
@@ -12483,6 +12499,24 @@
         window.TradingPanelMod.renderOverviewPanel(lastTradingUpdateData, null, sendEvent);
       }
     }
+
+    // HELP campaign (#1045) -- Help pane sub-tab activation. Scoped to the Help
+    // pane so it cannot collide with the Library pane's global .lib-tab queries.
+    function helpActivateSub(sub) {
+      const target = sub === 'capabilities' ? 'capabilities' : 'guide';
+      const pane = document.querySelector('.pane[data-route="help"]');
+      if (!pane) return;
+      pane.querySelectorAll('.help-tab').forEach(function (btn) {
+        btn.classList.toggle('is-active', btn.dataset.helpTab === target);
+      });
+      pane.querySelectorAll('.help-sub').forEach(function (el) {
+        el.classList.toggle('is-active', el.dataset.helpTab === target);
+      });
+    }
+    document.addEventListener('click', function (e) {
+      const btn = e.target.closest('.help-tab');
+      if (btn) helpActivateSub(btn.dataset.helpTab);
+    });
 
     // Settings sub-tab activation (General / AI models). Mirrors libActivateSub.
     function settingsActivateSub(sub) {

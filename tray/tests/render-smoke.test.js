@@ -34,8 +34,10 @@ const PANE_ROUTES = [
   'trading',
   // S26 (#879) -- the Activity Log
   'log',
+  // HELP campaign (#1045) -- Felix's in-app encyclopedia
+  'help',
 ];
-const NAV_ROUTES = ['conversation', 'harness', 'library', 'trading', 'log', 'settings'];
+const NAV_ROUTES = ['conversation', 'harness', 'library', 'trading', 'log', 'help', 'settings'];
 
 // Legacy alias kept for tests that loop over "routes that need panes".
 const SMOKE_ROUTES = PANE_ROUTES;
@@ -69,12 +71,12 @@ test('every expected pane element exists', () => {
 // ── Nav items (S5: 4 sections; Trading added as a 5th, #864 follow-up;
 //    Log added as a 6th, S26/#879) ────────────────────────────────────────
 
-test('nav has exactly 6 top-level sections (S5 + Trading + Log)', () => {
+test('nav has exactly 7 top-level sections (S5 + Trading + Log + Help)', () => {
   const navItems = root.querySelectorAll('.nav-item');
-  expect(navItems.length).toBe(6);
+  expect(navItems.length).toBe(7);
 });
 
-test('every expected nav item exists (S5: 4 sections + Trading + Log)', () => {
+test('every expected nav item exists (S5: 4 sections + Trading + Log + Help)', () => {
   for (const route of NAV_ROUTES) {
     const nav = root.querySelector(`.nav-item[data-route="${route}"]`);
     expect(nav).not.toBeNull();
