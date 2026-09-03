@@ -34,6 +34,13 @@ The only real check is:
 
 Do all three on every slice before merging. Do not trust `tests_passed` here.
 
+**Slices must be small, and must not ask for several edits to `main.html` at once.**
+The first HELP1 attempt (PR #1053) was told to make four changes to `main.html` and landed
+only one of them -- the small self-contained CSS block -- then auto-merged anyway and broke
+the jest suite. `main.html` is ~13k lines; an edit step that has to find four separate
+anchors in it will quietly do the easiest one. Give exact search anchors ("insert after the
+line containing X") and keep each slice to one or two insertions.
+
 **Trap self_dev will otherwise walk into:** `.lib-tab` / `.lib-sub` are queried *globally*
 by the renderer's Library code (see the comment at `tray/windows/main.html:4452`). The Help
 pane must use its own `help-tab` / `help-sub` class prefix, exactly like Trading's
@@ -50,7 +57,8 @@ page-killing SyntaxError that the Node test suite cannot catch.
 
 ## Next slice -- start here
 
-- **Active:** HELP1 -- #1045
+- **Active:** HELP1 -- #1045 (RESCOPED -- PR #1053 landed only the CSS + router entry; the
+  nav button, pane markup and tab handler are still missing. Issue body updated to match.)
 - **Model:** sonnet
 
 Fresh campaign, nothing landed yet.
