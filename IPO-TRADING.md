@@ -28,17 +28,22 @@ on all five of the others already being on master (it imports from `ipo_strategy
 
 ## Next slice -- start here
 
-- **Active:** IPO1 -- #1038
+- **Active:** IPO2 -- #1039
 - **Model:** sonnet
 
-Fresh campaign, nothing landed yet.
+IPO1 landed clean 2026-09-02 as PR #1044 -- diff matched the issue exactly (and proactively
+fixed `list_all()` too, a spot the issue didn't explicitly call out but should have). Campaign's
+own `tests_failed` verdict was the known environmental sandbox flake. Full local suite run
+caught one unrelated flaky test (`test_default_run_cli_invokes_real_openclaw_web_search`,
+passes clean in isolation -- an openclaw-CLI subprocess timing flake under full-suite load, not
+a real regression from this diff). Remaining: IPO2, IPO3, IPO4, IPO5, IPO6 (5 slices).
 
 ## Queue
 
 Ordered by dependency chain, not severity (unlike TRADING-AUDIT-FIXES.md's queue) -- see
 "Ordering matters" above.
 
-- [ ] IPO1 -- #1038 -- StrategySpec gains a nullable risk_override_pct column (strategy_store.py)
+- [x] IPO1 -- #1038 -- StrategySpec gains a nullable risk_override_pct column (strategy_store.py)
 - [ ] IPO2 -- #1039 -- RiskManager.check_order honors a per-call risk-pct override (risk_limits.py)
 - [ ] IPO3 -- #1040 -- live_tick.py threads spec.risk_override_pct into check_order
 - [ ] IPO4 -- #1041 -- hand-written IPO pop-then-fade strategy code (new ipo_strategy.py)
@@ -81,4 +86,7 @@ rest of the Trading panel's activity already uses, not a new alert path.
 
 ## Landed PRs
 
-(none yet)
+- PR #1044 -- IPO1 (self_dev generated, landed UNCHANGED -- diff matched the issue exactly,
+  proactively also fixed `list_all()` to include the new field. Campaign's own `tests_failed`
+  verdict confirmed as the known environmental sandbox flake -- full suite re-run locally
+  clean modulo one unrelated flaky openclaw-CLI test, 5518 passed/7 skipped).
