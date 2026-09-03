@@ -57,6 +57,7 @@ class StrategySpec:
     code: str
     qty: float = 1.0
     interval: str = "1d"
+    risk_override_pct: Optional[float] = None
 
 
 class StrategyStore:
@@ -73,6 +74,7 @@ class StrategyStore:
                 code        TEXT NOT NULL,
                 qty         REAL NOT NULL DEFAULT 1.0,
                 interval    TEXT NOT NULL DEFAULT '1d',
+                risk_override_pct REAL,
                 created_at  TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS strategy_versions (
@@ -93,6 +95,13 @@ class StrategyStore:
         # Migration: add interval column if table exists but lacks it
         try:
             self._con.execute("ALTER TABLE strategy_specs ADD COLUMN interval TEXT NOT NULL DEFAULT '1d'")
+            self._con.commit()
+        except OperationalError:
+            pass  # Column already exists
+
+        # Migration: add risk_override_pct column if table exists but lacks it
+        try:
+            self._con.execute("ALTER TABLE strategy_specs ADD COLUMN risk_override_pct REAL")
             self._con.commit()
         except OperationalError:
             pass  # Column already exists
@@ -140,8 +149,8 @@ class StrategyStore:
         )
         self._con.execute(
             "INSERT OR REPLACE INTO strategy_specs "
-            "(strategy_id, symbol, code, qty, interval, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (spec.strategy_id, spec.symbol, spec.code, float(spec.qty), spec.interval, ts),
+            "(strategy_id, symbol, code, qty, interval, risk_override_pct, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (spec.strategy_id, spec.symbol, spec.code, float(spec.qty), spec.interval, spec.risk_override_pct, ts),
         )
         self._con.commit()
 
@@ -188,6 +197,7 @@ class StrategyStore:
         return StrategySpec(
             strategy_id=row["strategy_id"], symbol=row["symbol"],
             code=row["code"], qty=row["qty"], interval=row["interval"],
+            risk_override_pct=row["risk_override_pct"],
         )
 
     def list_all(self) -> List[StrategySpec]:
@@ -196,7 +206,8 @@ class StrategyStore:
         ).fetchall()
         return [
             StrategySpec(strategy_id=r["strategy_id"], symbol=r["symbol"],
-                         code=r["code"], qty=r["qty"], interval=r["interval"])
+                         code=r["code"], qty=r["qty"], interval=r["interval"],
+                         risk_override_pct=r["risk_override_pct"])
             for r in rows
         ]
 

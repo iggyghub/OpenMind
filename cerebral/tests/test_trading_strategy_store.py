@@ -290,3 +290,23 @@ def test_migration_is_idempotent_across_restarts(tmp_path):
         "SELECT sql FROM sqlite_master WHERE name='strategy_versions'"
     ).fetchone()[0]
     assert "CHECK" not in ddl
+
+
+def test_risk_override_pct_round_trip(tmp_path):
+    """IPO1: `risk_override_pct` should round-trip through save/get correctly.
+    A non-None value should be preserved, and a None value should remain None."""
+    store = _store(tmp_path)
+    
+    # Save with explicit 25.0
+    spec_override = StrategySpec("s_override", "AAPL", "def strategy(data): return [0]", risk_override_pct=25.0)
+    store.save(spec_override)
+    fetched_override = store.get("s_override")
+    assert fetched_override is not None
+    assert fetched_override.risk_override_pct == 25.0
+    
+    # Save with default None
+    spec_default = StrategySpec("s_default", "TSLA", "def strategy(data): return [1]")
+    store.save(spec_default)
+    fetched_default = store.get("s_default")
+    assert fetched_default is not None
+    assert fetched_default.risk_override_pct is None
