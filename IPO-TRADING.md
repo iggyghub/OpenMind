@@ -24,12 +24,11 @@ piece the next one calls) -- don't skip ahead if an earlier one in that chain fa
 on all five of the others already being on master (it imports from `ipo_strategy.py`/
 `ipo_calendar.py` and calls the `StrategySpec.risk_override_pct` field IPO1-3 add).
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** IPO4 -- #1041
-- **Model:** sonnet
+- **Active:** none -- queue fully landed 2026-09-03
 
 IPO1 (PR #1044) and IPO2 (cherry-picked to master directly as commit 91b7985, original
 PR #1052 closed unmerged) both landed clean. **Real incident found and worked around on IPO2:**
@@ -48,7 +47,20 @@ Felix wording tweak, not large, but a real process violation worth remembering: 
 concurrent uncommitted work in it. IPO3 (PR #1054) also auto-merged, needed a hand-added test
 (the issue's own test requirement was skipped) and hit a second, smaller instance of the same
 contamination risk (a stray line appeared mid-edit in a shared test file, caught before
-committing). Remaining: IPO4, IPO5, IPO6 (3 slices).
+committing). IPO4 and IPO5 both auto-merged clean, independently re-verified byte-for-byte
+against the issue specs. **IPO6 needed the most substantial hand-fix of the whole campaign**:
+self_dev's PR (#1057) registered `check_ipo_calendar`/`dispatch_due_ipos` as tools and wired
+them into `call_tool`, but never actually defined either method (a real call would have raised
+`AttributeError`), and `main.py`'s loop wiring was left as a commented-out NOTE block instead
+of real code -- the whole feature would never have run. Hand-implemented both methods and the
+real loop wiring per the issue's own spec, plus fixed a gap in the issue itself (a missing
+`ipo_tracked` settings key -- `SettingsStore.set()` validates against an allowlist) and two
+exhaustive snapshot tests that broke as a result. Full suite green, 5537 passed/7 skipped.
+All 6 of 6 IPO slices landed 2026-09-03.
+
+**Still needed before this is live: the one-time operational validation step** (see Design
+summary below) -- IPO4's code has its own unit tests but hasn't been run through the real
+Gauntlet against real historical IPO data yet.
 
 ## Queue
 
@@ -58,9 +70,9 @@ Ordered by dependency chain, not severity (unlike TRADING-AUDIT-FIXES.md's queue
 - [x] IPO1 -- #1038 -- StrategySpec gains a nullable risk_override_pct column (strategy_store.py)
 - [x] IPO2 -- #1039 -- RiskManager.check_order honors a per-call risk-pct override (risk_limits.py)
 - [x] IPO3 -- #1040 -- live_tick.py threads spec.risk_override_pct into check_order
-- [ ] IPO4 -- #1041 -- hand-written IPO pop-then-fade strategy code (new ipo_strategy.py)
-- [ ] IPO5 -- #1042 -- free IPO-calendar fetcher, no API key (new ipo_calendar.py)
-- [ ] IPO6 -- #1043 -- wire it all together: weekly calendar refresh + per-tick dispatch (scheduler.py + main.py)
+- [x] IPO4 -- #1041 -- hand-written IPO pop-then-fade strategy code (new ipo_strategy.py)
+- [x] IPO5 -- #1042 -- free IPO-calendar fetcher, no API key (new ipo_calendar.py)
+- [x] IPO6 -- #1043 -- wire it all together: weekly calendar refresh + per-tick dispatch (scheduler.py + main.py)
 
 ## Design summary (for hand-review context, not part of any single issue)
 
@@ -98,6 +110,20 @@ rest of the Trading panel's activity already uses, not a new alert path.
 
 ## Landed PRs
 
+- PR #1057 -- IPO6 (self_dev generated, hand-fixed -- the most substantial hand-fix of the
+  campaign: the diff registered both new tools in `list_tools()`/`call_tool` but never defined
+  `_check_ipo_calendar`/`_dispatch_due_ipos` themselves (a real call would `AttributeError`),
+  and `main.py`'s loop wiring was left as a commented-out NOTE block, not real code -- the
+  whole feature would never have run. Hand-implemented both methods and the real loop wiring
+  per the issue's own spec. Also fixed a gap in the issue itself: a missing `ipo_tracked`
+  settings key -- `SettingsStore.set()` validates against an allowlist the issue didn't
+  account for -- and two exhaustive snapshot tests (`test_settings.py`, `test_plugins_time_
+  notes.py`) that broke as a result. Full suite re-run locally clean, 5537 passed/7 skipped).
+- PR #1056 -- IPO5 (self_dev generated, **auto-merged** -- independently re-verified byte-for-
+  byte against the issue's exact spec; tests re-run locally, genuinely correct).
+- PR #1055 -- IPO4 (self_dev generated, **auto-merged** -- independently re-verified byte-for-
+  byte against the issue's exact spec (the hand-written strategy code and its 3 tests); tests
+  re-run locally, genuinely correct).
 - Commit 91b7985 -- IPO2 (self_dev generated via PR #1052, landed UNCHANGED but merged by
   direct cherry-pick to master instead of `gh pr merge` -- the PR's branch had an unrelated
   `HELP.md` file bundled in from Felix's own concurrent autonomous campaign sharing this same
@@ -117,3 +143,5 @@ rest of the Trading panel's activity already uses, not a new alert path.
   test file, a line I never wrote (`assert len(broker._orders) == 1`, logically wrong for a
   blocked-order test) appeared mid-edit -- almost certainly Felix's own concurrent process
   touching the same file. Caught and corrected before committing.)
+- PR #1055 -- IPO4 (auto-merged by self_dev_campaign)
+- PR #1056 -- IPO5 (auto-merged by self_dev_campaign)
