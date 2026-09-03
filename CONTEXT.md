@@ -191,6 +191,8 @@ PWA serving from Cerebral (a local HTTP server + service-worker shell) is **out 
 
 **Gauntlet** (`_run_gauntlet`) — the one dispatch pipeline every idea source (web discovery, book claims, Expansion, Composite strategy) converges through: judge the claim, generate strategy code, sandboxed-backtest it, and save it as a validated Strategy on success. _Avoid_: adding a second pipeline for a new idea source — every source, however it originates a claim, ends at the Gauntlet.
 
+**IPO play** — the one deliberate exception to the Gauntlet's per-symbol backtest gate: a hand-written (not LLM-generated), fixed-rule Strategy (entry at IPO-day open, a trailing stop that tightens once the position is up 20%+) validated *once* against a basket of past IPOs' real price history, then registered directly for each newly-discovered IPO ticker via `StrategyStore.save()` — skipping `_run_gauntlet`'s own sandboxed backtest for that specific new symbol, since a ticker has no price history to backtest against before its first trading day. Sourced from a weekly IPO-calendar fetch, not idea discovery. _Avoid_: treating this as a precedent for skipping the Gauntlet elsewhere — it's justified here only because backtesting against the not-yet-existing symbol is structurally impossible, not because validation is inconvenient.
+
 ---
 
 ## Architecture
