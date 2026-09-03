@@ -4973,6 +4973,34 @@
       position: relative;
       flex-shrink: 0;
     }
+
+    /* ── Help pane (Help campaign slice 1) ───────────────────── */
+    .help-tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border);
+      padding: 0 18px;
+      flex-shrink: 0;
+    }
+    .help-tab {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 10px 14px 12px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 150ms, border-color 150ms;
+    }
+    .help-tab:hover { color: var(--text-dim); }
+    .help-tab.is-active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+    .help-sub { display: none; flex: 1; min-height: 0; }
+    .help-sub.is-active { display: flex; flex-direction: column; }
     .prof-switcher-btn {
       background: transparent;
       border: none;
