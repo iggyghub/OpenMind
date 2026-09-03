@@ -109,6 +109,7 @@ class SchedulerPlugin:
     # dispatch_due_events gets its own turn at list_due_events(), so the
     # per-strategy dispatcher never mistakes it for a strategy to run.
     DISCOVERY_EVENT_TITLE = "__autonomous_discovery__"
+    IPO_CALENDAR_EVENT_TITLE = "__ipo_calendar_check__"
 
     def __init__(self, db_path=None, router=None, web_search_fn=None,
                  record_activity_fn=None, discovery_watchlist=None,
@@ -621,6 +622,18 @@ class SchedulerPlugin:
                     "required": ["strategy_id"],
                 },
             ),
+            Tool(
+                name="check_ipo_calendar",
+                description="Checks the IPO calendar for upcoming IPOs and tracks new ones.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="dispatch_due_ipos",
+                description="Dispatches strategies for any IPOs whose date is today or in the past.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -676,6 +689,10 @@ class SchedulerPlugin:
             return self._halt_strategy(args)
         if tool_name == "resume_strategy":
             return self._resume_strategy(args)
+        if tool_name == "check_ipo_calendar":
+            return await self._check_ipo_calendar(args)
+        if tool_name == "dispatch_due_ipos":
+            return await self._dispatch_due_ipos(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -978,6 +995,20 @@ class SchedulerPlugin:
             return
         self._create_event({
             "title": self.DISCOVERY_EVENT_TITLE,
+            "start_iso": datetime.now(timezone.utc).isoformat(),
+            "recurrence": recurrence,
+        })
+
+    def ensure_ipo_calendar_event(self, recurrence: str = "7d") -> None:
+        """Idempotent get-or-create for the weekly IPO-calendar-refresh event, mirroring
+        ensure_discovery_event's own pattern exactly. Safe to call on every boot."""
+        existing = self._con.execute(
+            "SELECT id FROM events WHERE title = ?", (self.IPO_CALENDAR_EVENT_TITLE,)
+        ).fetchone()
+        if existing is not None:
+            return
+        self._create_event({
+            "title": self.IPO_CALENDAR_EVENT_TITLE,
             "start_iso": datetime.now(timezone.utc).isoformat(),
             "recurrence": recurrence,
         })

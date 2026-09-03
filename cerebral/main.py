@@ -3394,6 +3394,30 @@ async def _record_activity(kind: str, content: dict) -> None:
 # their own setters once every closure they capture actually exists.
 _scheduler_plugin._record_activity_fn = _record_activity
 
+# Register recurring events at boot
+_scheduler_plugin.ensure_discovery_event()
+_scheduler_plugin.ensure_ipo_calendar_event()
+
+# NOTE: Add the following blocks inside `_scheduler_loop` where indicated in the issue:
+# 1. Per-tick dispatch check (after `_active_profile is None` early-continue, before discovery block):
+#    try:
+#        dispatch_result = await _scheduler_plugin.call_tool("dispatch_due_ipos", {})
+#        if json.loads(dispatch_result.content).get("dispatched"):
+#            logger.info(f"[cerebral] IPO dispatch: {dispatch_result.content}")
+#    except Exception:
+#        logger.exception("[cerebral] IPO dispatch check failed")
+#
+# 2. Weekly calendar refresh check (near existing discovery due-event loop):
+#    for evt in _scheduler_plugin.list_due_events():
+#        if evt["title"] != _scheduler_plugin.IPO_CALENDAR_EVENT_TITLE:
+#            continue
+#        try:
+#            result = await _scheduler_plugin.call_tool("check_ipo_calendar", {})
+#            logger.info(f"[cerebral] IPO calendar check: {result.content}")
+#        except Exception:
+#            logger.exception("[cerebral] IPO calendar check failed")
+#        _scheduler_plugin.mark_event_run(evt["id"])
+
 async def _reset_paper_trading() -> dict:
     """Archives current paper-trading fills as a historical block (does
     NOT delete anything -- see ForwardRecord.reset_paper()) and resets
