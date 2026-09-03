@@ -29,6 +29,16 @@ class TestRiskLimits:
         assert just_over.allowed
         assert not a_cent_over.allowed
 
+    def test_per_trade_risk_override(self):
+        mgr = RiskManager(RiskConfig(max_per_trade_risk_pct=10.0))
+        # Global 10% cap would block 25% of account. Override 25% allows it.
+        res = mgr.check_order(10000.0, 0, 0.0, 2500.0, "AAPL", 25.0, max_per_trade_risk_pct_override=25.0)
+        assert res.allowed
+        # Without override, same trade should be blocked
+        res_no_override = mgr.check_order(10000.0, 0, 0.0, 2500.0, "AAPL", 25.0)
+        assert not res_no_override.allowed
+        assert res_no_override.blocked_by == "per_trade_risk"
+
     def test_daily_loss_halts_trades(self):
         mgr = RiskManager(RiskConfig(max_daily_loss_pct=6.0))
         # 6% of 10000 = 600. Current loss 600 -> reject
