@@ -3394,6 +3394,10 @@ async def _record_activity(kind: str, content: dict) -> None:
 # their own setters once every closure they capture actually exists.
 _scheduler_plugin._record_activity_fn = _record_activity
 
+# Register recurring events at boot
+_scheduler_plugin.ensure_discovery_event()
+_scheduler_plugin.ensure_ipo_calendar_event()
+
 async def _reset_paper_trading() -> dict:
     """Archives current paper-trading fills as a historical block (does
     NOT delete anything -- see ForwardRecord.reset_paper()) and resets
@@ -3624,6 +3628,29 @@ async def _scheduler_loop() -> None:
             if _active_profile is None:
                 await asyncio.sleep(300)
                 continue
+
+            # IPO6: cheap per-tick check (a date compare over a short list) --
+            # not gated by the weekly calendar-refresh event, since it needs to
+            # catch the actual listing day promptly, not wait up to a week.
+            try:
+                dispatch_result = await _scheduler_plugin.call_tool("dispatch_due_ipos", {})
+                if json.loads(dispatch_result.content).get("dispatched"):
+                    logger.info(f"[cerebral] IPO dispatch: {dispatch_result.content}")
+            except Exception:
+                logger.exception("[cerebral] IPO dispatch check failed")
+
+            # IPO6: weekly IPO-calendar refresh, mirroring the discovery
+            # due-event block below exactly but simpler -- no enabled/duration
+            # settings to check, it always runs on its own recurrence.
+            for evt in _scheduler_plugin.list_due_events():
+                if evt["title"] != _scheduler_plugin.IPO_CALENDAR_EVENT_TITLE:
+                    continue
+                try:
+                    result = await _scheduler_plugin.call_tool("check_ipo_calendar", {})
+                    logger.info(f"[cerebral] IPO calendar check: {result.content}")
+                except Exception:
+                    logger.exception("[cerebral] IPO calendar check failed")
+                _scheduler_plugin.mark_event_run(evt["id"])
 
             # S27 (#880): the autonomous discovery loop's own recurring
             # event, checked and consumed BEFORE dispatch_due_events gets

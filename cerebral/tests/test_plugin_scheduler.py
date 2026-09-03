@@ -2045,3 +2045,112 @@ async def test_halt_and_resume_strategy_are_reachable_via_call_tool(tmp_path):
     resume_result = await plugin.call_tool("resume_strategy", {"strategy_id": "s1"})
     assert not resume_result.is_error, resume_result.content
     assert lifecycle.get_state("s1").status == "paper"
+
+
+# ── IPO6 (#1043): calendar refresh + per-tick dispatch ─────────────────────
+
+def test_check_ipo_calendar_and_dispatch_due_ipos_tools_exist_in_list_tools(tmp_path):
+    plugin = _plugin(tmp_path)
+    tool_names = [t.name for t in plugin.list_tools()]
+    assert "check_ipo_calendar" in tool_names
+    assert "dispatch_due_ipos" in tool_names
+
+
+def _fake_upcoming_ipos(entries):
+    def fetch_upcoming_ipos(fetch_html_fn=None):
+        return list(entries)
+    return fetch_upcoming_ipos
+
+
+async def test_check_ipo_calendar_adds_new_tickers_and_logs_one_activity_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "cerebral.trading.ipo_calendar.fetch_upcoming_ipos",
+        _fake_upcoming_ipos([{"ticker": "ABCD", "company": "Abcd Inc.", "ipo_date": "2026-09-10"}]),
+    )
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    plugin = _plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+
+    result = await plugin.call_tool("check_ipo_calendar", {})
+
+    assert not result.is_error, result.content
+    body = json.loads(result.content)
+    assert body["tracked_total"] == 1
+    assert body["added"][0]["ticker"] == "ABCD"
+    assert plugin._settings.get("ipo_tracked")[0]["ticker"] == "ABCD"
+    assert plugin._settings.get("ipo_tracked")[0]["dispatched"] is False
+    assert len(logged) == 1
+    assert "ABCD" in logged[0]["summary"]
+
+
+async def test_check_ipo_calendar_does_not_re_add_or_re_log_a_known_ticker(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "cerebral.trading.ipo_calendar.fetch_upcoming_ipos",
+        _fake_upcoming_ipos([{"ticker": "ABCD", "company": "Abcd Inc.", "ipo_date": "2026-09-10"}]),
+    )
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    plugin = _plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+    plugin._settings.set("ipo_tracked", [{"ticker": "ABCD", "company": "Abcd Inc.",
+                                           "ipo_date": "2026-09-10", "dispatched": False}])
+
+    result = await plugin.call_tool("check_ipo_calendar", {})
+
+    body = json.loads(result.content)
+    assert body["tracked_total"] == 1
+    assert body["added"] == []
+    assert len(logged) == 0  # nothing new -- no activity entry
+
+
+async def test_dispatch_due_ipos_registers_a_strategy_for_a_today_or_past_due_ticker(tmp_path, monkeypatch):
+    monkeypatch.setattr("cerebral.trading.strategy_store._DB_PATH", tmp_path / "specs.db")
+    from datetime import date
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    plugin = _plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+    plugin._settings.set("ipo_tracked", [
+        {"ticker": "ABCD", "company": "Abcd Inc.", "ipo_date": date.today().isoformat(), "dispatched": False},
+    ])
+
+    result = await plugin.call_tool("dispatch_due_ipos", {})
+
+    assert not result.is_error, result.content
+    body = json.loads(result.content)
+    assert body["dispatched"] == ["ABCD"]
+    assert plugin._settings.get("ipo_tracked")[0]["dispatched"] is True
+    spec = StrategyStore(db_path=tmp_path / "specs.db").get("IPO play: ABCD (Abcd Inc.)")
+    assert spec is not None
+    assert spec.symbol == "ABCD"
+    assert spec.interval == "5m"
+    assert spec.risk_override_pct == 25.0
+    assert len(logged) == 1
+
+
+async def test_dispatch_due_ipos_skips_future_and_already_dispatched_entries(tmp_path, monkeypatch):
+    monkeypatch.setattr("cerebral.trading.strategy_store._DB_PATH", tmp_path / "specs.db")
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    plugin = _plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+    plugin._settings.set("ipo_tracked", [
+        {"ticker": "FUTR", "company": "Future Inc.", "ipo_date": "2099-01-01", "dispatched": False},
+        {"ticker": "DONE", "company": "Done Inc.", "ipo_date": "2020-01-01", "dispatched": True},
+    ])
+
+    result = await plugin.call_tool("dispatch_due_ipos", {})
+
+    body = json.loads(result.content)
+    assert body["dispatched"] == []
+    assert len(logged) == 0
+    assert StrategyStore(db_path=tmp_path / "specs.db").get("IPO play: FUTR (Future Inc.)") is None
