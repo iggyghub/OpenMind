@@ -373,6 +373,7 @@ def run_strategy_tick(
             trade_value=trade_value,
             symbol=spec.symbol,
             qty=float(qty),
+            max_per_trade_risk_pct_override=spec.risk_override_pct,
         )
         if not res.allowed:
             return {"status": "blocked", "blocked_by": res.blocked_by}
