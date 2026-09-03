@@ -338,6 +338,8 @@ class TestSchedulerPlugin:
             "expand_strategy_ticker",
             # S43 (#937)
             "auto_combine_strategies",
+            # IPO6 (#1043)
+            "check_ipo_calendar", "dispatch_due_ipos",
         }
 
     # -----------------------------------------------------------------------

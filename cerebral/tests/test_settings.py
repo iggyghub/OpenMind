@@ -70,6 +70,7 @@ class TestSettingsStore:
             "discovery_queries",
             "discovery_interval",
             "discovery_candidate_limit",
+            "ipo_tracked",
             "scheduler_heartbeat",
             "trading_sentiment_gate_enabled",
             "trading_bear_case_gate_enabled",

@@ -107,6 +107,10 @@ _DEFAULTS: dict[str, Any] = {
     "discovery_stop_at":         "",
     "discovery_queries":         [],
     "discovery_interval":        "15m",
+    # IPO6 (#1043): {"ticker","company","ipo_date","dispatched"} dicts, populated
+    # weekly by check_ipo_calendar, consumed (dispatched flipped True) by the
+    # per-tick dispatch_due_ipos check.
+    "ipo_tracked":               [],
     # How many candidate tickers a single accepted pattern-general idea is
     # tested against per discovery pass (see rank_for_day_trading).
     "discovery_candidate_limit": 10,
@@ -153,6 +157,7 @@ _TYPES: dict[str, type] = {
     "discovery_stop_at":         str,
     "discovery_queries":         list,
     "discovery_interval":        str,
+    "ipo_tracked":               list,
     "discovery_candidate_limit": int,
     "scheduler_heartbeat":       str,
 }
