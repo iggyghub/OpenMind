@@ -58,9 +58,23 @@ real loop wiring per the issue's own spec, plus fixed a gap in the issue itself 
 exhaustive snapshot tests that broke as a result. Full suite green, 5537 passed/7 skipped.
 All 6 of 6 IPO slices landed 2026-09-03.
 
-**Still needed before this is live: the one-time operational validation step** (see Design
-summary below) -- IPO4's code has its own unit tests but hasn't been run through the real
-Gauntlet against real historical IPO data yet.
+**The one-time operational validation step (see Design summary below) found and fixed a real
+bug, commit 680fd62.** Running the code through the real Gauntlet against real 2026 IPO data
+(BRVE, ATTO, LTGO) showed it going permanently flat -- Sharpe exactly 0.0, `p=1.000` -- before
+ever holding a position. Cause: the stop check for a bar used a peak already inflated by that
+SAME bar's own High, and a real IPO's first 5-minute bar routinely has a >4% range on its own
+(confirmed on all 3 tickers tested), tripping the stop on bar 0 every time. Fixed: peak/
+tight_armed now update AFTER a bar's own check, using the peak as of the end of the PRIOR bar.
+Added a regression test reproducing BRVE's real first-bar values; all 3 original unit tests
+pass unchanged (none of them happened to exercise a bar wide enough to trigger the bug).
+Re-validated live afterward: Sharpe went from exactly 0.0 to a real non-zero value on the same
+real data -- still `UNVALIDATED` on Monte Carlo (expected and fine: a single ticker's single
+trade can never pass a test requiring many independent samples, which is exactly why this
+design bypasses the Gauntlet's validation gate for live dispatch in the first place -- see
+"Validation is the one deliberate exception" below). Full suite re-run clean, 5537 passed/7
+skipped, modulo the one known pre-existing `test_sandboxed_eval.py` flake.
+
+**Campaign is now genuinely done and live-verified**, not just landed.
 
 ## Queue
 
