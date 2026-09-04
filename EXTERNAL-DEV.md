@@ -18,26 +18,39 @@ itself skipped one of its three specified files, see EXT1 note below) even with 
 
 **Never send `tray/` to self_dev** -- standard practice for this whole project.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** EXT2 -- #1061
-- **Model:** sonnet
+- **Active:** none -- queue fully landed 2026-09-04
 
 ## Queue
 
 - [x] EXT1 -- #1059 -- self_dev gains target_dir: generalize clone_fn's origin-repoint, thread
       target_dir through _run (skip the Felix-restart step when set), and replace the
       OpenMind-hardcoded candidate-file walk in _self_dev_edit with a generic one
-- [ ] EXT2 -- #1061 -- clone_fn (cerebral/self_dev_io.py) still repoints an external target_dir
+- [x] EXT2 -- #1061 -- clone_fn (cerebral/self_dev_io.py) still repoints an external target_dir
       clone's origin at Felix's OWN repo -- the one piece EXT1 skipped, and the piece that makes
       target_dir unsafe to use until fixed
 
 ## Landed PRs
 
+- PR #1062 -- EXT2 (self_dev generated the correct `clone_fn` fix, matching the issue spec
+  byte-for-byte; the sandbox gate correctly caught a real bug in the new test it wrote
+  (`git commit` before `git config user.name`/`user.email`, "Author identity unknown", exit
+  128) and left the PR unmerged as `tests_failed` instead of auto-merging red. Hand-fixed the
+  test's operation order only (`clone_fn` itself needed no changes), full suite re-run clean
+  locally (5533 passed/7 skipped), merged by hand.)
 - PR #1060 -- EXT1 (auto-merged by self_dev_campaign; hand-review found it skipped
   `cerebral/self_dev_io.py`'s `clone_fn` fix entirely and added none of the specified tests --
   main.py/self_dev.py parts were correct and match the issue spec closely. Filed the gap as
   #1061/EXT2 rather than hand-fixing, since the fix is small, precisely specced, and
   `self_dev_io.py` isn't a guardrail path.)
+
+**Campaign done 2026-09-04.** `self_dev` now accepts an optional `target_dir` (absolute path to
+an external local git repo with a GitHub remote): same clone -> model edit -> sandboxed test ->
+PR pipeline as Felix's own repo, origin/identity correctly resolved from whichever repo was
+actually cloned, and the Felix-restart step skipped when `target_dir` is set. Not yet
+live-verified against a REAL external repo end-to-end (both slices were verified by diff review
++ local test runs, not a live `self_dev` call with `target_dir` set) -- worth a one-time live
+smoke test before relying on it for real.
