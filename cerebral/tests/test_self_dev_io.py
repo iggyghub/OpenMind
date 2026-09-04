@@ -205,6 +205,45 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
 
 
+def test_clone_fn_uses_source_repo_identity_and_origin(tmp_path, monkeypatch):
+    """#1059/#1060: clone_fn must read identity/origin from the cloned repo,
+    not always from _REPO_ROOT. Proves target_dir works safely."""
+    (tmp_path / "repo_a").mkdir()
+    (tmp_path / "repo_b").mkdir()
+    for p in (tmp_path / "repo_a", tmp_path / "repo_b"):
+        subprocess.run(["git", "-C", str(p), "init"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(p), "remote", "add", "origin",
+                        f"https://github.com/example/repo-{p.name[-1]}.git"],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(p), "config", "user.name",
+                        f"Repo {p.name[-1]} Bot"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(p), "config", "user.email",
+                        f"repo-{p.name[-1]}@example.com"], check=True, capture_output=True)
+        # commit must come AFTER user.name/email are set, or a machine with no
+        # global git identity fails it with "Author identity unknown" (128) --
+        # this is exactly the failure clone_fn's own docstring warns about.
+        (p / "dummy.txt").write_text("x")
+        subprocess.run(["git", "-C", str(p), "add", "dummy.txt"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(p), "commit", "-m", "init"], check=True, capture_output=True)
+
+    dest = tmp_path / "dest"
+    io.clone_fn(str(tmp_path / "repo_b"), dest)
+
+    # Check origin URL
+    out = subprocess.run(["git", "-C", str(dest), "remote", "get-url", "origin"],
+                         capture_output=True, text=True)
+    assert out.returncode == 0
+    assert out.stdout.strip() == "https://github.com/example/repo-b.git"
+
+    # Check user config comes from source, not _REPO_ROOT
+    out_name = subprocess.run(["git", "-C", str(dest), "config", "user.name"],
+                              capture_output=True, text=True)
+    out_email = subprocess.run(["git", "-C", str(dest), "config", "user.email"],
+                               capture_output=True, text=True)
+    assert out_name.stdout.strip() == "Repo b Bot"
+    assert out_email.stdout.strip() == "repo-b@example.com"
+
+
 # ── test_fn: bounded by a timeout so a hung suite can't freeze Cerebral ──────
 
 def test_test_fn_timeout_returns_failed_not_raises(monkeypatch, tmp_path):

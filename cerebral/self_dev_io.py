@@ -128,9 +128,14 @@ def git_config_get(repo_root: Path, key: str) -> str:
 def clone_fn(repo_url: str, dest: Path) -> None:
     """Full local git clone -- live .git is never shared with the sandbox.
 
-    A fresh clone inherits no committer identity (global config may be unset),
-    so a later commit would die with 'Author identity unknown'. Carry the live
-    repo's identity into the clone (falling back to a self-dev default).
+    `repo_url` is either Felix's own repo (the default) or an external
+    target_dir (self_dev, generalized to point at any local repo, not just
+    Felix's own -- issue #1059/#1060). A fresh clone inherits no committer
+    identity (global config may be unset), so a later commit would die with
+    'Author identity unknown'. Carry the SOURCE repo's identity/origin into
+    the clone (falling back to a self-dev default) -- source_root is
+    whichever repo was actually cloned, so this works the same way for
+    both cases.
     """
     result = subprocess.run(
         ["git", "clone", repo_url, str(dest)],
@@ -139,24 +144,21 @@ def clone_fn(repo_url: str, dest: Path) -> None:
     if result.returncode != 0:
         raise RuntimeError(f"git clone failed:\n{result.stderr.strip()}")
 
-    name = git_config_get(_REPO_ROOT, "user.name") or "Felix self-dev"
-    email = git_config_get(_REPO_ROOT, "user.email") or "felix-self-dev@localhost"
+    source_root = Path(repo_url) if Path(repo_url).is_dir() else _REPO_ROOT
+    name = git_config_get(source_root, "user.name") or "Felix self-dev"
+    email = git_config_get(source_root, "user.email") or "felix-self-dev@localhost"
     for key, val in (("user.name", name), ("user.email", email)):
         subprocess.run(
             ["git", "-C", str(dest), "config", key, val],
             capture_output=True, text=True, check=True,
         )
 
-    # A clone of a local path has origin=<local path>, so `git push` / `gh pr
-    # create` have no GitHub host to target. Repoint origin at the live repo's
-    # GitHub remote so the branch + PR land upstream (the clone already holds
-    # all commits locally -- only push/PR need the network).
     origin = subprocess.run(
-        ["git", "-C", str(_REPO_ROOT), "remote", "get-url", "origin"],
+        ["git", "-C", str(source_root), "remote", "get-url", "origin"],
         capture_output=True, text=True,
     )
     url = origin.stdout.strip()
-    if origin.returncode == 0 and url and not url.startswith(str(_REPO_ROOT)):
+    if origin.returncode == 0 and url and not url.startswith(str(source_root)):
         subprocess.run(
             ["git", "-C", str(dest), "remote", "set-url", "origin", url],
             capture_output=True, text=True, check=True,
