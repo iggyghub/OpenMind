@@ -2987,6 +2987,45 @@ async def _broadcast(event: dict) -> None:
 # to a patch format if edits ever span files too large to round-trip.
 _SELF_DEV_MAX_FILES = 8
 
+_SELF_DEV_EXCLUDE_DIR_NAMES = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
+    "dist", "build", "target", ".next", ".nuxt", "vendor",
+    ".idea", ".vscode", "coverage", ".pytest_cache", ".mypy_cache",
+}
+# Path PREFIXES (not bare dir names) to skip -- narrower than excluding all of
+# ".claude", which would also hide ".claude/skills/*.md" that the planner is
+# deliberately supposed to see. ".claude/tmp" alone holds ~400+ loop log/status
+# files that would otherwise flood the candidate list.
+_SELF_DEV_EXCLUDE_PREFIXES = (".claude/tmp/", ".campaign-scratch/")
+_SELF_DEV_SOURCE_EXTS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".md",
+    ".ps1", ".sh", ".json", ".yaml", ".yml", ".html", ".css",
+    ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".php",
+}
+_SELF_DEV_MAX_CANDIDATES = 500
+
+
+def _self_dev_candidates(clone_dir) -> list[str]:
+    """Repo-relative source file paths under clone_dir, whatever the layout.
+
+    Walks the whole tree instead of a fixed set of OpenMind-specific roots so
+    self_dev works the same way against an external target_dir as it does
+    against Felix's own repo. Sorted and capped -- an unbounded list blows the
+    plan_prompt's token budget on a large repo.
+    """
+    out: list[str] = []
+    for p in clone_dir.rglob("*"):
+        if not p.is_file() or p.suffix not in _SELF_DEV_SOURCE_EXTS:
+            continue
+        rel = p.relative_to(clone_dir).as_posix()
+        if set(p.relative_to(clone_dir).parts[:-1]) & _SELF_DEV_EXCLUDE_DIR_NAMES:
+            continue
+        if any(rel.startswith(pre) for pre in _SELF_DEV_EXCLUDE_PREFIXES):
+            continue
+        out.append(rel)
+    out.sort()
+    return out[:_SELF_DEV_MAX_CANDIDATES]
+
 # ── Edit-prompt budget (issue #758) ─────────────────────────────────────────
 # The edit prompt used to inline every wanted file whole, with no size cap --
 # reliable on small files, structurally incapable on large ones (a 51KB file
@@ -3039,46 +3078,10 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
 
     clone_dir = _P(clone_dir)
 
-    # 1. Candidate source files (paths only -- cheap planner context).
-    candidates: list[str] = []
-    for base in ("cerebral", "plugins"):
-        root = clone_dir / base
-        if root.is_dir():
-            candidates += [p.relative_to(clone_dir).as_posix() for p in root.rglob("*.py")]
-    # Tray UI sources (JS) so self_dev can reach the Electron front-end. Skip
-    # node_modules (thousands of vendored files would blow the planner prompt)
-    # and the ~11k-line windows/main.html monolith (too large to round-trip in
-    # one edit prompt -- the modular tray/lib/*.js is the editable surface). Any
-    # tray/ edit ESCALATES to human review (GUARDRAIL_PATHS): the sandbox test
-    # gate runs pytest only, so it cannot validate JS -- a human must.
-    tray_lib = clone_dir / "tray" / "lib"
-    if tray_lib.is_dir():
-        candidates += [p.relative_to(clone_dir).as_posix() for p in tray_lib.rglob("*.js")]
-    # Prose surfaces: dev-skills and ADRs/docs. Without these the planner never
-    # SEES a skill or doc file, so a slice like "write .claude/skills/<x>/SKILL.md"
-    # could only be driven by naming the exact path in the change description and
-    # forcing a NEWFILE block (how SK-4 #363 had to be built). Markdown only --
-    # the sandbox gate runs pytest, which cannot validate prose, so these are
-    # low-risk to write and a human reads the PR anyway.
-    # ponytail: markdown only, and only these three roots. Widen further only if
-    # a slice actually needs another surface -- the whole point of a candidate
-    # list is to keep the planner prompt small.
-    for base, pattern in (
-        (".claude/skills", "*.md"),
-        ("docs", "*.md"),
-        ("scripts", "*.ps1"),
-    ):
-        root = clone_dir / base
-        if root.is_dir():
-            candidates += [
-                p.relative_to(clone_dir).as_posix()
-                for p in root.rglob(pattern)
-                if "node_modules" not in p.parts
-            ]
-    candidates.sort()
+    candidates = _self_dev_candidates(clone_dir)
 
     plan_prompt = (
-        "You are editing the OpenMind repository to accomplish a task.\n"
+        "You are editing a codebase to accomplish a task.\n"
         f"TASK: {description}\n\n"
         "Below is the list of source files. Reply with ONLY a JSON array of the "
         f"repo-relative paths you will EDIT or CREATE (at most {_SELF_DEV_MAX_FILES}). "
@@ -3098,7 +3101,7 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
     prompt_budget = int(context_window * (1 - _SELF_DEV_RESPONSE_RESERVE))
 
     edit_instructions = (
-        "You are editing the OpenMind repository. Make this change:\n"
+        "You are editing a codebase. Make this change:\n"
         f"TASK: {description}\n\n"
         "To EDIT an existing file, output a block EXACTLY in this format:\n"
         "<<<FILE: relative/path.py>>>\n<<<SEARCH>>>\n"
