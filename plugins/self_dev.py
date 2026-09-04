@@ -532,14 +532,15 @@ class SelfDevPlugin:
             Tool(
                 name="self_dev",
                 description=(
-                    "Modify Felix's own core: clone the repo, branch, have the "
-                    "model make a scoped edit (task_type='self_dev'), run the "
-                    "test suite inside the ADR-0010 sandbox, and open a PR. "
-                    "The PR is the final output -- nothing is merged or loaded "
-                    "automatically (that requires a human review or the SD-2..4 "
-                    "slices). Deny-by-default per ADR-0005 (shell_exec). "
-                    "Unavailable without a sandbox backend. Re-calling with the "
-                    "same run_id after an interrupted run resumes from the last "
+                    "Modify a git repo: clone it, branch, have the model make a "
+                    "scoped edit (task_type='self_dev'), run the test suite inside "
+                    "the ADR-0010 sandbox, and open a PR. Omit target_dir to modify "
+                    "Felix's own core; pass an absolute local repo path to work in an "
+                    "external project using the same pipeline. The PR is the final "
+                    "output -- nothing is merged or loaded automatically (that requires "
+                    "a human review or the SD-2..4 slices). Deny-by-default per ADR-0005 "
+                    "(shell_exec). Unavailable without a sandbox backend. Re-calling with "
+                    "the same run_id after an interrupted run resumes from the last "
                     "completed phase (clone/edit/test/pr) instead of refusing."
                 ),
                 plugin=PLUGIN_NAME,
@@ -549,6 +550,14 @@ class SelfDevPlugin:
                         "change_description": {
                             "type": "string",
                             "description": "Plain-English description of the change to make.",
+                        },
+                        "target_dir": {
+                            "type": "string",
+                            "description": (
+                                "Absolute path to an external git repo to work in instead of "
+                                "Felix's own repo. Must be a local git repo (with a GitHub "
+                                "remote for the PR push). Omit to edit Felix's own repo, as before."
+                            ),
                         },
                         "run_id": {
                             "type": "string",
@@ -668,6 +677,12 @@ class SelfDevPlugin:
             )
 
         run_id = str((args or {}).get("run_id") or uuid.uuid4()).strip()
+        target_dir = str((args or {}).get("target_dir") or "").strip()
+        if target_dir and not Path(target_dir).is_dir():
+            return ToolResult(
+                content=f"target_dir not found: {target_dir}", is_error=True,
+            )
+        repo_for_run = target_dir or self._repo_url
         clone_dir = self._sandbox_root / run_id
 
         # #780 -- the ledger, not clone-dir existence, is the resume signal.
@@ -704,12 +719,12 @@ class SelfDevPlugin:
             logger.info("[self_dev] run %r: resuming -- clone already recorded", run_id)
         else:
             try:
-                self._clone(self._repo_url, clone_dir)
+                self._clone(repo_for_run, clone_dir)
             except Exception as exc:
                 return ToolResult(content=f"Clone failed: {exc}", is_error=True)
             self._ledger.record(run_id, "clone", {
                 "name": "clone",
-                "args": {"repo_url": self._repo_url},
+                "args": {"repo_url": repo_for_run},
                 "result": {"clone_dir": str(clone_dir)},
                 "is_error": False,
             })
@@ -865,12 +880,18 @@ class SelfDevPlugin:
             )
 
         # 7. Trigger load (git pull + restart) -- S3 boot self-check runs on restart.
-        load_result = await self._load({"pr_url": pr_url})
-        load_data = (
-            json.loads(load_result.content)
-            if not load_result.is_error
-            else {"error": load_result.content}
-        )
+        if target_dir:
+            load_data = {
+                "status": "skipped",
+                "reason": "target_dir set -- not Felix's own repo, no restart needed",
+            }
+        else:
+            load_result = await self._load({"pr_url": pr_url})
+            load_data = (
+                json.loads(load_result.content)
+                if not load_result.is_error
+                else {"error": load_result.content}
+            )
         return ToolResult(
             content=json.dumps({
                 "run_id": run_id,
