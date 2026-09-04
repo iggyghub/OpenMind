@@ -212,9 +212,6 @@ def test_clone_fn_uses_source_repo_identity_and_origin(tmp_path, monkeypatch):
     (tmp_path / "repo_b").mkdir()
     for p in (tmp_path / "repo_a", tmp_path / "repo_b"):
         subprocess.run(["git", "-C", str(p), "init"], check=True, capture_output=True)
-        (p / "dummy.txt").write_text("x")
-        subprocess.run(["git", "-C", str(p), "add", "dummy.txt"], check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(p), "commit", "-m", "init"], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(p), "remote", "add", "origin",
                         f"https://github.com/example/repo-{p.name[-1]}.git"],
                        check=True, capture_output=True)
@@ -222,6 +219,12 @@ def test_clone_fn_uses_source_repo_identity_and_origin(tmp_path, monkeypatch):
                         f"Repo {p.name[-1]} Bot"], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(p), "config", "user.email",
                         f"repo-{p.name[-1]}@example.com"], check=True, capture_output=True)
+        # commit must come AFTER user.name/email are set, or a machine with no
+        # global git identity fails it with "Author identity unknown" (128) --
+        # this is exactly the failure clone_fn's own docstring warns about.
+        (p / "dummy.txt").write_text("x")
+        subprocess.run(["git", "-C", str(p), "add", "dummy.txt"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(p), "commit", "-m", "init"], check=True, capture_output=True)
 
     dest = tmp_path / "dest"
     io.clone_fn(str(tmp_path / "repo_b"), dest)
