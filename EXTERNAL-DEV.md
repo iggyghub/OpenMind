@@ -17,7 +17,7 @@ a green sandbox test run.
 
 **Never send `tray/` to self_dev** -- standard practice for this whole project.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
@@ -26,10 +26,11 @@ a green sandbox test run.
 
 ## Queue
 
-- [ ] EXT1 -- #1059 -- self_dev gains target_dir: generalize clone_fn's origin-repoint, thread
+- [x] EXT1 -- #1059 -- self_dev gains target_dir: generalize clone_fn's origin-repoint, thread
       target_dir through _run (skip the Felix-restart step when set), and replace the
       OpenMind-hardcoded candidate-file walk in _self_dev_edit with a generic one
 
 ## Landed PRs
 
 (none yet)
+- PR #1060 -- EXT1 (auto-merged by self_dev_campaign)
