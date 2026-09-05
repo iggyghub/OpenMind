@@ -1,11 +1,13 @@
 // Zero-dependency local server for the UI editor.
 // Serves the editor shell and injects the click-to-edit overlay into a
-// target reached one of four usual ways an editor connects to a site:
+// target reached one of the usual ways an editor connects to a site:
 //   /local/<path>  -- a file on disk, rooted at the OpenMind repo
 //   /remote?url=   -- any reachable URL (optional HTTP Basic Auth)
 //   /git?repo=     -- clone/pull a repo (shells out to the system `git`),
 //                     then serve a file from the checkout
 //   /ftp?host=     -- RETR one file over plain FTP (passive mode)
+//   /api/new       -- seed a blank .html file under ROOT (local only), then
+//                     open it via /local/ like any other local page
 // Edits persist as a JSON "overrides" layer per target; source files are
 // never touched. SFTP is a known gap -- see ftp-client.js's header comment.
 'use strict';
@@ -91,6 +93,36 @@ async function handleLocal(req, res, urlObj) {
   if (!full.startsWith(ROOT)) { res.writeHead(403); res.end('forbidden'); return; }
   if (!fs.existsSync(full) || !fs.statSync(full).isFile()) { res.writeHead(404); res.end('not found'); return; }
   serveFileFromDisk(full, sanitizeKey('local:' + rel), req, res);
+}
+
+const BLANK_PAGE = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>New Page</title>
+</head>
+<body>
+<h1>New Page</h1>
+<p>Start editing -- toggle Edit mode (top-right) once this loads.</p>
+</body>
+</html>
+`;
+
+// Seeds a blank .html file under ROOT so a brand-new page can be opened via
+// the normal /local/ route. Local only -- creating files on a remote/git/ftp
+// target isn't something this tool can do safely (no STOR, no commit flow).
+// Never overwrites an existing file at that path.
+function handleNewPage(req, res, body) {
+  let rel = (body.path || '').trim();
+  if (!rel) { res.writeHead(400); res.end('missing path'); return; }
+  if (!/\.html?$/i.test(rel)) rel += '.html';
+  const full = path.resolve(ROOT, rel);
+  if (!full.startsWith(ROOT)) { res.writeHead(403); res.end('forbidden'); return; }
+  if (!fs.existsSync(full)) {
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, BLANK_PAGE);
+  }
+  sendJson(res, 200, { ok: true, path: path.relative(ROOT, full).replace(/\\/g, '/') });
 }
 
 async function handleRemote(req, res, urlObj) {
@@ -199,6 +231,9 @@ const server = http.createServer(async (req, res) => {
       await handleGit(req, res, urlObj);
     } else if (req.method === 'GET' && urlObj.pathname === '/ftp') {
       await handleFtp(req, res, urlObj);
+    } else if (req.method === 'POST' && urlObj.pathname === '/api/new') {
+      const body = JSON.parse(await readBody(req));
+      handleNewPage(req, res, body);
     } else if (req.method === 'GET' && urlObj.pathname === '/api/load') {
       const key = urlObj.searchParams.get('key') || '';
       sendJson(res, 200, readOverrides(sanitizeKey(key)));
