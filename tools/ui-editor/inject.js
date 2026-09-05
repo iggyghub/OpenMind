@@ -25,6 +25,18 @@
     { label: 'Container', tag: 'DIV',     text: '',                   attrs: {} },
     { label: 'Section',   tag: 'SECTION', text: '',                   attrs: {} },
   ];
+
+  // ponytail: templates are hardcoded strings (inline styles only, no external deps);
+  // add/edit here when the library grows -- no parser needed, DOM does the heavy lifting
+  var SECTION_BLOCKS = [
+    { label: 'Navbar', html: '<nav style="display:flex;align-items:center;justify-content:space-between;padding:12px 24px;background:#1a1a2e;color:#eee;"><span style="font-size:20px;font-weight:bold;">Logo</span><span style="display:flex;gap:16px;"><a href="#" style="color:#eee;text-decoration:none;">Home</a><a href="#" style="color:#eee;text-decoration:none;">About</a><a href="#" style="color:#eee;text-decoration:none;">Services</a><a href="#" style="color:#eee;text-decoration:none;">Contact</a></span><button style="padding:8px 16px;background:#4da3ff;color:#fff;border:none;border-radius:6px;cursor:pointer;">Get Started</button></nav>' },
+    { label: 'Hero', html: '<section style="text-align:center;padding:80px 24px;background:#f8f9fa;"><h1 style="font-size:48px;margin:0 0 16px;">Your Headline Here</h1><p style="font-size:18px;color:#666;margin:0 0 32px;">A compelling subheading that explains what you offer and why it matters.</p><button style="padding:14px 28px;background:#4da3ff;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;">Get Started</button></section>' },
+    { label: 'Feature Grid', html: '<section style="padding:60px 24px;background:#fff;"><h2 style="text-align:center;margin:0 0 40px;font-size:32px;">Features</h2><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;max-width:900px;margin:0 auto;"><div style="padding:24px;border:1px solid #e0e0e0;border-radius:8px;text-align:center;"><div style="width:48px;height:48px;background:#4da3ff;border-radius:50%;margin:0 auto 16px;"></div><h3 style="margin:0 0 8px;">Feature One</h3><p style="color:#666;margin:0;">Short description of this feature and its benefit.</p></div><div style="padding:24px;border:1px solid #e0e0e0;border-radius:8px;text-align:center;"><div style="width:48px;height:48px;background:#4da3ff;border-radius:50%;margin:0 auto 16px;"></div><h3 style="margin:0 0 8px;">Feature Two</h3><p style="color:#666;margin:0;">Short description of this feature and its benefit.</p></div><div style="padding:24px;border:1px solid #e0e0e0;border-radius:8px;text-align:center;"><div style="width:48px;height:48px;background:#4da3ff;border-radius:50%;margin:0 auto 16px;"></div><h3 style="margin:0 0 8px;">Feature Three</h3><p style="color:#666;margin:0;">Short description of this feature and its benefit.</p></div></div></section>' },
+    { label: 'Pricing', html: '<section style="padding:60px 24px;background:#f8f9fa;"><h2 style="text-align:center;margin:0 0 40px;font-size:32px;">Pricing</h2><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;max-width:900px;margin:0 auto;"><div style="padding:32px 24px;background:#fff;border:1px solid #e0e0e0;border-radius:8px;text-align:center;"><h3 style="margin:0 0 8px;">Basic</h3><div style="font-size:36px;font-weight:bold;margin:16px 0;">$9<span style="font-size:14px;font-weight:normal;">/mo</span></div><p style="color:#666;margin:0 0 24px;">Up to 3 users<br>5 GB storage<br>Email support</p><button style="width:100%;padding:10px;background:#4da3ff;color:#fff;border:none;border-radius:6px;cursor:pointer;">Choose</button></div><div style="padding:32px 24px;background:#4da3ff;border-radius:8px;text-align:center;color:#fff;"><h3 style="margin:0 0 8px;">Pro</h3><div style="font-size:36px;font-weight:bold;margin:16px 0;">$29<span style="font-size:14px;font-weight:normal;">/mo</span></div><p style="opacity:.85;margin:0 0 24px;">Up to 20 users<br>50 GB storage<br>Priority support</p><button style="width:100%;padding:10px;background:#fff;color:#4da3ff;border:none;border-radius:6px;cursor:pointer;">Choose</button></div><div style="padding:32px 24px;background:#fff;border:1px solid #e0e0e0;border-radius:8px;text-align:center;"><h3 style="margin:0 0 8px;">Enterprise</h3><div style="font-size:36px;font-weight:bold;margin:16px 0;">$99<span style="font-size:14px;font-weight:normal;">/mo</span></div><p style="color:#666;margin:0 0 24px;">Unlimited users<br>500 GB storage<br>24/7 support</p><button style="width:100%;padding:10px;background:#4da3ff;color:#fff;border:none;border-radius:6px;cursor:pointer;">Choose</button></div></div></section>' },
+    { label: 'Footer', html: '<footer style="padding:40px 24px;background:#1a1a2e;color:#aaa;text-align:center;"><div style="display:flex;justify-content:center;gap:24px;margin-bottom:24px;"><a href="#" style="color:#aaa;text-decoration:none;">Privacy</a><a href="#" style="color:#aaa;text-decoration:none;">Terms</a><a href="#" style="color:#aaa;text-decoration:none;">About</a><a href="#" style="color:#aaa;text-decoration:none;">Contact</a></div><p style="margin:0;font-size:13px;">&#169; 2025 Your Company. All rights reserved.</p></footer>' },
+    { label: 'Contact Form', html: '<section style="padding:60px 24px;background:#fff;"><h2 style="text-align:center;margin:0 0 32px;font-size:32px;">Contact Us</h2><form style="display:flex;flex-direction:column;gap:16px;max-width:560px;margin:0 auto;"><input type="text" placeholder="Your Name" style="padding:12px;border:1px solid #ddd;border-radius:6px;font-size:15px;"><input type="email" placeholder="Email Address" style="padding:12px;border:1px solid #ddd;border-radius:6px;font-size:15px;"><textarea placeholder="Your message..." rows="5" style="padding:12px;border:1px solid #ddd;border-radius:6px;font-size:15px;resize:vertical;"></textarea><button type="submit" style="padding:14px;background:#4da3ff;color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer;">Send Message</button></form></section>' },
+    { label: 'Gallery', html: '<section style="padding:60px 24px;background:#fff;"><h2 style="text-align:center;margin:0 0 32px;font-size:32px;">Gallery</h2><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;max-width:900px;margin:0 auto;"><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div></div></section>' },
+  ];
   // elements that accept appendChild when empty rather than before/after
   var CONTAINER_TAGS = ['DIV', 'SECTION', 'ARTICLE', 'ASIDE', 'MAIN', 'UL', 'OL', 'FORM', 'HEADER', 'FOOTER', 'NAV'];
 
@@ -46,17 +58,27 @@
   }
 
   // Create a DOM element from a saved insert record and position it.
+  // Handles both single-element blocks (ins.tag) and section blocks (ins.html).
   function replayInsert(id, ins) {
     var targetEl = document.querySelector('[data-uieditor-id="' + ins.targetId + '"]');
     if (!targetEl) return null;
-    var el = document.createElement(ins.tag);
-    if (ins.text) el.textContent = ins.text;
-    Object.keys(ins.attrs || {}).forEach(function (k) { el.setAttribute(k, ins.attrs[k]); });
+    var el;
+    if (ins.html) {
+      // section block: IDs are already baked into the stored HTML
+      var tmp = document.createElement('div');
+      tmp.innerHTML = ins.html;
+      el = tmp.firstElementChild;
+      if (!el) return null;
+    } else {
+      el = document.createElement(ins.tag);
+      if (ins.text) el.textContent = ins.text;
+      Object.keys(ins.attrs || {}).forEach(function (k) { el.setAttribute(k, ins.attrs[k]); });
+      el.setAttribute('data-uieditor-id', id);
+    }
     var parent = targetEl.parentElement;
     if (ins.op === 'before' && parent) parent.insertBefore(el, targetEl);
     else if (ins.op === 'after' && parent) parent.insertBefore(el, targetEl.nextSibling);
     else targetEl.appendChild(el);
-    el.setAttribute('data-uieditor-id', id);
     return el;
   }
 
@@ -243,23 +265,31 @@
   function insertBlock(block, targetEl, op) {
     snapshot();
     var id = 'ins:' + (insertSeq++);
-    var el = document.createElement(block.tag);
-    if (block.text) el.textContent = block.text;
-    Object.keys(block.attrs || {}).forEach(function (k) { el.setAttribute(k, block.attrs[k]); });
+    var el, record;
+    if (block.html) {
+      // section block: parse template, stamp all elements with sequential IDs
+      var tmp = document.createElement('div');
+      tmp.innerHTML = block.html;
+      el = tmp.firstElementChild;
+      if (!el) { undoStack.pop(); return; }
+      el.setAttribute('data-uieditor-id', id);
+      el.querySelectorAll('*').forEach(function (child) {
+        child.setAttribute('data-uieditor-id', 'ins:' + (insertSeq++));
+      });
+      // store outerHTML with IDs baked in so replayInsert can restore the full subtree
+      record = { insert: { targetId: targetEl.getAttribute('data-uieditor-id'), op: op, html: el.outerHTML } };
+    } else {
+      el = document.createElement(block.tag);
+      if (block.text) el.textContent = block.text;
+      Object.keys(block.attrs || {}).forEach(function (k) { el.setAttribute(k, block.attrs[k]); });
+      el.setAttribute('data-uieditor-id', id);
+      record = { insert: { targetId: targetEl.getAttribute('data-uieditor-id'), op: op, tag: block.tag, text: block.text || '', attrs: block.attrs || {} } };
+    }
     var parent = targetEl.parentElement;
     if (op === 'before' && parent) parent.insertBefore(el, targetEl);
     else if (op === 'after' && parent) parent.insertBefore(el, targetEl.nextSibling);
     else targetEl.appendChild(el);
-    el.setAttribute('data-uieditor-id', id);
-    overrides[id] = {
-      insert: {
-        targetId: targetEl.getAttribute('data-uieditor-id'),
-        op: op,
-        tag: block.tag,
-        text: block.text || '',
-        attrs: block.attrs || {}
-      }
-    };
+    overrides[id] = record;
     scheduleSave();
     select(el);
   }
@@ -355,6 +385,11 @@
     'Blocks <span id="ue-blocks-arrow">▶</span></div>' +
     '<div id="ue-blocks-list" style="display:none;margin-top:4px;"></div>' +
     '</div>' +
+    '<div id="ue-sections-wrap" style="border-top:1px solid #444;padding-top:6px;">' +
+    '<div id="ue-sections-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
+    'Sections <span id="ue-sections-arrow">▶</span></div>' +
+    '<div id="ue-sections-list" style="display:none;margin-top:4px;"></div>' +
+    '</div>' +
     '</div>' +
     '<div id="ue-status" style="opacity:.6;">idle</div>';
   function mount() { document.documentElement.appendChild(bar); }
@@ -379,6 +414,28 @@
       var open = list.style.display !== 'none';
       list.style.display = open ? 'none' : 'block';
       bar.querySelector('#ue-blocks-arrow').textContent = open ? '▶' : '▼';
+    });
+  }());
+
+  // populate section template buttons
+  (function () {
+    var list = bar.querySelector('#ue-sections-list');
+    SECTION_BLOCKS.forEach(function (block) {
+      var btn = document.createElement('button');
+      btn.textContent = block.label;
+      btn.style.cssText = 'cursor:pointer;margin:2px;font-size:11px;padding:2px 6px;';
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        pendingBlock = block;
+        document.documentElement.style.cursor = 'crosshair';
+        setStatus('click target → place ' + block.label + ' section (Esc cancel)');
+      });
+      list.appendChild(btn);
+    });
+    bar.querySelector('#ue-sections-hdr').addEventListener('click', function () {
+      var open = list.style.display !== 'none';
+      list.style.display = open ? 'none' : 'block';
+      bar.querySelector('#ue-sections-arrow').textContent = open ? '▶' : '▼';
     });
   }());
 
@@ -786,6 +843,12 @@
         insertSeq = parseInt(insKeys[insKeys.length - 1].slice(4)) + 1;
         insKeys.forEach(function (id) {
           if (overrides[id].insert) replayInsert(id, overrides[id].insert);
+        });
+        // section blocks bake child IDs into stored HTML; scan DOM to ensure
+        // insertSeq stays past the highest child ID after replay
+        document.querySelectorAll('[data-uieditor-id^="ins:"]').forEach(function (el) {
+          var n = parseInt(el.getAttribute('data-uieditor-id').slice(4));
+          if (n >= insertSeq) insertSeq = n + 1;
         });
       }
       Object.keys(overrides).forEach(function (id) {
