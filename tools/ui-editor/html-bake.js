@@ -125,6 +125,33 @@ function findByPath(html, pathStr) {
   return findInContent(html, parts, 0, from, to);
 }
 
+// Find an element already carrying a literal data-uieditor-id="id" attribute in `html`
+// (true for anything previously baked from an insert record). Same return shape as findByPath.
+function findByIdAttr(html, id) {
+  const p = html.indexOf(`data-uieditor-id="${id}"`);
+  if (p < 0) return null;
+  const openStart = html.lastIndexOf('<', p);
+  if (openStart < 0) return null;
+  const openEnd = scanTagEnd(html, openStart);
+  if (openEnd < 0) return null;
+  const m = html.slice(openStart).match(/^<([a-zA-Z][a-zA-Z0-9:.-]*)/);
+  if (!m) return null;
+  const tag = m[1].toLowerCase();
+  const isVoid = html.slice(openEnd - 2, openEnd) === '/>' || VOID_TAGS.has(tag);
+  if (isVoid) return { openStart, openEnd, closeStart: openEnd, closeEnd: openEnd };
+  const close = findClose(html, tag, openEnd);
+  return close ? { openStart, openEnd, closeStart: close.start, closeEnd: close.end } : null;
+}
+
+// path-based ids (original document elements) vs 'ins:N' ids (elements this tool inserted,
+// which carry a literal data-uieditor-id attribute once baked -- see findByIdAttr above)
+function locate(html, id) {
+  return id.startsWith('ins:') ? findByIdAttr(html, id) : findByPath(html, id);
+}
+
+function escapeHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function escapeAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
+
 // Merge camelCase style properties from `newStyles` into an opening tag's style attribute.
 // Preserves unrelated inline styles; adds style attribute if absent.
 function mergeStyleAttr(openTag, newStyles) {
@@ -149,35 +176,123 @@ function mergeStyleAttr(openTag, newStyles) {
   return openTag.slice(0, ins) + ` style="${merged}"` + openTag.slice(ins);
 }
 
-// Apply all overrides to an HTML string and return the modified HTML.
-// overrides: { pathId: { style?: {camelCase props}, text?: string } }
-function bake(html, overrides) {
-  const located = [];
-  for (const [id, ov] of Object.entries(overrides)) {
-    if (!ov.style && typeof ov.text !== 'string') continue;
-    const pos = findByPath(html, id);
-    if (pos) located.push({ ov, pos });
-  }
-  // Process highest openStart first so earlier string positions stay valid across iterations
-  located.sort((a, b) => b.pos.openStart - a.pos.openStart);
-
-  let result = html;
-  for (const { ov, pos } of located) {
-    const { openStart, openEnd, closeStart } = pos;
-    // Text: replace content between opening and closing tags
-    if (typeof ov.text === 'string') {
-      const escaped = ov.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      result = result.slice(0, openEnd) + escaped + result.slice(closeStart);
-      // openStart/openEnd are unaffected (modification is after openEnd)
-    }
-    // Style: merge into opening tag (re-read from result since text may have changed length after openEnd)
-    if (ov.style) {
-      const openTag = result.slice(openStart, openEnd);
-      const newOpenTag = mergeStyleAttr(openTag, ov.style);
-      result = result.slice(0, openStart) + newOpenTag + result.slice(openEnd);
+// Like mergeStyleAttr but for arbitrary named attributes (e.g. an <img> src from the asset manager).
+function mergeAttrsIntoTag(openTag, attrs) {
+  let result = openTag;
+  for (const [k, v] of Object.entries(attrs)) {
+    const attrRe = new RegExp(`(\\s${k}\\s*=\\s*)("([^"]*)"|'([^']*)')`, 'i');
+    const m = result.match(attrRe);
+    const val = escapeAttr(v);
+    if (m) {
+      result = result.slice(0, m.index + m[1].length) + `"${val}"` + result.slice(m.index + m[0].length);
+    } else {
+      const ins = result.endsWith('/>') ? result.length - 2 : result.length - 1;
+      result = result.slice(0, ins) + ` ${k}="${val}"` + result.slice(ins);
     }
   }
   return result;
 }
 
-module.exports = { bake, findByPath, mergeStyleAttr };
+// Builds the outerHTML for an 'ins:N' insert record, applying that same id's own
+// style/text/attrs (a block can be styled after it's placed -- those land as extra
+// fields on the same overrides[id] object, alongside .insert).
+function buildInsertMarkup(id, ov) {
+  const ins = ov.insert;
+  if (ins.html) {
+    // section block: children already carry their own data-uieditor-id + any edits
+    // are applied to them separately (see childPatches in bake) -- only the root's
+    // own style/attrs (if the root itself was later selected and restyled) apply here.
+    const end = scanTagEnd(ins.html, 0);
+    if (end < 0) return ins.html;
+    let openTag = ins.html.slice(0, end);
+    if (ov.style) openTag = mergeStyleAttr(openTag, ov.style);
+    if (ov.attrs) openTag = mergeAttrsIntoTag(openTag, ov.attrs);
+    return openTag + ins.html.slice(end);
+  }
+  const attrs = Object.assign({ 'data-uieditor-id': id }, ins.attrs, ov.attrs);
+  const attrStr = Object.entries(attrs).map(([k, v]) => ` ${k}="${escapeAttr(v)}"`).join('');
+  if (VOID_TAGS.has(ins.tag.toLowerCase())) return `<${ins.tag}${attrStr}>`;
+  let openTag = `<${ins.tag}${attrStr}>`;
+  if (ov.style) openTag = mergeStyleAttr(openTag, ov.style);
+  const text = typeof ov.text === 'string' ? ov.text : (ins.text || '');
+  return `${openTag}${escapeHtml(text)}</${ins.tag}>`;
+}
+
+// Apply all overrides to an HTML string and return the modified HTML.
+// overrides: { pathId: { style?, text?, attrs? } } for existing elements,
+//            { 'ins:N': { insert: {targetId, op, tag|html, text?, attrs?}, style?, text?, attrs? } } for inserted ones.
+// ponytail: bp-scoped keys ('id|mobile') are skipped -- a static baked file has no JS
+// to switch breakpoint bands, so only device-global (unscoped) overrides are baked.
+function bake(html, overrides) {
+  const normal = [], inserts = [], childPatches = [];
+  for (const [id, ov] of Object.entries(overrides)) {
+    if (ov.insert) { inserts.push({ id, ov }); continue; }
+    if (id.startsWith('ins:')) { childPatches.push({ id, ov }); continue; }
+    if (id.indexOf('|') !== -1) continue;
+    if (!ov.style && typeof ov.text !== 'string' && !ov.attrs) continue;
+    const pos = findByPath(html, id);
+    if (pos) normal.push({ ov, pos });
+  }
+  // Process highest openStart first so earlier string positions stay valid across iterations
+  normal.sort((a, b) => b.pos.openStart - a.pos.openStart);
+
+  let result = html;
+  for (const { ov, pos } of normal) {
+    const { openStart, openEnd, closeStart } = pos;
+    if (typeof ov.text === 'string') {
+      result = result.slice(0, openEnd) + escapeHtml(ov.text) + result.slice(closeStart);
+    }
+    if (ov.style || ov.attrs) {
+      let openTag = result.slice(openStart, openEnd);
+      if (ov.style) openTag = mergeStyleAttr(openTag, ov.style);
+      if (ov.attrs) openTag = mergeAttrsIntoTag(openTag, ov.attrs);
+      result = result.slice(0, openStart) + openTag + result.slice(openEnd);
+    }
+  }
+
+  // Inserts: a path-based targetId is only valid against the CURRENT sibling layout, so once
+  // one insert lands next to a path-targeted element, that same stale path can miscount for a
+  // later insert at the same spot -- resolve every target position up front each round, then
+  // splice highest string-position first (so earlier positions stay valid), ties broken by
+  // insertion order (higher seq spliced first, so it ends up further from the shared target).
+  // Bounded rounds so a nested insert (targeting another not-yet-placed insert) gets a second
+  // pass once its target exists, without looping forever on a genuinely unknown target.
+  let pending = inserts.map(({ id, ov }) => ({ id, ov, seq: parseInt(id.slice(4), 10) }));
+  for (let round = 0; pending.length && round < 5; round++) {
+    const resolved = [], stillPending = [];
+    for (const item of pending) {
+      const target = locate(result, item.ov.insert.targetId);
+      if (!target) { stillPending.push(item); continue; }
+      const at = item.ov.insert.op === 'before' ? target.openStart
+        : item.ov.insert.op === 'after' ? target.closeEnd
+        : target.closeStart; // default: append as last child
+      resolved.push({ ...item, at });
+    }
+    if (!resolved.length) break; // remaining targets never resolve -- drop silently
+    resolved.sort((a, b) => b.at - a.at || b.seq - a.seq);
+    for (const item of resolved) {
+      const markup = buildInsertMarkup(item.id, item.ov);
+      result = result.slice(0, item.at) + markup + result.slice(item.at);
+    }
+    pending = stillPending;
+  }
+
+  // Edits to individual children of an already-baked section block (found by their own id attr).
+  for (const { id, ov } of childPatches) {
+    const pos = findByIdAttr(result, id);
+    if (!pos) continue;
+    if (typeof ov.text === 'string') {
+      result = result.slice(0, pos.openEnd) + escapeHtml(ov.text) + result.slice(pos.closeStart);
+    }
+    if (ov.style || ov.attrs) {
+      let openTag = result.slice(pos.openStart, pos.openEnd);
+      if (ov.style) openTag = mergeStyleAttr(openTag, ov.style);
+      if (ov.attrs) openTag = mergeAttrsIntoTag(openTag, ov.attrs);
+      result = result.slice(0, pos.openStart) + openTag + result.slice(pos.openEnd);
+    }
+  }
+
+  return result;
+}
+
+module.exports = { bake, findByPath, findByIdAttr, mergeStyleAttr, mergeAttrsIntoTag };

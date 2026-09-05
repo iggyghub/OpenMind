@@ -5,7 +5,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 
-const { bake, findByPath, mergeStyleAttr } = require('../html-bake.js');
+const { bake, findByPath, findByIdAttr, mergeStyleAttr, mergeAttrsIntoTag } = require('../html-bake.js');
 
 // ---- mergeStyleAttr ----
 
@@ -128,6 +128,103 @@ test('bake: no-op for unknown path', () => {
   const overrides = { 'BODY1>DIV0': { style: { color: 'red' } } };
   const out = bake(html, overrides);
   assert.equal(out, html); // unchanged
+});
+
+// ---- mergeAttrsIntoTag ----
+
+test('mergeAttrsIntoTag: adds attr when absent', () => {
+  const out = mergeAttrsIntoTag('<img>', { src: '/assets/a.png' });
+  assert.match(out, /src="\/assets\/a\.png"/);
+});
+
+test('mergeAttrsIntoTag: overwrites existing attr, escapes quotes', () => {
+  const out = mergeAttrsIntoTag('<img src="old.png" alt="x">', { src: 'new "b".png' });
+  assert.match(out, /src="new &quot;b&quot;\.png"/);
+  assert.match(out, /alt="x"/);
+  assert.doesNotMatch(out, /old\.png/);
+});
+
+// ---- bake: single-block inserts (S7) ----
+
+test('bake: single-block insert appended as last child', () => {
+  const html = '<html><head></head><body><p>hi</p></body></html>';
+  const overrides = { 'ins:0': { insert: { targetId: 'BODY1', op: 'append', tag: 'P', text: 'new one' } } };
+  const out = bake(html, overrides);
+  assert.match(out, /<p>hi<\/p><P data-uieditor-id="ins:0">new one<\/P><\/body>/);
+});
+
+test('bake: single-block insert before/after target', () => {
+  const html = '<html><head></head><body><p>hi</p></body></html>';
+  const overrides = {
+    'ins:0': { insert: { targetId: 'BODY1>P0', op: 'before', tag: 'H1', text: 'Heading' } },
+    'ins:1': { insert: { targetId: 'BODY1>P0', op: 'after', tag: 'BUTTON', text: 'Go' } },
+  };
+  const out = bake(html, overrides);
+  assert.match(out, /<H1[^>]*>Heading<\/H1><p>hi<\/p><BUTTON[^>]*>Go<\/BUTTON>/);
+});
+
+test('bake: inserted element carries its own later style edit', () => {
+  const html = '<html><head></head><body></body></html>';
+  const overrides = { 'ins:0': { insert: { targetId: 'BODY1', op: 'append', tag: 'P', text: 'styled' }, style: { color: '#ff0000' } } };
+  const out = bake(html, overrides);
+  assert.match(out, /<P data-uieditor-id="ins:0" style="color:#ff0000">styled<\/P>/);
+});
+
+test('bake: void-tag insert (img) has no closing tag or text', () => {
+  const html = '<html><head></head><body></body></html>';
+  const overrides = { 'ins:0': { insert: { targetId: 'BODY1', op: 'append', tag: 'img', attrs: { src: 'placeholder.png', alt: 'placeholder' } } } };
+  const out = bake(html, overrides);
+  assert.match(out, /<img data-uieditor-id="ins:0" src="placeholder\.png" alt="placeholder">/);
+});
+
+// ---- bake: section-block inserts (S8) ----
+
+test('bake: section-block insert splices stored outerHTML verbatim', () => {
+  const html = '<html><head></head><body></body></html>';
+  const sectionHtml = '<nav data-uieditor-id="ins:0"><a data-uieditor-id="ins:1">Home</a></nav>';
+  const overrides = { 'ins:0': { insert: { targetId: 'BODY1', op: 'append', html: sectionHtml } } };
+  const out = bake(html, overrides);
+  assert.match(out, /<nav data-uieditor-id="ins:0"><a data-uieditor-id="ins:1">Home<\/a><\/nav><\/body>/);
+});
+
+test('bake: edit to a child inside an already-inserted section is applied via its id attr', () => {
+  const html = '<html><head></head><body></body></html>';
+  const sectionHtml = '<nav data-uieditor-id="ins:0"><a data-uieditor-id="ins:1">Home</a></nav>';
+  const overrides = {
+    'ins:0': { insert: { targetId: 'BODY1', op: 'append', html: sectionHtml } },
+    'ins:1': { text: 'Homepage', style: { color: 'blue' } },
+  };
+  const out = bake(html, overrides);
+  assert.match(out, /<a data-uieditor-id="ins:1" style="color:blue">Homepage<\/a>/);
+});
+
+test('findByIdAttr: locates a previously-baked inserted element by its id attribute', () => {
+  const html = '<body><div><span data-uieditor-id="ins:2">hi</span></div></body>';
+  const pos = findByIdAttr(html, 'ins:2');
+  assert.ok(pos);
+  assert.equal(html.slice(pos.openStart, pos.closeEnd), '<span data-uieditor-id="ins:2">hi</span>');
+});
+
+// ---- bake: attrs on existing elements (S11 image replace) ----
+
+test('bake: attrs override on an existing element (e.g. image src replace)', () => {
+  const html = '<html><head></head><body><img src="old.png"></body></html>';
+  const overrides = { 'BODY1>IMG0': { attrs: { src: '/assets/k/new.png' } } };
+  const out = bake(html, overrides);
+  assert.match(out, /<img src="\/assets\/k\/new\.png">/);
+});
+
+// ---- bake: bp-scoped keys are skipped (no JS in a static file to switch bands) ----
+
+test('bake: bp-scoped style override is skipped, unscoped one for the same id still applies', () => {
+  const html = '<html><head></head><body><p>hi</p></body></html>';
+  const overrides = {
+    'BODY1>P0': { style: { color: 'black' } },
+    'BODY1>P0|mobile': { style: { color: 'red' }, bp: 'mobile' },
+  };
+  const out = bake(html, overrides);
+  assert.match(out, /color:black/);
+  assert.doesNotMatch(out, /color:red/);
 });
 
 // ---- file round-trip via server bake handler ----

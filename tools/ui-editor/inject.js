@@ -701,6 +701,14 @@
   }, true);
   document.addEventListener('mouseout', function () { hoverBox.style.display = 'none'; }, true);
 
+  // <html> (documentElement) never gets a data-uieditor-id (pathId/init() both stop at it),
+  // so a click landing there -- e.g. empty space below short page content -- would select or
+  // insert-target an unidentifiable element whose id can't be saved/replayed/baked. Fall back
+  // to <body>, which always has one.
+  function normalizeTarget(el) {
+    return (el === document.documentElement) ? document.body : el;
+  }
+
   document.addEventListener('click', function (e) {
     if (!editMode || within(e.target)) return;
     e.preventDefault(); e.stopPropagation();
@@ -708,22 +716,31 @@
       var block = pendingBlock;
       pendingBlock = null;
       document.documentElement.style.cursor = '';
-      var targetEl = e.target;
-      var r = targetEl.getBoundingClientRect();
+      var rawTarget = e.target;
+      var targetEl = normalizeTarget(rawTarget);
       var op;
-      if (targetEl.children.length === 0 && CONTAINER_TAGS.indexOf(targetEl.tagName) !== -1) {
+      if (rawTarget === document.documentElement) {
+        // clicked empty space outside any real content -- body's own rect doesn't extend
+        // there, so before/after geometry against it would misplace the block outside
+        // <body> entirely; append to the end of the page instead.
         op = 'append';
-      } else if (e.clientY < r.top + r.height / 2) {
-        op = 'before';
       } else {
-        op = 'after';
+        var r = targetEl.getBoundingClientRect();
+        if (targetEl.children.length === 0 && CONTAINER_TAGS.indexOf(targetEl.tagName) !== -1) {
+          op = 'append';
+        } else if (e.clientY < r.top + r.height / 2) {
+          op = 'before';
+        } else {
+          op = 'after';
+        }
       }
       insertBlock(block, targetEl, op);
       setStatus('inserted ' + block.label);
       return;
     }
-    if (e.shiftKey) addToSelection(e.target);
-    else select(e.target);
+    var target = normalizeTarget(e.target);
+    if (e.shiftKey) addToSelection(target);
+    else select(target);
   }, true);
 
   document.addEventListener('keydown', function (e) {
