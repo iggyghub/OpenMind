@@ -9,7 +9,8 @@
   var KEY = params.get('key');
   var LOCAL_PATH = params.get('path'); // only set for local: targets; enables bake
   var overrides = {};
-  var selected = null; // {el, id}
+  var selectedSet = new Set();
+  function primaryEl() { return selectedSet.size ? selectedSet.values().next().value : null; }
   var editMode = false;
   var saveTimer = null;
 
@@ -162,15 +163,26 @@
     }, 400);
   }
 
-  function setOverride(el, patch) {
-    snapshot();
+  function _patchOverride(el, patch) {
     var id = el.getAttribute('data-uieditor-id');
     if (typeof patch.text === 'string' && !(id in origText)) {
-      origText[id] = el.textContent; // capture original before first text edit
+      origText[id] = el.textContent;
     }
     var o = overrides[id] || (overrides[id] = {});
     if (patch.style) o.style = Object.assign(o.style || {}, patch.style);
     if (typeof patch.text === 'string') o.text = patch.text;
+  }
+
+  function setOverride(el, patch) {
+    snapshot();
+    _patchOverride(el, patch);
+    scheduleSave();
+  }
+
+  // ponytail: one snapshot + save for N elements; avoids N undo entries on bulk apply
+  function setOverrideAll(els, patch) {
+    snapshot();
+    els.forEach(function (el) { _patchOverride(el, patch); });
     scheduleSave();
   }
 
@@ -206,7 +218,7 @@
   function setStatus(s) { var el = bar.querySelector('#ue-status'); if (el) el.textContent = s; }
   function within(node) { return bar.contains(node); }
 
-  // ---- selection highlight + resize handles ----
+  // ---- selection highlights + resize handles ----
   var highlight = document.createElement('div');
   highlight.style.cssText = 'position:fixed;pointer-events:none;border:2px solid #4da3ff;z-index:2147483646;display:none;box-sizing:border-box;';
   var hoverBox = document.createElement('div');
@@ -218,6 +230,17 @@
       (pos === 'nw' || pos === 'se' ? 'nwse-resize' : 'nesw-resize') + ';';
     return h;
   });
+  // ponytail: extra highlight boxes created lazily for shift-selected elements beyond the first
+  var extraHighlights = [];
+  function getExtraHighlight(i) {
+    while (extraHighlights.length <= i) {
+      var h = document.createElement('div');
+      h.style.cssText = 'position:fixed;pointer-events:none;border:2px solid #4da3ff;z-index:2147483646;display:none;box-sizing:border-box;opacity:.6;';
+      document.documentElement.appendChild(h);
+      extraHighlights.push(h);
+    }
+    return extraHighlights[i];
+  }
   function mountOverlays() {
     document.documentElement.appendChild(highlight);
     document.documentElement.appendChild(hoverBox);
@@ -226,29 +249,60 @@
   if (document.body) mountOverlays(); else document.addEventListener('DOMContentLoaded', mountOverlays);
 
   function positionHighlight() {
-    if (!selected) { highlight.style.display = 'none'; handles.forEach(function (h) { h.style.display = 'none'; }); return; }
-    var r = selected.getBoundingClientRect();
+    var els = Array.from(selectedSet);
+    if (!els.length) {
+      highlight.style.display = 'none';
+      handles.forEach(function (h) { h.style.display = 'none'; });
+      extraHighlights.forEach(function (h) { h.style.display = 'none'; });
+      return;
+    }
+    var r = els[0].getBoundingClientRect();
     highlight.style.display = 'block';
     highlight.style.left = r.left + 'px'; highlight.style.top = r.top + 'px';
     highlight.style.width = r.width + 'px'; highlight.style.height = r.height + 'px';
-    var pts = { nw: [r.left, r.top], ne: [r.right, r.top], sw: [r.left, r.bottom], se: [r.right, r.bottom] };
-    handles.forEach(function (h) {
-      var p = pts[h.dataset.pos];
-      h.style.display = 'block';
-      h.style.left = (p[0] - 5) + 'px'; h.style.top = (p[1] - 5) + 'px';
-    });
+    if (els.length === 1) {
+      var pts = { nw: [r.left, r.top], ne: [r.right, r.top], sw: [r.left, r.bottom], se: [r.right, r.bottom] };
+      handles.forEach(function (h) {
+        var p = pts[h.dataset.pos];
+        h.style.display = 'block';
+        h.style.left = (p[0] - 5) + 'px'; h.style.top = (p[1] - 5) + 'px';
+      });
+    } else {
+      handles.forEach(function (h) { h.style.display = 'none'; });
+    }
+    for (var i = 1; i < els.length; i++) {
+      var box = getExtraHighlight(i - 1);
+      var er = els[i].getBoundingClientRect();
+      box.style.display = 'block';
+      box.style.left = er.left + 'px'; box.style.top = er.top + 'px';
+      box.style.width = er.width + 'px'; box.style.height = er.height + 'px';
+    }
+    for (var j = els.length - 1; j < extraHighlights.length; j++) {
+      extraHighlights[j].style.display = 'none';
+    }
   }
   window.addEventListener('scroll', positionHighlight, true);
   window.addEventListener('resize', positionHighlight);
 
-  function select(el) {
-    selected = el;
-    positionHighlight();
+  function updateToolbar(el) {
     var cs = getComputedStyle(el);
     bar.querySelector('#ue-bg').value = rgbToHex(cs.backgroundColor) || '#ffffff';
     bar.querySelector('#ue-fg').value = rgbToHex(cs.color) || '#000000';
     bar.querySelector('#ue-fs').value = parseInt(cs.fontSize, 10) || 14;
   }
+
+  function select(el) {
+    selectedSet = new Set([el]);
+    positionHighlight();
+    updateToolbar(el);
+  }
+
+  function addToSelection(el) {
+    selectedSet.add(el);
+    positionHighlight();
+    updateToolbar(primaryEl());
+  }
+
   function rgbToHex(rgb) {
     var m = rgb.match(/\d+/g);
     if (!m) return null;
@@ -267,11 +321,12 @@
   document.addEventListener('click', function (e) {
     if (!editMode || within(e.target)) return;
     e.preventDefault(); e.stopPropagation();
-    select(e.target);
+    if (e.shiftKey) addToSelection(e.target);
+    else select(e.target);
   }, true);
 
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { selected = null; positionHighlight(); }
+    if (e.key === 'Escape') { selectedSet.clear(); positionHighlight(); }
     if (e.ctrlKey && e.key.toLowerCase() === 'z' && !e.shiftKey) {
       if (document.activeElement && document.activeElement.contentEditable === 'true') return;
       e.preventDefault();
@@ -284,11 +339,12 @@
     }
   });
 
-  // move: drag inside the highlighted box (not on a handle)
+  // move: single-element only; drag inside the highlighted box (not on a handle)
   highlight.style.pointerEvents = 'none'; // handled via mousedown on document while editMode+selected, hit-testing the box rect
   document.addEventListener('mousedown', function (e) {
-    if (!editMode || !selected || within(e.target)) return;
+    if (!editMode || selectedSet.size !== 1 || within(e.target)) return;
     if (handles.some(function (h) { return h === e.target; })) return;
+    var selected = primaryEl();
     var r = selected.getBoundingClientRect();
     var overBox = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
     if (!overBox || e.target !== selected && !selected.contains(e.target)) {
@@ -316,7 +372,8 @@
   handles.forEach(function (h) {
     h.addEventListener('mousedown', function (e) {
       e.preventDefault(); e.stopPropagation();
-      if (!selected) return;
+      if (selectedSet.size !== 1) return;
+      var selected = primaryEl();
       var pos = h.dataset.pos;
       var r = selected.getBoundingClientRect();
       var startX = e.clientX, startY = e.clientY;
@@ -345,27 +402,27 @@
   bar.querySelector('#ue-toggle').addEventListener('change', function (e) {
     editMode = e.target.checked;
     bar.querySelector('#ue-panel').style.display = editMode ? 'flex' : 'none';
-    if (!editMode) { selected = null; positionHighlight(); hoverBox.style.display = 'none'; }
+    if (!editMode) { selectedSet.clear(); positionHighlight(); hoverBox.style.display = 'none'; }
   });
   bar.querySelector('#ue-bg').addEventListener('input', function (e) {
-    if (!selected) return;
-    selected.style.backgroundColor = e.target.value;
-    setOverride(selected, { style: { backgroundColor: e.target.value } });
+    if (!selectedSet.size) return;
+    selectedSet.forEach(function (el) { el.style.backgroundColor = e.target.value; });
+    setOverrideAll(selectedSet, { style: { backgroundColor: e.target.value } });
   });
   bar.querySelector('#ue-fg').addEventListener('input', function (e) {
-    if (!selected) return;
-    selected.style.color = e.target.value;
-    setOverride(selected, { style: { color: e.target.value } });
+    if (!selectedSet.size) return;
+    selectedSet.forEach(function (el) { el.style.color = e.target.value; });
+    setOverrideAll(selectedSet, { style: { color: e.target.value } });
   });
   bar.querySelector('#ue-fs').addEventListener('input', function (e) {
-    if (!selected) return;
+    if (!selectedSet.size) return;
     var v = e.target.value + 'px';
-    selected.style.fontSize = v;
-    setOverride(selected, { style: { fontSize: v } });
+    selectedSet.forEach(function (el) { el.style.fontSize = v; });
+    setOverrideAll(selectedSet, { style: { fontSize: v } });
   });
   bar.querySelector('#ue-edittext').addEventListener('click', function () {
-    if (!selected) return;
-    var el = selected; // snapshot: commit must refer to this element, not whatever selected is at blur time
+    if (selectedSet.size !== 1) return;
+    var el = primaryEl();
     el.contentEditable = 'true';
     el.focus();
     function commit() {
