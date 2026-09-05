@@ -155,6 +155,7 @@
   highlight.style.pointerEvents = 'none'; // handled via mousedown on document while editMode+selected, hit-testing the box rect
   document.addEventListener('mousedown', function (e) {
     if (!editMode || !selected || within(e.target)) return;
+    if (handles.some(function (h) { return h === e.target; })) return;
     var r = selected.getBoundingClientRect();
     var overBox = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
     if (!overBox || e.target !== selected && !selected.contains(e.target)) {
@@ -231,14 +232,15 @@
   });
   bar.querySelector('#ue-edittext').addEventListener('click', function () {
     if (!selected) return;
-    selected.contentEditable = 'true';
-    selected.focus();
+    var el = selected; // snapshot: commit must refer to this element, not whatever selected is at blur time
+    el.contentEditable = 'true';
+    el.focus();
     function commit() {
-      selected.contentEditable = 'false';
-      setOverride(selected, { text: selected.textContent });
-      selected.removeEventListener('blur', commit);
+      el.contentEditable = 'false';
+      setOverride(el, { text: el.textContent });
+      el.removeEventListener('blur', commit);
     }
-    selected.addEventListener('blur', commit);
+    el.addEventListener('blur', commit);
   });
   bar.querySelector('#ue-reset').addEventListener('click', function () {
     fetch('/api/reset', {
@@ -248,10 +250,11 @@
   });
 
   // ---- init: tag every element with a stable id, then apply saved overrides ----
+  var overlayNodes = [highlight, hoverBox].concat(handles);
   function init() {
     var all = document.documentElement.querySelectorAll('*');
     for (var i = 0; i < all.length; i++) {
-      if (within(all[i])) continue;
+      if (within(all[i]) || overlayNodes.indexOf(all[i]) !== -1) continue;
       all[i].setAttribute('data-uieditor-id', pathId(all[i]));
     }
     fetch('/api/load?key=' + encodeURIComponent(KEY)).then(function (r) { return r.json(); }).then(function (data) {
