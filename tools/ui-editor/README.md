@@ -24,6 +24,7 @@ Open `http://localhost:4545`. Choose a target type, enter a path or URL, and cli
 | **Edit text** | "Edit text" button — makes the element contenteditable (single selection only) |
 | **Undo / Redo** | Undo/Redo buttons or Ctrl+Z / Ctrl+Y (up to 50 steps) |
 | **Bake** | "Commit to file" button — writes all overrides inline into the source HTML file (local targets only) |
+| **Code** | "Code" button — opens a read-only panel showing the baked HTML; Copy and Download .html buttons (local targets only) |
 | **Reset** | "Reset this page" button — clears all overrides and reloads |
 | **Element tree** | Expandable "Elements" panel in the toolbar for tree-based selection |
 
@@ -47,4 +48,4 @@ Open `http://localhost:4545`. Choose a target type, enter a path or URL, and cli
 node --test "tools/ui-editor/tests/*.test.js"
 ```
 
-Tests cover `sanitizeKey`, `injectIntoHtml` (base-href insertion, CSP stripping, script tag placement), save/load/reset round-trip, bake/findByPath/mergeStyleAttr, undo/redo stack logic, element-tree helpers, and path-traversal containment + input validation. No test framework, no fixtures — plain `node:test` + `node:assert`.
+Tests cover `sanitizeKey`, `injectIntoHtml` (base-href insertion, CSP stripping, script tag placement), save/load/reset round-trip, bake/findByPath/mergeStyleAttr, undo/redo stack logic, element-tree helpers, path-traversal containment + input validation, and `renderHtml` (bake-to-string without disk write). No test framework, no fixtures — plain `node:test` + `node:assert`.

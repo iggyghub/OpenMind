@@ -237,6 +237,12 @@ async function handleFtp(req, res, urlObj) {
   }
 }
 
+// Apply saved overrides to source HTML and return the result without writing to disk.
+// fullPath must be pre-validated (absolute, within ROOT). skey is the sanitized override key.
+function renderHtml(skey, fullPath) {
+  return bake(fs.readFileSync(fullPath, 'utf8'), readOverrides(skey));
+}
+
 const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://localhost:${PORT}`);
   try {
@@ -273,6 +279,16 @@ const server = http.createServer(async (req, res) => {
       const f = path.join(OVERRIDES_DIR, sanitizeKey(body.key) + '.json');
       if (fs.existsSync(f)) fs.unlinkSync(f);
       sendJson(res, 200, { ok: true });
+    } else if (req.method === 'GET' && urlObj.pathname === '/api/render') {
+      const key = urlObj.searchParams.get('key') || '';
+      const filePath = urlObj.searchParams.get('path') || '';
+      if (!key) { res.writeHead(400); res.end('missing key'); return; }
+      if (!filePath) { res.writeHead(400); res.end('render is only available for local targets'); return; }
+      const full = checkLocalPath(filePath);
+      if (!full) { res.writeHead(403); res.end('forbidden'); return; }
+      if (!fs.existsSync(full) || !fs.statSync(full).isFile()) { res.writeHead(404); res.end('file not found'); return; }
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(renderHtml(sanitizeKey(key), full));
     } else if (req.method === 'POST' && urlObj.pathname === '/api/bake') {
       let body; try { body = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'invalid JSON' }); return; }
       if (!body || typeof body !== 'object' || Array.isArray(body)) { sendJson(res, 400, { error: 'body must be a JSON object' }); return; }
@@ -303,4 +319,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides, bake, checkLocalPath, validateSaveBody };
+module.exports = { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides, bake, checkLocalPath, validateSaveBody, renderHtml };
