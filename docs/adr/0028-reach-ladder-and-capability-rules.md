@@ -103,13 +103,60 @@ shipped test-green code that was broken on first click-through.
 - R2 and R6 are the two rules with teeth against the failure mode this repo
   actually has: building capability faster than it can be trusted.
 
-## Open
+## Resolution (2026-09-05 grill) -- no rewrite
 
-Whether this is a rewrite trigger. The rules describe a system that mostly
-already exists -- the ladder's five primitives are all built. What a v2 would
-change is the *arbitration layer* (a scheduler, and one acquisition path
-instead of nine), not the reach. That question is deliberately left open here;
-it needs its own grill and its own ADR.
+The open fork below was **resolved against a rewrite.** The grill it asked for
+happened the same day: an OS mapping of Felix across thirteen levels (storage,
+model, tool registry, gate, kernel loop, drivers, services, IPC, package
+manager, shell, toolkit, apps, user), run specifically to find structural gaps.
+
+> **Open (the fork, now closed):** Whether this is a rewrite trigger. The rules
+> describe a system that mostly already exists -- the ladder's five primitives
+> are all built. What a v2 would change is the *arbitration layer* (a scheduler,
+> and one acquisition path instead of nine), not the reach. That question is
+> deliberately left open here; it needs its own grill and its own ADR.
+
+**What the mapping found.** Real defects at six levels, and every one of them
+was addressable without moving a boundary:
+
+| Defect | Level | Outcome |
+|---|---|---|
+| One enabled model, no fallback, a human retry procedure | processor | ADR-0029 |
+| Tool results as prose; the world's errors fatal | kernel loop | ADR-0030 |
+| Tokens in one window of four; type and space untokenised | toolkit | ADR-0031 |
+| Process logs truncated on every launch; 37 hand-made copies | observability | ADR-0032 |
+| The user's reach into Felix grown by accretion | user | R7 amendment |
+| Nine capability-acquisition paths, no arbitration rule | package manager | **R3** |
+
+Five became single-ADR fixes, each contained inside one layer. The sixth --
+the half of the fork that named "one acquisition path instead of nine" --
+dissolved into a rule rather than a build: R3's table answers "which mechanism?"
+in one question, and the nine paths stay nine because they are genuinely
+different things, not nine implementations of one thing. An arbitration gap
+looked like a structural gap until it was named.
+
+**Both halves of the fork's premise were wrong.** The nine paths needed a rule,
+not a merge. And "a scheduler" was the wrong noun for the other half: the R5
+amendment below establishes that the contended resource is one remote endpoint,
+so what is missing is admission control, not scheduling. Neither correction
+required a boundary to move -- which is what a rewrite is for.
+
+**What remains undecided.** Three things, none of them rewrite triggers:
+
+1. **Admission control.** A max-in-flight semaphore against the one remote
+   endpoint -- not a scheduler, not a queue, not preemption (see the R5
+   amendment, and ADR-0029's rejection of a work queue). Nothing today bounds
+   concurrent calls to a host whose known failure mode is stalling under load.
+2. **Init / supervisor.** The layer that starts, restarts, and health-checks
+   Cerebral (`scripts/launch-felix.ps1`, `tray/main.js`'s relaunch path,
+   `tray/lib/boot-check.js`'s rollback). It is the most fragile layer in the
+   system and has no ADR. Grilled separately.
+3. **Categories the mapping never reached.** Testing and eval, packaging and
+   updates, configuration, identity. Un-grilled, so their state is unknown
+   rather than known-good.
+
+**Revisit trigger.** A defect that cannot be fixed inside one level -- one whose
+fix requires a boundary from the mapping to move. None of the six was.
 
 ## Amendment (2026-09-05) -- R7, the invocation ladder (menus, palettes, shortcuts)
 
