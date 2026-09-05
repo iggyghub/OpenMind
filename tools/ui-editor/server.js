@@ -35,6 +35,17 @@ const MIME = {
 };
 function mimeFor(p) { return MIME[path.extname(p).toLowerCase()] || 'application/octet-stream'; }
 
+// Every response here reflects a file on disk (source, overrides, or the
+// editor shell itself) that this dev tool expects to change on every edit --
+// no explicit Cache-Control meant browsers fell back to heuristic caching
+// (no validators to even revalidate against), so an edit could sit there
+// invisible behind a stale cached copy until a hard-refresh. The one
+// exception is /assets/ (content-hash-named uploads, genuinely immutable),
+// left alone below.
+function contentHeaders(contentType) {
+  return { 'content-type': contentType, 'cache-control': 'no-store' };
+}
+
 function sanitizeKey(s) { return s.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 150); }
 
 // Image magic-byte signatures (PNG/JPEG/GIF/WebP). No dep needed -- Buffer covers it.
@@ -112,7 +123,7 @@ function resetOverrides(key) {
 
 function sendJson(res, code, obj) {
   const body = JSON.stringify(obj);
-  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
+  res.writeHead(code, contentHeaders('application/json; charset=utf-8'));
   res.end(body);
 }
 
@@ -136,10 +147,10 @@ function serveFileFromDisk(fullPath, key, req, res, localRel) {
     let scriptUrl = `http://${req.headers.host}/inject.js?key=${key}`;
     if (localRel) scriptUrl += '&path=' + encodeURIComponent(localRel);
     const out = injectIntoHtml(html, scriptUrl, null);
-    res.writeHead(200, { 'content-type': mimeFor(fullPath) });
+    res.writeHead(200, contentHeaders(mimeFor(fullPath)));
     res.end(out);
   } else {
-    res.writeHead(200, { 'content-type': mimeFor(fullPath) });
+    res.writeHead(200, contentHeaders(mimeFor(fullPath)));
     fs.createReadStream(fullPath).pipe(res);
   }
 }
@@ -200,11 +211,11 @@ async function handleRemote(req, res, urlObj) {
   if (ct.includes('text/html')) {
     const html = await upstream.text();
     const out = injectIntoHtml(html, `http://${req.headers.host}/inject.js?key=${key}`, upstream.url);
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.writeHead(200, contentHeaders('text/html; charset=utf-8'));
     res.end(out);
   } else {
     const buf = Buffer.from(await upstream.arrayBuffer());
-    res.writeHead(200, { 'content-type': ct });
+    res.writeHead(200, contentHeaders(ct));
     res.end(buf);
   }
 }
@@ -261,10 +272,10 @@ async function handleFtp(req, res, urlObj) {
   const ext = path.extname(remotePath).toLowerCase();
   if (ext === '.html' || ext === '.htm') {
     const out = injectIntoHtml(buf.toString('utf8'), `http://${req.headers.host}/inject.js?key=${key}`, null);
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.writeHead(200, contentHeaders('text/html; charset=utf-8'));
     res.end(out);
   } else {
-    res.writeHead(200, { 'content-type': mimeFor(remotePath) });
+    res.writeHead(200, contentHeaders(mimeFor(remotePath)));
     res.end(buf);
   }
 }
@@ -280,11 +291,11 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && urlObj.pathname === '/') {
       const p = path.join(HERE, 'public', 'editor.html');
-      res.writeHead(200, { 'content-type': mimeFor(p) });
+      res.writeHead(200, contentHeaders(mimeFor(p)));
       fs.createReadStream(p).pipe(res);
     } else if (req.method === 'GET' && urlObj.pathname === '/inject.js') {
       const p = path.join(HERE, 'inject.js');
-      res.writeHead(200, { 'content-type': mimeFor(p) });
+      res.writeHead(200, contentHeaders(mimeFor(p)));
       fs.createReadStream(p).pipe(res);
     } else if (req.method === 'GET' && urlObj.pathname.startsWith('/local/')) {
       await handleLocal(req, res, urlObj);
@@ -319,7 +330,7 @@ const server = http.createServer(async (req, res) => {
       const full = checkLocalPath(filePath);
       if (!full) { res.writeHead(403); res.end('forbidden'); return; }
       if (!fs.existsSync(full) || !fs.statSync(full).isFile()) { res.writeHead(404); res.end('file not found'); return; }
-      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      res.writeHead(200, contentHeaders('text/plain; charset=utf-8'));
       res.end(renderHtml(sanitizeKey(key), full));
     } else if (req.method === 'POST' && urlObj.pathname === '/api/asset') {
       let body; try { body = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'invalid JSON' }); return; }
