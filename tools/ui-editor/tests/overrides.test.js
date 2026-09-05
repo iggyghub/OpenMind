@@ -108,3 +108,28 @@ test('validateSaveBody: accepts insert-op overrides with ins: keys', () => {
   });
   assert.equal(err, null);
 });
+
+// section block round-trip (S8)
+test('section block insert: save -> load -> reset round trip (html payload)', () => {
+  const key = 'test_section_' + Date.now();
+  const sectionHtml = '<nav data-uieditor-id="ins:0" style="display:flex;"><a data-uieditor-id="ins:1" href="#">Home</a></nav>';
+  const data = {
+    'ins:0': { insert: { targetId: 'HTML0>BODY0>DIV0', op: 'after', html: sectionHtml } }
+  };
+  writeOverrides(key, data);
+  const loaded = readOverrides(key);
+  assert.deepEqual(loaded, data);
+  assert.equal(loaded['ins:0'].insert.html, sectionHtml);
+  resetOverrides(key);
+  assert.deepEqual(readOverrides(key), {});
+});
+
+test('validateSaveBody: accepts section block overrides with html payload', () => {
+  const err = validateSaveBody({
+    key: 'test_k',
+    overrides: {
+      'ins:0': { insert: { targetId: 'BODY0>DIV0', op: 'after', html: '<nav data-uieditor-id="ins:0"><a data-uieditor-id="ins:1">Home</a></nav>' } }
+    }
+  });
+  assert.equal(err, null);
+});
