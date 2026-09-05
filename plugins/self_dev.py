@@ -37,6 +37,17 @@ the recorded phases AND removes the stale clone dir, so the run starts over
 from scratch. (The underlying `StepLedger.clear(run_id)` is still available
 via the injectable `ledger` seam for programmatic use.)
 
+S27 adds one bounded self-fix attempt (ADR-0008-style bounded self-correction,
+applied to the test step): when the test run fails, edit_fn is called a
+second time on the SAME clone with the failure output appended to the
+description, then tests re-run once, before the PR opens. Resumable via a
+"retest" ledger phase like every other step -- a crash between the two test
+runs replays the recorded outcome instead of re-attempting the fix. This
+targets the same class of problem the 2026-08-22 test-status gate above
+surfaced (red PRs sitting unmerged for a human to look at): most red runs
+are single mistakes an immediate second pass fixes, so this catches those
+before they ever become a pending-review PR.
+
 S5 (#807) adds self_dev_campaign: drives the existing _run() internals in a
 loop against a campaign driver file (Status: / - **Active:** Sx -- #N /
 - **Model:** / ## Queue / ## Landed PRs). Same driver-file format as the
@@ -787,6 +798,40 @@ class SelfDevPlugin:
                 "result": {"passed": test_passed, "summary": test_output},
                 "is_error": False,
             })
+
+        # 3b. One bounded self-fix attempt if tests failed (S27): the model
+        #     gets a second commit on the same clone, told what broke, before
+        #     the PR opens as tests_failed. Resumable via the "retest" phase.
+        if not test_passed:
+            if "retest" in resumed:
+                logger.info("[self_dev] run %r: resuming -- retest already recorded", run_id)
+                retest_result = resumed["retest"]["result"] or {}
+                test_passed = bool(retest_result.get("passed"))
+                test_output = str(retest_result.get("summary") or "")
+            else:
+                fix_description = (
+                    "The previous change failed the test suite. Before rewriting "
+                    "anything, read the failure output below and identify the "
+                    "SPECIFIC line or assertion that broke and why -- then make "
+                    "the smallest fix that addresses that cause (not a rewrite). "
+                    "Update or add a test that would have caught it, then "
+                    "commit.\n\nOriginal task:\n"
+                    f"{description}\n\nTest failure output:\n{test_output[:2000]}"
+                )
+                try:
+                    fix_result = self._resolve_edit()(clone_dir, fix_description)
+                    if inspect.isawaitable(fix_result):
+                        fix_result = await fix_result
+                    if fix_result.get("committed"):
+                        test_passed, test_output = await asyncio.to_thread(self._test, clone_dir)
+                except Exception as exc:
+                    test_output = f"{test_output}\n\nFix attempt failed: {exc}"
+                self._ledger.record(run_id, "retest", {
+                    "name": "retest",
+                    "args": {},
+                    "result": {"passed": test_passed, "summary": test_output},
+                    "is_error": False,
+                })
 
         # 4. Open PR (regardless of test colour; mergeability is decided below).
         if "pr" in resumed:

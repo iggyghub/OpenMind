@@ -297,6 +297,93 @@ async def test_test_runner_exception_does_not_prevent_pr(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# S27: one bounded self-fix attempt when tests fail
+# ---------------------------------------------------------------------------
+
+async def test_failing_tests_get_one_fix_attempt_that_succeeds(tmp_path):
+    """The second edit_fn call sees the failure output; if it fixes things,
+    the run proceeds to auto-merge like any other green run."""
+    edit_calls = []
+    test_calls = []
+
+    def edit_fn(d, desc):
+        edit_calls.append(desc)
+        return {"branch": "selfdev/abc123", "committed": True}
+
+    def test_fn(d):
+        test_calls.append(1)
+        return (len(test_calls) >= 2, "1 failed" if len(test_calls) < 2 else "1 passed")
+
+    merge_calls = []
+    plugin = _make(
+        tmp_path, edit_fn=edit_fn, test_fn=test_fn,
+        merge_fn=lambda url: merge_calls.append(url),
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": "Add a thing"})
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["test_passed"] is True
+    assert data["merge_decision"] == "auto_merge"
+    assert len(edit_calls) == 2, "edit_fn must run again with the failure context"
+    assert "Test failure output" in edit_calls[1]
+    assert "smallest fix" in edit_calls[1], "fix attempt must ask for root-cause, not a rewrite"
+    assert "1 failed" in edit_calls[1]
+    assert len(test_calls) == 2, "tests must re-run once after the fix attempt"
+    assert merge_calls == [_PR_URL]
+
+
+async def test_failing_tests_stay_failed_after_fix_attempt(tmp_path):
+    """If the fix attempt doesn't help, the run still opens a red PR (one
+    retry, not a loop) instead of merging."""
+    edit_calls = []
+    plugin = _make(
+        tmp_path,
+        edit_fn=lambda d, desc: (edit_calls.append(desc), {"branch": "b", "committed": True})[1],
+        test_fn=lambda d: (False, "still failing"),
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": "Broken change"})
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["test_passed"] is False
+    assert data["merge_decision"] == "tests_failed"
+    assert len(edit_calls) == 2, "exactly one fix attempt, not an unbounded loop"
+
+
+async def test_retest_phase_is_resumable(tmp_path):
+    """A crash after the fix attempt is recorded replays the outcome instead
+    of attempting a third edit."""
+    run_id = "post-fix-crash"
+    ledger = StepLedger(db_path=tmp_path / "ledger.db")
+    ledger.record(run_id, "clone", {"name": "clone", "args": {}, "result": {}, "is_error": False})
+    ledger.record(run_id, "edit", {
+        "name": "edit", "args": {},
+        "result": {"branch": "selfdev/x", "committed": True}, "is_error": False,
+    })
+    ledger.record(run_id, "test", {
+        "name": "test", "args": {}, "result": {"passed": False, "summary": "1 failed"}, "is_error": False,
+    })
+    ledger.record(run_id, "retest", {
+        "name": "retest", "args": {}, "result": {"passed": True, "summary": "1 passed"}, "is_error": False,
+    })
+
+    edit_calls = []
+    plugin = _make(
+        tmp_path,
+        ledger=ledger,
+        edit_fn=lambda d, desc: (edit_calls.append(desc), {"branch": "should-not-run", "committed": True})[1],
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": "x", "run_id": run_id})
+
+    assert not result.is_error, result.content
+    assert edit_calls == [], "the recorded retest result must be reused, not re-attempted"
+    data = json.loads(result.content)
+    assert data["test_passed"] is True
+    assert data["merge_decision"] == "auto_merge"
+
+
+# ---------------------------------------------------------------------------
 # Custom run_id flows through
 # ---------------------------------------------------------------------------
 
