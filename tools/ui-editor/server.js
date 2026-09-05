@@ -56,6 +56,10 @@ function writeOverrides(key, data) {
   fs.mkdirSync(OVERRIDES_DIR, { recursive: true });
   fs.writeFileSync(path.join(OVERRIDES_DIR, key + '.json'), JSON.stringify(data, null, 2));
 }
+function resetOverrides(key) {
+  const f = path.join(OVERRIDES_DIR, key + '.json');
+  if (fs.existsSync(f)) fs.unlinkSync(f);
+}
 
 function sendJson(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -254,6 +258,10 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`UI editor running at http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`UI editor running at http://localhost:${PORT}`);
+  });
+}
+
+module.exports = { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides };

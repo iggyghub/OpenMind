@@ -17,21 +17,42 @@ product surface. Each issue body is the full spec for its slice.
 
 ## Next slice -- start here
 
-- **Active:** S1 -- #1063
+- **Active:** S2 -- #1064
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] S1 -- #1063 -- verify + fix drag/resize/text/font/reset, add save-cycle tests
+- [x] S1 -- #1063 -- verify + fix drag/resize/text/font/reset, add save-cycle tests (PR #1079)
 - [ ] S2 -- #1064 -- bake overrides into the source HTML file (local targets only)
 - [ ] S3 -- #1065 -- undo/redo for edits
 - [ ] S4 -- #1066 -- element outline/tree panel for selection
 - [ ] S5 -- #1067 -- multi-select + bulk style edit
 - [ ] S6 -- #1068 -- safety/regression pass (path traversal, input validation, README)
+- [ ] S7 -- #1073 -- block palette: insert new elements (not just edit existing ones)
+- [ ] S8 -- #1074 -- section template library (navbar, hero, feature grid, pricing, footer, contact form, gallery)
+- [ ] S9 -- #1075 -- expanded style panel (spacing box model, flex/grid layout, border/radius/shadow)
+- [ ] S10 -- #1076 -- responsive breakpoints (mobile/tablet/desktop preview + per-breakpoint overrides)
+- [ ] S11 -- #1077 -- asset manager (image upload + insert/replace)
+- [ ] S12 -- #1078 -- code view / HTML export panel
 
 Per-slice model: sonnet unless the queue entry says otherwise.
 
+### Why S7-S12 (added 2026-09-04)
+
+Self-grilled against GrapesJS/Webflow/Wix-style builders: S1-S6 make the tool
+a solid *element editor* (move/resize/recolor/retext what's already on the
+page) but it still can't originate a page -- there's no way to add anything
+new. "Build a large variety of websites" needs: a block palette to insert
+elements (S7), prebuilt multi-element section blocks so a whole site doesn't
+require placing every `<div>` by hand (S8), a real style panel beyond
+bg/fg/font-size (S9), responsive breakpoints since every reference builder
+has them (S10), an asset manager for images (S11), and a code/export view
+so the result is portable (S12). Same SAFETY rules apply; S7 is the
+prerequisite for S8 (blocks are built from the same insert primitive).
+
 ## Landed PRs
+
+- S1 -- #1063 -- PR #1079
 
 ## SAFETY
 
