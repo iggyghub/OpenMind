@@ -62,7 +62,19 @@ try {
         $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
         $shortcut.WorkingDirectory = $repoRoot
         $shortcut.Description = "Launch Felix (OpenMind)"
+        $shortcut.IconLocation = (Join-Path $repoRoot "tray\assets\icon.ico") + ",0"
         $shortcut.Save()
+
+        # Must match tray/main.js's app.setAppUserModelID call -- otherwise this
+        # shortcut and the Electron window it launches get different Windows
+        # taskbar identities and show as two separate icons instead of merging
+        # into one (the pin, and pinning it to the taskbar later both inherit
+        # this from the shortcut file itself, so this only needs to run once).
+        try {
+            & (Join-Path $repoRoot "scripts\set-shortcut-appid.ps1") -Path $lnk -AppId "OpenMind.Felix"
+        } catch {
+            Fail "Could not set AppUserModelID on $lnk (non-fatal -- shortcut still works, just won't merge with the taskbar icon): $_"
+        }
 
         Pass "Created: $lnk"
         $created += $lnk

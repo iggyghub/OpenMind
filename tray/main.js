@@ -1,6 +1,15 @@
 const { app, Tray, Menu, BrowserWindow, Notification, nativeImage, ipcMain, screen, shell, globalShortcut, dialog } = require('electron');
 const WebSocket = require('ws');
 const path = require('path');
+
+// Without an explicit AppUserModelID, Windows derives one from the launching
+// process, so the desktop/taskbar shortcut (which runs through powershell.exe
+// -> launch-felix.ps1) and this Electron window end up with different
+// identities -- two separate taskbar icons instead of one. Set here (before
+// any window exists) AND on the shortcut files themselves (System.AppUserModel.ID
+// property, set via scripts/set-shortcut-appid.ps1) so both sides match and
+// Windows merges them into a single icon.
+if (process.platform === 'win32') app.setAppUserModelID('OpenMind.Felix');
 const { VisualiserState }      = require('./lib/visualiser-state');
 const { PositionStore }        = require('./lib/position-store');
 const { NotificationManager }  = require('./lib/notification-manager');
