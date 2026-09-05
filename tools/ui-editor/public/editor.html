@@ -5,40 +5,134 @@
 <title>UI Editor</title>
 <style>
   html,body{margin:0;height:100%;background:#111;color:#eee;font:13px/1.4 -apple-system,Segoe UI,sans-serif;}
-  #bar{display:flex;gap:8px;padding:8px;background:#1a1a1e;align-items:center;}
-  #bar input[type=text]{flex:1;padding:6px 8px;border-radius:6px;border:1px solid #333;background:#0e0e11;color:#eee;}
+  #bar{padding:8px;background:#1a1a1e;}
+  #bar-row1{display:flex;gap:8px;align-items:center;}
+  #bar select, #bar input[type=text], #bar input[type=password], #bar input[type=number]{
+    padding:6px 8px;border-radius:6px;border:1px solid #333;background:#0e0e11;color:#eee;
+  }
+  #bar input[type=checkbox]{margin-right:4px;}
   #bar button{padding:6px 12px;border-radius:6px;border:1px solid #333;background:#26262c;color:#eee;cursor:pointer;}
-  #bar select{padding:6px;border-radius:6px;background:#26262c;color:#eee;border:1px solid #333;}
-  iframe{width:100%;height:calc(100% - 46px);border:0;background:#fff;}
+  #conntype{min-width:110px;}
+  .fields{display:none;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;}
+  .fields.active{display:flex;}
+  .fields input[type=text], .fields input[type=password]{flex:1;min-width:140px;}
+  .fields .narrow{flex:none;width:70px;}
+  .fields label.inline{display:flex;align-items:center;gap:4px;white-space:nowrap;}
+  iframe{width:100%;height:calc(100% - 84px);border:0;background:#fff;}
   #hint{padding:4px 8px;opacity:.6;font-size:11px;}
+  #err{padding:4px 8px;color:#ff6b6b;font-size:11px;display:none;}
 </style>
 </head>
 <body>
 <div id="bar">
-  <select id="quick">
-    <option value="">Felix pages...</option>
-    <option value="local:tray/windows/main.html">main.html</option>
-    <option value="local:tray/windows/visualiser.html">visualiser.html</option>
-    <option value="local:tray/windows/detached-panel.html">detached-panel.html</option>
-    <option value="local:tray/windows/irreversible-modal.html">irreversible-modal.html</option>
-  </select>
-  <input id="target" type="text" placeholder="relative path (tray/windows/main.html) or https://example.com">
-  <button id="go">Open</button>
+  <div id="bar-row1">
+    <select id="conntype">
+      <option value="local">Local file</option>
+      <option value="url">URL</option>
+      <option value="git">Git repo</option>
+      <option value="ftp">FTP</option>
+    </select>
+    <select id="quick">
+      <option value="">Felix pages...</option>
+      <option value="tray/windows/main.html">main.html</option>
+      <option value="tray/windows/visualiser.html">visualiser.html</option>
+      <option value="tray/windows/detached-panel.html">detached-panel.html</option>
+      <option value="tray/windows/irreversible-modal.html">irreversible-modal.html</option>
+    </select>
+    <button id="go">Open</button>
+  </div>
+
+  <div class="fields active" data-conn="local">
+    <input id="local-path" type="text" placeholder="relative path, e.g. tray/windows/main.html">
+  </div>
+
+  <div class="fields" data-conn="url">
+    <input id="url-url" type="text" placeholder="https://example.com">
+    <label class="inline"><input type="checkbox" id="url-auth-toggle"> Basic auth</label>
+    <input id="url-user" type="text" placeholder="username" style="display:none;">
+    <input id="url-pass" type="password" placeholder="password" style="display:none;">
+  </div>
+
+  <div class="fields" data-conn="git">
+    <input id="git-repo" type="text" placeholder="repo URL, e.g. https://github.com/you/site.git">
+    <input id="git-branch" type="text" placeholder="branch (default)" style="flex:none;width:120px;">
+    <input id="git-path" type="text" placeholder="file path in repo, e.g. index.html">
+  </div>
+
+  <div class="fields" data-conn="ftp">
+    <input id="ftp-host" type="text" placeholder="host">
+    <input id="ftp-port" type="number" class="narrow" placeholder="21" value="21">
+    <input id="ftp-user" type="text" placeholder="username" style="flex:none;width:120px;">
+    <input id="ftp-pass" type="password" placeholder="password" style="flex:none;width:120px;">
+    <input id="ftp-path" type="text" placeholder="remote file path, e.g. /public_html/index.html">
+  </div>
 </div>
 <div id="hint">Edit mode toggle + tools live inside the loaded page (top-right). Toggle it, click an element, drag to move/resize, use the color/text controls. Edits autosave.</div>
+<div id="err"></div>
 <iframe id="frame" src="about:blank"></iframe>
 <script>
-  var input = document.getElementById('target');
+  var connType = document.getElementById('conntype');
   var quick = document.getElementById('quick');
   var frame = document.getElementById('frame');
-  function load(v) {
-    if (!v) return;
-    var src = /^https?:\/\//i.test(v) ? '/remote?url=' + encodeURIComponent(v) : '/local/' + v.replace(/^local:/, '');
+  var errEl = document.getElementById('err');
+
+  function showFields(type) {
+    document.querySelectorAll('.fields').forEach(function (el) {
+      el.classList.toggle('active', el.dataset.conn === type);
+    });
+  }
+  connType.addEventListener('change', function () { showFields(connType.value); });
+
+  document.getElementById('url-auth-toggle').addEventListener('change', function (e) {
+    document.getElementById('url-user').style.display = e.target.checked ? '' : 'none';
+    document.getElementById('url-pass').style.display = e.target.checked ? '' : 'none';
+  });
+
+  quick.addEventListener('change', function () {
+    if (!quick.value) return;
+    connType.value = 'local';
+    showFields('local');
+    document.getElementById('local-path').value = quick.value;
+    open_();
+  });
+
+  function val(id) { return document.getElementById(id).value.trim(); }
+
+  function open_() {
+    errEl.style.display = 'none';
+    var type = connType.value;
+    var src;
+    if (type === 'local') {
+      var p = val('local-path');
+      if (!p) return;
+      src = '/local/' + p.replace(/^\/+/, '');
+    } else if (type === 'url') {
+      var u = val('url-url');
+      if (!u) return;
+      src = '/remote?url=' + encodeURIComponent(u);
+      if (document.getElementById('url-auth-toggle').checked) {
+        src += '&user=' + encodeURIComponent(val('url-user')) + '&pass=' + encodeURIComponent(val('url-pass'));
+      }
+    } else if (type === 'git') {
+      var repo = val('git-repo'), gpath = val('git-path');
+      if (!repo || !gpath) { errEl.textContent = 'Git needs both a repo URL and a file path.'; errEl.style.display = 'block'; return; }
+      src = '/git?repo=' + encodeURIComponent(repo) + '&branch=' + encodeURIComponent(val('git-branch')) + '&path=' + encodeURIComponent(gpath);
+    } else if (type === 'ftp') {
+      var host = val('ftp-host'), fpath = val('ftp-path');
+      if (!host || !fpath) { errEl.textContent = 'FTP needs both a host and a remote file path.'; errEl.style.display = 'block'; return; }
+      src = '/ftp?host=' + encodeURIComponent(host) +
+        '&port=' + encodeURIComponent(val('ftp-port') || '21') +
+        '&user=' + encodeURIComponent(val('ftp-user')) +
+        '&pass=' + encodeURIComponent(val('ftp-pass')) +
+        '&path=' + encodeURIComponent(fpath);
+    }
     frame.src = src;
   }
-  document.getElementById('go').addEventListener('click', function () { load(input.value.trim()); });
-  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') load(input.value.trim()); });
-  quick.addEventListener('change', function () { input.value = quick.value.replace(/^local:/, ''); load(quick.value); });
+
+  document.getElementById('go').addEventListener('click', open_);
+  document.getElementById('bar').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') open_();
+  });
 </script>
 </body>
 </html>

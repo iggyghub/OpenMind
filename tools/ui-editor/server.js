@@ -1,15 +1,24 @@
 // Zero-dependency local server for the UI editor.
-// Serves the editor shell, proxies local files (rooted at the OpenMind repo)
-// and remote URLs, injects the click-to-edit overlay, and persists edits
-// as a JSON "overrides" layer per target (never touches source files).
+// Serves the editor shell and injects the click-to-edit overlay into a
+// target reached one of four usual ways an editor connects to a site:
+//   /local/<path>  -- a file on disk, rooted at the OpenMind repo
+//   /remote?url=   -- any reachable URL (optional HTTP Basic Auth)
+//   /git?repo=     -- clone/pull a repo (shells out to the system `git`),
+//                     then serve a file from the checkout
+//   /ftp?host=     -- RETR one file over plain FTP (passive mode)
+// Edits persist as a JSON "overrides" layer per target; source files are
+// never touched. SFTP is a known gap -- see ftp-client.js's header comment.
 'use strict';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
+const { ftpRetr } = require('./ftp-client');
 
 const ROOT = path.resolve(__dirname, '..', '..'); // C:\OpenMind
 const HERE = __dirname;
 const OVERRIDES_DIR = path.join(HERE, 'overrides');
+const GIT_CLONES_DIR = path.join(HERE, '.git-clones');
 const PORT = 4545;
 
 const MIME = {
@@ -61,31 +70,40 @@ function readBody(req) {
   });
 }
 
+// Shared by /local and /git: both resolve to a plain file on disk and only
+// differ in how that file got there.
+function serveFileFromDisk(fullPath, key, req, res) {
+  const ext = path.extname(fullPath).toLowerCase();
+  if (ext === '.html' || ext === '.htm') {
+    const html = fs.readFileSync(fullPath, 'utf8');
+    const out = injectIntoHtml(html, `http://${req.headers.host}/inject.js?key=${key}`, null);
+    res.writeHead(200, { 'content-type': mimeFor(fullPath) });
+    res.end(out);
+  } else {
+    res.writeHead(200, { 'content-type': mimeFor(fullPath) });
+    fs.createReadStream(fullPath).pipe(res);
+  }
+}
+
 async function handleLocal(req, res, urlObj) {
   const rel = decodeURIComponent(urlObj.pathname.replace(/^\/local\//, ''));
   const full = path.resolve(ROOT, rel);
   if (!full.startsWith(ROOT)) { res.writeHead(403); res.end('forbidden'); return; }
   if (!fs.existsSync(full) || !fs.statSync(full).isFile()) { res.writeHead(404); res.end('not found'); return; }
-  const ext = path.extname(full).toLowerCase();
-  if (ext === '.html' || ext === '.htm') {
-    const key = sanitizeKey('local:' + rel);
-    const html = fs.readFileSync(full, 'utf8');
-    const out = injectIntoHtml(html, `http://${req.headers.host}/inject.js?key=${key}`, null);
-    res.writeHead(200, { 'content-type': mimeFor(full) });
-    res.end(out);
-  } else {
-    res.writeHead(200, { 'content-type': mimeFor(full) });
-    fs.createReadStream(full).pipe(res);
-  }
+  serveFileFromDisk(full, sanitizeKey('local:' + rel), req, res);
 }
 
 async function handleRemote(req, res, urlObj) {
   const target = urlObj.searchParams.get('url');
   if (!target) { res.writeHead(400); res.end('missing url'); return; }
+  const user = urlObj.searchParams.get('user');
+  const pass = urlObj.searchParams.get('pass') || '';
   const key = sanitizeKey('remote:' + target);
+  const headers = {};
+  if (user) headers.authorization = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
   let upstream;
   try {
-    upstream = await fetch(target, { redirect: 'follow' });
+    upstream = await fetch(target, { redirect: 'follow', headers });
   } catch (e) {
     res.writeHead(502); res.end('fetch failed: ' + e.message); return;
   }
@@ -98,6 +116,66 @@ async function handleRemote(req, res, urlObj) {
   } else {
     const buf = Buffer.from(await upstream.arrayBuffer());
     res.writeHead(200, { 'content-type': ct });
+    res.end(buf);
+  }
+}
+
+// git clone/pull, keyed by a sanitized form of the repo URL, then served
+// like /local. Uses execFileSync (argv array, no shell) so a repo/branch/path
+// with shell metacharacters can't do anything but fail as a bad git argument.
+async function handleGit(req, res, urlObj) {
+  const repo = urlObj.searchParams.get('repo');
+  const branch = urlObj.searchParams.get('branch') || '';
+  const rel = urlObj.searchParams.get('path');
+  if (!repo || !rel) { res.writeHead(400); res.end('missing repo or path'); return; }
+
+  const dir = path.join(GIT_CLONES_DIR, sanitizeKey(repo));
+  try {
+    fs.mkdirSync(GIT_CLONES_DIR, { recursive: true });
+    if (!fs.existsSync(path.join(dir, '.git'))) {
+      const args = ['clone', '--depth', '1'];
+      if (branch) args.push('--branch', branch);
+      args.push(repo, dir);
+      execFileSync('git', args, { stdio: 'ignore' });
+    } else {
+      execFileSync('git', ['-C', dir, 'fetch', '--depth', '1', 'origin', branch || 'HEAD'], { stdio: 'ignore' });
+      execFileSync('git', ['-C', dir, 'reset', '--hard', 'FETCH_HEAD'], { stdio: 'ignore' });
+    }
+  } catch (e) {
+    res.writeHead(502); res.end('git operation failed: ' + e.message); return;
+  }
+
+  const full = path.resolve(dir, rel);
+  if (!full.startsWith(dir)) { res.writeHead(403); res.end('forbidden'); return; }
+  if (!fs.existsSync(full) || !fs.statSync(full).isFile()) { res.writeHead(404); res.end('not found'); return; }
+  serveFileFromDisk(full, sanitizeKey('git:' + repo + ':' + rel), req, res);
+}
+
+// Plain FTP RETR (see ftp-client.js) -- fetches one file, treats it exactly
+// like a remote page (overrides are a side JSON layer either way; there's
+// no STOR/upload yet, matching that local pages aren't baked to disk yet).
+async function handleFtp(req, res, urlObj) {
+  const host = urlObj.searchParams.get('host');
+  const remotePath = urlObj.searchParams.get('path');
+  if (!host || !remotePath) { res.writeHead(400); res.end('missing host or path'); return; }
+  const port = parseInt(urlObj.searchParams.get('port') || '21', 10);
+  const user = urlObj.searchParams.get('user') || '';
+  const pass = urlObj.searchParams.get('pass') || '';
+
+  let buf;
+  try {
+    buf = await ftpRetr({ host, port, user, pass, path: remotePath });
+  } catch (e) {
+    res.writeHead(502); res.end('FTP fetch failed: ' + e.message); return;
+  }
+  const key = sanitizeKey(`ftp:${host}:${port}:${remotePath}`);
+  const ext = path.extname(remotePath).toLowerCase();
+  if (ext === '.html' || ext === '.htm') {
+    const out = injectIntoHtml(buf.toString('utf8'), `http://${req.headers.host}/inject.js?key=${key}`, null);
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(out);
+  } else {
+    res.writeHead(200, { 'content-type': mimeFor(remotePath) });
     res.end(buf);
   }
 }
@@ -117,6 +195,10 @@ const server = http.createServer(async (req, res) => {
       await handleLocal(req, res, urlObj);
     } else if (req.method === 'GET' && urlObj.pathname === '/remote') {
       await handleRemote(req, res, urlObj);
+    } else if (req.method === 'GET' && urlObj.pathname === '/git') {
+      await handleGit(req, res, urlObj);
+    } else if (req.method === 'GET' && urlObj.pathname === '/ftp') {
+      await handleFtp(req, res, urlObj);
     } else if (req.method === 'GET' && urlObj.pathname === '/api/load') {
       const key = urlObj.searchParams.get('key') || '';
       sendJson(res, 200, readOverrides(sanitizeKey(key)));
