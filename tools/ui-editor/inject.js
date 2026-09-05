@@ -414,6 +414,7 @@
     '<button id="ue-edittext" style="cursor:pointer;margin-top:2px;">Edit text</button>' +
     '<button id="ue-reset" style="cursor:pointer;">Reset this page</button>' +
     (LOCAL_PATH ? '<button id="ue-bake" style="cursor:pointer;">Commit to file</button>' : '') +
+    '<button id="ue-code" style="cursor:pointer;">Code</button>' +
     '<div id="ue-tree-wrap" style="border-top:1px solid #444;padding-top:6px;">' +
     '<div id="ue-tree-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
     'Elements <span id="ue-tree-arrow">▶</span></div>' +
@@ -439,7 +440,18 @@
     '</div>' +
     '</div>' +
     '</div>' +
-    '<div id="ue-status" style="opacity:.6;">idle</div>';
+    '<div id="ue-status" style="opacity:.6;">idle</div>' +
+    '<div id="ue-code-modal" style="display:none;position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,.8);padding:20px;box-sizing:border-box;">' +
+    '<div style="background:#1e1e24;border-radius:8px;height:100%;display:flex;flex-direction:column;padding:14px;gap:8px;">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+    '<b style="color:#eee;font-size:13px;">HTML Source</b>' +
+    '<div style="display:flex;gap:6px;">' +
+    '<button id="ue-code-copy" style="cursor:pointer;">Copy</button>' +
+    '<button id="ue-code-dl" style="cursor:pointer;">Download .html</button>' +
+    '<button id="ue-code-close" style="cursor:pointer;">Close</button>' +
+    '</div></div>' +
+    '<textarea id="ue-code-text" readonly style="flex:1;font:12px/1.5 monospace,Courier New,monospace;background:#0e0e11;color:#ccc;border:1px solid #333;border-radius:4px;padding:8px;resize:none;white-space:pre;overflow:auto;"></textarea>' +
+    '</div></div>';
   function mount() { document.documentElement.appendChild(bar); }
   if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount);
 
@@ -922,6 +934,35 @@
         .catch(function () { setStatus('bake error'); });
     });
   }
+
+  bar.querySelector('#ue-code').addEventListener('click', function () {
+    var modal = bar.querySelector('#ue-code-modal');
+    var textarea = bar.querySelector('#ue-code-text');
+    if (!LOCAL_PATH) {
+      textarea.value = 'Code export is only available for local targets.';
+      modal.style.display = 'block';
+      return;
+    }
+    setStatus('rendering...');
+    fetch('/api/render?key=' + encodeURIComponent(KEY) + '&path=' + encodeURIComponent(LOCAL_PATH))
+      .then(function (r) { return r.text(); })
+      .then(function (html) { textarea.value = html; modal.style.display = 'block'; setStatus('idle'); })
+      .catch(function () { setStatus('render error'); });
+  });
+  bar.querySelector('#ue-code-close').addEventListener('click', function () {
+    bar.querySelector('#ue-code-modal').style.display = 'none';
+  });
+  bar.querySelector('#ue-code-copy').addEventListener('click', function () {
+    navigator.clipboard.writeText(bar.querySelector('#ue-code-text').value).catch(function () {});
+  });
+  bar.querySelector('#ue-code-dl').addEventListener('click', function () {
+    var text = bar.querySelector('#ue-code-text').value;
+    var blob = new Blob([text], { type: 'text/html' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = 'page.html'; a.click();
+    URL.revokeObjectURL(url);
+  });
 
   bar.querySelector('#ue-tree-hdr').addEventListener('click', function () {
     var list = bar.querySelector('#ue-tree-list');
