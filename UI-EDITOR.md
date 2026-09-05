@@ -17,14 +17,14 @@ product surface. Each issue body is the full spec for its slice.
 
 ## Next slice -- start here
 
-- **Active:** S3 -- #1065
+- **Active:** S4 -- #1066
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1 -- #1063 -- verify + fix drag/resize/text/font/reset, add save-cycle tests (PR #1079)
 - [x] S2 -- #1064 -- bake overrides into the source HTML file (PR #1080) (local targets only)
-- [ ] S3 -- #1065 -- undo/redo for edits
+- [x] S3 -- #1065 -- undo/redo for edits (PR #1081)
 - [ ] S4 -- #1066 -- element outline/tree panel for selection
 - [ ] S5 -- #1067 -- multi-select + bulk style edit
 - [ ] S6 -- #1068 -- safety/regression pass (path traversal, input validation, README)
@@ -54,6 +54,7 @@ prerequisite for S8 (blocks are built from the same insert primitive).
 
 - S1 -- #1063 -- PR #1079
 - S2 -- #1064 -- PR #1080
+- S3 -- #1065 -- PR #1081
 
 ## SAFETY
 
