@@ -47,6 +47,8 @@
   var redoStack = [];
   // original textContent per element id, captured before first text edit
   var origText = {};
+  // original attribute values per element id, captured before first attr override
+  var origAttrs = {};
   // style props we ever write; cleared per-element on snapshot restore
   var STYLE_PROPS = ['backgroundColor', 'color', 'fontSize', 'position', 'marginLeft', 'marginTop', 'marginRight', 'marginBottom', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'width', 'height', 'display', 'flexDirection', 'gap', 'alignItems', 'justifyContent', 'borderWidth', 'borderStyle', 'borderColor', 'borderRadius', 'boxShadow'];
 
@@ -90,7 +92,7 @@
   }
 
   function restoreSnapshot(snap) {
-    // clear styles on existing (non-inserted) elements
+    // clear styles and restore original attrs on existing (non-inserted) elements
     Object.keys(overrides).forEach(function (id) {
       if (id.startsWith('ins:')) return;
       var el = idToEl(id);
@@ -98,6 +100,12 @@
       STYLE_PROPS.forEach(function (p) { el.style[p] = ''; });
       if (overrides[id].text !== undefined && (!snap[id] || snap[id].text === undefined)) {
         if (id in origText) el.textContent = origText[id];
+      }
+      if (overrides[id].attrs && (!snap[id] || !snap[id].attrs)) {
+        var oa = origAttrs[id] || {};
+        Object.keys(overrides[id].attrs).forEach(function (k) {
+          if (k in oa && oa[k] !== null) el.setAttribute(k, oa[k]); else el.removeAttribute(k);
+        });
       }
     });
     // remove inserted elements absent from snap
@@ -224,6 +232,7 @@
   function applyOverride(el, o) {
     if (o.style) for (var k in o.style) el.style[k] = o.style[k];
     if (typeof o.text === 'string') el.textContent = o.text;
+    if (o.attrs) for (var k in o.attrs) el.setAttribute(k, o.attrs[k]);
     // o.insert is intentionally ignored here; replayInsert handles DOM creation
   }
 
@@ -244,9 +253,14 @@
     if (typeof patch.text === 'string' && !(id in origText)) {
       origText[id] = el.textContent;
     }
+    if (patch.attrs && !origAttrs[id]) {
+      origAttrs[id] = {};
+      Object.keys(patch.attrs).forEach(function (k) { origAttrs[id][k] = el.getAttribute(k); });
+    }
     var o = overrides[id] || (overrides[id] = {});
     if (patch.style) o.style = Object.assign(o.style || {}, patch.style);
     if (typeof patch.text === 'string') o.text = patch.text;
+    if (patch.attrs) o.attrs = Object.assign(o.attrs || {}, patch.attrs);
   }
 
   function setOverride(el, patch) {
@@ -390,6 +404,15 @@
     'Sections <span id="ue-sections-arrow">▶</span></div>' +
     '<div id="ue-sections-list" style="display:none;margin-top:4px;"></div>' +
     '</div>' +
+    '<div id="ue-assets-wrap" style="border-top:1px solid #444;padding-top:6px;">' +
+    '<div id="ue-assets-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
+    'Images <span id="ue-assets-arrow">▶</span></div>' +
+    '<div id="ue-assets-body" style="display:none;margin-top:4px;">' +
+    '<label style="font-size:11px;cursor:pointer;display:block;">Upload image<br>' +
+    '<input type="file" id="ue-imgfile" accept="image/png,image/jpeg,image/gif,image/webp" style="max-width:160px;font-size:10px;margin-top:2px;"></label>' +
+    '<div style="font-size:10px;opacity:.55;margin-top:3px;">Select an img to replace it,<br>or upload to insert a new one.</div>' +
+    '</div>' +
+    '</div>' +
     '</div>' +
     '<div id="ue-status" style="opacity:.6;">idle</div>';
   function mount() { document.documentElement.appendChild(bar); }
@@ -436,6 +459,47 @@
       var open = list.style.display !== 'none';
       list.style.display = open ? 'none' : 'block';
       bar.querySelector('#ue-sections-arrow').textContent = open ? '▶' : '▼';
+    });
+  }());
+
+  // image upload: pick a file → base64 → POST /api/asset → set src or insert new img block
+  (function () {
+    bar.querySelector('#ue-assets-hdr').addEventListener('click', function () {
+      var body = bar.querySelector('#ue-assets-body');
+      var open = body.style.display !== 'none';
+      body.style.display = open ? 'none' : 'block';
+      bar.querySelector('#ue-assets-arrow').textContent = open ? '▶' : '▼';
+    });
+    bar.querySelector('#ue-imgfile').addEventListener('change', function () {
+      var file = this.files[0];
+      if (!file) return;
+      var inp = this;
+      var reader = new FileReader();
+      reader.onload = function (ev) {
+        var b64 = ev.target.result.split(',')[1];
+        setStatus('uploading...');
+        fetch('/api/asset', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ key: KEY, data: b64 })
+        }).then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.error) { setStatus('upload: ' + d.error); return; }
+            var el = primaryEl();
+            if (el && el.tagName === 'IMG') {
+              el.src = d.url;
+              setOverride(el, { attrs: { src: d.url } });
+            } else {
+              var tgt = el || document.body;
+              insertBlock({ tag: 'IMG', text: '', attrs: { src: d.url, alt: '', width: '200', height: '150' } },
+                tgt, el ? 'after' : 'append');
+            }
+            setStatus('image uploaded');
+            inp.value = '';
+          })
+          .catch(function () { setStatus('upload failed'); });
+      };
+      reader.readAsDataURL(file);
     });
   }());
 

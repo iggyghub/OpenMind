@@ -26,6 +26,7 @@ Open `http://localhost:4545`. Choose a target type, enter a path or URL, and cli
 | **Bake** | "Commit to file" button — writes all overrides inline into the source HTML file (local targets only) |
 | **Reset** | "Reset this page" button — clears all overrides and reloads |
 | **Element tree** | Expandable "Elements" panel in the toolbar for tree-based selection |
+| **Upload image** | Expandable "Images" panel — pick a file to replace the selected `<img>` src, or insert a new image block if nothing (or a non-img element) is selected |
 
 ## Target types
 
@@ -34,6 +35,12 @@ Open `http://localhost:4545`. Choose a target type, enter a path or URL, and cli
 - **URL** — any reachable `https://` page (optional HTTP Basic Auth)
 - **Git repo** — clones/pulls the repo and serves a file from the checkout
 - **FTP** — fetches one file over plain FTP (passive mode; no STOR/upload yet)
+
+## Uploaded assets
+
+Image uploads are stored under `tools/ui-editor/overrides/assets/<target-key>/<sha256-16>.ext`. Files are deduplicated by content hash — uploading the same image twice writes only one file. The `/assets/<key>/<file>` route serves them with path-containment enforcement (no traversal outside the assets directory).
+
+**TODO:** `Commit to file` (bake) does not yet copy referenced asset files alongside the baked HTML. If you move a baked page, copy the matching `overrides/assets/<key>/` directory alongside it.
 
 ## What this can't do
 
@@ -46,4 +53,4 @@ Open `http://localhost:4545`. Choose a target type, enter a path or URL, and cli
 node --test "tools/ui-editor/tests/*.test.js"
 ```
 
-Tests cover `sanitizeKey`, `injectIntoHtml` (base-href insertion, CSP stripping, script tag placement), save/load/reset round-trip, bake/findByPath/mergeStyleAttr, undo/redo stack logic, element-tree helpers, and path-traversal containment + input validation. No test framework, no fixtures — plain `node:test` + `node:assert`.
+Tests cover `sanitizeKey`, `injectIntoHtml` (base-href insertion, CSP stripping, script tag placement), save/load/reset round-trip, bake/findByPath/mergeStyleAttr, undo/redo stack logic, element-tree helpers, path-traversal containment + input validation, and asset upload validation (magic-byte sniffing, size cap, dedup hash, asset path containment). No test framework, no fixtures — plain `node:test` + `node:assert`.

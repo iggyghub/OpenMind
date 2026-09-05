@@ -14,6 +14,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { ftpRetr } = require('./ftp-client');
 const { bake } = require('./html-bake');
@@ -21,6 +22,7 @@ const { bake } = require('./html-bake');
 const ROOT = path.resolve(__dirname, '..', '..'); // C:\OpenMind
 const HERE = __dirname;
 const OVERRIDES_DIR = path.join(HERE, 'overrides');
+const ASSETS_DIR = path.join(OVERRIDES_DIR, 'assets');
 const GIT_CLONES_DIR = path.join(HERE, '.git-clones');
 const PORT = 4545;
 
@@ -34,6 +36,36 @@ const MIME = {
 function mimeFor(p) { return MIME[path.extname(p).toLowerCase()] || 'application/octet-stream'; }
 
 function sanitizeKey(s) { return s.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 150); }
+
+// Image magic-byte signatures (PNG/JPEG/GIF/WebP). No dep needed -- Buffer covers it.
+const IMAGE_SIGS = [
+  { magic: [0x89, 0x50, 0x4E, 0x47], ext: 'png' },
+  { magic: [0xFF, 0xD8, 0xFF],         ext: 'jpg' },
+  { magic: [0x47, 0x49, 0x46, 0x38],   ext: 'gif' },
+];
+function detectImageType(buf) {
+  for (const sig of IMAGE_SIGS) {
+    if (sig.magic.every((b, i) => buf[i] === b)) return sig.ext;
+  }
+  // WebP: RIFF????WEBP (bytes 0-3 and 8-11)
+  if (buf.length >= 12 && buf.slice(0, 4).toString('binary') === 'RIFF' &&
+      buf.slice(8, 12).toString('binary') === 'WEBP') return 'webp';
+  return null;
+}
+
+const MAX_ASSET_BYTES = 5 * 1024 * 1024; // 5 MB
+function validateAssetBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return 'body must be a JSON object';
+  if (typeof body.key !== 'string' || !body.key) return 'key must be a non-empty string';
+  if (typeof body.data !== 'string' || !body.data) return 'data must be a non-empty base64 string';
+  return null;
+}
+
+// Returns the resolved absolute path if safely within ASSETS_DIR, null otherwise.
+function checkAssetPath(rel) {
+  const full = path.resolve(ASSETS_DIR, rel);
+  return full.startsWith(ASSETS_DIR + path.sep) ? full : null;
+}
 
 // Returns the resolved absolute path if it is safely within ROOT, null otherwise.
 // Uses ROOT + sep to close the directory-boundary escape (e.g. C:\OpenMindEvil
@@ -273,6 +305,30 @@ const server = http.createServer(async (req, res) => {
       const f = path.join(OVERRIDES_DIR, sanitizeKey(body.key) + '.json');
       if (fs.existsSync(f)) fs.unlinkSync(f);
       sendJson(res, 200, { ok: true });
+    } else if (req.method === 'POST' && urlObj.pathname === '/api/asset') {
+      let body; try { body = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'invalid JSON' }); return; }
+      const assetErr = validateAssetBody(body);
+      if (assetErr) { sendJson(res, 400, { error: assetErr }); return; }
+      let buf;
+      try { buf = Buffer.from(body.data, 'base64'); } catch { sendJson(res, 400, { error: 'invalid base64' }); return; }
+      if (buf.length > MAX_ASSET_BYTES) { sendJson(res, 400, { error: 'image exceeds 5 MB limit' }); return; }
+      const ext = detectImageType(buf);
+      if (!ext) { sendJson(res, 400, { error: 'not a recognised image (PNG/JPEG/GIF/WebP only)' }); return; }
+      const skey = sanitizeKey(body.key);
+      const hash = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 16);
+      const assetSubdir = path.join(ASSETS_DIR, skey);
+      fs.mkdirSync(assetSubdir, { recursive: true });
+      const filename = hash + '.' + ext;
+      const filepath = path.join(assetSubdir, filename);
+      if (!fs.existsSync(filepath)) fs.writeFileSync(filepath, buf);
+      sendJson(res, 200, { url: '/assets/' + skey + '/' + filename });
+    } else if (req.method === 'GET' && urlObj.pathname.startsWith('/assets/')) {
+      const rel = urlObj.pathname.slice('/assets/'.length);
+      const full = checkAssetPath(rel);
+      if (!full) { res.writeHead(403); res.end('forbidden'); return; }
+      if (!fs.existsSync(full) || !fs.statSync(full).isFile()) { res.writeHead(404); res.end('not found'); return; }
+      res.writeHead(200, { 'content-type': mimeFor(full) });
+      fs.createReadStream(full).pipe(res);
     } else if (req.method === 'POST' && urlObj.pathname === '/api/bake') {
       let body; try { body = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'invalid JSON' }); return; }
       if (!body || typeof body !== 'object' || Array.isArray(body)) { sendJson(res, 400, { error: 'body must be a JSON object' }); return; }
@@ -303,4 +359,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides, bake, checkLocalPath, validateSaveBody };
+module.exports = { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides, bake, checkLocalPath, validateSaveBody, detectImageType, validateAssetBody, checkAssetPath, MAX_ASSET_BYTES };
