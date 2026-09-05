@@ -504,30 +504,56 @@ function openMainWindow(hash) {
   // UI2 A5 (#485) -- detached panels open via window.open('detached-panel.html')
   // from the renderer. Whitelist that one file, deny everything else, and
   // force the same webPreferences posture as the Main window (ADR-0007).
+  //
+  // UI Editor nav button (tools/ui-editor) additionally whitelists exactly
+  // http://localhost:4545/ -- the tool's own dev server, started separately
+  // (`node tools/ui-editor/server.js`), never bundled into or spawned by
+  // Felix itself. Hardcoded origin, not a general localhost/http allowance.
+  const UI_EDITOR_ORIGIN = 'http://localhost:4545';
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    let ok = false;
-    try {
-      const parsed = new URL(url);
-      ok = parsed.protocol === 'file:'
-        && parsed.pathname.replace(/\\/g, '/').endsWith('/tray/windows/detached-panel.html');
-    } catch (_) { ok = false; }
-    if (!ok) return { action: 'deny' };
-    return {
-      action: 'allow',
-      overrideBrowserWindowOptions: {
-        width:           720,
-        height:          560,
-        minWidth:        320,
-        minHeight:       240,
-        title:           'Felix — Panel',
-        icon:            ICO_PATH,
-        backgroundColor: '#12101e',
-        webPreferences: {
-          nodeIntegration:  false,
-          contextIsolation: true,
+    let parsed;
+    try { parsed = new URL(url); } catch (_) { return { action: 'deny' }; }
+
+    if (parsed.protocol === 'file:'
+        && parsed.pathname.replace(/\\/g, '/').endsWith('/tray/windows/detached-panel.html')) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width:           720,
+          height:          560,
+          minWidth:        320,
+          minHeight:       240,
+          title:           'Felix — Panel',
+          icon:            ICO_PATH,
+          backgroundColor: '#12101e',
+          webPreferences: {
+            nodeIntegration:  false,
+            contextIsolation: true,
+          },
         },
-      },
-    };
+      };
+    }
+
+    if (parsed.origin === UI_EDITOR_ORIGIN) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width:           1100,
+          height:          760,
+          minWidth:        480,
+          minHeight:       360,
+          title:           'Felix — UI Editor',
+          icon:            ICO_PATH,
+          backgroundColor: '#111111',
+          webPreferences: {
+            nodeIntegration:  false,
+            contextIsolation: true,
+          },
+        },
+      };
+    }
+
+    return { action: 'deny' };
   });
 
   // Issue #188 — close button hides to tray; quit is tray-only.
