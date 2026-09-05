@@ -71,9 +71,12 @@ test('every expected pane element exists', () => {
 // ── Nav items (S5: 4 sections; Trading added as a 5th, #864 follow-up;
 //    Log added as a 6th, S26/#879) ────────────────────────────────────────
 
-test('nav has exactly 7 top-level sections (S5 + Trading + Log + Help)', () => {
+test('nav has exactly 8 top-level sections (S5 + Trading + Log + Help + UI Editor)', () => {
+  // UI Editor (#nav-ui-editor) has no data-route -- it pops tools/ui-editor's
+  // own window instead of switching an in-app pane -- so it's counted here
+  // but deliberately absent from NAV_ROUTES/PANE_ROUTES below.
   const navItems = root.querySelectorAll('.nav-item');
-  expect(navItems.length).toBe(7);
+  expect(navItems.length).toBe(8);
 });
 
 test('every expected nav item exists (S5: 4 sections + Trading + Log + Help)', () => {
