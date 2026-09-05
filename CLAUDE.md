@@ -33,8 +33,11 @@ Six rules, canonical text in `docs/adr/0028-reach-ladder-and-capability-rules.md
    -> `delegate`. Not interchangeable.
 4. **The ADR-0005 gate is the only permission model.** Every mechanism routes
    through the same 16-class gate, or it does not ship. No side doors.
-5. **One GPU is the scheduler.** Nothing assumes concurrency; two local sub-agents
-   serialize on the one 1080. The live conversational turn wins contention.
+5. **The scarce resource is the scheduler, and it is always singular.** The GPU when
+   the active model is local, the one endpoint when it is remote (today: everything).
+   Nothing assumes concurrency, nothing preempts; the live conversational turn wins
+   contention. Model tiers: **local** (on the 1080), **remote** (over HTTP), **cloud**
+   (a paid third-party API). Budd is remote, not cloud.
 6. **Verified running, or it did not ship.** Green tests are necessary, not
    sufficient -- exercise the real surface (live Cerebral over the IPC bridge, the
    actual browser, the actual tray) before calling it done.

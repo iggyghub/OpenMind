@@ -169,3 +169,28 @@ would let 70 plugins (some LLM-authored at runtime) compete for the scarcest
 surfaces in the product, which is precisely the outcome R7 exists to prevent.
 Plugins contribute panels (ADR-0012) and tools; they do not contribute menu
 items or hotkeys.
+
+## Amendment (2026-09-05) -- R5 restated: the scarce resource, not the GPU
+
+R5 was written as *"One GPU is the scheduler."* Measured against the live
+configuration (ADR-0029), that is wrong. Every LLM call leaves the machine:
+`custom/budd-quick` is the only enabled model, every local model is disabled, and
+the 1080 holds only Kokoro TTS, faster-whisper STT, and the `video` task pin. The
+GPU is nearly idle; **one remote endpoint** is what everything contends for.
+
+**R5, restated: the scarce resource is the scheduler, and it is always singular.**
+Which resource it is depends on where the active model runs -- the GPU when local,
+the endpoint when remote -- but there is exactly one, nothing preempts, and no
+design may assume concurrency. Where two things compete, the live conversational
+turn wins.
+
+The original reasoning survives the correction: parallel fan-out is still not the
+answer, it is just that the reason changed. Two local sub-agents serialise on one
+card; N remote sub-agents pile onto one host whose failure mode is already
+stalling under load. ADR-0020 decision 5 ("never parallel local") reached the
+right conclusion from a premise that no longer describes this box.
+
+A vocabulary correction goes with it, since it cost a full round of the grill:
+a **local** model runs on the 1080, a **remote** model is reached over HTTP, and a
+**cloud** model is a paid third-party API. Budd is remote and not cloud -- which is
+how "I'm not using the cloud" and "everything is remote" are both true at once.
