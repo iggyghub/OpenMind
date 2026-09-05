@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides } =
+const { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides, validateSaveBody } =
   require('../server.js');
 
 // sanitizeKey
@@ -81,4 +81,30 @@ test('writeOverrides overwrites previous data for same key', () => {
   writeOverrides(key, { b: 2 });
   assert.deepEqual(readOverrides(key), { b: 2 });
   resetOverrides(key);
+});
+
+// insert-op round trip (S7)
+test('insert-op override: save -> load -> reset round trip', () => {
+  const key = 'test_insert_' + Date.now();
+  const data = {
+    'HTML0>BODY0>P0': { style: { color: '#ff0000' } },
+    'ins:0': {
+      insert: { targetId: 'HTML0>BODY0>P0', op: 'before', tag: 'H2', text: 'New Heading', attrs: {} },
+      style: { fontSize: '24px' }
+    }
+  };
+  writeOverrides(key, data);
+  assert.deepEqual(readOverrides(key), data);
+  resetOverrides(key);
+  assert.deepEqual(readOverrides(key), {});
+});
+
+test('validateSaveBody: accepts insert-op overrides with ins: keys', () => {
+  const err = validateSaveBody({
+    key: 'test_k',
+    overrides: {
+      'ins:0': { insert: { targetId: 'BODY0>P0', op: 'before', tag: 'H2', text: 'x', attrs: {} } }
+    }
+  });
+  assert.equal(err, null);
 });

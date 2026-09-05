@@ -13,6 +13,20 @@
   function primaryEl() { return selectedSet.size ? selectedSet.values().next().value : null; }
   var editMode = false;
   var saveTimer = null;
+  var pendingBlock = null; // block def waiting for click-to-place
+  var insertSeq = 0; // monotonic counter for ins:N synthetic IDs
+
+  var BLOCKS = [
+    { label: 'Heading',   tag: 'H2',      text: 'New Heading',        attrs: {} },
+    { label: 'Paragraph', tag: 'P',       text: 'New paragraph text.', attrs: {} },
+    { label: 'Image',     tag: 'IMG',     text: '',                   attrs: { src: 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==', alt: 'placeholder', width: '200', height: '150' } },
+    { label: 'Button',    tag: 'BUTTON',  text: 'Click me',           attrs: {} },
+    { label: 'Link',      tag: 'A',       text: 'Link text',          attrs: { href: '#' } },
+    { label: 'Container', tag: 'DIV',     text: '',                   attrs: {} },
+    { label: 'Section',   tag: 'SECTION', text: '',                   attrs: {} },
+  ];
+  // elements that accept appendChild when empty rather than before/after
+  var CONTAINER_TAGS = ['DIV', 'SECTION', 'ARTICLE', 'ASIDE', 'MAIN', 'UL', 'OL', 'FORM', 'HEADER', 'FOOTER', 'NAV'];
 
   // ---- undo/redo stack ----
   // ponytail: cap at 50, fixed is fine for single-session editing; bump if UX bites
@@ -31,8 +45,32 @@
     updateHistoryBtns();
   }
 
+  // Create a DOM element from a saved insert record and position it.
+  function replayInsert(id, ins) {
+    var targetEl = document.querySelector('[data-uieditor-id="' + ins.targetId + '"]');
+    if (!targetEl) return null;
+    var el = document.createElement(ins.tag);
+    if (ins.text) el.textContent = ins.text;
+    Object.keys(ins.attrs || {}).forEach(function (k) { el.setAttribute(k, ins.attrs[k]); });
+    var parent = targetEl.parentElement;
+    if (ins.op === 'before' && parent) parent.insertBefore(el, targetEl);
+    else if (ins.op === 'after' && parent) parent.insertBefore(el, targetEl.nextSibling);
+    else targetEl.appendChild(el);
+    el.setAttribute('data-uieditor-id', id);
+    return el;
+  }
+
+  // Look up an element by its stored data-uieditor-id.
+  // ins:N elements use querySelector; path-based IDs use idToEl.
+  function elById(id) {
+    if (id.startsWith('ins:')) return document.querySelector('[data-uieditor-id="' + id + '"]');
+    return idToEl(id);
+  }
+
   function restoreSnapshot(snap) {
+    // clear styles on existing (non-inserted) elements
     Object.keys(overrides).forEach(function (id) {
+      if (id.startsWith('ins:')) return;
       var el = idToEl(id);
       if (!el) return;
       STYLE_PROPS.forEach(function (p) { el.style[p] = ''; });
@@ -40,9 +78,24 @@
         if (id in origText) el.textContent = origText[id];
       }
     });
+    // remove inserted elements absent from snap
+    Object.keys(overrides).forEach(function (id) {
+      if (!id.startsWith('ins:') || (id in snap)) return;
+      var el = document.querySelector('[data-uieditor-id="' + id + '"]');
+      if (el && el.parentElement) el.parentElement.removeChild(el);
+    });
+    // re-insert elements in snap missing from DOM (redo path)
+    Object.keys(snap)
+      .filter(function (k) { return k.startsWith('ins:'); })
+      .sort(function (a, b) { return parseInt(a.slice(4)) - parseInt(b.slice(4)); })
+      .forEach(function (id) {
+        if (!document.querySelector('[data-uieditor-id="' + id + '"]') && snap[id].insert) {
+          replayInsert(id, snap[id].insert);
+        }
+      });
     overrides = JSON.parse(JSON.stringify(snap));
     Object.keys(overrides).forEach(function (id) {
-      var el = idToEl(id);
+      var el = elById(id);
       if (el) applyOverride(el, overrides[id]);
     });
   }
@@ -149,6 +202,7 @@
   function applyOverride(el, o) {
     if (o.style) for (var k in o.style) el.style[k] = o.style[k];
     if (typeof o.text === 'string') el.textContent = o.text;
+    // o.insert is intentionally ignored here; replayInsert handles DOM creation
   }
 
   function scheduleSave() {
@@ -186,6 +240,30 @@
     scheduleSave();
   }
 
+  function insertBlock(block, targetEl, op) {
+    snapshot();
+    var id = 'ins:' + (insertSeq++);
+    var el = document.createElement(block.tag);
+    if (block.text) el.textContent = block.text;
+    Object.keys(block.attrs || {}).forEach(function (k) { el.setAttribute(k, block.attrs[k]); });
+    var parent = targetEl.parentElement;
+    if (op === 'before' && parent) parent.insertBefore(el, targetEl);
+    else if (op === 'after' && parent) parent.insertBefore(el, targetEl.nextSibling);
+    else targetEl.appendChild(el);
+    el.setAttribute('data-uieditor-id', id);
+    overrides[id] = {
+      insert: {
+        targetId: targetEl.getAttribute('data-uieditor-id'),
+        op: op,
+        tag: block.tag,
+        text: block.text || '',
+        attrs: block.attrs || {}
+      }
+    };
+    scheduleSave();
+    select(el);
+  }
+
   // ---- floating toolbar (fixed, isolated inline styles) ----
   var bar = document.createElement('div');
   bar.style.cssText = 'position:fixed;top:8px;right:8px;z-index:2147483647;background:#1e1e24;color:#eee;' +
@@ -210,10 +288,37 @@
     'Elements <span id="ue-tree-arrow">▶</span></div>' +
     '<div id="ue-tree-list" style="display:none;max-height:180px;overflow-y:auto;margin-top:4px;"></div>' +
     '</div>' +
+    '<div id="ue-blocks-wrap" style="border-top:1px solid #444;padding-top:6px;">' +
+    '<div id="ue-blocks-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
+    'Blocks <span id="ue-blocks-arrow">▶</span></div>' +
+    '<div id="ue-blocks-list" style="display:none;margin-top:4px;"></div>' +
+    '</div>' +
     '</div>' +
     '<div id="ue-status" style="opacity:.6;">idle</div>';
   function mount() { document.documentElement.appendChild(bar); }
   if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount);
+
+  // populate block palette buttons
+  (function () {
+    var list = bar.querySelector('#ue-blocks-list');
+    BLOCKS.forEach(function (block) {
+      var btn = document.createElement('button');
+      btn.textContent = block.label;
+      btn.style.cssText = 'cursor:pointer;margin:2px;font-size:11px;padding:2px 6px;';
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        pendingBlock = block;
+        document.documentElement.style.cursor = 'crosshair';
+        setStatus('click target → place ' + block.label + ' (Esc cancel)');
+      });
+      list.appendChild(btn);
+    });
+    bar.querySelector('#ue-blocks-hdr').addEventListener('click', function () {
+      var open = list.style.display !== 'none';
+      list.style.display = open ? 'none' : 'block';
+      bar.querySelector('#ue-blocks-arrow').textContent = open ? '▶' : '▼';
+    });
+  }());
 
   function setStatus(s) { var el = bar.querySelector('#ue-status'); if (el) el.textContent = s; }
   function within(node) { return bar.contains(node); }
@@ -321,12 +426,38 @@
   document.addEventListener('click', function (e) {
     if (!editMode || within(e.target)) return;
     e.preventDefault(); e.stopPropagation();
+    if (pendingBlock) {
+      var block = pendingBlock;
+      pendingBlock = null;
+      document.documentElement.style.cursor = '';
+      var targetEl = e.target;
+      var r = targetEl.getBoundingClientRect();
+      var op;
+      if (targetEl.children.length === 0 && CONTAINER_TAGS.indexOf(targetEl.tagName) !== -1) {
+        op = 'append';
+      } else if (e.clientY < r.top + r.height / 2) {
+        op = 'before';
+      } else {
+        op = 'after';
+      }
+      insertBlock(block, targetEl, op);
+      setStatus('inserted ' + block.label);
+      return;
+    }
     if (e.shiftKey) addToSelection(e.target);
     else select(e.target);
   }, true);
 
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { selectedSet.clear(); positionHighlight(); }
+    if (e.key === 'Escape') {
+      if (pendingBlock) {
+        pendingBlock = null;
+        document.documentElement.style.cursor = '';
+        setStatus('idle');
+      } else {
+        selectedSet.clear(); positionHighlight();
+      }
+    }
     if (e.ctrlKey && e.key.toLowerCase() === 'z' && !e.shiftKey) {
       if (document.activeElement && document.activeElement.contentEditable === 'true') return;
       e.preventDefault();
@@ -402,7 +533,10 @@
   bar.querySelector('#ue-toggle').addEventListener('change', function (e) {
     editMode = e.target.checked;
     bar.querySelector('#ue-panel').style.display = editMode ? 'flex' : 'none';
-    if (!editMode) { selectedSet.clear(); positionHighlight(); hoverBox.style.display = 'none'; }
+    if (!editMode) {
+      selectedSet.clear(); positionHighlight(); hoverBox.style.display = 'none';
+      if (pendingBlock) { pendingBlock = null; document.documentElement.style.cursor = ''; }
+    }
   });
   bar.querySelector('#ue-bg').addEventListener('input', function (e) {
     if (!selectedSet.size) return;
@@ -472,14 +606,23 @@
     }
     fetch('/api/load?key=' + encodeURIComponent(KEY)).then(function (r) { return r.json(); }).then(function (data) {
       overrides = data || {};
+      // replay inserts first (numeric order), then apply all style/text overrides
+      var insKeys = Object.keys(overrides)
+        .filter(function (k) { return k.startsWith('ins:'); })
+        .sort(function (a, b) { return parseInt(a.slice(4)) - parseInt(b.slice(4)); });
+      if (insKeys.length) {
+        insertSeq = parseInt(insKeys[insKeys.length - 1].slice(4)) + 1;
+        insKeys.forEach(function (id) {
+          if (overrides[id].insert) replayInsert(id, overrides[id].insert);
+        });
+      }
       Object.keys(overrides).forEach(function (id) {
-        var el = idToEl(id);
-        if (el) {
-          if (overrides[id].text !== undefined && !(id in origText)) {
-            origText[id] = el.textContent; // capture original before applying loaded text override
-          }
-          applyOverride(el, overrides[id]);
+        var el = elById(id);
+        if (!el) return;
+        if (overrides[id].text !== undefined && !(id in origText)) {
+          origText[id] = el.textContent; // capture original before applying loaded text override
         }
+        applyOverride(el, overrides[id]);
       });
       updateHistoryBtns();
     });
