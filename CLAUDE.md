@@ -18,6 +18,27 @@ OpenMind is a local-first personal AI agent platform. The user speaks to **Felix
 
 > To be filled in as the project is scaffolded.
 
+## Build rules (ADR-0028) -- these govern everything built here
+
+Six rules, canonical text in `docs/adr/0028-reach-ladder-and-capability-rules.md`.
+
+1. **Reach ladder -- stop at the first rung that reaches.** existing tool -> API
+   plugin -> sandboxed shell -> browser session -> computer-use -> ask the human.
+   Each descent costs ~10x tokens and ~10x flakiness. Never build a rung while a
+   lower one already reaches. "Ask the human" is a rung, not a failure.
+2. **Promote on the third repeat.** Ad hoc twice is fine; the third repeat earns a
+   plugin. No speculative pre-building.
+3. **Mechanism follows what is missing.** know-how -> Skill; a tool -> growth loop;
+   replay of a known chain -> Recipe; Felix's own core -> `self_dev`; context room
+   -> `delegate`. Not interchangeable.
+4. **The ADR-0005 gate is the only permission model.** Every mechanism routes
+   through the same 16-class gate, or it does not ship. No side doors.
+5. **One GPU is the scheduler.** Nothing assumes concurrency; two local sub-agents
+   serialize on the one 1080. The live conversational turn wins contention.
+6. **Verified running, or it did not ship.** Green tests are necessary, not
+   sufficient -- exercise the real surface (live Cerebral over the IPC bridge, the
+   actual browser, the actual tray) before calling it done.
+
 ## Agent skills
 
 ### Issue tracker

@@ -26,7 +26,13 @@ _SYSTEM_PROMPT = (
     "propose first so the user can confirm. "
     "Installed skills are reusable procedures -- call skill_list to see what is "
     "available, and skill_use(name) to load one whenever a task matches a "
-    "skill's description or the user names it directly."
+    "skill's description or the user names it directly. "
+    # ADR-0028 R1: the reach ladder, cheapest surface first.
+    "Reach for the cheapest surface that does the job: a purpose-built tool "
+    "first, then shell_exec, then a browser session, then computer_use. Each "
+    "step down that list is slower and less reliable, so never use a heavier "
+    "path when a lighter one reaches. If none of them reach, ask the user "
+    "rather than attempting an unreliable workaround."
 )
 
 
