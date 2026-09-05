@@ -52,6 +52,17 @@
   // style props we ever write; cleared per-element on snapshot restore
   var STYLE_PROPS = ['backgroundColor', 'color', 'fontSize', 'position', 'marginLeft', 'marginTop', 'marginRight', 'marginBottom', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'width', 'height', 'display', 'flexDirection', 'gap', 'alignItems', 'justifyContent', 'borderWidth', 'borderStyle', 'borderColor', 'borderRadius', 'boxShadow'];
 
+  function currentBp() {
+    if (window.innerWidth < 768) return 'mobile';
+    if (window.innerWidth < 1024) return 'tablet';
+    return undefined;
+  }
+  function matchesBp(bp) {
+    if (bp === 'mobile') return window.innerWidth < 768;
+    if (bp === 'tablet') return window.innerWidth >= 768 && window.innerWidth < 1024;
+    return true;
+  }
+
   function snapshot() {
     undoStack.push(JSON.parse(JSON.stringify(overrides)));
     if (undoStack.length > UNDO_CAP) undoStack.shift();
@@ -87,15 +98,17 @@
   // Look up an element by its stored data-uieditor-id.
   // ins:N elements use querySelector; path-based IDs use idToEl.
   function elById(id) {
-    if (id.startsWith('ins:')) return document.querySelector('[data-uieditor-id="' + id + '"]');
-    return idToEl(id);
+    var pipe = id.indexOf('|');
+    var base = pipe !== -1 ? id.slice(0, pipe) : id;
+    if (base.startsWith('ins:')) return document.querySelector('[data-uieditor-id="' + base + '"]');
+    return idToEl(base);
   }
 
   function restoreSnapshot(snap) {
     // clear styles and restore original attrs on existing (non-inserted) elements
     Object.keys(overrides).forEach(function (id) {
       if (id.startsWith('ins:')) return;
-      var el = idToEl(id);
+      var el = elById(id);
       if (!el) return;
       STYLE_PROPS.forEach(function (p) { el.style[p] = ''; });
       if (overrides[id].text !== undefined && (!snap[id] || snap[id].text === undefined)) {
@@ -230,6 +243,7 @@
   }
 
   function applyOverride(el, o) {
+    if (o.bp && !matchesBp(o.bp)) return;
     if (o.style) for (var k in o.style) el.style[k] = o.style[k];
     if (typeof o.text === 'string') el.textContent = o.text;
     if (o.attrs) for (var k in o.attrs) el.setAttribute(k, o.attrs[k]);
@@ -250,17 +264,28 @@
 
   function _patchOverride(el, patch) {
     var id = el.getAttribute('data-uieditor-id');
-    if (typeof patch.text === 'string' && !(id in origText)) {
-      origText[id] = el.textContent;
+    // text overrides are always bp-free (the text you write is device-global)
+    if (typeof patch.text === 'string') {
+      if (!(id in origText)) origText[id] = el.textContent;
+      var to = overrides[id] || (overrides[id] = {});
+      to.text = patch.text;
     }
+    if (patch.style) {
+      var bp = currentBp();
+      var key = bp ? id + '|' + bp : id;
+      var so = overrides[key] || (overrides[key] = {});
+      so.style = Object.assign(so.style || {}, patch.style);
+      if (bp) so.bp = bp;
+    }
+    // attrs (e.g. an inserted image's src) are device-global, like text -- flat key, not bp-scoped
     if (patch.attrs && !origAttrs[id]) {
       origAttrs[id] = {};
       Object.keys(patch.attrs).forEach(function (k) { origAttrs[id][k] = el.getAttribute(k); });
     }
-    var o = overrides[id] || (overrides[id] = {});
-    if (patch.style) o.style = Object.assign(o.style || {}, patch.style);
-    if (typeof patch.text === 'string') o.text = patch.text;
-    if (patch.attrs) o.attrs = Object.assign(o.attrs || {}, patch.attrs);
+    if (patch.attrs) {
+      var ao = overrides[id] || (overrides[id] = {});
+      ao.attrs = Object.assign(ao.attrs || {}, patch.attrs);
+    }
   }
 
   function setOverride(el, patch) {
@@ -571,6 +596,24 @@
   }
   window.addEventListener('scroll', positionHighlight, true);
   window.addEventListener('resize', positionHighlight);
+
+  // ponytail: only re-apply when the band actually crosses a boundary, not on every px change
+  var lastBand = currentBp();
+  window.addEventListener('resize', function () {
+    var band = currentBp();
+    if (band === lastBand) return;
+    lastBand = band;
+    Object.keys(overrides).forEach(function (key) {
+      var base = key.indexOf('|') !== -1 ? key.slice(0, key.indexOf('|')) : key;
+      if (base.startsWith('ins:')) return;
+      var el = idToEl(base);
+      if (el) STYLE_PROPS.forEach(function (p) { el.style[p] = ''; });
+    });
+    Object.keys(overrides).forEach(function (key) {
+      var el = elById(key);
+      if (el) applyOverride(el, overrides[key]);
+    });
+  });
 
   function setSelectValue(sel, val) {
     for (var i = 0; i < sel.options.length; i++) {

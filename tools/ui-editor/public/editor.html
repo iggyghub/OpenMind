@@ -4,23 +4,26 @@
 <meta charset="utf-8">
 <title>UI Editor</title>
 <style>
-  html,body{margin:0;height:100%;background:#111;color:#eee;font:13px/1.4 -apple-system,Segoe UI,sans-serif;}
-  #bar{padding:8px;background:#1a1a1e;}
+  html,body{margin:0;height:100%;background:#111;color:#eee;font:13px/1.4 -apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column;}
+  #bar{padding:8px;background:#1a1a1e;flex-shrink:0;}
   #bar-row1{display:flex;gap:8px;align-items:center;}
+  #bar-row2{display:flex;gap:4px;align-items:center;margin-top:6px;}
   #bar select, #bar input[type=text], #bar input[type=password], #bar input[type=number]{
     padding:6px 8px;border-radius:6px;border:1px solid #333;background:#0e0e11;color:#eee;
   }
   #bar input[type=checkbox]{margin-right:4px;}
   #bar button{padding:6px 12px;border-radius:6px;border:1px solid #333;background:#26262c;color:#eee;cursor:pointer;}
+  #bar button.bp-active{background:#4da3ff;border-color:#4da3ff;color:#fff;}
   #conntype{min-width:110px;}
   .fields{display:none;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;}
   .fields.active{display:flex;}
   .fields input[type=text], .fields input[type=password]{flex:1;min-width:140px;}
   .fields .narrow{flex:none;width:70px;}
   .fields label.inline{display:flex;align-items:center;gap:4px;white-space:nowrap;}
-  iframe{width:100%;height:calc(100% - 84px);border:0;background:#fff;}
-  #hint{padding:4px 8px;opacity:.6;font-size:11px;}
-  #err{padding:4px 8px;color:#ff6b6b;font-size:11px;display:none;}
+  #frame-wrap{flex:1;overflow:hidden;background:#222;display:flex;justify-content:center;}
+  iframe{width:100%;height:100%;border:2px solid #444;background:#fff;}
+  #hint{padding:4px 8px;opacity:.6;font-size:11px;flex-shrink:0;}
+  #err{padding:4px 8px;color:#ff6b6b;font-size:11px;display:none;flex-shrink:0;}
 </style>
 </head>
 <body>
@@ -41,6 +44,13 @@
       <option value="tray/windows/irreversible-modal.html">irreversible-modal.html</option>
     </select>
     <button id="go">Open</button>
+  </div>
+
+  <div id="bar-row2">
+    <span style="opacity:.6;font-size:11px;margin-right:2px;">Preview:</span>
+    <button id="bp-mobile">Mobile 375</button>
+    <button id="bp-tablet">Tablet 768</button>
+    <button id="bp-desktop" class="bp-active">Desktop</button>
   </div>
 
   <div class="fields active" data-conn="local">
@@ -74,7 +84,9 @@
 </div>
 <div id="hint">Edit mode toggle + tools live inside the loaded page (top-right). Toggle it, click an element, drag to move/resize, use the color/text controls. Edits autosave.</div>
 <div id="err"></div>
-<iframe id="frame" src="about:blank"></iframe>
+<div id="frame-wrap">
+  <iframe id="frame" src="about:blank"></iframe>
+</div>
 <script>
   var connType = document.getElementById('conntype');
   var quick = document.getElementById('quick');
@@ -153,6 +165,18 @@
   document.getElementById('bar').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') open_();
   });
+
+  // breakpoint preset buttons: resize the iframe width, centered against the dark chrome
+  function setBreakpoint(name) {
+    var widths = { mobile: '375px', tablet: '768px', desktop: '100%' };
+    frame.style.width = widths[name];
+    ['mobile', 'tablet', 'desktop'].forEach(function (n) {
+      document.getElementById('bp-' + n).classList.toggle('bp-active', n === name);
+    });
+  }
+  document.getElementById('bp-mobile').addEventListener('click', function () { setBreakpoint('mobile'); });
+  document.getElementById('bp-tablet').addEventListener('click', function () { setBreakpoint('tablet'); });
+  document.getElementById('bp-desktop').addEventListener('click', function () { setBreakpoint('desktop'); });
 </script>
 </body>
 </html>

@@ -46,6 +46,7 @@ Image uploads are stored under `tools/ui-editor/overrides/assets/<target-key>/<s
 
 - **Remote sites can't be baked.** The "Commit to file" button is only available for local targets. Remote pages (URL, Git, FTP) get a live-preview overlay only — the edits persist as a local JSON layer and are re-applied on each proxy load, but the remote source is never modified.
 - **Element identity drifts on dynamic pages.** Elements are identified by a DOM-index path (tag name + child index per ancestor). If the page reorders, inserts, or conditionally renders elements before load, the path may point to the wrong element and overrides will misfire or silently no-op.
+- **Responsive preview is width-only.** The Mobile/Tablet/Desktop preset buttons resize the iframe to 375 px / 768 px / full width respectively and visually center it against the editor chrome. There is no user-agent spoofing, no touch-event emulation, and no media-query injection — it is a viewport-width preview only.
 
 ## Tests
 
