@@ -17,7 +17,7 @@ product surface. Each issue body is the full spec for its slice.
 
 ## Next slice -- start here
 
-- **Active:** S10 -- #1076
+- **Active:** S11 -- #1077
 - **Model:** sonnet
 
 ## Queue
@@ -31,7 +31,7 @@ product surface. Each issue body is the full spec for its slice.
 - [x] S7 -- #1073 -- block palette: insert new elements (not just edit existing ones)
 - [x] S8 -- #1074 -- section template library (navbar, hero, feature grid, pricing, footer, contact form, gallery)
 - [x] S9 -- #1075 -- expanded style panel (spacing box model, flex/grid layout, border/radius/shadow)
-- [ ] S10 -- #1076 -- responsive breakpoints (mobile/tablet/desktop preview + per-breakpoint overrides)
+- [x] S10 -- #1076 -- responsive breakpoints (mobile/tablet/desktop preview + per-breakpoint overrides)
 - [ ] S11 -- #1077 -- asset manager (image upload + insert/replace)
 - [ ] S12 -- #1078 -- code view / HTML export panel
 
@@ -61,6 +61,7 @@ prerequisite for S8 (blocks are built from the same insert primitive).
 - S7 -- #1073 -- PR #1085
 - S8 -- #1074 -- PR #1086
 - S9 -- #1075 -- PR #1087
+- S10 -- #1076 -- PR #1088
 
 ## SAFETY
 

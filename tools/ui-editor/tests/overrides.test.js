@@ -133,3 +133,28 @@ test('validateSaveBody: accepts section block overrides with html payload', () =
   });
   assert.equal(err, null);
 });
+
+// breakpoint-scoped overrides (S10)
+test('breakpoint-scoped override: save -> load -> reset round trip', () => {
+  const key = 'test_bp_' + Date.now();
+  const data = {
+    'HTML0>BODY0>P0': { text: 'hello' },
+    'HTML0>BODY0>P0|mobile': { style: { color: '#ff0000' }, bp: 'mobile' },
+    'HTML0>BODY0>P0|tablet': { style: { color: '#00ff00' }, bp: 'tablet' },
+  };
+  writeOverrides(key, data);
+  assert.deepEqual(readOverrides(key), data);
+  resetOverrides(key);
+  assert.deepEqual(readOverrides(key), {});
+});
+
+test('validateSaveBody: accepts breakpoint-scoped override keys with pipe separator', () => {
+  const err = validateSaveBody({
+    key: 'test_k',
+    overrides: {
+      'HTML0>BODY0>P0': { text: 'hello' },
+      'HTML0>BODY0>P0|mobile': { style: { color: '#f00' }, bp: 'mobile' },
+    }
+  });
+  assert.equal(err, null);
+});
