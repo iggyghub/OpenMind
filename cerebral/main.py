@@ -3115,6 +3115,8 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
         "'(new file -- does not exist yet)', use a NEWFILE block with the whole "
         "body. A file marked TRUNCATED is only a partial excerpt -- if your edit "
         "needs a region not shown, pick a SEARCH anchor from what IS shown. "
+        "If this task changes behavior, include a test (new or updated) that "
+        "would fail without your fix and passes with it, in the same edit. "
         "Output ONLY these blocks, nothing else.\n\n"
         "CURRENT FILES:\n"
     )
