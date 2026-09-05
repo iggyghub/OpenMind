@@ -11,13 +11,13 @@ slice = one issue = one PR, merged to master before the next starts
 No ADR / spec doc for this one -- it's a standalone dev tool, not core
 product surface. Each issue body is the full spec for its slice.
 
-## Status: done
+## Status: ready
 
-<!-- ready = slices remain; done = S6 landed; blocked = a session needs a human -->
+<!-- ready = slices remain; done = S12 landed; blocked = a session needs a human -->
 
 ## Next slice -- start here
 
-- **Active:** none (S6 was the last slice in this phase; S7-S12 extend the tool)
+- **Active:** S7 -- #1073
 - **Model:** sonnet
 
 ## Queue
@@ -57,7 +57,7 @@ prerequisite for S8 (blocks are built from the same insert primitive).
 - S3 -- #1065 -- PR #1081
 - S4 -- #1066 -- PR #1082
 - S5 -- #1067 -- PR #1083
-- S6 -- #1068 -- PR (this branch)
+- S6 -- #1068 -- PR #1084
 
 ## SAFETY
 
