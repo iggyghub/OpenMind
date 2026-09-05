@@ -35,6 +35,22 @@ function mimeFor(p) { return MIME[path.extname(p).toLowerCase()] || 'application
 
 function sanitizeKey(s) { return s.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 150); }
 
+// Returns the resolved absolute path if it is safely within ROOT, null otherwise.
+// Uses ROOT + sep to close the directory-boundary escape (e.g. C:\OpenMindEvil
+// starts with C:\OpenMind but not C:\OpenMind\).
+function checkLocalPath(localRel) {
+  const full = path.resolve(ROOT, localRel);
+  return (full.startsWith(ROOT + path.sep) || full === ROOT) ? full : null;
+}
+
+// Returns an error string if body fails the /api/save shape check, null if valid.
+function validateSaveBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return 'body must be a JSON object';
+  if (typeof body.key !== 'string' || !body.key) return 'key must be a non-empty string';
+  if (!body.overrides || typeof body.overrides !== 'object' || Array.isArray(body.overrides)) return 'overrides must be a plain object';
+  return null;
+}
+
 function injectIntoHtml(html, scriptSrc, baseHref) {
   let out = html.replace(/<base[^>]*>/gi, '');
   if (baseHref) {
@@ -98,8 +114,8 @@ function serveFileFromDisk(fullPath, key, req, res, localRel) {
 
 async function handleLocal(req, res, urlObj) {
   const rel = decodeURIComponent(urlObj.pathname.replace(/^\/local\//, ''));
-  const full = path.resolve(ROOT, rel);
-  if (!full.startsWith(ROOT)) { res.writeHead(403); res.end('forbidden'); return; }
+  const full = checkLocalPath(rel);
+  if (!full) { res.writeHead(403); res.end('forbidden'); return; }
   if (!fs.existsSync(full) || !fs.statSync(full).isFile()) { res.writeHead(404); res.end('not found'); return; }
   serveFileFromDisk(full, sanitizeKey('local:' + rel), req, res, rel);
 }
@@ -247,8 +263,10 @@ const server = http.createServer(async (req, res) => {
       const key = urlObj.searchParams.get('key') || '';
       sendJson(res, 200, readOverrides(sanitizeKey(key)));
     } else if (req.method === 'POST' && urlObj.pathname === '/api/save') {
-      const body = JSON.parse(await readBody(req));
-      writeOverrides(sanitizeKey(body.key), body.overrides || {});
+      let body; try { body = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'invalid JSON' }); return; }
+      const saveErr = validateSaveBody(body);
+      if (saveErr) { sendJson(res, 400, { error: saveErr }); return; }
+      writeOverrides(sanitizeKey(body.key), body.overrides);
       sendJson(res, 200, { ok: true });
     } else if (req.method === 'POST' && urlObj.pathname === '/api/reset') {
       const body = JSON.parse(await readBody(req));
@@ -256,10 +274,11 @@ const server = http.createServer(async (req, res) => {
       if (fs.existsSync(f)) fs.unlinkSync(f);
       sendJson(res, 200, { ok: true });
     } else if (req.method === 'POST' && urlObj.pathname === '/api/bake') {
-      const body = JSON.parse(await readBody(req));
+      let body; try { body = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'invalid JSON' }); return; }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) { sendJson(res, 400, { error: 'body must be a JSON object' }); return; }
       const { key, path: filePath } = body;
+      if (typeof key !== 'string' || !key) { sendJson(res, 400, { error: 'missing key' }); return; }
       if (!filePath) { sendJson(res, 400, { error: 'bake is only available for local targets' }); return; }
-      if (!key) { sendJson(res, 400, { error: 'missing key' }); return; }
       const full = path.resolve(ROOT, filePath);
       if (!full.startsWith(ROOT + path.sep) && full !== ROOT) { sendJson(res, 400, { error: 'forbidden' }); return; }
       if (!fs.existsSync(full) || !fs.statSync(full).isFile()) { sendJson(res, 404, { error: 'file not found' }); return; }
@@ -284,4 +303,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides, bake };
+module.exports = { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides, bake, checkLocalPath, validateSaveBody };
