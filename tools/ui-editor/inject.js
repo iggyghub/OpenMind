@@ -36,6 +36,19 @@
     { label: 'Footer', html: '<footer style="padding:40px 24px;background:#1a1a2e;color:#aaa;text-align:center;"><div style="display:flex;justify-content:center;gap:24px;margin-bottom:24px;"><a href="#" style="color:#aaa;text-decoration:none;">Privacy</a><a href="#" style="color:#aaa;text-decoration:none;">Terms</a><a href="#" style="color:#aaa;text-decoration:none;">About</a><a href="#" style="color:#aaa;text-decoration:none;">Contact</a></div><p style="margin:0;font-size:13px;">&#169; 2025 Your Company. All rights reserved.</p></footer>' },
     { label: 'Contact Form', html: '<section style="padding:60px 24px;background:#fff;"><h2 style="text-align:center;margin:0 0 32px;font-size:32px;">Contact Us</h2><form style="display:flex;flex-direction:column;gap:16px;max-width:560px;margin:0 auto;"><input type="text" placeholder="Your Name" style="padding:12px;border:1px solid #ddd;border-radius:6px;font-size:15px;"><input type="email" placeholder="Email Address" style="padding:12px;border:1px solid #ddd;border-radius:6px;font-size:15px;"><textarea placeholder="Your message..." rows="5" style="padding:12px;border:1px solid #ddd;border-radius:6px;font-size:15px;resize:vertical;"></textarea><button type="submit" style="padding:14px;background:#4da3ff;color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer;">Send Message</button></form></section>' },
     { label: 'Gallery', html: '<section style="padding:60px 24px;background:#fff;"><h2 style="text-align:center;margin:0 0 32px;font-size:32px;">Gallery</h2><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;max-width:900px;margin:0 auto;"><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div><div style="background:#e0e0e0;height:180px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;">Image</div></div></section>' },
+    { label: 'Testimonials', html: '<section style="padding:60px 24px;background:#fff;"><h2 style="text-align:center;margin:0 0 40px;font-size:32px;">What people are saying</h2><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;max-width:900px;margin:0 auto;"><div style="padding:24px;background:#f8f9fa;border-radius:8px;"><p style="margin:0 0 16px;color:#444;">&ldquo;This product changed how our team works.&rdquo;</p><div style="font-weight:bold;">Jane Doe</div><div style="font-size:13px;color:#888;">CEO, Example Co.</div></div><div style="padding:24px;background:#f8f9fa;border-radius:8px;"><p style="margin:0 0 16px;color:#444;">&ldquo;Support is fast and the product just works.&rdquo;</p><div style="font-weight:bold;">Sam Lee</div><div style="font-size:13px;color:#888;">Founder, Acme</div></div><div style="padding:24px;background:#f8f9fa;border-radius:8px;"><p style="margin:0 0 16px;color:#444;">&ldquo;Best decision we made this year.&rdquo;</p><div style="font-weight:bold;">Priya Patel</div><div style="font-size:13px;color:#888;">Ops Lead, Northwind</div></div></div></section>' },
+    { label: 'FAQ', html: '<section style="padding:60px 24px;background:#f8f9fa;"><div style="max-width:700px;margin:0 auto;"><h2 style="text-align:center;margin:0 0 32px;font-size:32px;">Frequently Asked Questions</h2><details style="background:#fff;border-radius:8px;padding:16px;margin-bottom:12px;"><summary style="cursor:pointer;font-weight:bold;">What is included?</summary><p style="margin:8px 0 0;color:#666;">Everything you need to get started, no extra fees.</p></details><details style="background:#fff;border-radius:8px;padding:16px;margin-bottom:12px;"><summary style="cursor:pointer;font-weight:bold;">Can I cancel anytime?</summary><p style="margin:8px 0 0;color:#666;">Yes, cancel whenever you like, no lock-in contract.</p></details><details style="background:#fff;border-radius:8px;padding:16px;"><summary style="cursor:pointer;font-weight:bold;">Do you offer support?</summary><p style="margin:8px 0 0;color:#666;">Email support is included on every plan.</p></details></div></section>' },
+    { label: 'Team', html: '<section style="padding:60px 24px;background:#fff;"><h2 style="text-align:center;margin:0 0 40px;font-size:32px;">Meet the Team</h2><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;max-width:900px;margin:0 auto;text-align:center;"><div><div style="width:96px;height:96px;background:#e0e0e0;border-radius:50%;margin:0 auto 12px;"></div><h3 style="margin:0 0 4px;">Alex Rivera</h3><div style="color:#888;font-size:13px;">Founder</div></div><div><div style="width:96px;height:96px;background:#e0e0e0;border-radius:50%;margin:0 auto 12px;"></div><h3 style="margin:0 0 4px;">Morgan Ito</h3><div style="color:#888;font-size:13px;">Design Lead</div></div><div><div style="width:96px;height:96px;background:#e0e0e0;border-radius:50%;margin:0 auto 12px;"></div><h3 style="margin:0 0 4px;">Casey Nunez</h3><div style="color:#888;font-size:13px;">Engineering</div></div></div></section>' },
+    { label: 'Stats', html: '<section style="padding:50px 24px;background:#1a1a2e;color:#fff;"><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:24px;max-width:900px;margin:0 auto;text-align:center;"><div><div style="font-size:36px;font-weight:bold;color:#4da3ff;">10K+</div><div style="opacity:.7;font-size:13px;">Customers</div></div><div><div style="font-size:36px;font-weight:bold;color:#4da3ff;">99.9%</div><div style="opacity:.7;font-size:13px;">Uptime</div></div><div><div style="font-size:36px;font-weight:bold;color:#4da3ff;">150+</div><div style="opacity:.7;font-size:13px;">Countries</div></div><div><div style="font-size:36px;font-weight:bold;color:#4da3ff;">24/7</div><div style="opacity:.7;font-size:13px;">Support</div></div></div></section>' },
+    { label: 'CTA Banner', html: '<section style="padding:60px 24px;background:#4da3ff;color:#fff;text-align:center;"><h2 style="margin:0 0 12px;font-size:30px;">Ready to get started?</h2><p style="margin:0 0 24px;opacity:.9;">Join thousands of happy customers today.</p><button style="padding:14px 32px;background:#fff;color:#4da3ff;border:none;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;">Get Started</button></section>' },
+    { label: 'Newsletter', html: '<section style="padding:50px 24px;background:#f8f9fa;text-align:center;"><h2 style="margin:0 0 8px;font-size:26px;">Stay in the loop</h2><p style="margin:0 0 20px;color:#666;">Get updates delivered to your inbox.</p><form style="display:flex;gap:8px;max-width:420px;margin:0 auto;"><input type="email" placeholder="you@example.com" style="flex:1;padding:12px;border:1px solid #ddd;border-radius:6px;font-size:14px;"><button type="submit" style="padding:12px 20px;background:#4da3ff;color:#fff;border:none;border-radius:6px;cursor:pointer;">Subscribe</button></form></section>' },
+    // ponytail: a static storefront look, not a real checkout -- "Add to Cart" has no cart
+    // behind it. Wire it to a real payment provider (Stripe Buy Button / PayPal embed) by
+    // hand once the site owner has their own account + keys; out of scope for a template.
+    { label: 'Product Grid', html: '<section style="padding:60px 24px;background:#fff;"><h2 style="text-align:center;margin:0 0 40px;font-size:32px;">Shop</h2><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;max-width:900px;margin:0 auto;"><div style="border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;"><div style="height:160px;background:#e0e0e0;"></div><div style="padding:16px;"><h3 style="margin:0 0 6px;font-size:16px;">Product Name</h3><div style="font-weight:bold;margin:0 0 12px;">$29.00</div><button style="width:100%;padding:10px;background:#1a1a2e;color:#fff;border:none;border-radius:6px;cursor:pointer;">Add to Cart</button></div></div><div style="border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;"><div style="height:160px;background:#e0e0e0;"></div><div style="padding:16px;"><h3 style="margin:0 0 6px;font-size:16px;">Product Name</h3><div style="font-weight:bold;margin:0 0 12px;">$45.00</div><button style="width:100%;padding:10px;background:#1a1a2e;color:#fff;border:none;border-radius:6px;cursor:pointer;">Add to Cart</button></div></div><div style="border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;"><div style="height:160px;background:#e0e0e0;"></div><div style="padding:16px;"><h3 style="margin:0 0 6px;font-size:16px;">Product Name</h3><div style="font-weight:bold;margin:0 0 12px;">$18.00</div><button style="width:100%;padding:10px;background:#1a1a2e;color:#fff;border:none;border-radius:6px;cursor:pointer;">Add to Cart</button></div></div></div></section>' },
+    // ponytail: static numbers, not a live feed -- wire a real ticker (e.g. TradingView's
+    // embeddable widget) by hand if live data is actually wanted; this is layout only.
+    { label: 'Stock Ticker', html: '<section style="padding:14px 24px;background:#0e0e11;color:#eee;overflow:hidden;"><div style="display:flex;gap:32px;font-family:monospace,Courier New;font-size:14px;white-space:nowrap;overflow-x:auto;"><span>AAPL <span style="color:#2ecc71;">+1.24%</span></span><span>MSFT <span style="color:#2ecc71;">+0.68%</span></span><span>GOOG <span style="color:#ff6b6b;">-0.32%</span></span><span>TSLA <span style="color:#2ecc71;">+2.10%</span></span><span>AMZN <span style="color:#ff6b6b;">-0.15%</span></span></div></section>' },
   ];
   // elements that accept appendChild when empty rather than before/after
   var CONTAINER_TAGS = ['DIV', 'SECTION', 'ARTICLE', 'ASIDE', 'MAIN', 'UL', 'OL', 'FORM', 'HEADER', 'FOOTER', 'NAV'];
@@ -348,21 +361,70 @@
     select(el);
   }
 
-  // ---- floating toolbar (fixed, isolated inline styles) ----
+  // ---- floating toolbar ----
+  // Layout mirrors GrapesJS/Webflow-style builders: a slim top strip for mode + global
+  // actions, a left dock for structure/insertion (what to add, where you are in the tree),
+  // a right dock for contextual styling of the current selection. Previously all of this
+  // was one 190px-wide vertical stack of ~10 stacked accordions -- fine for a handful of
+  // controls, unusable once S7-S12 added block/section/style/asset panels on top of it.
+  // `bar` itself is just a non-interactive full-viewport wrapper (pointer-events:none) so
+  // clicks still reach the page everywhere except the docks explicitly opted back in.
+  var PANEL = 'background:#1e1e24;color:#eee;font:12px/1.4 -apple-system,Segoe UI,sans-serif;' +
+    'border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.4);box-sizing:border-box;pointer-events:auto;';
+  var BTN = 'cursor:pointer;background:#2a2a32;color:#eee;border:1px solid #3a3a42;border-radius:5px;padding:4px 10px;font:inherit;';
   var bar = document.createElement('div');
-  bar.style.cssText = 'position:fixed;top:8px;right:8px;z-index:2147483647;background:#1e1e24;color:#eee;' +
-    'font:12px/1.4 -apple-system,Segoe UI,sans-serif;border-radius:8px;padding:8px 10px;box-shadow:0 4px 16px rgba(0,0,0,.4);' +
-    'display:flex;flex-direction:column;gap:6px;min-width:190px;';
+  bar.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
   bar.innerHTML =
-    '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">' +
+    // ---- top strip: mode toggle + global actions (always mounted; panel section hides with edit mode) ----
+    '<div id="ue-topbar" style="' + PANEL + 'position:absolute;top:8px;left:8px;max-width:calc(100vw - 16px);padding:6px 10px;' +
+    'display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+    '<span id="ue-topbar-grip" title="Drag to move" style="cursor:grab;opacity:.4;letter-spacing:-2px;">&#8942;&#8942;</span>' +
+    '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;">' +
     '<input type="checkbox" id="ue-toggle"> <b>Edit mode</b></label>' +
-    '<div id="ue-panel" style="display:none;flex-direction:column;gap:4px;border-top:1px solid #444;padding-top:6px;">' +
-    '<div style="display:flex;gap:4px;">' +
-    '<button id="ue-undo" style="cursor:pointer;flex:1;" disabled>Undo</button>' +
-    '<button id="ue-redo" style="cursor:pointer;flex:1;" disabled>Redo</button>' +
-    '<button id="ue-shortcuts" title="Keyboard shortcuts" style="cursor:pointer;padding:0 8px;">?</button>' +
+    '<div id="ue-panel" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;flex:1;border-left:1px solid #444;padding-left:10px;">' +
+    '<button id="ue-undo" style="' + BTN + '" disabled>Undo</button>' +
+    '<button id="ue-redo" style="' + BTN + '" disabled>Redo</button>' +
+    '<button id="ue-shortcuts" title="Keyboard shortcuts" style="' + BTN + 'padding:4px 8px;">?</button>' +
+    '<div style="flex:1;min-width:4px;"></div>' +
+    '<div id="ue-status" style="opacity:.6;white-space:nowrap;">idle</div>' +
+    '<button id="ue-edittext" style="' + BTN + '">Edit text</button>' +
+    '<button id="ue-reset" style="' + BTN + '">Reset this page</button>' +
+    (LOCAL_PATH ? '<button id="ue-bake" style="' + BTN + '">Commit to file</button>' : '') +
+    '<button id="ue-code" style="' + BTN + '">Code</button>' +
+    '</div></div>' +
+    // ---- left dock: structure -- element tree + things you can insert ----
+    '<div id="ue-left" style="' + PANEL + 'position:absolute;top:54px;left:8px;width:200px;max-height:70vh;' +
+    'padding:8px 10px;overflow-y:auto;display:none;flex-direction:column;gap:2px;">' +
+    '<b id="ue-left-grip" title="Drag to move" style="font-size:12px;opacity:.8;cursor:grab;">&#8942;&#8942; Structure</b>' +
+    '<div id="ue-tree-wrap" style="border-top:1px solid #444;padding-top:6px;margin-top:4px;">' +
+    '<div id="ue-tree-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
+    'Elements <span id="ue-tree-arrow">▶</span></div>' +
+    '<div id="ue-tree-list" style="display:none;max-height:180px;overflow-y:auto;margin-top:4px;"></div>' +
     '</div>' +
-    '<details open style="border-top:1px solid #444;padding-top:4px;">' +
+    '<div id="ue-blocks-wrap" style="border-top:1px solid #444;padding-top:6px;margin-top:6px;">' +
+    '<div id="ue-blocks-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
+    'Blocks <span id="ue-blocks-arrow">▶</span></div>' +
+    '<div id="ue-blocks-list" style="display:none;margin-top:4px;"></div>' +
+    '</div>' +
+    '<div id="ue-sections-wrap" style="border-top:1px solid #444;padding-top:6px;margin-top:6px;">' +
+    '<div id="ue-sections-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
+    'Sections <span id="ue-sections-arrow">▶</span></div>' +
+    '<div id="ue-sections-list" style="display:none;margin-top:4px;"></div>' +
+    '</div>' +
+    '<div id="ue-assets-wrap" style="border-top:1px solid #444;padding-top:6px;margin-top:6px;">' +
+    '<div id="ue-assets-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
+    'Images <span id="ue-assets-arrow">▶</span></div>' +
+    '<div id="ue-assets-body" style="display:none;margin-top:4px;">' +
+    '<label style="font-size:11px;cursor:pointer;display:block;">Upload image<br>' +
+    '<input type="file" id="ue-imgfile" accept="image/png,image/jpeg,image/gif,image/webp" style="max-width:160px;font-size:10px;margin-top:2px;"></label>' +
+    '<div style="font-size:10px;opacity:.55;margin-top:3px;">Select an img to replace it,<br>or upload to insert a new one.</div>' +
+    '</div>' +
+    '</div></div>' +
+    // ---- right dock: style panel for the current selection ----
+    '<div id="ue-right" style="' + PANEL + 'position:absolute;top:54px;right:8px;width:212px;max-height:70vh;' +
+    'padding:8px 10px;overflow-y:auto;display:none;flex-direction:column;gap:4px;">' +
+    '<b id="ue-right-grip" title="Drag to move" style="font-size:12px;opacity:.8;cursor:grab;">&#8942;&#8942; Style</b>' +
+    '<details open style="border-top:1px solid #444;padding-top:4px;margin-top:2px;">' +
     '<summary style="cursor:pointer;user-select:none;margin-bottom:4px;">Color &amp; Typography</summary>' +
     '<div style="display:flex;flex-direction:column;gap:4px;">' +
     '<div style="display:flex;gap:6px;align-items:center;">BG <input type="color" id="ue-bg"></div>' +
@@ -427,52 +489,23 @@
     '<option value="4px 4px 0 rgba(0,0,0,.8)">hard</option>' +
     '</select></div>' +
     '</div></details>' +
-    '<button id="ue-edittext" style="cursor:pointer;margin-top:2px;">Edit text</button>' +
-    '<button id="ue-reset" style="cursor:pointer;">Reset this page</button>' +
-    (LOCAL_PATH ? '<button id="ue-bake" style="cursor:pointer;">Commit to file</button>' : '') +
-    '<button id="ue-code" style="cursor:pointer;">Code</button>' +
-    '<div id="ue-tree-wrap" style="border-top:1px solid #444;padding-top:6px;">' +
-    '<div id="ue-tree-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
-    'Elements <span id="ue-tree-arrow">▶</span></div>' +
-    '<div id="ue-tree-list" style="display:none;max-height:180px;overflow-y:auto;margin-top:4px;"></div>' +
     '</div>' +
-    '<div id="ue-blocks-wrap" style="border-top:1px solid #444;padding-top:6px;">' +
-    '<div id="ue-blocks-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
-    'Blocks <span id="ue-blocks-arrow">▶</span></div>' +
-    '<div id="ue-blocks-list" style="display:none;margin-top:4px;"></div>' +
-    '</div>' +
-    '<div id="ue-sections-wrap" style="border-top:1px solid #444;padding-top:6px;">' +
-    '<div id="ue-sections-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
-    'Sections <span id="ue-sections-arrow">▶</span></div>' +
-    '<div id="ue-sections-list" style="display:none;margin-top:4px;"></div>' +
-    '</div>' +
-    '<div id="ue-assets-wrap" style="border-top:1px solid #444;padding-top:6px;">' +
-    '<div id="ue-assets-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
-    'Images <span id="ue-assets-arrow">▶</span></div>' +
-    '<div id="ue-assets-body" style="display:none;margin-top:4px;">' +
-    '<label style="font-size:11px;cursor:pointer;display:block;">Upload image<br>' +
-    '<input type="file" id="ue-imgfile" accept="image/png,image/jpeg,image/gif,image/webp" style="max-width:160px;font-size:10px;margin-top:2px;"></label>' +
-    '<div style="font-size:10px;opacity:.55;margin-top:3px;">Select an img to replace it,<br>or upload to insert a new one.</div>' +
-    '</div>' +
-    '</div>' +
-    '</div>' +
-    '<div id="ue-status" style="opacity:.6;">idle</div>' +
-    '<div id="ue-code-modal" style="display:none;position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,.8);padding:20px;box-sizing:border-box;">' +
+    '<div id="ue-code-modal" style="display:none;position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,.8);padding:20px;box-sizing:border-box;pointer-events:auto;">' +
     '<div style="background:#1e1e24;border-radius:8px;height:100%;display:flex;flex-direction:column;padding:14px;gap:8px;">' +
     '<div style="display:flex;justify-content:space-between;align-items:center;">' +
     '<b style="color:#eee;font-size:13px;">HTML Source</b>' +
     '<div style="display:flex;gap:6px;">' +
-    '<button id="ue-code-copy" style="cursor:pointer;">Copy</button>' +
-    '<button id="ue-code-dl" style="cursor:pointer;">Download .html</button>' +
-    '<button id="ue-code-close" style="cursor:pointer;">Close</button>' +
+    '<button id="ue-code-copy" style="' + BTN + '">Copy</button>' +
+    '<button id="ue-code-dl" style="' + BTN + '">Download .html</button>' +
+    '<button id="ue-code-close" style="' + BTN + '">Close</button>' +
     '</div></div>' +
     '<textarea id="ue-code-text" readonly style="flex:1;font:12px/1.5 monospace,Courier New,monospace;background:#0e0e11;color:#ccc;border:1px solid #333;border-radius:4px;padding:8px;resize:none;white-space:pre;overflow:auto;"></textarea>' +
     '</div></div>' +
-    '<div id="ue-shortcuts-modal" style="display:none;position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,.8);padding:20px;box-sizing:border-box;">' +
+    '<div id="ue-shortcuts-modal" style="display:none;position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,.8);padding:20px;box-sizing:border-box;pointer-events:auto;">' +
     '<div style="background:#1e1e24;border-radius:8px;max-width:280px;margin:60px auto 0;padding:14px;">' +
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
     '<b style="color:#eee;font-size:13px;">Keyboard shortcuts</b>' +
-    '<button id="ue-shortcuts-close" style="cursor:pointer;">Close</button>' +
+    '<button id="ue-shortcuts-close" style="' + BTN + '">Close</button>' +
     '</div>' +
     '<div style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#ccc;">' +
     '<div style="display:flex;justify-content:space-between;gap:12px;"><span>Undo</span><span style="opacity:.6;">Ctrl+Z</span></div>' +
@@ -483,6 +516,60 @@
     '</div></div></div>';
   function mount() { document.documentElement.appendChild(bar); }
   if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount);
+
+  // Drag-reposition for the three docks, via their grip handle. Position persists in
+  // localStorage (shared across every page proxied through this editor -- one remembered
+  // layout, not per-target) so a dock you've moved out of the way stays out of the way.
+  function makeDraggable(panel, handle, storageKey, defaultLeft, defaultTop) {
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (e) {}
+    panel.style.left = (saved ? saved.left : defaultLeft()) + 'px';
+    panel.style.top = (saved ? saved.top : defaultTop()) + 'px';
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+    handle.addEventListener('mousedown', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      var startX = e.clientX, startY = e.clientY;
+      var startLeft = parseFloat(panel.style.left), startTop = parseFloat(panel.style.top);
+      handle.style.cursor = 'grabbing';
+      function onMove(ev) {
+        var w = panel.offsetWidth, h = panel.offsetHeight;
+        var nl = Math.max(0, Math.min(window.innerWidth - w, startLeft + ev.clientX - startX));
+        var nt = Math.max(0, Math.min(window.innerHeight - h, startTop + ev.clientY - startY));
+        panel.style.left = nl + 'px';
+        panel.style.top = nt + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.style.cursor = 'grab';
+        try {
+          localStorage.setItem(storageKey, JSON.stringify({ left: parseFloat(panel.style.left), top: parseFloat(panel.style.top) }));
+        } catch (e) {}
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+  makeDraggable(bar.querySelector('#ue-topbar'), bar.querySelector('#ue-topbar-grip'), 'ue-pos-topbar',
+    function () { return 8; }, function () { return 8; });
+  makeDraggable(bar.querySelector('#ue-left'), bar.querySelector('#ue-left-grip'), 'ue-pos-left',
+    function () { return 8; }, function () { return 54; });
+  makeDraggable(bar.querySelector('#ue-right'), bar.querySelector('#ue-right-grip'), 'ue-pos-right',
+    function () { return window.innerWidth - 220; }, function () { return 54; });
+
+  // Fixed left/top (needed for free dragging) no longer auto-follows a window resize the
+  // way the old CSS-anchored top:8/right:8 did -- clamp back on-screen if a resize leaves
+  // a dock's saved/default position outside the new viewport, without fighting the user's
+  // drag otherwise.
+  window.addEventListener('resize', function () {
+    [bar.querySelector('#ue-topbar'), bar.querySelector('#ue-left'), bar.querySelector('#ue-right')].forEach(function (panel) {
+      var maxLeft = Math.max(0, window.innerWidth - panel.offsetWidth);
+      var maxTop = Math.max(0, window.innerHeight - panel.offsetHeight);
+      if (parseFloat(panel.style.left) > maxLeft) panel.style.left = maxLeft + 'px';
+      if (parseFloat(panel.style.top) > maxTop) panel.style.top = maxTop + 'px';
+    });
+  });
 
   // populate block palette buttons
   (function () {
@@ -908,6 +995,8 @@
     editMode = !!on;
     bar.querySelector('#ue-toggle').checked = editMode;
     bar.querySelector('#ue-panel').style.display = editMode ? 'flex' : 'none';
+    bar.querySelector('#ue-left').style.display = editMode ? 'flex' : 'none';
+    bar.querySelector('#ue-right').style.display = editMode ? 'flex' : 'none';
     if (!editMode) {
       selectedSet.clear(); positionHighlight(); hoverBox.style.display = 'none';
       if (pendingBlock) { pendingBlock = null; document.documentElement.style.cursor = ''; }
