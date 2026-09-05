@@ -68,6 +68,17 @@
     .sidebar::-webkit-scrollbar-track { background: transparent; }
     .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
+    /* ── sidebar drag splitter (mirrors .ws-splitter / S3 #482) ─────────── */
+    .sidebar-splitter {
+      flex: 0 0 5px;
+      cursor: col-resize;
+      background: transparent;
+      border-right: 1px solid var(--border);
+      touch-action: none;
+    }
+    .sidebar-splitter:hover { background: var(--border); }
+    .sidebar.is-collapsed + .sidebar-splitter { cursor: default; pointer-events: none; }
+
     .brand {
       padding: 16px 18px 14px;
       font-size: 13px;
@@ -5397,6 +5408,7 @@
       <button class="nav-item" data-route="settings"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span><span class="nav-label">Settings</span></button>
     </nav>
   </aside>
+  <div class="sidebar-splitter" id="sidebar-splitter" aria-hidden="true"></div>
 
   <main class="content">
     <div class="header">
@@ -6578,6 +6590,9 @@
   <!-- Sidebar collapse (S1 -- #480) -- icon-rail collapse with Ctrl+B + localStorage.
        Dual-mode: window.SidebarCollapse here, module.exports for jest. -->
   <script src="../lib/sidebar-collapse.js"></script>
+  <!-- Sidebar drag-to-resize (mirrors the workspace splitter, S3 #482).
+       Dual-mode: window.SidebarResize here, module.exports for Node tests. -->
+  <script src="../lib/sidebar-resize.js"></script>
 
   <!-- Permissions store (Issue #202) — same source feeds the Node test
        suite via require() and this renderer via window.PermissionsStoreMod.
@@ -12754,6 +12769,7 @@
         window.SidebarCollapse.toggle(_sidebarEl);
       }
     });
+    window.SidebarResize.init(document.getElementById('sidebar-splitter'), _sidebarEl);
 
     // ── S2 -- #481 + UI2 A3 #483: workspace shell + plugin panels ─────────
     // The Conversation permanently occupies .ws-primary. .ws-secondary holds
