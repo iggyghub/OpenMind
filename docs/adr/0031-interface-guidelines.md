@@ -68,7 +68,18 @@ rewrite with no user-visible payoff. Rejected.
    *should* look like the host. Custom-drawing them would also forfeit the
    accessibility and focus behaviour the native ones provide free.
 
-5. **An absorbed app is made consistent behaviourally, never visually.** Felix
+5. **Accessibility is in scope; theme is deferred.** These are the two
+   cross-cutting layers, and the two that get roughly ten times more expensive to
+   retrofit -- today there are **0** `prefers-color-scheme` rules and **36** ARIA
+   attributes across 13,000 lines. They are split because they are not the same
+   kind of thing. Light mode is *preference*, and the user is currently the only
+   user, so it can wait until there is someone it serves. Keyboard reach, focus
+   order, and labelling are what make the interface usable **at all** when voice
+   is not an option -- an outage, a muted mic, a shared room -- so they are part of
+   the guidelines rather than a later campaign. ADR-0027's global focus ring is the
+   start of that work, not the end of it.
+
+6. **An absorbed app is made consistent behaviourally, never visually.** Felix
    will not restyle LibreOffice. What it controls is how the app is invoked and
    where its output lands -- the Document library already does this.
 
@@ -85,15 +96,6 @@ rewrite with no user-visible payoff. Rejected.
 
 ## Open
 
-**Theme and accessibility -- the two cross-cutting layers, and the two that are
-expensive to retrofit.** The stacked levels (patterns, surfaces) can be extracted
-whenever; theme cannot, since it means touching all 49 hardcoded hex values
-outside `main.html` plus everything inside it, and that cost only grows. Today
-there are **0** `prefers-color-scheme` rules and **36** ARIA attributes across
-13,000 lines.
-
-Recommended split, not yet decided: **accessibility in scope, theme deferred.**
-The user is currently the only user, so light mode is preference and can wait --
-but keyboard reach and focus order are what make the interface usable at all when
-voice is not an option, and ADR-0027's global focus ring already started that
-work.
+Nothing. Both cross-cutting forks were resolved into decision 5 (2026-09-05);
+the deferral of theme is a decision with a stated trigger -- a second user -- not
+an unanswered question.
