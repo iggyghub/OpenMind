@@ -69,6 +69,58 @@
     if (rb) rb.disabled = redoStack.length === 0;
   }
 
+  // ponytail: fixed cap; virtual-scroll if pages routinely exceed this
+  var TREE_CAP = 200;
+
+  function elHint(el) {
+    for (var c = el.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3) {
+        var t = c.textContent.trim();
+        if (t) return '"' + t.slice(0, 20) + (t.length > 20 ? '…' : '') + '"';
+      }
+    }
+    if (el.id) return '#' + el.id;
+    if (el.className && typeof el.className === 'string') {
+      var cls = el.className.trim().split(/\s+/)[0];
+      if (cls) return '.' + cls;
+    }
+    return '';
+  }
+
+  function buildTree() {
+    var list = bar.querySelector('#ue-tree-list');
+    if (!list) return;
+    list.innerHTML = '';
+    var count = 0;
+    function walk(el, depth) {
+      if (count >= TREE_CAP) return;
+      if (el === bar || bar.contains(el) || overlayNodes.indexOf(el) !== -1) return;
+      count++;
+      var row = document.createElement('div');
+      row.style.cssText = 'padding:2px 4px 2px ' + (depth * 8 + 4) + 'px;cursor:pointer;' +
+        'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:3px;font-size:11px;';
+      var hint = elHint(el);
+      row.textContent = el.tagName.toLowerCase() + (hint ? ' ' + hint : '');
+      row.title = row.textContent;
+      row.addEventListener('mouseover', function () { row.style.background = '#2a2a32'; });
+      row.addEventListener('mouseout', function () { row.style.background = ''; });
+      row.addEventListener('click', function (e) {
+        e.stopPropagation();
+        select(el);
+        el.scrollIntoView({ block: 'center' });
+      });
+      list.appendChild(row);
+      for (var i = 0; i < el.children.length; i++) walk(el.children[i], depth + 1);
+    }
+    if (document.body) walk(document.body, 0);
+    if (count >= TREE_CAP) {
+      var more = document.createElement('div');
+      more.style.cssText = 'padding:2px 4px;opacity:.5;font-size:11px;';
+      more.textContent = '(capped at ' + TREE_CAP + ' nodes)';
+      list.appendChild(more);
+    }
+  }
+
   function pathId(el) {
     var parts = [];
     var node = el;
@@ -141,6 +193,11 @@
     '<button id="ue-edittext" style="cursor:pointer;">Edit text</button>' +
     '<button id="ue-reset" style="cursor:pointer;">Reset this page</button>' +
     (LOCAL_PATH ? '<button id="ue-bake" style="cursor:pointer;">Commit to file</button>' : '') +
+    '<div id="ue-tree-wrap" style="border-top:1px solid #444;padding-top:6px;">' +
+    '<div id="ue-tree-hdr" style="cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;">' +
+    'Elements <span id="ue-tree-arrow">▶</span></div>' +
+    '<div id="ue-tree-list" style="display:none;max-height:180px;overflow-y:auto;margin-top:4px;"></div>' +
+    '</div>' +
     '</div>' +
     '<div id="ue-status" style="opacity:.6;">idle</div>';
   function mount() { document.documentElement.appendChild(bar); }
@@ -338,6 +395,15 @@
         .catch(function () { setStatus('bake error'); });
     });
   }
+
+  bar.querySelector('#ue-tree-hdr').addEventListener('click', function () {
+    var list = bar.querySelector('#ue-tree-list');
+    var arrow = bar.querySelector('#ue-tree-arrow');
+    var open = list.style.display !== 'none';
+    list.style.display = open ? 'none' : 'block';
+    arrow.textContent = open ? '▶' : '▼';
+    if (!open) buildTree();
+  });
 
   // ---- init: tag every element with a stable id, then apply saved overrides ----
   var overlayNodes = [highlight, hoverBox].concat(handles);
