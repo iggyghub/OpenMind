@@ -1071,7 +1071,23 @@ function _checkForMasterUpdate() {
   trayLog('auto-update: new commits since boot, Felix is active -- restart deferred until idle');
 }
 
+// Without this, Felix has no way to tell "the user clicked the pinned
+// taskbar icon while I'm already running (hidden, per #188's close-to-tray)"
+// apart from "launch a brand new second process" -- which Windows does by
+// default for any un-locked app. requestSingleInstanceLock() makes THIS
+// process the sole owner; a second launch attempt (pinned icon, desktop
+// shortcut, anything) fires 'second-instance' here instead of ever getting
+// its own app.whenReady(), and the second process quits immediately.
+const _gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!_gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => openMainWindow());
+}
+
 app.whenReady().then(() => {
+  if (!_gotSingleInstanceLock) return;
+
   // Without an explicit AppUserModelID, Windows derives one from the launching
   // process, so the desktop/taskbar shortcut (which runs through powershell.exe
   // -> launch-felix.ps1) and this Electron window end up with different
@@ -1098,7 +1114,14 @@ app.whenReady().then(() => {
 
   // Second half of "Restart Felix" (#443 rework): this instance was
   // relaunched by restartFelix(); Cerebral is down — bring it back.
-  if (process.argv.includes('--felix-restart')) respawnCerebral();
+  if (process.argv.includes('--felix-restart')) {
+    respawnCerebral();
+    // The window was open (or at least reachable) before the restart, so
+    // reopening it here — instead of leaving the user back at "click the
+    // tray icon to find it" — is what makes the restart feel like a
+    // restart of the app they were looking at, not a silent respawn.
+    openMainWindow();
+  }
   // SD-3 (#556): self-dev boot -- arm the health-check before connectToCerebral().
   if (process.argv.includes('--felix-self-dev-boot')) _selfDevBootPending = true;
 
