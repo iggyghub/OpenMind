@@ -28,6 +28,7 @@
   <div id="bar-row1">
     <select id="conntype">
       <option value="local">Local file</option>
+      <option value="new">New page</option>
       <option value="url">URL</option>
       <option value="git">Git repo</option>
       <option value="ftp">FTP</option>
@@ -44,6 +45,10 @@
 
   <div class="fields active" data-conn="local">
     <input id="local-path" type="text" placeholder="relative path, e.g. tray/windows/main.html">
+  </div>
+
+  <div class="fields" data-conn="new">
+    <input id="new-path" type="text" placeholder="path for the new file, e.g. tray/windows/scratch.html">
   </div>
 
   <div class="fields" data-conn="url">
@@ -106,6 +111,21 @@
       var p = val('local-path');
       if (!p) return;
       src = '/local/' + p.replace(/^\/+/, '');
+    } else if (type === 'new') {
+      var np = val('new-path');
+      if (!np) return;
+      fetch('/api/new', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: np })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (!data.ok) throw new Error(data.error || 'failed');
+        frame.src = '/local/' + data.path;
+      }).catch(function (e) {
+        errEl.textContent = 'Could not create the page: ' + e.message;
+        errEl.style.display = 'block';
+      });
+      return;
     } else if (type === 'url') {
       var u = val('url-url');
       if (!u) return;
