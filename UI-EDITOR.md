@@ -17,7 +17,7 @@ product surface. Each issue body is the full spec for its slice.
 
 ## Next slice -- start here
 
-- **Active:** S5 -- #1067
+- **Active:** S6 -- #1068
 - **Model:** sonnet
 
 ## Queue
@@ -26,7 +26,7 @@ product surface. Each issue body is the full spec for its slice.
 - [x] S2 -- #1064 -- bake overrides into the source HTML file (PR #1080) (local targets only)
 - [x] S3 -- #1065 -- undo/redo for edits (PR #1081)
 - [x] S4 -- #1066 -- element outline/tree panel for selection (PR #1082)
-- [ ] S5 -- #1067 -- multi-select + bulk style edit
+- [x] S5 -- #1067 -- multi-select + bulk style edit (PR #1083)
 - [ ] S6 -- #1068 -- safety/regression pass (path traversal, input validation, README)
 - [ ] S7 -- #1073 -- block palette: insert new elements (not just edit existing ones)
 - [ ] S8 -- #1074 -- section template library (navbar, hero, feature grid, pricing, footer, contact form, gallery)
@@ -56,6 +56,7 @@ prerequisite for S8 (blocks are built from the same insert primitive).
 - S2 -- #1064 -- PR #1080
 - S3 -- #1065 -- PR #1081
 - S4 -- #1066 -- PR #1082
+- S5 -- #1067 -- PR #1083
 
 ## SAFETY
 
