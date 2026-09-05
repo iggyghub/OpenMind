@@ -3272,7 +3272,7 @@ def _memory_update_event() -> dict:
     mgr = _get_memory()
     memories = mgr.list_all() if mgr else []
     return {"type": "memory_update", "data": {"memories": [
-        {"id": m.id, "fact": m.fact, "created_at": m.created_at, "category": m.category}
+        {"id": m.id, "fact": m.fact, "created_at": m.created_at, "category": m.category, "order": m.order}
         for m in memories
     ]}}
 
@@ -6353,6 +6353,27 @@ async def _handle_message(msg: dict) -> None:
         mgr = _get_memory()
         ok = await mgr.forget(msg.get("data", {}).get("memory_id", "")) if mgr else False
         if ok:
+            await _broadcast(_memory_update_event())
+
+    elif t == "move_memory_category":  # drag a Memory card into a (possibly new) folder
+        d = msg.get("data", {})
+        mgr = _get_memory()
+        ok = await mgr.set_category(d.get("memory_id", ""), d.get("category", "")) if mgr else False
+        if ok:
+            await _broadcast(_memory_update_event())
+
+    elif t == "reorder_memory":  # manual drag-to-reorder within a folder
+        d = msg.get("data", {})
+        mgr = _get_memory()
+        ok = await mgr.set_order(d.get("memory_id", ""), float(d.get("order", 0))) if mgr else False
+        if ok:
+            await _broadcast(_memory_update_event())
+
+    elif t == "duplicate_memory":  # in-app clipboard paste
+        d = msg.get("data", {})
+        mgr = _get_memory()
+        new_id = await mgr.duplicate(d.get("memory_id", ""), d.get("category")) if mgr else None
+        if new_id:
             await _broadcast(_memory_update_event())
 
     elif t == "list_recipes":
