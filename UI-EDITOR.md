@@ -11,13 +11,13 @@ slice = one issue = one PR, merged to master before the next starts
 No ADR / spec doc for this one -- it's a standalone dev tool, not core
 product surface. Each issue body is the full spec for its slice.
 
-## Status: ready
+## Status: done
 
 <!-- ready = slices remain; done = S12 landed; blocked = a session needs a human -->
 
 ## Next slice -- start here
 
-- **Active:** S11 -- #1077
+- **Active:** none (S12 is the last slice)
 - **Model:** sonnet
 
 ## Queue
@@ -33,7 +33,7 @@ product surface. Each issue body is the full spec for its slice.
 - [x] S9 -- #1075 -- expanded style panel (spacing box model, flex/grid layout, border/radius/shadow)
 - [x] S10 -- #1076 -- responsive breakpoints (mobile/tablet/desktop preview + per-breakpoint overrides)
 - [ ] S11 -- #1077 -- asset manager (image upload + insert/replace)
-- [ ] S12 -- #1078 -- code view / HTML export panel
+- [x] S12 -- #1078 -- code view / HTML export panel (PR #1090)
 
 Per-slice model: sonnet unless the queue entry says otherwise.
 
@@ -62,6 +62,7 @@ prerequisite for S8 (blocks are built from the same insert primitive).
 - S8 -- #1074 -- PR #1086
 - S9 -- #1075 -- PR #1087
 - S10 -- #1076 -- PR #1088
+- S12 -- #1078 -- PR #1090
 
 ## SAFETY
 
