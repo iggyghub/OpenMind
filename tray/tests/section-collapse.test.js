@@ -84,3 +84,37 @@ describe('setCollapsed', () => {
     expect(SectionCollapse.isCollapsed('settings', 'System')).toBe(false);
   });
 });
+
+// ── force-expand override (Settings > General > "Keep sections expanded") ────
+
+describe('isForceExpand / setForceExpand', () => {
+  test('defaults to false', () => {
+    expect(SectionCollapse.isForceExpand()).toBe(false);
+  });
+
+  test('persists true', () => {
+    SectionCollapse.setForceExpand(true);
+    expect(SectionCollapse.isForceExpand()).toBe(true);
+  });
+
+  test('setForceExpand(false) removes the key', () => {
+    SectionCollapse.setForceExpand(true);
+    SectionCollapse.setForceExpand(false);
+    expect(SectionCollapse.isForceExpand()).toBe(false);
+  });
+});
+
+describe('isCollapsed with force-expand on', () => {
+  test('overrides an explicitly collapsed section to false', () => {
+    SectionCollapse.setCollapsed('settings', 'Active model', true);
+    SectionCollapse.setForceExpand(true);
+    expect(SectionCollapse.isCollapsed('settings', 'Active model')).toBe(false);
+  });
+
+  test('turning it back off restores the section\'s own remembered state', () => {
+    SectionCollapse.setCollapsed('settings', 'Active model', true);
+    SectionCollapse.setForceExpand(true);
+    SectionCollapse.setForceExpand(false);
+    expect(SectionCollapse.isCollapsed('settings', 'Active model')).toBe(true);
+  });
+});

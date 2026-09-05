@@ -6144,6 +6144,16 @@
           </div>
           <input type="color" id="set-accent-picker" class="set-accent-picker">
         </div>
+        <div class="set-toggle-row">
+          <div>
+            <div class="set-toggle-label">Keep sections expanded</div>
+            <div class="set-toggle-sub">Ignore each section's remembered collapse state and always show them open</div>
+          </div>
+          <label class="set-toggle">
+            <input type="checkbox" id="set-sections-force-expand">
+            <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
+          </label>
+        </div>
 
         <div class="set-section">Voice input</div>
         <div class="set-toggle-row">
@@ -12889,6 +12899,19 @@
      'jobs-dossier'].forEach((id) => _sc.init(document.getElementById(id), 'job-search'));
     document.querySelectorAll('.jobs-auto-submit-section')
       .forEach((el) => _sc.init(el, 'job-search'));
+
+    // "Keep sections expanded" (Settings > General > Appearance): a global
+    // override so someone who's collapsed things out of habit over time can
+    // get back to everything-open with one toggle instead of hunting down
+    // each section individually.
+    const setSectionsForceExpandEl = document.getElementById('set-sections-force-expand');
+    if (setSectionsForceExpandEl) {
+      setSectionsForceExpandEl.checked = _sc.isForceExpand();
+      setSectionsForceExpandEl.addEventListener('change', () => {
+        _sc.setForceExpand(setSectionsForceExpandEl.checked);
+        if (setSectionsForceExpandEl.checked) _sc.forceExpandAll();
+      });
+    }
 
     // S1 -- #480: sidebar collapse + Ctrl+B hotkey
     const _sidebarEl = document.getElementById('sidebar');
