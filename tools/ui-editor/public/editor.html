@@ -5,6 +5,17 @@
 <title>UI Editor</title>
 <style>
   html,body{margin:0;height:100%;background:#111;color:#eee;font:13px/1.4 -apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column;}
+  #menubar{display:flex;gap:2px;background:#151518;padding:3px 6px;font-size:12px;flex-shrink:0;border-bottom:1px solid #2a2a2e;}
+  .menu{position:relative;}
+  .menu>button{background:none;border:none;color:#ccc;padding:5px 10px;cursor:pointer;border-radius:4px;font:inherit;}
+  .menu>button:hover, .menu.open>button{background:#2a2a32;color:#fff;}
+  .menu-list{display:none;position:absolute;top:100%;left:0;background:#1e1e24;border:1px solid #333;border-radius:6px;padding:4px;min-width:190px;box-shadow:0 4px 16px rgba(0,0,0,.5);z-index:20;}
+  .menu.open .menu-list{display:block;}
+  .menu-item{display:flex;justify-content:space-between;gap:20px;padding:6px 10px;border-radius:4px;cursor:pointer;color:#eee;white-space:nowrap;}
+  .menu-item:hover{background:#2a2a32;}
+  .menu-item[disabled]{opacity:.35;cursor:default;pointer-events:none;}
+  .menu-item .kbd{opacity:.5;font-size:11px;}
+  .menu-sep{height:1px;background:#333;margin:4px 2px;}
   #bar{padding:8px;background:#1a1a1e;flex-shrink:0;}
   #bar-row1{display:flex;gap:8px;align-items:center;}
   #bar-row2{display:flex;gap:4px;align-items:center;margin-top:6px;}
@@ -27,6 +38,39 @@
 </style>
 </head>
 <body>
+<div id="menubar">
+  <div class="menu" data-menu="file">
+    <button type="button">File</button>
+    <div class="menu-list">
+      <div class="menu-item" data-action="file-new">New page</div>
+      <div class="menu-item" data-action="file-open">Open selected target</div>
+      <div class="menu-sep"></div>
+      <div class="menu-item" data-action="file-save"><span>Commit to file</span><span class="kbd">Ctrl+S</span></div>
+      <div class="menu-item" data-action="file-export">Export / view HTML&hellip;</div>
+      <div class="menu-sep"></div>
+      <div class="menu-item" data-action="file-reset">Reset page (discard edits)</div>
+    </div>
+  </div>
+  <div class="menu" data-menu="edit">
+    <button type="button">Edit</button>
+    <div class="menu-list">
+      <div class="menu-item" data-action="edit-undo"><span>Undo</span><span class="kbd">Ctrl+Z</span></div>
+      <div class="menu-item" data-action="edit-redo"><span>Redo</span><span class="kbd">Ctrl+Y</span></div>
+      <div class="menu-sep"></div>
+      <div class="menu-item" data-action="edit-toggle"><span id="edit-toggle-label">Enable edit mode</span></div>
+    </div>
+  </div>
+  <div class="menu" data-menu="view">
+    <button type="button">View</button>
+    <div class="menu-list">
+      <div class="menu-item" data-action="view-mobile">Mobile 375</div>
+      <div class="menu-item" data-action="view-tablet">Tablet 768</div>
+      <div class="menu-item" data-action="view-desktop">Desktop</div>
+      <div class="menu-sep"></div>
+      <div class="menu-item" data-action="view-code">Code view&hellip;</div>
+    </div>
+  </div>
+</div>
 <div id="bar">
   <div id="bar-row1">
     <select id="conntype">
@@ -177,6 +221,84 @@
   document.getElementById('bp-mobile').addEventListener('click', function () { setBreakpoint('mobile'); });
   document.getElementById('bp-tablet').addEventListener('click', function () { setBreakpoint('tablet'); });
   document.getElementById('bp-desktop').addEventListener('click', function () { setBreakpoint('desktop'); });
+
+  // ---- File/Edit/View menu bar -- reads/drives the editing overlay that inject.js
+  // mounts inside the iframe via the window.__uiEditor bridge it exposes there.
+  // Same pattern as Figma/Google Docs/most desktop apps: a thin top menu strip whose
+  // items just call the same functions already reachable from inside the canvas.
+  (function () {
+    var menubar = document.getElementById('menubar');
+    var menus = Array.prototype.slice.call(menubar.querySelectorAll('.menu'));
+
+    function bridge() {
+      try { return frame.contentWindow && frame.contentWindow.__uiEditor; } catch (e) { return null; }
+    }
+
+    function closeAllMenus() { menus.forEach(function (m) { m.classList.remove('open'); }); }
+
+    function setItemDisabled(action, disabled) {
+      var el = menubar.querySelector('[data-action="' + action + '"]');
+      if (el) el.toggleAttribute('disabled', !!disabled);
+    }
+
+    function refreshMenuState() {
+      var b = bridge();
+      setItemDisabled('edit-undo', !b || !b.canUndo());
+      setItemDisabled('edit-redo', !b || !b.canRedo());
+      setItemDisabled('file-save', !b || !b.canBake);
+      setItemDisabled('file-export', !b);
+      setItemDisabled('file-reset', !b);
+      setItemDisabled('edit-toggle', !b);
+      setItemDisabled('view-code', !b);
+      document.getElementById('edit-toggle-label').textContent =
+        (b && b.isEditMode()) ? 'Disable edit mode' : 'Enable edit mode';
+    }
+
+    menus.forEach(function (m) {
+      m.querySelector('button').addEventListener('click', function (e) {
+        e.stopPropagation();
+        var wasOpen = m.classList.contains('open');
+        closeAllMenus();
+        if (!wasOpen) { refreshMenuState(); m.classList.add('open'); }
+      });
+    });
+    document.addEventListener('click', closeAllMenus);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAllMenus(); });
+
+    menubar.addEventListener('click', function (e) {
+      var item = e.target.closest('.menu-item');
+      if (!item || item.hasAttribute('disabled')) return;
+      var b = bridge();
+      switch (item.dataset.action) {
+        case 'file-new': connType.value = 'new'; showFields('new'); document.getElementById('new-path').focus(); break;
+        case 'file-open': open_(); break;
+        case 'file-save': if (b) b.bake(); break;
+        case 'file-export': if (b) b.showCode(); break;
+        case 'file-reset': if (b) b.resetPage(); break;
+        case 'edit-undo': if (b) b.undo(); break;
+        case 'edit-redo': if (b) b.redo(); break;
+        case 'edit-toggle': if (b) b.setEditMode(!b.isEditMode()); break;
+        case 'view-mobile': setBreakpoint('mobile'); break;
+        case 'view-tablet': setBreakpoint('tablet'); break;
+        case 'view-desktop': setBreakpoint('desktop'); break;
+        case 'view-code': if (b) b.showCode(); break;
+      }
+      closeAllMenus();
+    });
+
+    // Shortcuts at the pop-out window level too, so they work even when focus never
+    // made it into the iframe (e.g. right after opening a page from this chrome).
+    document.addEventListener('keydown', function (e) {
+      var tag = document.activeElement && document.activeElement.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      var b = bridge();
+      if (!b) return;
+      var key = e.key.toLowerCase();
+      if (e.ctrlKey && key === 's') { e.preventDefault(); if (b.canBake) b.bake(); }
+      else if (e.ctrlKey && key === 'z' && !e.shiftKey) { e.preventDefault(); b.undo(); }
+      else if (e.ctrlKey && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); b.redo(); }
+    });
+  }());
 </script>
 </body>
 </html>

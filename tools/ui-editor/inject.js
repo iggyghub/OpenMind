@@ -763,6 +763,14 @@
       e.preventDefault();
       doRedo();
     }
+    // Ctrl+S here (not just in editor.html's own keydown listener) because keyboard
+    // events target whichever document has focus -- once the user clicks into the
+    // page being edited (immediately, in practice), the pop-out window's own listener
+    // stops receiving them.
+    if (e.ctrlKey && e.key.toLowerCase() === 's' && bakeBtn) {
+      e.preventDefault();
+      bakeBtn.click();
+    }
   });
 
   // move: single-element only; drag inside the highlighted box (not on a handle)
@@ -825,14 +833,17 @@
     });
   });
 
-  bar.querySelector('#ue-toggle').addEventListener('change', function (e) {
-    editMode = e.target.checked;
+  // Shared by the checkbox and the pop-out window's Edit menu (window.__uiEditor.setEditMode).
+  function setEditMode(on) {
+    editMode = !!on;
+    bar.querySelector('#ue-toggle').checked = editMode;
     bar.querySelector('#ue-panel').style.display = editMode ? 'flex' : 'none';
     if (!editMode) {
       selectedSet.clear(); positionHighlight(); hoverBox.style.display = 'none';
       if (pendingBlock) { pendingBlock = null; document.documentElement.style.cursor = ''; }
     }
-  });
+  }
+  bar.querySelector('#ue-toggle').addEventListener('change', function (e) { setEditMode(e.target.checked); });
   bar.querySelector('#ue-bg').addEventListener('input', function (e) {
     if (!selectedSet.size) return;
     selectedSet.forEach(function (el) { el.style.backgroundColor = e.target.value; });
@@ -1029,4 +1040,20 @@
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
+
+  // Bridge for the pop-out window's own File/Edit/View menu bar (public/editor.html) --
+  // the server always proxies local/new/url/git/ftp targets through this same origin
+  // (localhost:port), so frame.contentWindow is reachable regardless of target type.
+  window.__uiEditor = {
+    undo: doUndo,
+    redo: doRedo,
+    canUndo: function () { return undoStack.length > 0; },
+    canRedo: function () { return redoStack.length > 0; },
+    isEditMode: function () { return editMode; },
+    setEditMode: setEditMode,
+    canBake: !!LOCAL_PATH,
+    bake: function () { var b = bar.querySelector('#ue-bake'); if (b) b.click(); },
+    showCode: function () { bar.querySelector('#ue-code').click(); },
+    resetPage: function () { bar.querySelector('#ue-reset').click(); },
+  };
 })();
