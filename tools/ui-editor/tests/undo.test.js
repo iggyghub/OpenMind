@@ -112,3 +112,64 @@ test('multi-step undo/redo cycle', () => {
   const c2 = redo(s, b2);        assert.deepEqual(c2, { v: 'c' });
   assert.equal(redo(s, c2), null);
 });
+
+// ---- throttled coalescing (borrowed from Craft.js history throttling) ----
+// A burst of edits closer together than THROTTLE_MS shouldn't each get their own undo
+// step -- only a pause longer than that starts a new one. Mirrors inject.js's snapshot().
+const THROTTLE_MS = 500;
+function shouldCoalesce(stackLength, now, lastSnapshotAt, throttleMs) {
+  return stackLength > 0 && (now - lastSnapshotAt) < throttleMs;
+}
+function pushThrottled(s, snap, now, state) {
+  if (shouldCoalesce(s.undo.length, now, state.lastSnapshotAt, THROTTLE_MS)) {
+    state.lastSnapshotAt = now;
+    s.redo = [];
+    return false; // coalesced, no new entry
+  }
+  state.lastSnapshotAt = now;
+  push(s, snap);
+  return true; // new entry pushed
+}
+
+test('throttle: first edit always pushes (empty stack, nothing to coalesce into)', () => {
+  const s = makeStack();
+  const state = { lastSnapshotAt: 0 };
+  assert.equal(pushThrottled(s, { a: 1 }, 1000, state), true);
+  assert.equal(s.undo.length, 1);
+});
+
+test('throttle: a second edit within the window coalesces (no new entry)', () => {
+  const s = makeStack();
+  const state = { lastSnapshotAt: 0 };
+  pushThrottled(s, { a: 1 }, 1000, state);
+  const pushed = pushThrottled(s, { a: 2 }, 1000 + 100, state);
+  assert.equal(pushed, false);
+  assert.equal(s.undo.length, 1); // still just the one entry from the burst start
+});
+
+test('throttle: an edit after the window elapses starts a new step', () => {
+  const s = makeStack();
+  const state = { lastSnapshotAt: 0 };
+  pushThrottled(s, { a: 1 }, 1000, state);
+  const pushed = pushThrottled(s, { a: 2 }, 1000 + THROTTLE_MS + 1, state);
+  assert.equal(pushed, true);
+  assert.equal(s.undo.length, 2);
+});
+
+test('throttle: window is rolling -- each edit in a burst extends it, not just the first', () => {
+  const s = makeStack();
+  const state = { lastSnapshotAt: 0 };
+  pushThrottled(s, { a: 1 }, 1000, state);           // starts burst
+  pushThrottled(s, { a: 2 }, 1000 + 400, state);      // within window, extends it
+  pushThrottled(s, { a: 3 }, 1000 + 400 + 400, state); // 400ms after the LAST edit, still within window
+  assert.equal(s.undo.length, 1); // whole burst stayed one step
+});
+
+test('throttle: coalescing still clears the redo stack (a mid-burst edit invalidates redo)', () => {
+  const s = makeStack();
+  const state = { lastSnapshotAt: 0 };
+  pushThrottled(s, { a: 1 }, 1000, state);
+  s.redo.push({ stale: true });
+  pushThrottled(s, { a: 2 }, 1000 + 100, state);
+  assert.equal(s.redo.length, 0);
+});

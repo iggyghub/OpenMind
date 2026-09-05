@@ -39,10 +39,18 @@
   ];
   // elements that accept appendChild when empty rather than before/after
   var CONTAINER_TAGS = ['DIV', 'SECTION', 'ARTICLE', 'ASIDE', 'MAIN', 'UL', 'OL', 'FORM', 'HEADER', 'FOOTER', 'NAV'];
+  // ponytail: a small fixed palette, not a full named-token/CSS-variable system (Silex's
+  // grapesjs-css-variables plugin) -- one click sets the picker instead of eyeballing a hue wheel.
+  var COLOR_PRESETS = ['#000000', '#ffffff', '#1a1a2e', '#4da3ff', '#2ecc71', '#f39c12', '#ff6b6b', '#8e44ad'];
 
   // ---- undo/redo stack ----
   // ponytail: cap at 50, fixed is fine for single-session editing; bump if UX bites
   var UNDO_CAP = 50;
+  // borrowed from Craft.js's history throttling: a burst of edits closer together than
+  // this (spinner clicks, a held drag, rapid typing) coalesces into one undo step instead
+  // of one per keystroke/pixel -- only a >500ms pause starts a new step.
+  var UNDO_THROTTLE_MS = 500;
+  var lastSnapshotAt = 0;
   var undoStack = [];
   var redoStack = [];
   // original textContent per element id, captured before first text edit
@@ -64,6 +72,10 @@
   }
 
   function snapshot() {
+    var now = Date.now();
+    var coalesce = undoStack.length > 0 && (now - lastSnapshotAt) < UNDO_THROTTLE_MS;
+    lastSnapshotAt = now;
+    if (coalesce) { redoStack = []; return; } // still mid-burst -- top of stack already covers it
     undoStack.push(JSON.parse(JSON.stringify(overrides)));
     if (undoStack.length > UNDO_CAP) undoStack.shift();
     redoStack = [];
@@ -105,9 +117,12 @@
   }
 
   function restoreSnapshot(snap) {
-    // clear styles and restore original attrs on existing (non-inserted) elements
+    // Clear styles and restore original attrs on every currently-overridden element --
+    // inserted ones included. Skipping 'ins:' ids here used to mean undoing a STYLE change
+    // on an inserted element (its insert itself untouched, just e.g. its color) never
+    // cleared the stale style, since the re-apply pass below only sets what's present in
+    // the restored snapshot, never clears what's absent.
     Object.keys(overrides).forEach(function (id) {
-      if (id.startsWith('ins:')) return;
       var el = elById(id);
       if (!el) return;
       STYLE_PROPS.forEach(function (p) { el.style[p] = ''; });
@@ -345,6 +360,7 @@
     '<div style="display:flex;gap:4px;">' +
     '<button id="ue-undo" style="cursor:pointer;flex:1;" disabled>Undo</button>' +
     '<button id="ue-redo" style="cursor:pointer;flex:1;" disabled>Redo</button>' +
+    '<button id="ue-shortcuts" title="Keyboard shortcuts" style="cursor:pointer;padding:0 8px;">?</button>' +
     '</div>' +
     '<details open style="border-top:1px solid #444;padding-top:4px;">' +
     '<summary style="cursor:pointer;user-select:none;margin-bottom:4px;">Color &amp; Typography</summary>' +
@@ -451,7 +467,20 @@
     '<button id="ue-code-close" style="cursor:pointer;">Close</button>' +
     '</div></div>' +
     '<textarea id="ue-code-text" readonly style="flex:1;font:12px/1.5 monospace,Courier New,monospace;background:#0e0e11;color:#ccc;border:1px solid #333;border-radius:4px;padding:8px;resize:none;white-space:pre;overflow:auto;"></textarea>' +
-    '</div></div>';
+    '</div></div>' +
+    '<div id="ue-shortcuts-modal" style="display:none;position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,.8);padding:20px;box-sizing:border-box;">' +
+    '<div style="background:#1e1e24;border-radius:8px;max-width:280px;margin:60px auto 0;padding:14px;">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
+    '<b style="color:#eee;font-size:13px;">Keyboard shortcuts</b>' +
+    '<button id="ue-shortcuts-close" style="cursor:pointer;">Close</button>' +
+    '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#ccc;">' +
+    '<div style="display:flex;justify-content:space-between;gap:12px;"><span>Undo</span><span style="opacity:.6;">Ctrl+Z</span></div>' +
+    '<div style="display:flex;justify-content:space-between;gap:12px;"><span>Redo</span><span style="opacity:.6;">Ctrl+Y</span></div>' +
+    '<div style="display:flex;justify-content:space-between;gap:12px;"><span>Commit to file</span><span style="opacity:.6;">Ctrl+S</span></div>' +
+    '<div style="display:flex;justify-content:space-between;gap:12px;"><span>Multi-select</span><span style="opacity:.6;">Shift+click</span></div>' +
+    '<div style="display:flex;justify-content:space-between;gap:12px;"><span>Cancel placement / deselect</span><span style="opacity:.6;">Esc</span></div>' +
+    '</div></div></div>';
   function mount() { document.documentElement.appendChild(bar); }
   if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount);
 
@@ -709,6 +738,62 @@
     return (el === document.documentElement) ? document.body : el;
   }
 
+  // ---- block/section drop targeting (pure geometry -- mirrored in tests/drop-target.test.js) ----
+  // Borrowed from Craft.js's Positioner: within this many px of the hovered element's OWN
+  // edge, retarget to its parent instead. Without it, placing a block near the edge of a
+  // small/nested element (a button, a short span) lands awkwardly inside that tiny element
+  // when the container was almost certainly what was meant.
+  var DROP_BORDER_OFFSET = 10;
+  function isNearEdge(rect, x, y, offset) {
+    return (x - rect.left) < offset || (rect.right - x) < offset ||
+      (y - rect.top) < offset || (rect.bottom - y) < offset;
+  }
+  // Borrowed from GrapesJS's findPosition: before/after by which half of the target's box
+  // the point falls in, or append when the target is an empty container.
+  function decideDropPosition(tag, childCount, rect, x, y) {
+    if (childCount === 0 && CONTAINER_TAGS.indexOf(tag) !== -1) return 'append';
+    return y < rect.top + rect.height / 2 ? 'before' : 'after';
+  }
+  function computeDropTarget(rawTarget, x, y) {
+    if (rawTarget === document.documentElement) {
+      // clicked empty space outside any real content -- body's own rect doesn't extend
+      // there, so before/after geometry against it would misplace the block outside
+      // <body> entirely; append to the end of the page instead.
+      return { targetEl: document.body, op: 'append', rect: document.body.getBoundingClientRect() };
+    }
+    var targetEl = rawTarget;
+    var rect = targetEl.getBoundingClientRect();
+    if (isNearEdge(rect, x, y, DROP_BORDER_OFFSET) && targetEl.parentElement &&
+        targetEl.parentElement !== document.documentElement) {
+      targetEl = targetEl.parentElement;
+      rect = targetEl.getBoundingClientRect();
+    }
+    var op = decideDropPosition(targetEl.tagName, targetEl.children.length, rect, x, y);
+    return { targetEl: targetEl, op: op, rect: rect };
+  }
+
+  // Live preview of where a pending block/section will land, following the cursor --
+  // every real drag-drop builder shows this; the old click-to-place flow showed nothing
+  // until you'd already committed to a spot.
+  var dropIndicator = document.createElement('div');
+  dropIndicator.style.cssText = 'position:fixed;pointer-events:none;height:3px;background:#4da3ff;' +
+    'z-index:2147483647;display:none;border-radius:2px;box-shadow:0 0 4px rgba(77,163,255,.8);';
+  if (document.body) document.documentElement.appendChild(dropIndicator);
+  else document.addEventListener('DOMContentLoaded', function () { document.documentElement.appendChild(dropIndicator); });
+  function positionDropIndicator(d) {
+    if (!d) { dropIndicator.style.display = 'none'; return; }
+    var r = d.rect;
+    var top = d.op === 'before' ? r.top - 1.5 : d.op === 'after' ? r.bottom - 1.5 : r.bottom - 5;
+    dropIndicator.style.display = 'block';
+    dropIndicator.style.left = r.left + 'px';
+    dropIndicator.style.width = Math.max(r.width, 4) + 'px';
+    dropIndicator.style.top = top + 'px';
+  }
+  document.addEventListener('mousemove', function (e) {
+    if (!pendingBlock || within(e.target)) { dropIndicator.style.display = 'none'; return; }
+    positionDropIndicator(computeDropTarget(e.target, e.clientX, e.clientY));
+  }, true);
+
   document.addEventListener('click', function (e) {
     if (!editMode || within(e.target)) return;
     e.preventDefault(); e.stopPropagation();
@@ -716,25 +801,9 @@
       var block = pendingBlock;
       pendingBlock = null;
       document.documentElement.style.cursor = '';
-      var rawTarget = e.target;
-      var targetEl = normalizeTarget(rawTarget);
-      var op;
-      if (rawTarget === document.documentElement) {
-        // clicked empty space outside any real content -- body's own rect doesn't extend
-        // there, so before/after geometry against it would misplace the block outside
-        // <body> entirely; append to the end of the page instead.
-        op = 'append';
-      } else {
-        var r = targetEl.getBoundingClientRect();
-        if (targetEl.children.length === 0 && CONTAINER_TAGS.indexOf(targetEl.tagName) !== -1) {
-          op = 'append';
-        } else if (e.clientY < r.top + r.height / 2) {
-          op = 'before';
-        } else {
-          op = 'after';
-        }
-      }
-      insertBlock(block, targetEl, op);
+      dropIndicator.style.display = 'none';
+      var d = computeDropTarget(e.target, e.clientX, e.clientY);
+      insertBlock(block, d.targetEl, d.op);
       setStatus('inserted ' + block.label);
       return;
     }
@@ -748,6 +817,7 @@
       if (pendingBlock) {
         pendingBlock = null;
         document.documentElement.style.cursor = '';
+        dropIndicator.style.display = 'none';
         setStatus('idle');
       } else {
         selectedSet.clear(); positionHighlight();
@@ -841,19 +911,42 @@
     if (!editMode) {
       selectedSet.clear(); positionHighlight(); hoverBox.style.display = 'none';
       if (pendingBlock) { pendingBlock = null; document.documentElement.style.cursor = ''; }
+      dropIndicator.style.display = 'none';
     }
   }
   bar.querySelector('#ue-toggle').addEventListener('change', function (e) { setEditMode(e.target.checked); });
-  bar.querySelector('#ue-bg').addEventListener('input', function (e) {
+
+  // Small preset swatch row after a color input -- click sets the input's value and applies
+  // it the same way typing/picking would. Reused for BG, text, and border color below.
+  function addColorSwatches(input, apply) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:3px;flex-wrap:wrap;margin:2px 0;';
+    COLOR_PRESETS.forEach(function (c) {
+      var sw = document.createElement('button');
+      sw.type = 'button';
+      sw.title = c;
+      sw.style.cssText = 'width:14px;height:14px;padding:0;border:1px solid #555;border-radius:3px;' +
+        'cursor:pointer;background:' + c + ';';
+      sw.addEventListener('click', function (e) { e.stopPropagation(); input.value = c; apply(c); });
+      row.appendChild(sw);
+    });
+    input.parentElement.insertAdjacentElement('afterend', row);
+  }
+
+  function applyBg(v) {
     if (!selectedSet.size) return;
-    selectedSet.forEach(function (el) { el.style.backgroundColor = e.target.value; });
-    setOverrideAll(selectedSet, { style: { backgroundColor: e.target.value } });
-  });
-  bar.querySelector('#ue-fg').addEventListener('input', function (e) {
+    selectedSet.forEach(function (el) { el.style.backgroundColor = v; });
+    setOverrideAll(selectedSet, { style: { backgroundColor: v } });
+  }
+  function applyFg(v) {
     if (!selectedSet.size) return;
-    selectedSet.forEach(function (el) { el.style.color = e.target.value; });
-    setOverrideAll(selectedSet, { style: { color: e.target.value } });
-  });
+    selectedSet.forEach(function (el) { el.style.color = v; });
+    setOverrideAll(selectedSet, { style: { color: v } });
+  }
+  bar.querySelector('#ue-bg').addEventListener('input', function (e) { applyBg(e.target.value); });
+  bar.querySelector('#ue-fg').addEventListener('input', function (e) { applyFg(e.target.value); });
+  addColorSwatches(bar.querySelector('#ue-bg'), applyBg);
+  addColorSwatches(bar.querySelector('#ue-fg'), applyFg);
   bar.querySelector('#ue-fs').addEventListener('input', function (e) {
     if (!selectedSet.size) return;
     var v = e.target.value + 'px';
@@ -914,11 +1007,13 @@
     selectedSet.forEach(function (el) { el.style.borderStyle = e.target.value; });
     setOverrideAll(selectedSet, { style: { borderStyle: e.target.value } });
   });
-  bar.querySelector('#ue-bc').addEventListener('input', function (e) {
+  function applyBorderColor(v) {
     if (!selectedSet.size) return;
-    selectedSet.forEach(function (el) { el.style.borderColor = e.target.value; });
-    setOverrideAll(selectedSet, { style: { borderColor: e.target.value } });
-  });
+    selectedSet.forEach(function (el) { el.style.borderColor = v; });
+    setOverrideAll(selectedSet, { style: { borderColor: v } });
+  }
+  bar.querySelector('#ue-bc').addEventListener('input', function (e) { applyBorderColor(e.target.value); });
+  addColorSwatches(bar.querySelector('#ue-bc'), applyBorderColor);
   bar.querySelector('#ue-br').addEventListener('input', function (e) {
     if (!selectedSet.size) return;
     var v = e.target.value + 'px';
@@ -980,6 +1075,12 @@
   bar.querySelector('#ue-code-close').addEventListener('click', function () {
     bar.querySelector('#ue-code-modal').style.display = 'none';
   });
+  bar.querySelector('#ue-shortcuts').addEventListener('click', function () {
+    bar.querySelector('#ue-shortcuts-modal').style.display = 'block';
+  });
+  bar.querySelector('#ue-shortcuts-close').addEventListener('click', function () {
+    bar.querySelector('#ue-shortcuts-modal').style.display = 'none';
+  });
   bar.querySelector('#ue-code-copy').addEventListener('click', function () {
     navigator.clipboard.writeText(bar.querySelector('#ue-code-text').value).catch(function () {});
   });
@@ -1002,7 +1103,7 @@
   });
 
   // ---- init: tag every element with a stable id, then apply saved overrides ----
-  var overlayNodes = [highlight, hoverBox].concat(handles);
+  var overlayNodes = [highlight, hoverBox, dropIndicator].concat(handles);
   function init() {
     var all = document.documentElement.querySelectorAll('*');
     for (var i = 0; i < all.length; i++) {
