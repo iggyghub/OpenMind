@@ -13,7 +13,8 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
 
-$launcher = Join-Path $repoRoot "scripts\launch-felix.ps1"
+$launcher    = Join-Path $repoRoot "scripts\launch-felix.ps1"
+$vbsLauncher = Join-Path $repoRoot "scripts\launch-felix-hidden.vbs"
 
 $desktop  = [Environment]::GetFolderPath("Desktop")
 $startMnu = Join-Path ([Environment]::GetFolderPath("StartMenu")) "Programs"
@@ -39,6 +40,10 @@ try {
         Fail "Launcher not found: $launcher"
         throw "Launcher missing -- did the repo layout change?"
     }
+    if (-not (Test-Path $vbsLauncher)) {
+        Fail "Silent-launch wrapper not found: $vbsLauncher"
+        throw "Wrapper missing -- did the repo layout change?"
+    }
 
     $wsh = New-Object -ComObject WScript.Shell
 
@@ -50,16 +55,16 @@ try {
         }
 
         $shortcut = $wsh.CreateShortcut($lnk)
-        $shortcut.TargetPath = "powershell.exe"
-        # -NoProfile keeps the launch fast (no $PROFILE dot-source).
-        # -ExecutionPolicy Bypass lets the .ps1 run without per-machine
-        #   Set-ExecutionPolicy ceremony.
-        # -WindowStyle Hidden keeps the launcher console invisible; logs go
-        #   to launcher.log in the repo root. Use "Show Logs" from the
-        #   Felix tray menu to inspect them.
-        # -File runs the script and exits, so the parent powershell.exe
-        #   doesn't linger.
-        $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
+        # Targets the .vbs wrapper, not powershell.exe directly: passing
+        # -WindowStyle Hidden to powershell.exe still lets Windows create and
+        # briefly flash a console window before PowerShell's own startup code
+        # gets around to applying that flag. launch-felix-hidden.vbs uses
+        # WshShell.Run's window-style parameter (0 = SW_HIDE), which the OS
+        # applies at process-creation time instead -- no window ever appears.
+        # Logs still land in launcher.log in the repo root regardless; use
+        # "Show Logs" from the Felix tray menu to inspect them.
+        $shortcut.TargetPath = $vbsLauncher
+        $shortcut.Arguments = ""
         $shortcut.WorkingDirectory = $repoRoot
         $shortcut.Description = "Launch Felix (OpenMind)"
         $shortcut.IconLocation = (Join-Path $repoRoot "tray\assets\icon.ico") + ",0"
