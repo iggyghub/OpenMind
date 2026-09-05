@@ -48,7 +48,7 @@
   // original textContent per element id, captured before first text edit
   var origText = {};
   // style props we ever write; cleared per-element on snapshot restore
-  var STYLE_PROPS = ['backgroundColor', 'color', 'fontSize', 'position', 'marginLeft', 'marginTop', 'width', 'height'];
+  var STYLE_PROPS = ['backgroundColor', 'color', 'fontSize', 'position', 'marginLeft', 'marginTop', 'marginRight', 'marginBottom', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'width', 'height', 'display', 'flexDirection', 'gap', 'alignItems', 'justifyContent', 'borderWidth', 'borderStyle', 'borderColor', 'borderRadius', 'boxShadow'];
 
   function snapshot() {
     undoStack.push(JSON.parse(JSON.stringify(overrides)));
@@ -302,15 +302,77 @@
   bar.innerHTML =
     '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">' +
     '<input type="checkbox" id="ue-toggle"> <b>Edit mode</b></label>' +
-    '<div id="ue-panel" style="display:none;flex-direction:column;gap:6px;border-top:1px solid #444;padding-top:6px;">' +
+    '<div id="ue-panel" style="display:none;flex-direction:column;gap:4px;border-top:1px solid #444;padding-top:6px;">' +
     '<div style="display:flex;gap:4px;">' +
     '<button id="ue-undo" style="cursor:pointer;flex:1;" disabled>Undo</button>' +
     '<button id="ue-redo" style="cursor:pointer;flex:1;" disabled>Redo</button>' +
     '</div>' +
+    '<details open style="border-top:1px solid #444;padding-top:4px;">' +
+    '<summary style="cursor:pointer;user-select:none;margin-bottom:4px;">Color &amp; Typography</summary>' +
+    '<div style="display:flex;flex-direction:column;gap:4px;">' +
     '<div style="display:flex;gap:6px;align-items:center;">BG <input type="color" id="ue-bg"></div>' +
     '<div style="display:flex;gap:6px;align-items:center;">Text <input type="color" id="ue-fg"></div>' +
     '<div style="display:flex;gap:6px;align-items:center;">Font <input type="number" id="ue-fs" min="6" max="200" style="width:56px;"> px</div>' +
-    '<button id="ue-edittext" style="cursor:pointer;">Edit text</button>' +
+    '</div></details>' +
+    '<details style="border-top:1px solid #444;padding-top:4px;">' +
+    '<summary style="cursor:pointer;user-select:none;margin-bottom:4px;">Spacing</summary>' +
+    '<div style="display:flex;flex-direction:column;gap:3px;">' +
+    '<div style="opacity:.7;font-size:11px;">Margin</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;">' +
+    '<label style="display:flex;align-items:center;font-size:11px;">T<input type="number" id="ue-mt" style="width:38px;margin:0 2px;"> px</label>' +
+    '<label style="display:flex;align-items:center;font-size:11px;">R<input type="number" id="ue-mr" style="width:38px;margin:0 2px;"> px</label>' +
+    '<label style="display:flex;align-items:center;font-size:11px;">B<input type="number" id="ue-mb" style="width:38px;margin:0 2px;"> px</label>' +
+    '<label style="display:flex;align-items:center;font-size:11px;">L<input type="number" id="ue-ml" style="width:38px;margin:0 2px;"> px</label>' +
+    '</div>' +
+    '<div style="opacity:.7;font-size:11px;">Padding</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;">' +
+    '<label style="display:flex;align-items:center;font-size:11px;">T<input type="number" id="ue-pt" style="width:38px;margin:0 2px;"> px</label>' +
+    '<label style="display:flex;align-items:center;font-size:11px;">R<input type="number" id="ue-pr" style="width:38px;margin:0 2px;"> px</label>' +
+    '<label style="display:flex;align-items:center;font-size:11px;">B<input type="number" id="ue-pb" style="width:38px;margin:0 2px;"> px</label>' +
+    '<label style="display:flex;align-items:center;font-size:11px;">L<input type="number" id="ue-pl" style="width:38px;margin:0 2px;"> px</label>' +
+    '</div></div></details>' +
+    '<details style="border-top:1px solid #444;padding-top:4px;">' +
+    '<summary style="cursor:pointer;user-select:none;margin-bottom:4px;">Layout</summary>' +
+    '<div style="display:flex;flex-direction:column;gap:4px;">' +
+    '<div style="display:flex;gap:6px;align-items:center;">Display' +
+    '<select id="ue-display" style="flex:1;margin-left:4px;">' +
+    '<option value="block">block</option><option value="flex">flex</option>' +
+    '<option value="inline-block">inline-block</option><option value="grid">grid</option>' +
+    '</select></div>' +
+    '<div id="ue-flex-opts" style="display:none;flex-direction:column;gap:4px;">' +
+    '<div style="display:flex;gap:6px;align-items:center;">Dir' +
+    '<select id="ue-flex-dir" style="flex:1;margin-left:4px;">' +
+    '<option value="row">row</option><option value="column">column</option>' +
+    '</select></div>' +
+    '<div style="display:flex;gap:6px;align-items:center;">Gap<input type="number" id="ue-gap" min="0" style="width:38px;margin:0 4px;"> px</div>' +
+    '<div style="display:flex;gap:6px;align-items:center;">Align' +
+    '<select id="ue-align" style="flex:1;margin-left:4px;">' +
+    '<option value="start">start</option><option value="center">center</option>' +
+    '<option value="end">end</option><option value="stretch">stretch</option>' +
+    '</select></div>' +
+    '<div style="display:flex;gap:6px;align-items:center;">Justify' +
+    '<select id="ue-justify" style="flex:1;margin-left:4px;">' +
+    '<option value="start">start</option><option value="center">center</option>' +
+    '<option value="end">end</option><option value="space-between">space-between</option>' +
+    '</select></div>' +
+    '</div></div></details>' +
+    '<details style="border-top:1px solid #444;padding-top:4px;">' +
+    '<summary style="cursor:pointer;user-select:none;margin-bottom:4px;">Border &amp; Shadow</summary>' +
+    '<div style="display:flex;flex-direction:column;gap:4px;">' +
+    '<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">' +
+    'W<input type="number" id="ue-bw" min="0" style="width:34px;margin:0 2px;"> px ' +
+    '<select id="ue-bs"><option value="none">none</option><option value="solid">solid</option><option value="dashed">dashed</option></select> ' +
+    '<input type="color" id="ue-bc">' +
+    '</div>' +
+    '<div style="display:flex;gap:6px;align-items:center;">Radius<input type="number" id="ue-br" min="0" style="width:38px;margin:0 4px;"> px</div>' +
+    '<div style="display:flex;gap:6px;align-items:center;">Shadow' +
+    '<select id="ue-shadow" style="flex:1;margin-left:4px;">' +
+    '<option value="">off</option>' +
+    '<option value="0 2px 8px rgba(0,0,0,.15)">soft</option>' +
+    '<option value="4px 4px 0 rgba(0,0,0,.8)">hard</option>' +
+    '</select></div>' +
+    '</div></details>' +
+    '<button id="ue-edittext" style="cursor:pointer;margin-top:2px;">Edit text</button>' +
     '<button id="ue-reset" style="cursor:pointer;">Reset this page</button>' +
     (LOCAL_PATH ? '<button id="ue-bake" style="cursor:pointer;">Commit to file</button>' : '') +
     '<div id="ue-tree-wrap" style="border-top:1px solid #444;padding-top:6px;">' +
@@ -446,11 +508,51 @@
   window.addEventListener('scroll', positionHighlight, true);
   window.addEventListener('resize', positionHighlight);
 
+  function setSelectValue(sel, val) {
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === val) { sel.selectedIndex = i; return; }
+    }
+  }
+
   function updateToolbar(el) {
     var cs = getComputedStyle(el);
     bar.querySelector('#ue-bg').value = rgbToHex(cs.backgroundColor) || '#ffffff';
     bar.querySelector('#ue-fg').value = rgbToHex(cs.color) || '#000000';
     bar.querySelector('#ue-fs').value = parseInt(cs.fontSize, 10) || 14;
+    // spacing
+    bar.querySelector('#ue-mt').value = parseInt(cs.marginTop, 10) || 0;
+    bar.querySelector('#ue-mr').value = parseInt(cs.marginRight, 10) || 0;
+    bar.querySelector('#ue-mb').value = parseInt(cs.marginBottom, 10) || 0;
+    bar.querySelector('#ue-ml').value = parseInt(cs.marginLeft, 10) || 0;
+    bar.querySelector('#ue-pt').value = parseInt(cs.paddingTop, 10) || 0;
+    bar.querySelector('#ue-pr').value = parseInt(cs.paddingRight, 10) || 0;
+    bar.querySelector('#ue-pb').value = parseInt(cs.paddingBottom, 10) || 0;
+    bar.querySelector('#ue-pl').value = parseInt(cs.paddingLeft, 10) || 0;
+    // layout
+    var disp = cs.display || 'block';
+    setSelectValue(bar.querySelector('#ue-display'), disp);
+    var flexOpts = bar.querySelector('#ue-flex-opts');
+    var showFlex = disp === 'flex' || disp === 'grid';
+    flexOpts.style.display = showFlex ? 'flex' : 'none';
+    if (showFlex) {
+      setSelectValue(bar.querySelector('#ue-flex-dir'), cs.flexDirection || 'row');
+      bar.querySelector('#ue-gap').value = parseInt(cs.gap, 10) || 0;
+      setSelectValue(bar.querySelector('#ue-align'), cs.alignItems || 'start');
+      setSelectValue(bar.querySelector('#ue-justify'), cs.justifyContent || 'start');
+    }
+    // border
+    bar.querySelector('#ue-bw').value = parseInt(cs.borderTopWidth, 10) || 0;
+    setSelectValue(bar.querySelector('#ue-bs'), cs.borderTopStyle || 'none');
+    bar.querySelector('#ue-bc').value = rgbToHex(cs.borderTopColor) || '#000000';
+    bar.querySelector('#ue-br').value = parseInt(cs.borderTopLeftRadius, 10) || 0;
+    // shadow: match inline style against presets
+    var inlineShadow = el.style.boxShadow || '';
+    var shadowSel = bar.querySelector('#ue-shadow');
+    var matched = false;
+    for (var si = 0; si < shadowSel.options.length; si++) {
+      if (shadowSel.options[si].value === inlineShadow) { shadowSel.selectedIndex = si; matched = true; break; }
+    }
+    if (!matched) shadowSel.selectedIndex = 0;
   }
 
   function select(el) {
@@ -610,6 +712,76 @@
     var v = e.target.value + 'px';
     selectedSet.forEach(function (el) { el.style.fontSize = v; });
     setOverrideAll(selectedSet, { style: { fontSize: v } });
+  });
+  // spacing: margin + padding
+  [['mt','marginTop'],['mr','marginRight'],['mb','marginBottom'],['ml','marginLeft'],
+   ['pt','paddingTop'],['pr','paddingRight'],['pb','paddingBottom'],['pl','paddingLeft']
+  ].forEach(function (pair) {
+    bar.querySelector('#ue-' + pair[0]).addEventListener('input', function (e) {
+      if (!selectedSet.size) return;
+      var v = e.target.value + 'px';
+      var style = {}; style[pair[1]] = v;
+      selectedSet.forEach(function (el) { el.style[pair[1]] = v; });
+      setOverrideAll(selectedSet, { style: style });
+    });
+  });
+  // layout
+  bar.querySelector('#ue-display').addEventListener('change', function (e) {
+    if (!selectedSet.size) return;
+    var v = e.target.value;
+    var flexOpts = bar.querySelector('#ue-flex-opts');
+    flexOpts.style.display = (v === 'flex' || v === 'grid') ? 'flex' : 'none';
+    selectedSet.forEach(function (el) { el.style.display = v; });
+    setOverrideAll(selectedSet, { style: { display: v } });
+  });
+  bar.querySelector('#ue-flex-dir').addEventListener('change', function (e) {
+    if (!selectedSet.size) return;
+    selectedSet.forEach(function (el) { el.style.flexDirection = e.target.value; });
+    setOverrideAll(selectedSet, { style: { flexDirection: e.target.value } });
+  });
+  bar.querySelector('#ue-gap').addEventListener('input', function (e) {
+    if (!selectedSet.size) return;
+    var v = e.target.value + 'px';
+    selectedSet.forEach(function (el) { el.style.gap = v; });
+    setOverrideAll(selectedSet, { style: { gap: v } });
+  });
+  bar.querySelector('#ue-align').addEventListener('change', function (e) {
+    if (!selectedSet.size) return;
+    selectedSet.forEach(function (el) { el.style.alignItems = e.target.value; });
+    setOverrideAll(selectedSet, { style: { alignItems: e.target.value } });
+  });
+  bar.querySelector('#ue-justify').addEventListener('change', function (e) {
+    if (!selectedSet.size) return;
+    selectedSet.forEach(function (el) { el.style.justifyContent = e.target.value; });
+    setOverrideAll(selectedSet, { style: { justifyContent: e.target.value } });
+  });
+  // border & shadow
+  bar.querySelector('#ue-bw').addEventListener('input', function (e) {
+    if (!selectedSet.size) return;
+    var v = e.target.value + 'px';
+    selectedSet.forEach(function (el) { el.style.borderWidth = v; });
+    setOverrideAll(selectedSet, { style: { borderWidth: v } });
+  });
+  bar.querySelector('#ue-bs').addEventListener('change', function (e) {
+    if (!selectedSet.size) return;
+    selectedSet.forEach(function (el) { el.style.borderStyle = e.target.value; });
+    setOverrideAll(selectedSet, { style: { borderStyle: e.target.value } });
+  });
+  bar.querySelector('#ue-bc').addEventListener('input', function (e) {
+    if (!selectedSet.size) return;
+    selectedSet.forEach(function (el) { el.style.borderColor = e.target.value; });
+    setOverrideAll(selectedSet, { style: { borderColor: e.target.value } });
+  });
+  bar.querySelector('#ue-br').addEventListener('input', function (e) {
+    if (!selectedSet.size) return;
+    var v = e.target.value + 'px';
+    selectedSet.forEach(function (el) { el.style.borderRadius = v; });
+    setOverrideAll(selectedSet, { style: { borderRadius: v } });
+  });
+  bar.querySelector('#ue-shadow').addEventListener('change', function (e) {
+    if (!selectedSet.size) return;
+    selectedSet.forEach(function (el) { el.style.boxShadow = e.target.value; });
+    setOverrideAll(selectedSet, { style: { boxShadow: e.target.value } });
   });
   bar.querySelector('#ue-edittext').addEventListener('click', function () {
     if (selectedSet.size !== 1) return;
