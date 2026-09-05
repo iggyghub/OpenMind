@@ -7,6 +7,7 @@
   'use strict';
   var params = new URLSearchParams(document.currentScript.src.split('?')[1] || '');
   var KEY = params.get('key');
+  var LOCAL_PATH = params.get('path'); // only set for local: targets; enables bake
   var overrides = {};
   var selected = null; // {el, id}
   var editMode = false;
@@ -75,6 +76,7 @@
     '<div style="display:flex;gap:6px;align-items:center;">Font <input type="number" id="ue-fs" min="6" max="200" style="width:56px;"> px</div>' +
     '<button id="ue-edittext" style="cursor:pointer;">Edit text</button>' +
     '<button id="ue-reset" style="cursor:pointer;">Reset this page</button>' +
+    (LOCAL_PATH ? '<button id="ue-bake" style="cursor:pointer;">Commit to file</button>' : '') +
     '</div>' +
     '<div id="ue-status" style="opacity:.6;">idle</div>';
   function mount() { document.documentElement.appendChild(bar); }
@@ -248,6 +250,18 @@
       body: JSON.stringify({ key: KEY })
     }).then(function () { location.reload(); });
   });
+  var bakeBtn = bar.querySelector('#ue-bake');
+  if (bakeBtn) {
+    bakeBtn.addEventListener('click', function () {
+      setStatus('baking...');
+      fetch('/api/bake', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key: KEY, path: LOCAL_PATH })
+      }).then(function (r) { return r.json(); })
+        .then(function (d) { setStatus(d.ok ? 'baked (' + d.count + ')' : (d.error || 'bake error')); })
+        .catch(function () { setStatus('bake error'); });
+    });
+  }
 
   // ---- init: tag every element with a stable id, then apply saved overrides ----
   var overlayNodes = [highlight, hoverBox].concat(handles);

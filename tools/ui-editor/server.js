@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { ftpRetr } = require('./ftp-client');
+const { bake } = require('./html-bake');
 
 const ROOT = path.resolve(__dirname, '..', '..'); // C:\OpenMind
 const HERE = __dirname;
@@ -77,12 +78,16 @@ function readBody(req) {
 }
 
 // Shared by /local and /git: both resolve to a plain file on disk and only
-// differ in how that file got there.
-function serveFileFromDisk(fullPath, key, req, res) {
+// differ in how that file got there. `localRel` is the repo-relative path for
+// local files only; passing it adds a `&path=` param to the inject.js URL so
+// the browser can include it in /api/bake requests.
+function serveFileFromDisk(fullPath, key, req, res, localRel) {
   const ext = path.extname(fullPath).toLowerCase();
   if (ext === '.html' || ext === '.htm') {
     const html = fs.readFileSync(fullPath, 'utf8');
-    const out = injectIntoHtml(html, `http://${req.headers.host}/inject.js?key=${key}`, null);
+    let scriptUrl = `http://${req.headers.host}/inject.js?key=${key}`;
+    if (localRel) scriptUrl += '&path=' + encodeURIComponent(localRel);
+    const out = injectIntoHtml(html, scriptUrl, null);
     res.writeHead(200, { 'content-type': mimeFor(fullPath) });
     res.end(out);
   } else {
@@ -96,7 +101,7 @@ async function handleLocal(req, res, urlObj) {
   const full = path.resolve(ROOT, rel);
   if (!full.startsWith(ROOT)) { res.writeHead(403); res.end('forbidden'); return; }
   if (!fs.existsSync(full) || !fs.statSync(full).isFile()) { res.writeHead(404); res.end('not found'); return; }
-  serveFileFromDisk(full, sanitizeKey('local:' + rel), req, res);
+  serveFileFromDisk(full, sanitizeKey('local:' + rel), req, res, rel);
 }
 
 const BLANK_PAGE = `<!doctype html>
@@ -250,6 +255,21 @@ const server = http.createServer(async (req, res) => {
       const f = path.join(OVERRIDES_DIR, sanitizeKey(body.key) + '.json');
       if (fs.existsSync(f)) fs.unlinkSync(f);
       sendJson(res, 200, { ok: true });
+    } else if (req.method === 'POST' && urlObj.pathname === '/api/bake') {
+      const body = JSON.parse(await readBody(req));
+      const { key, path: filePath } = body;
+      if (!filePath) { sendJson(res, 400, { error: 'bake is only available for local targets' }); return; }
+      if (!key) { sendJson(res, 400, { error: 'missing key' }); return; }
+      const full = path.resolve(ROOT, filePath);
+      if (!full.startsWith(ROOT + path.sep) && full !== ROOT) { sendJson(res, 400, { error: 'forbidden' }); return; }
+      if (!fs.existsSync(full) || !fs.statSync(full).isFile()) { sendJson(res, 404, { error: 'file not found' }); return; }
+      const ovs = readOverrides(sanitizeKey(key));
+      const count = Object.keys(ovs).length;
+      if (count > 0) {
+        const baked = bake(fs.readFileSync(full, 'utf8'), ovs);
+        fs.writeFileSync(full, baked, 'utf8');
+      }
+      sendJson(res, 200, { ok: true, count });
     } else {
       res.writeHead(404); res.end('not found');
     }
@@ -264,4 +284,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides };
+module.exports = { sanitizeKey, injectIntoHtml, readOverrides, writeOverrides, resetOverrides, bake };
