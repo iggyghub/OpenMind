@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>UI Editor</title>
+<style>
+  html,body{margin:0;height:100%;background:#111;color:#eee;font:13px/1.4 -apple-system,Segoe UI,sans-serif;}
+  #bar{display:flex;gap:8px;padding:8px;background:#1a1a1e;align-items:center;}
+  #bar input[type=text]{flex:1;padding:6px 8px;border-radius:6px;border:1px solid #333;background:#0e0e11;color:#eee;}
+  #bar button{padding:6px 12px;border-radius:6px;border:1px solid #333;background:#26262c;color:#eee;cursor:pointer;}
+  #bar select{padding:6px;border-radius:6px;background:#26262c;color:#eee;border:1px solid #333;}
+  iframe{width:100%;height:calc(100% - 46px);border:0;background:#fff;}
+  #hint{padding:4px 8px;opacity:.6;font-size:11px;}
+</style>
+</head>
+<body>
+<div id="bar">
+  <select id="quick">
+    <option value="">Felix pages...</option>
+    <option value="local:tray/windows/main.html">main.html</option>
+    <option value="local:tray/windows/visualiser.html">visualiser.html</option>
+    <option value="local:tray/windows/detached-panel.html">detached-panel.html</option>
+    <option value="local:tray/windows/irreversible-modal.html">irreversible-modal.html</option>
+  </select>
+  <input id="target" type="text" placeholder="relative path (tray/windows/main.html) or https://example.com">
+  <button id="go">Open</button>
+</div>
+<div id="hint">Edit mode toggle + tools live inside the loaded page (top-right). Toggle it, click an element, drag to move/resize, use the color/text controls. Edits autosave.</div>
+<iframe id="frame" src="about:blank"></iframe>
+<script>
+  var input = document.getElementById('target');
+  var quick = document.getElementById('quick');
+  var frame = document.getElementById('frame');
+  function load(v) {
+    if (!v) return;
+    var src = /^https?:\/\//i.test(v) ? '/remote?url=' + encodeURIComponent(v) : '/local/' + v.replace(/^local:/, '');
+    frame.src = src;
+  }
+  document.getElementById('go').addEventListener('click', function () { load(input.value.trim()); });
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') load(input.value.trim()); });
+  quick.addEventListener('change', function () { input.value = quick.value.replace(/^local:/, ''); load(quick.value); });
+</script>
+</body>
+</html>
