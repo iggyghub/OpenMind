@@ -38,6 +38,13 @@ Six rules, canonical text in `docs/adr/0028-reach-ladder-and-capability-rules.md
 6. **Verified running, or it did not ship.** Green tests are necessary, not
    sufficient -- exercise the real surface (live Cerebral over the IPC bridge, the
    actual browser, the actual tray) before calling it done.
+7. **Invocation ladder -- how the *user* reaches Felix, cheapest surface first.**
+   speak/type -> slash command -> command palette -> sidebar route -> menu item ->
+   global hotkey. Ordered by scarcity: speech is unlimited, hotkeys are ~5-8 chords
+   spent permanently. Nothing earns a menu item, route, or hotkey on first ask (R2
+   applies). A global hotkey is granted only when the action must fire while
+   *another app* has focus -- otherwise the palette is strictly better. Plugins
+   contribute panels (ADR-0012) and tools, never menu items or hotkeys.
 
 ## Agent skills
 

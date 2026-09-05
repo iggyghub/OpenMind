@@ -110,3 +110,62 @@ already exists -- the ladder's five primitives are all built. What a v2 would
 change is the *arbitration layer* (a scheduler, and one acquisition path
 instead of nine), not the reach. That question is deliberately left open here;
 it needs its own grill and its own ADR.
+
+## Amendment (2026-09-05) -- R7, the invocation ladder (menus, palettes, shortcuts)
+
+R1 orders how **Felix** reaches the world. Its mirror was unwritten: how the
+**user** reaches Felix. That surface has grown the same way capability did --
+by accretion, with no rule.
+
+What exists today, all hand-edited, none plugin-contributed:
+
+| Surface | Where | State |
+|---|---|---|
+| Speak / type | wake word, Main window | the default, unlimited |
+| Slash command | `planner.py` `_SLASH_SKILL_RE` | free per Skill, no registry |
+| Federated search | `tray/lib/search-registry.js`, 14 providers | **navigates only** -- hits carry `route`+`anchor`, never an action |
+| Sidebar nav | `sidebar-router.js` | hardcoded routes, "grown by campaigns" |
+| Tray menu | `tray/main.js:819-871` | hardcoded `template.push` |
+| App menu bar | `tray/main.js:1170` | two items |
+| Global hotkey | `tray/main.js:145,173` | exactly two: PTT, video-batch toggle |
+| Recipe | saved chain | the one user-authored shortcut |
+
+**R7. The invocation ladder. A capability earns the cheapest surface that
+reaches the user, and climbs only on repeat.**
+
+> speak/type -> slash command -> command palette -> sidebar route -> menu item
+> -> global hotkey
+
+The ordering is by *scarcity*, not by effort. Speech and typing are unlimited
+and cost nothing per capability. Slash commands are near-unlimited. Palette
+entries are cheap and self-describing. Sidebar routes and menu items are a
+small fixed budget competing for attention. Global hotkeys are the scarcest
+resource in the system -- perhaps five to eight usable chords before OS and
+app collisions -- and they are spent permanently.
+
+Two tests decide a promotion:
+
+1. **The repeat test (R2 applied to invocation).** Nothing gets a menu item,
+   route, or hotkey on the first ask. Speak it; if the same invocation recurs,
+   it earns a palette entry; on continued use it earns a slot. A surface added
+   before the repeat is clutter that is never removed.
+2. **The focus test, for hotkeys only.** A global hotkey's *only* unique
+   property is firing while another application has focus. If the user is
+   already in Felix, the palette is strictly better -- discoverable, unlimited,
+   collision-free. So a hotkey request is granted only when the action must fire
+   from inside another app. Push-to-talk and the video-batch toggle pass. Almost
+   nothing else will.
+
+**Corollary -- one build, not a menu framework.** The ladder's only genuinely
+missing rung is the palette, and it is nearly built: `search-registry.js`
+already ranks federated providers, but every hit navigates. Giving a hit an
+optional executable action, plus one provider over tools and Recipes, turns the
+existing search box into a command palette across all ~70 plugins. That is the
+single thing worth building here.
+
+Everything above it on the ladder stays hand-edited and rare **by design**. A
+declarative menu-contribution API for plugins is explicitly *not* built: it
+would let 70 plugins (some LLM-authored at runtime) compete for the scarcest
+surfaces in the product, which is precisely the outcome R7 exists to prevent.
+Plugins contribute panels (ADR-0012) and tools; they do not contribute menu
+items or hotkeys.
