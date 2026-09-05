@@ -17,7 +17,7 @@ product surface. Each issue body is the full spec for its slice.
 
 ## Next slice -- start here
 
-- **Active:** S9 -- #1075
+- **Active:** S11 -- #1077
 - **Model:** sonnet
 
 ## Queue
@@ -29,9 +29,9 @@ product surface. Each issue body is the full spec for its slice.
 - [x] S5 -- #1067 -- multi-select + bulk style edit (PR #1083)
 - [x] S6 -- #1068 -- safety/regression pass (path traversal, input validation, README)
 - [x] S7 -- #1073 -- block palette: insert new elements (not just edit existing ones)
-- [x] S8 -- #1074 -- section template library (navbar, hero, feature grid, pricing, footer, contact form, gallery)
-- [ ] S9 -- #1075 -- expanded style panel (spacing box model, flex/grid layout, border/radius/shadow)
-- [ ] S10 -- #1076 -- responsive breakpoints (mobile/tablet/desktop preview + per-breakpoint overrides)
+- [x] S8 -- #1074 -- section template library (navbar, hero, feature grid, pricing, footer, contact form, gallery) (PR #1086)
+- [ ] S9 -- #1075 -- expanded style panel (spacing box model, flex/grid layout, border/radius/shadow) (PR #1087 open)
+- [x] S10 -- #1076 -- responsive breakpoints (mobile/tablet/desktop preview + per-breakpoint overrides)
 - [ ] S11 -- #1077 -- asset manager (image upload + insert/replace)
 - [ ] S12 -- #1078 -- code view / HTML export panel
 
@@ -59,7 +59,8 @@ prerequisite for S8 (blocks are built from the same insert primitive).
 - S5 -- #1067 -- PR #1083
 - S6 -- #1068 -- PR #1084
 - S7 -- #1073 -- PR #1085
-- S8 -- #1074 -- PR (this branch)
+- S8 -- #1074 -- PR #1086
+- S10 -- #1076 -- PR (this branch)
 
 ## SAFETY
 
