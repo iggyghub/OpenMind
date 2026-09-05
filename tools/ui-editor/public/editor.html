@@ -99,10 +99,12 @@
 
   <div class="fields active" data-conn="local">
     <input id="local-path" type="text" placeholder="relative path, e.g. tray/windows/main.html">
+    <button id="local-browse" type="button" hidden>Browse&hellip;</button>
   </div>
 
   <div class="fields" data-conn="new">
     <input id="new-path" type="text" placeholder="path for the new file, e.g. tray/windows/scratch.html">
+    <button id="new-browse" type="button" hidden>Browse&hellip;</button>
   </div>
 
   <div class="fields" data-conn="url">
@@ -148,6 +150,35 @@
     document.getElementById('url-user').style.display = e.target.checked ? '' : 'none';
     document.getElementById('url-pass').style.display = e.target.checked ? '' : 'none';
   });
+
+  // Native Save/Open dialogs (tray/preload/ui-editor-preload.js) -- only
+  // present when this window is opened inside Felix's own Electron shell
+  // (see main.js's UI_EDITOR_ORIGIN override). Standalone browser usage
+  // (this tool's own README) has no window.felixDialogs and keeps the
+  // plain text-input path field, unchanged.
+  if (window.felixDialogs) {
+    var localBrowseBtn = document.getElementById('local-browse');
+    var newBrowseBtn = document.getElementById('new-browse');
+    localBrowseBtn.hidden = false;
+    newBrowseBtn.hidden = false;
+
+    localBrowseBtn.addEventListener('click', function () {
+      window.felixDialogs.openLocalFilePath().then(function (result) {
+        if (result.canceled) return;
+        if (result.error) { errEl.textContent = result.error; errEl.style.display = 'block'; return; }
+        document.getElementById('local-path').value = result.path;
+        open_();
+      });
+    });
+
+    newBrowseBtn.addEventListener('click', function () {
+      window.felixDialogs.saveNewPagePath().then(function (result) {
+        if (result.canceled) return;
+        if (result.error) { errEl.textContent = result.error; errEl.style.display = 'block'; return; }
+        document.getElementById('new-path').value = result.path;
+      });
+    });
+  }
 
   quick.addEventListener('change', function () {
     if (!quick.value) return;

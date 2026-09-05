@@ -548,6 +548,7 @@ function openMainWindow(hash) {
           webPreferences: {
             nodeIntegration:  false,
             contextIsolation: true,
+            preload:          path.join(__dirname, 'preload', 'ui-editor-preload.js'),
           },
         },
       };
@@ -681,6 +682,44 @@ ipcMain.on('irreversible-modal:ready', (event) => {
       return;
     }
   }
+});
+
+// Native Save/Open dialogs for the UI Editor's "New page" and "Local file"
+// fields (see setWindowOpenHandler's UI_EDITOR_ORIGIN override, which is the
+// only window carrying preload/ui-editor-preload.js — a plain webpage has no
+// way to get a real filesystem path back from a save dialog, so this only
+// exists for the tool opened inside Felix's own Electron shell; standalone
+// browser usage per the tool's own README keeps the plain text-input path).
+// tools/ui-editor/server.js only ever serves/writes files under the repo
+// root anyway (checkLocalPath), so a pick outside it is rejected here with
+// the same constraint the server would enforce a step later, rather than
+// let the user pick something that 403s after the fact.
+const { relativeToRoot } = require('./lib/repo-path');
+const UI_EDITOR_ROOT = path.join(__dirname, '..');
+
+ipcMain.handle('ui-editor:save-dialog', async () => {
+  const result = await dialog.showSaveDialog({
+    title: 'New page',
+    defaultPath: UI_EDITOR_ROOT,
+    filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
+  });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  const rel = relativeToRoot(UI_EDITOR_ROOT, result.filePath);
+  if (!rel) return { canceled: false, error: 'Must be inside the OpenMind folder.' };
+  return { canceled: false, path: rel };
+});
+
+ipcMain.handle('ui-editor:open-dialog', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Open local file',
+    defaultPath: UI_EDITOR_ROOT,
+    properties: ['openFile'],
+    filters: [{ name: 'HTML', extensions: ['html', 'htm'] }, { name: 'All files', extensions: ['*'] }],
+  });
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  const rel = relativeToRoot(UI_EDITOR_ROOT, result.filePaths[0]);
+  if (!rel) return { canceled: false, error: 'Must be inside the OpenMind folder.' };
+  return { canceled: false, path: rel };
 });
 
 // ── Visualiser window ─────────────────────────────────────────────────────────
