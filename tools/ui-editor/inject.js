@@ -13,6 +13,62 @@
   var editMode = false;
   var saveTimer = null;
 
+  // ---- undo/redo stack ----
+  // ponytail: cap at 50, fixed is fine for single-session editing; bump if UX bites
+  var UNDO_CAP = 50;
+  var undoStack = [];
+  var redoStack = [];
+  // original textContent per element id, captured before first text edit
+  var origText = {};
+  // style props we ever write; cleared per-element on snapshot restore
+  var STYLE_PROPS = ['backgroundColor', 'color', 'fontSize', 'position', 'marginLeft', 'marginTop', 'width', 'height'];
+
+  function snapshot() {
+    undoStack.push(JSON.parse(JSON.stringify(overrides)));
+    if (undoStack.length > UNDO_CAP) undoStack.shift();
+    redoStack = [];
+    updateHistoryBtns();
+  }
+
+  function restoreSnapshot(snap) {
+    Object.keys(overrides).forEach(function (id) {
+      var el = idToEl(id);
+      if (!el) return;
+      STYLE_PROPS.forEach(function (p) { el.style[p] = ''; });
+      if (overrides[id].text !== undefined && (!snap[id] || snap[id].text === undefined)) {
+        if (id in origText) el.textContent = origText[id];
+      }
+    });
+    overrides = JSON.parse(JSON.stringify(snap));
+    Object.keys(overrides).forEach(function (id) {
+      var el = idToEl(id);
+      if (el) applyOverride(el, overrides[id]);
+    });
+  }
+
+  function doUndo() {
+    if (!undoStack.length) return;
+    redoStack.push(JSON.parse(JSON.stringify(overrides)));
+    restoreSnapshot(undoStack.pop());
+    scheduleSave();
+    updateHistoryBtns();
+  }
+
+  function doRedo() {
+    if (!redoStack.length) return;
+    undoStack.push(JSON.parse(JSON.stringify(overrides)));
+    restoreSnapshot(redoStack.pop());
+    scheduleSave();
+    updateHistoryBtns();
+  }
+
+  function updateHistoryBtns() {
+    var ub = bar && bar.querySelector('#ue-undo');
+    var rb = bar && bar.querySelector('#ue-redo');
+    if (ub) ub.disabled = undoStack.length === 0;
+    if (rb) rb.disabled = redoStack.length === 0;
+  }
+
   function pathId(el) {
     var parts = [];
     var node = el;
@@ -55,7 +111,11 @@
   }
 
   function setOverride(el, patch) {
+    snapshot();
     var id = el.getAttribute('data-uieditor-id');
+    if (typeof patch.text === 'string' && !(id in origText)) {
+      origText[id] = el.textContent; // capture original before first text edit
+    }
     var o = overrides[id] || (overrides[id] = {});
     if (patch.style) o.style = Object.assign(o.style || {}, patch.style);
     if (typeof patch.text === 'string') o.text = patch.text;
@@ -71,6 +131,10 @@
     '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">' +
     '<input type="checkbox" id="ue-toggle"> <b>Edit mode</b></label>' +
     '<div id="ue-panel" style="display:none;flex-direction:column;gap:6px;border-top:1px solid #444;padding-top:6px;">' +
+    '<div style="display:flex;gap:4px;">' +
+    '<button id="ue-undo" style="cursor:pointer;flex:1;" disabled>Undo</button>' +
+    '<button id="ue-redo" style="cursor:pointer;flex:1;" disabled>Redo</button>' +
+    '</div>' +
     '<div style="display:flex;gap:6px;align-items:center;">BG <input type="color" id="ue-bg"></div>' +
     '<div style="display:flex;gap:6px;align-items:center;">Text <input type="color" id="ue-fg"></div>' +
     '<div style="display:flex;gap:6px;align-items:center;">Font <input type="number" id="ue-fs" min="6" max="200" style="width:56px;"> px</div>' +
@@ -151,6 +215,16 @@
 
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { selected = null; positionHighlight(); }
+    if (e.ctrlKey && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+      if (document.activeElement && document.activeElement.contentEditable === 'true') return;
+      e.preventDefault();
+      doUndo();
+    }
+    if (e.ctrlKey && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
+      if (document.activeElement && document.activeElement.contentEditable === 'true') return;
+      e.preventDefault();
+      doRedo();
+    }
   });
 
   // move: drag inside the highlighted box (not on a handle)
@@ -244,6 +318,8 @@
     }
     el.addEventListener('blur', commit);
   });
+  bar.querySelector('#ue-undo').addEventListener('click', doUndo);
+  bar.querySelector('#ue-redo').addEventListener('click', doRedo);
   bar.querySelector('#ue-reset').addEventListener('click', function () {
     fetch('/api/reset', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -275,8 +351,14 @@
       overrides = data || {};
       Object.keys(overrides).forEach(function (id) {
         var el = idToEl(id);
-        if (el) applyOverride(el, overrides[id]);
+        if (el) {
+          if (overrides[id].text !== undefined && !(id in origText)) {
+            origText[id] = el.textContent; // capture original before applying loaded text override
+          }
+          applyOverride(el, overrides[id]);
+        }
       });
+      updateHistoryBtns();
     });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
