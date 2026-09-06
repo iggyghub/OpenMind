@@ -305,7 +305,8 @@ describe('runSelfCheck', () => {
     });
     await runSelfCheck(opts);
     expect(opts.gitStashFn).toHaveBeenCalledWith('felix-rollback 2026-07-29T12-00-00-000Z');
-    expect(opts.gitStashFn).toHaveBeenCalledBefore(opts.gitResetFn);
+    expect(opts.gitStashFn.mock.invocationCallOrder[0])
+      .toBeLessThan(opts.gitResetFn.mock.invocationCallOrder[0]);
   });
 
   test('rollback: clears pending_backup in state file', async () => {
@@ -421,7 +422,8 @@ describe('manualRollback', () => {
     const opts = makeOpts();
     await manualRollback(opts);
     expect(opts.gitStashFn).toHaveBeenCalledWith('felix-rollback 2026-08-21T10-00-00-000Z');
-    expect(opts.gitStashFn).toHaveBeenCalledBefore(opts.gitResetFn);
+    expect(opts.gitStashFn.mock.invocationCallOrder[0])
+      .toBeLessThan(opts.gitResetFn.mock.invocationCallOrder[0]);
   });
 
   test('manual rollback: clears pending_backup in state file', async () => {
