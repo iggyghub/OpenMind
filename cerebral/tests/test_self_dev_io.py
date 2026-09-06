@@ -370,3 +370,54 @@ def test_test_fn_fails_when_jest_fails_even_if_pytest_passes(monkeypatch, tmp_pa
     passed, output = io.test_fn(tmp_path)
 
     assert passed is False
+
+
+# ── _ensure_tray_node_modules: link, don't reinstall, and never mask a ──────
+# jest run that should have happened (PR #1113 / SUP-2b post-mortem: node_
+# modules missing meant jest silently never ran on ANY self-dev tray/ diff).
+
+def test_ensure_tray_node_modules_skips_if_already_present(monkeypatch, tmp_path):
+    tray_dir = tmp_path / "tray"
+    (tray_dir / "node_modules").mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    io._ensure_tray_node_modules(tray_dir)
+
+    assert calls == []  # already there -- no mklink attempted
+
+
+def test_ensure_tray_node_modules_skips_if_live_repo_has_none(monkeypatch, tmp_path):
+    tray_dir = tmp_path / "tray"
+    tray_dir.mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    monkeypatch.setattr(io, "_REPO_ROOT", tmp_path / "no-such-repo")
+
+    io._ensure_tray_node_modules(tray_dir)
+
+    assert calls == []  # nothing to link from
+
+
+def test_ensure_tray_node_modules_links_from_the_live_repo(monkeypatch, tmp_path):
+    tray_dir = tmp_path / "clone" / "tray"
+    tray_dir.mkdir(parents=True)
+    live_repo = tmp_path / "live"
+    (live_repo / "tray" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(io, "_REPO_ROOT", live_repo)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        class R:
+            returncode, stdout, stderr = 0, "", ""
+        return R()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    io._ensure_tray_node_modules(tray_dir)
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[:3] == ["cmd", "/c", "mklink"]
+    assert str(tray_dir / "node_modules") in cmd
+    assert str(live_repo / "tray" / "node_modules") in cmd

@@ -204,6 +204,30 @@ def _changed_files_in_last_commit(clone_dir: Path) -> "list[str]":
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def _ensure_tray_node_modules(tray_dir: Path) -> None:
+    """Link the live repo's tray/node_modules into a self-dev clone's tray/.
+
+    `node_modules` is gitignored, so a fresh `git clone` never carries it --
+    a real `npm install` would work too, but is slow, network-dependent, and
+    installs the exact packages already sitting on disk in the live repo.
+    A directory junction (no admin/Developer-Mode privilege needed on
+    Windows, unlike a true symlink) makes the clone's `tray/node_modules`
+    resolve straight through to the live copy. Best-effort: if `mklink`
+    fails or the live repo itself has no node_modules, `test_fn`'s caller
+    falls back to skipping jest, same as before this existed.
+    """
+    dest = tray_dir / "node_modules"
+    if dest.exists():
+        return
+    src = _REPO_ROOT / "tray" / "node_modules"
+    if not src.is_dir():
+        return
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(dest), str(src)],
+        capture_output=True, text=True,
+    )
+
+
 def test_fn(clone_dir: Path) -> "tuple[bool, str]":
     """Run pytest in the clone (inside the sandbox via main.py wiring), plus
     the tray's jest suite when the diff touches `tray/`.
@@ -228,10 +252,18 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
     and no longer blocks merge, so an untested tray/ change would otherwise
     land straight into the restart/rollback path self_dev itself depends on.
     A diff touching `tray/` now also runs the tray's own `npm test` (jest);
-    both suites must pass. Skipped (not failed) when `tray/node_modules` is
-    absent in the clone, matching pytest's own "missing root is skipped" posture
-    -- a self-dev clone that never ran `npm install` shouldn't be blocked from
-    landing changes outside tray/ either.
+    both suites must pass.
+
+    `tray/node_modules` is gitignored, so a fresh clone never has it -- ensured
+    by linking the live repo's already-installed copy in (see
+    `_ensure_tray_node_modules`) rather than reinstalling. This used to just skip
+    jest when missing, which meant jest silently never ran on ANY self-dev
+    tray/ change: PR #1113 (SUP-2b) merged with 4 failing jest tests -- the very
+    tests it added itself -- because "missing -> skip" reported the same
+    `passed` as pytest alone, with nothing to say jest never touched the diff
+    it was meant to guard. Still skipped (not failed) if linking somehow fails
+    or `npm` is unavailable, so a genuinely broken host degrades to the old
+    pytest-only gate rather than blocking every tray/ change outright.
     """
     roots = [d for d in ("cerebral/tests/", "tests/") if (clone_dir / d).is_dir()]
     try:
@@ -253,6 +285,7 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
         return passed, output
 
     tray_dir = clone_dir / "tray"
+    _ensure_tray_node_modules(tray_dir)
     if not (tray_dir / "node_modules").is_dir():
         return passed, output + "\n\n[tray/ changed but node_modules missing -- jest skipped]"
 
