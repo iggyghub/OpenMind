@@ -18,6 +18,37 @@ OpenMind is a local-first personal AI agent platform. The user speaks to **Felix
 
 > To be filled in as the project is scaffolded.
 
+## Build rules (ADR-0028) -- these govern everything built here
+
+Six rules, canonical text in `docs/adr/0028-reach-ladder-and-capability-rules.md`.
+
+1. **Reach ladder -- stop at the first rung that reaches.** existing tool -> API
+   plugin -> sandboxed shell -> browser session -> computer-use -> ask the human.
+   Each descent costs ~10x tokens and ~10x flakiness. Never build a rung while a
+   lower one already reaches. "Ask the human" is a rung, not a failure.
+2. **Promote on the third repeat.** Ad hoc twice is fine; the third repeat earns a
+   plugin. No speculative pre-building.
+3. **Mechanism follows what is missing.** know-how -> Skill; a tool -> growth loop;
+   replay of a known chain -> Recipe; Felix's own core -> `self_dev`; context room
+   -> `delegate`. Not interchangeable.
+4. **The ADR-0005 gate is the only permission model.** Every mechanism routes
+   through the same 16-class gate, or it does not ship. No side doors.
+5. **The scarce resource is the scheduler, and it is always singular.** The GPU when
+   the active model is local, the one endpoint when it is remote (today: everything).
+   Nothing assumes concurrency, nothing preempts; the live conversational turn wins
+   contention. Model tiers: **local** (on the 1080), **remote** (over HTTP), **cloud**
+   (a paid third-party API). Budd is remote, not cloud.
+6. **Verified running, or it did not ship.** Green tests are necessary, not
+   sufficient -- exercise the real surface (live Cerebral over the IPC bridge, the
+   actual browser, the actual tray) before calling it done.
+7. **Invocation ladder -- how the *user* reaches Felix, cheapest surface first.**
+   speak/type -> slash command -> command palette -> sidebar route -> menu item ->
+   global hotkey. Ordered by scarcity: speech is unlimited, hotkeys are ~5-8 chords
+   spent permanently. Nothing earns a menu item, route, or hotkey on first ask (R2
+   applies). A global hotkey is granted only when the action must fire while
+   *another app* has focus -- otherwise the palette is strictly better. Plugins
+   contribute panels (ADR-0012) and tools, never menu items or hotkeys.
+
 ## Agent skills
 
 ### Issue tracker
@@ -46,5 +77,7 @@ Doesn't apply to scripts meant only for CI / chaining — those need a clean exi
 ## Cerebral's real logs are at the repo root, not `.claude/tmp/`
 
 `cerebral/main.py`'s own `logging.basicConfig` only writes to stdout — no `FileHandler` in the Python code. The actual persistence happens one layer up: `scripts/launch-felix.ps1` (the path both `restart_felix` and the tray's respawn button run) spawns Cerebral via `Start-Process -RedirectStandardOutput cerebral.log -RedirectStandardError cerebral.err.log`, both at the **repo root**. When diagnosing any live Cerebral issue, check those two files first — `Glob **/*.log` will bury them under `.claude/tmp/`'s slice-loop noise, and grepping the Python source for a `FileHandler` will (correctly, but misleadingly) turn up nothing. `launcher.log` (also repo root) covers the launch/respawn sequence itself, separate from `cerebral.err.log`'s runtime tracebacks.
+
+Same class of trap when **searching**: `cerebral/data/sandbox/self_dev/` holds dozens of retained full-repo clones (kept deliberately), so a raw `grep -r` over `cerebral/` returns every source file N+1 times and can exceed a 2-minute timeout. Use the Grep tool (respects ignores) or exclude that path.
 
 **`Start-Process -RedirectStandardOutput`/`-RedirectStandardError` overwrites the target file on every launch — it does not append.** A `restart_felix` mid-diagnosis destroys the only evidence of what just crashed. Copy `cerebral.err.log` aside before restarting anything you're actively debugging.

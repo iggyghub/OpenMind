@@ -68,6 +68,17 @@
     .sidebar::-webkit-scrollbar-track { background: transparent; }
     .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
+    /* ── sidebar drag splitter (mirrors .ws-splitter / S3 #482) ─────────── */
+    .sidebar-splitter {
+      flex: 0 0 5px;
+      cursor: col-resize;
+      background: transparent;
+      border-right: 1px solid var(--border);
+      touch-action: none;
+    }
+    .sidebar-splitter:hover { background: var(--border); }
+    .sidebar.is-collapsed + .sidebar-splitter { cursor: default; pointer-events: none; }
+
     .brand {
       padding: 16px 18px 14px;
       font-size: 13px;
@@ -2181,6 +2192,27 @@
     .mem-btn-delete:hover { color: #e05555; border-color: #e05555; }
 
     /* ── recipes pane ──────────────────────────────────────── */
+    /* ── shared sort bar (Library pane: Memory/Insights/Recipes/Documents) ── */
+    .lib-sort-bar {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+    .lib-sort-bar select {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font: inherit;
+      cursor: pointer;
+    }
+
     /* Named tool-chains. Accent: teal (#4bd4c8), distinct from memory green. */
     .pane[data-route="recipes"] { background: var(--bg); }
 
@@ -5397,6 +5429,7 @@
       <button class="nav-item" data-route="settings"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span><span class="nav-label">Settings</span></button>
     </nav>
   </aside>
+  <div class="sidebar-splitter" id="sidebar-splitter" aria-hidden="true"></div>
 
   <main class="content">
     <div class="header">
@@ -6111,6 +6144,16 @@
           </div>
           <input type="color" id="set-accent-picker" class="set-accent-picker">
         </div>
+        <div class="set-toggle-row">
+          <div>
+            <div class="set-toggle-label">Keep sections expanded</div>
+            <div class="set-toggle-sub">Ignore each section's remembered collapse state and always show them open</div>
+          </div>
+          <label class="set-toggle">
+            <input type="checkbox" id="set-sections-force-expand">
+            <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
+          </label>
+        </div>
 
         <div class="set-section">Voice input</div>
         <div class="set-toggle-row">
@@ -6271,6 +6314,15 @@
       </div>
 
       <div class="lib-sub is-active" data-lib="memory">
+        <div class="lib-sort-bar" id="memory-sort-bar">
+          <label>Sort within category
+            <select class="lib-sort-select" id="memory-sort">
+              <option value="created_desc">Newest first</option>
+              <option value="created_asc">Oldest first</option>
+              <option value="alpha">Alphabetical</option>
+            </select>
+          </label>
+        </div>
         <div class="mem-list" id="memory-list">
           <div class="mem-empty" id="memory-empty">
             <div class="mem-empty-icon">&#x2736;</div>
@@ -6280,6 +6332,16 @@
       </div>
 
       <div class="lib-sub" data-lib="insights">
+        <div class="lib-sort-bar" id="insights-sort-bar">
+          <label>Sort
+            <select class="lib-sort-select" id="insights-sort">
+              <option value="pinned_desc">Pinned first</option>
+              <option value="created_desc">Newest first</option>
+              <option value="created_asc">Oldest first</option>
+              <option value="alpha">Alphabetical</option>
+            </select>
+          </label>
+        </div>
         <div class="ins-list" id="insights-list">
           <div class="ins-empty" id="insights-empty">
             <div class="ins-empty-icon">&#x2736;</div>
@@ -6290,6 +6352,15 @@
 
       <div class="lib-sub" data-lib="recipes">
         <div class="rcp-body">
+          <div class="lib-sort-bar" id="rcp-sort-bar">
+            <label>Sort
+              <select class="lib-sort-select" id="rcp-sort">
+                <option value="alpha">Alphabetical</option>
+                <option value="last_run_desc">Last run</option>
+                <option value="run_count_desc">Most run</option>
+              </select>
+            </label>
+          </div>
           <div class="rcp-list" id="rcp-list">
             <div class="rcp-empty" id="rcp-empty">
               <span class="rcp-empty-icon">&#9874;</span>
@@ -6307,6 +6378,15 @@
           </div>
 
           <div class="docs-subview is-active" data-docsub="library">
+            <div class="lib-sort-bar" id="docs-sort-bar">
+              <label>Sort
+                <select class="lib-sort-select" id="docs-sort">
+                  <option value="updated_desc">Recently updated</option>
+                  <option value="alpha">Alphabetical</option>
+                  <option value="kind">Type</option>
+                </select>
+              </label>
+            </div>
             <div id="docs-list">
               <div class="docs-empty" id="docs-empty">
                 No documents in the library. Ask Felix to store a document, or use
@@ -6578,6 +6658,12 @@
   <!-- Sidebar collapse (S1 -- #480) -- icon-rail collapse with Ctrl+B + localStorage.
        Dual-mode: window.SidebarCollapse here, module.exports for jest. -->
   <script src="../lib/sidebar-collapse.js"></script>
+  <!-- Sidebar drag-to-resize (mirrors the workspace splitter, S3 #482).
+       Dual-mode: window.SidebarResize here, module.exports for Node tests. -->
+  <script src="../lib/sidebar-resize.js"></script>
+  <!-- Shared sort helpers for the Library pane's Memory/Insights/Recipes/Documents
+       tabs. Dual-mode: window.ListSort here, module.exports for Node tests. -->
+  <script src="../lib/list-sort.js"></script>
 
   <!-- Permissions store (Issue #202) — same source feeds the Node test
        suite via require() and this renderer via window.PermissionsStoreMod.
@@ -8526,6 +8612,25 @@
         .replace(/"/g, '&quot;');
     }
 
+    // Wires a Library-pane sort <select> (Memory/Insights/Recipes/Documents):
+    // restores the last-chosen mode from localStorage, persists on change, and
+    // re-renders via onChange. Returns a getter so the render function always
+    // reads the live value instead of tracking a duplicate state variable.
+    function wireSortSelect(selectId, storageKey, defaultVal, onChange) {
+      const sel = document.getElementById(selectId);
+      if (!sel) return () => defaultVal;
+      let stored = null;
+      try { stored = localStorage.getItem(storageKey); } catch (e) {}
+      if (stored && sel.querySelector(`option[value="${CSS.escape(stored)}"]`)) sel.value = stored;
+      else sel.value = defaultVal;
+      sel.addEventListener('change', () => {
+        try { localStorage.setItem(storageKey, sel.value); } catch (e) {}
+        onChange();
+      });
+      return () => sel.value;
+    }
+    const _sort = window.ListSort;
+
     function renderQueue() {
       // Header badge first — it's visible regardless of route.
       const n = queueItems.length;
@@ -8654,16 +8759,30 @@
       return isNaN(d.getTime()) ? iso : d.toLocaleString();
     }
 
+    const getInsightsSort = wireSortSelect('insights-sort', 'lib-sort:insights', 'pinned_desc', () => renderInsights());
+
+    function sortedInsights() {
+      const mode = getInsightsSort();
+      if (mode === 'created_desc') return _sort.sortBy(insightsItems, (x) => _sort.dateKey(x.created_at), 'desc');
+      if (mode === 'created_asc')  return _sort.sortBy(insightsItems, (x) => _sort.dateKey(x.created_at), 'asc');
+      if (mode === 'alpha')        return _sort.sortBy(insightsItems, (x) => _sort.alphaKey(x.description), 'asc');
+      // 'pinned_desc' (default) -- pinned items float to the top, newest first within each group.
+      return _sort.sortByMulti(insightsItems, [(x) => !!x.pinned, (x) => _sort.dateKey(x.created_at)], ['desc', 'desc']);
+    }
+
     function renderInsights() {
       insightsListEl.querySelectorAll('.ins-item').forEach((el) => el.remove());
 
+      const insightsSortBar = document.getElementById('insights-sort-bar');
       if (insightsItems.length === 0) {
         insightsEmptyEl.style.display = 'flex';
+        if (insightsSortBar) insightsSortBar.style.display = 'none';
         return;
       }
       insightsEmptyEl.style.display = 'none';
+      if (insightsSortBar) insightsSortBar.style.display = 'flex';
 
-      insightsItems.forEach((ins) => {
+      sortedInsights().forEach((ins) => {
         const el = document.createElement('div');
         el.className = 'ins-item' + (ins.pinned ? ' is-pinned' : '');
         el.dataset.id = ins.id;
@@ -8763,17 +8882,29 @@
     const rcpListEl  = document.getElementById('rcp-list');
     const rcpEmptyEl = document.getElementById('rcp-empty');
 
+    const getRcpSort = wireSortSelect('rcp-sort', 'lib-sort:recipes', 'alpha', () => renderRecipes());
+
+    function sortedRecipes(recipes) {
+      const mode = getRcpSort();
+      if (mode === 'last_run_desc')  return _sort.sortBy(recipes, (x) => _sort.dateKey(x.last_run_at), 'desc');
+      if (mode === 'run_count_desc') return _sort.sortBy(recipes, (x) => x.run_count || 0, 'desc');
+      return _sort.sortBy(recipes, (x) => _sort.alphaKey(x.name), 'asc');
+    }
+
     function renderRecipes() {
       rcpListEl.querySelectorAll('.rcp-item').forEach(function (el) { el.remove(); });
       const recipes = (recipesData && recipesData.recipes) || [];
       const staleIds = new Set((recipesData && recipesData.stale_ids) || []);
+      const rcpSortBar = document.getElementById('rcp-sort-bar');
       if (recipes.length === 0) {
         rcpEmptyEl.style.display = 'flex';
+        if (rcpSortBar) rcpSortBar.style.display = 'none';
         return;
       }
       rcpEmptyEl.style.display = 'none';
+      if (rcpSortBar) rcpSortBar.style.display = 'flex';
 
-      recipes.forEach(function (rcp) {
+      sortedRecipes(recipes).forEach(function (rcp) {
         const el = document.createElement('div');
         el.className = 'rcp-item';
         el.dataset.id = rcp.id;
@@ -8837,13 +8968,25 @@
     const docsEmptyEl = document.getElementById('docs-empty');
     const _docsPanel  = window.DocumentsPanel;
 
+    const getDocsSort = wireSortSelect('docs-sort', 'lib-sort:documents', 'updated_desc', () => renderDocuments());
+
+    function sortedDocuments() {
+      const mode = getDocsSort();
+      if (mode === 'alpha') return _sort.sortBy(documentsData, (x) => _sort.alphaKey(x.name), 'asc');
+      if (mode === 'kind')  return _sort.sortByMulti(documentsData, [(x) => _sort.alphaKey(x.kind), (x) => _sort.alphaKey(x.name)], ['asc', 'asc']);
+      return _sort.sortBy(documentsData, (x) => _sort.dateKey(x.updated_at), 'desc');
+    }
+
     function renderDocuments() {
       if (!docsListEl) return;
+      const docsSortBar = document.getElementById('docs-sort-bar');
       if (!documentsData || documentsData.length === 0) {
         docsListEl.innerHTML = docsEmptyEl ? docsEmptyEl.outerHTML : '<div class="docs-empty">No documents.</div>';
+        if (docsSortBar) docsSortBar.style.display = 'none';
         return;
       }
-      docsListEl.innerHTML = _docsPanel.renderList(documentsData);
+      docsListEl.innerHTML = _docsPanel.renderList(sortedDocuments());
+      if (docsSortBar) docsSortBar.style.display = 'flex';
     }
 
     // Delegate click handler for doc card actions.
@@ -9481,14 +9624,26 @@
         </div>`;
     }
 
+    const getMemorySort = wireSortSelect('memory-sort', 'lib-sort:memory', 'created_desc', () => renderMemory());
+
+    function sortedMemoryGroup(items) {
+      const mode = getMemorySort();
+      if (mode === 'created_asc') return _sort.sortBy(items, (x) => _sort.dateKey(x.created_at), 'asc');
+      if (mode === 'alpha')       return _sort.sortBy(items, (x) => _sort.alphaKey(x.fact), 'asc');
+      return _sort.sortBy(items, (x) => _sort.dateKey(x.created_at), 'desc');
+    }
+
     function renderMemory() {
       memoryListEl.querySelectorAll('.mem-group').forEach((el) => el.remove());
 
+      const memorySortBar = document.getElementById('memory-sort-bar');
       if (memoryItems.length === 0) {
         memoryEmptyEl.style.display = 'flex';
+        if (memorySortBar) memorySortBar.style.display = 'none';
         return;
       }
       memoryEmptyEl.style.display = 'none';
+      if (memorySortBar) memorySortBar.style.display = 'flex';
 
       // Group by category; uncategorised falls under "General" and sorts last.
       const UNCAT = 'General';
@@ -9502,7 +9657,7 @@
         a === UNCAT ? 1 : b === UNCAT ? -1 : a.localeCompare(b));
 
       names.forEach((name) => {
-        const items = groups.get(name);
+        const items = sortedMemoryGroup(groups.get(name));
         const group = document.createElement('div');
         group.className = 'mem-group' + (memoryCollapsed.has(name) ? ' collapsed' : '');
         group.dataset.group = name;
@@ -12745,6 +12900,19 @@
     document.querySelectorAll('.jobs-auto-submit-section')
       .forEach((el) => _sc.init(el, 'job-search'));
 
+    // "Keep sections expanded" (Settings > General > Appearance): a global
+    // override so someone who's collapsed things out of habit over time can
+    // get back to everything-open with one toggle instead of hunting down
+    // each section individually.
+    const setSectionsForceExpandEl = document.getElementById('set-sections-force-expand');
+    if (setSectionsForceExpandEl) {
+      setSectionsForceExpandEl.checked = _sc.isForceExpand();
+      setSectionsForceExpandEl.addEventListener('change', () => {
+        _sc.setForceExpand(setSectionsForceExpandEl.checked);
+        if (setSectionsForceExpandEl.checked) _sc.forceExpandAll();
+      });
+    }
+
     // S1 -- #480: sidebar collapse + Ctrl+B hotkey
     const _sidebarEl = document.getElementById('sidebar');
     window.SidebarCollapse.init(_sidebarEl);
@@ -12754,6 +12922,7 @@
         window.SidebarCollapse.toggle(_sidebarEl);
       }
     });
+    window.SidebarResize.init(document.getElementById('sidebar-splitter'), _sidebarEl);
 
     // ── S2 -- #481 + UI2 A3 #483: workspace shell + plugin panels ─────────
     // The Conversation permanently occupies .ws-primary. .ws-secondary holds

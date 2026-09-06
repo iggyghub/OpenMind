@@ -47,6 +47,24 @@ class Memory:
     created_at: str
     distance: float = 0.0
     category: str = ""  # groups the Memory page (e.g. "money-making idea"); "" = uncategorised
+    order: float = 0.0  # manual drag-to-reorder position within a category; see _order_of()
+
+
+def _order_of(meta: dict | None, created_at: str) -> float:
+    """Manual sort position for a memory: an explicit `order` in metadata if the
+    item has ever been dragged, else its creation time -- so memories stored
+    before drag-reorder existed still sort newest-first by default instead of
+    all clustering at 0."""
+    meta = meta or {}
+    if "order" in meta:
+        try:
+            return float(meta["order"])
+        except (TypeError, ValueError):
+            pass
+    try:
+        return datetime.fromisoformat(created_at).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class MemoryManager:
@@ -94,7 +112,13 @@ class MemoryManager:
     async def remember(self, fact: str, category: str = "") -> str:
         memory_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
-        meta = {"profile_id": self._profile_id, "created_at": created_at}
+        meta = {
+            "profile_id": self._profile_id,
+            "created_at": created_at,
+            # New memories start ordered by creation time, same as the implicit
+            # sort before manual reordering existed; a drag later overwrites this.
+            "order": datetime.now(timezone.utc).timestamp(),
+        }
         if category:
             meta["category"] = category
         self._collection.add(
@@ -123,13 +147,15 @@ class MemoryManager:
         metas = results["metadatas"][0]
 
         for mem_id, doc, dist, meta in zip(ids, docs, dists, metas):
+            created_at = meta.get("created_at", "")
             memories.append(Memory(
                 id=mem_id,
                 fact=doc,
                 profile_id=meta.get("profile_id", self._profile_id),
-                created_at=meta.get("created_at", ""),
+                created_at=created_at,
                 distance=dist,
                 category=(meta or {}).get("category", ""),
+                order=_order_of(meta, created_at),
             ))
         return memories
 
@@ -174,13 +200,67 @@ class MemoryManager:
                 profile_id=self._profile_id,
                 created_at=(meta or {}).get("created_at", ""),
                 category=(meta or {}).get("category", ""),
+                order=_order_of(meta, (meta or {}).get("created_at", "")),
             )
             for mem_id, doc, meta in zip(
                 res["ids"], res["documents"], res["metadatas"]
             )
         ]
-        memories.sort(key=lambda m: m.created_at, reverse=True)
+        # `order` defaults to created_at's epoch for anything never manually
+        # dragged, so this stays newest-first until a drag actually changes it.
+        memories.sort(key=lambda m: m.order, reverse=True)
         return memories
+
+    async def set_category(self, memory_id: str, category: str) -> bool:
+        """Move a memory into a (possibly new) category -- assigning a category
+        string nobody's used before is how a new folder gets created; there's
+        no separate folder-creation call since categories are just a metadata
+        field, not their own table."""
+        try:
+            existing = self._collection.get(ids=[memory_id])
+            if not existing["ids"]:
+                return False
+            meta = dict(existing["metadatas"][0] or {})
+            meta["category"] = category
+            self._collection.update(ids=[memory_id], metadatas=[meta])
+            logger.info("[memory] Moved memory %s to category %r", memory_id, category)
+            return True
+        except Exception:
+            logger.exception("[memory] set_category() failed for id %s", memory_id)
+            return False
+
+    async def set_order(self, memory_id: str, order: float) -> bool:
+        """Persists a manual drag-to-reorder position. Callers compute `order`
+        as the midpoint between the two neighbours the item was dropped
+        between (a classic fractional-index scheme), so reordering one item
+        never requires rewriting every other item's position."""
+        try:
+            existing = self._collection.get(ids=[memory_id])
+            if not existing["ids"]:
+                return False
+            meta = dict(existing["metadatas"][0] or {})
+            meta["order"] = order
+            self._collection.update(ids=[memory_id], metadatas=[meta])
+            return True
+        except Exception:
+            logger.exception("[memory] set_order() failed for id %s", memory_id)
+            return False
+
+    async def duplicate(self, memory_id: str, category: str | None = None) -> str | None:
+        """Copy/paste: creates an independent second memory with the same fact
+        (and, unless overridden, the same category). Returns the new id, or
+        None if the source doesn't exist."""
+        try:
+            existing = self._collection.get(ids=[memory_id])
+            if not existing["ids"]:
+                return None
+            fact = existing["documents"][0]
+            meta = existing["metadatas"][0] or {}
+            dest_category = category if category is not None else meta.get("category", "")
+            return await self.remember(fact, dest_category)
+        except Exception:
+            logger.exception("[memory] duplicate() failed for id %s", memory_id)
+            return None
 
     # ── Structured preferences ────────────────────────────────────────────────
 

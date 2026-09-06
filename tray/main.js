@@ -548,6 +548,7 @@ function openMainWindow(hash) {
           webPreferences: {
             nodeIntegration:  false,
             contextIsolation: true,
+            preload:          path.join(__dirname, 'preload', 'ui-editor-preload.js'),
           },
         },
       };
@@ -681,6 +682,44 @@ ipcMain.on('irreversible-modal:ready', (event) => {
       return;
     }
   }
+});
+
+// Native Save/Open dialogs for the UI Editor's "New page" and "Local file"
+// fields (see setWindowOpenHandler's UI_EDITOR_ORIGIN override, which is the
+// only window carrying preload/ui-editor-preload.js — a plain webpage has no
+// way to get a real filesystem path back from a save dialog, so this only
+// exists for the tool opened inside Felix's own Electron shell; standalone
+// browser usage per the tool's own README keeps the plain text-input path).
+// tools/ui-editor/server.js only ever serves/writes files under the repo
+// root anyway (checkLocalPath), so a pick outside it is rejected here with
+// the same constraint the server would enforce a step later, rather than
+// let the user pick something that 403s after the fact.
+const { relativeToRoot } = require('./lib/repo-path');
+const UI_EDITOR_ROOT = path.join(__dirname, '..');
+
+ipcMain.handle('ui-editor:save-dialog', async () => {
+  const result = await dialog.showSaveDialog({
+    title: 'New page',
+    defaultPath: UI_EDITOR_ROOT,
+    filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
+  });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  const rel = relativeToRoot(UI_EDITOR_ROOT, result.filePath);
+  if (!rel) return { canceled: false, error: 'Must be inside the OpenMind folder.' };
+  return { canceled: false, path: rel };
+});
+
+ipcMain.handle('ui-editor:open-dialog', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Open local file',
+    defaultPath: UI_EDITOR_ROOT,
+    properties: ['openFile'],
+    filters: [{ name: 'HTML', extensions: ['html', 'htm'] }, { name: 'All files', extensions: ['*'] }],
+  });
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  const rel = relativeToRoot(UI_EDITOR_ROOT, result.filePaths[0]);
+  if (!rel) return { canceled: false, error: 'Must be inside the OpenMind folder.' };
+  return { canceled: false, path: rel };
 });
 
 // ── Visualiser window ─────────────────────────────────────────────────────────
@@ -1071,7 +1110,23 @@ function _checkForMasterUpdate() {
   trayLog('auto-update: new commits since boot, Felix is active -- restart deferred until idle');
 }
 
+// Without this, Felix has no way to tell "the user clicked the pinned
+// taskbar icon while I'm already running (hidden, per #188's close-to-tray)"
+// apart from "launch a brand new second process" -- which Windows does by
+// default for any un-locked app. requestSingleInstanceLock() makes THIS
+// process the sole owner; a second launch attempt (pinned icon, desktop
+// shortcut, anything) fires 'second-instance' here instead of ever getting
+// its own app.whenReady(), and the second process quits immediately.
+const _gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!_gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => openMainWindow());
+}
+
 app.whenReady().then(() => {
+  if (!_gotSingleInstanceLock) return;
+
   // Without an explicit AppUserModelID, Windows derives one from the launching
   // process, so the desktop/taskbar shortcut (which runs through powershell.exe
   // -> launch-felix.ps1) and this Electron window end up with different
@@ -1098,7 +1153,14 @@ app.whenReady().then(() => {
 
   // Second half of "Restart Felix" (#443 rework): this instance was
   // relaunched by restartFelix(); Cerebral is down — bring it back.
-  if (process.argv.includes('--felix-restart')) respawnCerebral();
+  if (process.argv.includes('--felix-restart')) {
+    respawnCerebral();
+    // The window was open (or at least reachable) before the restart, so
+    // reopening it here — instead of leaving the user back at "click the
+    // tray icon to find it" — is what makes the restart feel like a
+    // restart of the app they were looking at, not a silent respawn.
+    openMainWindow();
+  }
   // SD-3 (#556): self-dev boot -- arm the health-check before connectToCerebral().
   if (process.argv.includes('--felix-self-dev-boot')) _selfDevBootPending = true;
 
