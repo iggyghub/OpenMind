@@ -24,3 +24,23 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "integration" in item.keywords and not config.option.markexpr:
             item.add_marker(skip_integration)
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_worker_heartbeat_task():
+    """Ensure no dangling _worker_heartbeat_task survives test teardown.
+
+    Some test fixtures construct a Cerebral app or trigger `_wire_session_worker`,
+    which spawns the background heartbeat task. If the task isn't explicitly
+    cancelled, Python's garbage collector destroys it on interpreter exit,
+    producing a RuntimeWarning and non-zero exit codes on Windows. This autouse
+    fixture safely cancels it if present.
+    """
+    yield
+    try:
+        import cerebral.main as _cm
+        task = _cm._worker_heartbeat_task
+        if task is not None and not task.done():
+            task.cancel()
+    except (ImportError, AttributeError):
+        pass
