@@ -39,6 +39,12 @@ let _bootSha = null;
 let _pendingUpdateRestart = false;
 const AUTO_UPDATE_POLL_MS = 5 * 60 * 1000;
 let reconnectTimer = null;
+// SUP-3 -- respawn a dead Cerebral once, bounded.
+let _consecutiveFailures = 0;
+let _respawnWatchdog = null;
+let _reconnectHalted = false;
+const RECONNECT_FAILURE_THRESHOLD = 5;
+const RESPAWN_WATCHDOG_MS = 15_000;
 // SD-3 (#556) -- set true when --felix-self-dev-boot is in argv; cleared once
 // health_check is sent on the first Cerebral connection after that boot.
 let _selfDevBootPending  = false;
