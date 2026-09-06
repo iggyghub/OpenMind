@@ -991,8 +991,6 @@ function runSelfDevCheck() {
     copyFileFn:  (src, dest) => fs.copyFileSync(src, dest),
     gitResetFn:  (sha) => execFileSync(gitExe, ['reset', '--hard', sha],
       { cwd: repoRoot, stdio: 'ignore' }),
-    gitStashFn:  (msg) => execFileSync(gitExe, ['stash', 'push', '--include-untracked', '-m', msg],
-      { cwd: repoRoot, stdio: 'ignore' }),
     notifyFn: (msg) => {
       trayLog(`SD-3: ${msg}`);
       electronNotify('Felix — boot check', msg);
@@ -1034,9 +1032,6 @@ function manualSelfDevRollback(source) {
     copyFileFn: (src, dest) => fs.copyFileSync(src, dest),
     gitResetFn: (sha) => execFileSync(gitExe, ['reset', '--hard', sha],
       { cwd: repoRoot, stdio: 'ignore' }),
-    gitStashFn: (msg) => execFileSync(gitExe, ['stash', 'push', '--include-untracked', '-m', msg],
-      { cwd: repoRoot, stdio: 'ignore' }),
-    writeFileFn: (p, d) => fs.writeFileSync(p, d, 'utf8'),
     notifyFn: (msg) => {
       trayLog(`manual rollback (${source}): ${msg}`);
       electronNotify('Felix — manual rollback', msg);

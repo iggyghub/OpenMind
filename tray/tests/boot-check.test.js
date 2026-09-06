@@ -297,38 +297,6 @@ describe('runSelfCheck', () => {
     expect(opts.notifyFn).toHaveBeenCalled();
     expect(opts.relauncher).toHaveBeenCalled();
   });
-
-  test('rollback: calls gitStashFn with backupTs in message before gitResetFn', async () => {
-    const opts = makeOpts({
-      checkFn: jest.fn().mockRejectedValue(new Error('timeout')),
-      gitStashFn: jest.fn(),
-    });
-    await runSelfCheck(opts);
-    expect(opts.gitStashFn).toHaveBeenCalledTimes(1);
-    const msg = opts.gitStashFn.mock.calls[0][0];
-    expect(msg).toContain('2026-07-29T12-00-00-000Z');
-    expect(opts.gitResetFn).toHaveBeenCalledTimes(1);
-  });
-
-  test('rollback: pending_backup is null in written state after rollback', async () => {
-    const opts = makeOpts({
-      checkFn: jest.fn().mockRejectedValue(new Error('timeout')),
-    });
-    await runSelfCheck(opts);
-    const written = JSON.parse(opts.writeFileFn.mock.calls[0][1]);
-    expect(written.pending_backup).toBeNull();
-  });
-
-  test('rollback continues even if gitStashFn throws', async () => {
-    const opts = makeOpts({
-      checkFn:    jest.fn().mockRejectedValue(new Error('timeout')),
-      gitStashFn: jest.fn().mockImplementation(() => { throw new Error('stash error'); }),
-    });
-    const result = await runSelfCheck(opts);
-    expect(result).toEqual({ pending: true, result: 'rollback' });
-    expect(opts.gitResetFn).toHaveBeenCalled();
-    expect(opts.relauncher).toHaveBeenCalled();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -351,8 +319,6 @@ describe('manualRollback', () => {
       gitResetFn: jest.fn(),
       notifyFn:   jest.fn(),
       relauncher: jest.fn(),
-      gitStashFn: jest.fn(),
-      writeFileFn: jest.fn(),
       ...overrides,
     };
   }
@@ -416,34 +382,6 @@ describe('manualRollback', () => {
     const result = await manualRollback(opts);
     expect(result.ok).toBe(true);
     expect(opts.notifyFn).toHaveBeenCalled();
-    expect(opts.relauncher).toHaveBeenCalled();
-  });
-
-  test('rollback: calls gitStashFn with backupTs in message before gitResetFn', async () => {
-    const opts = makeOpts({
-      gitStashFn: jest.fn(),
-    });
-    await manualRollback(opts);
-    expect(opts.gitStashFn).toHaveBeenCalledTimes(1);
-    const msg = opts.gitStashFn.mock.calls[0][0];
-    expect(msg).toContain('2026-08-21T10-00-00-000Z');
-    expect(opts.gitResetFn).toHaveBeenCalledTimes(1);
-  });
-
-  test('rollback: pending_backup is null in written state after rollback', async () => {
-    const opts = makeOpts();
-    await manualRollback(opts);
-    const written = JSON.parse(opts.writeFileFn.mock.calls[0][1]);
-    expect(written.pending_backup).toBeNull();
-  });
-
-  test('rollback continues even if gitStashFn throws', async () => {
-    const opts = makeOpts({
-      gitStashFn: jest.fn().mockImplementation(() => { throw new Error('stash error'); }),
-    });
-    const result = await manualRollback(opts);
-    expect(result.ok).toBe(true);
-    expect(opts.gitResetFn).toHaveBeenCalled();
     expect(opts.relauncher).toHaveBeenCalled();
   });
 });
