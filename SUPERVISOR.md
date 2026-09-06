@@ -7,7 +7,7 @@ amendment SD-5), not an external `claude -p` loop -- this campaign fixes the
 restart/rollback path itself, so it goes through the same gate any other core
 change would.
 
-## Status: blocked -- PR https://github.com/iggyghub/OpenMind/pull/1115 not merged (tests_failed): Test runner error: can only concatenate str (not "NoneType") to str
+## Status: ready
 
 <!-- ready = slices remain; done = SUP-4 landed; blocked = a session needs a human -->
 
