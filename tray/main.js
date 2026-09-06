@@ -1116,9 +1116,10 @@ function respawnCerebral() {
 // self_dev-triggered one gets, not a bare unsafe restart.
 function _gitOut(args, opts) {
   const { execFileSync } = require('child_process');
-  return execFileSync('git', args, {
+  const out = execFileSync('git', args, {
     cwd: path.join(__dirname, '..'), encoding: 'utf8', timeout: 30_000, ...opts,
-  }).trim();
+  });
+  return out ? out.trim() : '';
 }
 
 function _checkForMasterUpdate() {
