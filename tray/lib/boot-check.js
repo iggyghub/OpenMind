@@ -177,6 +177,9 @@ function manualRollback({
   _doRollback({
     dataDir, sha: state.last_known_good, backupTs: state.last_backup,
     copyFileFn, gitResetFn, notifyFn, relauncher,
+    gitStashFn: (msg) => {},
+    writeFileFn: () => {},
+    last_backup: state.last_backup,
     message: 'Felix manual rollback -- reverting to the previous version and relaunching.',
   });
 
