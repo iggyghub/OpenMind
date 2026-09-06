@@ -379,11 +379,16 @@ function handleCerebralEvent(event) {
       break;
     }
 
-    case 'restart_felix':
-      // SD-2 (#555): self_dev_load broadcasts this after pulling a merged PR.
-      // SD-3 (#556): pin SHA + snapshot state before relaunching.
-      restartFelixSelfDev();
+    case 'restart_felix': {
+      const { isCodeLoad } = require('./lib/boot-check');
+      const d = event.data || {};
+      if (isCodeLoad(d.reason)) {
+        restartFelixSelfDev();
+      } else {
+        restartFelix();
+      }
       break;
+    }
 
     case 'self_dev_manual_rollback':
       // #813 -- Cerebral broadcasts this when the self_dev_rollback tool is
