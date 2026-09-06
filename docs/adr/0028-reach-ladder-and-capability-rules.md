@@ -147,10 +147,10 @@ required a boundary to move -- which is what a rewrite is for.
    endpoint -- not a scheduler, not a queue, not preemption (see the R5
    amendment, and ADR-0029's rejection of a work queue). Nothing today bounds
    concurrent calls to a host whose known failure mode is stalling under load.
-2. **Init / supervisor.** The layer that starts, restarts, and health-checks
-   Cerebral (`scripts/launch-felix.ps1`, `tray/main.js`'s relaunch path,
-   `tray/lib/boot-check.js`'s rollback). It is the most fragile layer in the
-   system and has no ADR. Grilled separately.
+2. ~~**Init / supervisor.**~~ **Closed the same day by ADR-0033** -- the tray
+   is the supervisor, the launcher is its cold-start half, and nothing
+   supervises the tray by design. What stays open from that grill is narrower:
+   a crash-loop budget across boots, and autostart at boot.
 3. **Categories the mapping never reached.** Testing and eval, packaging and
    updates, configuration, identity. Un-grilled, so their state is unknown
    rather than known-good.
