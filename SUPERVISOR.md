@@ -13,7 +13,7 @@ change would.
 
 ## Next slice -- start here
 
-- **Active:** SUP-3 -- #1101
+- **Active:** SUP-3b -- #1117
 - **Model:** sonnet
 
 ## Queue
@@ -23,7 +23,8 @@ change would.
 - [x] SUP-1b -- #1105 -- tray/main.js never got the reason-based restart routing (PR #1104 only touched cerebral/main.py)
 - [x] SUP-2 -- #1100 -- a rollback must never destroy uncommitted work (INCOMPLETE, safe partial -- see SUP-2b)
 - [x] SUP-2b -- #1112 -- stash-before-reset never wired into tray/main.js or manualRollback's own call site -- COMPLETE
-- [ ] SUP-3 -- #1101 -- respawn a dead Cerebral once, bounded
+- [x] SUP-3 -- #1101 -- respawn a dead Cerebral once, bounded (state declared, INCOMPLETE -- see SUP-3b)
+- [ ] SUP-3b -- #1117 -- wire the reconnect-counter/respawn state PR #1116 declared but never used
 - [ ] SUP-4 -- #1102 -- the master-update poll: fix the crash, then stop treating local commits as updates
 
 ## Landed PRs
@@ -35,6 +36,7 @@ change would.
 - SUP-2 attempt 2 (SUP-2b) -> PR #1113 auto-merged, then **reverted** (commit 9a437d7) -- `_doRollback` didn't even accept `gitStashFn` any more and `manualRollback` passed hardcoded no-op stubs, a real regression. Its own new jest tests would have caught this, but jest never actually ran -- `tray/node_modules` is gitignored, missing in every clone, and "missing -> skip" reported the same `passed` as pytest alone. Root-caused and fixed by hand in `cerebral/self_dev_io.py` (`_ensure_tray_node_modules`, commit b18e71e).
 - SUP-2 attempt 3 -> PR #1114 auto-merged -- landed on master, verified SAFE (unlike attempt 2): `_doRollback` genuinely accepts and calls `gitStashFn`. NOT reverted. Still incomplete in the same shape as attempt 1: `manualRollback` never passed `gitStashFn` to its own `_doRollback` call, `tray/main.js` didn't wire a real `gitStashFn`, no new tests. Ran through the OLD gate (Cerebral hadn't reloaded the node_modules fix yet).
 - SUP-2 attempt 4 (SUP-2b) -> **PR #1115, hand-merged, COMPLETE.** First run with the node_modules fix live: jest genuinely ran and crashed the gate with a second, unrelated bug -- `capture_output=True`/`text=True` with no explicit encoding decodes jest's coloured output using the platform's default codepage (cp1252 on this box), which can't handle a byte in jest's real output and silently kills the stderr-reader thread, leaving `.stderr` as `None` and crashing `test_fn` with `TypeError` instead of showing jest's actual failure. Fixed by hand (`encoding="utf-8", errors="replace"`, commit 2ddeb7d). Once visible, jest's real failure was genuine but trivial: the PR's own new tests used `toHaveBeenCalledBefore`, a `jest-extended` matcher not installed in this project. The functional diff (`manualRollback` fixed, both `tray/main.js` call sites wired with real `git stash push --include-untracked`) was independently verified correct via `gh pr diff` before touching anything. Fixed the two matcher lines by hand (native `mock.invocationCallOrder`, a mechanical one-line substitution, not feature work) and merged. Cerebral restarted afterward and confirmed the restart was a plain one (`pending_backup` stayed null) -- live proof SUP-1b's reason-based routing still works correctly.
+- SUP-3 -> PR #1116 auto-merged -- safe but inert: declared all five state variables/constants (`_consecutiveFailures`, `_respawnWatchdog`, `_reconnectHalted`, `RECONNECT_FAILURE_THRESHOLD`, `RESPAWN_WATCHDOG_MS`, with correct threshold math -- 5 x 3s = 15s) but never touched `ws.on('close')` or `ws.on('open')` to actually use them. Fourth occurrence of this exact "declare, don't wire" shape (SUP-1 x2, SUP-2 x2-3, now SUP-3) -- filed SUP-3b (#1117) with the complete literal patch for both handlers, matching the explicit-code style that worked for SUP-1b and SUP-2b's successful retries.
 
 ## SAFETY
 
