@@ -237,7 +237,7 @@ function _doRollback({ dataDir, sha, backupTs, last_backup, copyFileFn, gitReset
  *   { action: 'defer' }                -- new commits, Felix active -> wait for idle
  *   { action: 'skip', reason: string } -- fetch/rev-parse/merge failed; try again later
  */
-function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, bootSha, isIdle }) {
+function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, gitMergeBaseFn, bootSha, isIdle }) {
   try {
     gitFetchFn();
   } catch (e) {
@@ -270,6 +270,13 @@ function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, bootSha, 
   }
 
   if (currentSha === bootSha) return { action: 'none' };
+
+  // ADR-0033 decision 6: only treat it as an update if HEAD is an ancestor
+  // of @{u}. Local-only commits (developer working state) should not trigger
+  // a restart.
+  if (gitMergeBaseFn && !gitMergeBaseFn('HEAD', '@{u}')) {
+    return { action: 'none' };
+  }
 
   return { action: isIdle ? 'restart' : 'defer' };
 }
