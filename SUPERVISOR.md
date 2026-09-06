@@ -13,12 +13,12 @@ change would.
 
 ## Next slice -- start here
 
-- **Active:** SUP-0 -- #1098
+- **Active:** SUP-1 -- #1099
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] SUP-0 -- #1098 -- self_dev test gate must run tray's jest suite for JS diffs
+- [x] SUP-0 -- #1098 -- self_dev test gate must run tray's jest suite for JS diffs
 - [ ] SUP-1 -- #1099 -- arm the rollback on a code load, never on a plain restart
 - [ ] SUP-2 -- #1100 -- a rollback must never destroy uncommitted work
 - [ ] SUP-3 -- #1101 -- respawn a dead Cerebral once, bounded
@@ -26,7 +26,7 @@ change would.
 
 ## Landed PRs
 
-(none yet)
+- SUP-0 -> PR #1103 (hand-built + reviewed, not run through self_dev_campaign -- see SAFETY)
 
 ## SAFETY
 
