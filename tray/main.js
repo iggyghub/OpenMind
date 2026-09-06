@@ -1130,6 +1130,10 @@ function _checkForMasterUpdate() {
     gitFetchFn:      () => _gitOut(['fetch', '--quiet'], { stdio: 'ignore' }),
     gitRevParseFn:   (ref) => _gitOut(['rev-parse', ref]),
     gitMergeFfOnlyFn: (sha) => _gitOut(['merge', '--ff-only', sha], { stdio: 'ignore' }),
+    gitMergeBaseFn:  (a, b) => {
+      try { _gitOut(['merge-base', '--is-ancestor', a, b]); return true; }
+      catch (_) { return false; }
+    },
     bootSha: _bootSha,
     isIdle:  felixState === 'idle',
   });
