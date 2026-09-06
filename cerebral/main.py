@@ -423,7 +423,7 @@ _command_registry = CommandRegistry()
 
 async def _handle_restart_felix() -> None:
     """Direct command handler for restart_felix -- mirrors _self_dev_restart broadcast."""
-    await _broadcast({"type": "restart_felix"})
+    await _broadcast({"type": "restart_felix", "data": {"reason": "user"}})
 
 
 _command_registry.register(Command(
@@ -3180,7 +3180,7 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
 
 async def _self_dev_restart() -> None:
     """self_dev restart_fn -- tell the tray to relaunch (SD-2 / #555)."""
-    await _broadcast({"type": "restart_felix"})
+    await _broadcast({"type": "restart_felix", "data": {"reason": "self_dev_load"}})
 
 
 async def _self_dev_rollback() -> None:
