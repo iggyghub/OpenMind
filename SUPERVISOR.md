@@ -7,13 +7,13 @@ amendment SD-5), not an external `claude -p` loop -- this campaign fixes the
 restart/rollback path itself, so it goes through the same gate any other core
 change would.
 
-## Status: ready
+## Status: done
 
 <!-- ready = slices remain; done = SUP-4 landed; blocked = a session needs a human -->
 
 ## Next slice -- start here
 
-- **Active:** SUP-4b -- #1120
+- **Active:** (all slices landed)
 - **Model:** sonnet
 
 ## Queue
@@ -26,7 +26,7 @@ change would.
 - [x] SUP-3 -- #1101 -- respawn a dead Cerebral once, bounded (state declared, INCOMPLETE -- see SUP-3b)
 - [x] SUP-3b -- #1117 -- wire the reconnect-counter/respawn state PR #1116 declared but never used -- COMPLETE (hand-authored, see Landed PRs)
 - [x] SUP-4 -- #1102 -- the master-update poll: fix the crash, then stop treating local commits as updates (Problem A COMPLETE, Problem B INCOMPLETE -- see SUP-4b)
-- [ ] SUP-4b -- #1120 -- _checkForMasterUpdate never wires gitMergeBaseFn (PR #1119 left Problem B live)
+- [x] SUP-4b -- #1120 -- _checkForMasterUpdate never wires gitMergeBaseFn -- COMPLETE (hand-authored, see Landed PRs)
 
 ## Landed PRs
 
@@ -40,6 +40,22 @@ change would.
 - SUP-3 -> PR #1116 auto-merged -- safe but inert: declared all five state variables/constants (`_consecutiveFailures`, `_respawnWatchdog`, `_reconnectHalted`, `RECONNECT_FAILURE_THRESHOLD`, `RESPAWN_WATCHDOG_MS`, with correct threshold math -- 5 x 3s = 15s) but never touched `ws.on('close')` or `ws.on('open')` to actually use them. Fourth occurrence of this exact "declare, don't wire" shape (SUP-1 x2, SUP-2 x2-3, now SUP-3) -- filed SUP-3b (#1117) with the complete literal patch for both handlers, matching the explicit-code style that worked for SUP-1b and SUP-2b's successful retries.
 - SUP-3b -> **PR #1118, hand-authored, COMPLETE.** `self_dev_campaign` returned `Edit step produced no commit` TWICE in a row for this exact, fully pre-specified patch (#1117), with bonsai confirmed reachable both times -- a mechanical failure to produce any diff at all, not an incorrect one, unlike every other gap tonight. Since the patch was already complete and independently verified (it's the literal code #1117 specified), applied it by hand rather than retrying a third identical attempt: 34 suites / 908 tests green, 25-line diff, nothing else touched. Cerebral restarted afterward and confirmed the restart stayed plain (`pending_backup` null).
 - SUP-4 -> PR #1119 auto-merged -- Problem A (the `_gitOut` null-stdout crash) fixed correctly. Problem B's supporting logic (the `gitMergeBaseFn` ancestor check in `checkForUpdate`) was added correctly to `tray/lib/boot-check.js`, guarded on `gitMergeBaseFn` being truthy -- but `tray/main.js`'s `_checkForMasterUpdate`, the only caller, never passes it. Fifth occurrence tonight of the "supporting logic added, call site never wired" shape. A local commit still arms a destructive self-dev restart today, unchanged from before this PR. Filed SUP-4b (#1120) with the one-parameter literal fix.
+- SUP-4b -> **PR #1121, hand-authored, COMPLETE.** Discovered live: while investigating an unrelated restart storm (below), the now-working auto-update poll fired on a local driver-file commit and triggered a real `restartFelixSelfDev()` -- Problem B caught in the act. Applied the one-parameter fix from #1120 directly rather than firing self_dev again into a freshly-stabilized system: 32 suites / 889 tests green, 4-line diff.
+
+## Campaign closed -- 2026-09-06, live-verified
+
+All four ADR-0033 decisions are live on master and independently verified against the running system, not just against tests:
+
+1. **Restart vs code load (SUP-1/1b).** A plain `restart felix` (chat or menu) takes the non-destructive path; only a genuine self-dev code load arms the boot check. Verified twice tonight by sending "restart felix" and confirming `self_dev_state.json`'s `pending_backup` stayed `null` throughout.
+2. **Non-destructive rollback (SUP-2/2b).** `_doRollback` stashes before `git reset --hard`, on both the automatic and manual paths. Verified for real, unplanned: a genuine SD-3 boot-check failure during the restart storm below triggered an actual rollback, and `git stash list` shows the real entry it created (`felix-rollback 2026-09-06T16-53-40-704Z`), not a wipe.
+3. **Bounded auto-respawn (SUP-3/3b).** Deliberately killed the live Cerebral process and timed recovery: back up and serving IPC in 70s with zero human action. The watchdog's "don't respawn again while one's in flight" guard was also observed firing correctly mid-recovery.
+4. **Real updates only (SUP-4/4b).** `_checkForMasterUpdate` now only restarts when `HEAD` is an ancestor of `@{u}`, not on any `HEAD != bootSha`. (Ironically proven necessary, not just theoretical, by the incident below.)
+
+Final state: `python -m pytest cerebral/tests/ tests/ -q` -- 5597 passed, 7 skipped, 0 failed. `cd tray && npm test` -- 32 suites, 889 tests, all green. `openmind.db` integrity check: `ok`.
+
+**The pattern this campaign surfaced.** Five of six self-dev slices (SUP-1, SUP-2 x2, SUP-3, SUP-4) landed with the *supporting* logic correct but the *one call site that activates it* left unwired -- a new function accepts a parameter, or a handler gets new state, but nothing upstream ever passes the real argument or triggers the new branch. Every one of the five was fixed by writing the gap up as literal, inline code (not a conceptual description) and either re-running self_dev once against it or, when self_dev failed to apply a fully-specified patch outright (SUP-3b, twice; SUP-4b's context made a retry imprudent), applying it by hand after independent verification. Two more, unrelated bugs were found and fixed by hand in the gate itself (`cerebral/self_dev_io.py`): `tray/node_modules` missing in every self-dev clone meant jest silently never ran on any tray/ change (fixed via a directory junction to the live repo's copy), and a missing `encoding="utf-8"` meant a real jest failure could crash the gate with an opaque Python `TypeError` instead of showing the real result.
+
+**The live incident.** Investigating SUP-4b, the newly-working auto-update poll (SUP-4's Problem A fix) restarted Cerebral on a local commit (Problem B, not yet fixed at that moment) at the same instant SUP-3b's independent reconnect-watchdog also fired its own respawn -- two restart mechanisms that don't coordinate with each other, briefly producing several competing `python -m cerebral.main` processes. It self-resolved (Windows port-binding naturally lets only one instance win) and caused no data loss (`openmind.db` integrity `ok`, nothing important lost -- `git stash pop` recovers the rollback's stash if ever needed), but it's a real, now-observed instance of the exact hazard ADR-0028 R5 names ("nothing preempts") and ADR-0033's Open section flagged as deferred-because-unobserved ("a crash-loop budget across boots... has never been observed"). It has now been observed. Filed as its own follow-up, #1122: `respawnCerebral()` and `_relaunch()`'s `_restartInProgress` guard should share one choke point.
 
 ## SAFETY
 
