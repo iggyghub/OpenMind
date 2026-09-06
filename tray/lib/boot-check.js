@@ -178,8 +178,8 @@ function manualRollback({
   }
 
   _doRollback({
-    dataDir, sha: state.last_known_good, backupTs: state.last_backup,
-    copyFileFn, gitResetFn, notifyFn, relauncher,
+    dataDir, sha: state.last_known_good, backupTs: state.last_backup, last_backup: state.last_backup,
+    copyFileFn, gitResetFn, gitStashFn, notifyFn, relauncher, writeFileFn,
     message: 'Felix manual rollback -- reverting to the previous version and relaunching.',
   });
 
