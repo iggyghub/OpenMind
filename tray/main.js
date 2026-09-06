@@ -100,6 +100,12 @@ function connectToCerebral() {
 
   ws.on('open', () => {
     isConnected = true;
+    // SUP-3b (ADR-0033 decision 4): a real reconnect clears the failure
+    // count and un-halts the respawn watchdog, so a later, separate crash
+    // episode can trigger the bounded respawn again fresh.
+    _consecutiveFailures = 0;
+    _reconnectHalted = false;
+    if (_respawnWatchdog) { clearTimeout(_respawnWatchdog); _respawnWatchdog = null; }
     console.log('[tray] Connected to Cerebral');
     refreshMenu();
     // SD-3 (#556): first connection after a self-dev boot -- run the self-check.
@@ -129,6 +135,25 @@ function connectToCerebral() {
       console.log(`[tray] Disconnected — retrying in ${RECONNECT_DELAY_MS}ms`);
       refreshMenu();
       reconnectTimer = setTimeout(connectToCerebral, RECONNECT_DELAY_MS);
+      // SUP-3b (ADR-0033 decision 4): after ~5 consecutive failed reconnects
+      // (~15s), respawn Cerebral once. _reconnectHalted stops a SECOND
+      // respawn from firing while the first is still in flight -- the base
+      // reconnect loop above keeps retrying every 3s regardless, so without
+      // this guard the threshold would re-trip ~15s later and respawn again,
+      // exactly the "respawn in a loop" the issue says never to do.
+      _consecutiveFailures++;
+      if (_consecutiveFailures >= RECONNECT_FAILURE_THRESHOLD && !_reconnectHalted) {
+        trayLog(`respawn: ${_consecutiveFailures} consecutive failed reconnects -- respawning Cerebral once`);
+        respawnCerebral();
+        _consecutiveFailures = 0;
+        _respawnWatchdog = setTimeout(() => {
+          if (!isConnected) {
+            _reconnectHalted = true;
+            trayLog('respawn: still not connected after the watchdog window -- not respawning again until a successful reconnect');
+            electronNotify('Felix', 'Cerebral did not come back after an automatic restart. Try Restart Felix from the tray menu, or check cerebral.err.log.');
+          }
+        }, RESPAWN_WATCHDOG_MS);
+      }
     }
   });
 
