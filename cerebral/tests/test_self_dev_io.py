@@ -421,3 +421,54 @@ def test_ensure_tray_node_modules_links_from_the_live_repo(monkeypatch, tmp_path
     assert cmd[:3] == ["cmd", "/c", "mklink"]
     assert str(tray_dir / "node_modules") in cmd
     assert str(live_repo / "tray" / "node_modules") in cmd
+
+
+# ── stdout/stderr can genuinely be None -- never crash on it ────────────────
+# A subprocess.run with capture_output=True normally never returns None for
+# either stream, but its background stderr-reader thread silently dies (and
+# leaves .stderr as None) if the child's output has a byte the platform's
+# default codepage can't decode -- observed for real: jest's own coloured
+# reporter output crashed test_fn with "can only concatenate str (not
+# 'NoneType') to str" on Windows (cp1252), turning a useful jest failure into
+# an opaque "Test runner error". encoding="utf-8", errors="replace" prevents
+# the decode crash in the first place; these tests are the second layer --
+# even if a stream comes back None for some other reason, test_fn must not
+# itself crash concatenating it.
+
+def test_test_fn_survives_none_pytest_stderr(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+
+    def fake_run(cmd, **kw):
+        class R:
+            returncode, stdout, stderr = 0, "3 passed", None
+        return R()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert "3 passed" in output
+
+
+def test_test_fn_survives_none_jest_stderr(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    (tmp_path / "tray" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(shutil, "which", lambda name: "npm")
+
+    def fake_run(cmd, **kw):
+        class R:
+            pass
+        r = R()
+        if cmd[0] == "python":
+            r.returncode, r.stdout, r.stderr = 0, "pytest output", ""
+        elif cmd[0] == "git":
+            r.returncode, r.stdout, r.stderr = 0, "tray/main.js", ""
+        else:
+            r.returncode, r.stdout, r.stderr = 0, "jest output", None
+        return r
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert "jest output" in output

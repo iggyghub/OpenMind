@@ -269,8 +269,8 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
     try:
         result = subprocess.run(
             ["python", "-m", "pytest", *roots, "-q", "--tb=short"],
-            capture_output=True, text=True, cwd=str(clone_dir),
-            timeout=_TEST_TIMEOUT_S,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(clone_dir), timeout=_TEST_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired as exc:
         partial = ((exc.stdout or "") + (exc.stderr or "")).strip()
@@ -278,7 +278,7 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
             f"test run timed out after {_TEST_TIMEOUT_S:.0f}s -- killed\n{partial}"
         ).strip()
     passed = result.returncode == 0
-    output = (result.stdout + result.stderr).strip()
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
 
     touches_tray = any(f.replace("\\", "/").startswith("tray/") for f in _changed_files_in_last_commit(clone_dir))
     if not touches_tray:
@@ -296,8 +296,8 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
     try:
         jest = subprocess.run(
             [npm, "test", "--silent"],
-            capture_output=True, text=True, cwd=str(tray_dir),
-            timeout=_TEST_TIMEOUT_S,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(tray_dir), timeout=_TEST_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired as exc:
         partial = ((exc.stdout or "") + (exc.stderr or "")).strip()
@@ -305,7 +305,15 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
             f"{output}\n\n[tray/ jest] timed out after {_TEST_TIMEOUT_S:.0f}s -- killed\n{partial}"
         ).strip()
 
-    jest_output = (jest.stdout + jest.stderr).strip()
+    # jest's coloured reporter output isn't ASCII (checkmarks, box-drawing);
+    # without an explicit encoding, subprocess.run falls back to the
+    # platform's default codepage (cp1252 on this Windows box), whose
+    # background stderr-reader thread silently dies on an undecodable byte
+    # and leaves .stderr as None -- crashing the very next line with
+    # "can only concatenate str (not 'NoneType') to str" and reporting a
+    # confusing "Test runner error" instead of jest's real (and useful)
+    # failure output. utf-8/errors="replace" never raises.
+    jest_output = ((jest.stdout or "") + (jest.stderr or "")).strip()
     return (passed and jest.returncode == 0), f"{output}\n\n[tray/ jest]\n{jest_output}".strip()
 
 
