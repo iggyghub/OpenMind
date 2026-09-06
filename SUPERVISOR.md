@@ -13,7 +13,7 @@ change would.
 
 ## Next slice -- start here
 
-- **Active:** SUP-2 -- #1100
+- **Active:** SUP-2b -- #1112
 - **Model:** sonnet
 
 ## Queue
@@ -21,7 +21,8 @@ change would.
 - [x] SUP-0 -- #1098 -- self_dev test gate must run tray's jest suite for JS diffs
 - [x] SUP-1 -- #1099 -- arm the rollback on a code load, never on a plain restart (INCOMPLETE -- see SUP-1b)
 - [x] SUP-1b -- #1105 -- tray/main.js never got the reason-based restart routing (PR #1104 only touched cerebral/main.py)
-- [ ] SUP-2 -- #1100 -- a rollback must never destroy uncommitted work
+- [x] SUP-2 -- #1100 -- a rollback must never destroy uncommitted work (INCOMPLETE -- see SUP-2b)
+- [ ] SUP-2b -- #1112 -- stash-before-reset never wired into tray/main.js or manualRollback's own call site (PR #1111 was inert)
 - [ ] SUP-3 -- #1101 -- respawn a dead Cerebral once, bounded
 - [ ] SUP-4 -- #1102 -- the master-update poll: fix the crash, then stop treating local commits as updates
 
@@ -30,6 +31,7 @@ change would.
 - SUP-0 -> PR #1103 (hand-built + reviewed, not run through self_dev_campaign -- see SAFETY)
 - SUP-1 -> PR #1104 (auto-merged by self_dev_campaign -- INCOMPLETE, cerebral/main.py only; tray/main.js half filed as SUP-1b)
 - SUP-1b -> PR #1108 (self_dev_campaign produced the correct diff twice -- #1106 and #1108 -- both blocked by an unrelated pytest exit-code flake, #1107; #1108 hand-merged after verifying its content by hand, since retrying a third time was not worth another ~11min run)
+- SUP-2 -> PR #1111 closed, not merged -- boot-check.js's own logic was correct but the wiring that would call it (tray/main.js's two call sites, plus manualRollback's own internal _doRollback call) was never added, so the fix would have been inert. Filed as SUP-2b with the exact three-part gap.
 
 ## SAFETY
 
