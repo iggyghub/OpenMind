@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -186,8 +187,26 @@ def create_branch_and_commit(clone_dir: Path, branch: str, message: str) -> bool
 _TEST_TIMEOUT_S = 1200.0  # ample for a full suite (20m); bounds a hung/runaway test
 
 
+def _changed_files_in_last_commit(clone_dir: Path) -> "list[str]":
+    """Files touched by the single commit `create_branch_and_commit` made.
+
+    Best-effort: an empty list (never an exception) on any git failure, so a
+    diff-detection bug degrades to "run pytest only", the pre-existing
+    behaviour, rather than blocking the gate.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(clone_dir), "diff-tree", "--no-commit-id",
+         "--name-only", "-r", "HEAD"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def test_fn(clone_dir: Path) -> "tuple[bool, str]":
-    """Run pytest in the clone (inside the sandbox via main.py wiring).
+    """Run pytest in the clone (inside the sandbox via main.py wiring), plus
+    the tray's jest suite when the diff touches `tray/`.
 
     Runs BOTH test roots: cerebral/tests/ AND the repo-root tests/. The gate
     used to run cerebral/tests/ only, so a self-dev change that added a broken
@@ -202,6 +221,17 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
     handler, an unbounded hang froze the whole Cerebral event loop -- no WS, no
     heartbeats, nothing -- until someone force-killed the process. A timeout
     turns that into a failed slice instead of a dead app.
+
+    SUP-0 (ADR-0033): `tray/` is a GUARDRAIL_PATHS entry precisely because this
+    gate used to run pytest only and could not validate JS -- since the
+    2026-08-21 full-auto-merge amendment, that guardrail hit is informational
+    and no longer blocks merge, so an untested tray/ change would otherwise
+    land straight into the restart/rollback path self_dev itself depends on.
+    A diff touching `tray/` now also runs the tray's own `npm test` (jest);
+    both suites must pass. Skipped (not failed) when `tray/node_modules` is
+    absent in the clone, matching pytest's own "missing root is skipped" posture
+    -- a self-dev clone that never ran `npm install` shouldn't be blocked from
+    landing changes outside tray/ either.
     """
     roots = [d for d in ("cerebral/tests/", "tests/") if (clone_dir / d).is_dir()]
     try:
@@ -215,8 +245,35 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
         return False, (
             f"test run timed out after {_TEST_TIMEOUT_S:.0f}s -- killed\n{partial}"
         ).strip()
+    passed = result.returncode == 0
     output = (result.stdout + result.stderr).strip()
-    return result.returncode == 0, output
+
+    touches_tray = any(f.replace("\\", "/").startswith("tray/") for f in _changed_files_in_last_commit(clone_dir))
+    if not touches_tray:
+        return passed, output
+
+    tray_dir = clone_dir / "tray"
+    if not (tray_dir / "node_modules").is_dir():
+        return passed, output + "\n\n[tray/ changed but node_modules missing -- jest skipped]"
+
+    npm = shutil.which("npm")
+    if not npm:
+        return passed, output + "\n\n[tray/ changed but npm not on PATH -- jest skipped]"
+
+    try:
+        jest = subprocess.run(
+            [npm, "test", "--silent"],
+            capture_output=True, text=True, cwd=str(tray_dir),
+            timeout=_TEST_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = ((exc.stdout or "") + (exc.stderr or "")).strip()
+        return False, (
+            f"{output}\n\n[tray/ jest] timed out after {_TEST_TIMEOUT_S:.0f}s -- killed\n{partial}"
+        ).strip()
+
+    jest_output = (jest.stdout + jest.stderr).strip()
+    return (passed and jest.returncode == 0), f"{output}\n\n[tray/ jest]\n{jest_output}".strip()
 
 
 def pr_fn(

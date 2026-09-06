@@ -1,6 +1,7 @@
 """Tests for cerebral/self_dev_io.py -- the git/gh/pytest shell-out helpers
 that live outside plugins/ (so plugins/self_dev.py stays scan-clean) plus the
 JSON extractor that parses untrusted model output in the edit step."""
+import shutil
 import subprocess
 
 from cerebral import self_dev_io as io
@@ -282,3 +283,90 @@ def test_test_fn_passes_timeout_to_subprocess(monkeypatch, tmp_path):
 
     assert passed is True
     assert captured["timeout"] == io._TEST_TIMEOUT_S
+
+
+# ── test_fn: SUP-0 (ADR-0033) -- a tray/ diff also runs the tray's jest ──────
+# suite, since GUARDRAIL_PATHS lists tray/ precisely because this gate used
+# to be pytest-only and could not validate JS.
+
+def test_changed_files_in_last_commit_returns_empty_on_git_failure(tmp_path):
+    """Not a git repo -- diff-tree fails; degrades to an empty list rather
+    than raising, so a diff-detection bug can never block the gate."""
+    assert io._changed_files_in_last_commit(tmp_path) == []
+
+
+def _fake_run_factory(pytest_rc=0, changed_files=(), jest_rc=0):
+    """subprocess.run stand-in that dispatches on argv[0]: 'python' -> pytest,
+    'git' -> the diff-tree changed-files lookup, anything else -> npm/jest."""
+    def fake_run(cmd, **kw):
+        class R:
+            pass
+        r = R()
+        if cmd[0] == "python":
+            r.returncode, r.stdout, r.stderr = pytest_rc, "pytest output", ""
+        elif cmd[0] == "git":
+            r.returncode, r.stdout, r.stderr = 0, "\n".join(changed_files), ""
+        else:
+            r.returncode, r.stdout, r.stderr = jest_rc, "jest output", ""
+        return r
+    return fake_run
+
+
+def test_test_fn_skips_jest_when_tray_not_touched(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    monkeypatch.setattr(subprocess, "run", _fake_run_factory(changed_files=["cerebral/main.py"]))
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert "jest" not in output.lower()
+
+
+def test_test_fn_skips_jest_when_node_modules_missing(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    monkeypatch.setattr(subprocess, "run", _fake_run_factory(changed_files=["tray/main.js"]))
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True  # missing node_modules skips, doesn't fail
+    assert "node_modules missing" in output
+
+
+def test_test_fn_skips_jest_when_npm_not_on_path(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    (tmp_path / "tray" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(subprocess, "run", _fake_run_factory(changed_files=["tray/main.js"]))
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert "npm not on PATH" in output
+
+
+def test_test_fn_runs_jest_when_tray_touched_and_passes(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    (tmp_path / "tray" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(shutil, "which", lambda name: "npm")
+    monkeypatch.setattr(subprocess, "run",
+                         _fake_run_factory(pytest_rc=0, changed_files=["tray/main.js"], jest_rc=0))
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert "[tray/ jest]" in output
+    assert "jest output" in output
+
+
+def test_test_fn_fails_when_jest_fails_even_if_pytest_passes(monkeypatch, tmp_path):
+    """This is the entire point of SUP-0: pytest passing must not be enough
+    to merge a tray/ change that breaks its own suite."""
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    (tmp_path / "tray" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(shutil, "which", lambda name: "npm")
+    monkeypatch.setattr(subprocess, "run",
+                         _fake_run_factory(pytest_rc=0, changed_files=["tray/main.js"], jest_rc=1))
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is False
