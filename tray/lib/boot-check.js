@@ -258,7 +258,12 @@ function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, bootSha, 
   return { action: isIdle ? 'restart' : 'defer' };
 }
 
+function isCodeLoad(reason) {
+  return reason === 'self_dev_load';
+}
+
 module.exports = {
   pinAndSnapshot, runSelfCheck, manualRollback, cleanFelixArgv, checkForUpdate,
+  isCodeLoad,
   BACKUP_KEEP, CHECK_TIMEOUT_MS, FELIX_RELAUNCH_FLAGS,
 };

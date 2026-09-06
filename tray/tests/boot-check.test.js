@@ -5,6 +5,7 @@
 
 const {
   pinAndSnapshot, runSelfCheck, manualRollback, cleanFelixArgv, checkForUpdate,
+  isCodeLoad,
   BACKUP_KEEP, CHECK_TIMEOUT_MS, FELIX_RELAUNCH_FLAGS,
 } = require('../lib/boot-check');
 
@@ -516,5 +517,27 @@ describe('checkForUpdate', () => {
     const opts = makeOpts({ gitRevParseFn: jest.fn().mockReturnValue('sha-boot') });
     checkForUpdate(opts);
     expect(opts.gitMergeFfOnlyFn).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isCodeLoad -- #SUP-1b, reason-based restart routing (SUP-1 follow-up)
+// ---------------------------------------------------------------------------
+
+describe('isCodeLoad', () => {
+  test('self_dev_load is true', () => {
+    expect(isCodeLoad('self_dev_load')).toBe(true);
+  });
+
+  test('user is false', () => {
+    expect(isCodeLoad('user')).toBe(false);
+  });
+
+  test('undefined is false', () => {
+    expect(isCodeLoad(undefined)).toBe(false);
+  });
+
+  test('empty string is false', () => {
+    expect(isCodeLoad('')).toBe(false);
   });
 });
