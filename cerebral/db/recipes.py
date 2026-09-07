@@ -235,6 +235,30 @@ class RecipeStore:
                 dup_ids.update(ids)
         return dup_ids
 
+    def verify(self, recipe_id: int, tools: list[dict]) -> dict:
+        """Dry-run replay: checks if recipe steps match current tool signatures.
+        
+        Returns {"passed": True, "evidence": None} if all tools exist and required
+        args are present. Returns {"passed": False, "evidence": "..."} on mismatch.
+        """
+        recipe = self.get(recipe_id)
+        if recipe is None:
+            return {"passed": False, "evidence": "Recipe not found"}
+
+        tool_map = {t["name"]: t.get("input_schema", {}) for t in tools}
+        for step in recipe.steps:
+            tool_name = step["tool_name"]
+            args = step["args"]
+            if tool_name not in tool_map:
+                return {"passed": False, "evidence": f"Tool '{tool_name}' missing or renamed in current registry"}
+            
+            schema = tool_map[tool_name]
+            for req in schema.get("required", []):
+                if req not in args:
+                    return {"passed": False, "evidence": f"Missing required arg '{req}' for tool '{tool_name}'"}
+                    
+        return {"passed": True, "evidence": None}
+
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _get(self, recipe_id: int) -> Recipe:
