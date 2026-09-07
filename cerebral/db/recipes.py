@@ -69,7 +69,8 @@ class RecipeStore:
 
     def __init__(self, db_path: Path = DB_PATH) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._con = sqlite3.connect(str(db_path), check_same_thread=False)
+        from cerebral.db._sqlite import connect
+        self._con = connect(db_path)
         self._con.row_factory = sqlite3.Row
         self._init_schema()
 

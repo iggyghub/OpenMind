@@ -45,7 +45,8 @@ class SpillStore:
     """SQLite-backed store of oversized tool output, keyed by an opaque locator."""
 
     def __init__(self, db_path: Path = _DEFAULT_DB, threshold: int = _DEFAULT_THRESHOLD) -> None:
-        self._con = sqlite3.connect(str(db_path), check_same_thread=False)
+        from cerebral.db._sqlite import connect
+        self._con = connect(db_path)
         self._con.row_factory = sqlite3.Row
         self._con.executescript(_DDL)
         self.threshold = threshold

@@ -139,7 +139,8 @@ class VideoStore:
     """Thread-safe via check_same_thread=False (same posture as JobSearchStore)."""
 
     def __init__(self, db_path: Path = _DEFAULT_DB) -> None:
-        self._con = sqlite3.connect(str(db_path), check_same_thread=False)
+        from cerebral.db._sqlite import connect
+        self._con = connect(db_path)
         self._con.row_factory = sqlite3.Row
         self._con.executescript(_DDL)
         self._run_migrations()

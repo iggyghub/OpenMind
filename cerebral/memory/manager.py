@@ -92,7 +92,8 @@ class MemoryManager:
         path = str(db_path)
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self._con = sqlite3.connect(path, check_same_thread=False)
+        from cerebral.db._sqlite import connect
+        self._con = connect(path)
         self._con.row_factory = sqlite3.Row
         self._init_schema()
 
