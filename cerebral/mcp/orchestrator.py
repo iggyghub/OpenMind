@@ -75,6 +75,7 @@ REASON_INVALID_TYPE = "invalid_required_capabilities"
 REASON_UNKNOWN_CAPABILITY = "unknown_capability"
 REASON_CREATE_FAILED = "create_failed"
 REASON_LOAD_FAILED = "load_failed"
+REASON_NO_TEST_FILE = "no_test_file"
 
 
 class PluginRegistrationError(Exception):
@@ -167,7 +168,15 @@ class MCPOrchestrator:
         acl: ProfileACL | None = None,
         consent: ConsentSurface | None = None,
         modal: ModalSurface | None = None,
+        verify_test_files: bool = False,
     ) -> None:
+        # ADR-0034: refuse a plugin with no cerebral/tests/test_plugin_<name>.py
+        # at registration. Defaults off -- the many unit tests across this
+        # suite that discover synthetic throwaway plugins (no matching real
+        # test file by design, that being the point of a throwaway fixture)
+        # would otherwise all need to opt out individually. The one real
+        # production construction (cerebral/main.py) opts in explicitly.
+        self._verify_test_files = verify_test_files
         self._plugins: dict[str, Plugin] = {}
         # tool_name → plugin_name for fast routing
         self._tool_index: dict[str, str] = {}
@@ -871,6 +880,18 @@ class MCPOrchestrator:
         if err is not None:
             self._record_registration_error(err.plugin_name, err.reason, err.detail, path)
             return
+
+        # ADR-0034 (verification contract): a plugin with no test file is
+        # refused the same way one with no REQUIRED_CAPABILITIES is -- this
+        # plugin alone is skipped, not the whole boot.
+        if self._verify_test_files:
+            from cerebral.verification import verify_plugin_test_file
+            verify_result = verify_plugin_test_file(plugin_name)
+            if not verify_result.passed:
+                self._record_registration_error(
+                    plugin_name, REASON_NO_TEST_FILE, verify_result.evidence, path,
+                )
+                return
 
         # S2 #470 — if the user has disabled this plugin, record its metadata
         # for the Harness UI card but skip registration so no tools are active.

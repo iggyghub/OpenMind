@@ -14,6 +14,7 @@ from cerebral.mcp.orchestrator import (
     PluginRegistrationError,
     REASON_INVALID_TYPE,
     REASON_MISSING,
+    REASON_NO_TEST_FILE,
     REASON_UNKNOWN_CAPABILITY,
     Tool,
     ToolResult,
@@ -321,6 +322,69 @@ def test_discover_plugins_loads_valid_plugin(tmp_path):
 
     names = [t.name for t in orc.list_tools()]
     assert "tick" in names
+
+
+def test_discover_plugins_verify_test_files_off_by_default(tmp_path):
+    # ADR-0034: default is off so the many synthetic-plugin discovery tests
+    # in this suite (no matching real test file, by design) don't all need
+    # to opt out individually.
+    plugin_code = textwrap.dedent("""
+        PLUGIN_NAME = "no_test_file_plugin"
+        REQUIRED_CAPABILITIES = frozenset()
+        def create():
+            class _P:
+                name = "no_test_file_plugin"
+                def list_tools(self): return []
+                async def call_tool(self, n, a): return None
+            return _P()
+    """)
+    (tmp_path / "no_test_file_plugin.py").write_text(plugin_code)
+
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+    assert "no_test_file_plugin" in orc._plugins
+    assert orc.registration_errors == []
+
+
+def test_discover_plugins_verify_test_files_on_refuses_missing(tmp_path):
+    # ADR-0034: opted in (as cerebral/main.py's real construction does),
+    # a plugin with no cerebral/tests/test_plugin_<name>.py is refused.
+    plugin_code = textwrap.dedent("""
+        PLUGIN_NAME = "no_test_file_plugin"
+        REQUIRED_CAPABILITIES = frozenset()
+        def create():
+            class _P:
+                name = "no_test_file_plugin"
+                def list_tools(self): return []
+                async def call_tool(self, n, a): return None
+            return _P()
+    """)
+    (tmp_path / "no_test_file_plugin.py").write_text(plugin_code)
+
+    orc = MCPOrchestrator(verify_test_files=True)
+    orc.discover_plugins(tmp_path)
+    assert "no_test_file_plugin" not in orc._plugins
+    assert orc.registration_errors[0]["reason"] == REASON_NO_TEST_FILE
+
+
+def test_discover_plugins_verify_test_files_on_accepts_covered_plugin(tmp_path):
+    # "clock" has a real cerebral/tests/test_plugin_clock.py -- registers fine.
+    plugin_code = textwrap.dedent("""
+        PLUGIN_NAME = "clock"
+        REQUIRED_CAPABILITIES = frozenset({"device_control"})
+        def create():
+            class _P:
+                name = "clock"
+                def list_tools(self): return []
+                async def call_tool(self, n, a): return None
+            return _P()
+    """)
+    (tmp_path / "clock.py").write_text(plugin_code)
+
+    orc = MCPOrchestrator(verify_test_files=True)
+    orc.discover_plugins(tmp_path)
+    assert "clock" in orc._plugins
+    assert orc.registration_errors == []
 
 
 def test_discover_plugins_skips_files_without_create(tmp_path):

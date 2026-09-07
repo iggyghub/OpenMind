@@ -393,7 +393,7 @@ if _active_profile:
             logger.warning("[cerebral] saved task pin '%s'->%s unavailable; skipped", _task, _mid)
 if _quality_default:
     logger.info("[cerebral] Quality tasks default to %s", _quality_default)
-_orc = MCPOrchestrator()
+_orc = MCPOrchestrator(verify_test_files=True)  # ADR-0034
 _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
