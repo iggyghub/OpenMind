@@ -9,7 +9,7 @@ dependent slice starts. See docs/adr/0034-verification-contract.md.
 
 ## Next slice -- start here
 
-- **Active:** D -- #1126
+- **Active:** E -- #1127
 - **Model:** self_dev's `task_type="self_dev"` router pin (local/cloud/connected server, per ADR-0015) -- not a fixed Claude-Code model choice.
 
 ## Queue
@@ -17,7 +17,7 @@ dependent slice starts. See docs/adr/0034-verification-contract.md.
 - [x] A -- #1123 -- VerifyResult + Verifiable protocol types (foundation, blocks C-F)
 - [x] B -- #1124 -- backfill missing plugin test stubs -- self_dev's PR #1138 was broken (invented fetch_fn/plugin.run() pattern) and also missed 7 plugins the issue's own count undercounted; hand-fixed instead of retrying (commits b2bdb29, b048bce), PR #1138 closed unmerged. 68/68 plugins now covered.
 - [x] C -- #1125 -- Plugin verify() + registration-time enforcement -- self_dev's PR #1139 was structurally broken (module-level RuntimeError that would crash the whole boot, called before plugins even registered); hand-fixed at the real per-plugin refusal point in MCPOrchestrator._load_plugin_file, added verify_test_files opt-in flag so ~20 existing discovery tests weren't broken (commit ec0e40e), PR #1139 closed unmerged.
-- [ ] D -- #1126 -- Skill verify() -- witnessed-run evidence field (depends on A)
+- [x] D -- #1126 -- Skill verify() -- witnessed-run evidence field. PR #1140 was actually correct as self_dev wrote it (no hand-fix needed) -- its `tests_failed` was the same environmental full-suite-timeout false alarm as before; confirmed via a clean local full-suite run before merging.
 - [ ] E -- #1127 -- Recipe verify() -- dry-run replay (depends on A)
 - [ ] F -- #1128 -- self_dev verify() adapter over the existing sandbox gate (depends on A)
 
@@ -28,6 +28,7 @@ D, E, F may run in parallel with B/C once A lands.
 - PR #1137 -- A (auto-merged by self_dev_campaign)
 - B -- hand-fixed on master (b2bdb29, b048bce); PR #1138 closed unmerged, superseded
 - C -- hand-fixed on master (ec0e40e); PR #1139 closed unmerged, superseded
+- PR #1140 -- D (merged as-is after a full-suite recheck cleared its timeout false alarm)
 ## SAFETY
 
 - Registration-time enforcement (C) must never land before the backfill
