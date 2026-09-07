@@ -23,10 +23,13 @@ dependent slice starts. See docs/adr/0036-admission-control.md.
 ## SAFETY
 
 - `cerebral/security/` (the ADR-0005 gate) is untouched by this campaign --
-  admission control lives entirely in `cerebral/llm/router.py`. If any
-  slice's diff touches the gate, sandbox, credential store, or
-  `cerebral/main.py` core, the blast-radius gate forces human PR review
-  regardless of test color -- do not treat that as a slice failure.
+  admission control lives entirely in `cerebral/llm/router.py`. Note the
+  blast-radius gate no longer blocks merge on a guardrail-path hit (the
+  2026-08-21 full-auto-merge amendment made that informational-only); the
+  only real gate left is test status. A slice touching `router.py` will
+  auto-merge on green tests with no human review step -- keep this
+  campaign's diffs narrowly scoped to router.py/settings so a subtle bug
+  isn't waved through on a passing but incomplete test.
 - No preemption, ever (R5). A call already holding a domain's slot runs to
   completion untouched, even when a `chat` call is waiting. Priority is
   queue-order among *waiters* only.

@@ -5,16 +5,16 @@ Claude-Code-run `run-*.ps1` loop. Each slice = one issue = one self_dev PR
 (clone -> edit -> sandbox test gate -> PR), merged before the next
 dependent slice starts. See docs/adr/0034-verification-contract.md.
 
-## Status: ready
+## Status: blocked -- run error: Edit failed: all enabled models unavailable: HTTP 504 from https://bonsai.ai-dabs.com/v1/chat/completions: Gateway Timeout
 
 ## Next slice -- start here
 
-- **Active:** A -- #1123
+- **Active:** B -- #1124
 - **Model:** self_dev's `task_type="self_dev"` router pin (local/cloud/connected server, per ADR-0015) -- not a fixed Claude-Code model choice.
 
 ## Queue
 
-- [ ] A -- #1123 -- VerifyResult + Verifiable protocol types (foundation, blocks C-F)
+- [x] A -- #1123 -- VerifyResult + Verifiable protocol types (foundation, blocks C-F)
 - [ ] B -- #1124 -- backfill the 10 missing plugin test stubs (must land before C)
 - [ ] C -- #1125 -- Plugin verify() + registration-time enforcement (depends on A, B)
 - [ ] D -- #1126 -- Skill verify() -- witnessed-run evidence field (depends on A)
@@ -25,6 +25,7 @@ D, E, F may run in parallel with B/C once A lands.
 
 ## Landed PRs
 
+- PR #1137 -- A (auto-merged by self_dev_campaign)
 ## SAFETY
 
 - Registration-time enforcement (C) must never land before the backfill

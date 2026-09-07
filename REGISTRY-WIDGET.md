@@ -31,6 +31,11 @@ H, I, J may run in parallel once G lands. K needs I's row to exist first.
   never through `tools/ui-editor/`'s bake step (that bypasses the sandbox
   test gate entirely and is reserved for a human's manual, ad hoc edits --
   see ADR-0037's near-miss note and CONTEXT.md's Absorbed app entry).
+- The blast-radius gate's guardrail block is informational-only as of the
+  2026-08-21 amendment -- test status is the only real merge gate now. A
+  tray/panel-spec change is not a guardrail path anyway, so this doesn't
+  change this campaign's risk much, but don't assume any human sees a
+  diff before it merges.
 - Nav placement does not change: Plugins/Skills stay under Harness,
   Recipes stays under Library. This campaign swaps the row *renderer*,
   never the sidebar structure (#473's four-section collapse stays intact).
