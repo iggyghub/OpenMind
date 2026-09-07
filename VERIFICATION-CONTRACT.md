@@ -9,13 +9,13 @@ dependent slice starts. See docs/adr/0034-verification-contract.md.
 
 ## Next slice -- start here
 
-- **Active:** B -- #1124
+- **Active:** C -- #1125
 - **Model:** self_dev's `task_type="self_dev"` router pin (local/cloud/connected server, per ADR-0015) -- not a fixed Claude-Code model choice.
 
 ## Queue
 
 - [x] A -- #1123 -- VerifyResult + Verifiable protocol types (foundation, blocks C-F)
-- [ ] B -- #1124 -- backfill the 10 missing plugin test stubs (must land before C)
+- [x] B -- #1124 -- backfill missing plugin test stubs -- self_dev's PR #1138 was broken (invented fetch_fn/plugin.run() pattern) and also missed 7 plugins the issue's own count undercounted; hand-fixed instead of retrying (commits b2bdb29, b048bce), PR #1138 closed unmerged. 68/68 plugins now covered.
 - [ ] C -- #1125 -- Plugin verify() + registration-time enforcement (depends on A, B)
 - [ ] D -- #1126 -- Skill verify() -- witnessed-run evidence field (depends on A)
 - [ ] E -- #1127 -- Recipe verify() -- dry-run replay (depends on A)
@@ -26,6 +26,7 @@ D, E, F may run in parallel with B/C once A lands.
 ## Landed PRs
 
 - PR #1137 -- A (auto-merged by self_dev_campaign)
+- B -- hand-fixed on master (b2bdb29, b048bce); PR #1138 closed unmerged, superseded
 ## SAFETY
 
 - Registration-time enforcement (C) must never land before the backfill
