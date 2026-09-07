@@ -1,0 +1,17 @@
+import asyncio
+
+from plugins.github_ingest import REQUIRED_CAPABILITIES, GithubIngestPlugin
+
+
+def test_required_capabilities():
+    assert isinstance(REQUIRED_CAPABILITIES, frozenset)
+    assert len(REQUIRED_CAPABILITIES) > 0
+
+
+def test_github_ingest_requires_repo_url():
+    # Real, deterministic guard-clause path -- exercises the actual code
+    # without cloning a real repo over the network.
+    plugin = GithubIngestPlugin()
+    result = asyncio.run(plugin.call_tool("github_ingest", {}))
+    assert result.is_error is True
+    assert "repo_url" in result.content
