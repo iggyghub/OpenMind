@@ -134,6 +134,36 @@ def _is_merge_conflict_error(text: str) -> bool:
     return any(marker in lowered for marker in _MERGE_CONFLICT_MARKERS)
 
 
+# A repo-relative source file path inside backticks in an issue/change
+# description -- same shape as scripts/check_doc_drift.py's citation check
+# (word/dot/dash segments, >=1 "/", known source extension). Deliberately
+# excludes a leading "/" (slash-commands) and URLs (the "://" and ":<port>"
+# shapes don't match this charset), for the same reason check_doc_drift.py
+# excludes them: this is informational coverage, not a merge gate, and a
+# false positive here is just a confusing note rather than a blocked PR --
+# but no reason to be sloppier than the proven heuristic already in the repo.
+_NAMED_PATH_RE = re.compile(
+    r"`([A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.\-]*)+"
+    r"\.(?:py|md|js|ts|jsx|tsx|json|ya?ml|ps1|sh))`"
+)
+
+
+def named_paths_in_text(text: str) -> "set[str]":
+    """Repo-relative file paths named in backticks in an issue/description.
+
+    Pure function -- no side effects. Used by SelfDevPlugin._run purely for
+    visibility (an `untouched_named_paths` field alongside guardrail_hit):
+    when an issue's acceptance criteria spells out an explicit file list
+    (e.g. #1145's 14 sqlite call sites), this surfaces which of those named
+    paths the actual diff never touched, instead of trusting a partial edit
+    to self-report completion. Informational only -- never gates merge, for
+    the same reason is_guardrail_diff doesn't: a path-shape heuristic getting
+    a diff-completeness call wrong is exactly the failure class #1142's own
+    doc-drift validator hit when trusted too far.
+    """
+    return set(_NAMED_PATH_RE.findall(text or ""))
+
+
 def is_guardrail_diff(changed_files: Iterable[str]) -> "tuple[bool, str]":
     """Return (True, reason) if any file in the diff touches a guardrail path.
 
@@ -816,9 +846,14 @@ class SelfDevPlugin:
         #    rollback (tray/lib/boot-check.js, SD-3), independent of this gate.
         guardrail_hit = False
         escalation_reason = ""
+        untouched_named_paths: list[str] = []
         try:
             changed_files = self._diff(pr_url)
             guardrail_hit, escalation_reason = is_guardrail_diff(changed_files)
+            named = named_paths_in_text(description)
+            if named:
+                changed_set = set(changed_files)
+                untouched_named_paths = sorted(p for p in named if p not in changed_set)
         except Exception as exc:
             escalation_reason = f"diff check failed: {exc}"
 
@@ -832,6 +867,7 @@ class SelfDevPlugin:
                     "branch": branch,
                     "reason": reason,
                     "test_passed": test_passed,
+                    "untouched_named_paths": untouched_named_paths,
                 })
             except Exception:
                 logger.exception(
@@ -843,12 +879,19 @@ class SelfDevPlugin:
             # routine/noisy activity, per decision #46's "log real decisions
             # individually" -- separate from the pending-review card above,
             # which writes to the user's active chat thread instead.
+            activity_summary = f"Self-dev PR {pr_url} needs human review: {reason}"
+            if untouched_named_paths:
+                activity_summary += (
+                    f" ({len(untouched_named_paths)} issue-named path(s) not touched: "
+                    f"{', '.join(untouched_named_paths)})"
+                )
             try:
                 await self._resolve_record_activity()("activity", {
                     "source": "self_dev",
-                    "summary": f"Self-dev PR {pr_url} needs human review: {reason}",
+                    "summary": activity_summary,
                     "pr_url": pr_url,
                     "run_id": run_id,
+                    "untouched_named_paths": untouched_named_paths,
                 })
             except Exception:
                 logger.exception(
@@ -868,6 +911,7 @@ class SelfDevPlugin:
                 "merge_decision": "tests_failed",
                 "guardrail_hit": guardrail_hit,
                 "guardrail_reason": escalation_reason,
+                "untouched_named_paths": untouched_named_paths,
             }))
 
         # 6. Auto-merge (tests passed; guardrail hits remain informational).
@@ -903,6 +947,7 @@ class SelfDevPlugin:
                 "merge_decision": "auto_merge",
                 "guardrail_hit": guardrail_hit,
                 "guardrail_reason": escalation_reason,
+                "untouched_named_paths": untouched_named_paths,
                 "load": load_data,
             })
         )
