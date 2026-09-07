@@ -24,3 +24,16 @@ def verify_plugin_test_file(plugin_name: str) -> VerifyResult:
     if test_path.exists():
         return VerifyResult(passed=True, evidence=f"Test file {test_path.name} exists.", score=1.0)
     return VerifyResult(passed=False, evidence=f"Missing test file {test_path.name}.", score=0.0)
+
+
+def verify_skill(skill_data: dict) -> VerifyResult:
+    """Verify a Skill's witnessed-run evidence.
+
+    Checks for the `verified_evidence` field in the Skill's frontmatter.
+    If present, the skill passes with that evidence. Otherwise, it fails
+    with an actionable message prompting for a witnessed run.
+    """
+    evidence = skill_data.get("verified_evidence")
+    if evidence:
+        return VerifyResult(passed=True, evidence=evidence)
+    return VerifyResult(passed=False, evidence="not yet witnessed-run")
