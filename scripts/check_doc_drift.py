@@ -16,25 +16,44 @@ import re
 import sys
 from pathlib import Path
 
+# A repo-relative source file path: path segments of word/dot/dash characters,
+# ending in a known source extension, optionally followed by a :line or
+# :line-line suffix (e.g. "cerebral/main.py:1127"). Deliberately excludes
+# anything starting with "/" (slash-commands like "/grill-me"), URLs
+# ("ws://localhost:7766", "accounts.google.com/..."), and placeholders
+# ("plugins/<name>.py") -- those aren't file citations even though they
+# contain a "/" or ".md"-like substring.
+_SOURCE_EXTS = (
+    "py|md|js|ts|jsx|tsx|json|ya?ml|ps1|sh|html|css|toml|cfg|ini|txt"
+)
+# Requires at least one "/" -- a bare filename like "main.py" is too ambiguous
+# to resolve (which of the repo's several main.py?) and ADRs cite those in
+# prose without a directory; only a real relative path is checkable here.
+_PATH_RE = re.compile(
+    rf"^[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.\-]*)+\.({_SOURCE_EXTS})$"
+)
+_LINE_SUFFIX_RE = re.compile(r":\d+(-\d+)?$")
+
 
 def extract_backtick_paths(file: Path) -> list[str]:
-    """Extract all backtick-quoted paths from a markdown file."""
+    """Extract backtick-quoted source file paths from a markdown file."""
     text = file.read_text(encoding="utf-8")
-    # Match text inside backticks that looks like a file path
-    pattern = r"`([^`]+)`"
-    matches = re.findall(pattern, text)
-    # Filter to only those that look like file paths (contain a slash or end with .md)
-    paths = [m for m in matches if "/" in m or m.endswith(".md")]
+    matches = re.findall(r"`([^`]+)`", text)
+    paths = []
+    for m in matches:
+        base = _LINE_SUFFIX_RE.sub("", m)
+        if _PATH_RE.match(base):
+            paths.append(base)
     return paths
 
 
-def validate_paths(paths: list[Path], base_dir: Path) -> list[str]:
+def validate_paths(paths: list[str], base_dir: Path) -> list[str]:
     """Check if each path exists relative to the base directory."""
     orphans = []
     for file_path in paths:
         resolved = (base_dir / file_path).resolve()
         if not resolved.exists():
-            orphans.append(str(file_path))
+            orphans.append(file_path)
     return orphans
 
 
@@ -58,7 +77,6 @@ def main() -> int:
     base_dir = args.base.resolve()
 
     if not args.files:
-        # Default scan locations
         adr_dir = base_dir / "docs" / "adr"
         context_file = base_dir / "CONTEXT.md"
 
@@ -71,9 +89,9 @@ def main() -> int:
         print("No files to scan.", file=sys.stderr)
         return 0
 
-    all_paths = []
+    all_paths: list[str] = []
     for file in args.files:
-        resolved_file = file.resolve()
+        resolved_file = Path(file).resolve()
         if resolved_file.is_file():
             all_paths.extend(extract_backtick_paths(resolved_file))
         else:
@@ -83,7 +101,7 @@ def main() -> int:
 
     if orphans:
         print("Orphaned citations found:")
-        for path in orphans:
+        for path in sorted(set(orphans)):
             print(f"  - {path}")
         return 1
 
