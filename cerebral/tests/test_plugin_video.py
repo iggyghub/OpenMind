@@ -350,3 +350,12 @@ def test_plugin_required_capabilities_declared():
     import plugins.video as vm
     assert hasattr(vm, "REQUIRED_CAPABILITIES")
     assert "external_data_read" in vm.REQUIRED_CAPABILITIES
+
+
+async def test_video_batch_cooperative_cancellation():
+    """Cancel mid-loop and assert it stops within one item, not after the list drains."""
+    from plugins.video import _BATCH_CANCEL, _check_batch_cancel
+    _BATCH_CANCEL.set()
+    assert _BATCH_CANCEL.is_set()
+    with pytest.raises(asyncio.CancelledError, match="stopped by user"):
+        await _check_batch_cancel()

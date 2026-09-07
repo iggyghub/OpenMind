@@ -21,6 +21,7 @@ Seams exposed for _wire_plugin_seams:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -116,6 +117,21 @@ _commit_fn: Optional[Callable] = None
 def set_commit_fn(fn: Callable) -> None:  # S7 #645
     global _commit_fn
     _commit_fn = fn
+
+
+# Module-level cancellation event for the video batch runner.
+_BATCH_CANCEL = asyncio.Event()
+
+
+async def _check_batch_cancel() -> None:
+    """Cooperative cancellation check -- yields to event loop so a stop signal or
+    pending CancelledError can interrupt between videos."""
+    if _BATCH_CANCEL.is_set():
+        raise asyncio.CancelledError("Video batch ingest stopped by user")
+    try:
+        await asyncio.sleep(0)
+    except asyncio.CancelledError:
+        raise
 
 
 # ── plugin class ──────────────────────────────────────────────────────────────
@@ -610,6 +626,7 @@ class VideoPlugin:
         return ToolResult(content=json.dumps(result))
 
     def _video_batch_stop(self) -> ToolResult:
+        _BATCH_CANCEL.set()
         return ToolResult(content=json.dumps(_channel.batch_stop()))
 
     def _video_batch_status(self) -> ToolResult:
@@ -801,11 +818,14 @@ class VideoPlugin:
         )
         pending_total = store.total_pending()
 
+        # Ingest progress feedback (#1143): show enumerated vs processed clearly.
+        total_ingested = processed_total + pending_total + failed
         status_fields: list[dict] = [
             {"label": "Status", "value": "Running" if running else "Idle"},
+            {"label": "Progress", "value": f"{processed_total} processed / {total_ingested} total"},
         ]
-        if processed_total:
-            status_fields.append({"label": "Processed", "value": str(processed_total)})
+        if pending_total:
+            status_fields.append({"label": "Pending", "value": str(pending_total)})
         # The active channel is only informative while a batch is in flight; when
         # idle it's a stale single-video URL, so drop it (S11 #659).
         if running and status.get("channel"):
@@ -814,8 +834,6 @@ class VideoPlugin:
             status_fields.append({"label": "Verified", "value": str(verified)})
         if pending:
             status_fields.append({"label": "Pending", "value": str(pending)})
-        elif pending_total:
-            status_fields.append({"label": "Pending", "value": str(pending_total)})
         if failed:
             status_fields.append({"label": "Failed", "value": str(failed)})
         if running and eta_secs is not None:

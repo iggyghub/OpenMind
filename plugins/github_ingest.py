@@ -12,6 +12,7 @@ the video plugin's -- reused, not forked.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -23,6 +24,9 @@ from cerebral.llm.router import ModelUnavailableError
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.video import channel as _channel
 from cerebral.video import github_source as _gh
+
+# Cooperative cancellation for in-progress GitHub ingest runs.
+_INGEST_CANCEL = asyncio.Event()
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +140,14 @@ async def _ingest_repo(store, repo_url: str, category: str) -> dict:
     skipped = 0
     try:
         for d in docs:
+            # Cooperative cancellation -- yields control so a stop signal or
+            # pending CancelledError can interrupt between documents.
+            if _INGEST_CANCEL.is_set():
+                raise asyncio.CancelledError("GitHub ingest stopped by user")
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                raise
             doc_url = repo_url + "#" + d["relpath"]
             existing = store.get_by_url(doc_url)
             if (
@@ -283,7 +295,33 @@ class GithubIngestPlugin:
         clusters that contain >=1 github-sourced idea.
         """
         store = _video._get_store()
-        widgets: list[dict] = [{
+        # Ingest progress & stop control (#1143)
+        widgets.insert(0, {
+            "type": "detail",
+            "id": "github-ingest-progress",
+            "fields": [
+                {"label": "Status", "value": "Running" if not _INGEST_CANCEL.is_set() else "Idle"},
+                {"label": "Progress", "value": f"{store._github_ingest_progress.get('processed', 0)} / {store._github_ingest_progress.get('total', 0)} docs"},
+            ],
+        })
+        if not _INGEST_CANCEL.is_set():
+            widgets.append({
+                "type": "action",
+                "id": "github-ingest-stop",
+                "label": "Stop ingest",
+                "tool": "github_ingest_stop",
+                "tool_args": {},
+            })
+        else:
+            widgets.append({
+                "type": "action",
+                "id": "github-ingest-reset",
+                "label": "Reset stop signal",
+                "tool": "github_ingest_reset",
+                "tool_args": {},
+            })
+
+        widgets.append({
             "type": "action",
             "id": "github-ingest",
             "label": "Ingest repo",
@@ -293,7 +331,7 @@ class GithubIngestPlugin:
             "input_placeholder": "repo URL(s), space or comma separated",
             "input_arg2": "category",
             "input_placeholder2": "collection (blank = Uncategorised)",
-        }]
+        })
 
         repos = store.list_github_repos()
         if repos:
