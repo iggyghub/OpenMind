@@ -5,7 +5,7 @@ Claude-Code-run `run-*.ps1` loop. Each slice = one issue = one self_dev PR
 (clone -> edit -> sandbox test gate -> PR), merged before the next
 dependent slice starts. See docs/adr/0034-verification-contract.md.
 
-## Status: blocked -- run error: Edit failed: all enabled models unavailable: HTTP 504 from https://bonsai.ai-dabs.com/v1/chat/completions: Gateway Timeout
+## Status: ready
 
 ## Next slice -- start here
 
