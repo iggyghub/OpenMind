@@ -394,6 +394,18 @@ if _active_profile:
 if _quality_default:
     logger.info("[cerebral] Quality tasks default to %s", _quality_default)
 _orc = MCPOrchestrator()
+# Slice C: Verify plugin test files at registration/boot.
+from cerebral.verification import verify_plugin_test_file
+
+def _verify_plugins() -> None:
+    """Slice C: refuse to register a plugin whose verify() reports no test file."""
+    for plugin_name in getattr(_orc, "_plugins", {}) or {}:
+        res = verify_plugin_test_file(plugin_name)
+        if not res.passed:
+            raise RuntimeError(f"Plugin '{plugin_name}' failed verification: {res.evidence}")
+
+_verify_plugins()
+
 _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
