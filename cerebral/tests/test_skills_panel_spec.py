@@ -25,7 +25,7 @@ def _reset_broadcast_fn():
     yield
     skills_mod.set_broadcast_fn(None)
 
-VALID_WIDGETS = frozenset({"list", "detail", "text", "action", "toggle"})
+VALID_WIDGETS = frozenset({"list", "detail", "text", "action", "toggle", "registry"})
 
 
 def _write_skill(root: Path, name: str, *, description="A test skill.",
@@ -71,8 +71,8 @@ def test_panel_spec_shape_with_no_skills(tmp_path):
     assert spec["title"] == "Skills"
     widgets = spec["widgets"]
     assert isinstance(widgets, list)
-    # Summary detail + install action, no skills.
-    assert [w["type"] for w in widgets] == ["detail", "action"]
+    # Summary detail + install action + an empty registry, no skills.
+    assert [w["type"] for w in widgets] == ["detail", "action", "registry"]
     for w in widgets:
         assert w["type"] in VALID_WIDGETS
 
@@ -83,8 +83,15 @@ def test_panel_spec_shape_with_no_skills(tmp_path):
     assert install["tool"] == "skill_install"
     assert install["input_arg"] == "repo"
 
+    assert widgets[2]["items"] == []
 
-def test_panel_spec_lists_each_skill_as_detail_plus_toggle(tmp_path):
+
+def _registry_items(spec):
+    reg = next(w for w in spec["widgets"] if w["type"] == "registry")
+    return {it["name"]: it for it in reg["items"]}
+
+
+def test_panel_spec_lists_each_skill_as_one_registry_row(tmp_path):
     _write_skill(tmp_path / "seed", "grill-me", tools=["ask_user"])
     _write_skill(tmp_path / "installed", "custom", tools=[])
     plugin = _plugin(tmp_path, enabled=["grill-me"])
@@ -92,48 +99,42 @@ def test_panel_spec_lists_each_skill_as_detail_plus_toggle(tmp_path):
     spec = plugin.panel_spec(1)
     widgets = spec["widgets"]
     types = [w["type"] for w in widgets]
-    # detail(summary), action(install), then per skill: detail + toggle(+action)
-    # custom (installed) also gets an uninstall action; grill-me (seed) does not.
-    assert types == [
-        "detail", "action",
-        "detail", "toggle",           # custom: name line + on/off switch
-        "action",                     # custom: uninstall
-        "detail", "toggle",           # grill-me: name line + on/off switch
-    ]
+    assert types == ["detail", "action", "registry"]
 
-    # One compact line per skill: the name is the value; description + source
+    items = _registry_items(spec)
+    assert set(items) == {"grill-me", "custom"}
+
+    # One compact row per skill: the name is the value; description + source
     # live in the hover hint (renderer -> native title tooltip).
-    custom_detail = widgets[2]
-    name_field = custom_detail["fields"][0]
-    assert name_field["value"] == "custom"
-    assert name_field["label"] == ""
-    assert "A test skill." in name_field["hint"]
-    assert "Source: installed" in name_field["hint"]  # no provenance sidecar written
+    custom = items["custom"]
+    assert custom["status"] == "disabled"
+    assert "A test skill." in custom["hint"]
+    assert "Source: installed" in custom["hint"]  # no provenance sidecar written
 
-    # The switch carries the current state (unchecked = disabled) and both
-    # enable/disable tools; the handler picks one based on the flip direction.
-    custom_toggle = widgets[3]
-    assert custom_toggle["checked"] is False
-    assert custom_toggle["label"] == "Disabled"  # word reflects state
-    assert custom_toggle["enable_tool"] == "skill_enable"
-    assert custom_toggle["disable_tool"] == "skill_disable"
+    # Enable/disable is one relabeled action whose tool matches current state.
+    custom_toggle = custom["actions"][0]
+    assert custom_toggle["label"] == "Enable"  # currently disabled
+    assert custom_toggle["tool"] == "skill_enable"
     assert custom_toggle["tool_args"] == {"name": "custom"}
 
-    custom_uninstall = widgets[4]
+    custom_uninstall = custom["actions"][1]
     assert custom_uninstall["tool"] == "skill_uninstall"
     assert custom_uninstall["tool_args"] == {"name": "custom"}
 
-    # grill-me is enabled -> its switch is checked (on).
-    grill_toggle = widgets[6]
-    assert grill_toggle["checked"] is True
-    assert grill_toggle["label"] == "Enabled"
+    # grill-me is enabled -> its action offers Disable, and (seed) has no uninstall.
+    grill = items["grill-me"]
+    assert grill["status"] == "enabled"
+    assert len(grill["actions"]) == 1
+    assert grill["actions"][0]["label"] == "Disable"
+    assert grill["actions"][0]["tool"] == "skill_disable"
 
 
 def test_panel_spec_seed_skill_has_no_uninstall_action(tmp_path):
     _write_skill(tmp_path / "seed", "grill-me")
     plugin = _plugin(tmp_path)
     spec = plugin.panel_spec(1)
-    tools = [w.get("tool") for w in spec["widgets"] if w["type"] == "action"]
+    grill = _registry_items(spec)["grill-me"]
+    tools = [a["tool"] for a in grill["actions"]]
     assert "skill_uninstall" not in tools
 
 
@@ -141,10 +142,8 @@ def test_panel_spec_installed_skill_has_uninstall_action(tmp_path):
     _write_skill(tmp_path / "installed", "custom")
     plugin = _plugin(tmp_path)
     spec = plugin.panel_spec(1)
-    uninstalls = [
-        w for w in spec["widgets"]
-        if w["type"] == "action" and w.get("tool") == "skill_uninstall"
-    ]
+    custom = _registry_items(spec)["custom"]
+    uninstalls = [a for a in custom["actions"] if a["tool"] == "skill_uninstall"]
     assert len(uninstalls) == 1
     assert uninstalls[0]["tool_args"] == {"name": "custom"}
 
@@ -156,30 +155,50 @@ def test_panel_spec_provenance_from_sidecar(tmp_path):
     )
     plugin = _plugin(tmp_path)
     spec = plugin.panel_spec(1)
-    detail = next(w for w in spec["widgets"] if w["type"] == "detail" and w["id"] == "skill-custom")
-    assert "Source: owner/repo@abc1234" in detail["fields"][0]["hint"]
+    custom = _registry_items(spec)["custom"]
+    assert "Source: owner/repo@abc1234" in custom["hint"]
 
 
 def test_panel_spec_seed_skill_source_is_seed(tmp_path):
     _write_skill(tmp_path / "seed", "grill-me")
     plugin = _plugin(tmp_path)
     spec = plugin.panel_spec(1)
-    detail = next(w for w in spec["widgets"] if w["type"] == "detail" and w["id"] == "skill-grill-me")
-    assert "Source: seed" in detail["fields"][0]["hint"]
+    grill = _registry_items(spec)["grill-me"]
+    assert "Source: seed" in grill["hint"]
 
 
 def test_panel_spec_does_not_dump_skill_body_inline(tmp_path):
     """The full SKILL.md body is no longer inlined per skill -- it made the tab
-    unreadable across many skills. Only the name (line) + description (hover)
+    unreadable across many skills. Only the name (row) + description (hover)
     show; the body stays available via the skill_preview tool."""
     _write_skill(tmp_path / "seed", "grill-me", body="Ask five hard questions.")
     plugin = _plugin(tmp_path)
     spec = plugin.panel_spec(1)
-    detail = next(w for w in spec["widgets"] if w["type"] == "detail" and w["id"] == "skill-grill-me")
-    field = detail["fields"][0]
-    assert field["value"] == "grill-me"
-    assert "A test skill." in field["hint"]              # description on hover
-    assert "Ask five hard questions." not in field["hint"]  # body not inlined
+    grill = _registry_items(spec)["grill-me"]
+    assert grill["name"] == "grill-me"
+    assert "A test skill." in grill["hint"]              # description on hover
+    assert "Ask five hard questions." not in grill["hint"]  # body not inlined
+
+
+def test_panel_spec_registry_item_carries_verify_result(tmp_path):
+    """ADR-0034/ADR-0035 integration: each skill row's verify badge reflects
+    whether verified_evidence is set in its SKILL.md frontmatter."""
+    _write_skill(tmp_path / "seed", "unverified-skill")
+    d = _write_skill(tmp_path / "seed", "verified-skill")
+    text = (d / "SKILL.md").read_text(encoding="utf-8")
+    text = text.replace(
+        "description: A test skill.",
+        "description: A test skill.\nverified_evidence: Confirmed working on task X",
+    )
+    (d / "SKILL.md").write_text(text, encoding="utf-8")
+
+    plugin = _plugin(tmp_path)
+    spec = plugin.panel_spec(1)
+    items = _registry_items(spec)
+
+    assert items["unverified-skill"]["verify"]["passed"] is False
+    assert items["verified-skill"]["verify"]["passed"] is True
+    assert items["verified-skill"]["verify"]["evidence"] == "Confirmed working on task X"
 
 
 def test_panel_spec_carries_no_html_or_scripts(tmp_path):

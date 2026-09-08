@@ -1349,6 +1349,26 @@ test('registry widget renders correctly', () => {
   expect(html).not.toContain('<button onclick=');
 });
 
+test('registry widget row carries an optional hint as a title tooltip', () => {
+  const PanelSpec = require('../lib/panel-spec.js');
+  const spec = {
+    widgets: [{
+      type: 'registry',
+      items: [{ name: 'my-skill', status: 'enabled', hint: 'A skill.\nSource: seed' }],
+    }],
+  };
+  const html = PanelSpec.renderPanel(spec);
+  expect(html).toContain('title="A skill.\nSource: seed"');
+});
+
+test('registry widget row with no hint omits the title attribute', () => {
+  const PanelSpec = require('../lib/panel-spec.js');
+  const html = PanelSpec.renderPanel({
+    widgets: [{ type: 'registry', items: [{ name: 'x', status: 'enabled' }] }],
+  });
+  expect(html).not.toContain('title=');
+});
+
 test('registry widget with no items renders an empty state', () => {
   const PanelSpec = require('../lib/panel-spec.js');
   const html = PanelSpec.renderPanel({ title: 'Empty', widgets: [{ type: 'registry', items: [] }] });

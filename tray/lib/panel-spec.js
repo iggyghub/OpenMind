@@ -280,9 +280,10 @@
           return _renderAction(a);
         }).join('');
       }
+      var hintAttr = it.hint ? ' title="' + escHtml(it.hint) + '"' : '';
       return (
         '<div class="ps-registry-row">' +
-          '<span class="ps-registry-name">' + name + '</span>' +
+          '<span class="ps-registry-name"' + hintAttr + '>' + name + '</span>' +
           '<span class="ps-registry-status">' + status + '</span>' +
           badge +
           '<div class="ps-registry-actions">' + actionsHtml + '</div>' +

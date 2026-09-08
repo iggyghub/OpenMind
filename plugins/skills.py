@@ -50,6 +50,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from cerebral.verification import verify_skill
+
 import httpx
 import yaml
 
@@ -135,6 +137,7 @@ class Skill:
     tools: tuple[str, ...]
     source: str  # "seed" | "installed"
     path: Path   # the skill's directory
+    verified_evidence: str | None = None
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str]:
@@ -184,6 +187,9 @@ def _load_skill_dir(dir_path: Path, source: str) -> Skill | None:
         raw_tools = []
     tools = tuple(str(t) for t in raw_tools)
 
+    raw_evidence = meta.get("verified_evidence")
+    verified_evidence = str(raw_evidence).strip() if raw_evidence else None
+
     return Skill(
         name=str(name),
         description=str(description),
@@ -191,6 +197,7 @@ def _load_skill_dir(dir_path: Path, source: str) -> Skill | None:
         tools=tools,
         source=source,
         path=dir_path,
+        verified_evidence=verified_evidence or None,
     )
 
 
@@ -701,10 +708,12 @@ class SkillsPlugin:
 
     def panel_spec(self, profile_id: "int | None") -> "dict | None":
         """Declarative panel spec for the Skills panel (Harness nav, sibling
-        to Plugins). Widgets: an install action, then per skill a detail
-        block (name/source/provenance/tools/enabled/instructions) plus an
-        enable-or-disable action and, for installed (non-seed) skills, an
-        uninstall action.
+        to Plugins). Widgets: an install action, then one registry row per
+        skill (ADR-0035) showing name/status/verify badge/actions -- enable
+        or disable (a single relabeled action, not a toggle control: the
+        registry row shape carries a static action list, so the tool+label
+        are picked per skill's current state) and, for installed
+        (non-seed) skills, uninstall.
         """
         enabled = self._enabled_names()
         skills = sorted(self._discover().values(), key=lambda s: s.name)
@@ -724,35 +733,32 @@ class SkillsPlugin:
             },
         ]
 
+        items: list = []
         for s in skills:
             is_enabled = s.name in enabled
-            # One scannable line per skill: the name, with the description on a
-            # 1s hover tooltip (renderer maps ``hint`` -> title=). The full body
-            # is no longer dumped inline (it made the tab unreadable across many
-            # skills); enabled state is conveyed by the toggle's Enable/Disable
-            # label, and the full text stays available via the skill_preview
-            # tool (ADR-0014 review-before-enable).
-            hint = f"{s.description}\nSource: {self._provenance_str(s)}"
-            widgets.append({"type": "detail", "id": f"skill-{s.name}", "fields": [
-                {"label": "", "value": s.name, "hint": hint},
-            ]})
-            widgets.append({
-                "type": "toggle",
+            verify = verify_skill({"verified_evidence": s.verified_evidence})
+            actions = [{
                 "id": f"skill-{s.name}-toggle",
-                "label": "Enabled" if is_enabled else "Disabled",
-                "checked": is_enabled,
-                "enable_tool": "skill_enable",
-                "disable_tool": "skill_disable",
+                "label": "Disable" if is_enabled else "Enable",
+                "tool": "skill_disable" if is_enabled else "skill_enable",
                 "tool_args": {"name": s.name},
-            })
+            }]
             if s.source == "installed":
-                widgets.append({
-                    "type": "action",
+                actions.append({
                     "id": f"skill-{s.name}-uninstall",
                     "label": "Uninstall",
                     "tool": "skill_uninstall",
                     "tool_args": {"name": s.name},
                 })
+            items.append({
+                "name": s.name,
+                "status": "enabled" if is_enabled else "disabled",
+                "hint": f"{s.description}\nSource: {self._provenance_str(s)}",
+                "verify": {"passed": verify.passed, "evidence": verify.evidence},
+                "actions": actions,
+            })
+
+        widgets.append({"type": "registry", "id": "skills-registry", "items": items})
 
         return {"title": "Skills", "widgets": widgets}
 
