@@ -117,7 +117,13 @@ def test_panel_spec_lists_each_skill_as_one_registry_row(tmp_path):
     assert custom_toggle["tool"] == "skill_enable"
     assert custom_toggle["tool_args"] == {"name": "custom"}
 
-    custom_uninstall = custom["actions"][1]
+    # Installed (non-seed) skills also get Update (ADR-0035 slice K), then
+    # Uninstall.
+    custom_update = custom["actions"][1]
+    assert custom_update["tool"] == "skill_update"
+    assert custom_update["tool_args"] == {"name": "custom"}
+
+    custom_uninstall = custom["actions"][2]
     assert custom_uninstall["tool"] == "skill_uninstall"
     assert custom_uninstall["tool_args"] == {"name": "custom"}
 
