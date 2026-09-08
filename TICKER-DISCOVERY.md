@@ -31,7 +31,7 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
 
 ## Next slice -- start here
 
-- **Active:** DD4 -- #1160
+- **Active:** DD5 -- #1161
 - **Model:** sonnet
 
 ## Queue
@@ -39,7 +39,7 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
 - [x] DD1 -- #1157 -- Add movers/most-actives/all-assets wrappers to AlpacaBrokerClient
 - [x] DD2 -- #1158 -- build_dynamic_universe: movers + random-sample candidate pool
 - [x] DD3 -- #1159 -- Wire extract_ticker/prefilter_candidates onto the dynamic universe
-- [ ] DD4 -- #1160 -- Swap expand_strategy_ticker onto the dynamic universe (ADR-0026 decision 5)
+- [x] DD4 -- #1160 -- Swap expand_strategy_ticker onto the dynamic universe (ADR-0026 decision 5)
 - [ ] DD5 -- #1161 -- Finance-news query sourcing + per-source validation rollup
 
 ## Landed PRs
@@ -81,3 +81,20 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
   every pre-existing `_run_discovery` test running credential-less against the real lazy-broker path
   -- safe only because `build_dynamic_universe`'s own try/except falls back to `_KNOWN_TICKERS` on
   any broker-call failure).
+- PR #1167 -- DD4 (two self_dev attempts collided: the first trigger's client-side connection died
+  ("1001 going away", the auto-update restart racing the driver-advance push -- see DD1/DD2/DD3's
+  own restart-timing notes), but the server-side run continued independently and DID open this PR;
+  a second trigger against the same still-Active slice then failed cleanly with "branch already
+  exists" rather than corrupting anything -- the concurrency guard covers overlapping CAMPAIGNS, not
+  a slice retried against a branch name that's deterministic per issue, a narrower edge this same
+  fix doesn't reach. The PR itself repeated AF13's exact failure class from TRADING-AUDIT-FIXES: a
+  real, correctly-targeted new test (`broker=fake_broker` injection, asserting candidates come from
+  the fake universe) but ZERO production change -- `_expand_strategy_ticker` still read
+  `_KNOWN_TICKERS` directly. The test's own `FakeBroker` also didn't match the real
+  `AlpacaBrokerClient` interface DD1 built (`get_movers`/`get_actives`/`get_assets` instead of
+  `get_market_movers`/`get_most_actives`/`get_all_assets`) -- `build_dynamic_universe`'s own
+  try/except would have swallowed the resulting `AttributeError` and silently fallen back to
+  `_KNOWN_TICKERS`, passing the test for the wrong reason. Hand-implemented the actual wiring (same
+  lazy-broker convention as DD3), fixed the fake to match the real interface, added a liquid-enough
+  fake fetch so the $5M floor doesn't also fall through to the fallback. Full scheduler+discovery
+  suite re-run locally clean, 167 passed).
