@@ -5,12 +5,16 @@ Claude-Code-run `run-*.ps1` loop. Each slice = one issue = one self_dev PR
 (clone -> edit -> sandbox test gate -> PR), merged before the next
 dependent slice starts. See docs/adr/0035-registry-widget-and-skill-update.md.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** K -- #1133
-- **Model:** self_dev's `task_type="self_dev"` router pin (local/cloud/connected server, per ADR-0015).
+- **Active:** none -- all 5 slices landed
+- **Model:** self_dev's `task_type="self_dev"` router pin (local/cloud/connected server, per ADR-0015) -- not a fixed Claude-Code model choice.
+
+All 5 slices (G-K) landed on master. Every one ended up hand-implemented --
+self_dev never produced a mergeable PR for this campaign; see Queue notes
+for each closed self_dev attempt and why.
 
 ## Queue
 
@@ -18,12 +22,12 @@ dependent slice starts. See docs/adr/0035-registry-widget-and-skill-update.md.
 - [x] H -- #1130 -- migrate Plugins panel onto the registry widget. Blocked mid-campaign on a real design gap (enable/disable was a tray-internal WS event, not a declared MCP tool -- see ADR-0031). Resolved by hand: added `plugin_set_enabled` tool to `plugins/settings_control.py` (commit fcd42a6), then swapped the drawer's toggle button to dispatch it via `call_tool` (commit 94457a8), keeping the card-grid/drawer structure itself untouched. A self_dev attempt (PR #1152, closed) built a disconnected fake widget with hardcoded data and corrupted a `<style>` block -- not reattempted.
 - [x] I -- #1131 -- migrate Skills sub-tab onto the registry widget. Hand-implemented directly, commit 4495dec. `plugins/skills.py`'s `panel_spec()` now emits one registry row per skill with a real VerifyResult badge; extended `_renderRegistry` with an optional `hint` field.
 - [x] J -- #1132 -- migrate Recipes tab onto the registry widget. Same design gap as H (run/delete were WS events) -- resolved by adding `recipe_run`/`recipe_delete` tools to a new `plugins/recipes.py` (commit 1939ca6), then migrating `renderRecipes()` onto `PanelSpec.renderWidget({type:'registry',...})` + `ActionWidget.initActionWidgets` (commit 94457a8). Also added a per-recipe VerifyResult (dry-run replay, ADR-0034) to the `recipes_update` broadcast for the badge, and added the `.ps-registry-*`/`.ps-verify-*` CSS that slices G/I had shipped without (Skills gets it for free too).
-- [ ] K -- #1133 -- skill_update tool + local-edit conflict detection (depends on G, I -- both done)
+- [x] K -- #1133 -- skill_update tool + local-edit conflict detection. A self_dev attempt (PR #1153, closed) reinvented the entire plugin from scratch at the wrong path (`cerebral/plugins/skills.py` instead of `plugins/skills.py`), disconnected from I's already-shipped provenance/panel_spec work -- not reattempted. Hand-implemented (commit c0876a0): diffs the installed copy against the original fetched content at the provenance sha, refuses on any difference ("has local edits -- update manually"), else overwrites + bumps sha. "Update" ps-action shown unconditionally on every installed skill's row rather than gated on a live upstream check (documented tradeoff in panel_spec()'s comment -- avoids one blocking GitHub API call per skill per panel render).
 
 ## Landed PRs
 
 - G -- hand-fixed on master (7d732fb); PR #1151 closed unmerged, superseded
-- H, I, J -- all hand-implemented on master (no clean self_dev PR for any of the three); see Queue notes above for commits
+- H, I, J, K -- all hand-implemented on master (no clean self_dev PR for any of the five slices); see Queue notes above for commits and for each closed self_dev PR's failure mode
 
 ## SAFETY
 
