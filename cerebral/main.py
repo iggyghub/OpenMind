@@ -4514,22 +4514,16 @@ async def _handle_plugins_test_call(msg: dict) -> None:
 
 # ── Plugin enable/disable (S2 #470) ──────────────────────────────────────────
 
-async def _handle_plugins_set_enabled(msg: dict) -> None:
-    """Handle ``plugins:set_enabled`` (spec section 5.2).
+async def _set_plugin_enabled(plugin_name: str, enabled: bool) -> tuple[bool, str]:
+    """Core enable/disable logic shared by the ``plugins:set_enabled`` IPC
+    handler and the ``plugin_set_enabled`` MCP tool.
 
     Adds/removes the plugin name from the ``disabled_plugins`` setting, then
     either unregisters (disable) or re-scans and re-registers (enable) the
-    plugin. Broadcasts ``plugins:changed`` and replies with ``plugins:list``.
+    plugin. Broadcasts ``plugins:changed`` and ``plugins:list`` on success.
+    Returns ``(ok, message)`` -- ``message`` is an error description when
+    ``ok`` is False, else a human-readable success summary.
     """
-    d = msg.get("data") or {}
-    plugin_name = (d.get("plugin_name") or "").strip()
-    enabled = d.get("enabled")
-
-    if not plugin_name or enabled is None:
-        logger.warning("[cerebral] plugins:set_enabled missing plugin_name or enabled")
-        return
-
-    enabled = bool(enabled)
     disabled: list[str] = list(_settings.get("disabled_plugins") or [])
 
     if not enabled:
@@ -4563,19 +4557,11 @@ async def _handle_plugins_set_enabled(msg: dict) -> None:
             logger.info("[cerebral] Disabled plugin '%s'", plugin_name)
         elif plugin_name not in _orc._disabled_plugins_meta:
             # Unknown plugin name entirely.
-            await _broadcast({
-                "type": "error",
-                "data": {"message": f"Unknown plugin: {plugin_name!r}"},
-            })
-            return
+            return False, f"Unknown plugin: {plugin_name!r}"
     else:
         # Enable: remove from disabled list, re-run single-plugin load path.
         if plugin_name not in _orc._plugins and plugin_name not in _orc._disabled_plugins_meta:
-            await _broadcast({
-                "type": "error",
-                "data": {"message": f"Unknown plugin: {plugin_name!r}"},
-            })
-            return
+            return False, f"Unknown plugin: {plugin_name!r}"
         # Determine the path and inspectability from disabled metadata.
         meta = _orc._disabled_plugins_meta.get(plugin_name)
         if meta is None:
@@ -4616,6 +4602,24 @@ async def _handle_plugins_set_enabled(msg: dict) -> None:
     snapshot = _plugins_snapshot_data()
     await _broadcast({"type": "plugins:changed", "data": snapshot})
     await _broadcast({"type": "plugins:list", "data": snapshot})
+    return True, f"Plugin {plugin_name!r} {'enabled' if enabled else 'disabled'}"
+
+
+async def _handle_plugins_set_enabled(msg: dict) -> None:
+    """Handle ``plugins:set_enabled`` (spec section 5.2): unpack the IPC
+    message, delegate to ``_set_plugin_enabled``, broadcast an error event
+    on failure."""
+    d = msg.get("data") or {}
+    plugin_name = (d.get("plugin_name") or "").strip()
+    enabled = d.get("enabled")
+
+    if not plugin_name or enabled is None:
+        logger.warning("[cerebral] plugins:set_enabled missing plugin_name or enabled")
+        return
+
+    ok, message = await _set_plugin_enabled(plugin_name, bool(enabled))
+    if not ok:
+        await _broadcast({"type": "error", "data": {"message": message}})
 
 
 # ── Message dispatcher ────────────────────────────────────────────────────────
@@ -7301,6 +7305,16 @@ async def _apply_settings_control(key: str, value: Any) -> None:
     await _broadcast(_settings_state_event())
 
 
+async def _apply_plugin_set_enabled(plugin_name: str, enabled: bool) -> str:
+    """Apply callback for the ``plugin_set_enabled`` MCP tool (settings_control
+    seam). Raises ``ValueError`` on failure, else returns a success message --
+    matches the ``_apply_fn`` contract used by ``_apply_settings_control``."""
+    ok, message = await _set_plugin_enabled(plugin_name, enabled)
+    if not ok:
+        raise ValueError(message)
+    return message
+
+
 # ── Video seams (ADR-0017 S1 #639 / S2 #640) ────────────────────────────────
 
 def _video_download(url: str, out_dir) -> dict:
@@ -7681,6 +7695,7 @@ def _wire_plugin_seams() -> None:
     seams: list[tuple[str, str, object]] = [
         # plugin name, seam method, factory
         ("settings_control", "set_apply_callback", _apply_settings_control),  # F4 #327
+        ("settings_control", "set_plugin_enable_callback", _apply_plugin_set_enabled),  # ADR-0035 H
         ("skills", "set_settings_store", _settings),  # S2 #538 (ADR-0014)
         ("skills", "set_broadcast_fn", _skills_broadcast),  # S5 #542
         ("memory",   "set_memory_factory",  _get_memory),                   # #79
