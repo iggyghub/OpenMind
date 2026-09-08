@@ -410,7 +410,7 @@ describe('renderPanel', () => {
 
   test('WIDGET_TYPES reports the whitelist', () => {
     expect(PanelSpec.WIDGET_TYPES.sort())
-      .toEqual(['action', 'cluster', 'detail', 'group', 'list', 'table', 'text', 'toggle']);
+      .toEqual(['action', 'cluster', 'detail', 'group', 'list', 'registry', 'table', 'text', 'toggle']);
   });
 });
 

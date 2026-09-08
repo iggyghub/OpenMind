@@ -1310,3 +1310,48 @@ test('writes serialised-DOM artifact', () => {
 
   expect(fs.existsSync(path.join(ARTIFACT_DIR, 'last-run.json'))).toBe(true);
 });
+
+// ── S29 — registry widget (#1123, ADR-0035) ────────────────────────────────
+
+test('registry widget renders correctly', () => {
+  const PanelSpec = require('../lib/panel-spec.js');
+  const spec = {
+    title: 'Test Registry',
+    widgets: [
+      {
+        type: 'registry',
+        items: [
+          {
+            name: 'my-plugin',
+            status: 'enabled',
+            verify: { passed: true, score: 98, evidence: 'All checks green' },
+            actions: [{ id: '1', tool: 'toggle_plugin', label: 'Toggle' }]
+          },
+          {
+            name: 'legacy-tool',
+            status: 'disabled',
+            verify: { passed: false, score: 42, evidence: 'Missing dependency' }
+          }
+        ]
+      }
+    ]
+  };
+  const html = PanelSpec.renderPanel(spec);
+  expect(html).toContain('<div class="ps-registry">');
+  expect(html).toContain('<div class="ps-registry-row">');
+  expect(html).toContain('my-plugin');
+  expect(html).toContain('enabled');
+  expect(html).toContain('ps-verify-passed');
+  expect(html).toContain('98');
+  expect(html).toContain('ps-verify-failed');
+  expect(html).toContain('legacy-tool');
+  expect(html).toContain('<button class="ps-action-btn" type="button">Toggle</button>');
+  expect(html).not.toContain('<button onclick=');
+});
+
+test('registry widget with no items renders an empty state', () => {
+  const PanelSpec = require('../lib/panel-spec.js');
+  const html = PanelSpec.renderPanel({ title: 'Empty', widgets: [{ type: 'registry', items: [] }] });
+  expect(html).toContain('ps-empty');
+  expect(html).toContain('No registry entries.');
+});
