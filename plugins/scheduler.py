@@ -1173,11 +1173,24 @@ class SchedulerPlugin:
         async def judge_idea_fn(idea: Idea) -> "tuple[bool, str]":
             return await _judge_idea(idea, router=self._router)
 
+        fetch_fn = fetch
+        if fetch_fn is None:
+            from cerebral.trading_data import fetch_ohlcv as fetch_fn
+
         def rank_fn(symbols: list) -> list:
-            fetch_fn = fetch
-            if fetch_fn is None:
-                from cerebral.trading_data import fetch_ohlcv as fetch_fn
             return rank_for_day_trading(symbols, fetch_fn)
+
+        # DD3 (#1159): the shared Candidate pool (ADR-0026 decision 5,
+        # amended 2026-09-08) -- SchedulerPlugin holds no broker reference
+        # (see the FIXME at ~line 942, the same gap AF16 hit and
+        # deliberately left alone), so lazily construct one only when no
+        # fake was injected for testing, matching _source_ideas' own
+        # BrowserPlugin() convention just above.
+        broker_obj = broker
+        if broker_obj is None:
+            from cerebral.trading.broker import AlpacaBrokerClient
+            broker_obj = AlpacaBrokerClient(env="paper")
+        known_tickers = set(build_dynamic_universe(broker_obj, fetch_fn))
 
         record_activity_fn = self._record_activity_fn
 
