@@ -1221,4 +1221,45 @@ describe('renderTradeLog', () => {
     expect(bySymbol.length).toBe(1);
     expect(bySymbol[0].strategy_id).toBe('strat-b');
   });
+
+  // Paper/Live sub-tabs (2026-09-08): Paper starts active, Live starts
+  // hidden -- checkable via the initial skeleton's own innerHTML string,
+  // no querySelector/click-simulation needed (this suite's fake mount
+  // can't support that -- see the confirm()-guarded-button precedent
+  // above; real click-driven switching is verified by hand in the app).
+  test('Paper section starts visible, Live section starts hidden', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradeLog({ all_fills: SAMPLE_FILLS }, mount);
+      const paperIdx = mount.innerHTML.indexOf('data-log-section="paper"');
+      const liveIdx = mount.innerHTML.indexOf('data-log-section="live"');
+      const paperTag = mount.innerHTML.slice(paperIdx, paperIdx + 60);
+      const liveTag = mount.innerHTML.slice(liveIdx, liveIdx + 60);
+      expect(paperTag).not.toContain('hidden');
+      expect(liveTag).toContain('hidden');
+    });
+  });
+
+  test('sortable column headers carry data-sort-key, including the new PnL % column', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradeLog({ all_fills: SAMPLE_FILLS }, mount);
+      ['time', 'symbol', 'side', 'qty', 'price', 'fees', 'pnl', 'pnl_pct', 'strategy_id'].forEach((key) => {
+        expect(mount.innerHTML).toContain(`data-sort-key="${key}"`);
+      });
+      expect(mount.innerHTML).toContain('>PnL %<');
+    });
+  });
+
+  // Doesn't crash wiring the new sub-tab click listener against this
+  // suite's weak fake (querySelector always returns null) -- this is the
+  // regression the 2026-09-08 self_dev PR actually introduced: an
+  // unguarded mount.querySelector('.trd-log-subtabs').addEventListener(...)
+  // threw here before the null-check fix.
+  test('renders without throwing against a mount whose querySelector returns null', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      expect(() => TradingPanel.renderTradeLog({ all_fills: SAMPLE_FILLS }, mount)).not.toThrow();
+    });
+  });
 });
