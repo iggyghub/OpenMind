@@ -2250,85 +2250,9 @@
     }
     .rcp-empty-text { font-size: 13px; }
 
-    .rcp-item {
-      padding: 10px 18px;
-      border-bottom: 1px solid #1e1c30;
-      animation: rcp-fadeIn 0.15s ease;
-    }
-    .rcp-item:last-child { border-bottom: none; }
-
-    @keyframes rcp-fadeIn {
-      from { opacity: 0; transform: translateY(-4px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-
-    .rcp-item-header {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-bottom: 4px;
-    }
-
-    .rcp-item-name {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text);
-      flex: 1;
-      word-wrap: break-word;
-      overflow-wrap: anywhere;
-    }
-
-    .rcp-item-meta {
-      font-size: 11px;
-      color: var(--text-muted);
-      margin-bottom: 8px;
-      font-family: 'Consolas', 'Cascadia Code', monospace;
-    }
-
-    .rcp-item-actions {
-      display: flex;
-      gap: 6px;
-      align-items: center;
-    }
-
-    .rcp-btn {
-      padding: 4px 10px;
-      border: none;
-      border-radius: var(--radius-md);
-      font-family: inherit;
-      font-size: 11px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.15s, background 0.15s, color 0.15s, border-color 0.15s;
-      letter-spacing: 0.01em;
-    }
-    .rcp-btn:active { opacity: 0.75; }
-    .rcp-btn:disabled { opacity: 0.45; cursor: default; }
-
-    .rcp-btn-run {
-      background: #4bd4c8;
-      color: var(--bg);
-    }
-    .rcp-btn-run:hover:not(:disabled) { background: #6dded4; }
-
-    .rcp-btn-delete {
-      background: var(--bg-elev);
-      color: var(--text-muted);
-      border: 1px solid var(--border);
-      margin-left: auto;
-    }
-    .rcp-btn-delete:hover { color: #e05555; border-color: #e05555; }
-
-    .rcp-run-feedback {
-      font-size: 11px;
-      margin-top: 4px;
-      padding: 4px 6px;
-      border-radius: var(--radius-sm);
-      display: none;
-    }
-    .rcp-run-feedback.ok  { color: #4bd4c8; }
-    .rcp-run-feedback.err { color: #e05555; }
-    .rcp-run-feedback.visible { display: block; }
+    /* ADR-0035 J: rows render via the shared .ps-registry-* widget (see
+       Registry widget CSS below) instead of bespoke .rcp-item markup. */
+    .rcp-registry-wrap { padding: 4px 18px; }
 
     /* ── credentials pane ───────────────────────────────────── */
     /* Lifted from the retired tray/windows/credentials.html; class names are
@@ -5403,6 +5327,26 @@
       animation: health-swirl 0.7s linear infinite;
       vertical-align: middle;
     }
+
+    /* Registry widget (ADR-0035) -- one row per installed component (Skills,
+       Recipes): name, status, VerifyResult badge, actions. */
+    .ps-registry-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 4px; border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .ps-registry-row:last-child { border-bottom: none; }
+    .ps-registry-name {
+      flex: 1; min-width: 0; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .ps-registry-status { flex: none; color: var(--text-muted); font-size: 11px; }
+    .ps-registry-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+    .ps-verify-passed, .ps-verify-failed {
+      flex: none; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+    }
+    .ps-verify-passed { color: var(--accent); border: 1px solid var(--accent); }
+    .ps-verify-failed { color: var(--text-muted); border: 1px solid var(--border); }
 
   </style>
 </head>
@@ -8891,8 +8835,13 @@
       return _sort.sortBy(recipes, (x) => _sort.alphaKey(x.name), 'asc');
     }
 
+    // ADR-0035 J: rows render through the shared registry widget (same
+    // renderer as Skills) -- name / step+run meta / VerifyResult badge /
+    // Run+Delete as declared recipe_run / recipe_delete tool calls, instead
+    // of bespoke .rcp-item markup + raw run_recipe/delete_recipe WS events.
     function renderRecipes() {
-      rcpListEl.querySelectorAll('.rcp-item').forEach(function (el) { el.remove(); });
+      const existingWrap = rcpListEl.querySelector('.rcp-registry-wrap');
+      if (existingWrap) existingWrap.remove();
       const recipes = (recipesData && recipesData.recipes) || [];
       const staleIds = new Set((recipesData && recipesData.stale_ids) || []);
       const rcpSortBar = document.getElementById('rcp-sort-bar');
@@ -8903,11 +8852,9 @@
       }
       rcpEmptyEl.style.display = 'none';
       if (rcpSortBar) rcpSortBar.style.display = 'flex';
+      if (typeof window.PanelSpec === 'undefined') return;
 
-      sortedRecipes(recipes).forEach(function (rcp) {
-        const el = document.createElement('div');
-        el.className = 'rcp-item';
-        el.dataset.id = rcp.id;
+      const items = sortedRecipes(recipes).map(function (rcp) {
         const stepCount = Array.isArray(rcp.steps) ? rcp.steps.length : 0;
         const metaParts = [
           stepCount + ' step' + (stepCount === 1 ? '' : 's'),
@@ -8919,48 +8866,37 @@
         if (staleIds.has(rcp.id)) {
           metaParts.push('stale');
         }
-        el.innerHTML =
-          '<div class="rcp-item-header">' +
-            '<span class="rcp-item-name">' + escHtml(rcp.name) + '</span>' +
-          '</div>' +
-          '<div class="rcp-item-meta">' + escHtml(metaParts.join(' \xb7 ')) + '</div>' +
-          '<div class="rcp-item-actions">' +
-            '<button class="rcp-btn rcp-btn-run"    type="button" data-rcp-run="'    + rcp.id + '">Run</button>' +
-            '<button class="rcp-btn rcp-btn-delete" type="button" data-rcp-delete="' + rcp.id + '">Delete</button>' +
-          '</div>' +
-          '<div class="rcp-run-feedback" id="rcp-fb-' + rcp.id + '"></div>';
-        rcpListEl.appendChild(el);
+        return {
+          name: rcp.name,
+          status: metaParts.join(' \xb7 '),
+          verify: rcp.verify || null,
+          actions: [
+            { id: 'recipe-run-' + rcp.id, label: 'Run', tool: 'recipe_run', tool_args: { recipe_id: rcp.id } },
+            { id: 'recipe-delete-' + rcp.id, label: 'Delete', tool: 'recipe_delete', tool_args: { recipe_id: rcp.id } },
+          ],
+        };
       });
+
+      const wrap = document.createElement('div');
+      wrap.className = 'rcp-registry-wrap';
+      wrap.innerHTML = window.PanelSpec.renderWidget({ type: 'registry', items: items });
+      rcpListEl.appendChild(wrap);
+      if (window.ActionWidget) window.ActionWidget.initActionWidgets(wrap, sendEvent);
     }
 
+    // recipe_run_result still fires (from _run_recipe_by_id) regardless of
+    // whether the run was dispatched via the old WS event or the new
+    // recipe_run tool -- reset the matching row's action button/status
+    // rather than waiting for the next full recipes_update re-render, so a
+    // failed run doesn't leave its button stuck disabled.
     function _onRecipeRunResult(data) {
-      const fbEl = document.getElementById('rcp-fb-' + data.recipe_id);
-      if (!fbEl) return;
-      const item = fbEl.closest('.rcp-item');
-      const runBtn = item && item.querySelector('.rcp-btn-run');
-      if (runBtn) runBtn.disabled = false;
-      fbEl.textContent = data.ok ? 'Done.' : ('Error: ' + escHtml(data.message || 'unknown'));
-      fbEl.className = 'rcp-run-feedback visible ' + (data.ok ? 'ok' : 'err');
-      setTimeout(function () {
-        fbEl.className = 'rcp-run-feedback';
-        fbEl.textContent = '';
-      }, 4000);
+      const row = rcpListEl.querySelector('[data-widget-id="recipe-run-' + data.recipe_id + '"]');
+      if (!row) return;
+      const btn = row.querySelector('.ps-action-btn');
+      const status = row.querySelector('.ps-action-status');
+      if (btn) btn.disabled = false;
+      if (status) status.textContent = data.ok ? 'Done.' : ('Error: ' + (data.message || 'unknown'));
     }
-
-    rcpListEl.addEventListener('click', function (e) {
-      const runBtn = e.target.closest('[data-rcp-run]');
-      if (runBtn) {
-        const id = parseInt(runBtn.dataset.rcpRun, 10);
-        runBtn.disabled = true;
-        sendEvent({ type: 'run_recipe', data: { recipe_id: id } });
-        return;
-      }
-      const delBtn = e.target.closest('[data-rcp-delete]');
-      if (delBtn) {
-        const id = parseInt(delBtn.dataset.rcpDelete, 10);
-        sendEvent({ type: 'delete_recipe', data: { recipe_id: id } });
-      }
-    });
 
     // ── Documents panel (S6 #457) ─────────────────────────────────────────────
     let documentsData = [];
@@ -10891,8 +10827,10 @@
           renderHarness();
         });
       });
-      // Enable/disable toggle -> plugins:set_enabled; the plugins:changed
-      // broadcast that follows re-renders the drawer (no optimistic UI).
+      // Enable/disable toggle -> the declared plugin_set_enabled MCP tool
+      // (ADR-0031: "a button is a declared tool call"). The plugins:changed
+      // broadcast the tool's apply callback fires re-renders the drawer
+      // (no optimistic UI) -- same as the WS event it replaces.
       hrnsDrawerBodyEl.querySelectorAll('[data-toggle-plugin]').forEach(function (btn) {
         btn.addEventListener('click', function () {
           var pluginName    = btn.dataset.togglePlugin;
@@ -10900,8 +10838,8 @@
           btn.disabled    = true;
           btn.textContent = targetEnabled ? 'Enabling…' : 'Disabling…';
           sendEvent({
-            type: 'plugins:set_enabled',
-            data: { plugin_name: pluginName, enabled: targetEnabled },
+            type: 'call_tool',
+            data: { name: 'plugin_set_enabled', args: { plugin_name: pluginName, enabled: targetEnabled } },
           });
         });
       });

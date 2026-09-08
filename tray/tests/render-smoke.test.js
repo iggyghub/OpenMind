@@ -668,9 +668,12 @@ test('inline script handles recipes_update and recipe_run_result events (S19)', 
   expect(inlineScript).toMatch(/['"]recipe_run_result['"]/);
 });
 
-test('inline script fires run_recipe and delete_recipe IPC verbs (S19)', () => {
-  expect(inlineScript).toMatch(/['"]run_recipe['"]/);
-  expect(inlineScript).toMatch(/['"]delete_recipe['"]/);
+test('inline script fires recipe_run/recipe_delete tool calls + list_recipes (ADR-0035 J)', () => {
+  // S19 originally fired raw run_recipe/delete_recipe WS verbs; ADR-0035 J
+  // migrated the Recipes tab onto the registry widget, whose actions are
+  // declared recipe_run/recipe_delete tool calls (ADR-0031) instead.
+  expect(inlineScript).toMatch(/['"]recipe_run['"]/);
+  expect(inlineScript).toMatch(/['"]recipe_delete['"]/);
   expect(inlineScript).toMatch(/['"]list_recipes['"]/);
 });
 
