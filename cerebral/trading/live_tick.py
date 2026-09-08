@@ -306,16 +306,28 @@ def run_strategy_tick(
     side, qty, is_close = action
 
     # Stale-data guard, opens only (AF11/#1005): block a fresh open when the
-    # last fetched bar is >3 calendar days old -- never trap a losing
-    # position open by refusing its exit on the same stale data (matches
-    # every other opens-only gate's reasoning in this function, e.g. the
-    # risk-limit checks below). Checked here, after decide_action, so a
-    # close/hold never pays for or is affected by this check.
+    # last fetched bar is stale -- never trap a losing position open by
+    # refusing its exit on the same stale data (matches every other
+    # opens-only gate's reasoning in this function, e.g. the risk-limit
+    # checks below). Checked here, after decide_action, so a close/hold
+    # never pays for or is affected by this check.
+    #
+    # Business-day count, not a flat calendar-day count: a plain weekend
+    # (Fri bar -> Mon "today") is exactly 3 calendar days, so the original
+    # ">3" threshold survived weekends by only 1 day of margin -- add any
+    # single market holiday (e.g. the Tue after Labor Day, Fri bar -> Tue
+    # "today" = 4 calendar days) and it tripped, silently blocking every
+    # open for the whole day. numpy.busday_count doesn't know NYSE holidays
+    # specifically (no calendar dependency, same disclosed tradeoff as
+    # market_hours.py), but it does skip weekends, which is what actually
+    # made the old threshold this fragile.
     if not is_close and len(data) > 0:
         last_bar_date = data.index[-1].date() if hasattr(data.index[-1], "date") else None
-        if last_bar_date is not None and (end - last_bar_date).days > 3:
-            return {"status": "hold", "signal": signal, "symbol": spec.symbol,
-                    "reason": "stale_market_data"}
+        if last_bar_date is not None:
+            import numpy as np
+            if np.busday_count(last_bar_date, end) > 2:
+                return {"status": "hold", "signal": signal, "symbol": spec.symbol,
+                        "reason": "stale_market_data"}
 
     # Captured BEFORE the order: placing it mutates the broker's position.
     entry_price = float(position.avg_entry_price) if is_close else 0.0

@@ -292,6 +292,28 @@ def test_tick_still_closes_a_fractional_long_on_a_short_signal(tmp_path, monkeyp
     assert closed["status"] == "closed" and closed["side"] == "sell"
 
 
+def test_tick_not_stale_across_a_single_holiday(tmp_path, monkeypatch):
+    """Regression for the bug that blocked every open on 2026-09-08: a bar from
+    the Friday before a Monday market holiday, evaluated on the following
+    Tuesday, is 4 CALENDAR days old (> the old flat threshold) but only 2
+    BUSINESS days old -- must NOT be treated as stale."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=2.0)
+
+    from datetime import date
+
+    today = date(2026, 9, 8)  # Tuesday after Labor Day (2026-09-07)
+    data = pd.DataFrame(
+        {"Open": [10.0], "High": [11.0], "Low": [9.0], "Close": [10.5], "Volume": [1000]},
+        index=pd.date_range("2026-09-04", periods=1, freq="D"),  # last Friday
+    )
+    fetch = lambda symbol, start, end, interval="1d": data
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fetch, today=today)
+    assert result["status"] == "opened"
+
+
 def test_tick_holds_on_stale_market_data(tmp_path, monkeypatch):
     """Stale market data (>3 days old) must block new opens but not block closes."""
     record = make_record(tmp_path, monkeypatch)
