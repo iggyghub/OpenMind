@@ -9,16 +9,18 @@ dependent slice starts. See docs/adr/0036-admission-control.md.
 
 ## Next slice -- start here
 
-- **Active:** L -- #1134
+- **Active:** M -- #1135
 - **Model:** self_dev's `task_type="self_dev"` router pin (local/cloud/connected server, per ADR-0015).
 
 ## Queue
 
-- [ ] L -- #1134 -- per-Failure-domain semaphore in router.py, cap=1, chat-priority queue (foundation, blocks M, N)
-- [ ] M -- #1135 -- expose the cap as a System setting (depends on L)
+- [x] L -- #1134 -- per-Failure-domain semaphore in router.py, cap=1, chat-priority queue. A self_dev attempt (PR #1154, closed) got the right file but keyed the cap by model_id instead of by host/Failure domain, only wrapped `complete()` (leaving `complete_with_tools` -- the actual hot path -- and `complete_with_images` uncapped), had a genuine race in the release handoff, and added no tests. Hand-implemented instead (commit 1e6803e): `_DomainSemaphore` keyed by `backend.url`, covers all three router entry points, race-free slot handoff, 4 new concurrency tests in test_router.py.
+- [ ] M -- #1135 -- expose the cap as a System setting (depends on L -- done)
 - [ ] N -- #1136 -- Felix proposes cap changes from observed stalls (depends on L, M) -- most cuttable slice; L+M alone already close the "zero admission control" gap
 
 ## Landed PRs
+
+- L -- hand-implemented on master (1e6803e); PR #1154 closed unmerged
 
 ## SAFETY
 
