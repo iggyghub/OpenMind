@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cerebral.paths import data_dir
+from cerebral.verification import VerifyResult
 
 DB_PATH = data_dir() / "openmind.db"
 
@@ -50,6 +51,35 @@ class Recipe:
         safe = self.name.lower().replace(" ", "_")
         safe = "".join(c if c.isalnum() or c == "_" else "_" for c in safe)
         return f"recipe_{safe}"
+
+    def verify(self, tools: list[dict]) -> VerifyResult:
+        """Dry-run replay (ADR-0034): confirms every step's tool still
+        exists with all its required args present, catching a tool that
+        drifted since this Recipe was saved. No real side effects -- this
+        never calls a tool, only checks signatures against the live
+        registry's current schemas (the shape MCPOrchestrator.tools_for_llm
+        returns: {"name": ..., "input_schema": {...}}).
+        """
+        tool_map = {t["name"]: t.get("input_schema", {}) for t in tools}
+        for step in self.steps:
+            tool_name = step["tool_name"]
+            args = step["args"]
+            if tool_name not in tool_map:
+                return VerifyResult(
+                    passed=False,
+                    evidence=f"Tool '{tool_name}' missing or renamed in current registry.",
+                )
+            required = tool_map[tool_name].get("required", [])
+            for req in required:
+                if req not in args:
+                    return VerifyResult(
+                        passed=False,
+                        evidence=f"Missing required arg '{req}' for tool '{tool_name}'.",
+                    )
+        return VerifyResult(
+            passed=True,
+            evidence="All steps' tools and required args are present in the current registry.",
+        )
 
 
 def _steps_fingerprint(steps: list[dict]) -> str:

@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from cerebral.db.recipes import Recipe, RecipeStore, STALE_DAYS, _steps_fingerprint
+from cerebral.verification import VerifyResult
 from cerebral.llm.chain_engine import ChainEngine
 from cerebral.llm.planner import Planner
 from cerebral.llm.router import ToolCall
@@ -515,3 +516,41 @@ async def test_s1_s2_still_work_without_on_chain_done():
     response = await engine.run("Read latest from Sarah and reply I'll be there", _TOOLS)
     assert response == "Done! I searched and replied."
     assert backend.complete_with_tools.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# verify() -- dry-run replay (ADR-0034)
+# ---------------------------------------------------------------------------
+
+_LIVE_TOOLS_MATCHING = [
+    {"name": "gmail_search", "input_schema": {"type": "object", "required": ["query"]}},
+    {"name": "gmail_send", "input_schema": {"type": "object", "required": ["to", "body"]}},
+]
+
+
+def test_verify_passes_when_all_tools_and_args_present(store):
+    r = store.save(profile_id=1, name="Morning", steps=_STEPS_2)
+    result = r.verify(_LIVE_TOOLS_MATCHING)
+    assert isinstance(result, VerifyResult)
+    assert result.passed is True
+
+
+def test_verify_fails_when_tool_renamed_or_removed(store):
+    r = store.save(profile_id=1, name="Morning", steps=_STEPS_2)
+    live_tools = [_LIVE_TOOLS_MATCHING[0]]  # gmail_send no longer exists
+    result = r.verify(live_tools)
+    assert result.passed is False
+    assert "gmail_send" in result.evidence
+
+
+def test_verify_fails_when_required_arg_missing_from_frozen_step(store):
+    r = store.save(profile_id=1, name="Morning", steps=_STEPS_2)
+    # gmail_search now requires a new "max_results" arg the frozen step never set
+    live_tools = [
+        {"name": "gmail_search", "input_schema": {"type": "object", "required": ["query", "max_results"]}},
+        _LIVE_TOOLS_MATCHING[1],
+    ]
+    result = r.verify(live_tools)
+    assert result.passed is False
+    assert "max_results" in result.evidence
+    assert "gmail_search" in result.evidence
