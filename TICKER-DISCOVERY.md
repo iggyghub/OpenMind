@@ -31,14 +31,14 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
 
 ## Next slice -- start here
 
-- **Active:** DD3 -- #1159
+- **Active:** DD4 -- #1160
 - **Model:** sonnet
 
 ## Queue
 
 - [x] DD1 -- #1157 -- Add movers/most-actives/all-assets wrappers to AlpacaBrokerClient
 - [x] DD2 -- #1158 -- build_dynamic_universe: movers + random-sample candidate pool
-- [ ] DD3 -- #1159 -- Wire extract_ticker/prefilter_candidates onto the dynamic universe
+- [x] DD3 -- #1159 -- Wire extract_ticker/prefilter_candidates onto the dynamic universe
 - [ ] DD4 -- #1160 -- Swap expand_strategy_ticker onto the dynamic universe (ADR-0026 decision 5)
 - [ ] DD5 -- #1161 -- Finance-news query sourcing + per-source validation rollup
 
@@ -65,3 +65,19 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
   `â€”`) -- replaced with plain ASCII `--`, matching this codebase's own convention. Campaign's own
   `tests_failed` verdict was the same known environmental sandbox flake as DD1 -- full
   discovery/trading suite re-run locally clean, 471 passed).
+- PR #1166 -- DD3 (self_dev's `discovery.py` wiring -- `extract_ticker`/`prefilter_candidates`/
+  `process_idea`/`run_discovery_pass` all threading an optional `known_tickers` param -- was correct
+  and matched the spec exactly. `scheduler.py`'s half of the wiring was NOT: it added the `broker`
+  parameter to `_run_discovery` and imported `build_dynamic_universe`, but never actually called it
+  -- `known_tickers=known_tickers` referenced a variable that was never assigned anywhere in
+  `_run_discovery`'s scope (the only other `known_tickers` in the file is an unrelated local inside
+  `_check_ipo_calendar`, a different method). A real `NameError` that would have crashed every
+  single discovery pass -- not caught by the sandbox's own pytest run. Hand-fixed: lazily constructs
+  `AlpacaBrokerClient(env="paper")` when no broker is injected (matching `_source_ideas`' own
+  `BrowserPlugin()` convention), calls `build_dynamic_universe(broker, fetch_fn)` once per pass, and
+  converts its `list` result to a `set` before passing to `known_tickers` -- `prefilter_candidates`
+  does `known_tickers - set(existing)`, which raises `TypeError` on a plain list, a second bug the
+  first one was hiding. Full discovery+scheduler suite re-run locally clean, 167 passed, including
+  every pre-existing `_run_discovery` test running credential-less against the real lazy-broker path
+  -- safe only because `build_dynamic_universe`'s own try/except falls back to `_KNOWN_TICKERS` on
+  any broker-call failure).
