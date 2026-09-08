@@ -7804,6 +7804,7 @@ def _wire_plugin_seams() -> None:
         ("self_dev", "set_rollback_fn", _self_dev_rollback),                         # #813 manual rollback
         ("self_dev", "set_record_turn_fn", _record_turn),                           # #810 pending-review card
         ("self_dev", "set_record_activity_fn", _record_activity),                   # S26 #879 Activity Log
+        ("self_dev", "set_campaign_status_fn", _self_dev_campaign_status),          # 2026-09-08 idle-aware restart
         ("computer_use", "set_driving_fn", _computer_use_driving),                   # S2 #576 (ADR-0016 (c))
         ("computer_use", "set_vision_ground_fn", _computer_use_vision_ground),       # S5 #578 (ADR-0016 sec 5)
         ("computer_use", "set_attended_handoff_fn", _computer_use_attended_handoff), # S6 #579 (ADR-0016 sec 6)

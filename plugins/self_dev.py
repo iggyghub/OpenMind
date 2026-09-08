@@ -383,6 +383,10 @@ _rollback_fn = None
 # activity" thread instead, for the Activity Log -- a different destination
 # for the same event, not a replacement.
 _record_activity_fn = None
+# 2026-09-08 -- tells the tray a campaign started/finished, so its
+# auto-update idle check doesn't restart Cerebral mid-slice. Same lazy
+# module-global convention as the seams above.
+_campaign_status_fn = None
 
 
 def set_edit_fn(fn) -> None:
