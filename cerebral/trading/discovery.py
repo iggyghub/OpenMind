@@ -93,7 +93,11 @@ class DiscoveryWatchlist:
         return [r["symbol"] for r in rows]
 
     def prefilter_candidates(
-        self, idea: Idea, limit: int = 3, rank_fn: Optional[RankCandidatesFn] = None,
+        self,
+        idea: Idea,
+        limit: int = 3,
+        rank_fn: Optional[RankCandidatesFn] = None,
+        known_tickers: Optional[frozenset[str]] = None,
     ) -> List[str]:
         """Cheap, in-process, TRUSTED-code pre-filter -- deliberately not
         the sandbox (S25/#878's own sub-decision 2: the sandbox exists for
@@ -136,7 +140,8 @@ class DiscoveryWatchlist:
         symbols' own priority -- they still fill every slot but the last.
         """
         existing = self.symbols()
-        overflow = sorted(_KNOWN_TICKERS - set(existing))
+        universe_tickers = known_tickers if known_tickers is not None else _KNOWN_TICKERS
+        overflow = sorted(universe_tickers - set(existing))
         universe = existing + overflow
         if rank_fn is not None:
             ranked = rank_fn(universe)
@@ -245,7 +250,9 @@ def _attempt_outcome(result: dict) -> "tuple[str, str]":
     return verdict, ""
 
 
-def extract_ticker(idea: Idea) -> Optional[str]:
+def extract_ticker(
+    idea: Idea, known_tickers: "frozenset[str] | set[str]" = _KNOWN_TICKERS
+) -> Optional[str]:
     """A ticker-specific idea (decision #36) names a specific stock in its
     claim or page title. Deliberately conservative: an unrecognized
     all-caps token is NOT assumed to be a ticker -- screen by default
@@ -253,10 +260,10 @@ def extract_ticker(idea: Idea) -> Optional[str]:
     text = f"{idea.claim_text or ''} {idea.page_title or ''}"
     for match in re.finditer(r"\$?\b[A-Z]{2,5}\b", text):
         symbol = match.group(0).lstrip("$")
-        if symbol in _KNOWN_TICKERS:
+        if symbol in known_tickers:
             return symbol
     for match in re.finditer(r"\$([A-Z])\b", text):
-        if match.group(1) in _KNOWN_TICKERS:
+        if match.group(1) in known_tickers:
             return match.group(1)
     return None
 
@@ -371,6 +378,7 @@ async def process_idea(
     record_attempt_fn: Optional[RecordAttemptFn] = None,
     rank_fn: Optional[RankCandidatesFn] = None,
     candidate_limit: int = 3,
+    known_tickers: Optional[set] = None,
 ) -> List[dict]:
     """One sourced idea -> zero or more run_gauntlet dispatches.
 
@@ -385,7 +393,7 @@ async def process_idea(
     which only ever logs a "dispatched" activity-feed entry before the
     gauntlet has even run and is unrelated to this.
     """
-    ticker = extract_ticker(idea)
+    ticker = extract_ticker(idea, known_tickers or _KNOWN_TICKERS)
 
     if ticker is not None:
         result = await run_gauntlet_fn(idea, ticker)
@@ -435,7 +443,9 @@ async def process_idea(
         })
 
     results: List[dict] = []
-    for candidate in watchlist.prefilter_candidates(idea, limit=candidate_limit, rank_fn=rank_fn):
+    for candidate in watchlist.prefilter_candidates(
+        idea, limit=candidate_limit, rank_fn=rank_fn, known_tickers=known_tickers
+    ):
         result = await run_gauntlet_fn(idea, candidate)
         watchlist.upsert(candidate, source=idea.provenance)
         await _record_attempt(record_attempt_fn, candidate, idea, result)
@@ -452,6 +462,7 @@ async def run_discovery_pass(
     record_attempt_fn: Optional[RecordAttemptFn] = None,
     rank_fn: Optional[RankCandidatesFn] = None,
     candidate_limit: int = 3,
+    known_tickers: Optional[set] = None,
 ) -> List[dict]:
     """One discovery-loop tick: every already-sourced idea, processed in
     turn. Sourcing (web_search/navigate) is the caller's job -- kept out
@@ -461,10 +472,15 @@ async def run_discovery_pass(
     results: List[dict] = []
     for idea in ideas:
         results.extend(await process_idea(
-            idea, watchlist, run_gauntlet_fn,
-            judge_idea_fn=judge_idea_fn, record_activity_fn=record_activity_fn,
-            record_attempt_fn=record_attempt_fn, rank_fn=rank_fn,
+            idea,
+            watchlist,
+            run_gauntlet_fn,
+            judge_idea_fn=judge_idea_fn,
+            record_activity_fn=record_activity_fn,
+            record_attempt_fn=record_attempt_fn,
+            rank_fn=rank_fn,
             candidate_limit=candidate_limit,
+            known_tickers=known_tickers,
         ))
     return results
 

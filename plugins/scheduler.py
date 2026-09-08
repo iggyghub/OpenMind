@@ -23,7 +23,12 @@ from cerebral.trading.strategy_store import StrategySpec, StrategyStore, mint_ex
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.gauntlet import run_gauntlet, compute_max_holding_days
 from cerebral.trading.discovery import (
-    DiscoveryAttempts, DiscoveryWatchlist, _KNOWN_TICKERS, rank_for_day_trading, run_discovery_pass,
+    DiscoveryAttempts,
+    DiscoveryWatchlist,
+    _KNOWN_TICKERS,
+    build_dynamic_universe,
+    rank_for_day_trading,
+    run_discovery_pass,
 )
 from cerebral.trading.books import (
     BookStore, chunk_text, extract_claims_from_chunk, extract_full_text,
@@ -1109,7 +1114,9 @@ class SchedulerPlugin:
                 ))
         return ideas
 
-    async def _run_discovery(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
+    async def _run_discovery(
+        self, args: dict, *, strategy_store=None, fetch=None, broker=None
+    ) -> ToolResult:
         """The discovery loop's one trigger: source -> screen -> dispatch.
         `symbol + hypothesis + code -> run_gauntlet` (decision #33) stays
         the single unchanged convergence point -- this only ever calls
@@ -1166,11 +1173,24 @@ class SchedulerPlugin:
         async def judge_idea_fn(idea: Idea) -> "tuple[bool, str]":
             return await _judge_idea(idea, router=self._router)
 
+        fetch_fn = fetch
+        if fetch_fn is None:
+            from cerebral.trading_data import fetch_ohlcv as fetch_fn
+
         def rank_fn(symbols: list) -> list:
-            fetch_fn = fetch
-            if fetch_fn is None:
-                from cerebral.trading_data import fetch_ohlcv as fetch_fn
             return rank_for_day_trading(symbols, fetch_fn)
+
+        # DD3 (#1159): the shared Candidate pool (ADR-0026 decision 5,
+        # amended 2026-09-08) -- SchedulerPlugin holds no broker reference
+        # (see the FIXME at ~line 942, the same gap AF16 hit and
+        # deliberately left alone), so lazily construct one only when no
+        # fake was injected for testing, matching _source_ideas' own
+        # BrowserPlugin() convention just above.
+        broker_obj = broker
+        if broker_obj is None:
+            from cerebral.trading.broker import AlpacaBrokerClient
+            broker_obj = AlpacaBrokerClient(env="paper")
+        known_tickers = set(build_dynamic_universe(broker_obj, fetch_fn))
 
         record_activity_fn = self._record_activity_fn
 
@@ -1188,10 +1208,15 @@ class SchedulerPlugin:
 
         candidate_limit = self._settings.get("discovery_candidate_limit")
         results = await run_discovery_pass(
-            ideas, self._discovery_watchlist, run_gauntlet_fn,
-            judge_idea_fn=judge_idea_fn, record_activity_fn=record_activity_fn,
-            record_attempt_fn=record_attempt_fn, rank_fn=rank_fn,
+            ideas,
+            self._discovery_watchlist,
+            run_gauntlet_fn,
+            judge_idea_fn=judge_idea_fn,
+            record_activity_fn=record_activity_fn,
+            record_attempt_fn=record_attempt_fn,
+            rank_fn=rank_fn,
             candidate_limit=candidate_limit,
+            known_tickers=known_tickers,
         )
         return ToolResult(content=json.dumps({
             "sourced": len(ideas), "dispatched": len(results),
