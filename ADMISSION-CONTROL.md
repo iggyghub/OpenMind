@@ -9,18 +9,19 @@ dependent slice starts. See docs/adr/0036-admission-control.md.
 
 ## Next slice -- start here
 
-- **Active:** M -- #1135
+- **Active:** N -- #1136
 - **Model:** self_dev's `task_type="self_dev"` router pin (local/cloud/connected server, per ADR-0015).
 
 ## Queue
 
 - [x] L -- #1134 -- per-Failure-domain semaphore in router.py, cap=1, chat-priority queue. A self_dev attempt (PR #1154, closed) got the right file but keyed the cap by model_id instead of by host/Failure domain, only wrapped `complete()` (leaving `complete_with_tools` -- the actual hot path -- and `complete_with_images` uncapped), had a genuine race in the release handoff, and added no tests. Hand-implemented instead (commit 1e6803e): `_DomainSemaphore` keyed by `backend.url`, covers all three router entry points, race-free slot handoff, 4 new concurrency tests in test_router.py.
-- [ ] M -- #1135 -- expose the cap as a System setting (depends on L -- done)
-- [ ] N -- #1136 -- Felix proposes cap changes from observed stalls (depends on L, M) -- most cuttable slice; L+M alone already close the "zero admission control" gap
+- [x] M -- #1135 -- expose the cap as a System setting. A self_dev attempt (PR #1155, closed) only registered the settings schema key (5 lines) with a default of 10 that silently contradicted L's ADR-mandated default of 1 -- no UI, no settings_control wiring, no connection to the live router at all (the actual acceptance criterion). Hand-implemented instead (commit 27110f0): `ModelRouter.set_admission_cap()` live-updates every domain semaphore, wired from both the `set_system_setting` tool and the Settings panel's direct `set_setting` path, new "Admission cap" input in the Settings panel.
+- [ ] N -- #1136 -- Felix proposes cap changes from observed stalls (depends on L, M -- both done) -- most cuttable slice; L+M alone already close the "zero admission control" gap
 
 ## Landed PRs
 
 - L -- hand-implemented on master (1e6803e); PR #1154 closed unmerged
+- M -- hand-implemented on master (27110f0); PR #1155 closed unmerged
 
 ## SAFETY
 
