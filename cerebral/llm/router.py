@@ -174,6 +174,50 @@ CLOUD_MODELS = {
 _DEFAULT_CONTEXT_WINDOW = 8192
 
 
+class _DomainSemaphore:
+    """Per-Failure-domain admission cap (ADR-0036).
+
+    Like ``asyncio.Semaphore(cap)``, except a waiter tagged
+    ``task_type == "chat"`` is served ahead of any other waiting
+    ``task_type``, regardless of arrival order (R5: priority is
+    queue-order among *waiters*, never preemption -- a call already
+    holding the slot always runs to completion untouched).
+
+    A freed slot is handed directly to the next waiter under the same
+    lock that released it (no decrement in between) -- otherwise a
+    brand-new ``acquire()`` could race in and steal the slot out from
+    under an already-queued, possibly chat-priority, waiter.
+    """
+
+    __slots__ = ("cap", "active", "waiters", "_lock")
+
+    def __init__(self, cap: int = 1) -> None:
+        self.cap = cap
+        self.active = 0
+        self.waiters: list[tuple[str, "asyncio.Future[None]"]] = []
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, task_type: str) -> None:
+        async with self._lock:
+            if self.active < self.cap:
+                self.active += 1
+                return
+            fut: "asyncio.Future[None]" = asyncio.get_running_loop().create_future()
+            self.waiters.append((task_type, fut))
+            # Stable sort: chat waiters move to the front; FIFO order is
+            # preserved within each priority band.
+            self.waiters.sort(key=lambda w: w[0] != "chat")
+        await fut
+
+    async def release(self) -> None:
+        async with self._lock:
+            if self.waiters:
+                _, fut = self.waiters.pop(0)
+                fut.set_result(None)  # hand the slot off directly
+            else:
+                self.active -= 1
+
+
 class ModelRouter:
     def __init__(
         self,
@@ -210,6 +254,11 @@ class ModelRouter:
         self._enabled: dict[str, bool] = {mid: True for mid in backends}
         self._fallback_enabled: bool = False
         self._usage_log: list[dict] = []
+        # ADR-0036: per-Failure-domain admission cap, keyed by backend host
+        # (see _domain_key), not by model_id -- two model_ids on the same
+        # host share one cap.
+        self._domain_semaphores: dict[str, _DomainSemaphore] = {}
+        self._sem_lock = asyncio.Lock()
 
     @property
     def active_model(self) -> str:
@@ -528,6 +577,38 @@ class ModelRouter:
             out.append(mid)
         return out
 
+    def _domain_key(self, model_id: str) -> str | None:
+        """The Failure domain a model_id belongs to (ADR-0036): its
+        backend's shared host (``.url``), so two model_ids on the same
+        server share one cap. None for a backend with no shared network
+        endpoint to cap -- AnthropicBackend's SDK client has no ``.url``,
+        and cloud is explicitly out of this ADR's scope ("Budd is remote,
+        not cloud", ADR-0028 R5)."""
+        backend = self._backends.get(model_id)
+        return getattr(backend, "url", None) if backend is not None else None
+
+    async def _get_sem(self, domain: str) -> _DomainSemaphore:
+        async with self._sem_lock:
+            sem = self._domain_semaphores.get(domain)
+            if sem is None:
+                sem = _DomainSemaphore(cap=1)
+                self._domain_semaphores[domain] = sem
+            return sem
+
+    async def _admit(self, model_id: str, task_type: str, call):
+        """Run the zero-arg async ``call`` under model_id's Failure-domain
+        admission cap (ADR-0036). A backend with no shared endpoint to cap
+        (cloud) runs uncapped."""
+        domain = self._domain_key(model_id)
+        if domain is None:
+            return await call()
+        sem = await self._get_sem(domain)
+        await sem.acquire(task_type)
+        try:
+            return await call()
+        finally:
+            await sem.release()
+
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         top = self.active_model
         model_id = self._task_models.get(task_type, top)
@@ -549,7 +630,9 @@ class ModelRouter:
             last_exc: Exception | None = None
             for mid in attempts:
                 try:
-                    response = await self._backends[mid].complete(prompt, task_type)
+                    response = await self._admit(
+                        mid, task_type, lambda mid=mid: self._backends[mid].complete(prompt, task_type)
+                    )
                 except (OSError, ConnectionError) as exc:
                     last_exc = exc
                     logger.warning(
@@ -573,7 +656,9 @@ class ModelRouter:
             ) from last_exc
 
         try:
-            response = await self._backends[model_id].complete(prompt, task_type)
+            response = await self._admit(
+                model_id, task_type, lambda: self._backends[model_id].complete(prompt, task_type)
+            )
         except (OSError, ConnectionError) as exc:
             if model_id == top:
                 raise ModelUnavailableError(
@@ -585,7 +670,9 @@ class ModelRouter:
             )
             model_id = top
             try:
-                response = await self._backends[model_id].complete(prompt, task_type)
+                response = await self._admit(
+                    model_id, task_type, lambda: self._backends[model_id].complete(prompt, task_type)
+                )
             except (OSError, ConnectionError) as exc2:
                 raise ModelUnavailableError(
                     f"model '{model_id}' unavailable: {exc2}"
@@ -630,8 +717,9 @@ class ModelRouter:
         last_exc: Exception | None = None
         for mid in chain:
             try:
-                response = await self._backends[mid].complete_with_images(
-                    prompt, images, task_type
+                response = await self._admit(
+                    mid, task_type,
+                    lambda mid=mid: self._backends[mid].complete_with_images(prompt, images, task_type),
                 )
             except (OSError, ConnectionError) as exc:
                 last_exc = exc
@@ -669,7 +757,9 @@ class ModelRouter:
             last_exc: Exception | None = None
             for mid in attempts:
                 try:
-                    result = await self._backends[mid].complete_with_tools(prompt, tools)
+                    result = await self._admit(
+                        mid, task_type, lambda mid=mid: self._backends[mid].complete_with_tools(prompt, tools)
+                    )
                 except (OSError, ConnectionError) as exc:
                     last_exc = exc
                     logger.warning(
@@ -686,7 +776,9 @@ class ModelRouter:
 
         backend = self._backends[model_id]
         try:
-            result = await backend.complete_with_tools(prompt, tools)
+            result = await self._admit(
+                model_id, task_type, lambda: backend.complete_with_tools(prompt, tools)
+            )
         except (OSError, ConnectionError) as exc:
             raise ModelUnavailableError(
                 f"model '{model_id}' unavailable: {exc}"

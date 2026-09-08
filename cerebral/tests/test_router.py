@@ -2034,3 +2034,125 @@ async def test_dynamic_backend_complete_with_images_delegates(monkeypatch):
     assert parts[1]["image_url"]["url"] == (
         f"data:image/png;base64,{base64.b64encode(b'i').decode('ascii')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Admission control (ADR-0036, slice L) — per-Failure-domain semaphore
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+
+class _SlowBackend:
+    """A backend whose complete() blocks on a shared asyncio.Event, so a
+    test can observe how many calls are concurrently past admission."""
+
+    def __init__(self, url: str = "http://shared-host"):
+        self.url = url
+        self.active = 0
+        self.max_active = 0
+        self._release = asyncio.Event()
+
+    async def complete(self, prompt: str, task_type: str) -> str:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        await self._release.wait()
+        self.active -= 1
+        return f"{prompt}:{task_type}"
+
+    def release_all(self) -> None:
+        self._release.set()
+
+
+async def test_admission_cap_limits_concurrent_calls_to_one_domain():
+    """A single Failure domain (one backend .url) admits only `cap` (1)
+    call at a time -- the rest queue at the semaphore, never entering
+    complete() concurrently."""
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend})
+
+    tasks = [
+        asyncio.create_task(router.complete(f"p{i}", task_type="background"))
+        for i in range(3)
+    ]
+    await asyncio.sleep(0.02)  # let every task attempt admission
+    assert backend.active == 1  # only one made it past the cap
+
+    backend.release_all()
+    results = await asyncio.gather(*tasks)
+
+    assert backend.max_active == 1  # never more than `cap` concurrently
+    assert sorted(results) == [
+        "p0:background", "p1:background", "p2:background",
+    ]
+
+
+async def test_admission_chat_call_admitted_before_queued_background_calls():
+    """R5/ADR-0036: priority is queue-order among *waiters*, never
+    preemption. A call already holding the slot runs to completion
+    untouched; among waiters, chat jumps ahead of background regardless of
+    arrival order."""
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend})
+    order: list[str] = []
+
+    async def call(tag: str, task_type: str) -> None:
+        await router.complete(tag, task_type=task_type)
+        order.append(tag)
+
+    # `first` takes the only slot and blocks inside complete() -- it runs to
+    # completion untouched no matter what queues up behind it.
+    first = asyncio.create_task(call("first", "background"))
+    await asyncio.sleep(0.02)
+    assert backend.active == 1
+
+    # Two background waiters queue first, then a chat waiter arrives last --
+    # it must still be admitted ahead of both.
+    bg1 = asyncio.create_task(call("bg1", "background"))
+    await asyncio.sleep(0.01)
+    bg2 = asyncio.create_task(call("bg2", "background"))
+    await asyncio.sleep(0.01)
+    chat = asyncio.create_task(call("chat", "chat"))
+    await asyncio.sleep(0.02)
+
+    backend.release_all()
+    await asyncio.gather(first, bg1, bg2, chat)
+
+    assert order[0] == "first"  # already-holding call is never preempted
+    assert order.index("chat") < order.index("bg1")
+    assert order.index("chat") < order.index("bg2")
+
+
+async def test_admission_two_model_ids_on_same_host_share_one_domain():
+    """Two model_ids whose backends share a host (Failure domain, per
+    CONTEXT.md) share ONE cap, not one each."""
+    shared = _SlowBackend(url="http://shared-host")
+    router = ModelRouter(backends={"custom/a": shared, "custom/b": shared})
+
+    async def call(model_id: str, tag: str) -> str:
+        router.switch_model(model_id)
+        return await router.complete(tag, task_type="background")
+
+    t1 = asyncio.create_task(call("custom/a", "via-a"))
+    await asyncio.sleep(0.02)
+    t2 = asyncio.create_task(call("custom/b", "via-b"))
+    await asyncio.sleep(0.02)
+
+    assert shared.active == 1  # the second model_id's call queued, not ran
+
+    shared.release_all()
+    await asyncio.gather(t1, t2)
+    assert shared.max_active == 1
+
+
+async def test_admission_cloud_backend_with_no_url_is_uncapped():
+    """A backend with no shared endpoint (e.g. AnthropicBackend's SDK
+    client) has no Failure domain to cap -- ADR-0036 scopes this to
+    remote/Budd, not cloud."""
+    backend = AsyncMock()
+    del backend.url  # AsyncMock auto-creates attrs; this backend has none
+    backend.complete.return_value = "ok"
+    router = ModelRouter(backends={"claude/haiku": backend})
+
+    results = await asyncio.gather(*[router.complete("p") for _ in range(3)])
+    assert results == ["ok", "ok", "ok"]
