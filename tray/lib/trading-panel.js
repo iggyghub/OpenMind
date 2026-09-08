@@ -1902,18 +1902,21 @@ function renderTradeLog(data, container) {
     </div>`;
     if (typeof mount.querySelector === 'function') {
       // Wire sub-tab switching
-      mount.querySelector('.trd-log-subtabs').addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-log-tab]');
-        if (!btn) return;
-        const tabId = btn.dataset.logTab;
-        mount._logActiveTab = tabId;
-        mount.querySelectorAll('.trd-log-subtabs button').forEach(b => {
-          b.classList.toggle('is-active', b.dataset.logTab === tabId);
+      const subtabsEl = mount.querySelector('.trd-log-subtabs');
+      if (subtabsEl) {
+        subtabsEl.addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-log-tab]');
+          if (!btn) return;
+          const tabId = btn.dataset.logTab;
+          mount._logActiveTab = tabId;
+          mount.querySelectorAll('.trd-log-subtabs button').forEach(b => {
+            b.classList.toggle('is-active', b.dataset.logTab === tabId);
+          });
+          mount.querySelectorAll('.trd-log-section').forEach(s => {
+            s.hidden = s.dataset.logSection !== tabId;
+          });
         });
-        mount.querySelectorAll('.trd-log-section').forEach(s => {
-          s.hidden = s.dataset.logSection !== tabId;
-        });
-      });
+      }
       _wireTradeLogSection(mount, 'paper', () => mount._logPaperFills || []);
       _wireTradeLogSection(mount, 'live', () => mount._logLiveFills || []);
     }
