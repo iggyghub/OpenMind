@@ -9,22 +9,21 @@ dependent slice starts. See docs/adr/0035-registry-widget-and-skill-update.md.
 
 ## Next slice -- start here
 
-- **Active:** H -- #1130
+- **Active:** K -- #1133
 - **Model:** self_dev's `task_type="self_dev"` router pin (local/cloud/connected server, per ADR-0015).
 
 ## Queue
 
 - [x] G -- #1129 -- add `registry` to the panel vocabulary. PR #1151's widget code was correct but its own test used a require path one level too deep, resolving outside the repo; hand-fixed (commit 7d732fb), also updated the pre-existing WIDGET_TYPES exact-match test. PR #1151 closed unmerged.
-- [ ] H -- #1130 -- migrate Plugins panel onto the registry widget
-- [ ] I -- #1131 -- migrate Skills sub-tab onto the registry widget (blocks K)
-- [ ] J -- #1132 -- migrate Recipes tab onto the registry widget
-- [ ] K -- #1133 -- skill_update tool + local-edit conflict detection (depends on G, I)
-
-H, I, J may run in parallel once G lands. K needs I's row to exist first.
+- [x] H -- #1130 -- migrate Plugins panel onto the registry widget. Blocked mid-campaign on a real design gap (enable/disable was a tray-internal WS event, not a declared MCP tool -- see ADR-0031). Resolved by hand: added `plugin_set_enabled` tool to `plugins/settings_control.py` (commit fcd42a6), then swapped the drawer's toggle button to dispatch it via `call_tool` (commit 94457a8), keeping the card-grid/drawer structure itself untouched. A self_dev attempt (PR #1152, closed) built a disconnected fake widget with hardcoded data and corrupted a `<style>` block -- not reattempted.
+- [x] I -- #1131 -- migrate Skills sub-tab onto the registry widget. Hand-implemented directly, commit 4495dec. `plugins/skills.py`'s `panel_spec()` now emits one registry row per skill with a real VerifyResult badge; extended `_renderRegistry` with an optional `hint` field.
+- [x] J -- #1132 -- migrate Recipes tab onto the registry widget. Same design gap as H (run/delete were WS events) -- resolved by adding `recipe_run`/`recipe_delete` tools to a new `plugins/recipes.py` (commit 1939ca6), then migrating `renderRecipes()` onto `PanelSpec.renderWidget({type:'registry',...})` + `ActionWidget.initActionWidgets` (commit 94457a8). Also added a per-recipe VerifyResult (dry-run replay, ADR-0034) to the `recipes_update` broadcast for the badge, and added the `.ps-registry-*`/`.ps-verify-*` CSS that slices G/I had shipped without (Skills gets it for free too).
+- [ ] K -- #1133 -- skill_update tool + local-edit conflict detection (depends on G, I -- both done)
 
 ## Landed PRs
 
 - G -- hand-fixed on master (7d732fb); PR #1151 closed unmerged, superseded
+- H, I, J -- all hand-implemented on master (no clean self_dev PR for any of the three); see Queue notes above for commits
 
 ## SAFETY
 
