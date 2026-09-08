@@ -410,6 +410,11 @@ def set_record_activity_fn(fn) -> None:
     _record_activity_fn = fn
 
 
+def set_campaign_status_fn(fn) -> None:
+    global _campaign_status_fn
+    _campaign_status_fn = fn
+
+
 async def _default_record_turn_fn(kind: str, content: dict) -> None:
     """No-op until main.py wires the Conversation store seam via
     set_record_turn_fn (main.py's own ``_record_turn``, S9/#292).
@@ -1027,10 +1032,20 @@ class SelfDevPlugin:
                 is_error=True,
             )
         self._campaign_running = True
+        if _campaign_status_fn is not None:
+            try:
+                await _campaign_status_fn({"running": True})
+            except Exception:
+                logger.warning("[self_dev] campaign_status_fn(running=True) failed", exc_info=True)
         try:
             return await self._campaign_inner(args)
         finally:
             self._campaign_running = False
+            if _campaign_status_fn is not None:
+                try:
+                    await _campaign_status_fn({"running": False})
+                except Exception:
+                    logger.warning("[self_dev] campaign_status_fn(running=False) failed", exc_info=True)
 
     async def _campaign_inner(self, args: dict) -> ToolResult:
         """Drive a multi-slice campaign from a driver .md file (SD-5/#807).

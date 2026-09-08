@@ -3204,6 +3204,12 @@ async def _self_dev_rollback() -> None:
     await _broadcast({"type": "self_dev_manual_rollback"})
 
 
+async def _self_dev_campaign_status(status: dict) -> None:
+    """self_dev campaign_status_fn -- tells the tray a campaign started/finished,
+    so its auto-update idle check doesn't restart Cerebral mid-slice (2026-09-08)."""
+    await _broadcast({"type": "self_dev_campaign_status", "data": status})
+
+
 async def _send(websocket, event: dict) -> None:
     try:
         await websocket.send(json.dumps(event))

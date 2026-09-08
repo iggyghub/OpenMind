@@ -762,6 +762,7 @@ async def test_campaign_refuses_concurrent_second_call(tmp_path):
 
     entered = asyncio.Event()
     release = asyncio.Event()
+    campaign_status_calls = []
 
     class _SlowPlugin(SelfDevPlugin):
         async def _run(self, args: dict) -> ToolResult:
@@ -769,12 +770,16 @@ async def test_campaign_refuses_concurrent_second_call(tmp_path):
             await release.wait()
             return _auto_merge_result()
 
+    def _status_fn(status):
+        campaign_status_calls.append(status)
+
     plugin = _SlowPlugin(
         sandbox=_FakeSandbox(),
         issue_fn=lambda n: f"# Issue {n}\n\nBody",
         sandbox_root=tmp_path / "self_dev",
         ledger=StepLedger(db_path=tmp_path / "ledger.db"),
     )
+    plugin.set_campaign_status_fn(_status_fn)
 
     first = asyncio.create_task(
         plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
@@ -784,21 +789,43 @@ async def test_campaign_refuses_concurrent_second_call(tmp_path):
     second = await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
     assert second.is_error
     assert "already running" in second.content.lower()
+    # Refusal must not have flipped the status flag
+    assert campaign_status_calls == [{"running": True}]
 
     release.set()
     first_result = await first
     assert not first_result.is_error
+    # Status must be flipped back to False after the first campaign finishes
+    assert campaign_status_calls == [{"running": True}, {"running": False}]
 
 
 async def test_campaign_allows_a_new_run_after_the_previous_one_finishes(tmp_path):
     """The guard clears once a campaign completes -- not a permanent lockout."""
     driver = tmp_path / "BOOKS.md"
     driver.write_text(_DRIVER_BOOKS, encoding="utf-8")
-    plugin = _make_plugin(tmp_path, [_auto_merge_result(), _auto_merge_result()])
+    campaign_status_calls = []
+
+    def _status_fn(status):
+        campaign_status_calls.append(status)
+
+    class _SpyPlugin(SelfDevPlugin):
+        async def _run(self, args: dict) -> ToolResult:
+            return _auto_merge_result()
+
+    plugin = _SpyPlugin(
+        sandbox=_FakeSandbox(),
+        issue_fn=lambda n: f"# Issue {n}\n\nBody",
+        sandbox_root=tmp_path / "self_dev",
+        ledger=StepLedger(db_path=tmp_path / "ledger.db"),
+    )
+    plugin.set_campaign_status_fn(_status_fn)
 
     first = await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
     assert not first.is_error
+    assert campaign_status_calls == [{"running": True}, {"running": False}]
 
     driver.write_text(_DRIVER_BOOKS, encoding="utf-8")  # reset Active for a clean second run
     second = await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
     assert not second.is_error
+    # Second campaign should trigger status calls again
+    assert campaign_status_calls == [{"running": True}, {"running": False}, {"running": True}, {"running": False}]
