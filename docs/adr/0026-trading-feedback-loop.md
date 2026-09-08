@@ -104,3 +104,37 @@ Grounding facts from the live database, not assumptions:
   adding load to the existing always-on discovery loop; if usage later shows the
   on-demand friction isn't worth it, promoting either to a scheduled job is a small
   follow-up, not a redesign.
+
+## Amendment — 2026-09-08 (dynamic Candidate pool, replaces the static ticker source in decision 5)
+
+Decision 5 fixed the *ranking* (`rank_for_day_trading`) and the *cap* (`discovery_candidate_limit`)
+as shared between Discovery and Expansion, but left the underlying ticker source as
+`_KNOWN_TICKERS` — a 36-symbol frozenset hand-edited directly in `discovery.py` source, most
+recently 2026-09-01. That was a real gap: which companies count as liquid/interesting drifts over
+time, and a hardcoded list needs a human to keep re-editing source to track that drift. It was also
+the wrong shape for what the user actually wants — `_KNOWN_TICKERS`' 2026-09-01 revision leaned
+mega-cap-heavy, and mega-caps are deliberately low-volatility; day/swing trading wants tickers that
+actually move.
+
+**Decision:** the ticker source behind the shared Candidate pool becomes dynamic — built fresh each
+use from Alpaca's real market-movers/most-actives screeners (both gainers and losers: a loser is a
+bounce/reversal candidate, not just something to avoid) plus a random sample of the broader
+tradable universe for breadth, still narrowed by the existing `rank_for_day_trading` liquidity/ATR
+filter unchanged from decision 5. `_KNOWN_TICKERS` is kept, not deleted, as the fallback when the
+live Alpaca calls fail for any reason (network, auth, rate limit) — Discovery/Expansion must never
+go silent just because one live call errored.
+
+Two alternatives were considered and rejected during the grill: a market-cap/S&P-500-constituents
+anchor list (rejected — same "barely moves" problem as the mega-cap-heavy `_KNOWN_TICKERS` it would
+replace, just refreshed instead of static) and per-strategy-type candidate pools (rejected — no
+strategy anywhere declares any ticker-fit criteria today; inventing that tagging concept purely to
+split the pool would be solving a problem that doesn't exist yet, not shaped by the actual gap
+found). See `TICKER-DISCOVERY.md` (self_dev campaign driver, issues #1157-#1161) for the concrete
+slices, and the new **Candidate pool** glossary term in `CONTEXT.md`.
+
+Also added in the same campaign, independent of the pool mechanism above: named finance-news query
+sourcing (Motley Fool, Benzinga, MarketWatch, Zacks, CNBC, via the existing `web_search` idea-
+sourcing path — no new scraper) and a per-source-domain validated/unvalidated rollup
+(`DiscoveryAttempts.get_source_performance`, derived from the `idea_url` already recorded per
+attempt — no schema change), so which sites' "top picks" actually pan out becomes visible over
+time instead of every source being trusted equally forever.
