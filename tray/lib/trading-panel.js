@@ -1730,36 +1730,70 @@ function _renderTradeLogRows(section, fills) {
   const tbody = section.querySelector('.trd-log-tbody');
   const emptyEl = section.querySelector('.trd-log-empty');
   if (!tbody) return;
+  
+  // Initialize sort state if not present
+  if (!section._sortKey) {
+    section._sortKey = 'time';
+    section._sortDir = 'desc';
+  }
+
   const searchVal = section.querySelector('.trd-log-search').value;
   const strategyVal = section.querySelector('.trd-log-strategy-filter').value;
   const symbolVal = section.querySelector('.trd-log-symbol-filter').value;
-  // Newest first for a log -- all_fills itself is chronological oldest-first
-  // (S35c's own doc comment: needed that order to build a running curve).
-  const rows = _tradeLogFilterRows(fills, searchVal, strategyVal, symbolVal).slice().reverse();
+  
+  const filtered = _tradeLogFilterRows(fills, searchVal, strategyVal, symbolVal);
+  
+  // Sort by active key/direction
+  const sortKey = section._sortKey;
+  const sortDir = section._sortDir;
+  filtered.sort((a, b) => {
+    let va = a[sortKey], vb = b[sortKey];
+    if (sortKey === 'time') { va = a.timestamp || 0; vb = b.timestamp || 0; }
+    if (va < vb) return sortDir === 'asc' ? -1 : 1;
+    if (va > vb) return sortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
 
-  if (rows.length === 0) {
+  if (filtered.length === 0) {
     tbody.innerHTML = '';
     if (emptyEl) emptyEl.hidden = false;
     return;
   }
   if (emptyEl) emptyEl.hidden = true;
-  tbody.innerHTML = rows.map((f) => `
-    <tr>
-      <td>${new Date(f.timestamp).toLocaleString()}</td>
-      <td>${f.symbol}</td>
-      <td class="trd-log-side-${f.side}">${f.side.toUpperCase()}</td>
-      <td>${f.qty}</td>
-      <td>$${f.price.toFixed(2)}</td>
-      <td>$${f.fees.toFixed(2)}</td>
-      <td class="${f.pnl >= 0 ? 'positive' : 'negative'}">$${f.pnl.toFixed(2)}</td>
-      <td class="trd-log-strategy-cell" title="${f.strategy_id}">${f.strategy_id.length > 40 ? f.strategy_id.slice(0, 40) + '…' : f.strategy_id}</td>
-    </tr>
-  `).join('');
+  
+  tbody.innerHTML = filtered.map((f) => {
+    const pnlPct = (f.price * f.qty === 0)
+      ? '—'
+      : ((f.pnl / (f.price * f.qty)) * 100).toFixed(2);
+    const pnlSign = f.pnl >= 0 ? '+' : '';
+    return `
+      <tr>
+        <td>${new Date(f.timestamp).toLocaleString()}</td>
+        <td>${f.symbol}</td>
+        <td class="trd-log-side-${f.side}">${f.side.toUpperCase()}</td>
+        <td>${f.qty}</td>
+        <td>$${f.price.toFixed(2)}</td>
+        <td>$${f.fees.toFixed(2)}</td>
+        <td class="${f.pnl >= 0 ? 'positive' : 'negative'}">$${f.pnl.toFixed(2)}</td>
+        <td class="${f.pnl >= 0 ? 'positive' : 'negative'}">${pnlSign}${pnlPct}%</td>
+        <td class="trd-log-strategy-cell" title="${f.strategy_id}">${f.strategy_id.length > 40 ? f.strategy_id.slice(0, 40) + '…' : f.strategy_id}</td>
+      </tr>
+    `;
+  }).join('');
+  
+  // Update sort indicators on headers
+  section.querySelectorAll('th[data-sort-key]').forEach(th => {
+    th.classList.remove('is-sorted-asc', 'is-sorted-desc');
+    if (th.dataset.sortKey === section._sortKey) {
+      th.classList.add(sortDir === 'asc' ? 'is-sorted-asc' : 'is-sorted-desc');
+    }
+  });
 }
 
-function _buildTradeLogSection(sectionId, title) {
+function _buildTradeLogSection(sectionId, title, isActive) {
+  const hidden = isActive ? '' : ' hidden';
   return `
-    <div class="trd-log-section" data-log-section="${sectionId}">
+    <div class="trd-log-section" data-log-section="${sectionId}"${hidden}>
       <h3 class="trd-overview-section-title">${title}</h3>
       <div class="trd-log-filters">
         <input type="text" class="trd-log-search" placeholder="Search symbol or strategy…">
@@ -1768,7 +1802,7 @@ function _buildTradeLogSection(sectionId, title) {
       </div>
       <div class="trd-log-table-wrap">
         <table class="trd-log-table">
-          <thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Fees</th><th>PnL</th><th>Strategy</th></tr></thead>
+          <thead><tr><th data-sort-key="time">Time</th><th data-sort-key="symbol">Symbol</th><th data-sort-key="side">Side</th><th data-sort-key="qty">Qty</th><th data-sort-key="price">Price</th><th data-sort-key="fees">Fees</th><th data-sort-key="pnl">PnL</th><th data-sort-key="pnl_pct">PnL %</th><th data-sort-key="strategy_id">Strategy</th></tr></thead>
           <tbody class="trd-log-tbody"></tbody>
         </table>
       </div>
@@ -1784,6 +1818,21 @@ function _wireTradeLogSection(mount, sectionId, getFills) {
   section.querySelector('.trd-log-search').addEventListener('input', rerender);
   section.querySelector('.trd-log-strategy-filter').addEventListener('change', rerender);
   section.querySelector('.trd-log-symbol-filter').addEventListener('change', rerender);
+  
+  // Header sort clicks
+  section.querySelectorAll('th[data-sort-key]').forEach(th => {
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', () => {
+      const key = th.dataset.sortKey;
+      if (section._sortKey === key) {
+        section._sortDir = section._sortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        section._sortKey = key;
+        section._sortDir = 'desc'; // default to newest-first
+      }
+      rerender();
+    });
+  });
 }
 
 function _injectTradeLogStyles() {
@@ -1793,6 +1842,9 @@ function _injectTradeLogStyles() {
   style.id = styleId;
   style.textContent = `
     .trd-log { padding: 12px; }
+    .trd-log-subtabs { display: flex; gap: 8px; margin-bottom: 12px; }
+    .trd-log-subtabs button { padding: 4px 12px; border: 1px solid var(--border, #ccc); border-radius: 4px; background: var(--bg, #fff); color: var(--text, #333); cursor: pointer; }
+    .trd-log-subtabs button.is-active { background: #e3f2fd; border-color: #2196f3; color: #0d47a1; font-weight: 500; }
     .trd-log-section { margin-bottom: 24px; }
     .trd-log-filters { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
     .trd-log-search { flex: 1; min-width: 160px; padding: 4px 8px; border: 1px solid var(--border, #ccc); border-radius: 4px; background: var(--bg, #fff); color: var(--text, #333); }
@@ -1800,6 +1852,8 @@ function _injectTradeLogStyles() {
     .trd-log-table-wrap { overflow-x: auto; }
     .trd-log-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
     .trd-log-table th, .trd-log-table td { padding: 5px 8px; border-bottom: 1px solid var(--border, #eee); text-align: left; white-space: nowrap; }
+    .trd-log-table th.is-sorted-asc::after { content: ' ▲'; font-size: 0.8em; }
+    .trd-log-table th.is-sorted-desc::after { content: ' ▼'; font-size: 0.8em; }
     .trd-log-side-buy { color: #2ecc71; }
     .trd-log-side-sell { color: #e74c3c; }
     .trd-log-strategy-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1837,11 +1891,29 @@ function renderTradeLog(data, container) {
 
   const alreadyBuilt = typeof mount.querySelector === 'function' && mount.querySelector('.trd-log');
   if (!alreadyBuilt) {
+    if (!mount._logActiveTab) mount._logActiveTab = 'paper';
     mount.innerHTML = `<div class="trd-log">
-      ${_buildTradeLogSection('paper', 'Paper Trades')}
-      ${_buildTradeLogSection('live', 'Live Trades')}
+      <div class="trd-log-subtabs">
+        <button data-log-tab="paper" class="is-active">Paper Trades</button>
+        <button data-log-tab="live">Live Trades</button>
+      </div>
+      ${_buildTradeLogSection('paper', 'Paper Trades', mount._logActiveTab === 'paper')}
+      ${_buildTradeLogSection('live', 'Live Trades', mount._logActiveTab === 'live')}
     </div>`;
     if (typeof mount.querySelector === 'function') {
+      // Wire sub-tab switching
+      mount.querySelector('.trd-log-subtabs').addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-log-tab]');
+        if (!btn) return;
+        const tabId = btn.dataset.logTab;
+        mount._logActiveTab = tabId;
+        mount.querySelectorAll('.trd-log-subtabs button').forEach(b => {
+          b.classList.toggle('is-active', b.dataset.logTab === tabId);
+        });
+        mount.querySelectorAll('.trd-log-section').forEach(s => {
+          s.hidden = s.dataset.logSection !== tabId;
+        });
+      });
       _wireTradeLogSection(mount, 'paper', () => mount._logPaperFills || []);
       _wireTradeLogSection(mount, 'live', () => mount._logLiveFills || []);
     }
