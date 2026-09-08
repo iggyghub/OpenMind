@@ -27,12 +27,11 @@ send `tray/` to self_dev. The related UI ask (paper/live tabs on the Trading Pan
 Slices are STRICTLY ORDERED -- each depends on the previous landing first (DD1 -> DD2 -> DD3 ->
 DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-severity addition).
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** DD5 -- #1161
-- **Model:** sonnet
+- **Active:** none -- all 5 slices landed 2026-09-08
 
 ## Queue
 
@@ -40,7 +39,7 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
 - [x] DD2 -- #1158 -- build_dynamic_universe: movers + random-sample candidate pool
 - [x] DD3 -- #1159 -- Wire extract_ticker/prefilter_candidates onto the dynamic universe
 - [x] DD4 -- #1160 -- Swap expand_strategy_ticker onto the dynamic universe (ADR-0026 decision 5)
-- [ ] DD5 -- #1161 -- Finance-news query sourcing + per-source validation rollup
+- [x] DD5 -- #1161 -- Finance-news query sourcing + per-source validation rollup
 
 ## Landed PRs
 
@@ -98,3 +97,30 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
   lazy-broker convention as DD3), fixed the fake to match the real interface, added a liquid-enough
   fake fetch so the $5M floor doesn't also fall through to the fallback. Full scheduler+discovery
   suite re-run locally clean, 167 passed).
+- PR #1169 -- DD5 (the cleanest slice of the whole campaign -- landed unchanged, no fix needed. All
+  three parts present and correct: the 5 named finance-news `site:` queries appended to
+  `_run_discovery`'s defaults, `DiscoveryAttempts.get_source_performance()` rolling up by domain
+  parsed from `idea_url` (no schema change, as specified), and the new
+  `get_discovery_source_performance` tool wired into both `list_tools`/`call_tool` dispatch. Both
+  required tests present and correct. Full discovery+scheduler suite re-run locally clean, 169
+  passed. **Campaign complete.**
+
+## Campaign retrospective
+
+All 5 slices required hand-review; the sandbox's own `tests_failed` verdict was the known
+environmental flake in every single case (never a real signal) -- but 3 of 5 slices (DD1, DD3, DD4)
+had real, independent bugs the sandbox's own green-ish run didn't catch: missing tests (DD1),
+a `NameError` that would crash every discovery pass (DD3), and a slice that shipped a correct test
+with zero production code change (DD4, repeating AF13's exact failure class from the earlier
+TRADING-AUDIT-FIXES campaign). Only DD2 and DD5 landed clean. This matches the driver file's own
+opening warning almost exactly -- assume every slice needs real review, not just a glance at a green
+checkmark.
+
+Also surfaced, hand-fixed, and merged along the way (not part of the original 5-slice design, found
+live while running this campaign):
+- `plugins/self_dev.py`'s `_campaign()` had no concurrency guard at all -- fixed same-day, now
+  refuses a second concurrent campaign outright.
+- `tray/main.js`'s auto-update restart considers Felix idle purely from chat/voice wake state, blind
+  to a self_dev campaign running via the direct-IPC `trigger_campaign.py` path -- caused 3 restart
+  collisions in this session alone. Filed as issue #1168, driver `SELF-DEV-IDLE-FIX.md`, queued to
+  run next.
