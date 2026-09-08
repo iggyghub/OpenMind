@@ -69,6 +69,7 @@ class AlpacaBrokerClient:
         self.env = env
         self._client = None
         self._connected = False
+        self._screener = None
         # In-memory ledger for per-(strategy_id, symbol) position isolation.
         # Alpaca itself has no per-strategy position concept, so this lives
         # here, mirroring StubBrokerClient's own ledger. Resets on restart --
@@ -87,6 +88,16 @@ class AlpacaBrokerClient:
         except ImportError:
             raise RuntimeError("alpaca-py is not installed. Install with: pip install alpaca-py")
         self._connected = True
+
+    def _connect_screener(self) -> None:
+        if self._screener is not None:
+            return
+        api_key, api_secret = _get_alpaca_credentials(self.env)
+        try:
+            import alpaca.data.historical.screener
+            self._screener = alpaca.data.historical.screener.ScreenerClient(api_key, api_secret)
+        except ImportError:
+            raise RuntimeError("alpaca-py is not installed. Install with: pip install alpaca-py")
 
     def preflight(self) -> tuple[bool, str]:
         """Checks the live path can actually work before ever routing an
@@ -268,6 +279,28 @@ class AlpacaBrokerClient:
             price=fill_price,
             fees=0.0,
         )
+
+    def get_all_assets(self) -> list[str]:
+        self._connect()
+        from alpaca.trading.requests import GetAssetsRequest
+        from alpaca.trading.enums import AssetStatus, AssetClass
+        assets = self._client.get_all_assets(GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY))
+        return [a.symbol for a in assets if a.tradable]
+
+    def get_market_movers(self, top: int = 10) -> dict:
+        self._connect_screener()
+        from alpaca.data.requests import MarketMoversRequest
+        data = self._screener.get_market_movers(MarketMoversRequest(market_type="stocks", top=top))
+        return {
+            "gainers": [{"symbol": g.symbol, "percent_change": float(g.percent_change)} for g in data.gainers],
+            "losers": [{"symbol": l.symbol, "percent_change": float(l.percent_change)} for l in data.losers],
+        }
+
+    def get_most_actives(self, top: int = 10) -> list[dict]:
+        self._connect_screener()
+        from alpaca.data.requests import MostActivesRequest
+        data = self._screener.get_most_actives(MostActivesRequest(top=top))
+        return [{"symbol": a.symbol, "volume": int(a.volume)} for a in data]
 
 
 class StubBrokerClient:

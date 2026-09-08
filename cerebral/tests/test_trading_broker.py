@@ -64,10 +64,12 @@ class _FakeAlpacaClient:
         )
 
 
-def _connected_alpaca_client(statuses_after_submit):
+def _connected_alpaca_client(statuses_after_submit, screener=None):
     broker = AlpacaBrokerClient(env="paper")
     broker._connected = True
     broker._client = _FakeAlpacaClient(statuses_after_submit)
+    if screener is not None:
+        broker._screener = screener
     return broker
 
 
