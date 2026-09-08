@@ -1939,18 +1939,39 @@ async def test_expand_strategy_ticker_logs_one_activity_entry_on_dispatch(tmp_pa
         return ToolResult(content=json.dumps({"verdict": "VALIDATED"}))
     plugin._run_gauntlet = fake_gauntlet
 
-    # Inject a fake broker returning a known dynamic universe
+    # Inject a fake broker returning a known dynamic universe -- method
+    # names/shapes match AlpacaBrokerClient's real interface (DD1/#1157:
+    # get_market_movers/get_most_actives/get_all_assets), not a made-up one.
     fake_universe = ["MSFT", "GOOGL", "TSLA", "AMZN"]
     class FakeBroker:
-        def get_movers(self): return fake_universe[:2]
-        def get_actives(self): return fake_universe[2:3]
-        def get_assets(self): return fake_universe
+        def get_market_movers(self, top=15):
+            return {
+                "gainers": [{"symbol": "MSFT", "percent_change": 2.0}],
+                "losers": [{"symbol": "GOOGL", "percent_change": -1.5}],
+            }
+        def get_most_actives(self, top=10):
+            return [{"symbol": "TSLA", "volume": 1_000_000}]
+        def get_all_assets(self):
+            return fake_universe
     fake_broker = FakeBroker()
 
+    # A liquid-enough fetch so rank_for_day_trading's default $5M
+    # dollar-volume floor doesn't filter every candidate out (falling
+    # back to _KNOWN_TICKERS, which would break this test's own
+    # assertions below).
+    def fake_fetch(symbol, start, end, interval="1d"):
+        import numpy as np
+        close = np.full(200, 100.0)
+        return pd.DataFrame({
+            "Open": close, "High": close * 1.01, "Low": close * 0.99,
+            "Close": close, "Volume": np.full(200, 100_000),
+        })
+
     result = await plugin._expand_strategy_ticker(
-        {"strategy_id": "S1"}, 
-        strategy_store=store, 
-        broker=fake_broker
+        {"strategy_id": "S1"},
+        strategy_store=store,
+        broker=fake_broker,
+        fetch=fake_fetch,
     )
     
     assert not result.is_error, result.content
