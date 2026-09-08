@@ -9,12 +9,12 @@ dependent slice starts. See docs/adr/0035-registry-widget-and-skill-update.md.
 
 ## Next slice -- start here
 
-- **Active:** G -- #1129
+- **Active:** H -- #1130
 - **Model:** self_dev's `task_type="self_dev"` router pin (local/cloud/connected server, per ADR-0015).
 
 ## Queue
 
-- [ ] G -- #1129 -- add `registry` to the panel vocabulary (foundation, blocks H-K)
+- [x] G -- #1129 -- add `registry` to the panel vocabulary. PR #1151's widget code was correct but its own test used a require path one level too deep, resolving outside the repo; hand-fixed (commit 7d732fb), also updated the pre-existing WIDGET_TYPES exact-match test. PR #1151 closed unmerged.
 - [ ] H -- #1130 -- migrate Plugins panel onto the registry widget
 - [ ] I -- #1131 -- migrate Skills sub-tab onto the registry widget (blocks K)
 - [ ] J -- #1132 -- migrate Recipes tab onto the registry widget
@@ -23,6 +23,8 @@ dependent slice starts. See docs/adr/0035-registry-widget-and-skill-update.md.
 H, I, J may run in parallel once G lands. K needs I's row to exist first.
 
 ## Landed PRs
+
+- G -- hand-fixed on master (7d732fb); PR #1151 closed unmerged, superseded
 
 ## SAFETY
 
