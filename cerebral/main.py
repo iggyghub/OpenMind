@@ -1833,10 +1833,19 @@ def _recipes_update_event() -> dict:
     recipes = _recipe_store.list_for_profile(_active_profile.id)
     stale = _recipe_store.stale_ids(_active_profile.id)
     dups = _recipe_store.duplicate_ids(_active_profile.id)
+    # ADR-0035 J: dry-run replay VerifyResult (ADR-0034) for the registry
+    # widget's badge -- catches a step whose tool drifted since the save.
+    tools = _orc.tools_for_llm
+    recipe_dicts = []
+    for r in recipes:
+        d = r.to_dict()
+        v = r.verify(tools)
+        d["verify"] = {"passed": v.passed, "evidence": v.evidence}
+        recipe_dicts.append(d)
     return {
         "type": "recipes_update",
         "data": {
-            "recipes": [r.to_dict() for r in recipes],
+            "recipes": recipe_dicts,
             "stale_ids": list(stale),
             "duplicate_ids": list(dups),
         },
@@ -6585,24 +6594,18 @@ async def _handle_message(msg: dict) -> None:
     elif t == "delete_recipe":
         recipe_id = msg.get("data", {}).get("recipe_id")
         if recipe_id:
-            ok = _recipe_store.delete(recipe_id)
-            if ok:
-                await _broadcast(_recipes_update_event())
+            try:
+                await _delete_recipe_by_id(recipe_id)
+            except ValueError as exc:
+                logger.warning("[cerebral] delete_recipe failed: %s", exc)
 
     elif t == "run_recipe":
         recipe_id = msg.get("data", {}).get("recipe_id")
-        if recipe_id and _active_profile:
-            recipe = _recipe_store.get(recipe_id)
-            if recipe is not None:
-                result = await _replay_recipe(recipe.synthetic_tool_name, _active_profile.id)
-                await _broadcast({
-                    "type": "recipe_run_result",
-                    "data": {
-                        "recipe_id": recipe_id,
-                        "ok": not result.is_error,
-                        "message": result.content,
-                    },
-                })
+        if recipe_id:
+            try:
+                await _run_recipe_by_id(recipe_id)
+            except ValueError as exc:
+                logger.warning("[cerebral] run_recipe failed: %s", exc)
 
     elif t == "list_settings":
         await _broadcast(_settings_state_event())
@@ -7222,6 +7225,40 @@ async def _replay_recipe(synthetic_name: str, profile_id: int) -> ToolResult:
     return ToolResult(content="; ".join(results) or "Recipe completed.", is_error=False)
 
 
+async def _run_recipe_by_id(recipe_id: int) -> str:
+    """Core recipe_run logic shared by the ``run_recipe`` IPC handler and the
+    ``recipe_run`` MCP tool (ADR-0035 J prep). Raises ``ValueError`` on
+    failure, else returns a summary of what ran."""
+    if _active_profile is None:
+        raise ValueError("No active profile.")
+    recipe = _recipe_store.get(recipe_id)
+    if recipe is None:
+        raise ValueError(f"Recipe {recipe_id} not found.")
+    result = await _replay_recipe(recipe.synthetic_tool_name, _active_profile.id)
+    await _broadcast({
+        "type": "recipe_run_result",
+        "data": {
+            "recipe_id": recipe_id,
+            "ok": not result.is_error,
+            "message": result.content,
+        },
+    })
+    if result.is_error:
+        raise ValueError(result.content)
+    return result.content
+
+
+async def _delete_recipe_by_id(recipe_id: int) -> str:
+    """Core recipe_delete logic shared by the ``delete_recipe`` IPC handler
+    and the ``recipe_delete`` MCP tool (ADR-0035 J prep). Raises
+    ``ValueError`` on failure, else returns a confirmation message."""
+    ok = _recipe_store.delete(recipe_id)
+    if not ok:
+        raise ValueError(f"Recipe {recipe_id} not found.")
+    await _broadcast(_recipes_update_event())
+    return f"Recipe {recipe_id} deleted."
+
+
 # ── Heartbeat ─────────────────────────────────────────────────────────────────
 
 def _attach_builder_plugin() -> None:
@@ -7696,6 +7733,8 @@ def _wire_plugin_seams() -> None:
         # plugin name, seam method, factory
         ("settings_control", "set_apply_callback", _apply_settings_control),  # F4 #327
         ("settings_control", "set_plugin_enable_callback", _apply_plugin_set_enabled),  # ADR-0035 H
+        ("recipes", "set_recipe_run_callback", _run_recipe_by_id),  # ADR-0035 J prep
+        ("recipes", "set_recipe_delete_callback", _delete_recipe_by_id),  # ADR-0035 J prep
         ("skills", "set_settings_store", _settings),  # S2 #538 (ADR-0014)
         ("skills", "set_broadcast_fn", _skills_broadcast),  # S5 #542
         ("memory",   "set_memory_factory",  _get_memory),                   # #79
