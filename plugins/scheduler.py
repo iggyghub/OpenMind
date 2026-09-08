@@ -510,6 +510,12 @@ class SchedulerPlugin:
                 schema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="get_discovery_source_performance",
+                description="Rolls up discovery attempt outcomes by source domain. Returns {domain: {validated, unvalidated, total}}.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
                 name="upload_book",
                 description=(
                     "2026-08-26: upload a book (PDF or plain text) for Felix to read in "
@@ -670,6 +676,8 @@ class SchedulerPlugin:
             return self._get_paper_archive_fills(args)
         if tool_name == "get_discovery_status":
             return self._get_discovery_status(args)
+        if tool_name == "get_discovery_source_performance":
+            return self._get_discovery_source_performance(args)
         if tool_name == "get_strategy_code":
             return self._get_strategy_code(args)
         if tool_name == "expand_strategy_ticker":
@@ -1152,6 +1160,11 @@ class SchedulerPlugin:
         queries = args.get("queries") or [
             "day trading strategy 5 minute chart backtest",
             "intraday scalping strategy that actually works",
+            "site:fool.com top stock picks this week",
+            "site:benzinga.com analyst top stock picks",
+            "site:marketwatch.com stocks to watch this week",
+            "site:zacks.com top stock picks",
+            "site:cnbc.com stocks to watch",
         ]
         interval = args.get("interval") or "15m"
 
@@ -1289,6 +1302,9 @@ class SchedulerPlugin:
             # scheduler_heartbeat's comment in settings.py.
             "scheduler_heartbeat": self._settings.get("scheduler_heartbeat"),
         }))
+
+    def _get_discovery_source_performance(self, args: dict) -> ToolResult:
+        return ToolResult(content=json.dumps(self._discovery_attempts.get_source_performance()))
 
     # ------------------------------------------------------------------
     # 2026-08-26: book ingestion -- a book is just another idea SOURCE,

@@ -615,6 +615,24 @@ def test_attempts_are_independent_per_symbol(tmp_path):
     assert a.get_latest("ABC")["verdict"] == "VALIDATED"
 
 
+def test_get_source_performance_rollups_by_domain(tmp_path):
+    a = _attempts(tmp_path)
+    a.record("TICKER1", "VALIDATED", idea_url="https://fool.com/pick1")
+    a.record("TICKER2", "UNVALIDATED", idea_url="https://fool.com/pick2")
+    a.record("TICKER3", "VALIDATED", idea_url="https://benzinga.com/pick3")
+    a.record("TICKER4", "UNVALIDATED", idea_url="https://benzinga.com/pick4")
+    a.record("TICKER5", "UNVALIDATED", idea_url="https://marketwatch.com/pick5")
+    a.record("TICKER6", "VALIDATED", idea_url="")
+
+    perf = a.get_source_performance()
+
+    assert perf["fool.com"] == {"validated": 1, "unvalidated": 1, "total": 2}
+    assert perf["benzinga.com"] == {"validated": 1, "unvalidated": 1, "total": 2}
+    assert perf["marketwatch.com"] == {"validated": 0, "unvalidated": 1, "total": 1}
+    assert perf[""] == {"validated": 1, "unvalidated": 0, "total": 1}
+    assert len(perf) == 4
+
+
 # ── process_idea: per-attempt logging (S30/#894) ───────────────────────────
 
 async def test_ticker_specific_dispatch_records_the_attempt(tmp_path):

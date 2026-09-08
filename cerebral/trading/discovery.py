@@ -208,6 +208,28 @@ class DiscoveryAttempts:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def get_source_performance(self) -> dict:
+        """Rolls up every recorded attempt by source domain (parsed from
+        idea_url via urllib.parse.urlparse(...).netloc, empty string for
+        attempts with no URL -- grouped under "" rather than dropped).
+        Returns {domain: {"validated": int, "unvalidated": int, "total": int}}.
+        A domain with zero VALIDATED attempts is still included, not filtered
+        out -- that's the whole point, seeing a consistently-losing source."""
+        from urllib.parse import urlparse
+        rows = self._con.execute(
+            "SELECT idea_url, verdict FROM discovery_attempts"
+        ).fetchall()
+        out: dict = {}
+        for row in rows:
+            domain = urlparse(row["idea_url"] or "").netloc
+            bucket = out.setdefault(domain, {"validated": 0, "unvalidated": 0, "total": 0})
+            bucket["total"] += 1
+            if row["verdict"] == "VALIDATED":
+                bucket["validated"] += 1
+            else:
+                bucket["unvalidated"] += 1
+        return out
+
     def close(self) -> None:
         self._con.close()
 
