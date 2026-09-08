@@ -9,6 +9,7 @@ ALL side effects are injected:
   - _run stubbed via a subclass override, never exercises clone/edit/test/pr
   - no real git, no gh, no network, no Cerebral
 """
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -744,3 +745,60 @@ def test_self_dev_campaign_schema_has_required_driver_file(tmp_path):
 def test_required_capabilities_include_fs_read():
     from plugins.self_dev import REQUIRED_CAPABILITIES
     assert "fs_read" in REQUIRED_CAPABILITIES
+
+
+# ---------------------------------------------------------------------------
+# Concurrency guard (2026-09-08) -- ADR-0028 rule 5, found live when two
+# trigger_campaign.py invocations ran two independent campaigns at once and
+# the tray IPC's broadcast-not-per-request tool_result delivery let one
+# script receive the OTHER campaign's result.
+# ---------------------------------------------------------------------------
+
+async def test_campaign_refuses_concurrent_second_call(tmp_path):
+    """A second self_dev_campaign call while one is still mid-flight is
+    refused immediately (is_error), not queued or run alongside the first."""
+    driver = tmp_path / "BOOKS.md"
+    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowPlugin(SelfDevPlugin):
+        async def _run(self, args: dict) -> ToolResult:
+            entered.set()
+            await release.wait()
+            return _auto_merge_result()
+
+    plugin = _SlowPlugin(
+        sandbox=_FakeSandbox(),
+        issue_fn=lambda n: f"# Issue {n}\n\nBody",
+        sandbox_root=tmp_path / "self_dev",
+        ledger=StepLedger(db_path=tmp_path / "ledger.db"),
+    )
+
+    first = asyncio.create_task(
+        plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
+    )
+    await entered.wait()  # let the first call get into its (still-running) slice
+
+    second = await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
+    assert second.is_error
+    assert "already running" in second.content.lower()
+
+    release.set()
+    first_result = await first
+    assert not first_result.is_error
+
+
+async def test_campaign_allows_a_new_run_after_the_previous_one_finishes(tmp_path):
+    """The guard clears once a campaign completes -- not a permanent lockout."""
+    driver = tmp_path / "BOOKS.md"
+    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")
+    plugin = _make_plugin(tmp_path, [_auto_merge_result(), _auto_merge_result()])
+
+    first = await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
+    assert not first.is_error
+
+    driver.write_text(_DRIVER_BOOKS, encoding="utf-8")  # reset Active for a clean second run
+    second = await plugin.call_tool("self_dev_campaign", {"driver_file": str(driver), "max_slices": 1})
+    assert not second.is_error

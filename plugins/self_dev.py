@@ -506,6 +506,18 @@ class SelfDevPlugin:
         self._live_root = live_root or _REPO_ROOT
         # ADR-0034: last sandbox test-suite outcome, exposed via verify().
         self._last_verify: VerifyResult | None = None
+        # ADR-0028 rule 5 (singular scheduler): _campaign() has no other
+        # concurrency guard -- two overlapping self_dev_campaign calls (e.g.
+        # two trigger_campaign.py invocations) would run two independent
+        # clone/edit/test/PR pipelines at once, and the tray IPC's
+        # broadcast-not-per-request tool_result delivery means a caller can
+        # even receive the WRONG campaign's result (found live 2026-09-08:
+        # both scripts printed the same, first-to-finish campaign's output).
+        # A plain bool is race-safe here without needing asyncio.Lock: this
+        # flag is only ever read+set at _campaign's very top, with no
+        # `await` between the check and the set, so no other coroutine can
+        # interleave in that gap under asyncio's cooperative scheduling.
+        self._campaign_running = False
 
     def _resolve_edit(self) -> EditFn:
         return self._edit_override or _edit_fn or _default_edit_fn
@@ -997,6 +1009,30 @@ class SelfDevPlugin:
         }))
 
     async def _campaign(self, args: dict) -> ToolResult:
+        """Concurrency guard (2026-09-08) wrapping the real _campaign_inner.
+
+        ADR-0028 rule 5 (singular scheduler): refuses a second campaign
+        outright rather than queueing it -- a silent multi-minute wait with
+        no feedback is worse than an immediate, clear refusal the caller
+        can retry. See self._campaign_running's own comment in __init__
+        for why a plain bool is race-safe here without asyncio.Lock.
+        """
+        if self._campaign_running:
+            return ToolResult(
+                content=(
+                    "Refused: a self_dev_campaign is already running. "
+                    "ADR-0028 rule 5 -- the scheduler is singular; only one "
+                    "campaign runs at a time. Wait for it to finish and retry."
+                ),
+                is_error=True,
+            )
+        self._campaign_running = True
+        try:
+            return await self._campaign_inner(args)
+        finally:
+            self._campaign_running = False
+
+    async def _campaign_inner(self, args: dict) -> ToolResult:
         """Drive a multi-slice campaign from a driver .md file (SD-5/#807).
 
         Loops around the existing _run() engine. Each iteration:
