@@ -31,13 +31,13 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
 
 ## Next slice -- start here
 
-- **Active:** DD2 -- #1158
+- **Active:** DD3 -- #1159
 - **Model:** sonnet
 
 ## Queue
 
 - [x] DD1 -- #1157 -- Add movers/most-actives/all-assets wrappers to AlpacaBrokerClient
-- [ ] DD2 -- #1158 -- build_dynamic_universe: movers + random-sample candidate pool
+- [x] DD2 -- #1158 -- build_dynamic_universe: movers + random-sample candidate pool
 - [ ] DD3 -- #1159 -- Wire extract_ticker/prefilter_candidates onto the dynamic universe
 - [ ] DD4 -- #1160 -- Swap expand_strategy_ticker onto the dynamic universe (ADR-0026 decision 5)
 - [ ] DD5 -- #1161 -- Finance-news query sourcing + per-source validation rollup
@@ -51,10 +51,17 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
   nothing actually called `get_all_assets`/`get_market_movers`/`get_most_actives`) -- added 3 direct
   unit tests against fake `TradingClient`/`ScreenerClient` doubles. Campaign's own `tests_failed`
   verdict was the known environmental sandbox flake (collection cut off ~7%, not a real failure) --
-  full broker/trading suite re-run locally clean, 442 passed. Also surfaced a real gap in
-  `trigger_campaign.py`/the tray IPC: its WebSocket response isn't correlated to the request that
-  asked for it -- two concurrent `self_dev_campaign` triggers on separate connections can each
-  receive the WRONG one's result. Not yet fixed -- worth a proper request-id-matching fix, and
-  `self_dev.py`'s own `_campaign()` has no lock preventing concurrent runs at all, contradicting
-  ADR-0028 rule 5. Neither caused any real corruption here since DD1/UI1 touch disjoint files, but
-  don't rely on that next time).
+  full broker/trading suite re-run locally clean, 442 passed. Also surfaced a real gap: two
+  concurrent `self_dev_campaign` triggers could each receive the WRONG one's result (the tray IPC
+  broadcasts `tool_result` to every connected client, filtered client-side by tool name only, not a
+  request id) -- **fixed 2026-09-08** in `plugins/self_dev.py`'s `_campaign()`, which now refuses a
+  second concurrent campaign outright rather than letting two run at once. Verified live: DD2 was
+  triggered while this fix's own restart was still settling, and a second concurrent trigger against
+  the live process got the new "already running" refusal instead of a wrong/duplicate result).
+- PR #1165 -- DD2 (self_dev generated `build_dynamic_universe` matching the spec closely, including
+  all 3 required tests (fallback-on-exception, fallback-on-empty-ranked-result, movers/actives/
+  random-sample inclusion). Hand-fixed one cosmetic issue: a mojibake'd em-dash in the new docstring
+  (UTF-8 bytes misread as latin-1/cp1252 somewhere in the self_dev edit pipeline, rendered as
+  `â€”`) -- replaced with plain ASCII `--`, matching this codebase's own convention. Campaign's own
+  `tests_failed` verdict was the same known environmental sandbox flake as DD1 -- full
+  discovery/trading suite re-run locally clean, 471 passed).
