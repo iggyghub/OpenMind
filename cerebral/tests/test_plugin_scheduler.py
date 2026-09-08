@@ -1072,6 +1072,25 @@ def test_get_discovery_status_reports_scheduler_heartbeat(tmp_path):
     assert status["scheduler_heartbeat"] == "2026-08-26T02:14:56+00:00"
 
 
+async def test_get_discovery_source_performance_tool_works(tmp_path):
+    from cerebral.trading.discovery import DiscoveryAttempts
+    a = DiscoveryAttempts(db_path=tmp_path / "attempts.db")
+    a.record("TICKER1", "VALIDATED", idea_url="https://fool.com/pick1")
+    a.record("TICKER2", "UNVALIDATED", idea_url="https://fool.com/pick2")
+
+    plugin = SchedulerPlugin(
+        db_path=str(tmp_path / "sched.db"),
+        discovery_attempts=a,
+    )
+
+    result = await plugin.call_tool("get_discovery_source_performance", {})
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["fool.com"]["validated"] == 1
+    assert data["fool.com"]["unvalidated"] == 1
+    assert data["fool.com"]["total"] == 2
+
+
 def test_stop_discovery_disables_and_clears_stop_at(tmp_path):
     plugin = _plugin(tmp_path)
     plugin._start_discovery({"duration_hours": 4})
