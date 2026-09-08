@@ -64,10 +64,12 @@ class _FakeAlpacaClient:
         )
 
 
-def _connected_alpaca_client(statuses_after_submit):
+def _connected_alpaca_client(statuses_after_submit, screener=None):
     broker = AlpacaBrokerClient(env="paper")
     broker._connected = True
     broker._client = _FakeAlpacaClient(statuses_after_submit)
+    if screener is not None:
+        broker._screener = screener
     return broker
 
 
@@ -362,3 +364,92 @@ def test_alpaca_positions_isolated_by_strategy_id():
     pos_b_after = find_position(broker.list_positions(strategy_id="strat_b"), "AAPL")
     assert pos_a_after is not None and pos_a_after.qty == 10.0
     assert pos_b_after is None  # B is flat
+
+
+class _FakeAsset:
+    __slots__ = ("symbol", "tradable")
+
+    def __init__(self, symbol, tradable=True):
+        self.symbol = symbol
+        self.tradable = tradable
+
+
+class _FakeAllAssetsClient:
+    """Stands in for TradingClient for get_all_assets only."""
+    def __init__(self, assets):
+        self._assets = assets
+
+    def get_all_assets(self, request):
+        return self._assets
+
+
+class _FakeMoverEntry:
+    __slots__ = ("symbol", "percent_change")
+
+    def __init__(self, symbol, percent_change):
+        self.symbol = symbol
+        self.percent_change = percent_change
+
+
+class _FakeMovers:
+    def __init__(self, gainers, losers):
+        self.gainers = gainers
+        self.losers = losers
+
+
+class _FakeActiveEntry:
+    __slots__ = ("symbol", "volume")
+
+    def __init__(self, symbol, volume):
+        self.symbol = symbol
+        self.volume = volume
+
+
+class _FakeScreenerClient:
+    """Stands in for alpaca.data.historical.screener.ScreenerClient."""
+    def __init__(self, movers=None, actives=None):
+        self._movers = movers
+        self._actives = actives or []
+
+    def get_market_movers(self, request):
+        return self._movers
+
+    def get_most_actives(self, request):
+        return self._actives
+
+
+def test_alpaca_get_all_assets_returns_tradable_symbols_only():
+    broker = _connected_alpaca_client(["filled"])
+    broker._client = _FakeAllAssetsClient([
+        _FakeAsset("AAPL", tradable=True),
+        _FakeAsset("ZZZZ", tradable=False),
+        _FakeAsset("MSFT", tradable=True),
+    ])
+    assets = broker.get_all_assets()
+    assert assets == ["AAPL", "MSFT"]
+
+
+def test_alpaca_get_market_movers_returns_gainers_and_losers():
+    movers = _FakeMovers(
+        gainers=[_FakeMoverEntry("NVDA", 12.5), _FakeMoverEntry("AMD", 8.1)],
+        losers=[_FakeMoverEntry("INTC", -6.3)],
+    )
+    broker = _connected_alpaca_client(["filled"], screener=_FakeScreenerClient(movers=movers))
+    result = broker.get_market_movers(top=2)
+    assert result == {
+        "gainers": [
+            {"symbol": "NVDA", "percent_change": 12.5},
+            {"symbol": "AMD", "percent_change": 8.1},
+        ],
+        "losers": [{"symbol": "INTC", "percent_change": -6.3}],
+    }
+
+
+def test_alpaca_get_most_actives_returns_symbol_and_volume():
+    actives = [_FakeActiveEntry("TSLA", 5_000_000), _FakeActiveEntry("SPY", 3_000_000)]
+    broker = _connected_alpaca_client(["filled"], screener=_FakeScreenerClient(actives=actives))
+    result = broker.get_most_actives(top=2)
+    assert result == [
+        {"symbol": "TSLA", "volume": 5_000_000},
+        {"symbol": "SPY", "volume": 3_000_000},
+    ]
