@@ -1916,8 +1916,9 @@ async def test_run_gauntlet_returns_derived_strategy_id(tmp_path, monkeypatch):
 # ── S44: Activity Log entries for expand_strategy_ticker / auto_combine_strategies ──
 
 async def test_expand_strategy_ticker_logs_one_activity_entry_on_dispatch(tmp_path, monkeypatch):
-    """S44: _expand_strategy_ticker records one activity entry per invocation
-    (not per candidate) with strategy_id, attempted tickers, and their verdicts."""
+    """S44/Slice X: _expand_strategy_ticker records one activity entry per invocation
+    (not per candidate) with strategy_id, attempted tickers, and their verdicts.
+    Uses dynamic universe from injected broker instead of static _KNOWN_TICKERS."""
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
     
@@ -1938,14 +1939,50 @@ async def test_expand_strategy_ticker_logs_one_activity_entry_on_dispatch(tmp_pa
         return ToolResult(content=json.dumps({"verdict": "VALIDATED"}))
     plugin._run_gauntlet = fake_gauntlet
 
-    result = await plugin._expand_strategy_ticker({"strategy_id": "S1"}, strategy_store=store)
+    # Inject a fake broker returning a known dynamic universe -- method
+    # names/shapes match AlpacaBrokerClient's real interface (DD1/#1157:
+    # get_market_movers/get_most_actives/get_all_assets), not a made-up one.
+    fake_universe = ["MSFT", "GOOGL", "TSLA", "AMZN"]
+    class FakeBroker:
+        def get_market_movers(self, top=15):
+            return {
+                "gainers": [{"symbol": "MSFT", "percent_change": 2.0}],
+                "losers": [{"symbol": "GOOGL", "percent_change": -1.5}],
+            }
+        def get_most_actives(self, top=10):
+            return [{"symbol": "TSLA", "volume": 1_000_000}]
+        def get_all_assets(self):
+            return fake_universe
+    fake_broker = FakeBroker()
+
+    # A liquid-enough fetch so rank_for_day_trading's default $5M
+    # dollar-volume floor doesn't filter every candidate out (falling
+    # back to _KNOWN_TICKERS, which would break this test's own
+    # assertions below).
+    def fake_fetch(symbol, start, end, interval="1d"):
+        import numpy as np
+        close = np.full(200, 100.0)
+        return pd.DataFrame({
+            "Open": close, "High": close * 1.01, "Low": close * 0.99,
+            "Close": close, "Volume": np.full(200, 100_000),
+        })
+
+    result = await plugin._expand_strategy_ticker(
+        {"strategy_id": "S1"},
+        strategy_store=store,
+        broker=fake_broker,
+        fetch=fake_fetch,
+    )
     
     assert not result.is_error, result.content
     assert len(logged) == 1
     entry = logged[0]
     assert entry["source"] == "expand_strategy_ticker"
     assert entry["strategy_id"] == "S1"
+    # Assert candidates come from the fake broker, exclude current_symbol "AAPL"
     assert len(entry["tickers"]) > 0
+    assert "AAPL" not in entry["tickers"]
+    assert all(t in fake_universe for t in entry["tickers"])
     assert all(v in entry["verdicts"].values() for v in ["VALIDATED"])
 
 

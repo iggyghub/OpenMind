@@ -1685,7 +1685,7 @@ class SchedulerPlugin:
         return ToolResult(content=json.dumps({"code": spec.code, "provenance": provenance}))
 
     async def _expand_strategy_ticker(
-        self, args: dict, *, strategy_store=None, fetch=None, confidence_fn=None,
+        self, args: dict, *, strategy_store=None, fetch=None, confidence_fn=None, broker=None,
     ) -> ToolResult:
         """S42: expand a validated strategy to new candidate tickers via the gauntlet.
 
@@ -1725,8 +1725,14 @@ class SchedulerPlugin:
         if fetch_fn is None:
             from cerebral.trading_data import fetch_ohlcv as fetch_fn
 
-        # Filter out current symbol and rank using the same logic discovery already uses
-        candidates = [t for t in _KNOWN_TICKERS if t != current_symbol]
+        # DD4 (#1160): the shared Candidate pool (ADR-0026 decision 5, amended
+        # 2026-09-08) -- same lazy-broker convention as _run_discovery (DD3).
+        broker_obj = broker
+        if broker_obj is None:
+            from cerebral.trading.broker import AlpacaBrokerClient
+            broker_obj = AlpacaBrokerClient(env="paper")
+        universe = build_dynamic_universe(broker_obj, fetch_fn)
+        candidates = [t for t in universe if t != current_symbol]
         ranked_candidates = rank_for_day_trading(candidates, fetch_fn)
         candidates = ranked_candidates[:candidate_limit]
 
