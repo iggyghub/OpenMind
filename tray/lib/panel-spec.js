@@ -249,6 +249,51 @@
     return '<table class="ps-table">' + head + '<tbody>' + body + '</tbody></table>';
   }
 
+  // Registry widget -- installed components list (ADR-0035 S10/G, #1123).
+  // Each row shows name, status, a VerifyResult badge (passed/evidence hover, score),
+  // and actions rendered as ps-action widgets (declared tool call, no onclick).
+  function _renderRegistry(w) {
+    var items = Array.isArray(w && w.items) ? w.items : [];
+    if (items.length === 0) {
+      return '<div class="ps-empty">No registry entries.</div>';
+    }
+    var rows = items.map(function (it) {
+      if (!it || typeof it !== 'object') return '';
+      var name = escHtml(it.name || '');
+      var status = escHtml(it.status || '');
+      var badge = '';
+      var verify = it.verify;
+      if (verify && typeof verify === 'object') {
+        var passed = verify.passed;
+        var score = verify.score;
+        var evidence = verify.evidence;
+        if (passed !== undefined) {
+          var cls = passed ? 'ps-verify-passed' : 'ps-verify-failed';
+          var txt = passed ? 'Passed' : 'Failed';
+          if (score !== undefined) txt += ' (' + escHtml(String(score)) + ')';
+          badge = '<span class="' + cls + '" title="' + escHtml(evidence || '') + '">' + txt + '</span>';
+        }
+      }
+      var actionsHtml = '';
+      if (Array.isArray(it.actions)) {
+        actionsHtml = it.actions.map(function (a) {
+          return _renderAction(a);
+        }).join('');
+      }
+      return (
+        '<div class="ps-registry-row">' +
+          '<span class="ps-registry-name">' + name + '</span>' +
+          '<span class="ps-registry-status">' + status + '</span>' +
+          badge +
+          '<div class="ps-registry-actions">' + actionsHtml + '</div>' +
+        '</div>'
+      );
+    }).join('');
+    return (
+      '<div class="ps-registry">' + rows + '</div>'
+    );
+  }
+
   var WIDGETS = {
     list:   _renderList,
     detail: _renderDetail,
@@ -258,6 +303,7 @@
     table:   _renderTable,
     group:   _renderGroup,
     cluster: _renderCluster,
+    registry: _renderRegistry,
   };
 
   // Renders one widget. Unknown or malformed types return '' -- inert.
