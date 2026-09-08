@@ -72,6 +72,7 @@ def settings_control():
     importlib.reload(mod)
     yield mod
     mod.set_apply_callback(None)
+    mod.set_plugin_enable_callback(None)
 
 
 class _FakePrompt:
@@ -111,12 +112,10 @@ def test_plugin_declares_fs_write_capability(settings_control):
     assert settings_control.REQUIRED_CAPABILITIES == frozenset({"fs_write"})
 
 
-def test_plugin_exposes_one_tool_with_enum_key(settings_control):
+def test_plugin_exposes_set_system_setting_tool_with_enum_key(settings_control):
     plugin = settings_control.create()
     tools = plugin.list_tools()
-    assert len(tools) == 1
-    tool = tools[0]
-    assert tool.name == "set_system_setting"
+    tool = next(t for t in tools if t.name == "set_system_setting")
     assert tool.plugin == settings_control.PLUGIN_NAME
     assert tool.irreversible is False
     enum = tool.schema["properties"]["key"]["enum"]
@@ -125,6 +124,19 @@ def test_plugin_exposes_one_tool_with_enum_key(settings_control):
     # Profile-scoped keys must NOT be reachable through this tool.
     for forbidden in ("voice", "wake_name", "voice_id", "memory"):
         assert forbidden not in enum
+
+
+def test_plugin_exposes_plugin_set_enabled_tool(settings_control):
+    """ADR-0035 slice H: plugin_set_enabled(plugin_name, enabled) tool."""
+    plugin = settings_control.create()
+    tools = plugin.list_tools()
+    names = {t.name for t in tools}
+    assert "plugin_set_enabled" in names
+    tool = next(t for t in tools if t.name == "plugin_set_enabled")
+    assert tool.plugin == settings_control.PLUGIN_NAME
+    assert set(tool.schema["required"]) == {"plugin_name", "enabled"}
+    assert tool.schema["properties"]["plugin_name"]["type"] == "string"
+    assert tool.schema["properties"]["enabled"]["type"] == "boolean"
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +231,68 @@ async def test_appearance_keys_routed_through_callback(settings_control):
         ("ui_scale", "1.25"),
         ("ui_accent", "#ff0066"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# plugin_set_enabled (ADR-0035 slice H)
+# ---------------------------------------------------------------------------
+
+
+async def test_plugin_set_enabled_missing_plugin_name_errors(settings_control):
+    plugin = settings_control.create()
+    result = await plugin.call_tool("plugin_set_enabled", {"enabled": True})
+    assert result.is_error
+    assert "plugin_name" in result.content
+
+
+async def test_plugin_set_enabled_wrong_type_enabled_errors(settings_control):
+    plugin = settings_control.create()
+    result = await plugin.call_tool(
+        "plugin_set_enabled", {"plugin_name": "alpha", "enabled": "yes"},
+    )
+    assert result.is_error
+    assert "boolean" in result.content
+
+
+async def test_plugin_set_enabled_without_wired_callback_errors(settings_control):
+    plugin = settings_control.create()
+    settings_control.set_plugin_enable_callback(None)
+    result = await plugin.call_tool(
+        "plugin_set_enabled", {"plugin_name": "alpha", "enabled": False},
+    )
+    assert result.is_error
+    assert "not wired" in result.content
+
+
+async def test_plugin_set_enabled_invokes_wired_callback(settings_control):
+    plugin = settings_control.create()
+    calls: list[tuple[str, bool]] = []
+
+    async def apply(plugin_name, enabled):
+        calls.append((plugin_name, enabled))
+        return f"Plugin {plugin_name!r} {'enabled' if enabled else 'disabled'}"
+
+    settings_control.set_plugin_enable_callback(apply)
+    result = await plugin.call_tool(
+        "plugin_set_enabled", {"plugin_name": "alpha", "enabled": False},
+    )
+    assert not result.is_error
+    assert calls == [("alpha", False)]
+    assert "alpha" in result.content
+
+
+async def test_plugin_set_enabled_callback_value_error_surfaces(settings_control):
+    plugin = settings_control.create()
+
+    async def apply(plugin_name, enabled):
+        raise ValueError(f"Unknown plugin: {plugin_name!r}")
+
+    settings_control.set_plugin_enable_callback(apply)
+    result = await plugin.call_tool(
+        "plugin_set_enabled", {"plugin_name": "no_such_plugin", "enabled": False},
+    )
+    assert result.is_error
+    assert "no_such_plugin" in result.content
 
 
 # ---------------------------------------------------------------------------

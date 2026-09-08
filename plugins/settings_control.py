@@ -92,6 +92,19 @@ def set_apply_callback(fn: Optional[ApplyFn]) -> None:
     _apply_fn = fn
 
 
+# Module-level seam for plugin_set_enabled (ADR-0035 slice H).
+# Shape: async fn(plugin_name: str, enabled: bool) -> str; raises ValueError
+# on failure, else returns a human-readable success message.
+PluginEnableFn = Callable[[str, bool], Awaitable[str]]
+_plugin_enable_fn: Optional[PluginEnableFn] = None
+
+
+def set_plugin_enable_callback(fn: Optional[PluginEnableFn]) -> None:
+    """Inject the (async) plugin-enable callback from cerebral.main."""
+    global _plugin_enable_fn
+    _plugin_enable_fn = fn
+
+
 class SettingsControlPlugin:
     name = PLUGIN_NAME
 
@@ -133,9 +146,34 @@ class SettingsControlPlugin:
                     "required": ["key", "value"],
                 },
             ),
+            Tool(
+                name="plugin_set_enabled",
+                description=(
+                    "Enable or disable an installed plugin. Requires user "
+                    "approval via the consent card; the change applies only "
+                    "after the user accepts."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "plugin_name": {
+                            "type": "string",
+                            "description": "Name of the plugin to enable/disable.",
+                        },
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "True to enable, false to disable.",
+                        },
+                    },
+                    "required": ["plugin_name", "enabled"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
+        if tool_name == "plugin_set_enabled":
+            return await self._plugin_set_enabled(args)
         if tool_name != "set_system_setting":
             return ToolResult(
                 content=f"Unknown tool: '{tool_name}'", is_error=True,
@@ -175,6 +213,41 @@ class SettingsControlPlugin:
                 content=f"Could not change {key!r}: {exc}", is_error=True,
             )
         return ToolResult(content=f"Set {key} to {value!r}.")
+
+    async def _plugin_set_enabled(self, args: dict) -> ToolResult:
+        plugin_name = args.get("plugin_name")
+        if not isinstance(plugin_name, str) or not plugin_name.strip():
+            return ToolResult(
+                content="Missing or invalid 'plugin_name'.", is_error=True,
+            )
+        enabled = args.get("enabled")
+        if not isinstance(enabled, bool):
+            return ToolResult(
+                content=f"'enabled' must be a boolean, got {type(enabled).__name__}.",
+                is_error=True,
+            )
+        if _plugin_enable_fn is None:
+            logger.warning(
+                "[settings_control] plugin-enable callback not wired; cannot set %r",
+                plugin_name,
+            )
+            return ToolResult(
+                content="Settings control is not wired in this process.",
+                is_error=True,
+            )
+        try:
+            message = await _plugin_enable_fn(plugin_name, enabled)
+        except ValueError as exc:
+            return ToolResult(content=str(exc), is_error=True)
+        except Exception as exc:  # pragma: no cover -- defensive
+            logger.exception(
+                "[settings_control] plugin enable/disable failed for %r", plugin_name,
+            )
+            return ToolResult(
+                content=f"Could not change plugin {plugin_name!r}: {exc}",
+                is_error=True,
+            )
+        return ToolResult(content=message)
 
 
 def create() -> SettingsControlPlugin:
