@@ -797,3 +797,73 @@ def test_rank_for_day_trading_allows_sub_five_prices_with_default_min_price():
     ranked = rank_for_day_trading(list(bars), lambda sym, *a, **kw: bars[sym])
 
     assert ranked == ["CHEAP"]
+
+
+def _fake_broker(movers_data, actives_data, all_assets_data, raise_on_call=False):
+    class Broker:
+        def get_market_movers(self, top=15):
+            if raise_on_call:
+                raise ConnectionError("network down")
+            return movers_data
+        def get_most_actives(self, top=10):
+            if raise_on_call:
+                raise ConnectionError("network down")
+            return actives_data
+        def get_all_assets(self):
+            if raise_on_call:
+                raise ConnectionError("network down")
+            return all_assets_data
+    return Broker()
+
+
+def test_build_dynamic_universe_includes_movers_actives_ranked():
+    """Gainers, losers, actives, and random sample should all appear in the
+    ranked output when they pass the liquidity/volatility filters."""
+    from cerebral.trading.discovery import build_dynamic_universe
+    from cerebral.trading.discovery import _KNOWN_TICKERS
+    
+    def fetch_ohlcv(sym, *a, **kw):
+        return _bars(price=50.0, dollar_range_pct=0.03, volume=10_000_000)
+        
+    broker = _fake_broker(
+        movers_data={"gainers": [{"symbol": "G1"}, {"symbol": "G2"}], "losers": [{"symbol": "L1"}]},
+        actives_data=[{"symbol": "A1"}, {"symbol": "A2"}],
+        all_assets_data=["R1", "R2", "R3"],
+    )
+    
+    ranked = build_dynamic_universe(broker, fetch_ohlcv, random_sample_size=2)
+    
+    # Movers/actives must pass the filter and appear in the ranked list
+    assert all(sym in ranked for sym in ["G1", "G2", "L1", "A1", "A2"])
+    # rank_for_day_trading returns them sorted by volatility; all have same here, so alphabetical
+    assert ranked == sorted(ranked)
+    # The random sample adds at least one from remaining
+    assert len(ranked) >= 5
+
+
+def test_build_dynamic_universe_falls_back_on_broker_exception():
+    """If the broker calls raise, it must return exactly sorted(_KNOWN_TICKERS)."""
+    from cerebral.trading.discovery import build_dynamic_universe
+    from cerebral.trading.discovery import _KNOWN_TICKERS
+    
+    broker = _fake_broker({}, [], [], raise_on_call=True)
+    ranked = build_dynamic_universe(broker, lambda *a, **kw: None)
+    
+    assert ranked == sorted(_KNOWN_TICKERS)
+
+
+def test_build_dynamic_universe_falls_back_on_empty_ranked_result():
+    """If all candidates fail the liquidity/ATR filter, rank_for_day_trading
+    returns [], so build_dynamic_universe must fall back to sorted(_KNOWN_TICKERS)."""
+    from cerebral.trading.discovery import build_dynamic_universe
+    from cerebral.trading.discovery import _KNOWN_TICKERS
+    
+    broker = _fake_broker(
+        movers_data={"gainers": [], "losers": []},
+        actives_data=[],
+        all_assets_data=["T1", "T2"],
+    )
+    # Fetch function that returns empty/None data so rank_for_day_trading skips them
+    ranked = build_dynamic_universe(broker, lambda *a, **kw: None)
+    
+    assert ranked == sorted(_KNOWN_TICKERS)
