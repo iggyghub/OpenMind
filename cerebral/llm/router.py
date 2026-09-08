@@ -174,6 +174,40 @@ CLOUD_MODELS = {
 _DEFAULT_CONTEXT_WINDOW = 8192
 
 
+class _DomainSemaphore:
+    """Per-domain admission control with FIFO queue and chat priority."""
+    __slots__ = ("cap", "active", "waiters", "_lock")
+
+    def __init__(self, cap: int = 1):
+        self.cap = cap
+        self.active = 0
+        self.waiters: list[tuple[str, asyncio.Future]] = []
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, task_type: str) -> None:
+        async with self._lock:
+            if self.active < self.cap:
+                self.active += 1
+                return
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+            self.waiters.append((task_type, fut))
+            self.waiters.sort(key=lambda x: x[0] != "chat")
+        await fut
+        async with self._lock:
+            self.active += 1
+
+    def release(self) -> None:
+        async def _dispatch() -> None:
+            async with self._lock:
+                self.active -= 1
+                if self.waiters:
+                    _, fut = self.waiters.pop(0)
+                    if not fut.done():
+                        fut.set_result(None)
+        asyncio.create_task(_dispatch())
+
+
 class ModelRouter:
     def __init__(
         self,
@@ -210,6 +244,8 @@ class ModelRouter:
         self._enabled: dict[str, bool] = {mid: True for mid in backends}
         self._fallback_enabled: bool = False
         self._usage_log: list[dict] = []
+        self._domain_semaphores: dict[str, _DomainSemaphore] = {}
+        self._sem_lock = asyncio.Lock()
 
     @property
     def active_model(self) -> str:
@@ -284,6 +320,14 @@ class ModelRouter:
                 "context_window", _DEFAULT_CONTEXT_WINDOW
             )
         )
+
+    async def _get_sem(self, model_id: str) -> _DomainSemaphore:
+        async with self._sem_lock:
+            sem = self._domain_semaphores.get(model_id)
+            if sem is None:
+                sem = _DomainSemaphore(cap=1)
+                self._domain_semaphores[model_id] = sem
+            return sem
 
     async def probe_model(self, model_id: str) -> bool:
         """Cheap reachability check: can this model answer within the probe
@@ -531,77 +575,84 @@ class ModelRouter:
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         top = self.active_model
         model_id = self._task_models.get(task_type, top)
-        # Graceful fallback (issue #349): a per-task model that is missing or
-        # unreachable falls back to the active model with a log. The active
-        # model itself failing still raises — never a silent cloud fallback
-        # unless the master fallback toggle is on.
-        if model_id not in self._backends:
-            logger.warning(
-                "[router] task '%s' model '%s' not available — using active %s",
-                task_type, model_id, top,
-            )
-            model_id = top
-
-        if self._fallback_enabled:
-            chain = self._routable_chain()
-            attempts = [model_id] + [m for m in chain if m != model_id]
-            attempts = [m for m in attempts if m in self._backends]
-            last_exc: Exception | None = None
-            for mid in attempts:
-                try:
-                    response = await self._backends[mid].complete(prompt, task_type)
-                except (OSError, ConnectionError) as exc:
-                    last_exc = exc
-                    logger.warning(
-                        "[router] fallback: '%s' unavailable (%s) — trying next", mid, exc,
-                    )
-                    continue
-                self._last_model = mid
-                logger.info("[router] %s handled request", mid)
-                _u = getattr(self._backends[mid], "_last_usage", None)
-                if not isinstance(_u, dict):
-                    _u = {}
-                self._usage_log.append({
-                    "model_id": mid,
-                    "task_type": task_type,
-                    "prompt_tokens": int(_u.get("prompt_tokens", 0)),
-                    "completion_tokens": int(_u.get("completion_tokens", 0)),
-                })
-                return response
-            raise ModelUnavailableError(
-                f"all enabled models unavailable: {last_exc}"
-            ) from last_exc
-
+        
+        # Admission control: per-domain semaphore with chat priority
+        sem = await self._get_sem(model_id)
+        await sem.acquire(task_type)
         try:
-            response = await self._backends[model_id].complete(prompt, task_type)
-        except (OSError, ConnectionError) as exc:
-            if model_id == top:
+            # Graceful fallback (issue #349): a per-task model that is missing or
+            # unreachable falls back to the active model with a log. The active
+            # model itself failing still raises — never a silent cloud fallback
+            # unless the master fallback toggle is on.
+            if model_id not in self._backends:
+                logger.warning(
+                    "[router] task '%s' model '%s' not available — using active %s",
+                    task_type, model_id, top,
+                )
+                model_id = top
+
+            if self._fallback_enabled:
+                chain = self._routable_chain()
+                attempts = [model_id] + [m for m in chain if m != model_id]
+                attempts = [m for m in attempts if m in self._backends]
+                last_exc: Exception | None = None
+                for mid in attempts:
+                    try:
+                        response = await self._backends[mid].complete(prompt, task_type)
+                    except (OSError, ConnectionError) as exc:
+                        last_exc = exc
+                        logger.warning(
+                            "[router] fallback: '%s' unavailable (%s) — trying next", mid, exc,
+                        )
+                        continue
+                    self._last_model = mid
+                    logger.info("[router] %s handled request", mid)
+                    _u = getattr(self._backends[mid], "_last_usage", None)
+                    if not isinstance(_u, dict):
+                        _u = {}
+                    self._usage_log.append({
+                        "model_id": mid,
+                        "task_type": task_type,
+                        "prompt_tokens": int(_u.get("prompt_tokens", 0)),
+                        "completion_tokens": int(_u.get("completion_tokens", 0)),
+                    })
+                    return response
                 raise ModelUnavailableError(
-                    f"model '{model_id}' unavailable: {exc}"
-                ) from exc
-            logger.warning(
-                "[router] task '%s' model '%s' unavailable (%s) — falling back to active %s",
-                task_type, model_id, exc, top,
-            )
-            model_id = top
+                    f"all enabled models unavailable: {last_exc}"
+                ) from last_exc
+
             try:
                 response = await self._backends[model_id].complete(prompt, task_type)
-            except (OSError, ConnectionError) as exc2:
-                raise ModelUnavailableError(
-                    f"model '{model_id}' unavailable: {exc2}"
-                ) from exc2
-        self._last_model = model_id
-        logger.info("[router] %s handled request", model_id)
-        _u = getattr(self._backends[model_id], "_last_usage", None)
-        if not isinstance(_u, dict):
-            _u = {}
-        self._usage_log.append({
-            "model_id": model_id,
-            "task_type": task_type,
-            "prompt_tokens": int(_u.get("prompt_tokens", 0)),
-            "completion_tokens": int(_u.get("completion_tokens", 0)),
-        })
-        return response
+            except (OSError, ConnectionError) as exc:
+                if model_id == top:
+                    raise ModelUnavailableError(
+                        f"model '{model_id}' unavailable: {exc}"
+                    ) from exc
+                logger.warning(
+                    "[router] task '%s' model '%s' unavailable (%s) — falling back to active %s",
+                    task_type, model_id, exc, top,
+                )
+                model_id = top
+                try:
+                    response = await self._backends[model_id].complete(prompt, task_type)
+                except (OSError, ConnectionError) as exc2:
+                    raise ModelUnavailableError(
+                        f"model '{model_id}' unavailable: {exc2}"
+                    ) from exc2
+            self._last_model = model_id
+            logger.info("[router] %s handled request", model_id)
+            _u = getattr(self._backends[model_id], "_last_usage", None)
+            if not isinstance(_u, dict):
+                _u = {}
+            self._usage_log.append({
+                "model_id": model_id,
+                "task_type": task_type,
+                "prompt_tokens": int(_u.get("prompt_tokens", 0)),
+                "completion_tokens": int(_u.get("completion_tokens", 0)),
+            })
+            return response
+        finally:
+            sem.release()
 
     def _vision_chain(self) -> list[str]:
         """Priority-ordered enabled + routable backends that self-declare vision.
