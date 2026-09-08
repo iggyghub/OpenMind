@@ -8,7 +8,7 @@ Keys: notifications_enabled, reminder_interval_minutes, camera_enabled,
       visualiser_visible, mic_mode, tts_muted, tts_volume,
       mic_input_device, browser_pause_on_verification,
       disabled_plugins, enabled_skills, background_actuation,
-      setvalue_roles, user_idle_ms, trading_live_arm
+      setvalue_roles, user_idle_ms, trading_live_arm, admission_cap
 """
 from __future__ import annotations
 
@@ -122,6 +122,9 @@ _DEFAULTS: dict[str, Any] = {
     # with nothing to distinguish "task died" from "nothing was due" short
     # of a live forced-due hand trace. This closes that gap for next time.
     "scheduler_heartbeat":       "",
+    # ADR-0036 M: per-Failure-domain admission cap (default matches L's
+    # hardcoded default -- R5 "the scarce resource is always singular").
+    "admission_cap":             1,
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -160,6 +163,7 @@ _TYPES: dict[str, type] = {
     "ipo_tracked":               list,
     "discovery_candidate_limit": int,
     "scheduler_heartbeat":       str,
+    "admission_cap":             int,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
@@ -206,6 +210,8 @@ class SettingsStore:
         if key == "user_idle_ms":
             value = max(0, value)
         if key == "discovery_candidate_limit":
+            value = max(1, value)
+        if key == "admission_cap":
             value = max(1, value)
         if key == "mic_mode" and value not in _MIC_MODE_VALUES:
             raise ValueError(

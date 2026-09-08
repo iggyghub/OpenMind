@@ -6205,6 +6205,13 @@
             <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
           </label>
         </div>
+        <div class="set-interval-row">
+          <div>
+            <div class="set-toggle-label">Admission cap</div>
+            <div class="set-toggle-sub">Max concurrent calls per remote model endpoint (ADR-0036)</div>
+          </div>
+          <input type="number" class="set-interval-select" id="set-admission-cap" min="1" step="1" style="width: 64px;">
+        </div>
 
         </div>
       </div>
@@ -6961,6 +6968,7 @@
       tts_muted:                 false,
       tts_volume:                100,
       mic_input_device:          '',
+      admission_cap:             1,
     };
 
     // Integrations pane state (S15 / #298). Populated by harness_status
@@ -11954,6 +11962,7 @@
     const setIntervalSelect = document.getElementById('set-interval-select');
     const setCameraToggle   = document.getElementById('set-camera-toggle');
     const setVisToggle      = document.getElementById('set-vis-toggle');
+    const setAdmissionCap   = document.getElementById('set-admission-cap');
 
     // S7 -- mic-mode control (#290)
     const hdrMicMode      = document.getElementById('hdr-mic-mode');
@@ -12065,6 +12074,7 @@
       setIntervalSelect.value = ivVal;
       setCameraToggle.checked = !!s.camera_enabled;
       setVisToggle.checked    = !!s.visualiser_visible;
+      if (setAdmissionCap) setAdmissionCap.value = s.admission_cap ?? 1;
       applyMicMode(s.mic_mode || 'passive');
       // Restore the PTT hotkey label (unless mid-capture).
       currentPttKey = s.ptt_key || 'Control+Shift+Space';
@@ -12088,6 +12098,13 @@
     setVisToggle.addEventListener('change', () => {
       sendEvent({ type: 'set_setting', data: { key: 'visualiser_visible', value: setVisToggle.checked } });
     });
+    if (setAdmissionCap) {
+      setAdmissionCap.addEventListener('change', () => {
+        const cap = Math.max(1, parseInt(setAdmissionCap.value, 10) || 1);
+        setAdmissionCap.value = cap;
+        sendEvent({ type: 'set_setting', data: { key: 'admission_cap', value: cap } });
+      });
+    }
 
     // Mic-mode header segmented control click.
     hdrMicSegs.forEach(btn => {

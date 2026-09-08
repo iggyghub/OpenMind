@@ -75,6 +75,7 @@ class TestSettingsStore:
             "trading_sentiment_gate_enabled",
             "trading_bear_case_gate_enabled",
             "trading_stock_sentiment_gate_enabled",
+            "admission_cap",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):
@@ -316,6 +317,15 @@ class TestSettingsStore:
     def test_scheduler_heartbeat_defaults_empty(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")
         assert store.get("scheduler_heartbeat") == ""
+
+    def test_admission_cap_defaults_1(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("admission_cap") == 1
+
+    def test_admission_cap_floors_at_1(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("admission_cap", 0)
+        assert store.get("admission_cap") == 1
 
     def test_discovery_queries_rejects_non_str_items(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")

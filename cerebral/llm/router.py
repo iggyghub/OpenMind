@@ -217,6 +217,17 @@ class _DomainSemaphore:
             else:
                 self.active -= 1
 
+    async def set_cap(self, new_cap: int) -> None:
+        """Live-update the cap (ADR-0036 M). A raised cap admits
+        already-queued waiters immediately; a lowered cap never preempts
+        an active call (R5) -- it just tightens future admission."""
+        async with self._lock:
+            self.cap = new_cap
+            while self.active < self.cap and self.waiters:
+                self.active += 1
+                _, fut = self.waiters.pop(0)
+                fut.set_result(None)
+
 
 class ModelRouter:
     def __init__(
@@ -224,6 +235,7 @@ class ModelRouter:
         backends: dict[str, Backend] | None = None,
         models: dict[str, dict] | None = None,
         default_model: str | None = None,
+        admission_cap: int = 1,
     ):
         if backends is None:
             backends = _real_backends()
@@ -256,9 +268,12 @@ class ModelRouter:
         self._usage_log: list[dict] = []
         # ADR-0036: per-Failure-domain admission cap, keyed by backend host
         # (see _domain_key), not by model_id -- two model_ids on the same
-        # host share one cap.
+        # host share one cap. admission_cap is the cap new domains are
+        # created with; set_admission_cap (M) also live-updates existing
+        # ones.
         self._domain_semaphores: dict[str, _DomainSemaphore] = {}
         self._sem_lock = asyncio.Lock()
+        self._admission_cap = admission_cap
 
     @property
     def active_model(self) -> str:
@@ -591,9 +606,24 @@ class ModelRouter:
         async with self._sem_lock:
             sem = self._domain_semaphores.get(domain)
             if sem is None:
-                sem = _DomainSemaphore(cap=1)
+                sem = _DomainSemaphore(cap=self._admission_cap)
                 self._domain_semaphores[domain] = sem
             return sem
+
+    async def set_admission_cap(self, cap: int) -> None:
+        """Live-update the per-Failure-domain admission cap (ADR-0036 M).
+
+        Applies to every existing domain immediately (a raised cap admits
+        already-queued waiters right away) and to domains created after
+        this call. Persistence to felix-settings.json is the caller's
+        job (settings_control's apply callback)."""
+        if cap < 1:
+            raise ValueError(f"admission_cap must be >= 1, got {cap}")
+        self._admission_cap = cap
+        async with self._sem_lock:
+            sems = list(self._domain_semaphores.values())
+        for sem in sems:
+            await sem.set_cap(cap)
 
     async def _admit(self, model_id: str, task_type: str, call):
         """Run the zero-arg async ``call`` under model_id's Failure-domain

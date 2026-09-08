@@ -398,6 +398,10 @@ _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
 _settings = _SettingsStore()
+# ADR-0036 M: restore the persisted admission cap. No domain semaphores
+# exist yet this early in boot (no LLM call has happened), so a direct
+# attribute assignment is enough -- _get_sem reads it lazily per domain.
+_router._admission_cap = _settings.get("admission_cap")
 # S34 (#901): now that _settings exists, re-point _trading_broker_fallback
 # at the real configured starting capital instead of StubBrokerClient's
 # own library default. _trading_broker (Alpaca) has no equivalent knob --
@@ -6631,6 +6635,10 @@ async def _handle_message(msg: dict) -> None:
             # back on. The tray registers/clears the global hotkey off the
             # same setting.
             _audio_pipeline.set_ptt_only(value == "ptt")
+        elif key == "admission_cap":
+            # ADR-0036 M: live-update the router's per-Failure-domain
+            # semaphores -- _settings.set already clamped to >=1.
+            await _router.set_admission_cap(_settings.get("admission_cap"))
         await _broadcast(_settings_state_event())
 
     elif t == "set_camera_enabled":
@@ -7339,6 +7347,10 @@ async def _apply_settings_control(key: str, value: Any) -> None:
         else:
             _env.disable_camera()
         await _broadcast(_env_context_event())
+    if key == "admission_cap":
+        # ADR-0036 M: live-update the router's per-Failure-domain
+        # semaphores -- _settings.set already clamped to >=1.
+        await _router.set_admission_cap(_settings.get("admission_cap"))
     await _broadcast(_settings_state_event())
 
 

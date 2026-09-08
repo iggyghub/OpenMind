@@ -2156,3 +2156,70 @@ async def test_admission_cloud_backend_with_no_url_is_uncapped():
 
     results = await asyncio.gather(*[router.complete("p") for _ in range(3)])
     assert results == ["ok", "ok", "ok"]
+
+
+# ---------------------------------------------------------------------------
+# set_admission_cap (ADR-0036, slice M) -- live cap change
+# ---------------------------------------------------------------------------
+
+async def test_set_admission_cap_raises_cap_and_admits_queued_waiters():
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend})
+
+    tasks = [
+        asyncio.create_task(router.complete(f"p{i}", task_type="background"))
+        for i in range(3)
+    ]
+    await asyncio.sleep(0.02)
+    assert backend.active == 1  # cap=1 default -- only one admitted so far
+
+    await router.set_admission_cap(3)
+    await asyncio.sleep(0.02)  # newly-admitted waiters enter complete()
+    assert backend.active == 3  # raising the cap admitted the other two
+
+    backend.release_all()
+    results = await asyncio.gather(*tasks)
+    assert sorted(results) == [
+        "p0:background", "p1:background", "p2:background",
+    ]
+
+
+async def test_set_admission_cap_lower_never_preempts_active_call():
+    """R5: a call already holding a slot runs to completion untouched,
+    even when the cap drops below the current active count."""
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=2)
+
+    t1 = asyncio.create_task(router.complete("a", task_type="background"))
+    t2 = asyncio.create_task(router.complete("b", task_type="background"))
+    await asyncio.sleep(0.02)
+    assert backend.active == 2
+
+    await router.set_admission_cap(1)  # lower than the 2 already active
+    await asyncio.sleep(0.01)
+    assert backend.active == 2  # neither existing call was preempted
+
+    backend.release_all()
+    results = await asyncio.gather(t1, t2)
+    assert sorted(results) == ["a:background", "b:background"]
+
+
+async def test_set_admission_cap_rejects_below_one():
+    router = ModelRouter(backends={"custom/a": _SlowBackend()})
+    with pytest.raises(ValueError):
+        await router.set_admission_cap(0)
+
+
+async def test_admission_cap_constructor_param_seeds_new_domains():
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=2)
+
+    tasks = [
+        asyncio.create_task(router.complete(f"p{i}", task_type="background"))
+        for i in range(2)
+    ]
+    await asyncio.sleep(0.02)
+    assert backend.active == 2  # both admitted under the constructor cap
+
+    backend.release_all()
+    await asyncio.gather(*tasks)

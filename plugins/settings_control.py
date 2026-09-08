@@ -19,8 +19,10 @@ Scope (matches issue #327)
 * **System settings owned by Cerebral** (``cerebral/data/felix-settings.json``):
   ``notifications_enabled``, ``reminder_interval_minutes``, ``camera_enabled``,
   ``visualiser_visible``, ``mic_mode``, ``tts_muted``, ``tts_volume``,
-  ``mic_input_device``. Applied via the SettingsStore singleton and
-  reflected live through the existing ``settings_updated`` broadcast.
+  ``mic_input_device``, ``admission_cap`` (ADR-0036 M -- also live-updates
+  the router's per-Failure-domain semaphores). Applied via the SettingsStore
+  singleton and reflected live through the existing ``settings_updated``
+  broadcast.
 * **Appearance settings owned by the renderer** (theme/scale/accent live
   in ``localStorage`` under ``om:appearance``): the tool emits an
   ``apply_appearance`` broadcast that the renderer handles and persists
@@ -68,6 +70,7 @@ SYSTEM_KEYS: frozenset[str] = frozenset({
     "tts_muted",
     "tts_volume",
     "mic_input_device",
+    "admission_cap",
 })
 
 # Renderer-owned appearance keys (localStorage source of truth).
@@ -133,8 +136,9 @@ class SettingsControlPlugin:
                                 "New value -- bool for toggles "
                                 "(notifications_enabled, camera_enabled, "
                                 "visualiser_visible, tts_muted); int for "
-                                "tts_volume (0-100) and "
-                                "reminder_interval_minutes (>=0); string for "
+                                "tts_volume (0-100), "
+                                "reminder_interval_minutes (>=0), and "
+                                "admission_cap (>=1, ADR-0036); string for "
                                 "mic_mode (passive|ptt|disabled), "
                                 "mic_input_device (label, '' for system "
                                 "default), ui_theme (midnight|light|hc), "
