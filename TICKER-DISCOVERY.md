@@ -31,12 +31,12 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
 
 ## Next slice -- start here
 
-- **Active:** DD1 -- #1157
+- **Active:** DD2 -- #1158
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] DD1 -- #1157 -- Add movers/most-actives/all-assets wrappers to AlpacaBrokerClient
+- [x] DD1 -- #1157 -- Add movers/most-actives/all-assets wrappers to AlpacaBrokerClient
 - [ ] DD2 -- #1158 -- build_dynamic_universe: movers + random-sample candidate pool
 - [ ] DD3 -- #1159 -- Wire extract_ticker/prefilter_candidates onto the dynamic universe
 - [ ] DD4 -- #1160 -- Swap expand_strategy_ticker onto the dynamic universe (ADR-0026 decision 5)
@@ -44,4 +44,17 @@ DD4; DD5 is independent of DD2-DD4 but still queued last since it's the lowest-s
 
 ## Landed PRs
 
-(none yet)
+- PR #1163 -- DD1 (self_dev generated the production `broker.py` code correctly --
+  `_screener`/`_connect_screener()` cleanly mirrors the existing `_client`/`_connect()` pattern,
+  all three methods match the issue's spec. Hand-fixed: the PR shipped with ZERO tests for the
+  three new methods (only the test fixture's signature was extended to accept a `screener` param,
+  nothing actually called `get_all_assets`/`get_market_movers`/`get_most_actives`) -- added 3 direct
+  unit tests against fake `TradingClient`/`ScreenerClient` doubles. Campaign's own `tests_failed`
+  verdict was the known environmental sandbox flake (collection cut off ~7%, not a real failure) --
+  full broker/trading suite re-run locally clean, 442 passed. Also surfaced a real gap in
+  `trigger_campaign.py`/the tray IPC: its WebSocket response isn't correlated to the request that
+  asked for it -- two concurrent `self_dev_campaign` triggers on separate connections can each
+  receive the WRONG one's result. Not yet fixed -- worth a proper request-id-matching fix, and
+  `self_dev.py`'s own `_campaign()` has no lock preventing concurrent runs at all, contradicting
+  ADR-0028 rule 5. Neither caused any real corruption here since DD1/UI1 touch disjoint files, but
+  don't rely on that next time).
