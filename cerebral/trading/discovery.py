@@ -320,7 +320,7 @@ def build_dynamic_universe(
     min_dollar_volume: float = 5_000_000,
 ) -> List[str]:
     """Builds today's candidate ticker universe: Alpaca's top gainers +
-    losers (both â€” a loser is a bounce/reversal candidate, not just noise)
+    losers (both -- a loser is a bounce/reversal candidate, not just noise)
     + most-actives, plus a random sample of the broader tradable universe
     for breadth, all narrowed by rank_for_day_trading's existing liquidity/
     ATR filter. Falls back to _KNOWN_TICKERS on ANY exception from the
