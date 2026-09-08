@@ -716,3 +716,30 @@ def test_rollback_tool_takes_no_required_args(tmp_path):
     plugin = _make(tmp_path)
     tool = next(t for t in plugin.list_tools() if t.name == "self_dev_rollback")
     assert tool.schema.get("required", []) == []
+
+
+# ---------------------------------------------------------------------------
+# verify() -- thin adapter over the existing sandbox gate (ADR-0034)
+# ---------------------------------------------------------------------------
+
+def test_verify_before_any_run(tmp_path):
+    plugin = _make(tmp_path)
+    result = plugin.verify()
+    assert result.passed is False
+    assert "No self_dev run" in result.evidence
+
+
+async def test_verify_reflects_green_run(tmp_path):
+    plugin = _make(tmp_path)
+    await plugin.call_tool("self_dev", {"change_description": "Add a README comment"})
+    result = plugin.verify()
+    assert result.passed is True
+    assert result.evidence == "1 passed in 0.01s"
+
+
+async def test_verify_reflects_red_run(tmp_path):
+    plugin = _make(tmp_path, test_fn=lambda d: (False, "1 failed, 0 passed"))
+    await plugin.call_tool("self_dev", {"change_description": "Add a README comment"})
+    result = plugin.verify()
+    assert result.passed is False
+    assert result.evidence == "1 failed, 0 passed"

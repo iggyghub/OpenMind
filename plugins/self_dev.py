@@ -64,6 +64,7 @@ from cerebral import self_dev_io as _io
 from cerebral.llm.step_ledger import StepLedger
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.paths import data_dir
+from cerebral.verification import VerifyResult
 
 logger = logging.getLogger(__name__)
 
@@ -503,6 +504,8 @@ class SelfDevPlugin:
         self._repo_url = repo_url or str(_REPO_ROOT)
         self._sandbox_root = sandbox_root or (data_dir() / "sandbox" / "self_dev")
         self._live_root = live_root or _REPO_ROOT
+        # ADR-0034: last sandbox test-suite outcome, exposed via verify().
+        self._last_verify: VerifyResult | None = None
 
     def _resolve_edit(self) -> EditFn:
         return self._edit_override or _edit_fn or _default_edit_fn
@@ -518,6 +521,18 @@ class SelfDevPlugin:
 
     def _resolve_record_activity(self) -> RecordTurnFn:
         return self._record_activity_override or _record_activity_fn or _default_record_activity_fn
+
+    def verify(self) -> VerifyResult:
+        """ADR-0034: thin adapter over the existing sandbox test gate.
+
+        Exposes the most recent self_dev run's test-suite outcome as a
+        VerifyResult -- no new test-running logic, this only introspects
+        what `_run` already recorded. Before any run, there is nothing to
+        report yet.
+        """
+        if self._last_verify is None:
+            return VerifyResult(passed=False, evidence="No self_dev run recorded yet.")
+        return self._last_verify
 
     def pr_state(self, pr_url: str) -> str:
         """Live PR state (OPEN/MERGED/CLOSED) via the injected pr_state_fn
@@ -787,6 +802,10 @@ class SelfDevPlugin:
                 "result": {"passed": test_passed, "summary": test_output},
                 "is_error": False,
             })
+
+        # ADR-0034: expose this run's test outcome via verify() -- no new
+        # test-running logic, just introspecting the gate above.
+        self._last_verify = VerifyResult(passed=test_passed, evidence=test_output)
 
         # 4. Open PR (regardless of test colour; mergeability is decided below).
         if "pr" in resumed:
