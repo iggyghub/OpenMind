@@ -308,6 +308,45 @@ def rank_for_day_trading(
         scored.append((symbol, range_pct))
     scored.sort(key=lambda pair: pair[1], reverse=True)
     return [symbol for symbol, _ in scored]
+
+
+def build_dynamic_universe(
+    broker: "Any",  # duck-typed: needs get_market_movers/get_most_actives/get_all_assets
+    fetch_ohlcv_fn: FetchOhlcvFn,
+    movers_top: int = 15,
+    actives_top: int = 10,
+    random_sample_size: int = 15,
+    min_price: float = 1.0,
+    min_dollar_volume: float = 5_000_000,
+) -> List[str]:
+    """Builds today's candidate ticker universe: Alpaca's top gainers +
+    losers (both â€” a loser is a bounce/reversal candidate, not just noise)
+    + most-actives, plus a random sample of the broader tradable universe
+    for breadth, all narrowed by rank_for_day_trading's existing liquidity/
+    ATR filter. Falls back to _KNOWN_TICKERS on ANY exception from the
+    broker calls (network, auth, rate limit, unsupported account tier) --
+    this must never leave discovery with zero candidates just because one
+    live API call failed."""
+    import random
+    try:
+        movers = broker.get_market_movers(top=movers_top)
+        actives = broker.get_most_actives(top=actives_top)
+        all_assets = broker.get_all_assets()
+    except Exception:
+        logger.warning("[discovery] dynamic universe fetch failed, falling back to _KNOWN_TICKERS", exc_info=True)
+        return sorted(_KNOWN_TICKERS)
+
+    symbols = set()
+    symbols.update(g["symbol"] for g in movers.get("gainers", []))
+    symbols.update(g["symbol"] for g in movers.get("losers", []))
+    symbols.update(a["symbol"] for a in actives)
+    remaining = [s for s in all_assets if s not in symbols]
+    symbols.update(random.sample(remaining, min(random_sample_size, len(remaining))))
+
+    ranked = rank_for_day_trading(
+        sorted(symbols), fetch_ohlcv_fn, min_price=min_price, min_dollar_volume=min_dollar_volume,
+    )
+    return ranked if ranked else sorted(_KNOWN_TICKERS)
 RecordAttemptFn = Callable[[dict], Awaitable[None]]
 
 
