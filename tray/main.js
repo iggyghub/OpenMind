@@ -52,6 +52,7 @@ let _selfDevBootPending  = false;
 let _healthCheckResolve = null;
 let _healthCheckTimer   = null;
 let felixState  = 'idle';      // 'idle' | 'active'
+let selfDevCampaignRunning = false;
 let activeProfile = null;
 let allProfiles   = [];
 let mainWindow        = null;
@@ -254,6 +255,10 @@ function handleCerebralEvent(event) {
 
     case 'thinking':
       routeToVisualiser(event);
+      break;
+
+    case 'self_dev_campaign_status':
+      selfDevCampaignRunning = !!(event.data && event.data.running);
       break;
 
     case 'passive':
@@ -1135,7 +1140,7 @@ function _checkForMasterUpdate() {
       catch (_) { return false; }
     },
     bootSha: _bootSha,
-    isIdle:  felixState === 'idle',
+    isIdle:  felixState === 'idle' && !selfDevCampaignRunning,
   });
 
   if (decision.action === 'skip') {

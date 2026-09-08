@@ -383,6 +383,10 @@ _rollback_fn = None
 # activity" thread instead, for the Activity Log -- a different destination
 # for the same event, not a replacement.
 _record_activity_fn = None
+# 2026-09-08 -- tells the tray a campaign started/finished, so its
+# auto-update idle check doesn't restart Cerebral mid-slice. Same lazy
+# module-global convention as the seams above.
+_campaign_status_fn = None
 
 
 def set_edit_fn(fn) -> None:
@@ -408,6 +412,11 @@ def set_rollback_fn(fn) -> None:
 def set_record_activity_fn(fn) -> None:
     global _record_activity_fn
     _record_activity_fn = fn
+
+
+def set_campaign_status_fn(fn) -> None:
+    global _campaign_status_fn
+    _campaign_status_fn = fn
 
 
 async def _default_record_turn_fn(kind: str, content: dict) -> None:
@@ -1027,10 +1036,20 @@ class SelfDevPlugin:
                 is_error=True,
             )
         self._campaign_running = True
+        if _campaign_status_fn is not None:
+            try:
+                await _campaign_status_fn({"running": True})
+            except Exception:
+                logger.warning("[self_dev] campaign_status_fn(running=True) failed", exc_info=True)
         try:
             return await self._campaign_inner(args)
         finally:
             self._campaign_running = False
+            if _campaign_status_fn is not None:
+                try:
+                    await _campaign_status_fn({"running": False})
+                except Exception:
+                    logger.warning("[self_dev] campaign_status_fn(running=False) failed", exc_info=True)
 
     async def _campaign_inner(self, args: dict) -> ToolResult:
         """Drive a multi-slice campaign from a driver .md file (SD-5/#807).
