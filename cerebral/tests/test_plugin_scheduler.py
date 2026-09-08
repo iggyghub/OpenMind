@@ -1916,8 +1916,9 @@ async def test_run_gauntlet_returns_derived_strategy_id(tmp_path, monkeypatch):
 # ── S44: Activity Log entries for expand_strategy_ticker / auto_combine_strategies ──
 
 async def test_expand_strategy_ticker_logs_one_activity_entry_on_dispatch(tmp_path, monkeypatch):
-    """S44: _expand_strategy_ticker records one activity entry per invocation
-    (not per candidate) with strategy_id, attempted tickers, and their verdicts."""
+    """S44/Slice X: _expand_strategy_ticker records one activity entry per invocation
+    (not per candidate) with strategy_id, attempted tickers, and their verdicts.
+    Uses dynamic universe from injected broker instead of static _KNOWN_TICKERS."""
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
     
@@ -1938,14 +1939,29 @@ async def test_expand_strategy_ticker_logs_one_activity_entry_on_dispatch(tmp_pa
         return ToolResult(content=json.dumps({"verdict": "VALIDATED"}))
     plugin._run_gauntlet = fake_gauntlet
 
-    result = await plugin._expand_strategy_ticker({"strategy_id": "S1"}, strategy_store=store)
+    # Inject a fake broker returning a known dynamic universe
+    fake_universe = ["MSFT", "GOOGL", "TSLA", "AMZN"]
+    class FakeBroker:
+        def get_movers(self): return fake_universe[:2]
+        def get_actives(self): return fake_universe[2:3]
+        def get_assets(self): return fake_universe
+    fake_broker = FakeBroker()
+
+    result = await plugin._expand_strategy_ticker(
+        {"strategy_id": "S1"}, 
+        strategy_store=store, 
+        broker=fake_broker
+    )
     
     assert not result.is_error, result.content
     assert len(logged) == 1
     entry = logged[0]
     assert entry["source"] == "expand_strategy_ticker"
     assert entry["strategy_id"] == "S1"
+    # Assert candidates come from the fake broker, exclude current_symbol "AAPL"
     assert len(entry["tickers"]) > 0
+    assert "AAPL" not in entry["tickers"]
+    assert all(t in fake_universe for t in entry["tickers"])
     assert all(v in entry["verdicts"].values() for v in ["VALIDATED"])
 
 
