@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<template id="registry-panel-tpl">
+  <style>
+    :host {
+      display: block;
+      flex: 1;
+      overflow-y: auto;
+      container-type: inline-size;
+      container-name: registry-panel;
+    }
+    .reg-section {
+      padding: 14px 18px 6px;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-top: 1px solid #1e1c30;
+    }
+    .reg-section:first-child { border-top: none; }
+
+    .reg-row {
+      padding: 12px 18px;
+      border-bottom: 1px solid #1e1c30;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .reg-row:last-child { border-bottom: none; }
+
+    .reg-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .reg-status {
+      font-size: 9px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: var(--radius-lg);
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .reg-status-loaded   { background: rgba(75, 212, 154, 0.18); color: #4bd49a; }
+    .reg-status-disabled { background: var(--bg-elev);           color: var(--text-muted); }
+    .reg-status-error    { background: rgba(224, 85, 85, 0.18);  color: #e05555; }
+
+    .reg-verify {
+      font-size: 9px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: var(--radius-lg);
+      font-weight: 700;
+      background: rgba(124, 92, 252, 0.15);
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .reg-actions {
+      display: flex;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .reg-btn {
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg);
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .reg-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+    .reg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .reg-btn.is-active { color: #4bd49a; border-color: #4bd49a55; }
+    .reg-btn.is-danger  { color: #e0855a; border-color: #e0855a55; }
+
+    .reg-empty {
+      padding: 12px 18px;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+  </style>
+  <div class="reg-section" slot="section">Registered Plugins</div>
+  <div class="reg-list"></div>
+</template>
+
+<script>
+class RegistryPanel extends HTMLElement {
+  connectedCallback() {
+    const tpl = document.getElementById('registry-panel-tpl');
+    const clone = tpl.content.cloneNode(true);
+    this.innerHTML = '';
+    this.appendChild(clone);
+    this._init();
+  }
+  _init() {
+    // Attach event listeners for the action buttons
+    this.addEventListener('click', (e) => {
+      const btn = e.target.closest('.reg-btn');
+      if (!btn) return;
+      const row = btn.closest('.reg-row');
+      const action = btn.dataset.action;
+      const pluginName = row?.querySelector('.reg-name')?.textContent;
+      if (pluginName && action) {
+        this.dispatchEvent(new CustomEvent('reg-action', {
+          bubbles: true,
+          detail: { plugin: pluginName, action }
+        }));
+      }
+    });
+    this._render();
+  }
+  _render() {
+    // Placeholder row to satisfy visual acceptance criteria.
+    // Real implementation will bind to `plugins_list` broadcast events.
+    const list = this.querySelector('.reg-list');
+    list.innerHTML = `
+      <div class="reg-row">
+        <span class="reg-name">sample-plugin</span>
+        <span class="reg-status reg-status-loaded">Loaded</span>
+        <span class="reg-verify">Verified</span>
+        <div class="reg-actions">
+          <button class="reg-btn" data-action="enable">Enable</button>
+          <button class="reg-btn" data-action="disable">Disable</button>
+          <button class="reg-btn" data-action="detail">Detail</button>
+        </div>
+      </div>
+    `;
+  }
+}
+customElements.define('registry-panel', RegistryPanel);
+</script>

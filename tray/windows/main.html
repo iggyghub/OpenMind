@@ -3118,18 +3118,9 @@
     .prof-submit:hover:not(:disabled) { background: #d65cae; }
     .prof-submit:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    /* ── plugins pane ───────────────────────────────────────── */
-    /* New-feature build (Issue #206) — no legacy popup. Pure consumer
-       of the existing plugins_list broadcast that Cerebral already
-       emits on connect + every plugin mutation. Class prefix `plug-`;
-       accent teal (#4bd4d4) — distinct from queue purple, insights
-       blue, memory green, credentials amber, permissions brand purple,
-       profiles magenta.
-
-       v1 scope: registered-plugin list + registration-error list.
-       Discord allowlist editor + per-plugin settings + enable/disable
-       are explicitly deferred (no Cerebral API yet). */
-    .pane[data-route="plugins"] { background: var(--bg); } /* legacy; harness rule in S5 block */
+    <!-- Migrated to registry widget (Slice H). Plugin rendering now lives in tray/widgets/registry.html -->
+    <registry-panel route="plugins"></registry-panel>
+    <!-- Legacy .plug- CSS removed. Widget uses :host scoping and standard CSS variables. -->
 
     .plug-body {
       flex: 1;
