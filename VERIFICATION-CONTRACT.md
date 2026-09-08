@@ -5,11 +5,11 @@ Claude-Code-run `run-*.ps1` loop. Each slice = one issue = one self_dev PR
 (clone -> edit -> sandbox test gate -> PR), merged before the next
 dependent slice starts. See docs/adr/0034-verification-contract.md.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** F -- #1128
+- **Active:** none -- all 6 slices landed
 - **Model:** self_dev's `task_type="self_dev"` router pin (local/cloud/connected server, per ADR-0015) -- not a fixed Claude-Code model choice.
 
 ## Queue
@@ -19,7 +19,9 @@ dependent slice starts. See docs/adr/0034-verification-contract.md.
 - [x] C -- #1125 -- Plugin verify() + registration-time enforcement -- self_dev's PR #1139 was structurally broken (module-level RuntimeError that would crash the whole boot, called before plugins even registered); hand-fixed at the real per-plugin refusal point in MCPOrchestrator._load_plugin_file, added verify_test_files opt-in flag so ~20 existing discovery tests weren't broken (commit ec0e40e), PR #1139 closed unmerged.
 - [x] D -- #1126 -- Skill verify() -- witnessed-run evidence field. PR #1140 was actually correct as self_dev wrote it (no hand-fix needed) -- its `tests_failed` was the same environmental full-suite-timeout false alarm as before; confirmed via a clean local full-suite run before merging.
 - [x] E -- #1127 -- Recipe verify() -- dry-run replay. PR #1141 returned a bare dict instead of VerifyResult (breaking the contract's own type uniformity) and had zero tests; hand-fixed on Recipe itself (commit 8b80dea), PR #1141 closed unmerged.
-- [ ] F -- #1128 -- self_dev verify() adapter over the existing sandbox gate (depends on A)
+- [x] F -- #1128 -- self_dev verify() adapter over the existing sandbox gate. PR #1150 reinvented the entire plugins/self_dev.py from scratch at the wrong path (cerebral/plugins/self_dev.py) -- the worst bug of the six, and matched an unrelated PR #1148's same failure mode tonight, suggesting a systematic self_dev weakness on large-file edits, not a one-off; hand-fixed on the real file (commit 0dcac10), PR #1150 closed unmerged.
+
+**Campaign complete: 1/6 slices landed clean via self_dev (A), 1/6 landed clean after a false-alarm recheck (D), 4/6 needed a hand-fix for a real bug self_dev introduced (B, C, E, F).**
 
 D, E, F may run in parallel with B/C once A lands.
 
@@ -30,6 +32,7 @@ D, E, F may run in parallel with B/C once A lands.
 - C -- hand-fixed on master (ec0e40e); PR #1139 closed unmerged, superseded
 - PR #1140 -- D (merged as-is after a full-suite recheck cleared its timeout false alarm)
 - E -- hand-fixed on master (8b80dea); PR #1141 closed unmerged, superseded
+- F -- hand-fixed on master (0dcac10); PR #1150 closed unmerged, superseded
 ## SAFETY
 
 - Registration-time enforcement (C) must never land before the backfill
