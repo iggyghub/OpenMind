@@ -400,9 +400,12 @@ async def extract_claims_from_chunk(chunk: str, router) -> List[str]:
 async def ingest_book(
     chunks: List[str],
     title: str,
+    author: str = "",
+    isbn: str = "",
     watchlist: DiscoveryWatchlist,
     run_gauntlet_fn: RunGauntletFn,
     claim_extractor_fn: ClaimExtractorFn,
+    book_store: Optional[BookStore] = None,
     judge_idea_fn: Optional[JudgeIdeaFn] = None,
     record_activity_fn: Optional[RecordActivityFn] = None,
     record_attempt_fn: Optional[RecordAttemptFn] = None,
@@ -415,6 +418,12 @@ async def ingest_book(
     idea). `on_progress(chunks_done, total_chunks, strategies_dispatched)`
     fires after every chunk so a caller can persist/broadcast progress
     without this function knowing about BookStore or IPC at all."""
+    if book_store is not None:
+        existing = book_store.list_all()
+        for b in existing:
+            if b.title.lower() == title.lower() or (author and getattr(b, "author", "") == author) or (isbn and getattr(b, "isbn", "") == isbn):
+                return {"warning": "Book already in library", "skipped": True}
+
     total = len(chunks)
     dispatched = 0
     claims_seen = 0
