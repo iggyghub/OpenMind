@@ -350,6 +350,57 @@ class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((success, pos, total), (False, 0, 0))
 
+    # ── SR2: repair prompt params ────────────────────────────────────────
+
+    async def test_to_strategy_repair_prompt_includes_prior_code_and_error(self):
+        """When prior_code and prior_error are both given, the sent prompt
+        must contain both -- that's what the repair caller relies on."""
+        idea = from_prose("Buy when RSI < 30")
+
+        class CapturingRouter:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(self, prompt: str, task_type: str) -> str:
+                self.calls.append(prompt)
+                return "def strategy(data):\n    return [1]"
+
+        router = CapturingRouter()
+        with patch("cerebral.trading_ideas._run_tally", return_value=(False, 0, 0)):
+            await to_strategy(
+                idea,
+                router=router,
+                prior_code="def strategy(data):\n    return data.Close.sign()",
+                prior_error="AttributeError: 'Series' object has no attribute 'sign'",
+            )
+
+        self.assertEqual(len(router.calls), 1)
+        prompt = router.calls[0]
+        self.assertIn("def strategy(data):\n    return data.Close.sign()", prompt)
+        self.assertIn("AttributeError: 'Series' object has no attribute 'sign'", prompt)
+        self.assertIn("Your previous attempt at this failed", prompt)
+
+    async def test_to_strategy_no_repair_section_when_params_absent(self):
+        """Backward compatibility: when neither prior_code nor prior_error is
+        given, the prompt must not contain the repair section at all."""
+        idea = from_prose("Buy when RSI < 30")
+
+        class CapturingRouter:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(self, prompt: str, task_type: str) -> str:
+                self.calls.append(prompt)
+                return "def strategy(data):\n    return [1]"
+
+        router = CapturingRouter()
+        with patch("cerebral.trading_ideas._run_tally", return_value=(False, 0, 0)):
+            await to_strategy(idea, router=router)
+
+        self.assertEqual(len(router.calls), 1)
+        self.assertNotIn("Your previous attempt at this failed", router.calls[0])
+        self.assertNotIn("Previous code:", router.calls[0])
+
     def test_run_tally_computes_real_positive_count_from_confidence_weight(self):
         """The real S40 (retrieval) + S38 (confidence weight) wiring, not a
         stub: 3 retrieved ids, 2 with positive weight, 1 with negative."""
