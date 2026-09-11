@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from cerebral.sandbox._windows import WindowsSandbox
-from cerebral.trading.sandboxed_eval import evaluate_signals
+from cerebral.trading.sandboxed_eval import evaluate_signals, evaluate_signals_verbose
 
 pytestmark = pytest.mark.skipif(
     not WindowsSandbox.available(), reason="ADR-0010 sandbox not available on this machine"
@@ -191,3 +191,36 @@ def test_plain_python_list_still_works():
     bars = _bars(3)
     result = evaluate_signals(code, bars)
     assert result == [1, -1, 0]
+
+
+def test_evaluate_signals_verbose_returns_reason_when_strategy_raises():
+    bars = _bars()
+    raising_code = (
+        "def strategy(data):\n"
+        "    raise ValueError('boom')\n"
+    )
+    signals, reason = evaluate_signals_verbose(raising_code, bars)
+    assert all(s == 0 for s in signals)
+    assert reason is not None
+    assert "strategy evaluation failed" in reason or "evaluation raised" in reason
+
+
+def test_evaluate_signals_verbose_returns_reason_for_malformed_signals():
+    # Values outside {-1, 0, 1} write valid JSON but fail evaluate_signals_verbose's validator
+    bars = _bars(3)
+    bad_code = (
+        "def strategy(data):\n"
+        "    return [2, 3, 4]\n"
+    )
+    signals, reason = evaluate_signals_verbose(bad_code, bars)
+    assert all(s == 0 for s in signals)
+    assert reason is not None
+    assert "malformed" in reason
+
+
+def test_evaluate_signals_verbose_success_returns_none_reason():
+    bars = _bars()
+    signals, reason = evaluate_signals_verbose(MA_CROSS_CODE, bars)
+    expected = _expected_ma_cross_signals(bars)
+    assert signals == expected
+    assert reason is None
