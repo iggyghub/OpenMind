@@ -184,6 +184,36 @@ def test_extract_full_text_office_without_libreoffice_degrades_to_empty(tmp_path
 
 # ── BookStore ────────────────────────────────────────────────────────────
 
+def test_book_store_migration_adds_strategies_repaired_column(tmp_path):
+    import sqlite3 as _sqlite3
+    db_path = tmp_path / "old_books.db"
+    # Simulate a pre-SR4 books.db without the strategies_repaired column
+    con = _sqlite3.connect(str(db_path))
+    con.execute("""
+        CREATE TABLE books (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            title            TEXT NOT NULL,
+            filename         TEXT NOT NULL,
+            stored_path      TEXT NOT NULL,
+            status           TEXT NOT NULL DEFAULT 'queued',
+            total_chunks     INTEGER NOT NULL DEFAULT 0,
+            processed_chunks INTEGER NOT NULL DEFAULT 0,
+            strategies_found INTEGER NOT NULL DEFAULT 0,
+            created_at       TEXT NOT NULL,
+            error_message    TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    con.execute("INSERT INTO books (title, filename, stored_path, created_at) VALUES (?, ?, ?, ?)",
+                ("Old Book", "old.pdf", "/old.pdf", "2026-01-01T00:00:00+00:00"))
+    con.commit()
+    con.close()
+
+    store = BookStore(db_path=db_path)
+    book = store.list_all()[0]
+
+    assert book.strategies_repaired == 0  # default applied by migration
+
+
 def test_book_store_add_and_get_round_trips(tmp_path):
     store = _store(tmp_path)
     added = store.add("Market Wizards", "wizards.pdf", "/data/books/1/wizards.pdf")

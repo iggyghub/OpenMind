@@ -3924,7 +3924,9 @@ async def _trading_broadcast() -> None:
             {
                 "id": b.id, "title": b.title, "filename": b.filename, "status": b.status,
                 "total_chunks": b.total_chunks, "processed_chunks": b.processed_chunks,
-                "strategies_found": b.strategies_found, "error_message": b.error_message,
+                "strategies_found": b.strategies_found,
+                "strategies_repaired": b.strategies_repaired,
+                "error_message": b.error_message,
                 "valid_strategies": list_validated_strategies(b.title, _trading_strategy_store),
             }
             for b in _scheduler_plugin._book_store.list_all()

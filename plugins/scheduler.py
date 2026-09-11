@@ -1412,6 +1412,20 @@ class SchedulerPlugin:
                 # chapter provenance still survives via idea.provenance.
                 gauntlet_args, origin="discovered", strategy_store=strategy_store, fetch=fetch,
             )
+            if not result.is_error:
+                try:
+                    parsed = json.loads(result.content)
+                    if parsed.get("verdict") == "VALIDATED":
+                        sid = parsed.get("strategy_id", "")
+                        if sid:
+                            _ss = strategy_store if strategy_store is not None else StrategyStore()
+                            row = _ss.get_current_version(sid)
+                            if row is not None and row["provenance_json"]:
+                                prov = json.loads(row["provenance_json"])
+                                if "(repaired after 1 retry)" in prov.get("source", ""):
+                                    self._book_store.increment_repaired(book_id)
+                except Exception:
+                    pass
             return {"ticker": ticker, "is_error": result.is_error, "result": result.content}
 
         async def claim_extractor(chunk: str) -> list:
@@ -1491,7 +1505,9 @@ class SchedulerPlugin:
             {
                 "id": b.id, "title": b.title, "filename": b.filename, "status": b.status,
                 "total_chunks": b.total_chunks, "processed_chunks": b.processed_chunks,
-                "strategies_found": b.strategies_found, "created_at": b.created_at,
+                "strategies_found": b.strategies_found,
+                "strategies_repaired": b.strategies_repaired,
+                "created_at": b.created_at,
                 "error_message": b.error_message,
                 "valid_strategies": list_validated_strategies(b.title, store),
             }

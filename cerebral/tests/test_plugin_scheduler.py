@@ -2311,3 +2311,76 @@ async def test_run_gauntlet_no_repair_when_code_succeeds_first_try(tmp_path):
 
     assert len(ts_calls) == 1  # only the initial generation, no repair
     assert not result.is_error
+
+
+# ── SR4: strategies_repaired counter ─────────────────────────────────────
+
+async def test_book_ingestion_increments_strategies_repaired_on_repair(tmp_path):
+    """SR4: a book-sourced strategy that hits the SR3 repair path should
+    increment the book's strategies_repaired counter by exactly 1."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    router = BookRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    repaired_sid = "repaired-strategy-1"
+
+    async def fake_run_gauntlet(args, *, strategy_store=None, fetch=None, origin="generated", **kwargs):
+        # Simulate _run_gauntlet saving the strategy with a repaired provenance, then returning VALIDATED
+        if strategy_store is not None:
+            strategy_store.save(
+                StrategySpec(strategy_id=repaired_sid, symbol=args.get("symbol", "AAPL"), code=MA_CROSS_CODE),
+                origin=origin,
+                provenance_json={"source": args.get("provenance", "") + " (repaired after 1 retry)"},
+            )
+        return ToolResult(content=json.dumps({
+            "verdict": "VALIDATED", "sharpe": 1.5, "total_return": 0.2,
+            "strategy_id": repaired_sid, "gates": [],
+        }))
+
+    plugin._run_gauntlet = fake_run_gauntlet
+
+    result = await plugin._upload_book(
+        {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
+        strategy_store=store, fetch=_fetch,
+    )
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+
+    book = plugin._book_store.get(book_id)
+    assert book.strategies_repaired == 1
+
+
+async def test_book_ingestion_does_not_increment_repaired_on_first_try_success(tmp_path):
+    """SR4: a book-sourced strategy that succeeds on the first try must NOT
+    increment strategies_repaired."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    router = BookRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    clean_sid = "clean-strategy-1"
+
+    async def fake_run_gauntlet(args, *, strategy_store=None, fetch=None, origin="generated", **kwargs):
+        if strategy_store is not None:
+            strategy_store.save(
+                StrategySpec(strategy_id=clean_sid, symbol=args.get("symbol", "AAPL"), code=MA_CROSS_CODE),
+                origin=origin,
+                provenance_json={"source": args.get("provenance", "")},
+            )
+        return ToolResult(content=json.dumps({
+            "verdict": "VALIDATED", "sharpe": 1.5, "total_return": 0.2,
+            "strategy_id": clean_sid, "gates": [],
+        }))
+
+    plugin._run_gauntlet = fake_run_gauntlet
+
+    result = await plugin._upload_book(
+        {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
+        strategy_store=store, fetch=_fetch,
+    )
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+
+    book = plugin._book_store.get(book_id)
+    assert book.strategies_repaired == 0
