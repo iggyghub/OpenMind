@@ -30,17 +30,22 @@ existing broadcast dict -- no new tray rendering in this campaign.
 
 ## Next slice -- start here
 
-- **Active:** SR1 -- #1176
+- **Active:** SR2 -- #1177
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] SR1 -- #1176 -- sandboxed_eval.py: expose the real failure reason without changing evaluate_signals' contract
+- [x] SR1 -- #1176 -- sandboxed_eval.py: expose the real failure reason without changing evaluate_signals' contract
 - [ ] SR2 -- #1177 -- trading_ideas.py: give to_strategy an optional repair prompt
 - [ ] SR3 -- #1178 -- plugins/scheduler.py: wire one bounded repair retry into _run_gauntlet
 - [ ] SR4 -- #1179 -- observability: track how often the repair retry actually helps
 
 ## Landed PRs
+
+- SR1 -- #1182 -- landed by hand (the autonomous loop's own outer process didn't
+  survive a Claude Code session restart mid-attempt; the partial working-tree diff
+  it left was inspected, verified complete/correct against the issue spec, tested,
+  and finished/merged directly rather than re-run from scratch)
 
 ## SAFETY
 
