@@ -30,14 +30,14 @@ existing broadcast dict -- no new tray rendering in this campaign.
 
 ## Next slice -- start here
 
-- **Active:** SR3 -- #1178
+- **Active:** SR4 -- #1179
 - **Model:** sonnet
 
 ## Queue
 
 - [x] SR1 -- #1176 -- sandboxed_eval.py: expose the real failure reason without changing evaluate_signals' contract
 - [x] SR2 -- #1177 -- trading_ideas.py: give to_strategy an optional repair prompt
-- [ ] SR3 -- #1178 -- plugins/scheduler.py: wire one bounded repair retry into _run_gauntlet
+- [x] SR3 -- #1178 -- plugins/scheduler.py: wire one bounded repair retry into _run_gauntlet
 - [ ] SR4 -- #1179 -- observability: track how often the repair retry actually helps
 
 ## Landed PRs
@@ -47,6 +47,7 @@ existing broadcast dict -- no new tray rendering in this campaign.
   it left was inspected, verified complete/correct against the issue spec, tested,
   and finished/merged directly rather than re-run from scratch)
 - SR2 -- #1183 -- to_strategy repair prompt params
+- SR3 -- #1184 -- bounded repair retry in _run_gauntlet
 
 ## SAFETY
 
