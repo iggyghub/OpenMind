@@ -405,11 +405,18 @@ class _FakeActiveEntry:
         self.volume = volume
 
 
+class _FakeMostActives:
+    """Mimics alpaca-py's MostActives response model, which wraps the
+    entries in a .most_actives field rather than being iterable itself."""
+    def __init__(self, most_actives):
+        self.most_actives = most_actives
+
+
 class _FakeScreenerClient:
     """Stands in for alpaca.data.historical.screener.ScreenerClient."""
     def __init__(self, movers=None, actives=None):
         self._movers = movers
-        self._actives = actives or []
+        self._actives = _FakeMostActives(actives or [])
 
     def get_market_movers(self, request):
         return self._movers
