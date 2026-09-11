@@ -26,19 +26,18 @@ merging, even on a green sandbox test run.**
 **None of these fixes require touching `tray/`** except SR4's one-field addition to an
 existing broadcast dict -- no new tray rendering in this campaign.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** SR4 -- #1179
-- **Model:** sonnet
+- **Active:** (none -- all slices landed)
 
 ## Queue
 
 - [x] SR1 -- #1176 -- sandboxed_eval.py: expose the real failure reason without changing evaluate_signals' contract
 - [x] SR2 -- #1177 -- trading_ideas.py: give to_strategy an optional repair prompt
 - [x] SR3 -- #1178 -- plugins/scheduler.py: wire one bounded repair retry into _run_gauntlet
-- [ ] SR4 -- #1179 -- observability: track how often the repair retry actually helps
+- [x] SR4 -- #1179 -- observability: track how often the repair retry actually helps
 
 ## Landed PRs
 
@@ -48,6 +47,7 @@ existing broadcast dict -- no new tray rendering in this campaign.
   and finished/merged directly rather than re-run from scratch)
 - SR2 -- #1183 -- to_strategy repair prompt params
 - SR3 -- #1184 -- bounded repair retry in _run_gauntlet
+- SR4 -- #1185 -- strategies_repaired counter + migration + broadcast field
 
 ## SAFETY
 
