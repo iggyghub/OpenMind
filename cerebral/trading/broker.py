@@ -300,7 +300,7 @@ class AlpacaBrokerClient:
         self._connect_screener()
         from alpaca.data.requests import MostActivesRequest
         data = self._screener.get_most_actives(MostActivesRequest(top=top))
-        return [{"symbol": a.symbol, "volume": int(a.volume)} for a in data]
+        return [{"symbol": a.symbol, "volume": int(a.volume)} for a in data.most_actives]
 
 
 class StubBrokerClient:
