@@ -275,5 +275,8 @@ try {
 } catch {
     Write-Host ("FAILED: {0}" -f $_.Exception.Message) -ForegroundColor Red
 } finally {
-    Read-Host "Press Enter to close" | Out-Null
+    # Read-Host throws under -NonInteractive (e.g. invoked by an automation
+    # harness rather than double-clicked) -- swallow it so a clean run isn't
+    # misreported as a failure just because there's no console to pause.
+    try { Read-Host "Press Enter to close" | Out-Null } catch {}
 }

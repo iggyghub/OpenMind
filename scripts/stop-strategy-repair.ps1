@@ -9,5 +9,5 @@ try {
 } catch {
     Write-Host ("FAILED: {0}" -f $_.Exception.Message) -ForegroundColor Red
 } finally {
-    Read-Host "Press Enter to close" | Out-Null
+    try { Read-Host "Press Enter to close" | Out-Null } catch {}
 }
