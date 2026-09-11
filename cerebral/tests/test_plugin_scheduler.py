@@ -2210,3 +2210,104 @@ async def test_dispatch_due_ipos_skips_future_and_already_dispatched_entries(tmp
     assert body["dispatched"] == []
     assert len(logged) == 0
     assert StrategyStore(db_path=tmp_path / "specs.db").get("IPO play: FUTR (Future Inc.)") is None
+
+
+# ── SR3: one bounded repair retry in _run_gauntlet ───────────────────────────
+
+_BROKEN_CODE = "def strategy(data):\n    return data['Close'].sign()\n"
+
+
+async def test_run_gauntlet_repair_retries_once_on_code_failure(tmp_path):
+    """SR3: when generated code fails the pre-check, to_strategy is called
+    exactly once more with the error; the repaired code is what run_gauntlet
+    receives, and '(repaired after 1 retry)' appears in the provenance."""
+    from unittest.mock import patch, MagicMock
+
+    ts_calls = []
+
+    async def fake_to_strategy(idea, *, llm=None, router=None, prior_code=None, prior_error=None):
+        ts_calls.append({"prior_code": prior_code, "prior_error": prior_error})
+        return _BROKEN_CODE if len(ts_calls) == 1 else MA_CROSS_CODE
+
+    def fake_evv(code, bars):
+        return [0] * len(bars), "AttributeError: 'Series' object has no attribute 'sign'"
+
+    card = MagicMock(verdict="VALIDATED", sharpe=1.5, total_return=0.2, gates=[])
+
+    plugin = _plugin(tmp_path)
+
+    with patch("cerebral.trading_ideas.to_strategy", new=fake_to_strategy), \
+         patch("cerebral.trading.sandboxed_eval.evaluate_signals_verbose", new=fake_evv), \
+         patch("plugins.scheduler.run_gauntlet", return_value=card) as mock_gauntlet:
+        result = await plugin._run_gauntlet(
+            {"claim": "trend", "symbol": "AAPL", "hypothesis": "trend following"},
+            fetch=_fetch,
+        )
+
+    assert not result.is_error, result.content
+    assert len(ts_calls) == 2, f"to_strategy called {len(ts_calls)} times, expected 2"
+    assert ts_calls[1]["prior_error"] is not None  # repair call received the error
+    kw = mock_gauntlet.call_args.kwargs
+    assert kw["strategy_code"] == MA_CROSS_CODE  # repaired code was backtested
+    assert "(repaired after 1 retry)" in kw["provenance"]
+
+
+async def test_run_gauntlet_repair_both_fail_falls_through_normally(tmp_path):
+    """SR3: if both the initial and repaired code fail, _run_gauntlet makes
+    exactly two to_strategy calls then proceeds to the normal reject path --
+    no infinite retry, no crash."""
+    from unittest.mock import patch, MagicMock
+
+    ts_calls = []
+
+    async def fake_to_strategy(idea, *, llm=None, router=None, prior_code=None, prior_error=None):
+        ts_calls.append(True)
+        return _BROKEN_CODE  # both calls return broken code
+
+    def fake_evv(code, bars):
+        return [0] * len(bars), "AttributeError: 'Series' object has no attribute 'sign'"
+
+    card = MagicMock(verdict="REJECTED", sharpe=0.0, total_return=0.0, gates=[])
+
+    plugin = _plugin(tmp_path)
+
+    with patch("cerebral.trading_ideas.to_strategy", new=fake_to_strategy), \
+         patch("cerebral.trading.sandboxed_eval.evaluate_signals_verbose", new=fake_evv), \
+         patch("plugins.scheduler.run_gauntlet", return_value=card):
+        result = await plugin._run_gauntlet(
+            {"claim": "trend", "symbol": "AAPL", "hypothesis": "trend following"},
+            fetch=_fetch,
+        )
+
+    assert len(ts_calls) == 2  # initial + exactly one repair, never more
+    assert not result.is_error  # no crash -- normal reject path
+
+
+async def test_run_gauntlet_no_repair_when_code_succeeds_first_try(tmp_path):
+    """SR3: when the generated code passes the pre-check, to_strategy is called
+    exactly once -- no wasted repair attempt."""
+    from unittest.mock import patch, MagicMock
+
+    ts_calls = []
+
+    async def fake_to_strategy(idea, *, llm=None, router=None, prior_code=None, prior_error=None):
+        ts_calls.append(True)
+        return MA_CROSS_CODE
+
+    def fake_evv(code, bars):
+        return [1] * len(bars), None  # no error
+
+    card = MagicMock(verdict="VALIDATED", sharpe=1.5, total_return=0.2, gates=[])
+
+    plugin = _plugin(tmp_path)
+
+    with patch("cerebral.trading_ideas.to_strategy", new=fake_to_strategy), \
+         patch("cerebral.trading.sandboxed_eval.evaluate_signals_verbose", new=fake_evv), \
+         patch("plugins.scheduler.run_gauntlet", return_value=card):
+        result = await plugin._run_gauntlet(
+            {"claim": "trend", "symbol": "AAPL", "hypothesis": "trend following"},
+            fetch=_fetch,
+        )
+
+    assert len(ts_calls) == 1  # only the initial generation, no repair
+    assert not result.is_error
