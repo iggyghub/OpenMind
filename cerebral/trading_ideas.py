@@ -157,7 +157,13 @@ def from_book_claim(claim: str, book: str, chapter: str) -> Idea:
     )
 
 
-async def to_strategy(idea: Idea, llm: Optional[Any] = None, router=None) -> str:
+async def to_strategy(
+    idea: Idea,
+    llm: Optional[Any] = None,
+    router=None,
+    prior_code: Optional[str] = None,
+    prior_error: Optional[str] = None,
+) -> str:
     """
     Generates a runnable `def strategy(data) -> signals:` Python function.
     Uses Qwen/Budd (free models only) via the model router (task_type=
@@ -192,6 +198,17 @@ async def to_strategy(idea: Idea, llm: Optional[Any] = None, router=None) -> str
         "0 (hold nothing) or -1 (hold short). The LAST element is the position "
         "to hold right now.\n"
         "- No imports: only Python builtins and the DataFrame itself are in scope.\n\n"
+    )
+
+    if prior_code and prior_error:
+        prompt += (
+            "Your previous attempt at this failed. Fix the bug -- do not change the "
+            "strategy's actual logic/hypothesis, only correct the error.\n\n"
+            f"Previous code:\n{prior_code}\n\n"
+            f"Error:\n{prior_error}\n\n"
+        )
+
+    prompt += (
         "Return ONLY valid Python code for:\n"
         "def strategy(data) -> signals:\n"
         "    ..."
