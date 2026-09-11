@@ -181,6 +181,34 @@ function _renderSentimentBadge(sentiment) {
 }
 
 /**
+ * Read-only daily market-trend badge -- purely informational (unlike the
+ * sentiment badge above, this gates nothing), sourced from
+ * cerebral/trading/market_trend.py's MarketTrendGate via
+ * _trading_broadcast's "market_trend" key. Always renders when a reading
+ * exists (no enabled/disabled setting -- there's no gate here to toggle).
+ * @param {Object} [marketTrend] - {label, pct_change, symbol, updated_at}
+ */
+function _renderMarketTrendBadge(marketTrend) {
+  if (!marketTrend) {
+    return '';
+  }
+  const label = marketTrend.label || 'FLAT';
+  const cls = label === 'UP' ? 'positive' : label === 'DOWN' ? 'negative' : 'neutral';
+  const pct = typeof marketTrend.pct_change === 'number' ? marketTrend.pct_change : 0;
+  const sign = pct > 0 ? '+' : '';
+  const symbol = marketTrend.symbol || 'SPY';
+  return `
+    <div class="paper-control market-trend-badge">
+      <h3>Market Trend</h3>
+      <div class="paper-control-row">
+        <span class="trend-label ${cls}">${label}</span>
+        <span class="trend-detail">${symbol} ${sign}${pct.toFixed(2)}% today</span>
+      </div>
+    </div>
+  `;
+}
+
+/**
  * Wires the paper-trading control's Start/Stop buttons (call_tool, same
  * pattern as _wireDiscoveryControl) and the capital input's Save button
  * (set_setting -- a plain numeric setting, not voice/chat-reachable the
@@ -460,10 +488,11 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const discoveryHtml = _renderDiscoveryControl(data && data.discovery);
   const paperControlHtml = _renderPaperControl(data && data.paper_control);
   const sentimentHtml = _renderSentimentBadge(data && data.sentiment);
+  const marketTrendHtml = _renderMarketTrendBadge(data && data.market_trend);
   _injectTradingPanelStyles();
 
   if (!data || !data.positions || data.positions.length === 0) {
-    mount.innerHTML = paperControlHtml + sentimentHtml + discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+    mount.innerHTML = paperControlHtml + marketTrendHtml + sentimentHtml + discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
     _wireDiscoveryControl(mount, sendEventFn);
     _wirePaperControl(mount, sendEventFn);
     return;
@@ -479,7 +508,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const state = mount._strategyState;
   const strategy = state.strategies[state.selectedIdx];
 
-  mount.innerHTML = paperControlHtml + sentimentHtml + discoveryHtml + `
+  mount.innerHTML = paperControlHtml + marketTrendHtml + sentimentHtml + discoveryHtml + `
     <div class="trading-panel-layout">
       <div class="strategy-list">
         <h3>Strategies</h3>
@@ -597,6 +626,11 @@ function _injectTradingPanelStyles() {
     .confidence-badge.positive { background: #e8f5e9; color: #2e7d32; }
     .confidence-badge.negative { background: #ffebee; color: #c62828; }
     .confidence-badge.neutral { background: #eee; color: #666; }
+    .trend-label { font-weight: bold; padding: 2px 8px; border-radius: 3px; }
+    .trend-label.positive { background: #e8f5e9; color: #2e7d32; }
+    .trend-label.negative { background: #ffebee; color: #c62828; }
+    .trend-label.neutral { background: #eee; color: #666; }
+    .trend-detail { font-size: 0.85em; color: var(--text-muted, #777); margin-left: 4px; }
     .expansion-badge { font-size: 0.7em; padding: 2px 5px; border-radius: 3px; background: #ede7f6; color: #5e35b1; }
     .fill-list, .alerts-box { margin-top: 16px; }
     .fills-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }

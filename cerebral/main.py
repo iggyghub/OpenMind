@@ -253,6 +253,7 @@ from cerebral.trading.discovery import VettedTickers
 from cerebral.trading.market_hours import is_market_hours
 from cerebral.trading.books import list_validated_strategies
 from cerebral.trading.sentiment import MarketSentimentGate, StockSentimentGate
+from cerebral.trading.market_trend import MarketTrendGate
 from plugins.rss_monitor import RSSMonitorPlugin
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
@@ -293,6 +294,7 @@ _vetted_tickers = VettedTickers()  # S28 (#881)
 # the new items. Not engineered around since it's inactive by default.
 _sentiment_gate = MarketSentimentGate()
 _stock_sentiment_gate = StockSentimentGate()
+_market_trend_gate = MarketTrendGate()
 _rss_monitor = RSSMonitorPlugin()
 
 
@@ -3945,6 +3947,19 @@ async def _trading_broadcast() -> None:
             "updated_at": sentiment_reading.updated_at.isoformat() if sentiment_reading.updated_at else None,
             "enabled": _settings.get("trading_sentiment_gate_enabled"),
         }
+        # Purely informational, no gate/setting to check -- unlike sentiment
+        # above this always renders. refresh() is a same-day no-op after
+        # its first call, but that first call is a real (offloaded) network
+        # fetch, so it goes through asyncio.to_thread like the other
+        # blocking-network work in this loop (see dispatch_due_events above).
+        from cerebral.trading_data import fetch_ohlcv
+        trend_reading = await asyncio.to_thread(_market_trend_gate.refresh, fetch_ohlcv)
+        market_trend = {
+            "label": trend_reading.label,
+            "pct_change": trend_reading.pct_change,
+            "symbol": trend_reading.symbol,
+            "updated_at": trend_reading.updated_at.isoformat() if trend_reading.updated_at else None,
+        }
         await _broadcast({
             "type": "trading_update",
             "data": {
@@ -3952,7 +3967,7 @@ async def _trading_broadcast() -> None:
                 "books": books, "books_model": books_model_label,
                 "paper_control": paper_control, "total_pnl": total_pnl,
                 "all_fills": all_fills, "paper_archives": paper_archives,
-                "sentiment": sentiment,
+                "sentiment": sentiment, "market_trend": market_trend,
             },
         })
     except Exception as e:
