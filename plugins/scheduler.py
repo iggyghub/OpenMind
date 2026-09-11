@@ -871,6 +871,7 @@ class SchedulerPlugin:
         if not symbol or not hypothesis:
             return ToolResult(content="symbol and hypothesis are required", is_error=True)
 
+        idea = None
         if not code:
             from cerebral.trading_ideas import from_prose, from_book_claim, extract_from_url, to_strategy
 
@@ -903,7 +904,7 @@ class SchedulerPlugin:
 
         if fetch is None:
             from cerebral.trading_data import fetch_ohlcv as fetch
-        from cerebral.trading.sandboxed_eval import evaluate_signals
+        from cerebral.trading.sandboxed_eval import evaluate_signals, evaluate_signals_verbose
 
         end = datetime.now(timezone.utc).date()
         # Intraday bars don't need 365 calendar days; use interval-derived lookback
@@ -913,6 +914,16 @@ class SchedulerPlugin:
             prices = fetch(symbol, start.isoformat(), end.isoformat(), interval=interval)
         except Exception as e:
             return ToolResult(content=f"Data fetch failed for {symbol}: {e}", is_error=True)
+
+        if idea is not None:
+            _, _repair_err = evaluate_signals_verbose(code, prices)
+            if _repair_err:
+                _repaired = await to_strategy(
+                    idea, router=self._router, prior_code=code, prior_error=_repair_err,
+                )
+                if _repaired:
+                    code = _repaired
+                    provenance = provenance + " (repaired after 1 retry)"
 
         def backtest(bars, params):
             signals = evaluate_signals(code, bars)
