@@ -179,6 +179,15 @@ def test_ensure_discovery_event_is_actually_due_immediately(tmp_path):
     assert any(e["title"] == plugin.DISCOVERY_EVENT_TITLE for e in due)
 
 
+def test_ensure_design_system_event_is_actually_due_immediately(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin.ensure_design_system_event()
+
+    due = plugin.list_due_events()
+
+    assert any(e["title"] == plugin.DESIGN_SYSTEM_EVENT_TITLE for e in due)
+
+
 def test_schema_migrates_an_events_table_missing_last_run_iso(tmp_path):
     """Regression (found live 2026-08-25): the real production
     openmind.db's `events` table predated the last_run_iso column --
@@ -738,6 +747,44 @@ async def test_ensure_discovery_event_is_idempotent(tmp_path):
     assert events == 1
 
 
+def test_ensure_design_system_event_is_idempotent(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    plugin.ensure_design_system_event()
+    plugin.ensure_design_system_event()
+
+    events = plugin._con.execute(
+        "SELECT COUNT(*) FROM events WHERE title = ?", (plugin.DESIGN_SYSTEM_EVENT_TITLE,)
+    ).fetchone()[0]
+    assert events == 1
+
+
+# ── 2026-09-08: base design system scan ─────────────────────────────────────
+
+async def test_scan_design_system_reports_a_real_violation(tmp_path):
+    plugin = _plugin(tmp_path)
+    windows_dir = Path(__file__).resolve().parent.parent.parent / "tray" / "windows"
+    assert windows_dir.exists()  # sanity: this test reads the real tray/, not a fixture
+
+    result = await plugin.call_tool("scan_design_system", {})
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["violations"] == []  # the real codebase is clean as of this change
+
+
+async def test_design_system_autofix_toggle_defaults_off_and_persists(tmp_path):
+    plugin = _plugin(tmp_path)
+    assert not plugin._settings.get("design_system_autofix_enabled")
+
+    r1 = await plugin.call_tool("start_design_system_autofix", {})
+    assert json.loads(r1.content) == {"enabled": True}
+    assert plugin._settings.get("design_system_autofix_enabled") is True
+
+    r2 = await plugin.call_tool("stop_design_system_autofix", {})
+    assert json.loads(r2.content) == {"enabled": False}
+    assert plugin._settings.get("design_system_autofix_enabled") is False
+
+
 async def test_ticker_specific_idea_reaches_run_gauntlet_with_origin_discovered(tmp_path):
     """The acceptance test #880 names: a ticker-specific sourced idea
     reaches run_gauntlet with origin='discovered' and the source URL as
@@ -1291,6 +1338,33 @@ async def test_upload_book_extracts_and_dispatches_a_claim(tmp_path):
     assert version["origin"] == "discovered"
 
 
+async def test_upload_book_stores_and_lists_the_given_category(tmp_path):
+    router = BookRouter([])  # NONE every chunk -- category storage doesn't need real claims
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    result = await plugin._upload_book({
+        "filename": "wizards.txt", "data_base64": _b64("Some book content."),
+        "category": "trading psychology",
+    })
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+
+    books = json.loads(plugin._list_books({}).content)
+    book = next(b for b in books if b["id"] == book_id)
+    assert book["category"] == "trading psychology"
+
+
+async def test_upload_book_with_no_category_defaults_to_uncategorised(tmp_path):
+    router = BookRouter([])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    result = await plugin._upload_book({"filename": "wizards.txt", "data_base64": _b64("content")})
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+
+    books = json.loads(plugin._list_books({}).content)
+    book = next(b for b in books if b["id"] == book_id)
+    assert book["category"] == "Uncategorised"
+
+
 async def test_upload_book_requires_filename_and_data(tmp_path):
     plugin = _plugin(tmp_path)
 
@@ -1383,6 +1457,57 @@ async def test_stop_book_cancels_the_running_task(tmp_path):
     await task  # cancellation is swallowed internally -- completes normally
 
     assert plugin._book_store.get(book_id).status == "stopped"
+
+
+class ConcurrencyTrackingRouter(BookRouter):
+    """Tracks how many .complete() calls are concurrently in flight, each
+    blocked on a shared gate until the test releases it -- proves at most
+    one book's chunk is ever being sent to the LLM at a time (ADR-0028 rule
+    5: the endpoint is singular, background book ingestion must not pile up
+    concurrent requests against it)."""
+    def __init__(self, claims):
+        super().__init__(claims)
+        self.gate = asyncio.Event()
+        self.concurrent = 0
+        self.max_concurrent = 0
+
+    async def complete(self, prompt: str, task_type: str) -> str:
+        self.concurrent += 1
+        self.max_concurrent = max(self.max_concurrent, self.concurrent)
+        try:
+            await self.gate.wait()
+            return await super().complete(prompt, task_type)
+        finally:
+            self.concurrent -= 1
+
+
+async def test_only_one_book_ingests_at_a_time(tmp_path):
+    router = ConcurrencyTrackingRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+
+    r1 = await plugin._upload_book({"filename": "a.txt", "data_base64": _b64("Book A content.")})
+    id1 = json.loads(r1.content)["book_id"]
+    task1 = plugin._book_tasks[id1]
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert router.concurrent == 1  # book A's chunk is inside .complete(), blocked on the gate
+
+    r2 = await plugin._upload_book({"filename": "b.txt", "data_base64": _b64("Book B content.")})
+    id2 = json.loads(r2.content)["book_id"]
+    task2 = plugin._book_tasks[id2]
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # Book B's task exists (queued in _book_tasks) but is stuck waiting on
+    # the ingest semaphore -- it must NOT have reached .complete() yet.
+    assert router.concurrent == 1
+
+    router.gate.set()  # release both -- A finishes, then B gets its turn
+    await task1
+    await task2
+
+    assert router.max_concurrent == 1
+    assert plugin._book_store.get(id1).status == "done"
+    assert plugin._book_store.get(id2).status == "done"
 
 
 async def test_stop_book_marks_an_orphaned_processing_book_as_stopped(tmp_path):

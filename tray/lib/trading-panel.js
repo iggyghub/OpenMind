@@ -283,6 +283,7 @@ function _renderBookRow(b, expanded) {
       <div class="book-row-title">${b.title}</div>
       <div class="book-row-meta">
         <span class="book-status book-status-${b.status}">${statusLabel}</span>
+        ${b.category && b.category !== 'Uncategorised' ? `<span class="book-category">${b.category}</span>` : ''}
         ${b.status === 'processing' ? `<span class="book-progress-text">${b.processed_chunks}/${b.total_chunks} chunks</span>` : ''}
         <span class="book-dispatch-count">${b.strategies_found} dispatch${b.strategies_found === 1 ? '' : 'es'}</span>
         <button class="book-valid-toggle" type="button" data-book-id="${b.id}" ${validList.length ? '' : 'disabled'}>
@@ -321,10 +322,12 @@ function _renderBooksSection(books, booksModel, expandedIds) {
 
   return `
     <div class="books-section">
-      <h3>Books ${booksModel ? `<span class="books-reading-model">reading with ${booksModel}</span>` : ''}</h3>
+      <h3>Stock Market ${booksModel ? `<span class="books-reading-model">reading with ${booksModel}</span>` : ''}</h3>
       <div class="books-upload-row">
         <input type="file" class="books-file-input" multiple accept=".pdf,.epub,.mobi,.azw,.azw3,.docx,.doc,.odt,.rtf,.txt,.md">
-        <span class="books-upload-hint">Upload several at once -- each reads in full and processes in the background.</span>
+        <input type="text" class="books-category-input" placeholder="Category (e.g. value investing)" hidden>
+        <button class="books-upload-submit-btn" type="button" hidden>Upload</button>
+        <span class="books-upload-hint">Choose file(s), set a category, then Upload -- each reads in full and processes in the background.</span>
       </div>
       ${all.length === 0 ? '<div class="books-empty">No books uploaded yet.</div>' : ''}
       <div class="books-list">${activeHtml}</div>
@@ -340,10 +343,12 @@ function _renderBooksSection(books, booksModel, expandedIds) {
  * @param {string} filename
  * @param {string} dataBase64 - base64-encoded file bytes
  * @param {string} [title] - defaults (server-side) to filename without extension
+ * @param {string} [category] - defaults (server-side) to 'Uncategorised'
  */
-function buildUploadBookEvent(filename, dataBase64, title) {
+function buildUploadBookEvent(filename, dataBase64, title, category) {
   const args = { filename: filename, data_base64: dataBase64 };
   if (title) args.title = title;
+  if (category) args.category = category;
   return { type: 'call_tool', data: { name: 'upload_book', args: args } };
 }
 
@@ -378,29 +383,47 @@ function buildResumeStrategyEvent(strategyId) {
 }
 
 /**
- * Wires the multi-file input (reads each selected file as base64 and fires
- * one upload_book call per file, then polls once so the new queued row
- * appears without waiting for the first background progress tick) and the
- * per-row Stop/Redo/Delete buttons (event-delegated off .books-section,
- * not just .books-list -- finished books live in a second .books-list
- * nested inside the <details> collapsible, a sibling of the active one,
- * so delegating off a single .books-list would miss clicks in there).
+ * Wires the multi-file input as a two-step flow: choosing file(s) stages
+ * them and reveals the category field + Upload button (rather than
+ * uploading immediately on selection) so every file in the batch gets
+ * filed under the category typed for it. Clicking Upload reads each staged
+ * file as base64 and fires one upload_book call per file (then polls once
+ * so the new queued row appears without waiting for the first background
+ * progress tick), and resets the row for the next batch. Also wires the
+ * per-row Stop/Redo/Delete buttons (event-delegated off .books-section, not
+ * just .books-list -- finished books live in a second .books-list nested
+ * inside the <details> collapsible, a sibling of the active one, so
+ * delegating off a single .books-list would miss clicks in there).
  */
 function _wireBooksSection(mount, sendEventFn) {
   const input = mount.querySelector('.books-file-input');
-  if (input && sendEventFn) {
+  const categoryInput = mount.querySelector('.books-category-input');
+  const uploadBtn = mount.querySelector('.books-upload-submit-btn');
+  if (input && categoryInput && uploadBtn && sendEventFn) {
+    let pendingFiles = [];
     input.addEventListener('change', () => {
-      const files = Array.from(input.files || []);
-      files.forEach((file) => {
+      pendingFiles = Array.from(input.files || []);
+      const hasFiles = pendingFiles.length > 0;
+      categoryInput.hidden = !hasFiles;
+      uploadBtn.hidden = !hasFiles;
+      if (hasFiles) categoryInput.focus();
+    });
+    uploadBtn.addEventListener('click', () => {
+      const category = categoryInput.value.trim();
+      pendingFiles.forEach((file) => {
         const reader = new FileReader();
         reader.onload = () => {
           const base64 = String(reader.result).split(',').pop(); // strip data: URL prefix
-          sendEventFn(buildUploadBookEvent(file.name, base64));
+          sendEventFn(buildUploadBookEvent(file.name, base64, null, category));
           sendEventFn({ type: 'trading_poll' });
         };
         reader.readAsDataURL(file);
       });
+      pendingFiles = [];
       input.value = ''; // allow re-selecting the same file(s) later
+      categoryInput.value = '';
+      categoryInput.hidden = true;
+      uploadBtn.hidden = true;
     });
   }
 
@@ -448,8 +471,9 @@ function _wireBooksSection(mount, sendEventFn) {
 }
 
 /**
- * Renders the Books sub-tab (own tab since 2026-08-27, previously embedded
- * atop the Strategies sub-tab) from the same `trading_update` payload
+ * Renders the Stock Market book-ingestion section (moved from its own
+ * Trading sub-tab into the Library > Books tab, 2026-09-08 -- same mount id,
+ * just reparented in the DOM) from the same `trading_update` payload
  * renderTradingUpdate already receives -- no separate broadcast/poll.
  * @param {Object} data - { books, books_model } from _trading_broadcast()
  * @param {HTMLElement} [container] - defaults to #books-panel-mount
@@ -669,6 +693,8 @@ function _injectTradingPanelStyles() {
     .books-reading-model { font-size: 0.75em; font-weight: normal; color: var(--text-muted, #777); margin-left: 6px; }
     .books-upload-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
     .books-upload-hint { font-size: 0.85em; color: var(--text-muted, #777); }
+    .books-category-input { flex: 0 1 220px; padding: 4px 8px; }
+    .book-category { font-size: 0.85em; color: var(--text-muted, #777); padding: 1px 6px; border: 1px solid var(--border, #ddd); border-radius: 3px; }
     .books-list { display: flex; flex-direction: column; gap: 8px; }
     .books-empty { color: var(--text-muted, #888); font-size: 0.9em; padding: 4px 0; }
     .books-done-section { margin-top: 10px; }

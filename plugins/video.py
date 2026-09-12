@@ -750,7 +750,9 @@ class VideoPlugin:
         """Declarative Videos panel (ADR-0017 decision 9, ADR-0012)."""
         store = _get_store()
         status = _channel.batch_status(store)
-        clusters = store.list_clusters()
+        # Video-only: book/github ingest share this same clusters table and
+        # have their own source-scoped panels (book_ingest, github_ingest).
+        clusters = store.list_clusters(source_type="video")
 
         widgets: list[dict] = []
 

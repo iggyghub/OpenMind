@@ -69,6 +69,7 @@ from cerebral.security import (
     is_valid_modal_choice,
 )
 from cerebral.commands import Command, CommandRegistry
+from cerebral import design_system as _design_system
 from cerebral.db.conversation import (
     KIND_ACTIVITY,
     KIND_FELIX_SPEECH,
@@ -3421,6 +3422,7 @@ _scheduler_plugin._record_activity_fn = _record_activity
 # Register recurring events at boot
 _scheduler_plugin.ensure_discovery_event()
 _scheduler_plugin.ensure_ipo_calendar_event()
+_scheduler_plugin.ensure_design_system_event()
 
 async def _reset_paper_trading() -> dict:
     """Archives current paper-trading fills as a historical block (does
@@ -3676,6 +3678,56 @@ async def _scheduler_loop() -> None:
                     logger.exception("[cerebral] IPO calendar check failed")
                 _scheduler_plugin.mark_event_run(evt["id"])
 
+            # 2026-09-08: base design system scan (BASE-DESIGN-SYSTEM.md) --
+            # mirrors the IPO-calendar block exactly: always runs on its own
+            # recurrence, no enabled/duration settings gating the scan
+            # itself. Only the side-effecting part (filing a GitHub issue +
+            # driving self_dev_campaign for each new gap) is gated behind
+            # design_system_autofix_enabled (default OFF, discovery_enabled's
+            # own precedent) -- a rule already queued (any state) is never
+            # re-filed; a regression needs a human to reopen it.
+            for evt in _scheduler_plugin.list_due_events():
+                if evt["title"] != _scheduler_plugin.DESIGN_SYSTEM_EVENT_TITLE:
+                    continue
+                try:
+                    repo_root = Path(__file__).resolve().parent.parent
+                    violations = _design_system.scan(repo_root / "tray")
+                    logger.info(f"[cerebral] base design system scan: {len(violations)} violation(s)")
+                    if violations and _settings.get("design_system_autofix_enabled"):
+                        driver_path = repo_root / "BASE-DESIGN-SYSTEM.md"
+                        driver_text = driver_path.read_text(encoding="utf-8")
+                        by_rule: dict = {}
+                        for v in violations:
+                            by_rule.setdefault(v.rule_id, []).append(v)
+                        already_queued = _design_system.queued_rule_ids(driver_text)
+                        issue_numbers: dict = {}
+                        for rule_id, rule_violations in by_rule.items():
+                            if rule_id in already_queued:
+                                continue
+                            title = f"Base design system: {rule_id} ({len(rule_violations)} gap(s))"
+                            body = "\n".join(
+                                f"- `{v.file}:{v.line}` -- {v.description}"
+                                for v in rule_violations
+                            ) + "\n\nFiled automatically by the base design system scan -- see BASE-DESIGN-SYSTEM.md."
+                            issue_no = _design_system.create_issue(repo_root, title, body)
+                            if issue_no is not None:
+                                issue_numbers[rule_id] = issue_no
+                            else:
+                                logger.warning(f"[cerebral] design system: failed to file issue for rule {rule_id!r}")
+                        if issue_numbers:
+                            new_text, filed = _design_system.sync_driver_queue(
+                                driver_text, violations, lambda r, v: issue_numbers.get(r),
+                            )
+                            if filed:
+                                driver_path.write_text(new_text, encoding="utf-8")
+                                logger.info(f"[cerebral] design system: queued {filed}")
+                                await _orc.call_tool(
+                                    "self_dev_campaign", {"driver_file": str(driver_path)},
+                                )
+                except Exception:
+                    logger.exception("[cerebral] base design system scan failed")
+                _scheduler_plugin.mark_event_run(evt["id"])
+
             # S27 (#880): the autonomous discovery loop's own recurring
             # event, checked and consumed BEFORE dispatch_due_events gets
             # its own list_due_events() call -- mark_event_run here means
@@ -3927,6 +3979,7 @@ async def _trading_broadcast() -> None:
                 "strategies_found": b.strategies_found,
                 "strategies_repaired": b.strategies_repaired,
                 "error_message": b.error_message,
+                "category": b.category,
                 "valid_strategies": list_validated_strategies(b.title, _trading_strategy_store),
             }
             for b in _scheduler_plugin._book_store.list_all()
@@ -8367,6 +8420,7 @@ async def main() -> None:
         # S27 (#880): idempotent get-or-create -- registers the discovery
         # loop's own recurring event once, safe to call on every boot.
         _scheduler_plugin.ensure_discovery_event()
+        _scheduler_plugin.ensure_design_system_event()
         scheduler_task = asyncio.create_task(_scheduler_loop())
         await _shutdown.wait()
         heartbeat.cancel()

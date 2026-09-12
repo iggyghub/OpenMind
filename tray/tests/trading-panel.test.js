@@ -485,7 +485,7 @@ describe('renderBooksPanel (2026-08-27, was "renderTradingUpdate books section")
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
       TradingPanel.renderBooksPanel({ positions: [], alerts: [] }, mount);
-      expect(mount.innerHTML).toContain('Books');
+      expect(mount.innerHTML).toContain('Stock Market');
       expect(mount.innerHTML).toContain('books-file-input');
       expect(mount.innerHTML).toContain('No books uploaded yet.');
     });
@@ -770,6 +770,13 @@ describe('buildUploadBookEvent (2026-08-26)', () => {
     expect(TradingPanel.buildUploadBookEvent('wizards.pdf', 'YWJj', 'Market Wizards')).toEqual({
       type: 'call_tool',
       data: { name: 'upload_book', args: { filename: 'wizards.pdf', data_base64: 'YWJj', title: 'Market Wizards' } },
+    });
+  });
+
+  test('an explicit category is included; omitted defaults server-side to Uncategorised', () => {
+    expect(TradingPanel.buildUploadBookEvent('wizards.pdf', 'YWJj', null, 'value investing')).toEqual({
+      type: 'call_tool',
+      data: { name: 'upload_book', args: { filename: 'wizards.pdf', data_base64: 'YWJj', category: 'value investing' } },
     });
   });
 });

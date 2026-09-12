@@ -120,13 +120,13 @@ test('library pane exists with sub-tab bar (S5)', () => {
   expect(pane).not.toBeNull();
   const tabs = pane.querySelector('#lib-tabs');
   expect(tabs).not.toBeNull();
-  // Seven sub-tabs (memory / insights / recipes / documents / job-search /
-  // videos / github). Trading moved out to its own top-level route (#864
-  // follow-up) -- see the standalone Trading pane tests below. Thinking
+  // Eight sub-tabs (memory / insights / recipes / documents / job-search /
+  // videos / books / github). Trading moved out to its own top-level route
+  // (#864 follow-up) -- see the standalone Trading pane tests below. Thinking
   // (#816/#825) deliberately has NO tab button -- pill-only, see the test
   // below.
   const tabBtns = pane.querySelectorAll('.lib-tab');
-  expect(tabBtns.length).toBe(7);
+  expect(tabBtns.length).toBe(8);
 });
 
 test('trading is its own top-level pane, not a Library sub-tab (#864 follow-up)', () => {

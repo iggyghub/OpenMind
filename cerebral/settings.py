@@ -125,6 +125,11 @@ _DEFAULTS: dict[str, Any] = {
     # ADR-0036 M: per-Failure-domain admission cap (default matches L's
     # hardcoded default -- R5 "the scarce resource is always singular").
     "admission_cap":             1,
+    # 2026-09-08: base design system scan (BASE-DESIGN-SYSTEM.md). Mirrors
+    # discovery_enabled's own precedent -- the daily scan always runs and
+    # logs; this only gates its side effects (filing a GitHub issue + queuing
+    # a self_dev_campaign slice for each new gap found). Default OFF.
+    "design_system_autofix_enabled": False,
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -164,6 +169,7 @@ _TYPES: dict[str, type] = {
     "discovery_candidate_limit": int,
     "scheduler_heartbeat":       str,
     "admission_cap":             int,
+    "design_system_autofix_enabled": bool,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})

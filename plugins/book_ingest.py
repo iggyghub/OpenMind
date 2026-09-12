@@ -162,6 +162,92 @@ class BookIngestPlugin:
             return await self._books_seed_from_csv(args)
         return ToolResult(content=f"Unknown tool: {tool_name}", is_error=True)
 
+    def panel_spec(self, profile_id: "int | None" = None) -> dict:
+        """Declarative Books panel (mirrors github_ingest's panel_spec).
+
+        An ingest form, the ingested books, and the source-scoped clusters --
+        the last reuses the same cluster/group/move/commit widgets as the
+        Videos panel (move_tool / commit are source-agnostic), showing the
+        SHARED clusters that contain >=1 book-sourced idea.
+        """
+        store = _video._get_store()
+        widgets: list[dict] = []
+        widgets.append({
+            "type": "action",
+            "id": "book-ingest",
+            "label": "Ingest book",
+            "tool": "book_ingest",
+            "tool_args": {},
+            "input_arg": "path",
+            "input_placeholder": "absolute path to PDF/EPUB/txt/md",
+            "input_arg2": "category",
+            "input_placeholder2": "collection (blank = Uncategorised)",
+        })
+
+        books = _bm.BookMetaStore().list_for_profile(profile_id) if profile_id is not None else []
+        if books:
+            items = [{
+                "title": b["title"] or b["id"],
+                "subtitle": " · ".join(p for p in (
+                    b.get("author") or "",
+                    f"{b['clustered_count']} / {b['chapter_count']} chapters clustered",
+                ) if p),
+            } for b in books]
+            widgets.append({
+                "type": "group",
+                "label": "Books",
+                "count": str(len(books)),
+                "open": True,
+                "widgets": [{"type": "list", "items": items}],
+            })
+
+        clusters = store.list_clusters(source_type="book")
+        if clusters:
+            all_collections = sorted(store.list_collections())
+            by_collection: dict[str, list[dict]] = {}
+            for c in clusters:
+                by_collection.setdefault(c.get("collection") or "Uncategorised", []).append(c)
+            ordered = sorted(by_collection.items(), key=lambda kv: len(kv[1]), reverse=True)
+            for gi, (collection, members) in enumerate(ordered):
+                children: list[dict] = []
+                for c in members:
+                    n = c["member_count"]
+                    parts = [f"{n} chapter{'s' if n != 1 else ''}", _video.verdict_label(c["verdict"])]
+                    if c["confidence"] is not None:
+                        parts.append(f"{c['confidence']:.0%}")
+                    if c.get("memory_id"):
+                        parts.append("✓ Memory")
+                    children.append({
+                        "type": "cluster",
+                        "cluster_id": c["id"],
+                        "label": c["label"],
+                        "stats": " · ".join(parts),
+                        "collection": collection,
+                        "collections": all_collections,
+                        "move_tool": "video_move_cluster",
+                    })
+                    if c["verdict"] and not c.get("memory_id"):
+                        children.append({
+                            "type": "action",
+                            "id": f"book-commit-{c['id']}",
+                            "label": f"Commit {c['label']} to Memory",
+                            "tool": "video_commit",
+                            "tool_args": {"cluster_id": c["id"]},
+                        })
+                label = collection[:1].upper() + collection[1:]
+                widgets.append({
+                    "type": "group",
+                    "label": label,
+                    "collection": collection,
+                    "count": f"{len(members)} cluster{'s' if len(members) != 1 else ''}",
+                    "open": gi == 0,
+                    "widgets": children,
+                })
+        else:
+            widgets.append({"type": "list", "items": []})
+
+        return {"title": "Books", "widgets": widgets}
+
     async def _book_ingest(self, args: dict) -> ToolResult:
         path: str = (args.get("path") or "").strip()
         category: str = (args.get("category") or "").strip() or "Uncategorised"

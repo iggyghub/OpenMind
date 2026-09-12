@@ -224,6 +224,24 @@ def test_book_store_add_and_get_round_trips(tmp_path):
     assert fetched.title == "Market Wizards"
     assert fetched.status == "queued"
     assert fetched.total_chunks == 0
+    assert fetched.category == "Uncategorised"  # default when none given
+
+
+def test_book_store_add_with_category_round_trips(tmp_path):
+    store = _store(tmp_path)
+    added = store.add("Market Wizards", "wizards.pdf", "/data/books/1/wizards.pdf",
+                       category="trading psychology")
+
+    fetched = store.get(added.id)
+
+    assert fetched.category == "trading psychology"
+    assert any(b.category == "trading psychology" for b in store.list_all())
+
+
+def test_book_store_add_blank_category_defaults_to_uncategorised(tmp_path):
+    store = _store(tmp_path)
+    added = store.add("Market Wizards", "wizards.pdf", "/data/books/1/wizards.pdf", category="")
+    assert store.get(added.id).category == "Uncategorised"
 
 
 def test_book_store_progress_updates_persist(tmp_path):
