@@ -22,6 +22,7 @@ from cerebral.trading.live_tick import run_strategy_tick
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore, mint_expansion_strategy_id
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.gauntlet import run_gauntlet, compute_max_holding_days
+from cerebral.trading.replay import run_bars
 from cerebral.trading.discovery import (
     DiscoveryAttempts,
     DiscoveryWatchlist,
@@ -977,23 +978,8 @@ class SchedulerPlugin:
                     provenance = provenance + " (repaired after 1 retry)"
 
         def backtest(bars, params):
-            signals = evaluate_signals(code, bars)
-            # A strategy may return fewer signals than bars (indicator
-            # warm-up) -- right-align: the LAST signal pairs with the LAST
-            # bar, same convention as evaluate_signal's own live-tick read.
-            if len(signals) < len(bars):
-                signals = [0] * (len(bars) - len(signals)) + list(signals)
-            signals = pd.Series(signals, index=bars.index)
-            # Yesterday's decided position earns today's return -- using the
-            # same-bar signal would let the strategy trade on a close it
-            # hasn't seen yet.
-            position = signals.shift(1).fillna(0.0)
-            daily_returns = position * bars["Close"].pct_change().fillna(0.0)
-            equity = 100.0 * (1.0 + daily_returns).cumprod()
-            # "Most trades daily, max hold a month" (user policy decision):
-            # feeds run_gauntlet's max_holding_period gate (#961 follow-up).
-            max_holding_days = compute_max_holding_days(position, interval)
-            return list(equity), {"max_holding_days": max_holding_days}
+            equity, _position, metrics = run_bars(code, bars, interval)
+            return equity, metrics
 
         # Fractional-share sizing at registration (found live 2026-09-01):
         # position_qty used to be a hardcoded 1.0 regardless of price or
