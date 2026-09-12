@@ -67,6 +67,18 @@ def test_get_bars_returns_capitalised_ohlcv_columns():
     assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
 
 
+def test_get_bars_requests_split_and_dividend_adjusted_bars():
+    """RP0 / #1187: Alpaca returns raw unadjusted prices unless the request
+    carries an Adjustment enum. Without this, AAPL's 2020-08-31 4:1 split
+    reads as a fake ~74% one-day crash, and Alpaca disagrees with the
+    yfinance fallback which is already split+dividend adjusted."""
+    from alpaca.data.enums import Adjustment
+
+    client = _client_with_fakes()
+    client.get_bars("AAPL", "2026-01-01", "2026-01-10", "1d")
+    assert client._client.last_request.kwargs["adjustment"] == Adjustment.ALL
+
+
 def test_get_bars_collapses_the_multiindex_to_a_plain_date_index():
     """Real bug, live-observed: get_stock_bars always returns a MultiIndex
     (symbol, timestamp), even for one symbol. df.index.name = "Date"
