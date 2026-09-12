@@ -500,6 +500,7 @@ class AlpacaMarketDataClient:
     def get_bars(self, symbol: str, start: str, end: str, interval: str) -> pd.DataFrame:
         self._connect()
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        from alpaca.data.enums import Adjustment
         from datetime import datetime
 
         # Map yfinance-compatible interval strings to a real Alpaca TimeFrame.
@@ -525,11 +526,15 @@ class AlpacaMarketDataClient:
         start_dt = datetime.fromisoformat(start) if isinstance(start, str) else start
         end_dt = datetime.fromisoformat(end) if isinstance(end, str) else end
 
+        # Adjustment.ALL == split-and-dividend adjusted, matching trading_data's
+        # yfinance fallback contract; unadjusted defaults turn a 4:1 AAPL split
+        # into a fake 74% one-day crash (see REPLAY.md RP0).
         req = self._request_cls(
             symbol_or_symbols=symbol,
             timeframe=timeframe,
             start=start_dt,
             end=end_dt,
+            adjustment=Adjustment.ALL,
         )
         bars = self._client.get_stock_bars(req)
         df = bars.df
