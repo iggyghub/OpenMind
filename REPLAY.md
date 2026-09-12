@@ -202,13 +202,13 @@ every registered tool's name + one-liner into the system prompt, so *registering
 
 ## Next slice -- start here
 
-- **Active:** RP1 -- #1188
-- **Model:** sonnet
+- **Active:** RP2 -- #1189
+- **Model:** opus
 
 ## Queue
 
 - [x] RP0 -- #1187 -- `broker.py`: pass `adjustment=Adjustment.ALL` -- **live bug, land first and alone** (Model: opus)
-- [ ] RP1 -- #1188 -- `cerebral/trading/replay.py`: extract scheduler's `backtest` closure (pure refactor) (Model: sonnet)
+- [x] RP1 -- #1188 -- `cerebral/trading/replay.py`: extract scheduler's `backtest` closure (pure refactor) (Model: sonnet)
 - [ ] RP2 -- #1189 -- derive a `Trade` list from position diffs; wire `compute_backtest_result` for net-of-cost returns (Model: opus)
 - [ ] RP3 -- #1190 -- `cerebral/trading/bar_cache.py`: SQLite bar store with append-only gap fill; route `fetch_ohlcv` through it (Model: opus)
 - [ ] RP4 -- #1191 -- `cerebral/trading/replay_store.py`: `ReplayStore` + `replay_runs.db`, incl. `flat_reason` (Model: sonnet)
@@ -221,6 +221,7 @@ every registered tool's name + one-liner into the system prompt, so *registering
 ## Landed PRs
 
 - RP0 -- #1198 -- `broker.py`: pass `adjustment=Adjustment.ALL`
+- RP1 -- #1199 -- `cerebral/trading/replay.py`: extract scheduler's `backtest` closure into `run_bars`
 
 ## Slice detail
 
