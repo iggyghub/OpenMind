@@ -8,6 +8,27 @@ import pandas as pd
 
 from cerebral.trading.gauntlet import compute_max_holding_days
 from cerebral.trading.sandboxed_eval import evaluate_signals
+from cerebral.trading.cost_model import Trade, compute_backtest_result
+
+
+def derive_trades(position: pd.Series, close: pd.Series) -> list[Trade]:
+    """Derive a list of Trade objects from position changes and close prices."""
+    trades: list[Trade] = []
+    diffs = position.diff()
+    for idx, delta in diffs.items():
+        if delta != 0:
+            direction = "buy" if delta > 0 else "sell"
+            price = float(close.loc[idx])
+            pos_idx = int(position.index.get_loc(idx))
+            trades.append(
+                Trade(
+                    index=pos_idx,
+                    direction=direction,
+                    price=price,
+                    value=abs(delta) * price,
+                )
+            )
+    return trades
 
 
 def run_bars(code: str, bars: pd.DataFrame, interval: str) -> tuple[list[float], pd.Series, dict]:
@@ -27,4 +48,12 @@ def run_bars(code: str, bars: pd.DataFrame, interval: str) -> tuple[list[float],
     daily_returns = position * bars["Close"].pct_change().fillna(0.0)
     equity = 100.0 * (1.0 + daily_returns).cumprod()
     max_holding_days = compute_max_holding_days(position, interval)
-    return list(equity), position, {"max_holding_days": max_holding_days}
+    
+    # RP2: derive trades and compute net-of-cost returns
+    trades = derive_trades(position, bars["Close"])
+    cost_config = {}  # Zero-cost baseline; reuse gauntlet default convention
+    net_result = compute_backtest_result(equity, trades, cost_config)
+    net_returns = net_result.get("net_returns", equity) if isinstance(net_result, dict) else net_result
+    metrics = {"max_holding_days": max_holding_days, "net_returns": net_returns}
+    
+    return list(equity), position, metrics
