@@ -934,7 +934,7 @@ async def test_run_discovery_defaults_to_a_day_trading_interval(tmp_path):
     seen_intervals = []
 
     def fetch(symbol, start, end, interval="1d"):
-        seen_intervals.append(interval)
+        seen_intervals.append((symbol, interval))
         return _trend_prices()
 
     router = FakeRouterReturningCode()
@@ -950,7 +950,12 @@ async def test_run_discovery_defaults_to_a_day_trading_interval(tmp_path):
     result = await plugin._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
-    assert seen_intervals == ["15m"]
+    # DD3/DD5 (ticker discovery) added a dynamic-universe/liquidity-ranking
+    # pass ahead of the per-idea gauntlet dispatch, which legitimately fetches
+    # many symbols at the default "1d" via this same injected `fetch` --
+    # unrelated to the discovered idea's own interval. Check the actual
+    # gauntlet-dispatched AAPL fetch specifically, not the full call list.
+    assert ("AAPL", "15m") in seen_intervals
 
 
 async def test_run_discovery_accepts_an_explicit_interval_override(tmp_path):
@@ -958,7 +963,7 @@ async def test_run_discovery_accepts_an_explicit_interval_override(tmp_path):
     seen_intervals = []
 
     def fetch(symbol, start, end, interval="1d"):
-        seen_intervals.append(interval)
+        seen_intervals.append((symbol, interval))
         return _trend_prices()
 
     router = FakeRouterReturningCode()
@@ -976,7 +981,9 @@ async def test_run_discovery_accepts_an_explicit_interval_override(tmp_path):
     )
 
     assert not result.is_error, result.content
-    assert seen_intervals == ["5m"]
+    # See the sibling default-interval test above for why this checks
+    # membership rather than the full call list.
+    assert ("AAPL", "5m") in seen_intervals
 
 
 # ── S31 (#896): manual discovery start/stop + duration ────────────────────
