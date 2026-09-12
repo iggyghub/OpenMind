@@ -72,6 +72,7 @@ class Book:
     strategies_repaired: int
     created_at: str
     error_message: str
+    category: str = "Uncategorised"
 
 
 class BookStore:
@@ -106,13 +107,24 @@ class BookStore:
             self._con.commit()
         except sqlite3.OperationalError:
             pass  # Column already exists
+        # 2026-09-09: category, added to an already-live table -- same
+        # try/ALTER/except convention cerebral/video/store.py's own
+        # migrations use ("column already exists" is the expected steady
+        # state after the first run).
+        try:
+            self._con.execute(
+                "ALTER TABLE books ADD COLUMN category TEXT NOT NULL DEFAULT 'Uncategorised'"
+            )
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass
 
-    def add(self, title: str, filename: str, stored_path: str) -> Book:
+    def add(self, title: str, filename: str, stored_path: str, category: str = "Uncategorised") -> Book:
         now = datetime.now(timezone.utc).isoformat()
         cur = self._con.execute(
-            "INSERT INTO books (title, filename, stored_path, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (title, filename, stored_path, STATUS_QUEUED, now),
+            "INSERT INTO books (title, filename, stored_path, status, created_at, category) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (title, filename, stored_path, STATUS_QUEUED, now, category or "Uncategorised"),
         )
         self._con.commit()
         return self.get(cur.lastrowid)  # type: ignore[arg-type]
@@ -194,6 +206,10 @@ def _row_to_book(row: sqlite3.Row) -> Book:
         strategies_repaired=row["strategies_repaired"],
         created_at=row["created_at"],
         error_message=row["error_message"],
+        # keys() check: a row from a pre-migration connection within the same
+        # process (a test's raw sqlite3.connect, not through BookStore) won't
+        # have the column yet.
+        category=row["category"] if "category" in row.keys() else "Uncategorised",
     )
 
 
