@@ -80,6 +80,9 @@ class DiscoveryPlugin:
         else:
             self._settings = SettingsStore(path=Path(path).parent / "felix-settings.json")
 
+        # Wired post-construction by main.py (TradingStrategiesPlugin).
+        self._gauntlet = None
+
     def list_tools(self):
         return [
             Tool(
@@ -264,7 +267,7 @@ class DiscoveryPlugin:
             }
             if idea.source_url:
                 gauntlet_args["url"] = idea.source_url
-            result = await self._scheduler._run_gauntlet(
+            result = await self._gauntlet._run_gauntlet(
                 gauntlet_args, origin="discovered",
                 strategy_store=strategy_store, fetch=fetch,
             )

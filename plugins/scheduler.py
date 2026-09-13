@@ -1,10 +1,9 @@
 """
-Scheduler plugin — MCP server for Felix.
+Scheduler plugin -- MCP server for Felix.
 
-Tools: create_event, list_events, update_event, delete_event, run_gauntlet.
+Tools: create_event, list_events, update_event, delete_event.
 SQLite-backed (same openmind.db). No external calendar deps.
 """
-import asyncio
 import json
 import logging
 import re
@@ -15,26 +14,18 @@ from pathlib import Path
 import pandas as pd
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
-from cerebral.trading.live_tick import run_strategy_tick
-from cerebral.trading.strategy_store import StrategySpec, StrategyStore, mint_expansion_strategy_id
-from cerebral.trading.broker import StubBrokerClient
-from cerebral.trading.gauntlet import run_gauntlet, compute_max_holding_days
-from cerebral.trading.replay import run_bars
-from cerebral.trading.discovery import (
-    build_dynamic_universe,
-    rank_for_day_trading,
-)
+from cerebral.paths import data_dir
 from cerebral.settings import SettingsStore
+from cerebral.trading.live_tick import run_strategy_tick
+from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "scheduler"
 
-# ADR-0005 / Issue #44 — list_events reads SQLite (fs_read); create_event /
+# ADR-0005 / Issue #44 -- list_events reads SQLite (fs_read); create_event /
 # update_event / delete_event mutate the events table (fs_write).
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write"})
-
-from cerebral.paths import data_dir
 
 _DEFAULT_DB = data_dir() / "openmind.db"
 
@@ -50,7 +41,7 @@ def _is_valid_recurrence(recurrence: str) -> bool:
     return recurrence in _VALID_RECURRENCES or bool(_SHORT_RECURRENCE_RE.match(recurrence))
 
 
-def _recurrence_interval(recurrence: str | None) -> "timedelta | None":
+def _recurrence_interval(recurrence: "str | None") -> "timedelta | None":
     """Time between recurrences, or None for a one-time event / unknown value."""
     if not recurrence:
         return None
@@ -209,116 +200,6 @@ class SchedulerPlugin:
                 },
             ),
             Tool(
-                name="run_gauntlet",
-                description=(
-                    "Validates a trading strategy against the full validation gauntlet "
-                    "(out-of-sample, walk-forward, Monte Carlo, vs-random, vs-benchmark, "
-                    "noise, parameter sensitivity, costs, capacity). A VALIDATED verdict "
-                    "auto-registers the strategy and schedules it for autonomous paper "
-                    "trading -- this is the production entry point S9/S10's dispatch "
-                    "chain has no other way to reach."
-                ),
-                plugin=PLUGIN_NAME,
-                schema={
-                    "type": "object",
-                    "properties": {
-                        "code": {"type": "string", "description": "Python source: def strategy(data) -> signals"},
-                        "claim": {"type": "string", "description": "Trading hypothesis text to generate code from (alternative to code)"},
-                        "url": {"type": "string", "description": "URL to extract a trading claim from (alternative to code)"},
-                        "book": {"type": "string", "description": "Book title, with chapter, as an alternative to code"},
-                        "chapter": {"type": "string", "description": "Chapter number, paired with book"},
-                        "symbol": {"type": "string", "description": "Ticker to backtest and, on VALIDATED, paper-trade"},
-                        "hypothesis": {"type": "string", "description": "Falsifiable claim the strategy is testing"},
-                        "provenance": {"type": "string", "description": "Where the strategy came from (URL, book claim, 'user, verbatim')"},
-                    },
-                    "required": ["symbol", "hypothesis"],
-                },
-            ),
-            Tool(
-                name="edit_strategy",
-                description=(
-                    "Edits an existing strategy's source code: records a new version, "
-                    "re-runs the full validation gauntlet against the edited code, and "
-                    "only moves the strategy's live dispatch pointer to the new version "
-                    "if it validates. A failed edit leaves the strategy running its "
-                    "last-good version."
-                ),
-                plugin=PLUGIN_NAME,
-                schema={
-                    "type": "object",
-                    "properties": {
-                        "strategy_id": {"type": "string", "description": "The strategy to edit (its existing strategy_id)"},
-                        "code": {"type": "string", "description": "The new Python source: def strategy(data) -> signals"},
-                    },
-                    "required": ["strategy_id", "code"],
-                },
-            ),
-            Tool(
-                name="get_strategy_code",
-                description="Returns a strategy's currently dispatched source code and its rendered provenance.",
-                plugin=PLUGIN_NAME,
-                schema={
-                    "type": "object",
-                    "properties": {
-                        "strategy_id": {"type": "string"},
-                    },
-                    "required": ["strategy_id"],
-                },
-            ),
-            Tool(
-                name="expand_strategy_ticker",
-                description=(
-                    "Expands a validated strategy to new candidate tickers by running the full "
-                    "validation gauntlet. Requires the strategy's confidence weight to be positive. "
-                    "Candidate tickers are drawn from the known liquid universe, ranked by "
-                    "day-trading suitability, and capped by the discovery candidate limit. "
-                    "Each successful candidate registers as a new strategy row suffixed with @SYMBOL."
-                ),
-                plugin=PLUGIN_NAME,
-                schema={
-                    "type": "object",
-                    "properties": {
-                        "strategy_id": {"type": "string", "description": "The strategy to expand"},
-                    },
-                    "required": ["strategy_id"],
-                },
-            ),
-            Tool(
-                name="mix_strategies",
-                description=(
-                    "Combines multiple validated strategies into a single composite strategy. "
-                    "Resolves each component by strategy_id, validates they share the same symbol, "
-                    "generates the composite source code, and runs the full validation gauntlet. "
-                    "Modes: 'unanimous' (requires exact agreement, else 0), 'majority' (sign of sum, ties 0)."
-                ),
-                plugin=PLUGIN_NAME,
-                schema={
-                    "type": "object",
-                    "properties": {
-                        "component_ids": {"type": "array", "items": {"type": "string"}, "description": "List of strategy_ids to mix"},
-                        "mode": {"type": "string", "enum": ["unanimous", "majority"], "description": "Voting mode"}
-                    },
-                    "required": ["component_ids", "mode"],
-                },
-            ),
-            Tool(
-                name="auto_combine_strategies",
-                description=(
-                    "S43: Automatically selects the top-3 validated strategies for a given symbol by "
-                    "confidence weight, combines them using both 'unanimous' and 'majority' voting, "
-                    "and runs the validation gauntlet on both. Returns the better-performing composite. "
-                    "Requires at least 2 eligible strategies with positive confidence weight."
-                ),
-                plugin=PLUGIN_NAME,
-                schema={
-                    "type": "object",
-                    "properties": {
-                        "symbol": {"type": "string", "description": "Ticker to auto-compose strategies for"},
-                    },
-                    "required": ["symbol"],
-                },
-            ),
-            Tool(
                 name="start_trading",
                 description=(
                     "S34/#901: enable the autonomous paper-trading dispatch loop "
@@ -362,35 +243,6 @@ class SchedulerPlugin:
                     "required": ["archive_id"],
                 },
             ),
-            Tool(
-                name="halt_strategy",
-                description=(
-                    "2026-08-27: manually halts a strategy's autonomous dispatch "
-                    "(paper or live) -- reversible via resume_strategy. Keeps all "
-                    "history (fills, lineage); only stops future scheduled ticks."
-                ),
-                plugin=PLUGIN_NAME,
-                schema={
-                    "type": "object",
-                    "properties": {"strategy_id": {"type": "string"}},
-                    "required": ["strategy_id"],
-                },
-            ),
-            Tool(
-                name="resume_strategy",
-                description=(
-                    "2026-08-27: reverses a halt (manual or automatic) -- resumes "
-                    "at 'paper' status; re-earns live status through the normal "
-                    "30-trade graduation gate again rather than resuming live "
-                    "immediately."
-                ),
-                plugin=PLUGIN_NAME,
-                schema={
-                    "type": "object",
-                    "properties": {"strategy_id": {"type": "string"}},
-                    "required": ["strategy_id"],
-                },
-            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -402,10 +254,6 @@ class SchedulerPlugin:
             return self._update_event(args)
         if tool_name == "delete_event":
             return self._delete_event(args)
-        if tool_name == "run_gauntlet":
-            return await self._run_gauntlet(args)
-        if tool_name == "edit_strategy":
-            return await self._edit_strategy(args)
         if tool_name == "start_trading":
             return self._start_trading(args)
         if tool_name == "stop_trading":
@@ -414,18 +262,6 @@ class SchedulerPlugin:
             return await self._reset_paper_trading(args)
         if tool_name == "get_paper_archive_fills":
             return self._get_paper_archive_fills(args)
-        if tool_name == "get_strategy_code":
-            return self._get_strategy_code(args)
-        if tool_name == "expand_strategy_ticker":
-            return await self._expand_strategy_ticker(args)
-        if tool_name == "mix_strategies":
-            return await self._run_mix_strategies(args)
-        if tool_name == "auto_combine_strategies":
-            return await self._run_auto_combine_strategies(args)
-        if tool_name == "halt_strategy":
-            return self._halt_strategy(args)
-        if tool_name == "resume_strategy":
-            return self._resume_strategy(args)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # ------------------------------------------------------------------
@@ -551,163 +387,6 @@ class SchedulerPlugin:
         self._con.commit()
         return ToolResult(content=json.dumps({"id": event_id, "deleted": True}))
 
-    async def _run_gauntlet(
-        self, args: dict, *, strategy_store=None, fetch=None,
-        origin: str = "generated", parent_version=None, strategy_id: "str | None" = None,
-        components_json=None, interval: str = "1d",
-    ) -> ToolResult:
-        """S11 Part 3: the production entry point for run_gauntlet.
-
-        Builds a real backtest wrapper around the compiled strategy (not a
-        mock, not a hardcoded equity curve -- the two ways the first attempt
-        at this, closed unmerged as PR #855, was broken) and calls the real
-        `cerebral.trading.gauntlet.run_gauntlet`. A VALIDATED verdict flows
-        straight into gauntlet.py's own existing auto-promote block (`self`
-        as `scheduler`, a fresh StubBrokerClient as `paper_broker`), which
-        registers a StrategySpec and schedules a recurring event -- the same
-        chain S9/S10 already built and tested; this call site's only job is
-        making sure that chain is ever reached in production at all.
-
-        S15b (#860): `code` can also be generated from a `claim`/`url`/
-        `book`+`chapter` via `to_strategy` (S15's real, router-backed
-        generator) instead of being supplied directly -- async because
-        `to_strategy` itself is (it awaits the model router).
-
-        `strategy_store`/`fetch` are test-only injection seams (not part of
-        the Tool schema an LLM sees) -- default to the real StrategyStore /
-        yfinance-backed fetch_ohlcv, matching `_run_paper_strategy`'s own
-        `store=None, fetch=None` convention.
-        """
-        code = args.get("code", "").strip()
-        claim = args.get("claim", "").strip()
-        url = args.get("url", "").strip()
-        book = args.get("book", "").strip()
-        chapter = args.get("chapter", "").strip()
-        symbol = args.get("symbol", "").strip()
-        hypothesis = args.get("hypothesis", "").strip()
-        provenance = args.get("provenance", "")
-        interval = args.get("interval", "1d")
-
-        if not symbol or not hypothesis:
-            return ToolResult(content="symbol and hypothesis are required", is_error=True)
-
-        idea = None
-        if not code:
-            from cerebral.trading_ideas import from_prose, from_book_claim, extract_from_url, to_strategy
-
-            # book+chapter checked before bare claim (2026-08-26) so a
-            # caller with a specific claim AND book provenance (book
-            # ingestion) gets from_book_claim(claim, book, chapter) --
-            # correct provenance, real claim text -- instead of losing the
-            # book/chapter tagging to from_prose's generic "user, verbatim"
-            # provenance. Every pre-existing caller passes exactly one of
-            # claim/book+chapter, never both, so this is additive: claim-
-            # only and book+chapter-only behavior are both unchanged.
-            if book and chapter:
-                idea = from_book_claim(claim or f"Hypothesis from {book}", book, chapter)
-            elif claim:
-                idea = from_prose(claim)
-            elif url:
-                ideas = extract_from_url(url)
-                if not ideas:
-                    return ToolResult(content=f"No claims extracted from {url}", is_error=True)
-                idea = ideas[0]
-            else:
-                return ToolResult(
-                    content="One of code, claim, book+chapter, or url is required",
-                    is_error=True,
-                )
-
-            code = await to_strategy(idea, router=self._router)
-            if not code:
-                return ToolResult(content="Strategy generation produced no code", is_error=True)
-
-        if fetch is None:
-            from cerebral.trading_data import fetch_ohlcv as fetch
-        from cerebral.trading.sandboxed_eval import evaluate_signals, evaluate_signals_verbose
-
-        end = datetime.now(timezone.utc).date()
-        # Intraday bars don't need 365 calendar days; use interval-derived lookback
-        lookback_days = 365 if interval == "1d" else 30
-        start = end - timedelta(days=lookback_days)
-        try:
-            prices = fetch(symbol, start.isoformat(), end.isoformat(), interval=interval)
-        except Exception as e:
-            return ToolResult(content=f"Data fetch failed for {symbol}: {e}", is_error=True)
-
-        if idea is not None:
-            _, _repair_err = evaluate_signals_verbose(code, prices)
-            if _repair_err:
-                _repaired = await to_strategy(
-                    idea, router=self._router, prior_code=code, prior_error=_repair_err,
-                )
-                if _repaired:
-                    code = _repaired
-                    provenance = provenance + " (repaired after 1 retry)"
-
-        def backtest(bars, params):
-            equity, _position, metrics = run_bars(code, bars, interval)
-            return equity, metrics
-
-        # Fractional-share sizing at registration (found live 2026-09-01):
-        # position_qty used to be a hardcoded 1.0 regardless of price or
-        # account size -- 1 share of any $100+ stock instantly blew past
-        # RiskManager's per-trade-risk cap on the real (small) paper
-        # account, silently blocking almost every real signal forever.
-        # Alpaca and StubBrokerClient both already accept fractional qty;
-        # nothing previously computed one. Sized to the FULL risk budget
-        # (user call, 2026-09-01: ~$10/stock across a $100/10-position
-        # account, no headroom margin) -- a struggling strategy re-sizes on
-        # its next registration, so drift between registration and first
-        # dispatch tick isn't worth trading off against hitting the target
-        # size exactly. Deliberately NOT touched: the ramp (25%/50%/100%)
-        # and confidence-weight multiplier in live_tick.py's
-        # run_strategy_tick, which multiply this registered qty at dispatch
-        # time -- those are separate, already-tested mechanisms this only
-        # feeds a sane starting value into.
-        last_price = float(prices["Close"].iloc[-1]) if "Close" in prices.columns and len(prices) else 0.0
-        risk_pct = self._settings.get("max_per_trade_risk_pct") or 2.0
-        starting_capital = self._settings.get("trading_paper_starting_capital") or 10000.0
-        # FIXME: SchedulerPlugin doesn't expose self._trading_broker yet. If/when it does,
-        # prefer it here to avoid drift with the app setting:
-        #   if self._trading_broker is not None:
-        #       try: starting_capital = self._trading_broker.get_account().equity
-        #       except Exception: pass
-        position_qty = (starting_capital * (risk_pct / 100.0)) / last_price if last_price > 0 else 1.0
-
-        try:
-            # ponytail: benchmark is the strategy's own buy-and-hold, not a
-            # real index (SPY) -- run_gauntlet's vs-benchmark gate needs
-            # *some* series; wiring a shared SPY fetch is a separate slice.
-            card = run_gauntlet(
-                backtest, prices, {}, prices.copy(),
-                position_sizes=pd.Series([position_qty] * len(prices), index=prices.index),
-                hypothesis=hypothesis, provenance=provenance,
-                scheduler=self, paper_broker=StubBrokerClient(),
-                symbol=symbol, strategy_code=code,
-                strategy_store=strategy_store, position_qty=position_qty,
-                origin=origin, parent_version=parent_version, strategy_id=strategy_id,
-                components_json=components_json, interval=interval,
-            )
-        except Exception as e:
-            logger.warning(f"[scheduler] run_gauntlet failed for {symbol}: {e}", exc_info=True)
-            return ToolResult(content=f"Gauntlet run failed: {e}", is_error=True)
-
-        return ToolResult(content=json.dumps({
-            "verdict": card.verdict,
-            "sharpe": card.sharpe,
-            "total_return": card.total_return,
-            # StrategyCard has no strategy_name field -- mirror the exact same
-            # derivation cerebral.trading.gauntlet.run_gauntlet uses internally
-            # (strategy_name = strategy_id or hypothesis or provenance) so the
-            # reported value matches whatever store.save() actually used.
-            "strategy_id": strategy_id or hypothesis or provenance,
-            "gates": [
-                {"name": g.name, "passed": bool(g.passed), "details": g.details}
-                for g in card.gates
-            ],
-        }))
-
     def _start_trading(self, args: dict) -> ToolResult:
         self._settings.set("trading_paper_enabled", True)
         return ToolResult(content=json.dumps({"enabled": True}))
@@ -733,334 +412,6 @@ class SchedulerPlugin:
         fills = self._get_paper_archive_fills_fn(int(archive_id))
         return ToolResult(content=json.dumps({"fills": fills}))
 
-
-
-    def _halt_strategy(self, args: dict) -> ToolResult:
-        strategy_id = (args.get("strategy_id") or "").strip()
-        if not strategy_id:
-            return ToolResult(content="strategy_id is required", is_error=True)
-        if self._lifecycle is None:
-            return ToolResult(content="Strategy lifecycle is not wired", is_error=True)
-        self._lifecycle.halt_strategy(strategy_id)
-        if self._on_trading_change is not None:
-            self._on_trading_change()
-        return ToolResult(content=json.dumps({"strategy_id": strategy_id, "status": "halted"}))
-
-    def _resume_strategy(self, args: dict) -> ToolResult:
-        strategy_id = (args.get("strategy_id") or "").strip()
-        if not strategy_id:
-            return ToolResult(content="strategy_id is required", is_error=True)
-        if self._lifecycle is None:
-            return ToolResult(content="Strategy lifecycle is not wired", is_error=True)
-        state = self._lifecycle.get_state(strategy_id)
-        if state.status != "halted":
-            return ToolResult(content=f"Strategy '{strategy_id}' is not halted (status={state.status})", is_error=True)
-        self._lifecycle.resume_strategy(strategy_id)
-        if self._on_trading_change is not None:
-            self._on_trading_change()
-        return ToolResult(content=json.dumps({"strategy_id": strategy_id, "status": "paper"}))
-
-    async def _edit_strategy(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
-        """S17 (#862): edit an existing strategy's code -- new version, full
-        gauntlet re-run, dispatch pointer only moves on VALIDATED. Delegates
-        to _run_gauntlet's existing auto-promote path via the origin/
-        parent_version/strategy_id params added for exactly this call --
-        no separate gauntlet-calling logic duplicated here."""
-        strategy_id = args.get("strategy_id", "").strip()
-        code = args.get("code", "").strip()
-        if not strategy_id or not code:
-            return ToolResult(content="strategy_id and code are required", is_error=True)
-
-        store = strategy_store if strategy_store is not None else StrategyStore()
-        spec = store.get(strategy_id)
-        parent = store.get_current_version(strategy_id)
-        if spec is None or parent is None:
-            return ToolResult(content=f"No existing strategy '{strategy_id}' to edit", is_error=True)
-
-        provenance = store.render_provenance(parent) + ", as modified by user"
-        return await self._run_gauntlet(
-            {
-                "code": code, "symbol": spec.symbol,
-                "hypothesis": parent["hypothesis"] or "",
-                "provenance": provenance,
-            },
-            strategy_store=store, fetch=fetch,
-            origin="user_edited", parent_version=parent["version"], strategy_id=strategy_id,
-        )
-
-    def _get_strategy_code(self, args: dict, *, strategy_store=None) -> ToolResult:
-        """S17 (#862): companion read -- current dispatched source + provenance."""
-        strategy_id = args.get("strategy_id", "").strip()
-        if not strategy_id:
-            return ToolResult(content="strategy_id is required", is_error=True)
-
-        store = strategy_store if strategy_store is not None else StrategyStore()
-        spec = store.get(strategy_id)
-        if spec is None:
-            return ToolResult(content=f"No strategy '{strategy_id}' found", is_error=True)
-
-        version_row = store.get_current_version(strategy_id)
-        provenance = store.render_provenance(version_row) if version_row is not None else "unknown"
-        return ToolResult(content=json.dumps({"code": spec.code, "provenance": provenance}))
-
-    async def _expand_strategy_ticker(
-        self, args: dict, *, strategy_store=None, fetch=None, confidence_fn=None, broker=None,
-    ) -> ToolResult:
-        """S42: expand a validated strategy to new candidate tickers via the gauntlet.
-
-        `strategy_store`/`fetch` are test-only injection seams, matching
-        `_run_gauntlet`'s own convention. `confidence_fn` likewise (defaults to
-        S38's real ForwardRecord.compute_confidence_weight) -- a strategy_id
-        string in, a float weight out.
-        """
-        strategy_id = args.get("strategy_id", "").strip()
-        if not strategy_id:
-            return ToolResult(content="strategy_id is required", is_error=True)
-
-        store = strategy_store if strategy_store is not None else StrategyStore()
-        spec = store.get(strategy_id)
-        if spec is None:
-            return ToolResult(content=f"No strategy '{strategy_id}' found", is_error=True)
-
-        if confidence_fn is not None:
-            confidence = confidence_fn(strategy_id)
-        else:
-            from cerebral.trading.forward_record import ForwardRecord
-            confidence = ForwardRecord().compute_confidence_weight(strategy_id=strategy_id)
-
-        if confidence <= 0:
-            return ToolResult(
-                content=f"Strategy '{strategy_id}' has non-positive confidence weight ({confidence}). Cannot expand.",
-                is_error=True,
-            )
-
-        version_row = store.get_current_version(strategy_id)
-        hypothesis = (version_row["hypothesis"] if version_row is not None else "") or f"Hypothesis from {strategy_id}"
-
-        current_symbol = spec.symbol
-        candidate_limit = self._settings.get("discovery_candidate_limit") or 3
-
-        fetch_fn = fetch
-        if fetch_fn is None:
-            from cerebral.trading_data import fetch_ohlcv as fetch_fn
-
-        # DD4 (#1160): the shared Candidate pool (ADR-0026 decision 5, amended
-        # 2026-09-08) -- same lazy-broker convention as _run_discovery (DD3).
-        broker_obj = broker
-        if broker_obj is None:
-            from cerebral.trading.broker import AlpacaBrokerClient
-            broker_obj = AlpacaBrokerClient(env="paper")
-        universe = build_dynamic_universe(broker_obj, fetch_fn)
-        candidates = [t for t in universe if t != current_symbol]
-        ranked_candidates = rank_for_day_trading(candidates, fetch_fn)
-        candidates = ranked_candidates[:candidate_limit]
-
-        results = []
-        for candidate in candidates:
-            new_id = mint_expansion_strategy_id(strategy_id, candidate)
-            gauntlet_args = {
-                "code": spec.code,
-                "symbol": candidate,
-                "hypothesis": hypothesis,
-                "provenance": f"Expanded from {strategy_id} for {candidate}",
-            }
-            try:
-                result = await self._run_gauntlet(
-                    gauntlet_args,
-                    strategy_store=store,
-                    fetch=fetch,
-                    origin="discovered",
-                    strategy_id=new_id,
-                )
-                verdict = json.loads(result.content).get("verdict", "ERROR") if not result.is_error else "ERROR"
-            except Exception as exc:
-                verdict = "ERROR"
-                logger.exception("[scheduler] expand_strategy_ticker gauntlet dispatch failed for %s", candidate)
-            results.append({
-                "ticker": candidate,
-                "new_id": new_id,
-                "verdict": verdict,
-            })
-
-        if self._record_activity_fn is not None:
-            await self._record_activity_fn(
-                "activity",
-                {
-                    "source": "expand_strategy_ticker",
-                    "strategy_id": strategy_id,
-                    "tickers": [r["ticker"] for r in results],
-                    "verdicts": {r["ticker"]: r["verdict"] for r in results},
-                }
-            )
-
-        return ToolResult(content=json.dumps({
-            "original_id": strategy_id,
-            "attempts": results,
-        }))
-
-    async def _run_mix_strategies(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
-        component_ids = args.get("component_ids", [])
-        mode = args.get("mode", "")
-        if not component_ids or mode not in ("unanimous", "majority"):
-            return ToolResult(content="component_ids (list) and mode (unanimous/majority) are required", is_error=True)
-
-        if strategy_store is not None:
-            store = strategy_store
-        else:
-            from cerebral.trading.strategy_store import StrategyStore
-            store = StrategyStore()
-
-        resolved = []
-        symbols = set()
-        provenances = []
-        for cid in component_ids:
-            spec = store.get(cid)
-            version = store.get_current_version(cid)
-            if spec is None or version is None:
-                return ToolResult(content=f"Component strategy '{cid}' not found in store", is_error=True)
-            symbols.add(spec.symbol)
-            provenances.append(store.render_provenance(version))
-            resolved.append((cid, spec.code))
-
-        if len(symbols) > 1:
-            return ToolResult(
-                content=f"Mismatched symbols across components: {sorted(symbols)}. All components must share the same symbol.",
-                is_error=True,
-            )
-        
-        symbol = symbols.pop()
-        
-        try:
-            from cerebral.trading.compose import compose_strategies
-            composite_code = compose_strategies(resolved, mode)
-        except Exception as e:
-            return ToolResult(content=f"Composite generation failed: {e}", is_error=True)
-
-        import uuid
-        new_id = f"mixed_{uuid.uuid4().hex[:8]}"
-
-        # A real Python object, not a pre-serialized string: store.save()
-        # does its own json.dumps on whatever components_json is given (see
-        # cerebral/trading/strategy_store.py), and render_provenance's
-        # 'mixed' branch reads this column back to name every component --
-        # the earlier version of this method packed the same information
-        # into the `provenance` string instead, which never reaches
-        # strategy_versions.components_json at all (that column stayed
-        # NULL forever, so render_provenance could never actually name a
-        # component -- a real bug, not just an unused parameter).
-        components = [{"id": cid, "provenance": p} for cid, p in zip(component_ids, provenances)]
-        provenance_str = f"Mixed strategy ({mode}) of {len(component_ids)} components: {', '.join(component_ids)}"
-
-        return await self._run_gauntlet(
-            {
-                "code": composite_code,
-                "symbol": symbol,
-                "hypothesis": f"Composite strategy ({mode}) of {len(component_ids)} components",
-                "provenance": provenance_str,
-            },
-            strategy_store=store, fetch=fetch,
-            origin="mixed", strategy_id=new_id, components_json=components,
-        )
-
-    async def _run_auto_combine_strategies(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
-        """S43: Same-symbol composite auto-discovery tool. Selects top-3 by confidence,
-        runs both unanimous and majority modes, and keeps the better-performing result."""
-        symbol = args.get("symbol", "").strip()
-        if not symbol:
-            return ToolResult(content="symbol is required", is_error=True)
-
-        store = strategy_store if strategy_store is not None else StrategyStore()
-        symbol_strategies = [s for s in store.list_all() if s.symbol == symbol]
-        
-        from cerebral.trading.forward_record import ForwardRecord
-        record = ForwardRecord()
-        scored = []
-        for s in symbol_strategies:
-            try:
-                conf = record.compute_confidence_weight(strategy_id=s.strategy_id)
-                if conf > 0:
-                    scored.append((conf, s.strategy_id))
-            except Exception:
-                continue
-                
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top_3 = scored[:3]
-        
-        if len(top_3) < 2:
-            return ToolResult(content=json.dumps({
-                "status": "not_enough_strategies",
-                "eligible_count": len(top_3),
-                "message": f"Need at least 2 eligible strategies (confidence > 0), found {len(top_3)} on {symbol}."
-            }))
-            
-        component_ids = [sid for _, sid in top_3]
-        
-        res_uni = await self._run_mix_strategies(
-            {"component_ids": component_ids, "mode": "unanimous"},
-            strategy_store=store, fetch=fetch
-        )
-        res_maj = await self._run_mix_strategies(
-            {"component_ids": component_ids, "mode": "majority"},
-            strategy_store=store, fetch=fetch
-        )
-        
-        def parse(res):
-            try:
-                d = json.loads(res.content)
-                return d.get("total_return", 0.0), d.get("verdict", "ERROR"), d.get("strategy_id")
-            except Exception:
-                return 0.0, "ERROR", None
-
-        ret_uni, ver_uni, id_uni = parse(res_uni)
-        ret_maj, ver_maj, id_maj = parse(res_maj)
-
-        if ver_uni == "VALIDATED" and ver_maj != "VALIDATED":
-            winner, loser = "unanimous", "majority"
-        elif ver_maj == "VALIDATED" and ver_uni != "VALIDATED":
-            winner, loser = "majority", "unanimous"
-        else:
-            winner = "unanimous" if ret_uni >= ret_maj else "majority"
-            loser = "majority" if winner == "unanimous" else "unanimous"
-
-        winner_ret, winner_ver = (ret_uni, ver_uni) if winner == "unanimous" else (ret_maj, ver_maj)
-        loser_id = id_maj if winner == "unanimous" else id_uni
-
-        # Only the winner may end up persisted as a validated strategy --
-        # run_gauntlet only saves a StrategySpec when its own verdict is
-        # VALIDATED (cerebral/trading/gauntlet.py), so this is a real delete
-        # when the loser also validated, and a harmless no-op (nothing to
-        # delete) when it didn't. Both branches were previously reached via
-        # a store.get/getattr('origin'/'provenance') lookup that doesn't
-        # exist on StrategySpec, silently swallowed by a bare except -- this
-        # uses the loser's own real strategy_id instead, surfaced by
-        # _run_mix_strategies above.
-        if loser_id is not None:
-            store.delete(loser_id)
-
-        if self._record_activity_fn is not None:
-            await self._record_activity_fn(
-                "activity",
-                {
-                    "source": "auto_combine_strategies",
-                    "symbol": symbol,
-                    "component_ids": component_ids,
-                    "winner_mode": winner,
-                    "winner_strategy_id": id_uni if winner == "unanimous" else id_maj,
-                    "winner_verdict": winner_ver,
-                }
-            )
-
-        return ToolResult(content=json.dumps({
-            "status": "complete",
-            "symbol": symbol,
-            "component_ids": component_ids,
-            "winner_mode": winner,
-            "winner_strategy_id": id_uni if winner == "unanimous" else id_maj,
-            "winner_return": winner_ret,
-            "winner_verdict": winner_ver,
-            "loser_mode": loser,
-        }))
-
     def _run_paper_strategy(
         self, strategy_name: str, broker, forward_record: "ForwardRecord",
         config: dict | None = None, store=None, fetch=None, phase: str = "paper",
@@ -1070,7 +421,7 @@ class SchedulerPlugin:
         stock_sentiment_labels: dict | None = None,
         claimed_symbols: set | None = None,
         bear_case_fn=None,
-        correlation_matrix: pd.DataFrame | None = None,
+        correlation_matrix: "pd.DataFrame | None" = None,
     ) -> dict:
         """Runs one paper-trading tick for the given strategy. Pure trade
         execution -- event bookkeeping (marking a due event as dispatched)
