@@ -324,7 +324,6 @@ class TestSchedulerPlugin:
         assert names == {
             "create_event", "list_events", "update_event", "delete_event",
             "run_gauntlet", "edit_strategy", "get_strategy_code", "mix_strategies",
-            "run_discovery", "start_discovery", "stop_discovery", "get_discovery_status",
             "halt_strategy", "resume_strategy",
             # S34 (#901/#906)
             "start_trading", "stop_trading",
@@ -339,7 +338,6 @@ class TestSchedulerPlugin:
             "auto_combine_strategies",
             # IPO6 (#1043)
             "check_ipo_calendar", "dispatch_due_ipos",
-            "get_discovery_source_performance",
         }
 
     # -----------------------------------------------------------------------
