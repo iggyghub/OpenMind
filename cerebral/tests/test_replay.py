@@ -98,3 +98,101 @@ def strategy(data):
     assert len(net_returns) == len(gross_returns)
     for g, n in zip(gross_returns, net_returns):
         assert n <= g + 1e-9, f"Net return {n} > gross return {g}"
+
+
+def test_run_replay_portfolio(tmp_path):
+    """run_replay against synthetic specs, a fake bar_cache, and a real
+    ReplayStore. Uses the REAL StrategySpec (cerebral.trading.strategy_store)
+    -- the same dataclass live dispatch and run_gauntlet use -- not a
+    reinvented local one, since run_replay must accept exactly what
+    StrategyStore.list_all() (RP6) will actually hand it."""
+    from cerebral.trading.replay import run_replay
+    from cerebral.trading.replay_store import ReplayStore
+    from cerebral.trading.strategy_store import StrategySpec
+
+    class FakeBarCache:
+        """Matches cerebral.trading.bar_cache's real free-function shape --
+        get_bars(symbol, start, end, interval), not a duck-typed .fetch()
+        with a different argument order. Ignores start/end and returns 50
+        synthetic bars regardless, wide enough to cover any interval's
+        warm-up margin plus the requested window."""
+        def get_bars(self, symbol: str, start: str, end: str, interval: str):
+            idx = pd.date_range(start="2023-06-01", periods=250, freq="B")
+            close = [100.0 + i * 0.1 for i in range(250)]
+            return pd.DataFrame(
+                {"Open": close, "High": close, "Low": close, "Close": close, "Volume": [1e6] * 250},
+                index=idx,
+            )
+
+    bar_cache = FakeBarCache()
+    replay_store = ReplayStore(db_path=str(tmp_path / "replay.db"))
+
+    always_long = StrategySpec("s-always-long", "SPY", "def strategy(data):\n    return [1] * len(data)\n", interval="1d")
+    broken = StrategySpec("s-broken", "TSLA", "def strategy(data):\n    raise RuntimeError('kaboom')\n", interval="1d")
+    warmup_need = StrategySpec(
+        "s-warmup", "AAPL",
+        "def strategy(data):\n    n = len(data)\n    return [0] * 19 + [1] * (n - 19)\n",
+        interval="1d",
+    )
+
+    specs = [always_long, broken, warmup_need]
+    start = "2024-01-01"
+    end = "2024-01-10"
+
+    run_id = run_replay(specs, start, end, bar_cache=bar_cache, replay_store=replay_store)
+
+    assert run_id is not None and isinstance(run_id, str)
+
+    # ReplayStore rows are sqlite3.Row -- dict-style ["column"] access, not
+    # attribute access.
+    runs = replay_store.list_runs()
+    assert len(runs) == 1
+    assert runs[0]["run_id"] == run_id
+    assert runs[0]["n_strategies"] == 3
+
+    results = replay_store.get_results(run_id)
+    results_map = {r["strategy_id"]: r for r in results}
+    assert set(results_map) == {"s-always-long", "s-broken", "s-warmup"}
+
+    always_res = results_map["s-always-long"]
+    assert always_res["net_return"] is not None
+    assert always_res["net_return"] != 0.0
+    assert always_res["flat_reason"] is None
+
+    broken_res = results_map["s-broken"]
+    assert broken_res["flat_reason"] is not None
+    assert "kaboom" in broken_res["flat_reason"]
+
+    # Warm-up strategy should not fail -- correct all-flat-during-warm-up
+    # behaviour is not a code failure.
+    warmup_res = results_map["s-warmup"]
+    assert warmup_res["flat_reason"] is None
+
+
+def test_run_replay_broken_strategy_does_not_abort_the_run(tmp_path):
+    """One strategy raising must not prevent the others in the same run
+    from being recorded."""
+    from cerebral.trading.replay import run_replay
+    from cerebral.trading.replay_store import ReplayStore
+    from cerebral.trading.strategy_store import StrategySpec
+
+    class FakeBarCache:
+        def get_bars(self, symbol, start, end, interval):
+            idx = pd.date_range(start="2023-06-01", periods=250, freq="B")
+            close = [100.0 + i * 0.1 for i in range(250)]
+            return pd.DataFrame(
+                {"Open": close, "High": close, "Low": close, "Close": close, "Volume": [1e6] * 250},
+                index=idx,
+            )
+
+    replay_store = ReplayStore(db_path=str(tmp_path / "replay2.db"))
+    specs = [
+        StrategySpec("s-a", "AAA", "def strategy(data):\n    raise ValueError('bad')\n", interval="1d"),
+        StrategySpec("s-b", "BBB", _ALWAYS_LONG, interval="1d"),
+    ]
+    run_id = run_replay(specs, "2024-01-01", "2024-01-10", bar_cache=FakeBarCache(), replay_store=replay_store)
+
+    results = {r["strategy_id"]: r for r in replay_store.get_results(run_id)}
+    assert results["s-a"]["flat_reason"] is not None
+    assert results["s-b"]["flat_reason"] is None
+    assert results["s-b"]["net_return"] is not None
