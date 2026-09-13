@@ -202,7 +202,7 @@ every registered tool's name + one-liner into the system prompt, so *registering
 
 ## Next slice -- start here
 
-- **Active:** RP7 -- #1194
+- **Active:** RP8 -- #1195
 - **Model:** sonnet
 
 ## Queue
@@ -214,7 +214,7 @@ every registered tool's name + one-liner into the system prompt, so *registering
 - [x] RP4 -- #1191 -- `cerebral/trading/replay_store.py`: `ReplayStore` + `replay_runs.db`, incl. `flat_reason` (Model: sonnet)
 - [x] RP5 -- #1192 -- `replay.py`: `run_replay(specs, start, end)` engine over the cached store (Model: opus)
 - [x] RP6 -- #1193 -- `plugins/trading_replay.py`: `list_strategies` + `simulate_period` + `replay_report` (+ ADR-0034 test file) (Model: sonnet)
-- [ ] RP7 -- #1194 -- batch cache warm as a start/stop background task, with retry/backoff (Model: sonnet)
+- [x] RP7 -- #1194 -- batch cache warm as a start/stop background task, with retry/backoff (Model: sonnet)
 - [ ] RP8 -- #1195 -- news: dated fetch + paging loop + prominence filter + per-day count, cached in `bars.db` (Model: sonnet)
 - [ ] RP9 -- #1196 -- `docs/replay-live-verify.md` + first real 286-strategy replay; report the broken-code census (Model: sonnet)
 
@@ -300,6 +300,20 @@ every registered tool's name + one-liner into the system prompt, so *registering
   (cheap per-call SQLite connections) -- matched that instead. 8/8 new tests pass; 618/619
   across the full regression sweep (the one failure is the already-flagged pre-existing
   assertion).
+- RP7 -- #1205 -- `start_cache_warm`/`stop_cache_warm` -- a smaller gap this time, three
+  real bugs: `from cerebral.trading.bar_cache import bar_cache` (the module exports
+  `get_bars`, not a `bar_cache` attribute -- fix is importing the module itself, same
+  pattern `run_replay` already uses); `DiscoveryWatchlist.symbols()` called on the bare
+  class when it's a real instance method (`TypeError` on first use), and its
+  `List[str]` return unioned with a `set` via `|` (also `TypeError`); and, the more
+  serious one, `bar_cache.get_bars` -- a plain synchronous function doing real SQLite +
+  network I/O -- called directly inside an `async def`, blocking Cerebral's entire event
+  loop on every fetch, exactly the ADR-0026-documented failure class. Wrapped it in
+  `loop.run_in_executor`. The PR also shipped zero test coverage for either tool despite
+  its own issue spec asking for retry/stop/universe-dedup tests -- added 8 covering
+  retry-then-succeed, give-up-after-3, stop-halts-progress, stop-with-nothing-running,
+  concurrent-run refusal, and the plugin's own dispatch. 16/16 pass; 626/627 across the
+  full regression sweep (the one failure is the already-flagged pre-existing assertion).
 
 ## Slice detail
 
