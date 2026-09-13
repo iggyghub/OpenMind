@@ -19,11 +19,15 @@ so this does too rather than inventing a stricter policy for identical work.
 """
 from __future__ import annotations
 
+import asyncio
+import datetime
 import json
 import logging
 from typing import Optional
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
+from cerebral.trading import bar_cache
+from cerebral.trading.discovery import DiscoveryWatchlist
 from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.replay import run_replay
 from cerebral.trading.replay_store import ReplayStore
@@ -98,6 +102,40 @@ class TradingReplayPlugin:
                     "required": ["run_id"],
                 },
             ),
+            Tool(
+                name="start_cache_warm",
+                description=(
+                    "Start a sequential background batch job to warm the "
+                    "intraday/daily bar cache for a universe of symbols. "
+                    "Defaults to interval='1d' and a computed universe "
+                    "(live strategies + discovery watchlist). Returns a "
+                    "status message. Use stop_cache_warm to halt it."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "interval": {
+                            "type": "string",
+                            "description": "Bar interval, e.g. '1d' or '15m'. Default '1d'.",
+                        },
+                        "symbols": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional explicit symbols (defaults to universe).",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="stop_cache_warm",
+                description=(
+                    "Signal the running cache-warm background task to finish "
+                    "its current symbol and stop. Returns a status message."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -107,6 +145,10 @@ class TradingReplayPlugin:
             return self._simulate_period(args)
         if tool_name == "replay_report":
             return self._replay_report(args)
+        if tool_name == "start_cache_warm":
+            return ToolResult(content=await start_cache_warm(args.get("interval", "1d"), args.get("symbols")))
+        if tool_name == "stop_cache_warm":
+            return ToolResult(content=await stop_cache_warm())
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _list_strategies(self, args: dict) -> ToolResult:
@@ -199,6 +241,72 @@ class TradingReplayPlugin:
             "rows": rows,
             "flat_reason_census": census,
         }))
+
+
+# Background task state for cache warm
+_cache_warm_task: Optional[asyncio.Task] = None
+_cache_warm_stop_flag = False
+
+
+def _compute_universe(symbols: Optional[list[str]]) -> list[str]:
+    if symbols is not None:
+        return list(symbols)
+    strat_syms = {s.symbol for s in StrategyStore().list_all()}
+    # symbols() is an instance method, not a classmethod/staticmethod --
+    # DiscoveryWatchlist.symbols() on the bare class raises TypeError
+    # (missing self). It also returns a List[str], not a set, so `|` needs
+    # both sides as sets.
+    disc_syms = set(DiscoveryWatchlist().symbols())
+    return sorted(strat_syms | disc_syms)
+
+
+async def start_cache_warm(interval: str = "1d", symbols: Optional[list[str]] = None) -> str:
+    global _cache_warm_task, _cache_warm_stop_flag
+    if _cache_warm_task is not None and not _cache_warm_task.done():
+        return "Cache warm already running."
+    _cache_warm_stop_flag = False
+    _cache_warm_task = asyncio.create_task(_run_cache_warm(interval, symbols))
+    return "Cache warm started."
+
+
+async def stop_cache_warm() -> str:
+    global _cache_warm_task
+    if _cache_warm_task is None or _cache_warm_task.done():
+        return "No cache warm running."
+    global _cache_warm_stop_flag
+    _cache_warm_stop_flag = True
+    await _cache_warm_task
+    return "Cache warm stopped."
+
+
+async def _run_cache_warm(interval: str, symbols: Optional[list[str]]) -> None:
+    default_start = "2016-01-01"
+    today = datetime.date.today().isoformat()
+
+    universe = _compute_universe(symbols)
+
+    loop = asyncio.get_event_loop()
+    for symbol in universe:
+        if _cache_warm_stop_flag:
+            break
+        # ponytail: fixed 3 attempts, no jitter, no framework — upgrade to a real backoff library only if this measurably proves insufficient
+        for attempt in range(3):
+            try:
+                # bar_cache.get_bars is a plain synchronous function (sqlite
+                # + a real network call) -- calling it directly here would
+                # block the WHOLE event loop for its duration on every
+                # fetch, exactly the class of bug ADR-0026 already recorded
+                # as a real live incident (a book-ingestion stall). Running
+                # it in the default executor keeps this coroutine
+                # cooperative even though the underlying call isn't.
+                await loop.run_in_executor(None, bar_cache.get_bars, symbol, default_start, today, interval)
+                break
+            except Exception:
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    logger.warning("Cache warm failed for %s after 3 attempts", symbol)
+        await asyncio.sleep(0)  # yield control between symbols
 
 
 def create() -> TradingReplayPlugin:
