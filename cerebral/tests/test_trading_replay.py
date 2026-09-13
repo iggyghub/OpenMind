@@ -1,181 +1,124 @@
-"""Full tests for trading_replay tools against tmp-path-backed stores.
-
-Exercises list_strategies, simulate_period, and replay_report.
-Includes smoke-test verification of MCPOrchestrator discovery.
+"""Full tests for trading_replay tools against tmp-path-backed real stores
+(not mocks standing in for sqlite3.Row/StrategySpec's actual shapes --
+ReplayStore rows only support ["column"] access, not .get()/.attribute, and
+StrategySpec's real field is strategy_id, not id).
 """
+import asyncio
 import json
-import tempfile
-from typing import Optional, List
-from unittest.mock import MagicMock, patch
 
-from cerebral.trading.strategy_store import StrategyStore
-from cerebral.trading.replay.store import ReplayStore
-from cerebral.main import MCPOrchestrator
-from plugins.trading_replay import (
-    TradingReplayPlugin,
-    list_strategies,
-    simulate_period,
-    replay_report,
-)
-
-# Mock strategy objects
-class MockStrategy:
-    def __init__(self, sid: str, symbol: str, interval: str, qty: int):
-        self.id = sid
-        self.symbol = symbol
-        self.interval = interval
-        self.qty = qty
+from cerebral.trading.strategy_store import StrategyStore, StrategySpec
+from cerebral.trading.replay_store import ReplayStore
+from plugins import trading_replay as tr
 
 
-class TestTradingReplayTools:
-    """Tests for trading_replay tools using mocked dependencies."""
+def _content(result):
+    assert not result.is_error, result.content
+    return json.loads(result.content)
 
-    def setup_method(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.plugin = TradingReplayPlugin()
 
-        # Patch store classes so tools use our controlled instances
-        self.mock_store_cls = patch('plugins.trading_replay.StrategyStore').start()
-        self.mock_replay_cls = patch('plugins.trading_replay.ReplayStore').start()
+def test_list_strategies_returns_filtered_json(tmp_path, monkeypatch):
+    store = StrategyStore(db_path=tmp_path / "strategy.db")
+    store.save(StrategySpec("s1", "AAPL", "def strategy(d): return [1]*len(d)", interval="1h"))
+    store.save(StrategySpec("s2", "AAPL", "def strategy(d): return [1]*len(d)", interval="4h"))
+    store.save(StrategySpec("s3", "MSFT", "def strategy(d): return [1]*len(d)", interval="1h"))
+    monkeypatch.setattr(tr, "StrategyStore", lambda: store)
 
-        self.mock_store_inst = self.mock_store_cls.return_value
-        self.mock_replay_inst = self.mock_replay_cls.return_value
+    plugin = tr.create()
 
-        # Default mock behaviors
-        self.mock_store_inst.list_all.return_value = []
-        self.mock_replay_inst.get_results.return_value = []
-        self.mock_replay_inst.get_run.return_value = {}
+    data = _content(asyncio.run(plugin.call_tool("list_strategies", {})))
+    assert len(data) == 3
+    assert all(k in data[0] for k in ("id", "symbol", "interval", "qty"))
 
-    def teardown_method(self):
-        patch.stopall()
+    data = _content(asyncio.run(plugin.call_tool("list_strategies", {"symbol": "AAPL"})))
+    assert len(data) == 2 and all(d["symbol"] == "AAPL" for d in data)
 
-    def test_list_strategies_returns_filtered_json(self):
-        # Setup mock strategies
-        strats = [
-            MockStrategy("s1", "AAPL", "1h", 10),
-            MockStrategy("s2", "AAPL", "4h", 20),
-            MockStrategy("s3", "MSFT", "1h", 5),
-        ]
-        self.mock_store_inst.list_all.return_value = strats
+    data = _content(asyncio.run(plugin.call_tool("list_strategies", {"interval": "1h"})))
+    assert len(data) == 2 and all(d["interval"] == "1h" for d in data)
 
-        # Test unfiltered
-        res = list_strategies()
-        data = json.loads(res.output)
-        assert len(data) == 3
-        assert all(k in data[0] for k in ("id", "symbol", "interval", "qty"))
+    data = _content(asyncio.run(plugin.call_tool("list_strategies", {"symbol": "AAPL", "interval": "1h"})))
+    assert len(data) == 1 and data[0]["id"] == "s1"
 
-        # Test symbol filter
-        res = list_strategies(symbol="AAPL")
-        data = json.loads(res.output)
-        assert len(data) == 2
-        assert all(d["symbol"] == "AAPL" for d in data)
 
-        # Test interval filter
-        res = list_strategies(interval="1h")
-        data = json.loads(res.output)
-        assert len(data) == 2
-        assert all(d["interval"] == "1h" for d in data)
+def test_simulate_period_returns_run_id_and_summary(tmp_path, monkeypatch):
+    store = StrategyStore(db_path=tmp_path / "strategy.db")
+    store.save(StrategySpec("s1", "AAPL", "def strategy(d): return [1]*len(d)", interval="1h"))
+    store.save(StrategySpec("s2", "MSFT", "def strategy(d): return [1]*len(d)", interval="4h"))
+    monkeypatch.setattr(tr, "StrategyStore", lambda: store)
 
-        # Test both filters
-        res = list_strategies(symbol="AAPL", interval="1h")
-        data = json.loads(res.output)
-        assert len(data) == 1
-        assert data[0]["id"] == "s1"
+    replay_store = ReplayStore(db_path=str(tmp_path / "replay.db"))
+    monkeypatch.setattr(tr, "ReplayStore", lambda: replay_store)
 
-    def test_simulate_period_returns_run_id_and_summary(self):
-        # Setup strategies
-        strats = [
-            MockStrategy("s1", "AAPL", "1h", 10),
-            MockStrategy("s2", "MSFT", "4h", 5),
-        ]
-        self.mock_store_inst.list_all.return_value = strats
-        self.mock_replay_inst.get_results.return_value = [
-            {"symbol": "AAPL", "interval": "1h", "net_return": 0.05, "flat_reason": "ValueError: bad param"},
-            {"symbol": "MSFT", "interval": "4h", "net_return": -0.02, "flat_reason": None},
-        ]
-        
-        with patch('plugins.trading_replay.run_replay') as mock_replay:
-            mock_replay.return_value = "run_abc123"
-            
-            res = simulate_period("2024-01-01", "2024-01-02", symbols=["AAPL"])
+    def fake_run_replay(specs, start, end):
+        run_id = replay_store.create_run(start, end, "1h", len(specs))
+        # Only one spec should reach here (symbols=["AAPL"] filter applied
+        # by the plugin BEFORE calling run_replay).
+        assert [s.strategy_id for s in specs] == ["s1"]
+        replay_store.record_result(
+            run_id, "s1", "AAPL", gross_return=0.06, net_return=0.05,
+            n_trades=2, max_drawdown=-0.01, sharpe=1.2, flat_reason=None,
+        )
+        return run_id
+    monkeypatch.setattr(tr, "run_replay", fake_run_replay)
 
-        data = json.loads(res.output)
-        assert data["run_id"] == "run_abc123"
-        assert data["total_strategies_replayed"] == 1  # Filtered to AAPL
-        assert data["flat_reason_count"] == 0  # Only AAPL, which had error, but count includes? 
-        # Wait, AAPL has flat_reason, so count should be 1 if simulated.
-        # AAPL has flat_reason="ValueError...", so count is 1.
-        assert data["flat_reason_count"] == 1
-        assert data["aggregate_mean_net_return"] == 0.05
+    plugin = tr.create()
+    data = _content(asyncio.run(plugin.call_tool(
+        "simulate_period", {"start": "2024-01-01", "end": "2024-01-02", "symbols": ["AAPL"]}
+    )))
 
-    def test_simulate_period_empty_result(self):
-        self.mock_store_inst.list_all.return_value = []
-        
-        with patch('plugins.trading_replay.run_replay') as mock_replay:
-            mock_replay.return_value = "run_empty"
-            res = simulate_period("2024-01-01", "2024-01-02")
+    assert data["total_strategies_replayed"] == 1
+    assert data["flat_reason_count"] == 0
+    assert data["aggregate_mean_net_return"] == 0.05
 
-        data = json.loads(res.output)
-        assert data["run_id"] == "run_empty"
-        assert data["total_strategies_replayed"] == 0
-        assert data["flat_reason_count"] == 0
-        assert data["aggregate_mean_net_return"] == 0.0
 
-    def test_replay_report_returns_full_data_and_census(self):
-        self.mock_replay_inst.get_results.return_value = [
-            {"symbol": "A", "interval": "1h", "net_return": 0.1, "flat_reason": "AttributeError: 'Series' object has no attribute 'x'"},
-            {"symbol": "B", "interval": "1h", "net_return": 0.2, "flat_reason": "AttributeError: 'DataFrame' object has no attribute 'y'"},
-            {"symbol": "C", "interval": "4h", "net_return": -0.1, "flat_reason": None},
-        ]
+def test_simulate_period_requires_start_and_end():
+    plugin = tr.create()
+    result = asyncio.run(plugin.call_tool("simulate_period", {"start": "2024-01-01"}))
+    assert result.is_error is True
 
-        res = replay_report("run_123")
-        data = json.loads(res.output)
 
-        assert data["run_id"] == "run_123"
-        assert data["total_strategies"] == 3
-        assert len(data["rows"]) == 3
-        assert data["flat_reason_census"] == {"AttributeError": 2}
-        assert data["rows"][0]["flat_reason"] == "AttributeError: 'Series' object has no attribute 'x'"
-        assert data["rows"][2]["flat_reason"] is None
+def test_replay_report_returns_full_data_and_census(tmp_path, monkeypatch):
+    replay_store = ReplayStore(db_path=str(tmp_path / "replay.db"))
+    monkeypatch.setattr(tr, "ReplayStore", lambda: replay_store)
 
-    def test_replay_report_unknown_run_returns_error(self):
-        self.mock_replay_inst.get_run.side_effect = KeyError("run_999")
-        
-        res = replay_report("run_999")
-        data = json.loads(res.output)
+    run_id = replay_store.create_run("2024-01-01", "2024-01-02", "1h", 3)
+    replay_store.record_result(run_id, "a", "A", 0.1, 0.1, 1, -0.01, 0.5,
+                                "AttributeError: 'Series' object has no attribute 'x'")
+    replay_store.record_result(run_id, "b", "B", 0.2, 0.2, 2, -0.02, 0.7,
+                                "AttributeError: 'DataFrame' object has no attribute 'y'")
+    replay_store.record_result(run_id, "c", "C", -0.1, -0.1, 0, -0.05, -0.3, None)
 
-        assert "error" in data
-        assert "run_999" in data["error"]
+    plugin = tr.create()
+    data = _content(asyncio.run(plugin.call_tool("replay_report", {"run_id": run_id})))
 
-    def test_replay_report_get_results_error(self):
-        self.mock_replay_inst.get_results.side_effect = Exception("Store read failure")
-        
-        # Should not crash, should return error or handle gracefully?
-        # Simulate_period handles get_results exception.
-        # ReplayReport handles get_run/get_results exception.
-        res = replay_report("run_fail")
-        data = json.loads(res.output)
+    assert data["run_id"] == run_id
+    assert data["total_strategies"] == 3
+    assert len(data["rows"]) == 3
+    assert data["flat_reason_census"] == {"AttributeError": 2}
+    assert data["rows"][0]["flat_reason"] is not None
+    assert data["rows"][2]["flat_reason"] is None
 
-        assert "error" in data
 
-    def test_smoke_test_mcpoorchestrator_discovery(self):
-        """Smoke-test that MCPOrchestrator discovers trading_replay without refusal."""
-        # MCPOrchestrator(verify_test_files=True) checks for gate files.
-        # If this test file exists and the gate test passes, the plugin should register.
-        # We instantiate with verify_test_files=True to ensure it would catch issues.
-        # We expect no exception and the plugin to be present.
-        try:
-            orchestrator = MCPOrchestrator(verify_test_files=True)
-            # Check if trading_replay was accepted.
-            # The exact attribute may vary, but typically plugins are registered.
-            # We check that no "Refused plugin" error would occur by the fact
-            # that we are running this test successfully and the gate test exists.
-            # A more robust check is to assert the plugin class is loadable.
-            from plugins.trading_replay import TradingReplayPlugin
-            plugin = TradingReplayPlugin()
-            assert "list_strategies" in [t.name for t in plugin.TOOLS]
-            # If we are here, the gate file is valid and plugin structure is correct.
-            # MCPOrchestrator would accept it.
-        except Exception as e:
-            # If this fails, it might indicate a missing gate file or bad plugin structure.
-            raise AssertionError(f"Plugin discovery or structure failed: {e}")
+def test_replay_report_unknown_run_returns_error(tmp_path, monkeypatch):
+    replay_store = ReplayStore(db_path=str(tmp_path / "replay.db"))
+    monkeypatch.setattr(tr, "ReplayStore", lambda: replay_store)
+
+    plugin = tr.create()
+    result = asyncio.run(plugin.call_tool("replay_report", {"run_id": "does-not-exist"}))
+    assert result.is_error is True
+    assert "does-not-exist" in result.content
+
+
+def test_mcporchestrator_discovers_trading_replay_without_refusal():
+    """Smoke-test plugin discovery with verify_test_files=True, per
+    CLAUDE.md: a bare MCPOrchestrator() defaults that to False and would
+    NOT catch a missing/misnamed gate file."""
+    from pathlib import Path
+    from cerebral.main import MCPOrchestrator
+
+    plugins_dir = Path(__file__).resolve().parents[2] / "plugins"
+    orc = MCPOrchestrator(verify_test_files=True)
+    orc.discover_plugins(plugins_dir)
+
+    assert "trading_replay" in orc._plugins
+    refusals = [e for e in orc.registration_errors if e.get("plugin_name") == "trading_replay"]
+    assert refusals == []

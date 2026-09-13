@@ -1,23 +1,20 @@
-"""Gate test for trading_replay plugin discovery.
+"""Gate test for trading_replay plugin discovery (ADR-0034).
 
-Ensures the plugin registers tools and passes MCPOrchestrator verification.
-Mirrors the test_plugin_settings_control.py pattern.
+Mirrors cerebral/tests/test_plugin_settings_control.py's pattern -- a real
+guard-clause assertion, not a placeholder, so this file both satisfies the
+orchestrator's REASON_NO_TEST_FILE gate and actually exercises something.
 """
-from plugins.trading_replay import TradingReplayPlugin
+import asyncio
+
+from plugins.trading_replay import REQUIRED_CAPABILITIES, create
 
 
-def test_plugin_trading_replay_gate():
-    plugin = TradingReplayPlugin()
-    assert plugin is not None, "Plugin instance should not be None"
+def test_required_capabilities():
+    assert isinstance(REQUIRED_CAPABILITIES, frozenset)
+    assert len(REQUIRED_CAPABILITIES) > 0
 
-    tool_names = {t.name for t in plugin.TOOLS}
-    
-    assert "list_strategies" in tool_names, (
-        f"Missing 'list_strategies' in plugin tools. Found: {tool_names}"
-    )
-    assert "simulate_period" in tool_names, (
-        f"Missing 'simulate_period' in plugin tools. Found: {tool_names}"
-    )
-    assert "replay_report" in tool_names, (
-        f"Missing 'replay_report' in plugin tools. Found: {tool_names}"
-    )
+
+def test_replay_report_rejects_missing_run_id():
+    plugin = create()
+    result = asyncio.run(plugin.call_tool("replay_report", {}))
+    assert result.is_error is True
