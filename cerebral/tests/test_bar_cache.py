@@ -6,6 +6,14 @@ from unittest.mock import patch
 
 from cerebral.trading.bar_cache import get_bars
 
+_CREATE_BARS_TABLE = """
+    CREATE TABLE IF NOT EXISTS bars (
+        symbol TEXT, interval TEXT, ts TEXT,
+        open REAL, high REAL, low REAL, close REAL, volume REAL,
+        fetched_at TEXT, PRIMARY KEY (symbol, interval, ts)
+    )
+"""
+
 
 @pytest.fixture
 def mock_data_dir(tmp_path):
@@ -49,6 +57,7 @@ def test_wider_end_fetches_only_gap(mock_data_dir, mock_alpaca_client):
     # Pre-populate DB with 2 days
     db_path = os.path.join(str(mock_data_dir), "bars.db")
     conn = sqlite3.connect(db_path)
+    conn.execute(_CREATE_BARS_TABLE)
     conn.executemany(
         "INSERT INTO bars (symbol, interval, ts, open, high, low, close, volume, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
@@ -78,6 +87,7 @@ def test_refresh_true_fetches_full_range(mock_data_dir, mock_alpaca_client):
     # Pre-populate DB with 2 days
     db_path = os.path.join(str(mock_data_dir), "bars.db")
     conn = sqlite3.connect(db_path)
+    conn.execute(_CREATE_BARS_TABLE)
     conn.executemany(
         "INSERT INTO bars (symbol, interval, ts, open, high, low, close, volume, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
