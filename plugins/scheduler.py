@@ -3,6 +3,10 @@ Scheduler plugin -- MCP server for Felix.
 
 Tools: create_event, list_events, update_event, delete_event.
 SQLite-backed (same openmind.db). No external calendar deps.
+
+Shared dispatch seam: list_due_events() / mark_event_run() -- called by
+other plugins' recurring-event loops in cerebral/main.py to query and
+acknowledge due events without owning the events table themselves.
 """
 import json
 import logging
