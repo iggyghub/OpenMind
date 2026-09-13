@@ -323,13 +323,6 @@ class TestSchedulerPlugin:
         names = {t.name for t in create().list_tools()}
         assert names == {
             "create_event", "list_events", "update_event", "delete_event",
-            # S34 (#901/#906)
-            "start_trading", "stop_trading",
-            # S37c (#924)
-            "reset_paper_trading",
-            # S37e (hand-built): read-only fetch for the Overview tab's
-            # collapsible archive history section.
-            "get_paper_archive_fills",
         }
 
     # -----------------------------------------------------------------------

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from plugins.scheduler import SchedulerPlugin
+from plugins.trading_control import TradingControlPlugin
 from plugins.book_library import BookLibraryPlugin
 from plugins.design_system_autofix import DesignSystemAutofixPlugin
 from plugins.discovery import DiscoveryPlugin
@@ -22,6 +23,11 @@ ALWAYS_FLAT = "def strategy(data):\n    return [0] * len(data)"
 
 def _plugin(tmp_path):
     return SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
+
+
+def _tc_plugin(tmp_path):
+    """TradingControlPlugin wrapping a fresh SchedulerPlugin -- for _run_paper_strategy tests."""
+    return TradingControlPlugin(scheduler_plugin=_plugin(tmp_path))
 
 
 def _ds_plugin(tmp_path):
@@ -72,7 +78,7 @@ def _fetch(symbol, start, end, interval="1d"):
 
 
 def test_run_paper_strategy_evaluates_the_strategy_and_records_the_fill(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     broker = StubBrokerClient()
     record = _record(tmp_path, monkeypatch)
 
@@ -90,7 +96,7 @@ def test_run_paper_strategy_evaluates_the_strategy_and_records_the_fill(tmp_path
 
 
 def test_run_paper_strategy_looks_the_spec_up_in_the_store(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("stored strat", "MSFT", ALWAYS_LONG, qty=4.0))
     record = _record(tmp_path, monkeypatch)
@@ -106,7 +112,7 @@ def test_run_paper_strategy_looks_the_spec_up_in_the_store(tmp_path, monkeypatch
 def test_run_paper_strategy_without_a_spec_places_no_trade(tmp_path, monkeypatch):
     """Regression: with no config it used to buy 1 share of a ticker literally
     named "SYMBOL", forever, with no strategy consulted at all."""
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     record = _record(tmp_path, monkeypatch)
     broker = StubBrokerClient()
     store = StrategyStore(db_path=tmp_path / "specs.db")
@@ -120,7 +126,7 @@ def test_run_paper_strategy_without_a_spec_places_no_trade(tmp_path, monkeypatch
 
 
 def test_run_paper_strategy_no_broker_skips(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     record = _record(tmp_path, monkeypatch)
 
     result = plugin._run_paper_strategy("no broker", None, record)
@@ -135,7 +141,7 @@ def test_run_paper_strategy_degrades_a_bad_strategy_to_hold_instead_of_raising(t
     A strategy missing its `def strategy(data)` entirely is exactly this
     case: no exception, no error status, just a hold -- but it must still
     be observable via a WARNING log, not silent."""
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     record = _record(tmp_path, monkeypatch)
 
     with caplog.at_level("WARNING", logger="cerebral.trading.sandboxed_eval"):
@@ -303,22 +309,23 @@ def test_end_to_end_due_event_dispatches_a_real_paper_trade(tmp_path, monkeypatc
     restarts-clean-on-edit scoping)."""
     from cerebral.trading.live_tick import dispatch_due_events
 
-    plugin = _plugin(tmp_path)
+    scheduler = _plugin(tmp_path)
+    tc = TradingControlPlugin(scheduler_plugin=scheduler)
     broker = StubBrokerClient()
     record = _record(tmp_path, monkeypatch)
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("MA cross test", "AAPL", ALWAYS_LONG, qty=2.0))
     past = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
-    plugin._create_event({"title": "MA cross test", "start_iso": past, "recurrence": "5m"})
+    scheduler._create_event({"title": "MA cross test", "start_iso": past, "recurrence": "5m"})
 
-    results = dispatch_due_events(plugin, broker, record, store=store, fetch=_fetch)
+    results = dispatch_due_events(tc, broker, record, store=store, fetch=_fetch)
 
     assert [r["status"] for r in results] == ["opened"]
     fills = record.get_fills(strategy_id="MA cross test@v1")
     assert len(fills) == 1
     assert fills[0]["price"] > 0  # StubBrokerClient's real simulated price (S8), not a placeholder
     assert fills[0]["symbol"] == "AAPL"  # the spec's real ticker, not "SYMBOL"
-    assert plugin.list_due_events() == []  # idempotent -- won't re-fire immediately
+    assert scheduler.list_due_events() == []  # idempotent -- won't re-fire immediately
 
 
 def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, monkeypatch):
@@ -345,14 +352,15 @@ def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, m
         def _simulated_price(self, symbol):
             return self._scripted.pop(0) if self._scripted else super()._simulated_price(symbol)
 
-    plugin = _plugin(tmp_path)
+    scheduler = _plugin(tmp_path)
+    plugin = TradingControlPlugin(scheduler_plugin=scheduler)
     broker = ScriptedPriceBroker([50.0, 55.0])  # buy at 50, sell at 55
     record = _record(tmp_path, monkeypatch)
     lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("penny breakout", "PENNY", ALWAYS_LONG, qty=4.0))
     past = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
-    plugin._create_event({"title": "penny breakout", "start_iso": past, "recurrence": "5m"})
+    scheduler._create_event({"title": "penny breakout", "start_iso": past, "recurrence": "5m"})
 
     opened = dispatch_due_events(plugin, broker, record, lifecycle, store, fetch=_fetch)
     assert opened[0]["status"] == "opened"
@@ -363,8 +371,8 @@ def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, m
     # and 6 minutes pass, so the recurring event is due again.
     store.save(StrategySpec("penny breakout", "PENNY", ALWAYS_FLAT, qty=4.0))
     stale = (datetime.now(timezone.utc) - timedelta(minutes=6)).strftime("%Y-%m-%dT%H:%M:%S")
-    plugin._con.execute("UPDATE events SET last_run_iso=?", (stale,))
-    plugin._con.commit()
+    scheduler._con.execute("UPDATE events SET last_run_iso=?", (stale,))
+    scheduler._con.commit()
 
     closed = dispatch_due_events(plugin, broker, record, lifecycle, store, fetch=_fetch)
 
@@ -1187,14 +1195,14 @@ def test_settings_injection_isolates_from_the_real_production_file(tmp_path):
 
 
 def test_start_stop_trading_tools_exist_in_list_tools(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     tool_names = [t.name for t in plugin.list_tools()]
     assert "start_trading" in tool_names
     assert "stop_trading" in tool_names
 
 
 def test_start_trading_enables_paper_trading(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     result = plugin._start_trading({})
     assert not result.is_error
     assert json.loads(result.content) == {"enabled": True}
@@ -1202,7 +1210,7 @@ def test_start_trading_enables_paper_trading(tmp_path):
 
 
 def test_stop_trading_disables_paper_trading(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     result = plugin._stop_trading({})
     assert not result.is_error
     assert json.loads(result.content) == {"enabled": False}
@@ -1210,20 +1218,20 @@ def test_stop_trading_disables_paper_trading(tmp_path):
 
 
 def test_reset_paper_trading_tool_exists_in_list_tools(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     tool_names = [t.name for t in plugin.list_tools()]
     assert "reset_paper_trading" in tool_names
 
 
 async def test_reset_paper_trading_unwired_returns_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     assert plugin._reset_paper_fn is None
     result = await plugin.call_tool("reset_paper_trading", {})
     assert result.is_error
 
 
 async def test_reset_paper_trading_invokes_a_sync_seam(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     calls = []
     plugin._reset_paper_fn = lambda: calls.append(1) or {"archived": True, "fills": 3}
     result = await plugin.call_tool("reset_paper_trading", {})
@@ -1233,7 +1241,7 @@ async def test_reset_paper_trading_invokes_a_sync_seam(tmp_path):
 
 
 async def test_reset_paper_trading_invokes_an_async_seam(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     calls = []
 
     async def fake_reset():
@@ -1248,27 +1256,27 @@ async def test_reset_paper_trading_invokes_an_async_seam(tmp_path):
 
 
 def test_get_paper_archive_fills_tool_exists_in_list_tools(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     tool_names = [t.name for t in plugin.list_tools()]
     assert "get_paper_archive_fills" in tool_names
 
 
 async def test_get_paper_archive_fills_unwired_returns_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     assert plugin._get_paper_archive_fills_fn is None
     result = await plugin.call_tool("get_paper_archive_fills", {"archive_id": 1})
     assert result.is_error
 
 
 async def test_get_paper_archive_fills_requires_archive_id(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     plugin._get_paper_archive_fills_fn = lambda archive_id: []
     result = await plugin.call_tool("get_paper_archive_fills", {})
     assert result.is_error
 
 
 async def test_get_paper_archive_fills_invokes_seam_with_archive_id(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     calls = []
     fake_fills = [{"symbol": "AAPL", "qty": 1}]
     plugin._get_paper_archive_fills_fn = lambda archive_id: calls.append(archive_id) or fake_fills
