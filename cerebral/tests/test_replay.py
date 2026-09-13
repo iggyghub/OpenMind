@@ -98,3 +98,70 @@ def strategy(data):
     assert len(net_returns) == len(gross_returns)
     for g, n in zip(gross_returns, net_returns):
         assert n <= g + 1e-9, f"Net return {n} > gross return {g}"
+
+
+from dataclasses import dataclass
+from datetime import datetime
+import tempfile
+
+@dataclass
+class StrategySpec:
+    symbol: str
+    interval: str
+    code: str
+
+
+def test_run_replay_portfolio(tmp_path):
+    """Test run_replay with synthetic specs, fake bar_cache, and real ReplayStore."""
+    import pandas as pd
+    from cerebral.trading.replay import run_replay
+    from cerebral.trading.replay_store import ReplayStore
+
+    # Fake bar_cache that ignores start/end and returns synthetic data
+    class FakeBarCache:
+        def fetch(self, symbol: str, interval: str, start: str, end: str, warmup_days: int = 30):
+            idx = pd.date_range(start="2023-12-01", periods=50, freq="B")
+            close = [100.0 + i for i in range(50)]
+            return pd.DataFrame(
+                {"Open": close, "High": close, "Low": close, "Close": close, "Volume": [1e6] * 50},
+                index=idx,
+            )
+
+    bar_cache = FakeBarCache()
+    replay_store = ReplayStore(db_path=str(tmp_path / "replay.db"))
+
+    always_long = StrategySpec("SPY", "1d", "def strategy(data):\n    return [1] * len(data)\n")
+    broken = StrategySpec("TSLA", "1d", "def strategy(data):\n    raise RuntimeError('kaboom')\n")
+    warmup_need = StrategySpec("AAPL", "1d", "def strategy(data):\n    n = len(data)\n    return [0] * 19 + [1] * (n - 19)\n")
+
+    specs = [always_long, broken, warmup_need]
+    start = "2024-01-01"
+    end = "2024-01-10"
+
+    run_id = run_replay(specs, start, end, bar_cache=bar_cache, replay_store=replay_store)
+
+    # Assert run_id is returned
+    assert run_id is not None and isinstance(run_id, str)
+
+    # Assert replay_runs table has one row with correct n_strategies
+    runs = replay_store.get_runs()
+    assert len(runs) == 1
+    assert runs[0].run_id == run_id
+    assert runs[0].n_strategies == 3
+
+    # Assert per-strategy results
+    results = replay_store.get_results(run_id)
+    results_map = {r.spec_code: r for r in results}
+
+    always_res = results_map["SPY"]
+    assert always_res.net_return is not None
+    assert always_res.net_return != 0.0
+    assert always_res.flat_reason is None
+
+    broken_res = results_map["TSLA"]
+    assert broken_res.flat_reason is not None
+    assert "kaboom" in broken_res.flat_reason
+
+    # Warm-up strategy should not fail, just report flat/neutral for window
+    warmup_res = results_map["AAPL"]
+    assert warmup_res.flat_reason is None
