@@ -44,10 +44,10 @@ def test_unanimous_mode_exact_agreement():
 @pytest.mark.asyncio
 async def test_mix_strategies_rejects_mismatched_symbols():
     """mix_strategies rejects different symbols."""
-    from plugins.scheduler import SchedulerPlugin
+    from plugins.trading_strategies import TradingStrategiesPlugin
     from cerebral.trading.strategy_store import StrategyStore
-    
-    plugin = SchedulerPlugin(db_path=":memory:")
+
+    plugin = TradingStrategiesPlugin()
     store = MagicMock(spec=StrategyStore)
     store.get.side_effect = lambda sid: MagicMock(symbol="AAPL" if sid == "s1" else "GOOG", code="def strategy(d): pass")
     store.get_current_version.side_effect = lambda sid: {"version": 1}
@@ -63,10 +63,10 @@ async def test_mix_strategies_rejects_mismatched_symbols():
 @pytest.mark.asyncio
 async def test_mix_strategies_provenance_includes_components():
     """Provenance string contains every component's identity."""
-    from plugins.scheduler import SchedulerPlugin
+    from plugins.trading_strategies import TradingStrategiesPlugin
     from cerebral.trading.strategy_store import StrategyStore
-    
-    plugin = SchedulerPlugin(db_path=":memory:")
+
+    plugin = TradingStrategiesPlugin()
     store = MagicMock(spec=StrategyStore)
     comp1_id = "strat_alpha"
     comp2_id = "strat_beta"
@@ -137,10 +137,10 @@ async def test_mix_strategies_end_to_end_persists_real_components_json(tmp_path)
     agree often enough -- that risk is irrelevant to what this test proves
     (the components_json plumbing), so it's deliberately eliminated rather
     than left to chance."""
-    from plugins.scheduler import SchedulerPlugin
+    from plugins.trading_strategies import TradingStrategiesPlugin
     from cerebral.trading.strategy_store import StrategyStore
 
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
+    plugin = TradingStrategiesPlugin()
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):

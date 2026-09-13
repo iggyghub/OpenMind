@@ -323,7 +323,7 @@ class TradingStrategiesPlugin:
             from cerebral.trading.forward_record import ForwardRecord
             confidence = ForwardRecord().compute_confidence_weight(strategy_id=strategy_id)
         if confidence <= 0:
-            return ToolResult(content=f"Strategy '{strategy_id}' has non-positive confidence ({confidence}). Cannot expand.", is_error=True)
+            return ToolResult(content=f"Strategy '{strategy_id}' has non-positive confidence weight ({confidence}). Cannot expand.", is_error=True)
         version_row = store.get_current_version(strategy_id)
         hypothesis = (version_row["hypothesis"] if version_row is not None else "") or f"Hypothesis from {strategy_id}"
         current_symbol = spec.symbol
