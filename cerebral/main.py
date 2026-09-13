@@ -243,6 +243,7 @@ _quality_default = _router.seed_quality_default()
 # happened to run, would call _scheduler_loop before its def is reached
 # later in this file -- both real bugs a fresh self-dev edit hit).
 from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
+from plugins.trading_strategies import TradingStrategiesPlugin as _TradingStrategiesPlugin
 from plugins.design_system_autofix import DesignSystemAutofixPlugin as _DesignSystemAutofixPlugin
 from plugins.book_library import BookLibraryPlugin as _BookLibraryPlugin
 from plugins.discovery import DiscoveryPlugin as _DiscoveryPlugin
@@ -262,6 +263,7 @@ from cerebral.trading.market_trend import MarketTrendGate
 from plugins.rss_monitor import RSSMonitorPlugin
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
+_trading_strategies_plugin = _TradingStrategiesPlugin(router=_router, scheduler=_scheduler_plugin)
 _design_system_plugin = _DesignSystemAutofixPlugin(scheduler=_scheduler_plugin)
 _book_library_plugin = _BookLibraryPlugin(router=_router, scheduler=_scheduler_plugin)
 _discovery_plugin = _DiscoveryPlugin(router=_router, scheduler=_scheduler_plugin)
@@ -285,7 +287,9 @@ _trading_broker_fallback = StubBrokerClient()
 _trading_forward_record = ForwardRecord()
 _alert_dispatcher = AlertDispatcher()
 _trading_lifecycle = StrategyLifecycle(alert_dispatcher=_alert_dispatcher)
-_scheduler_plugin._lifecycle = _trading_lifecycle
+_trading_strategies_plugin._lifecycle = _trading_lifecycle
+_book_library_plugin._gauntlet = _trading_strategies_plugin
+_discovery_plugin._gauntlet = _trading_strategies_plugin
 _trading_strategy_store = StrategyStore()
 _vetted_tickers = VettedTickers()  # S28 (#881)
 # Market-wide sentiment gate on new paper opens (2026-08-31), sourced from
@@ -424,6 +428,7 @@ _trading_broker_fallback = StubBrokerClient({"starting_cash": _settings.get("tra
 # one would silently never be visible through the other until a restart.
 # Same pattern as _scheduler_plugin._record_activity_fn below.
 _scheduler_plugin._settings = _settings
+_trading_strategies_plugin._settings = _settings
 _discovery_plugin._settings = _settings
 _ipo_calendar_plugin._settings = _settings
 # Constructed here, not with the other trading globals above: RiskManager
@@ -3428,6 +3433,7 @@ async def _record_activity(kind: str, content: dict) -> None:
 # attribute assignment, matching how self_dev's seams are wired later via
 # their own setters once every closure they capture actually exists.
 _scheduler_plugin._record_activity_fn = _record_activity
+_trading_strategies_plugin._record_activity_fn = _record_activity
 _book_library_plugin._record_activity_fn = _record_activity
 _discovery_plugin._record_activity_fn = _record_activity
 _ipo_calendar_plugin._record_activity_fn = _record_activity
@@ -4045,6 +4051,7 @@ async def _trading_broadcast() -> None:
 # progresses (chunk-by-chunk, in its own background task) without the
 # panel having to poll -- same wiring pattern as _record_activity_fn.
 _scheduler_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
+_trading_strategies_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
 _book_library_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
 
 async def _handle_trading_poll(_data: dict) -> None:
@@ -6869,7 +6876,7 @@ async def _handle_message(msg: dict) -> None:
         strategy_id = (d.get("strategy_name") or d.get("strategy_id") or "").strip()
         code = d.get("code") or ""
         if strategy_id and code:
-            result = await _scheduler_plugin.call_tool(
+            result = await _trading_strategies_plugin.call_tool(
                 "edit_strategy", {"strategy_id": strategy_id, "code": code}
             )
             await _broadcast({
@@ -8384,6 +8391,7 @@ async def main() -> None:
     # acting on. register() supports re-registering under the same name to
     # replace it -- do that with the real, fully-wired instance instead.
     _orc.register(_scheduler_plugin)
+    _orc.register(_trading_strategies_plugin)
     _orc.register(_design_system_plugin)
     _orc.register(_book_library_plugin)
     _orc.register(_discovery_plugin)

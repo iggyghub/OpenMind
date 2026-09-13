@@ -89,6 +89,8 @@ class BookLibraryPlugin:
         self._book_tasks: dict[int, "asyncio.Task"] = {}
         self._book_ingest_semaphore = asyncio.Semaphore(1)
         self._on_trading_change = None
+        # Wired post-construction by main.py (TradingStrategiesPlugin).
+        self._gauntlet = None
 
     def list_tools(self):
         return [
@@ -290,7 +292,7 @@ class BookLibraryPlugin:
                 gauntlet_args["book"] = idea.book_info.get("book", "")
                 gauntlet_args["chapter"] = idea.book_info.get("chapter", "")
                 gauntlet_args["claim"] = idea.claim_text
-            result = await self._scheduler._run_gauntlet(
+            result = await self._gauntlet._run_gauntlet(
                 # "discovered", not a new "book" bucket -- origin is a
                 # deliberately closed enum (strategy_store._VALID_ORIGINS)
                 # and book ingestion is autonomous sourcing exactly like
