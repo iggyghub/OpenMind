@@ -233,6 +233,7 @@ class TradingReplayPlugin:
                 "max_drawdown": r["max_drawdown"],
                 "sharpe": r["sharpe"],
                 "flat_reason": reason,
+                "news_event_count": r["news_event_count"],
             })
 
         return ToolResult(content=json.dumps({

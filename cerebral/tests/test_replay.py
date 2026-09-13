@@ -1,4 +1,6 @@
 """Unit tests for cerebral/trading/replay.py (RP1)."""
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 
@@ -6,6 +8,19 @@ from cerebral.trading.replay import run_bars, derive_trades
 
 
 _ALWAYS_LONG = "def strategy(data):\n    return [1] * len(data)\n"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_news_calls(monkeypatch):
+    """run_replay (RP8) always attempts a news fetch per strategy. Tests
+    that don't care about news shouldn't risk a real Alpaca News API call
+    if real paper credentials happen to be configured in this environment's
+    keyring -- same concern test_trading_data.py's own
+    no_alpaca_market_data fixture guards against for bars. Tests that
+    specifically exercise news integration override this with their own
+    more specific patch, which takes precedence inside its `with` block."""
+    monkeypatch.setattr("cerebral.trading.replay.news_cache.fetch_news", lambda *a, **kw: [])
+    monkeypatch.setattr("cerebral.trading.replay.news_cache.count_news_events", lambda *a, **kw: 0)
 
 
 def _ramp_bars(n: int = 30) -> pd.DataFrame:
@@ -196,3 +211,42 @@ def test_run_replay_broken_strategy_does_not_abort_the_run(tmp_path):
     assert results["s-a"]["flat_reason"] is not None
     assert results["s-b"]["flat_reason"] is None
     assert results["s-b"]["net_return"] is not None
+
+
+def test_run_repopulates_news_event_count(tmp_path):
+    """Confirm run_replay populates news_event_count when news data exists, and 0 when none."""
+    from cerebral.trading.replay import run_replay
+    from cerebral.trading.replay_store import ReplayStore
+    from cerebral.trading.strategy_store import StrategySpec
+
+    class FakeBarCache:
+        def get_bars(self, symbol, start, end, interval):
+            idx = pd.date_range(start="2023-06-01", periods=250, freq="B")
+            close = [100.0 + i * 0.1 for i in range(250)]
+            return pd.DataFrame(
+                {"Open": close, "High": close, "Low": close, "Close": close, "Volume": [1e6] * 250},
+                index=idx,
+            )
+
+    replay_store = ReplayStore(db_path=str(tmp_path / "replay_news.db"))
+
+    spec = StrategySpec("s-news", "TSLA", _ALWAYS_LONG, interval="1d")
+    
+    # Patch news_cache to simulate existing news data
+    with patch("cerebral.trading.replay.news_cache") as mock_news:
+        mock_news.count_news_events.return_value = 2  # Simulate 2 events per day
+        
+        run_id = run_replay([spec], "2024-01-01", "2024-01-03", bar_cache=FakeBarCache(), replay_store=replay_store)
+
+        results = {r["strategy_id"]: r for r in replay_store.get_results(run_id)}
+        assert results["s-news"]["news_event_count"] == 6  # 3 days * 2 events
+
+    # Test 0 when no news cached
+    with patch("cerebral.trading.replay.news_cache") as mock_news:
+        mock_news.count_news_events.return_value = 0
+        
+        spec2 = StrategySpec("s-no-news", "AAPL", _ALWAYS_LONG, interval="1d")
+        run_id2 = run_replay([spec2], "2024-02-01", "2024-02-02", bar_cache=FakeBarCache(), replay_store=replay_store)
+        
+        results2 = {r["strategy_id"]: r for r in replay_store.get_results(run_id2)}
+        assert results2["s-no-news"]["news_event_count"] == 0

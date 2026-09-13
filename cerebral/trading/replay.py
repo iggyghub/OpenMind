@@ -8,6 +8,7 @@ import logging
 
 import pandas as pd
 
+from cerebral.trading import news_cache
 from cerebral.trading.gauntlet import compute_max_holding_days, _bars_per_year
 from cerebral.trading.sandboxed_eval import evaluate_signals, evaluate_signals_verbose
 from cerebral.trading.cost_model import Trade, compute_backtest_result
@@ -154,6 +155,25 @@ def run_replay(specs, start: str, end: str, bar_cache=None, replay_store=None) -
             fetch_start = (start_dt - pd.Timedelta(days=int(margin_days))).strftime("%Y-%m-%d")
             bars = bar_cache.get_bars(spec.symbol, fetch_start, end, spec.interval)
 
+            # RP8: news_event_count is purely informational (REPLAY.md D4/
+            # RP8 SAFETY: "must never gate, filter, or alter which strategies
+            # get replayed or how their returns are computed") -- a failed
+            # news fetch (network hiccup, no credentials, API shape change)
+            # must never be mistaken for the STRATEGY failing, which is
+            # exactly what would happen if this raised into the outer
+            # except below. Isolated in its own try/except, defaulting to 0.
+            news_count = 0
+            try:
+                news_cache.fetch_news(spec.symbol, fetch_start, end)
+                for d in pd.date_range(start=start, end=end, freq="D"):
+                    news_count += news_cache.count_news_events(spec.symbol, d.strftime("%Y-%m-%d"))
+            except Exception as news_exc:
+                logger.warning(
+                    "[replay] news fetch failed for %s (%s), continuing with news_event_count=0: %s",
+                    spec.strategy_id, spec.symbol, news_exc,
+                )
+                news_count = 0
+
             equity, position, metrics, reason = run_bars_verbose(spec.code, bars, spec.interval)
 
             if reason is not None:
@@ -163,6 +183,7 @@ def run_replay(specs, start: str, end: str, bar_cache=None, replay_store=None) -
                     run_id, spec.strategy_id, spec.symbol,
                     gross_return=None, net_return=None, n_trades=0,
                     max_drawdown=None, sharpe=None, flat_reason=reason,
+                    news_event_count=0,
                 )
                 continue
 
@@ -205,6 +226,7 @@ def run_replay(specs, start: str, end: str, bar_cache=None, replay_store=None) -
                 gross_return=gross_return, net_return=net_return,
                 n_trades=n_trades_window, max_drawdown=max_dd, sharpe=sharpe,
                 flat_reason=None,
+                news_event_count=news_count,
             )
         except Exception as exc:
             # One broken strategy must never abort the whole replay run.
@@ -213,6 +235,7 @@ def run_replay(specs, start: str, end: str, bar_cache=None, replay_store=None) -
                 run_id, spec.strategy_id, spec.symbol,
                 gross_return=None, net_return=None, n_trades=0,
                 max_drawdown=None, sharpe=None, flat_reason=str(exc),
+                news_event_count=0,
             )
 
     return run_id

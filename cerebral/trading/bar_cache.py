@@ -76,6 +76,10 @@ def get_bars(symbol: str, start: str, end: str, interval: str = "1d", refresh: b
     db_path = os.path.join(data_dir(), "bars.db")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
+    # RP8: ensure the news table exists alongside bars
+    from cerebral.trading import news_cache
+    news_cache.init_news_db(db_path)
+
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(

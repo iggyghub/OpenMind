@@ -1,6 +1,7 @@
 import sqlite3
 import uuid
 from datetime import datetime, timezone
+from sqlite3 import OperationalError
 from typing import List, Optional
 
 from cerebral.paths import data_dir
@@ -41,6 +42,15 @@ class ReplayStore:
             );
         """)
         self.conn.commit()
+        # RP8: news_event_count, added after the table above already shipped
+        # (RP4) -- migrate existing DBs the same way strategy_store.py does.
+        try:
+            self.conn.execute(
+                "ALTER TABLE replay_results ADD COLUMN news_event_count INTEGER DEFAULT 0"
+            )
+            self.conn.commit()
+        except OperationalError:
+            pass  # Column already exists
 
     def create_run(self, start: str, end: str, interval: str, n_strategies: int) -> str:
         run_id = uuid.uuid4().hex
@@ -64,12 +74,13 @@ class ReplayStore:
         max_drawdown: float,
         sharpe: float,
         flat_reason: Optional[str],
+        news_event_count: int = 0,
     ) -> None:
         cur = self.conn.cursor()
         cur.execute(
             """INSERT INTO replay_results (
-                run_id, strategy_id, symbol, gross_return, net_return, n_trades, max_drawdown, sharpe, flat_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                run_id, strategy_id, symbol, gross_return, net_return, n_trades, max_drawdown, sharpe, flat_reason, news_event_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, strategy_id) DO UPDATE SET
                 symbol=excluded.symbol,
                 gross_return=excluded.gross_return,
@@ -77,8 +88,9 @@ class ReplayStore:
                 n_trades=excluded.n_trades,
                 max_drawdown=excluded.max_drawdown,
                 sharpe=excluded.sharpe,
-                flat_reason=excluded.flat_reason""",
-            (run_id, strategy_id, symbol, gross_return, net_return, n_trades, max_drawdown, sharpe, flat_reason),
+                flat_reason=excluded.flat_reason,
+                news_event_count=excluded.news_event_count""",
+            (run_id, strategy_id, symbol, gross_return, net_return, n_trades, max_drawdown, sharpe, flat_reason, news_event_count),
         )
         self.conn.commit()
 
