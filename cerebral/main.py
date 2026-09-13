@@ -248,6 +248,7 @@ from plugins.design_system_autofix import DesignSystemAutofixPlugin as _DesignSy
 from plugins.book_library import BookLibraryPlugin as _BookLibraryPlugin
 from plugins.discovery import DiscoveryPlugin as _DiscoveryPlugin
 from plugins.ipo_calendar import IpoCalendarPlugin as _IpoCalendarPlugin
+from plugins.trading_control import TradingControlPlugin as _TradingControlPlugin
 from cerebral.trading.broker import StubBrokerClient, AlpacaBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
@@ -268,6 +269,7 @@ _design_system_plugin = _DesignSystemAutofixPlugin(scheduler=_scheduler_plugin)
 _book_library_plugin = _BookLibraryPlugin(router=_router, scheduler=_scheduler_plugin)
 _discovery_plugin = _DiscoveryPlugin(router=_router, scheduler=_scheduler_plugin)
 _ipo_calendar_plugin = _IpoCalendarPlugin(scheduler=_scheduler_plugin)
+_trading_control_plugin = _TradingControlPlugin(scheduler_plugin=_scheduler_plugin)
 # Paper only, deliberately: env="paper" is Alpaca's own paper-trading
 # account (real fills against real market data, fake money), so no code
 # path from this loop can fire a LIVE order. Live execution waits on an
@@ -3463,8 +3465,8 @@ async def _reset_paper_trading() -> dict:
     return result
 
 
-_scheduler_plugin._reset_paper_fn = _reset_paper_trading
-_scheduler_plugin._get_paper_archive_fills_fn = _trading_forward_record.get_paper_archive_fills
+_trading_control_plugin._reset_paper_fn = _reset_paper_trading
+_trading_control_plugin._get_paper_archive_fills_fn = _trading_forward_record.get_paper_archive_fills
 
 
 def _conversation_turns_event(limit: int = 50) -> dict:
@@ -3864,7 +3866,7 @@ async def _scheduler_loop() -> None:
                             stock_sentiment_labels[sym] = reading.label
                 results = await asyncio.to_thread(
                     _dispatch_due_events,
-                    _scheduler_plugin, paper_broker, _trading_forward_record,
+                    _trading_control_plugin, paper_broker, _trading_forward_record,
                     lifecycle=_trading_lifecycle, store=_trading_strategy_store,
                     arm=_settings.get("trading_live_arm"),
                     risk=_risk_mgr,
@@ -4050,7 +4052,7 @@ async def _trading_broadcast() -> None:
 # 2026-08-26: lets the plugin schedule a live broadcast as book ingestion
 # progresses (chunk-by-chunk, in its own background task) without the
 # panel having to poll -- same wiring pattern as _record_activity_fn.
-_scheduler_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
+_trading_control_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
 _trading_strategies_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
 _book_library_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
 
@@ -8396,6 +8398,7 @@ async def main() -> None:
     _orc.register(_book_library_plugin)
     _orc.register(_discovery_plugin)
     _orc.register(_ipo_calendar_plugin)
+    _orc.register(_trading_control_plugin)
     _attach_builder_plugin()
     _wire_plugin_seams()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))
