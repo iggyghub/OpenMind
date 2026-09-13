@@ -22,7 +22,7 @@ confirm live behavior, before merging -- even on a green sandbox test run.**
 
 ## Next slice -- start here
 
-- **Active:** S6 -- #1214
+- **Active:** S7 -- #1215
 - **Model:** sonnet
 - **Status:** ready
 
@@ -33,7 +33,7 @@ confirm live behavior, before merging -- even on a green sandbox test run.**
 - [x] S3 -- #1211 -- extract discovery tools
 - [x] S4 -- #1212 -- extract IPO-calendar tools
 - [x] S5 -- #1213 -- extract strategy/gauntlet admin tools (largest slice)
-- [ ] S6 -- #1214 -- extract trading-control tools (riskiest, land last)
+- [x] S6 -- #1214 -- extract trading-control tools (riskiest, land last)
 - [ ] S7 -- #1215 -- scheduler.py cleanup: docstring, dead imports, capability narrowing (closes #1208)
 
 Order matters: S1-S4 are increasingly-coupled but independent extractions:
@@ -50,6 +50,7 @@ only, once scheduler.py genuinely holds only calendar tools.
 - PR #1219 -- S3: extract discovery tools (merged 2026-09-13)
 - PR #1220 -- S4: extract IPO-calendar tools (merged 2026-09-13)
 - PR #1221 -- S5: extract strategy/gauntlet admin tools (merged 2026-09-13)
+- PR #1222 -- S6: extract trading-control tools (merged 2026-09-13)
 
 ## SAFETY
 
