@@ -50,7 +50,6 @@ PLUGIN_NAME = "scheduler"
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write", "fs_delete"})
 
 from cerebral.paths import data_dir
-from cerebral import design_system as _design_system
 
 _DEFAULT_DB = data_dir() / "openmind.db"
 
@@ -117,7 +116,6 @@ class SchedulerPlugin:
     # per-strategy dispatcher never mistakes it for a strategy to run.
     DISCOVERY_EVENT_TITLE = "__autonomous_discovery__"
     IPO_CALENDAR_EVENT_TITLE = "__ipo_calendar_check__"
-    DESIGN_SYSTEM_EVENT_TITLE = "__base_design_system_scan__"
 
     def __init__(self, db_path=None, router=None, web_search_fn=None,
                  record_activity_fn=None, discovery_watchlist=None,
@@ -469,38 +467,7 @@ class SchedulerPlugin:
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
             ),
-            Tool(
-                name="scan_design_system",
-                description=(
-                    "Read-only: scan tray/ against BASE-DESIGN-SYSTEM.md's baseline UI "
-                    "rules (currently: every tab bar must use tray/lib/tab-strip.js's "
-                    "scroll+reorder behavior) and return any gaps found. Safe to call any "
-                    "time -- never files an issue or edits code by itself; that only "
-                    "happens on the recurring scan's own tick, and only when "
-                    "design_system_autofix_enabled is on."
-                ),
-                plugin=PLUGIN_NAME,
-                schema={"type": "object", "properties": {}},
-            ),
-            Tool(
-                name="start_design_system_autofix",
-                description=(
-                    "Enable the standing base-design-system loop: its daily scan starts "
-                    "filing a GitHub issue + queuing a self_dev_campaign slice "
-                    "(BASE-DESIGN-SYSTEM.md) for each new gap it finds, instead of only "
-                    "logging it. Default OFF, mirroring discovery_enabled's own precedent "
-                    "-- the scan itself always runs, this only gates the autonomous "
-                    "issue-filing + code-editing side effects."
-                ),
-                plugin=PLUGIN_NAME,
-                schema={"type": "object", "properties": {}},
-            ),
-            Tool(
-                name="stop_design_system_autofix",
-                description="Disable the base-design-system loop's autofix side effects (issue filing + self_dev_campaign). The scan itself keeps running and logging.",
-                plugin=PLUGIN_NAME,
-                schema={"type": "object", "properties": {}},
-            ),
+
             Tool(
                 name="start_trading",
                 description=(
@@ -712,12 +679,7 @@ class SchedulerPlugin:
             return self._start_discovery(args)
         if tool_name == "stop_discovery":
             return self._stop_discovery(args)
-        if tool_name == "scan_design_system":
-            return self._scan_design_system(args)
-        if tool_name == "start_design_system_autofix":
-            return self._start_design_system_autofix(args)
-        if tool_name == "stop_design_system_autofix":
-            return self._stop_design_system_autofix(args)
+
         if tool_name == "start_trading":
             return self._start_trading(args)
         if tool_name == "stop_trading":
@@ -1074,20 +1036,6 @@ class SchedulerPlugin:
             "recurrence": recurrence,
         })
 
-    def ensure_design_system_event(self, recurrence: str = "24h") -> None:
-        """Idempotent get-or-create for the daily base-design-system scan
-        event, mirroring ensure_ipo_calendar_event's own pattern exactly.
-        Safe to call on every boot."""
-        existing = self._con.execute(
-            "SELECT id FROM events WHERE title = ?", (self.DESIGN_SYSTEM_EVENT_TITLE,)
-        ).fetchone()
-        if existing is not None:
-            return
-        self._create_event({
-            "title": self.DESIGN_SYSTEM_EVENT_TITLE,
-            "start_iso": datetime.now(timezone.utc).isoformat(),
-            "recurrence": recurrence,
-        })
 
     async def _check_ipo_calendar(self, args: dict) -> ToolResult:
         from cerebral.trading.ipo_calendar import fetch_upcoming_ipos
@@ -1369,32 +1317,6 @@ class SchedulerPlugin:
     def _get_discovery_source_performance(self, args: dict) -> ToolResult:
         return ToolResult(content=json.dumps(self._discovery_attempts.get_source_performance()))
 
-    # ------------------------------------------------------------------
-    # 2026-09-08: base design system scan (BASE-DESIGN-SYSTEM.md) -- the
-    # tray/ side of the same "singular scheduler, no speculative building"
-    # discipline: a daily read-only scan against a small, earned rule
-    # registry (cerebral/design_system.py), gated the same way discovery is
-    # (default OFF for the side-effecting part, always-on for the scan).
-    # ------------------------------------------------------------------
-
-    def _scan_design_system(self, args: dict) -> ToolResult:  # noqa: ARG002
-        tray_dir = Path(__file__).resolve().parent.parent / "tray"
-        violations = _design_system.scan(tray_dir)
-        return ToolResult(content=json.dumps({
-            "violations": [
-                {"rule_id": v.rule_id, "file": v.file, "line": v.line,
-                 "snippet": v.snippet, "description": v.description}
-                for v in violations
-            ],
-        }))
-
-    def _start_design_system_autofix(self, args: dict) -> ToolResult:  # noqa: ARG002
-        self._settings.set("design_system_autofix_enabled", True)
-        return ToolResult(content=json.dumps({"enabled": True}))
-
-    def _stop_design_system_autofix(self, args: dict) -> ToolResult:  # noqa: ARG002
-        self._settings.set("design_system_autofix_enabled", False)
-        return ToolResult(content=json.dumps({"enabled": False}))
 
     # ------------------------------------------------------------------
     # 2026-08-26: book ingestion -- a book is just another idea SOURCE,
