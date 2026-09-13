@@ -243,6 +243,7 @@ _quality_default = _router.seed_quality_default()
 # happened to run, would call _scheduler_loop before its def is reached
 # later in this file -- both real bugs a fresh self-dev edit hit).
 from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
+from plugins.design_system_autofix import DesignSystemAutofixPlugin as _DesignSystemAutofixPlugin
 from cerebral.trading.broker import StubBrokerClient, AlpacaBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
@@ -258,6 +259,7 @@ from cerebral.trading.market_trend import MarketTrendGate
 from plugins.rss_monitor import RSSMonitorPlugin
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
+_design_system_plugin = _DesignSystemAutofixPlugin(scheduler=_scheduler_plugin)
 # Paper only, deliberately: env="paper" is Alpaca's own paper-trading
 # account (real fills against real market data, fake money), so no code
 # path from this loop can fire a LIVE order. Live execution waits on an
@@ -3422,7 +3424,7 @@ _scheduler_plugin._record_activity_fn = _record_activity
 # Register recurring events at boot
 _scheduler_plugin.ensure_discovery_event()
 _scheduler_plugin.ensure_ipo_calendar_event()
-_scheduler_plugin.ensure_design_system_event()
+_design_system_plugin.ensure_design_system_event()
 
 async def _reset_paper_trading() -> dict:
     """Archives current paper-trading fills as a historical block (does
@@ -3687,7 +3689,7 @@ async def _scheduler_loop() -> None:
             # own precedent) -- a rule already queued (any state) is never
             # re-filed; a regression needs a human to reopen it.
             for evt in _scheduler_plugin.list_due_events():
-                if evt["title"] != _scheduler_plugin.DESIGN_SYSTEM_EVENT_TITLE:
+                if evt["title"] != _design_system_plugin.DESIGN_SYSTEM_EVENT_TITLE:
                     continue
                 try:
                     repo_root = Path(__file__).resolve().parent.parent
@@ -8370,6 +8372,7 @@ async def main() -> None:
     # acting on. register() supports re-registering under the same name to
     # replace it -- do that with the real, fully-wired instance instead.
     _orc.register(_scheduler_plugin)
+    _orc.register(_design_system_plugin)
     _attach_builder_plugin()
     _wire_plugin_seams()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))
@@ -8420,7 +8423,7 @@ async def main() -> None:
         # S27 (#880): idempotent get-or-create -- registers the discovery
         # loop's own recurring event once, safe to call on every boot.
         _scheduler_plugin.ensure_discovery_event()
-        _scheduler_plugin.ensure_design_system_event()
+        _design_system_plugin.ensure_design_system_event()
         scheduler_task = asyncio.create_task(_scheduler_loop())
         await _shutdown.wait()
         heartbeat.cancel()

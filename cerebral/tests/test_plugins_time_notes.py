@@ -340,8 +340,6 @@ class TestSchedulerPlugin:
             "auto_combine_strategies",
             # IPO6 (#1043)
             "check_ipo_calendar", "dispatch_due_ipos",
-            # design system autofix
-            "scan_design_system", "start_design_system_autofix", "stop_design_system_autofix",
             "get_discovery_source_performance",
         }
 
