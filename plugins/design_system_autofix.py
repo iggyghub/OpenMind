@@ -67,7 +67,7 @@ class DesignSystemAutofixPlugin:
             ),
         ]
 
-    def call_tool(self, tool_name: str, args: dict) -> ToolResult:
+    async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         if tool_name == "scan_design_system":
             return self._scan_design_system(args)
         if tool_name == "start_design_system_autofix":
