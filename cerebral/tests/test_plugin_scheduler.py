@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from plugins.scheduler import SchedulerPlugin
+from plugins.book_library import BookLibraryPlugin
 from cerebral.mcp.orchestrator import ToolResult
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
@@ -19,6 +20,11 @@ ALWAYS_FLAT = "def strategy(data):\n    return [0] * len(data)"
 
 def _plugin(tmp_path):
     return SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
+
+
+def _book_plugin(tmp_path, router=None):
+    scheduler = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    return BookLibraryPlugin(db_path=str(tmp_path / "sched.db"), router=router, scheduler=scheduler)
 
 
 def _record(tmp_path, monkeypatch):
@@ -1308,7 +1314,7 @@ async def test_upload_book_extracts_and_dispatches_a_claim(tmp_path):
         return _trend_prices()
 
     router = BookRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book(
         {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
@@ -1340,7 +1346,7 @@ async def test_upload_book_extracts_and_dispatches_a_claim(tmp_path):
 
 async def test_upload_book_stores_and_lists_the_given_category(tmp_path):
     router = BookRouter([])  # NONE every chunk -- category storage doesn't need real claims
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
     result = await plugin._upload_book({
         "filename": "wizards.txt", "data_base64": _b64("Some book content."),
         "category": "trading psychology",
@@ -1355,7 +1361,7 @@ async def test_upload_book_stores_and_lists_the_given_category(tmp_path):
 
 async def test_upload_book_with_no_category_defaults_to_uncategorised(tmp_path):
     router = BookRouter([])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
     result = await plugin._upload_book({"filename": "wizards.txt", "data_base64": _b64("content")})
     book_id = json.loads(result.content)["book_id"]
     await plugin._book_tasks[book_id]
@@ -1366,7 +1372,7 @@ async def test_upload_book_with_no_category_defaults_to_uncategorised(tmp_path):
 
 
 async def test_upload_book_requires_filename_and_data(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = await plugin._upload_book({})
 
@@ -1374,7 +1380,7 @@ async def test_upload_book_requires_filename_and_data(tmp_path):
 
 
 async def test_upload_book_rejects_invalid_base64(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = await plugin._upload_book({"filename": "a.txt", "data_base64": "not-valid-base64!!"})
 
@@ -1382,7 +1388,7 @@ async def test_upload_book_rejects_invalid_base64(tmp_path):
 
 
 async def test_upload_book_rejects_a_file_with_no_extractable_text(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = await plugin._upload_book({"filename": "book.epub", "data_base64": _b64("whatever")})
 
@@ -1393,7 +1399,7 @@ async def test_upload_book_rejects_a_file_with_no_extractable_text(tmp_path):
 async def test_upload_book_with_no_claims_still_completes(tmp_path):
     store = StrategyStore(db_path=tmp_path / "specs.db")
     router = BookRouter([])  # NONE every chunk
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book(
         {"filename": "empty.txt", "data_base64": _b64("Dry narrative, no claims here.")},
@@ -1412,7 +1418,7 @@ async def test_upload_book_with_no_claims_still_completes(tmp_path):
 
 async def test_list_books_orders_newest_first(tmp_path):
     store = StrategyStore(db_path=tmp_path / "specs.db")
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=BookRouter([]))
+    plugin = _book_plugin(tmp_path, router=BookRouter([]))
 
     r1 = await plugin._upload_book({"filename": "first.txt", "data_base64": _b64("first book text")}, strategy_store=store)
     await plugin._book_tasks[json.loads(r1.content)["book_id"]]
@@ -1445,7 +1451,7 @@ class BlockingRouter(BookRouter):
 
 async def test_stop_book_cancels_the_running_task(tmp_path):
     router = BlockingRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
     book_id = json.loads(result.content)["book_id"]
@@ -1483,7 +1489,7 @@ class ConcurrencyTrackingRouter(BookRouter):
 
 async def test_only_one_book_ingests_at_a_time(tmp_path):
     router = ConcurrencyTrackingRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     r1 = await plugin._upload_book({"filename": "a.txt", "data_base64": _b64("Book A content.")})
     id1 = json.loads(r1.content)["book_id"]
@@ -1513,7 +1519,7 @@ async def test_only_one_book_ingests_at_a_time(tmp_path):
 async def test_stop_book_marks_an_orphaned_processing_book_as_stopped(tmp_path):
     """No entry in _book_tasks -- simulates a book left stuck at
     'processing' by a Cerebral restart that lost the in-memory task."""
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Orphaned", "o.txt", "/tmp/o.txt")
     plugin._book_store.set_total_chunks(book.id, 5)
     plugin._book_store.update_progress(book.id, 2, 0)
@@ -1525,7 +1531,7 @@ async def test_stop_book_marks_an_orphaned_processing_book_as_stopped(tmp_path):
 
 
 async def test_stop_book_unknown_id_is_an_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = plugin._stop_book({"book_id": 9999})
 
@@ -1539,7 +1545,7 @@ async def test_retry_book_reprocesses_from_scratch(tmp_path):
         return _trend_prices()
 
     router = BookRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book(
         {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
@@ -1560,7 +1566,7 @@ async def test_retry_book_reprocesses_from_scratch(tmp_path):
 
 
 async def test_retry_book_errors_when_the_stored_file_is_gone(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Missing File", "m.txt", str(tmp_path / "does_not_exist.txt"))
 
     result = await plugin._retry_book({"book_id": book.id})
@@ -1570,7 +1576,7 @@ async def test_retry_book_errors_when_the_stored_file_is_gone(tmp_path):
 
 
 async def test_retry_book_unknown_id_is_an_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = await plugin._retry_book({"book_id": 9999})
 
@@ -1584,7 +1590,7 @@ async def test_retry_book_is_not_clobbered_by_the_superseded_tasks_late_completi
     'current' and skip writing terminal state, or its late cancellation
     settling could clobber the new run's fresh status."""
     router = BlockingRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
     book_id = json.loads(result.content)["book_id"]
@@ -1624,7 +1630,7 @@ async def test_resume_book_continues_from_processed_chunks_not_zero(tmp_path):
         return _trend_prices()
 
     router = BookRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book(
         {"filename": "book.txt", "data_base64": _b64(_multi_chunk_text(3))},
@@ -1654,7 +1660,7 @@ async def test_resume_book_continues_from_processed_chunks_not_zero(tmp_path):
 
 
 async def test_resume_book_rejects_a_book_that_is_not_stopped(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Active Book", "a.txt", "/a.txt")
     plugin._book_store.set_total_chunks(book.id, 5)  # leaves status "processing"
 
@@ -1665,7 +1671,7 @@ async def test_resume_book_rejects_a_book_that_is_not_stopped(tmp_path):
 
 
 async def test_resume_book_unknown_id_is_an_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = await plugin._resume_book({"book_id": 9999})
 
@@ -1673,7 +1679,7 @@ async def test_resume_book_unknown_id_is_an_error(tmp_path):
 
 
 async def test_resume_book_errors_when_the_stored_file_is_gone(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Missing File", "m.txt", str(tmp_path / "does_not_exist.txt"))
     plugin._book_store.set_total_chunks(book.id, 3)
     plugin._book_store.set_stopped(book.id)
@@ -1688,7 +1694,7 @@ async def test_resume_book_refuses_on_a_chunk_count_mismatch(tmp_path):
     """If re-chunking the stored file today doesn't reproduce the same
     total_chunks recorded when the book was first processed, resuming by
     index would silently misalign -- must refuse, not guess."""
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     stored = tmp_path / "book.txt"
     stored.write_bytes(_multi_chunk_text(3).encode("utf-8"))
     book = plugin._book_store.add("Drifted Book", "book.txt", str(stored))
@@ -1705,7 +1711,7 @@ async def test_resume_book_with_nothing_remaining_marks_it_done(tmp_path):
     """processed_chunks already >= total_chunks (shouldn't normally
     happen, but a stray Stop click could land here) -- resume should just
     settle the book as done, not launch a no-op ingestion task."""
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     stored = tmp_path / "book.txt"
     stored.write_bytes(_multi_chunk_text(3).encode("utf-8"))
     book = plugin._book_store.add("Fully Processed", "book.txt", str(stored))
@@ -1725,7 +1731,7 @@ async def test_stop_book_on_an_already_done_book_is_an_error_and_does_not_change
     """Regression: this used to silently overwrite a finished book's
     status to 'stopped' -- found live 2026-08-27/28, hand-corrected via
     direct DB calls both times it happened."""
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Finished Book", "f.txt", "/f.txt")
     plugin._book_store.set_total_chunks(book.id, 5)
     plugin._book_store.update_progress(book.id, 5, 3)
@@ -1739,7 +1745,7 @@ async def test_stop_book_on_an_already_done_book_is_an_error_and_does_not_change
 
 
 async def test_stop_book_on_an_already_errored_book_is_an_error_and_does_not_change_status(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Errored Book", "e.txt", "/e.txt")
     plugin._book_store.set_error(book.id, "some failure")
 
@@ -1751,7 +1757,7 @@ async def test_stop_book_on_an_already_errored_book_is_an_error_and_does_not_cha
 
 async def test_delete_book_removes_the_record_and_the_stored_file(tmp_path):
     router = BookRouter([])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
     book_id = json.loads(result.content)["book_id"]
@@ -1768,7 +1774,7 @@ async def test_delete_book_removes_the_record_and_the_stored_file(tmp_path):
 
 async def test_delete_book_cancels_an_in_progress_task(tmp_path):
     router = BlockingRouter(["Some claim about AAPL."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
     book_id = json.loads(result.content)["book_id"]
@@ -1783,7 +1789,7 @@ async def test_delete_book_cancels_an_in_progress_task(tmp_path):
 
 
 async def test_delete_book_unknown_id_is_an_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = plugin._delete_book({"book_id": 9999})
 
@@ -2453,7 +2459,7 @@ async def test_book_ingestion_increments_strategies_repaired_on_repair(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     router = BookRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     repaired_sid = "repaired-strategy-1"
 
@@ -2470,7 +2476,7 @@ async def test_book_ingestion_increments_strategies_repaired_on_repair(tmp_path)
             "strategy_id": repaired_sid, "gates": [],
         }))
 
-    plugin._run_gauntlet = fake_run_gauntlet
+    plugin._scheduler._run_gauntlet = fake_run_gauntlet
 
     result = await plugin._upload_book(
         {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
@@ -2489,7 +2495,7 @@ async def test_book_ingestion_does_not_increment_repaired_on_first_try_success(t
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     router = BookRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     clean_sid = "clean-strategy-1"
 
@@ -2505,7 +2511,7 @@ async def test_book_ingestion_does_not_increment_repaired_on_first_try_success(t
             "strategy_id": clean_sid, "gates": [],
         }))
 
-    plugin._run_gauntlet = fake_run_gauntlet
+    plugin._scheduler._run_gauntlet = fake_run_gauntlet
 
     result = await plugin._upload_book(
         {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},

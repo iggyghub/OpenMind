@@ -244,6 +244,7 @@ _quality_default = _router.seed_quality_default()
 # later in this file -- both real bugs a fresh self-dev edit hit).
 from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
 from plugins.design_system_autofix import DesignSystemAutofixPlugin as _DesignSystemAutofixPlugin
+from plugins.book_library import BookLibraryPlugin as _BookLibraryPlugin
 from cerebral.trading.broker import StubBrokerClient, AlpacaBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
@@ -260,6 +261,7 @@ from plugins.rss_monitor import RSSMonitorPlugin
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
 _design_system_plugin = _DesignSystemAutofixPlugin(scheduler=_scheduler_plugin)
+_book_library_plugin = _BookLibraryPlugin(router=_router, scheduler=_scheduler_plugin)
 # Paper only, deliberately: env="paper" is Alpaca's own paper-trading
 # account (real fills against real market data, fake money), so no code
 # path from this loop can fire a LIVE order. Live execution waits on an
@@ -3420,6 +3422,7 @@ async def _record_activity(kind: str, content: dict) -> None:
 # attribute assignment, matching how self_dev's seams are wired later via
 # their own setters once every closure they capture actually exists.
 _scheduler_plugin._record_activity_fn = _record_activity
+_book_library_plugin._record_activity_fn = _record_activity
 
 # Register recurring events at boot
 _scheduler_plugin.ensure_discovery_event()
@@ -3984,7 +3987,7 @@ async def _trading_broadcast() -> None:
                 "category": b.category,
                 "valid_strategies": list_validated_strategies(b.title, _trading_strategy_store),
             }
-            for b in _scheduler_plugin._book_store.list_all()
+            for b in _book_library_plugin._book_store.list_all()
         ]
         # Which model claim-extraction is actually reading chunks with right
         # now -- setting the 'books' task in Settings -> Models had no
@@ -4034,6 +4037,7 @@ async def _trading_broadcast() -> None:
 # progresses (chunk-by-chunk, in its own background task) without the
 # panel having to poll -- same wiring pattern as _record_activity_fn.
 _scheduler_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
+_book_library_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
 
 async def _handle_trading_poll(_data: dict) -> None:
     """IPC handler for tray polling of live trading state."""
@@ -8373,6 +8377,7 @@ async def main() -> None:
     # replace it -- do that with the real, fully-wired instance instead.
     _orc.register(_scheduler_plugin)
     _orc.register(_design_system_plugin)
+    _orc.register(_book_library_plugin)
     _attach_builder_plugin()
     _wire_plugin_seams()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))
