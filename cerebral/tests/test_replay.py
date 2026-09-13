@@ -1,4 +1,6 @@
 """Unit tests for cerebral/trading/replay.py (RP1)."""
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 
@@ -6,6 +8,19 @@ from cerebral.trading.replay import run_bars, derive_trades
 
 
 _ALWAYS_LONG = "def strategy(data):\n    return [1] * len(data)\n"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_news_calls(monkeypatch):
+    """run_replay (RP8) always attempts a news fetch per strategy. Tests
+    that don't care about news shouldn't risk a real Alpaca News API call
+    if real paper credentials happen to be configured in this environment's
+    keyring -- same concern test_trading_data.py's own
+    no_alpaca_market_data fixture guards against for bars. Tests that
+    specifically exercise news integration override this with their own
+    more specific patch, which takes precedence inside its `with` block."""
+    monkeypatch.setattr("cerebral.trading.replay.news_cache.fetch_news", lambda *a, **kw: [])
+    monkeypatch.setattr("cerebral.trading.replay.news_cache.count_news_events", lambda *a, **kw: 0)
 
 
 def _ramp_bars(n: int = 30) -> pd.DataFrame:

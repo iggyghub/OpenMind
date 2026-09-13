@@ -155,11 +155,24 @@ def run_replay(specs, start: str, end: str, bar_cache=None, replay_store=None) -
             fetch_start = (start_dt - pd.Timedelta(days=int(margin_days))).strftime("%Y-%m-%d")
             bars = bar_cache.get_bars(spec.symbol, fetch_start, end, spec.interval)
 
-            # RP8: fetch news gap-fill and count prominent events
-            news_cache.fetch_news(spec.symbol, fetch_start, end)
+            # RP8: news_event_count is purely informational (REPLAY.md D4/
+            # RP8 SAFETY: "must never gate, filter, or alter which strategies
+            # get replayed or how their returns are computed") -- a failed
+            # news fetch (network hiccup, no credentials, API shape change)
+            # must never be mistaken for the STRATEGY failing, which is
+            # exactly what would happen if this raised into the outer
+            # except below. Isolated in its own try/except, defaulting to 0.
             news_count = 0
-            for d in pd.date_range(start=start, end=end, freq="D"):
-                news_count += news_cache.count_news_events(spec.symbol, d.strftime("%Y-%m-%d"))
+            try:
+                news_cache.fetch_news(spec.symbol, fetch_start, end)
+                for d in pd.date_range(start=start, end=end, freq="D"):
+                    news_count += news_cache.count_news_events(spec.symbol, d.strftime("%Y-%m-%d"))
+            except Exception as news_exc:
+                logger.warning(
+                    "[replay] news fetch failed for %s (%s), continuing with news_event_count=0: %s",
+                    spec.strategy_id, spec.symbol, news_exc,
+                )
+                news_count = 0
 
             equity, position, metrics, reason = run_bars_verbose(spec.code, bars, spec.interval)
 
