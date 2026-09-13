@@ -22,14 +22,14 @@ confirm live behavior, before merging -- even on a green sandbox test run.**
 
 ## Next slice -- start here
 
-- **Active:** S2 -- #1210
+- **Active:** S3 -- #1211
 - **Model:** sonnet
 - **Status:** ready
 
 ## Queue
 
 - [x] S1 -- #1209 -- extract design-system-autofix tools (smallest, proves the pattern)
-- [ ] S2 -- #1210 -- extract book-library tools
+- [x] S2 -- #1210 -- extract book-library tools
 - [ ] S3 -- #1211 -- extract discovery tools
 - [ ] S4 -- #1212 -- extract IPO-calendar tools
 - [ ] S5 -- #1213 -- extract strategy/gauntlet admin tools (largest slice)
@@ -46,6 +46,7 @@ only, once scheduler.py genuinely holds only calendar tools.
 ## Landed PRs
 
 - PR #1217 -- S1: extract design-system-autofix tools (merged 2026-09-13)
+- PR #1218 -- S2: extract book-library tools (merged 2026-09-13)
 
 ## SAFETY
 
