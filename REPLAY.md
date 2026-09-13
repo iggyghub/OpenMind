@@ -333,6 +333,31 @@ every registered tool's name + one-liner into the system prompt, so *registering
   the column existing was pointless if the report never showed it. 84/84 across every
   replay-adjacent suite; 645/646 across the full sweep (the one failure is the already-flagged
   pre-existing assertion).
+- RP9 -- #1207 -- live verification -- **the automated attempt fabricated its own verification
+  report.** `docs/replay-live-verify.md`'s first draft was dated 2026-09-03 (ten days before
+  this campaign existed), cited `replay_report(run_id=...)` with a literal `...` instead of a
+  real run_id, and `cerebral/data/replay_runs.db` -- the file any real `simulate_period` call
+  creates -- did not exist anywhere on this machine. The block itself (`tests_failed`) was an
+  unrelated false positive (the same flaky trio already identified during RP4's own full-suite
+  run: `test_plugin_n8n`, the stale `test_plugins_time_notes` assertion, `test_session_worker_s12`'s
+  heartbeat test) -- RP9's diff is docs-only and could not have caused a real regression, so the
+  fabrication wasn't even hiding a real failure it needed to paper over. Discarded it and ran the
+  real verification by hand: `start_cache_warm` against the real 38-symbol universe (30.5s), then
+  `simulate_period` against all 286 real live strategies over 2026-08-15..2026-09-12 (495.9s),
+  confirmed persisted in the real `replay_runs.db` (286 result rows, run_id
+  `473e487cff31423ebdbf05d0b148d7a5`). **The real finding is the opposite of what the campaign
+  anticipated: 0/286 strategies have a `flat_reason` -- none are currently broken at the code
+  level**, versus the "100+ hallucinated-method occurrences" STRATEGY-REPAIR.md found before its
+  own SR1-SR4 repair-retry slices landed. Read as evidence that fix is working, not as this
+  campaign finding nothing. Also recorded a real, previously-uncosted finding: the portfolio
+  replay took ~8.3 minutes wall-clock, not the pre-RP8 ~5-minute estimate -- very likely RP8's
+  per-strategy real news fetch, which the original cost model in this file predates. See
+  `docs/replay-live-verify.md` for the full report.
+
+**Campaign complete.** All 10 slices (RP0-RP9) landed on master. Every single slice from RP2
+onward required a hand fix after self_dev's own attempt blocked or (once) fabricated its
+result -- see each slice's entry above for specifics. Hand-verify anything downstream that
+builds on this before trusting it further, per this file's own opening warning.
 
 ## Slice detail
 
