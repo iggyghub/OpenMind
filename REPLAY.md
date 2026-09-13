@@ -202,15 +202,15 @@ every registered tool's name + one-liner into the system prompt, so *registering
 
 ## Next slice -- start here
 
-- **Active:** RP3 -- #1190
-- **Model:** opus
+- **Active:** RP4 -- #1191
+- **Model:** sonnet
 
 ## Queue
 
 - [x] RP0 -- #1187 -- `broker.py`: pass `adjustment=Adjustment.ALL` -- **live bug, land first and alone** (Model: opus)
 - [x] RP1 -- #1188 -- `cerebral/trading/replay.py`: extract scheduler's `backtest` closure (pure refactor) (Model: sonnet)
 - [x] RP2 -- #1189 -- derive a `Trade` list from position diffs; wire `compute_backtest_result` for net-of-cost returns (Model: opus)
-- [ ] RP3 -- #1190 -- `cerebral/trading/bar_cache.py`: SQLite bar store with append-only gap fill; route `fetch_ohlcv` through it (Model: opus)
+- [x] RP3 -- #1190 -- `cerebral/trading/bar_cache.py`: SQLite bar store with append-only gap fill; route `fetch_ohlcv` through it (Model: opus)
 - [ ] RP4 -- #1191 -- `cerebral/trading/replay_store.py`: `ReplayStore` + `replay_runs.db`, incl. `flat_reason` (Model: sonnet)
 - [ ] RP5 -- #1192 -- `replay.py`: `run_replay(specs, start, end)` engine over the cached store (Model: opus)
 - [ ] RP6 -- #1193 -- `plugins/trading_replay.py`: `list_strategies` + `simulate_period` + `replay_report` (+ ADR-0034 test file) (Model: sonnet)
@@ -234,6 +234,25 @@ every registered tool's name + one-liner into the system prompt, so *registering
   themselves buggy (an index-length mismatch, an off-by-one signal count) rather than the
   implementation -- fixed both and added one new test locking in the constant-nonzero-position edge
   case. All 8 `test_replay.py` tests + the 35-test gauntlet suite pass.
+- RP3 -- #1201 -- `bar_cache.py` SQLite store -- same pattern as RP2: Felix's `self_dev_campaign`
+  attempt wrote the store and its own tests, correctly caught 3 setup-time errors, and blocked
+  instead of merging. Hand-fixed and merged: `AlpacaMarketDataClient` was imported lazily, so
+  `cerebral.trading.bar_cache` had no persistent attribute for the test's own
+  `patch("cerebral.trading.bar_cache.AlpacaMarketDataClient")` to target -- moved to module level,
+  which surfaced a real, worse bug underneath: `df["Date"]` was read as a column access, but "Date"
+  was only ever an *index name* on a meaningless `RangeIndex` (`read_sql_query` with no `index_col`),
+  and the real `ts` column had already been dropped by the preceding column-select -- every call
+  where the cache already had data would `KeyError`. Also found and fixed: `refresh=True` still
+  silently narrowed to the cached gap instead of re-fetching the full range, defeating its own
+  purpose; two of the PR's own tests pre-populated SQLite rows against a table that was never
+  created (`sqlite3.connect` to a new file creates an empty file, not a schema); and, biggest gap,
+  **the PR never wired `fetch_ohlcv` to actually use `bar_cache` at all** -- explicitly part of
+  RP3's spec ("so the whole system benefits, not just replay"), untested by anything in the given
+  test file, and would have landed a slice that changed nothing for the live system. Wired it,
+  added 2 new integration tests, and extended `test_trading_data.py`'s existing fixtures so its
+  pre-existing tests don't silently start touching the real production `bars.db`. 16/16 new tests
+  pass; 291/292 in the broader regression sweep (the one failure is a pre-existing stale assertion
+  in `test_plugins_time_notes.py`, confirmed on a clean master checkout, flagged separately).
 
 ## Slice detail
 
