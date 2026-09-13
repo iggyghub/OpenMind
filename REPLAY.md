@@ -202,7 +202,7 @@ every registered tool's name + one-liner into the system prompt, so *registering
 
 ## Next slice -- start here
 
-- **Active:** RP6 -- #1193
+- **Active:** RP7 -- #1194
 - **Model:** sonnet
 
 ## Queue
@@ -213,7 +213,7 @@ every registered tool's name + one-liner into the system prompt, so *registering
 - [x] RP3 -- #1190 -- `cerebral/trading/bar_cache.py`: SQLite bar store with append-only gap fill; route `fetch_ohlcv` through it (Model: opus)
 - [x] RP4 -- #1191 -- `cerebral/trading/replay_store.py`: `ReplayStore` + `replay_runs.db`, incl. `flat_reason` (Model: sonnet)
 - [x] RP5 -- #1192 -- `replay.py`: `run_replay(specs, start, end)` engine over the cached store (Model: opus)
-- [ ] RP6 -- #1193 -- `plugins/trading_replay.py`: `list_strategies` + `simulate_period` + `replay_report` (+ ADR-0034 test file) (Model: sonnet)
+- [x] RP6 -- #1193 -- `plugins/trading_replay.py`: `list_strategies` + `simulate_period` + `replay_report` (+ ADR-0034 test file) (Model: sonnet)
 - [ ] RP7 -- #1194 -- batch cache warm as a start/stop background task, with retry/backoff (Model: sonnet)
 - [ ] RP8 -- #1195 -- news: dated fetch + paging loop + prominence filter + per-day count, cached in `bars.db` (Model: sonnet)
 - [ ] RP9 -- #1196 -- `docs/replay-live-verify.md` + first real 286-strategy replay; report the broken-code census (Model: sonnet)
@@ -280,6 +280,26 @@ every registered tool's name + one-liner into the system prompt, so *registering
   the one-broken-strategy-doesn't-abort-the-run case. 10/10 `test_replay.py` pass; 353/354 across
   the full scheduler/gauntlet/discovery/live_tick/replay regression set (the one failure is the
   already-flagged pre-existing `test_plugins_time_notes.py` assertion).
+- RP6 -- #1204 -- `plugins/trading_replay.py` -- **didn't even collect.** The PR imported
+  `cerebral.core.plugin` (does not exist anywhere in this repo; the real path every plugin
+  uses is `cerebral.mcp.orchestrator`) and `cerebral.trading.replay.store`/`.replay.replay`
+  (both are flat modules, not a `replay/` package). Past the import, nearly every API in the
+  plugin and both its test files was invented rather than checked: `ToolResult(output=...)`
+  instead of the real `content=`; a bare `handler=` field instead of the real
+  `list_tools()`/`call_tool(name, args)` dispatch every plugin here actually uses; `s.id`
+  instead of the real `StrategySpec.strategy_id`; `run_replay(start, end, specs)` instead of
+  the real `(specs, start, end, ...)`; `ReplayStore` rows treated as dicts with `.get()`/
+  `.attribute` access when they're `sqlite3.Row` (`["column"]` only) with no `interval`
+  column at all; `get_runs()` instead of the real `list_runs()`. Rewrote the plugin as a
+  proper class (mirroring `settings_control.py`) and both test files against the real APIs,
+  including a genuine `MCPOrchestrator(verify_test_files=True)` discovery smoke test against
+  the real `plugins/` directory -- the original "smoke test" only re-imported the class and
+  checked a nonexistent `.TOOLS` attribute, never touching the orchestrator at all. Also
+  fixed one bug of my own found while testing: closing `StrategyStore`/`ReplayStore` in a
+  `finally` block is wrong here, since `scheduler.py`'s own convention never closes these
+  (cheap per-call SQLite connections) -- matched that instead. 8/8 new tests pass; 618/619
+  across the full regression sweep (the one failure is the already-flagged pre-existing
+  assertion).
 
 ## Slice detail
 
