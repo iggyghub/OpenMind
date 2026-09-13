@@ -246,6 +246,7 @@ from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
 from plugins.design_system_autofix import DesignSystemAutofixPlugin as _DesignSystemAutofixPlugin
 from plugins.book_library import BookLibraryPlugin as _BookLibraryPlugin
 from plugins.discovery import DiscoveryPlugin as _DiscoveryPlugin
+from plugins.ipo_calendar import IpoCalendarPlugin as _IpoCalendarPlugin
 from cerebral.trading.broker import StubBrokerClient, AlpacaBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
@@ -264,6 +265,7 @@ _scheduler_plugin = _SchedulerPlugin(router=_router)
 _design_system_plugin = _DesignSystemAutofixPlugin(scheduler=_scheduler_plugin)
 _book_library_plugin = _BookLibraryPlugin(router=_router, scheduler=_scheduler_plugin)
 _discovery_plugin = _DiscoveryPlugin(router=_router, scheduler=_scheduler_plugin)
+_ipo_calendar_plugin = _IpoCalendarPlugin(scheduler=_scheduler_plugin)
 # Paper only, deliberately: env="paper" is Alpaca's own paper-trading
 # account (real fills against real market data, fake money), so no code
 # path from this loop can fire a LIVE order. Live execution waits on an
@@ -423,6 +425,7 @@ _trading_broker_fallback = StubBrokerClient({"starting_cash": _settings.get("tra
 # Same pattern as _scheduler_plugin._record_activity_fn below.
 _scheduler_plugin._settings = _settings
 _discovery_plugin._settings = _settings
+_ipo_calendar_plugin._settings = _settings
 # Constructed here, not with the other trading globals above: RiskManager
 # reads live settings via settings_store, which must exist first.
 _risk_mgr = RiskManager(settings_store=_settings, alert_dispatcher=_alert_dispatcher)
@@ -3427,10 +3430,11 @@ async def _record_activity(kind: str, content: dict) -> None:
 _scheduler_plugin._record_activity_fn = _record_activity
 _book_library_plugin._record_activity_fn = _record_activity
 _discovery_plugin._record_activity_fn = _record_activity
+_ipo_calendar_plugin._record_activity_fn = _record_activity
 
 # Register recurring events at boot
 _discovery_plugin.ensure_discovery_event()
-_scheduler_plugin.ensure_ipo_calendar_event()
+_ipo_calendar_plugin.ensure_ipo_calendar_event()
 _design_system_plugin.ensure_design_system_event()
 
 async def _reset_paper_trading() -> dict:
@@ -3668,7 +3672,7 @@ async def _scheduler_loop() -> None:
             # not gated by the weekly calendar-refresh event, since it needs to
             # catch the actual listing day promptly, not wait up to a week.
             try:
-                dispatch_result = await _scheduler_plugin.call_tool("dispatch_due_ipos", {})
+                dispatch_result = await _ipo_calendar_plugin.call_tool("dispatch_due_ipos", {})
                 if json.loads(dispatch_result.content).get("dispatched"):
                     logger.info(f"[cerebral] IPO dispatch: {dispatch_result.content}")
             except Exception:
@@ -3678,10 +3682,10 @@ async def _scheduler_loop() -> None:
             # due-event block below exactly but simpler -- no enabled/duration
             # settings to check, it always runs on its own recurrence.
             for evt in _scheduler_plugin.list_due_events():
-                if evt["title"] != _scheduler_plugin.IPO_CALENDAR_EVENT_TITLE:
+                if evt["title"] != _ipo_calendar_plugin.IPO_CALENDAR_EVENT_TITLE:
                     continue
                 try:
-                    result = await _scheduler_plugin.call_tool("check_ipo_calendar", {})
+                    result = await _ipo_calendar_plugin.call_tool("check_ipo_calendar", {})
                     logger.info(f"[cerebral] IPO calendar check: {result.content}")
                 except Exception:
                     logger.exception("[cerebral] IPO calendar check failed")
@@ -8383,6 +8387,7 @@ async def main() -> None:
     _orc.register(_design_system_plugin)
     _orc.register(_book_library_plugin)
     _orc.register(_discovery_plugin)
+    _orc.register(_ipo_calendar_plugin)
     _attach_builder_plugin()
     _wire_plugin_seams()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))
@@ -8434,6 +8439,7 @@ async def main() -> None:
         # loop's own recurring event once, safe to call on every boot.
         _discovery_plugin.ensure_discovery_event()
         _design_system_plugin.ensure_design_system_event()
+        _ipo_calendar_plugin.ensure_ipo_calendar_event()
         scheduler_task = asyncio.create_task(_scheduler_loop())
         await _shutdown.wait()
         heartbeat.cancel()
