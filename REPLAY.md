@@ -198,7 +198,7 @@ File one separate issue for the `scheduler.py` junk-drawer extraction. Do not do
 every registered tool's name + one-liner into the system prompt, so *registering*
 `list_strategies` is the introspection wiring. One fewer slice than expected.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
@@ -216,7 +216,7 @@ every registered tool's name + one-liner into the system prompt, so *registering
 - [x] RP6 -- #1193 -- `plugins/trading_replay.py`: `list_strategies` + `simulate_period` + `replay_report` (+ ADR-0034 test file) (Model: sonnet)
 - [x] RP7 -- #1194 -- batch cache warm as a start/stop background task, with retry/backoff (Model: sonnet)
 - [x] RP8 -- #1195 -- news: dated fetch + paging loop + prominence filter + per-day count, cached in `bars.db` (Model: sonnet)
-- [ ] RP9 -- #1196 -- `docs/replay-live-verify.md` + first real 286-strategy replay; report the broken-code census (Model: sonnet)
+- [x] RP9 -- #1196 -- `docs/replay-live-verify.md` + first real 286-strategy replay; report the broken-code census (Model: sonnet)
 
 ## Landed PRs
 
