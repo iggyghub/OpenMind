@@ -245,6 +245,7 @@ _quality_default = _router.seed_quality_default()
 from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
 from plugins.design_system_autofix import DesignSystemAutofixPlugin as _DesignSystemAutofixPlugin
 from plugins.book_library import BookLibraryPlugin as _BookLibraryPlugin
+from plugins.discovery import DiscoveryPlugin as _DiscoveryPlugin
 from cerebral.trading.broker import StubBrokerClient, AlpacaBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
@@ -262,6 +263,7 @@ from plugins.rss_monitor import RSSMonitorPlugin
 _scheduler_plugin = _SchedulerPlugin(router=_router)
 _design_system_plugin = _DesignSystemAutofixPlugin(scheduler=_scheduler_plugin)
 _book_library_plugin = _BookLibraryPlugin(router=_router, scheduler=_scheduler_plugin)
+_discovery_plugin = _DiscoveryPlugin(router=_router, scheduler=_scheduler_plugin)
 # Paper only, deliberately: env="paper" is Alpaca's own paper-trading
 # account (real fills against real market data, fake money), so no code
 # path from this loop can fire a LIVE order. Live execution waits on an
@@ -420,6 +422,7 @@ _trading_broker_fallback = StubBrokerClient({"starting_cash": _settings.get("tra
 # one would silently never be visible through the other until a restart.
 # Same pattern as _scheduler_plugin._record_activity_fn below.
 _scheduler_plugin._settings = _settings
+_discovery_plugin._settings = _settings
 # Constructed here, not with the other trading globals above: RiskManager
 # reads live settings via settings_store, which must exist first.
 _risk_mgr = RiskManager(settings_store=_settings, alert_dispatcher=_alert_dispatcher)
@@ -3423,9 +3426,10 @@ async def _record_activity(kind: str, content: dict) -> None:
 # their own setters once every closure they capture actually exists.
 _scheduler_plugin._record_activity_fn = _record_activity
 _book_library_plugin._record_activity_fn = _record_activity
+_discovery_plugin._record_activity_fn = _record_activity
 
 # Register recurring events at boot
-_scheduler_plugin.ensure_discovery_event()
+_discovery_plugin.ensure_discovery_event()
 _scheduler_plugin.ensure_ipo_calendar_event()
 _design_system_plugin.ensure_design_system_event()
 
@@ -3741,7 +3745,7 @@ async def _scheduler_loop() -> None:
             # share the same `events` table; this is the one title that
             # means "run discovery", not "dispatch a strategy").
             for evt in _scheduler_plugin.list_due_events():
-                if evt["title"] != _scheduler_plugin.DISCOVERY_EVENT_TITLE:
+                if evt["title"] != _discovery_plugin.DISCOVERY_EVENT_TITLE:
                     continue
                 # S31 (#896): manually stopped -- skip without mark_event_run,
                 # so re-enabling makes it immediately due again instead of
@@ -3761,7 +3765,7 @@ async def _scheduler_loop() -> None:
                     if stop_dt is not None and stop_dt.tzinfo is not None:
                         stop_dt = stop_dt.astimezone(timezone.utc).replace(tzinfo=None)
                     if stop_dt is not None and stop_dt <= datetime.now(timezone.utc).replace(tzinfo=None):
-                        await _scheduler_plugin.call_tool("stop_discovery", {})
+                        await _discovery_plugin.call_tool("stop_discovery", {})
                         await _record_activity("activity", {
                             "source": "trading",
                             "summary": "Discovery auto-stopped: its duration timer expired",
@@ -3772,7 +3776,7 @@ async def _scheduler_loop() -> None:
                         "queries": _settings.get("discovery_queries") or None,
                         "interval": _settings.get("discovery_interval"),
                     }
-                    discovery_result = await _scheduler_plugin.call_tool("run_discovery", discovery_args)
+                    discovery_result = await _discovery_plugin.call_tool("run_discovery", discovery_args)
                     logger.info(f"[cerebral] Discovery pass: {discovery_result.content}")
                 except Exception:
                     logger.exception("[cerebral] Discovery pass failed")
@@ -3825,7 +3829,7 @@ async def _scheduler_loop() -> None:
                 if _settings.get("trading_stock_sentiment_gate_enabled"):
                     due_symbols = set()
                     for evt in _scheduler_plugin.list_due_events():
-                        if evt["title"] == _scheduler_plugin.DISCOVERY_EVENT_TITLE:
+                        if evt["title"] == _discovery_plugin.DISCOVERY_EVENT_TITLE:
                             continue
                         spec = _trading_strategy_store.get(evt["title"])
                         if spec is not None:
@@ -3938,14 +3942,14 @@ async def _trading_broadcast() -> None:
             # live update the whole time, even though books kept
             # processing normally server-side.
             alerts = [dataclasses.asdict(a) for a in _trading_lifecycle.get_alert_history()]
-        # S31 (#896): read _scheduler_plugin's own settings-backed state
-        # directly rather than round-tripping through get_discovery_status's
-        # ToolResult/json -- same values, no serialization needed here.
+        # S31 (#896): read module-level _settings singleton directly (same
+        # values, no ToolResult round-trip needed -- _discovery_plugin._settings
+        # is rebound to this singleton at boot).
         discovery = {
-            "enabled": _scheduler_plugin._settings.get("discovery_enabled"),
-            "stop_at": _scheduler_plugin._settings.get("discovery_stop_at"),
-            "queries": _scheduler_plugin._settings.get("discovery_queries"),
-            "interval": _scheduler_plugin._settings.get("discovery_interval"),
+            "enabled": _settings.get("discovery_enabled"),
+            "stop_at": _settings.get("discovery_stop_at"),
+            "queries": _settings.get("discovery_queries"),
+            "interval": _settings.get("discovery_interval"),
         }
         # S34 (#901): current paper-trading control state, for the (hand-
         # built, tray/lib/trading-panel.js) Start/Stop + capital control.
@@ -4051,12 +4055,12 @@ async def _trading_tickers_data() -> dict:
     from cerebral.trading.ticker_view import build_ticker_view
     from cerebral.trading_data import fetch_ohlcv
     return build_ticker_view(
-        watchlist_symbols=_scheduler_plugin._discovery_watchlist.symbols(),
+        watchlist_symbols=_discovery_plugin._discovery_watchlist.symbols(),
         states=_trading_lifecycle._states,
         get_spec=_trading_strategy_store.get,
         get_fills=lambda dispatch_id: _trading_forward_record.get_fills(strategy_id=dispatch_id),
         fetch_ohlcv=fetch_ohlcv,
-        get_latest_attempt=_scheduler_plugin._discovery_attempts.get_latest,
+        get_latest_attempt=_discovery_plugin._discovery_attempts.get_latest,
     )
 
 
@@ -8378,6 +8382,7 @@ async def main() -> None:
     _orc.register(_scheduler_plugin)
     _orc.register(_design_system_plugin)
     _orc.register(_book_library_plugin)
+    _orc.register(_discovery_plugin)
     _attach_builder_plugin()
     _wire_plugin_seams()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))
@@ -8427,7 +8432,7 @@ async def main() -> None:
             )
         # S27 (#880): idempotent get-or-create -- registers the discovery
         # loop's own recurring event once, safe to call on every boot.
-        _scheduler_plugin.ensure_discovery_event()
+        _discovery_plugin.ensure_discovery_event()
         _design_system_plugin.ensure_design_system_event()
         scheduler_task = asyncio.create_task(_scheduler_loop())
         await _shutdown.wait()

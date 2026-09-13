@@ -8,6 +8,8 @@ from pathlib import Path
 
 from plugins.scheduler import SchedulerPlugin
 from plugins.book_library import BookLibraryPlugin
+from plugins.design_system_autofix import DesignSystemAutofixPlugin
+from plugins.discovery import DiscoveryPlugin
 from cerebral.mcp.orchestrator import ToolResult
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
@@ -20,6 +22,24 @@ ALWAYS_FLAT = "def strategy(data):\n    return [0] * len(data)"
 
 def _plugin(tmp_path):
     return SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
+
+
+def _ds_plugin(tmp_path):
+    scheduler = _plugin(tmp_path)
+    return DesignSystemAutofixPlugin(scheduler=scheduler)
+
+
+def _disc_plugin(tmp_path, **kwargs):
+    """Returns (scheduler, discovery) pair sharing the same db."""
+    db = str(tmp_path / "sched.db")
+    scheduler_kw = {k: v for k, v in kwargs.items() if k == "router"}
+    disc_kw = {k: v for k, v in kwargs.items() if k in (
+        "router", "web_search_fn", "record_activity_fn",
+        "discovery_watchlist", "discovery_attempts", "settings",
+    )}
+    scheduler = SchedulerPlugin(db_path=db, **scheduler_kw)
+    disc = DiscoveryPlugin(db_path=db, scheduler=scheduler, **disc_kw)
+    return scheduler, disc
 
 
 def _book_plugin(tmp_path, router=None):
@@ -177,21 +197,22 @@ def test_ensure_discovery_event_is_actually_due_immediately(tmp_path):
     """Integration-level regression for the same bug: the real production
     call path (ensure_discovery_event -> list_due_events), not just a
     hand-built tz-aware start_iso."""
-    plugin = _plugin(tmp_path)
-    plugin.ensure_discovery_event()
+    scheduler, disc = _disc_plugin(tmp_path)
+    disc.ensure_discovery_event()
 
-    due = plugin.list_due_events()
+    due = scheduler.list_due_events()
 
-    assert any(e["title"] == plugin.DISCOVERY_EVENT_TITLE for e in due)
+    assert any(e["title"] == disc.DISCOVERY_EVENT_TITLE for e in due)
 
 
 def test_ensure_design_system_event_is_actually_due_immediately(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin.ensure_design_system_event()
+    scheduler = _plugin(tmp_path)
+    ds = _ds_plugin(tmp_path)
+    ds.ensure_design_system_event()
 
-    due = plugin.list_due_events()
+    due = scheduler.list_due_events()
 
-    assert any(e["title"] == plugin.DESIGN_SYSTEM_EVENT_TITLE for e in due)
+    assert any(e["title"] == ds.DESIGN_SYSTEM_EVENT_TITLE for e in due)
 
 
 def test_schema_migrates_an_events_table_missing_last_run_iso(tmp_path):
@@ -742,25 +763,26 @@ def _web_search_hits(*hits):
 
 
 async def test_ensure_discovery_event_is_idempotent(tmp_path):
-    plugin = _plugin(tmp_path)
+    scheduler, disc = _disc_plugin(tmp_path)
 
-    plugin.ensure_discovery_event()
-    plugin.ensure_discovery_event()
+    disc.ensure_discovery_event()
+    disc.ensure_discovery_event()
 
-    events = plugin._con.execute(
-        "SELECT COUNT(*) FROM events WHERE title = ?", (plugin.DISCOVERY_EVENT_TITLE,)
+    events = scheduler._con.execute(
+        "SELECT COUNT(*) FROM events WHERE title = ?", (disc.DISCOVERY_EVENT_TITLE,)
     ).fetchone()[0]
     assert events == 1
 
 
 def test_ensure_design_system_event_is_idempotent(tmp_path):
-    plugin = _plugin(tmp_path)
+    scheduler = _plugin(tmp_path)
+    ds = _ds_plugin(tmp_path)
 
-    plugin.ensure_design_system_event()
-    plugin.ensure_design_system_event()
+    ds.ensure_design_system_event()
+    ds.ensure_design_system_event()
 
-    events = plugin._con.execute(
-        "SELECT COUNT(*) FROM events WHERE title = ?", (plugin.DESIGN_SYSTEM_EVENT_TITLE,)
+    events = scheduler._con.execute(
+        "SELECT COUNT(*) FROM events WHERE title = ?", (ds.DESIGN_SYSTEM_EVENT_TITLE,)
     ).fetchone()[0]
     assert events == 1
 
@@ -768,7 +790,7 @@ def test_ensure_design_system_event_is_idempotent(tmp_path):
 # ── 2026-09-08: base design system scan ─────────────────────────────────────
 
 async def test_scan_design_system_reports_a_real_violation(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ds_plugin(tmp_path)
     windows_dir = Path(__file__).resolve().parent.parent.parent / "tray" / "windows"
     assert windows_dir.exists()  # sanity: this test reads the real tray/, not a fixture
 
@@ -779,7 +801,7 @@ async def test_scan_design_system_reports_a_real_violation(tmp_path):
 
 
 async def test_design_system_autofix_toggle_defaults_off_and_persists(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ds_plugin(tmp_path)
     assert not plugin._settings.get("design_system_autofix_enabled")
 
     r1 = await plugin.call_tool("start_design_system_autofix", {})
@@ -801,16 +823,13 @@ async def test_ticker_specific_idea_reaches_run_gauntlet_with_origin_discovered(
         return _trend_prices()
 
     router = FakeRouterReturningCode()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/aapl-earnings",
-            "title": "AAPL beats on strong earnings",
-            "snippet": "AAPL tends to rally after a strong earnings beat.",
-        }),
-    )
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/aapl-earnings",
+        "title": "AAPL beats on strong earnings",
+        "snippet": "AAPL tends to rally after a strong earnings beat.",
+    }))
 
-    result = await plugin._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
+    result = await disc._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
@@ -832,26 +851,23 @@ async def test_ticker_specific_idea_reaches_run_gauntlet_with_origin_discovered(
 
 async def test_run_discovery_persists_the_attempt_outcome(tmp_path):
     """S30/#894: the real gauntlet outcome must land in
-    plugin._discovery_attempts, not just get counted and discarded."""
+    disc._discovery_attempts, not just get counted and discarded."""
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     router = FakeRouterReturningCode()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/aapl-earnings",
-            "title": "AAPL beats on strong earnings",
-            "snippet": "AAPL tends to rally after a strong earnings beat.",
-        }),
-    )
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/aapl-earnings",
+        "title": "AAPL beats on strong earnings",
+        "snippet": "AAPL tends to rally after a strong earnings beat.",
+    }))
 
-    result = await plugin._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
+    result = await disc._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
-    latest = plugin._discovery_attempts.get_latest("AAPL")
+    latest = disc._discovery_attempts.get_latest("AAPL")
     assert latest is not None
     assert latest["verdict"] == "VALIDATED"
 
@@ -863,21 +879,18 @@ async def test_pattern_general_idea_is_screened_and_accepted_reaches_gauntlet(tm
         return _trend_prices()
 
     router = AcceptingRouter()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/mean-reversion",
-            "title": "A mean-reversion pattern in equities",
-            "snippet": "Stocks that fall 3 days in a row tend to bounce.",
-        }),
-    )
-    plugin._discovery_watchlist.upsert("MSFT")
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/mean-reversion",
+        "title": "A mean-reversion pattern in equities",
+        "snippet": "Stocks that fall 3 days in a row tend to bounce.",
+    }))
+    disc._discovery_watchlist.upsert("MSFT")
     # Isolate from the known-liquid overflow (2026-08-26 fix, see
     # discovery.py's prefilter_candidates) -- this test only cares that
     # MSFT specifically reaches the gauntlet, not how wide the pool is.
-    plugin._settings.set("discovery_candidate_limit", 1)
+    disc._settings.set("discovery_candidate_limit", 1)
 
-    result = await plugin._run_discovery({"queries": ["mean reversion pattern"]}, strategy_store=store, fetch=fetch)
+    result = await disc._run_discovery({"queries": ["mean reversion pattern"]}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
@@ -893,24 +906,21 @@ async def test_pattern_general_idea_is_screened_and_accepted_reaches_gauntlet(tm
 
 async def test_rejected_pattern_idea_never_reaches_run_gauntlet(tmp_path):
     """The acceptance test #880 names explicitly, exercised at the real
-    SchedulerPlugin level (not just discovery.py's own unit test)."""
+    DiscoveryPlugin level (not just discovery.py's own unit test)."""
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
         raise AssertionError("fetch must never be called -- the idea was rejected")
 
     router = RejectingRouter()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/vague",
-            "title": "Markets go up sometimes",
-            "snippet": "Good companies tend to do well over time.",
-        }),
-    )
-    plugin._discovery_watchlist.upsert("MSFT")
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/vague",
+        "title": "Markets go up sometimes",
+        "snippet": "Good companies tend to do well over time.",
+    }))
+    disc._discovery_watchlist.upsert("MSFT")
 
-    result = await plugin._run_discovery({}, strategy_store=store, fetch=fetch)
+    result = await disc._run_discovery({}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
@@ -930,17 +940,15 @@ async def test_both_accepted_and_rejected_ideas_log_to_the_activity_log(tmp_path
         logged.append((kind, content))
 
     router = RejectingRouter()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        record_activity_fn=record_activity,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/vague",
-            "title": "Markets go up sometimes",
-            "snippet": "Good companies tend to do well over time.",
-        }),
-    )
+    _, disc = _disc_plugin(tmp_path, router=router,
+                           record_activity_fn=record_activity,
+                           web_search_fn=_web_search_hits({
+                               "url": "https://example.com/vague",
+                               "title": "Markets go up sometimes",
+                               "snippet": "Good companies tend to do well over time.",
+                           }))
 
-    await plugin._run_discovery({"queries": ["vague claim"]}, strategy_store=store, fetch=fetch)
+    await disc._run_discovery({"queries": ["vague claim"]}, strategy_store=store, fetch=fetch)
 
     assert len(logged) == 1
     kind, content = logged[0]
@@ -955,9 +963,9 @@ async def test_run_discovery_uses_default_queries_when_none_given(tmp_path):
         calls.append(query)
         return []
 
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), web_search_fn=web_search)
+    _, disc = _disc_plugin(tmp_path, web_search_fn=web_search)
 
-    result = await plugin._run_discovery({})
+    result = await disc._run_discovery({})
 
     assert not result.is_error
     assert len(calls) >= 1  # a real default query list was used, not empty
@@ -970,9 +978,9 @@ async def test_run_discovery_accepts_explicit_queries(tmp_path):
         calls.append(query)
         return []
 
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), web_search_fn=web_search)
+    _, disc = _disc_plugin(tmp_path, web_search_fn=web_search)
 
-    await plugin._run_discovery({"queries": ["my custom query"]})
+    await disc._run_discovery({"queries": ["my custom query"]})
 
     assert calls == ["my custom query"]
 
@@ -991,16 +999,13 @@ async def test_run_discovery_defaults_to_a_day_trading_interval(tmp_path):
         return _trend_prices()
 
     router = FakeRouterReturningCode()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/aapl-earnings",
-            "title": "AAPL beats on strong earnings",
-            "snippet": "AAPL tends to rally after a strong earnings beat.",
-        }),
-    )
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/aapl-earnings",
+        "title": "AAPL beats on strong earnings",
+        "snippet": "AAPL tends to rally after a strong earnings beat.",
+    }))
 
-    result = await plugin._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
+    result = await disc._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
     # DD3/DD5 (ticker discovery) added a dynamic-universe/liquidity-ranking
@@ -1020,16 +1025,13 @@ async def test_run_discovery_accepts_an_explicit_interval_override(tmp_path):
         return _trend_prices()
 
     router = FakeRouterReturningCode()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/aapl-earnings",
-            "title": "AAPL beats on strong earnings",
-            "snippet": "AAPL tends to rally after a strong earnings beat.",
-        }),
-    )
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/aapl-earnings",
+        "title": "AAPL beats on strong earnings",
+        "snippet": "AAPL tends to rally after a strong earnings beat.",
+    }))
 
-    result = await plugin._run_discovery(
+    result = await disc._run_discovery(
         {"queries": ["aapl earnings"], "interval": "5m"}, strategy_store=store, fetch=fetch,
     )
 
@@ -1045,24 +1047,24 @@ def test_discovery_defaults_to_disabled(tmp_path):
     """discovery_enabled defaults False -- discovery does NOT run on its
     own until explicitly started (the intended behavior change from
     "always on once the underlying scheduler-loop bug is fixed")."""
-    plugin = _plugin(tmp_path)
-    status = json.loads(plugin._get_discovery_status({}).content)
+    _, disc = _disc_plugin(tmp_path)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["enabled"] is False
 
 
 def test_start_discovery_with_no_args_enables_indefinitely(tmp_path):
-    plugin = _plugin(tmp_path)
-    result = plugin._start_discovery({})
+    _, disc = _disc_plugin(tmp_path)
+    result = disc._start_discovery({})
     status = json.loads(result.content)
     assert status["enabled"] is True
     assert status["stop_at"] == ""
 
 
 def test_start_discovery_with_duration_sets_a_real_stop_at(tmp_path):
-    plugin = _plugin(tmp_path)
+    _, disc = _disc_plugin(tmp_path)
     before = datetime.now(timezone.utc)
 
-    result = plugin._start_discovery({"duration_hours": 2})
+    result = disc._start_discovery({"duration_hours": 2})
 
     status = json.loads(result.content)
     assert status["enabled"] is True
@@ -1073,10 +1075,10 @@ def test_start_discovery_with_duration_sets_a_real_stop_at(tmp_path):
 
 
 def test_start_discovery_stores_custom_queries_and_interval(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin._start_discovery({"queries": ["5 minute ORB strategy"], "interval": "5m"})
+    _, disc = _disc_plugin(tmp_path)
+    disc._start_discovery({"queries": ["5 minute ORB strategy"], "interval": "5m"})
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["queries"] == ["5 minute ORB strategy"]
     assert status["interval"] == "5m"
 
@@ -1084,38 +1086,38 @@ def test_start_discovery_stores_custom_queries_and_interval(tmp_path):
 def test_start_discovery_with_empty_queries_leaves_existing_value_alone(tmp_path):
     """Empty queries/interval on start_discovery must not reset an already-
     customized value back to the built-in default -- #896's own scope note."""
-    plugin = _plugin(tmp_path)
-    plugin._start_discovery({"queries": ["day trading momentum"], "interval": "5m"})
+    _, disc = _disc_plugin(tmp_path)
+    disc._start_discovery({"queries": ["day trading momentum"], "interval": "5m"})
 
-    plugin._start_discovery({})  # re-enable with no overrides
+    disc._start_discovery({})  # re-enable with no overrides
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["queries"] == ["day trading momentum"]
     assert status["interval"] == "5m"
 
 
 def test_start_discovery_defaults_candidate_limit_to_10(tmp_path):
-    plugin = _plugin(tmp_path)
-    result = plugin._start_discovery({})
+    _, disc = _disc_plugin(tmp_path)
+    result = disc._start_discovery({})
     status = json.loads(result.content)
     assert status["candidate_limit"] == 10
 
 
 def test_start_discovery_stores_custom_candidate_limit(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin._start_discovery({"candidate_limit": 25})
+    _, disc = _disc_plugin(tmp_path)
+    disc._start_discovery({"candidate_limit": 25})
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["candidate_limit"] == 25
 
 
 def test_start_discovery_with_no_candidate_limit_leaves_existing_value_alone(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin._start_discovery({"candidate_limit": 25})
+    _, disc = _disc_plugin(tmp_path)
+    disc._start_discovery({"candidate_limit": 25})
 
-    plugin._start_discovery({})  # re-enable with no overrides
+    disc._start_discovery({})  # re-enable with no overrides
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["candidate_limit"] == 25
 
 
@@ -1124,10 +1126,10 @@ def test_get_discovery_status_reports_scheduler_heartbeat(tmp_path):
     itself has found anything due -- see scheduler_heartbeat's comment in
     settings.py for why this was added (found live 2026-08-26: the loop
     silently stopped ticking overnight with no visible error anywhere)."""
-    plugin = _plugin(tmp_path)
-    plugin._settings.set("scheduler_heartbeat", "2026-08-26T02:14:56+00:00")
+    _, disc = _disc_plugin(tmp_path)
+    disc._settings.set("scheduler_heartbeat", "2026-08-26T02:14:56+00:00")
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
 
     assert status["scheduler_heartbeat"] == "2026-08-26T02:14:56+00:00"
 
@@ -1138,12 +1140,9 @@ async def test_get_discovery_source_performance_tool_works(tmp_path):
     a.record("TICKER1", "VALIDATED", idea_url="https://fool.com/pick1")
     a.record("TICKER2", "UNVALIDATED", idea_url="https://fool.com/pick2")
 
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"),
-        discovery_attempts=a,
-    )
+    _, disc = _disc_plugin(tmp_path, discovery_attempts=a)
 
-    result = await plugin.call_tool("get_discovery_source_performance", {})
+    result = await disc.call_tool("get_discovery_source_performance", {})
     assert not result.is_error
     data = json.loads(result.content)
     assert data["fool.com"]["validated"] == 1
@@ -1152,10 +1151,10 @@ async def test_get_discovery_source_performance_tool_works(tmp_path):
 
 
 def test_stop_discovery_disables_and_clears_stop_at(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin._start_discovery({"duration_hours": 4})
+    _, disc = _disc_plugin(tmp_path)
+    disc._start_discovery({"duration_hours": 4})
 
-    result = plugin._stop_discovery({})
+    result = disc._stop_discovery({})
 
     status = json.loads(result.content)
     assert status["enabled"] is False
@@ -1163,11 +1162,11 @@ def test_stop_discovery_disables_and_clears_stop_at(tmp_path):
 
 
 def test_get_discovery_status_reflects_real_settings_store_state(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin._settings.set("discovery_enabled", True)
-    plugin._settings.set("discovery_interval", "1m")
+    _, disc = _disc_plugin(tmp_path)
+    disc._settings.set("discovery_enabled", True)
+    disc._settings.set("discovery_interval", "1m")
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["enabled"] is True
     assert status["interval"] == "1m"
 
@@ -1181,10 +1180,10 @@ def test_settings_injection_isolates_from_the_real_production_file(tmp_path):
     make a content-based assertion flaky for reasons having nothing to do
     with this isolation)."""
     from cerebral.settings import _SETTINGS_PATH
-    plugin = _plugin(tmp_path)
+    _, disc = _disc_plugin(tmp_path)
 
-    assert plugin._settings._path != _SETTINGS_PATH
-    assert plugin._settings._path == tmp_path / "felix-settings.json"
+    assert disc._settings._path != _SETTINGS_PATH
+    assert disc._settings._path == tmp_path / "felix-settings.json"
 
 
 def test_start_stop_trading_tools_exist_in_list_tools(tmp_path):
