@@ -6,6 +6,8 @@ StrategySpec's real field is strategy_id, not id).
 import asyncio
 import json
 
+import pytest
+
 from cerebral.trading.strategy_store import StrategyStore, StrategySpec
 from cerebral.trading.replay_store import ReplayStore
 from plugins import trading_replay as tr
@@ -14,6 +16,19 @@ from plugins import trading_replay as tr
 def _content(result):
     assert not result.is_error, result.content
     return json.loads(result.content)
+
+
+@pytest.fixture(autouse=True)
+def _reset_cache_warm_state():
+    """start_cache_warm/stop_cache_warm track their running task via
+    module-level globals (matches this module's existing design, not
+    per-plugin-instance state) -- reset around every test in this file so
+    one test's task/flag never leaks into the next."""
+    tr._cache_warm_task = None
+    tr._cache_warm_stop_flag = False
+    yield
+    tr._cache_warm_task = None
+    tr._cache_warm_stop_flag = False
 
 
 def test_list_strategies_returns_filtered_json(tmp_path, monkeypatch):
@@ -122,3 +137,123 @@ def test_mcporchestrator_discovers_trading_replay_without_refusal():
     assert "trading_replay" in orc._plugins
     refusals = [e for e in orc.registration_errors if e.get("plugin_name") == "trading_replay"]
     assert refusals == []
+
+
+# ── RP7: start_cache_warm / stop_cache_warm ─────────────────────────
+
+
+def test_compute_universe_uses_explicit_symbols_when_given():
+    assert tr._compute_universe(["X", "Y"]) == ["X", "Y"]
+
+
+def test_compute_universe_unions_strategies_and_watchlist_without_duplicates(monkeypatch):
+    class FakeStore:
+        def list_all(self):
+            return [StrategySpec("s1", "AAPL", "code"), StrategySpec("s2", "TSLA", "code")]
+
+    class FakeWatchlist:
+        def symbols(self):
+            return ["TSLA", "NVDA"]  # TSLA overlaps -- must not duplicate
+
+    monkeypatch.setattr(tr, "StrategyStore", FakeStore)
+    monkeypatch.setattr(tr, "DiscoveryWatchlist", FakeWatchlist)
+
+    universe = tr._compute_universe(None)
+    assert sorted(universe) == ["AAPL", "NVDA", "TSLA"]
+    assert len(universe) == len(set(universe))
+
+
+def test_start_cache_warm_retries_once_then_succeeds(monkeypatch):
+    calls = []
+
+    class FlakyBarCache:
+        def get_bars(self, symbol, start, end, interval):
+            calls.append(symbol)
+            if symbol == "FLAKY" and calls.count("FLAKY") == 1:
+                raise RuntimeError("transient failure")
+            return "ok"
+
+    monkeypatch.setattr(tr, "bar_cache", FlakyBarCache())
+
+    async def scenario():
+        msg = await tr.start_cache_warm(interval="1d", symbols=["FLAKY", "OK"])
+        assert msg == "Cache warm started."
+        await tr._cache_warm_task  # wait for the background task to finish
+
+    asyncio.run(scenario())
+
+    assert calls.count("FLAKY") == 2  # failed once, retried, succeeded
+    assert "OK" in calls
+
+
+def test_start_cache_warm_gives_up_after_three_failures(monkeypatch):
+    calls = []
+
+    class AlwaysFailsBarCache:
+        def get_bars(self, symbol, start, end, interval):
+            calls.append(symbol)
+            raise RuntimeError("permanent failure")
+
+    monkeypatch.setattr(tr, "bar_cache", AlwaysFailsBarCache())
+
+    async def scenario():
+        await tr.start_cache_warm(interval="1d", symbols=["BROKEN"])
+        await tr._cache_warm_task
+
+    asyncio.run(scenario())  # must not raise -- a symbol's failure is swallowed, not fatal
+
+    assert calls.count("BROKEN") == 3  # exactly 3 attempts, no more
+
+
+def test_stop_cache_warm_halts_before_all_symbols_are_fetched(monkeypatch):
+    calls = []
+
+    class RecordingBarCache:
+        def get_bars(self, symbol, start, end, interval):
+            calls.append(symbol)
+            return "ok"
+
+    monkeypatch.setattr(tr, "bar_cache", RecordingBarCache())
+
+    async def scenario():
+        await tr.start_cache_warm(interval="1d", symbols=["A", "B", "C"])
+        await asyncio.sleep(0)  # let the task begin before we stop it
+        msg = await tr.stop_cache_warm()
+        assert msg == "Cache warm stopped."
+
+    asyncio.run(scenario())
+
+    assert len(calls) < 3, "stop_cache_warm should prevent every symbol from being fetched"
+
+
+def test_stop_cache_warm_with_nothing_running():
+    msg = asyncio.run(tr.stop_cache_warm())
+    assert msg == "No cache warm running."
+
+
+def test_start_cache_warm_refuses_a_second_concurrent_run(monkeypatch):
+    class SlowBarCache:
+        def get_bars(self, symbol, start, end, interval):
+            return "ok"
+
+    monkeypatch.setattr(tr, "bar_cache", SlowBarCache())
+
+    async def scenario():
+        first = await tr.start_cache_warm(interval="1d", symbols=["A"])
+        second = await tr.start_cache_warm(interval="1d", symbols=["B"])
+        assert first == "Cache warm started."
+        assert second == "Cache warm already running."
+        await tr._cache_warm_task
+
+    asyncio.run(scenario())
+
+
+def test_plugin_call_tool_dispatches_cache_warm_tools(monkeypatch):
+    monkeypatch.setattr(tr, "_compute_universe", lambda symbols: [])
+    plugin = tr.create()
+
+    result = asyncio.run(plugin.call_tool("start_cache_warm", {}))
+    assert result.content == "Cache warm started."
+
+    result = asyncio.run(plugin.call_tool("stop_cache_warm", {}))
+    assert result.content in ("Cache warm stopped.", "No cache warm running.")

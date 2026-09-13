@@ -26,7 +26,7 @@ import logging
 from typing import Optional
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
-from cerebral.trading.bar_cache import bar_cache
+from cerebral.trading import bar_cache
 from cerebral.trading.discovery import DiscoveryWatchlist
 from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.replay import run_replay
@@ -252,8 +252,12 @@ def _compute_universe(symbols: Optional[list[str]]) -> list[str]:
     if symbols is not None:
         return list(symbols)
     strat_syms = {s.symbol for s in StrategyStore().list_all()}
-    disc_syms = DiscoveryWatchlist.symbols()
-    return list(strat_syms | disc_syms)
+    # symbols() is an instance method, not a classmethod/staticmethod --
+    # DiscoveryWatchlist.symbols() on the bare class raises TypeError
+    # (missing self). It also returns a List[str], not a set, so `|` needs
+    # both sides as sets.
+    disc_syms = set(DiscoveryWatchlist().symbols())
+    return sorted(strat_syms | disc_syms)
 
 
 async def start_cache_warm(interval: str = "1d", symbols: Optional[list[str]] = None) -> str:
@@ -281,13 +285,21 @@ async def _run_cache_warm(interval: str, symbols: Optional[list[str]]) -> None:
 
     universe = _compute_universe(symbols)
 
+    loop = asyncio.get_event_loop()
     for symbol in universe:
         if _cache_warm_stop_flag:
             break
         # ponytail: fixed 3 attempts, no jitter, no framework — upgrade to a real backoff library only if this measurably proves insufficient
         for attempt in range(3):
             try:
-                bar_cache.get_bars(symbol, default_start, today, interval)
+                # bar_cache.get_bars is a plain synchronous function (sqlite
+                # + a real network call) -- calling it directly here would
+                # block the WHOLE event loop for its duration on every
+                # fetch, exactly the class of bug ADR-0026 already recorded
+                # as a real live incident (a book-ingestion stall). Running
+                # it in the default executor keeps this coroutine
+                # cooperative even though the underlying call isn't.
+                await loop.run_in_executor(None, bar_cache.get_bars, symbol, default_start, today, interval)
                 break
             except Exception:
                 if attempt < 2:
