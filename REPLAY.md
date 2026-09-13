@@ -202,7 +202,7 @@ every registered tool's name + one-liner into the system prompt, so *registering
 
 ## Next slice -- start here
 
-- **Active:** RP8 -- #1195
+- **Active:** RP9 -- #1196
 - **Model:** sonnet
 
 ## Queue
@@ -215,7 +215,7 @@ every registered tool's name + one-liner into the system prompt, so *registering
 - [x] RP5 -- #1192 -- `replay.py`: `run_replay(specs, start, end)` engine over the cached store (Model: opus)
 - [x] RP6 -- #1193 -- `plugins/trading_replay.py`: `list_strategies` + `simulate_period` + `replay_report` (+ ADR-0034 test file) (Model: sonnet)
 - [x] RP7 -- #1194 -- batch cache warm as a start/stop background task, with retry/backoff (Model: sonnet)
-- [ ] RP8 -- #1195 -- news: dated fetch + paging loop + prominence filter + per-day count, cached in `bars.db` (Model: sonnet)
+- [x] RP8 -- #1195 -- news: dated fetch + paging loop + prominence filter + per-day count, cached in `bars.db` (Model: sonnet)
 - [ ] RP9 -- #1196 -- `docs/replay-live-verify.md` + first real 286-strategy replay; report the broken-code census (Model: sonnet)
 
 ## Landed PRs
@@ -314,6 +314,25 @@ every registered tool's name + one-liner into the system prompt, so *registering
   retry-then-succeed, give-up-after-3, stop-halts-progress, stop-with-nothing-running,
   concurrent-run refusal, and the plugin's own dispatch. 16/16 pass; 626/627 across the
   full regression sweep (the one failure is the already-flagged pre-existing assertion).
+- RP8 -- #1206 -- news fetch/cache -- **the deepest gap of the campaign: news fetching was
+  100% non-functional**, not just untested -- `AlpacaMarketDataClient` has no `get_news`
+  method at all. Checked the real installed `alpaca-py` API
+  (`alpaca.data.historical.news.NewsClient` + `NewsRequest`) and implemented it for real:
+  it's an attribute-based Pydantic model (`article.id`, `.symbols`, `.created_at`;
+  `news_set.data["news"]`, `.next_page_token`), not the dict-shaped fake the PR's own tests
+  assumed. Also: `fetch_news`/`count_news_events` never called the module's own
+  `init_news_db()` (`no such table: news` on any fresh DB); `datetime.timedelta(days=1)`
+  isn't a thing (`timedelta` is a sibling class, not a `datetime` attribute); `replay_store.py`
+  (RP4) was never touched despite `replay.py` already passing it a `news_event_count` kwarg
+  it didn't accept (immediate `TypeError` on every replay); and a real design bug -- the news
+  fetch lived inside the per-strategy try/except, so a transient news-API failure would get
+  attributed as the *strategy* failing, directly contradicting RP8's own "must never alter
+  which strategies get replayed" requirement. Fixed all of it, added an autouse fixture so
+  pre-existing tests can't accidentally hit a real Alpaca News call if real credentials exist
+  in this box's keyring, and surfaced `news_event_count` on `replay_report`'s rows (RP6) since
+  the column existing was pointless if the report never showed it. 84/84 across every
+  replay-adjacent suite; 645/646 across the full sweep (the one failure is the already-flagged
+  pre-existing assertion).
 
 ## Slice detail
 
