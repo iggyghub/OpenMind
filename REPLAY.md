@@ -202,8 +202,8 @@ every registered tool's name + one-liner into the system prompt, so *registering
 
 ## Next slice -- start here
 
-- **Active:** RP5 -- #1192
-- **Model:** opus
+- **Active:** RP6 -- #1193
+- **Model:** sonnet
 
 ## Queue
 
@@ -212,7 +212,7 @@ every registered tool's name + one-liner into the system prompt, so *registering
 - [x] RP2 -- #1189 -- derive a `Trade` list from position diffs; wire `compute_backtest_result` for net-of-cost returns (Model: opus)
 - [x] RP3 -- #1190 -- `cerebral/trading/bar_cache.py`: SQLite bar store with append-only gap fill; route `fetch_ohlcv` through it (Model: opus)
 - [x] RP4 -- #1191 -- `cerebral/trading/replay_store.py`: `ReplayStore` + `replay_runs.db`, incl. `flat_reason` (Model: sonnet)
-- [ ] RP5 -- #1192 -- `replay.py`: `run_replay(specs, start, end)` engine over the cached store (Model: opus)
+- [x] RP5 -- #1192 -- `replay.py`: `run_replay(specs, start, end)` engine over the cached store (Model: opus)
 - [ ] RP6 -- #1193 -- `plugins/trading_replay.py`: `list_strategies` + `simulate_period` + `replay_report` (+ ADR-0034 test file) (Model: sonnet)
 - [ ] RP7 -- #1194 -- batch cache warm as a start/stop background task, with retry/backoff (Model: sonnet)
 - [ ] RP8 -- #1195 -- news: dated fetch + paging loop + prominence filter + per-day count, cached in `bars.db` (Model: sonnet)
@@ -262,6 +262,24 @@ every registered tool's name + one-liner into the system prompt, so *registering
   `test_plugins_time_notes.py` assertion (flagged under RP3). `replay_store.py`'s own 2 tests
   passed on the first run, standalone and inside the full sweep both times. Merged as-is, no code
   changes needed.
+- RP5 -- #1203 -- `run_replay` engine -- **the largest gap so far.** Felix's `self_dev_campaign`
+  attempt wrote ONE test calling a `run_replay` that didn't exist anywhere in `replay.py`, and
+  reinvented a local `StrategySpec` (fields `symbol, interval, code`) instead of importing the
+  real one from `strategy_store.py` -- incompatible with what RP6's `StrategyStore.list_all()`
+  will actually hand it. The test also called `replay_store.get_runs()` (the real method is
+  `list_runs()`) and accessed results via `.attribute` (`result.run_id`, `result.spec_code`) --
+  `ReplayStore` rows are `sqlite3.Row`, `["column"]` access only, and there is no `spec_code`
+  column. Every one of these would have failed regardless of whether `run_replay` existed.
+  Implemented the real engine by hand: `run_bars_verbose` (mirrors SR1's
+  `evaluate_signals`/`_verbose` split so `run_bars`'s existing 3-tuple contract for
+  `plugins/scheduler.py` stays untouched) plus `run_replay(specs, start, end, bar_cache=None,
+  replay_store=None)` -- a thin per-strategy loop (D1: not `run_gauntlet`), per-interval warm-up
+  margin so genuine indicator warm-up doesn't read as a code failure, scoring restricted to the
+  requested window, and a try/except per strategy so one broken strategy can't abort the run.
+  Rewrote the test against the real `StrategySpec`/`ReplayStore` APIs and added a second test for
+  the one-broken-strategy-doesn't-abort-the-run case. 10/10 `test_replay.py` pass; 353/354 across
+  the full scheduler/gauntlet/discovery/live_tick/replay regression set (the one failure is the
+  already-flagged pre-existing `test_plugins_time_notes.py` assertion).
 
 ## Slice detail
 
