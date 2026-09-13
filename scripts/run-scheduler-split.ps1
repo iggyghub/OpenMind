@@ -52,7 +52,17 @@ try {
     function Log($msg) {
         $line = "[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $msg
         Write-Host $line
-        Add-Content -LiteralPath $loopLog -Value $line
+        # A concurrent reader (a log-tailing tool, antivirus, indexing) can
+        # transiently hold a share-mode lock on $loopLog just long enough for
+        # Add-Content to fail -- observed killing the whole multi-hour loop
+        # via an uncaught exception right after a slice succeeded. Retry a
+        # few times before giving up; this write is best-effort logging, not
+        # something worth crashing the campaign over.
+        for ($i = 0; $i -lt 5; $i++) {
+            try { Add-Content -LiteralPath $loopLog -Value $line -ErrorAction Stop; return } catch {
+                Start-Sleep -Milliseconds 200
+            }
+        }
     }
 
     $shell = New-Object -ComObject WScript.Shell
