@@ -202,8 +202,8 @@ every registered tool's name + one-liner into the system prompt, so *registering
 
 ## Next slice -- start here
 
-- **Active:** RP4 -- #1191
-- **Model:** sonnet
+- **Active:** RP5 -- #1192
+- **Model:** opus
 
 ## Queue
 
@@ -211,7 +211,7 @@ every registered tool's name + one-liner into the system prompt, so *registering
 - [x] RP1 -- #1188 -- `cerebral/trading/replay.py`: extract scheduler's `backtest` closure (pure refactor) (Model: sonnet)
 - [x] RP2 -- #1189 -- derive a `Trade` list from position diffs; wire `compute_backtest_result` for net-of-cost returns (Model: opus)
 - [x] RP3 -- #1190 -- `cerebral/trading/bar_cache.py`: SQLite bar store with append-only gap fill; route `fetch_ohlcv` through it (Model: opus)
-- [ ] RP4 -- #1191 -- `cerebral/trading/replay_store.py`: `ReplayStore` + `replay_runs.db`, incl. `flat_reason` (Model: sonnet)
+- [x] RP4 -- #1191 -- `cerebral/trading/replay_store.py`: `ReplayStore` + `replay_runs.db`, incl. `flat_reason` (Model: sonnet)
 - [ ] RP5 -- #1192 -- `replay.py`: `run_replay(specs, start, end)` engine over the cached store (Model: opus)
 - [ ] RP6 -- #1193 -- `plugins/trading_replay.py`: `list_strategies` + `simulate_period` + `replay_report` (+ ADR-0034 test file) (Model: sonnet)
 - [ ] RP7 -- #1194 -- batch cache warm as a start/stop background task, with retry/backoff (Model: sonnet)
@@ -253,6 +253,15 @@ every registered tool's name + one-liner into the system prompt, so *registering
   pre-existing tests don't silently start touching the real production `bars.db`. 16/16 new tests
   pass; 291/292 in the broader regression sweep (the one failure is a pre-existing stale assertion
   in `test_plugins_time_notes.py`, confirmed on a clean master checkout, flagged separately).
+- RP4 -- #1202 -- `replay_store.py` `ReplayStore` + `replay_runs.db` -- **the first slice where
+  Felix's own code needed no fix.** Its `self_dev_campaign` attempt still blocked on
+  `tests_failed`, but the cause was full-suite flakiness (`self_dev_io.py`'s test gate runs the
+  ENTIRE `cerebral/tests/ tests/` suite, ~5769 tests, ~8 minutes): two failures
+  (`test_plugin_n8n.py`, `test_session_worker_s12.py`) unrelated to `replay_store.py` in any way,
+  both passing cleanly in isolation and on a clean master checkout, plus the already-known stale
+  `test_plugins_time_notes.py` assertion (flagged under RP3). `replay_store.py`'s own 2 tests
+  passed on the first run, standalone and inside the full sweep both times. Merged as-is, no code
+  changes needed.
 
 ## Slice detail
 
