@@ -1,4 +1,4 @@
-﻿"""Strategy/gauntlet admin plugin -- MCP tools for strategy management.
+"""Strategy/gauntlet admin plugin -- MCP tools for strategy management.
 Extracted from plugins/scheduler.py per SCHEDULER-SPLIT.md S5 (#1213).
 """
 import json
