@@ -202,14 +202,14 @@ every registered tool's name + one-liner into the system prompt, so *registering
 
 ## Next slice -- start here
 
-- **Active:** RP2 -- #1189
+- **Active:** RP3 -- #1190
 - **Model:** opus
 
 ## Queue
 
 - [x] RP0 -- #1187 -- `broker.py`: pass `adjustment=Adjustment.ALL` -- **live bug, land first and alone** (Model: opus)
 - [x] RP1 -- #1188 -- `cerebral/trading/replay.py`: extract scheduler's `backtest` closure (pure refactor) (Model: sonnet)
-- [ ] RP2 -- #1189 -- derive a `Trade` list from position diffs; wire `compute_backtest_result` for net-of-cost returns (Model: opus)
+- [x] RP2 -- #1189 -- derive a `Trade` list from position diffs; wire `compute_backtest_result` for net-of-cost returns (Model: opus)
 - [ ] RP3 -- #1190 -- `cerebral/trading/bar_cache.py`: SQLite bar store with append-only gap fill; route `fetch_ohlcv` through it (Model: opus)
 - [ ] RP4 -- #1191 -- `cerebral/trading/replay_store.py`: `ReplayStore` + `replay_runs.db`, incl. `flat_reason` (Model: sonnet)
 - [ ] RP5 -- #1192 -- `replay.py`: `run_replay(specs, start, end)` engine over the cached store (Model: opus)
@@ -222,6 +222,18 @@ every registered tool's name + one-liner into the system prompt, so *registering
 
 - RP0 -- #1198 -- `broker.py`: pass `adjustment=Adjustment.ALL`
 - RP1 -- #1199 -- `cerebral/trading/replay.py`: extract scheduler's `backtest` closure into `run_bars`
+- RP2 -- #1200 -- `derive_trades` + `compute_backtest_result` wiring -- Felix's own `self_dev_campaign`
+  attempt (via `scripts/trigger_campaign.py` over tray IPC, not the external `run-replay.ps1` loop)
+  wrote the real implementation and correctly caught 3 failing tests itself, blocking rather than
+  merging broken code. Hand-fixed and merged directly (same as STRATEGY-REPAIR's SR1): `derive_trades`
+  used `position.diff()` raw, whose first element is always NaN, and `NaN != 0` spuriously "traded"
+  bar 0 every time; `compute_backtest_result` was fed the cumulative equity curve instead of per-bar
+  fractional `daily_returns` (its `cumulative_net_return` property compounds via `(1+r)`, which only
+  means something for returns, not price levels); its `BacktestResult` return is a dataclass, not a
+  dict, so the prior `isinstance(dict)` check always fell through. Two of the three failing tests were
+  themselves buggy (an index-length mismatch, an off-by-one signal count) rather than the
+  implementation -- fixed both and added one new test locking in the constant-nonzero-position edge
+  case. All 8 `test_replay.py` tests + the 35-test gauntlet suite pass.
 
 ## Slice detail
 
