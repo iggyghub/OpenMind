@@ -222,9 +222,23 @@ try {
                     try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}
                 }
 
+            # A just-Kill()ed process (STOP file / timeout path above) can hold its
+            # redirected-output file handle open for a moment after Kill() returns --
+            # observed crashing the loop here with "being used by another process."
+            # Retry before giving up; this read is diagnostic (usage-limit pattern
+            # matching), not worth losing the whole campaign over.
+            function Read-FileWithRetry($path) {
+                for ($i = 0; $i -lt 5; $i++) {
+                    try { return [IO.File]::ReadAllText($path) } catch {
+                        Start-Sleep -Milliseconds 300
+                    }
+                }
+                return ""
+            }
+
             $output = ""
-            if (Test-Path $outLog) { $output += [IO.File]::ReadAllText($outLog) }
-            if (Test-Path $errLog) { $output += [IO.File]::ReadAllText($errLog) }
+            if (Test-Path $outLog) { $output += Read-FileWithRetry $outLog }
+            if (Test-Path $errLog) { $output += Read-FileWithRetry $errLog }
 
             if ($output -match $limitPattern) {
                 # "Failed to authenticate" = expired/invalid stored OAuth token (401);
