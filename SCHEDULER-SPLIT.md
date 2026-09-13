@@ -52,6 +52,20 @@ only, once scheduler.py genuinely holds only calendar tools.
 
 ## SAFETY
 
+- **Before moving any method out of `scheduler.py`, grep every ALREADY-MERGED
+  plugin (not just `scheduler.py` itself) for a private reach into it.** Found
+  the hard way after S1-S4: `book_library.py` and `discovery.py` both call
+  `self._scheduler._run_gauntlet(...)` directly -- a dependency invisible from
+  reading `scheduler.py`'s own diff, since it lives in a *different* file that
+  isn't part of the slice moving `_run_gauntlet` away. It wouldn't have failed
+  a test either -- both plugins' test suites construct fake schedulers, so
+  only the real production wiring breaks, silently, the first time a book
+  claim or a discovered idea tries to run the gauntlet. #1213 (S5) was amended
+  with the concrete fix (a distinct `_gauntlet` reference, not a repoint of
+  `_scheduler`, since `discovery.py` still needs `_scheduler` for its calendar
+  delegation) before it ran. Do this same audit before S6 and S7 too, even
+  though S6 came up clean (`_on_trading_change` turned out to be an
+  independent per-plugin attribute, not a shared reach).
 - **`cerebral/main.py` is Cerebral's live orchestrator.** Every slice changes
   it. After each merge, hand-restart Felix (`scripts/launch-felix.ps1`, run
   directly -- never `Start-Process`-wrapped, see CLAUDE.md) and confirm via the
