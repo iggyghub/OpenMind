@@ -1,0 +1,73 @@
+# BATCH-REPLAY.md -- Batch Historical Replay campaign driver
+
+Runs the existing Historical Replay engine (REPLAY.md, `plugins/trading_replay.py`)
+over the full available history in 1-month batches, as a standing, resumable,
+user-controllable job -- instead of the one-off `simulate_period` calls the
+original campaign shipped. Two goals: (1) build up a real multi-period track
+record per strategy instead of a single 4-week snapshot, and (2) actually use
+that accumulated evidence -- feed it into `StrategyLifecycle.check_retirement`'s
+currently-hardcoded-to-0.0 drawdown circuit breaker, and add a new refusal gate
+to `check_graduation` so a strategy with a bad accumulated replay history can't
+graduate to live money on a lucky 30-trade paper streak alone.
+
+Scoped 2026-09-14 in conversation with the user (not from a GitHub issue --
+context: live trading review found paper dispatch inactive since a Sep 4 reset;
+led into "how would these strategies have performed historically," which led
+into "let's watch this systematically over time instead of one-off," which led
+into "and make the accumulated data actually feed decisions, since nobody's
+manually reviewing this"). Explicitly run via Felix's own `self_dev_campaign`
+(ADR-0015), not a Claude Code campaign-scaffold loop, per direct instruction.
+
+**Read before running:** self_dev_campaign auto-merges every slice regardless
+of guardrail/test status (2026-08-21 full-auto-merge amendment) -- unlike the
+scheduler-split campaign run earlier today (Claude Code loop, tests gated
+every merge), nothing here blocks a bad PR from landing on its own. Hand-review
+every landed PR's actual diff before trusting it, same discipline REPLAY.md's
+own trading-domain slices needed almost every time.
+
+## Status: ready
+
+## Next slice -- start here
+
+- **Active:** S1 -- #1224
+- **Model:** sonnet
+
+## Queue
+
+- [ ] S1 -- #1224 -- backend: start/stop/status tools, 1-month cadence, persisted resumable cursor
+- [ ] S2 -- #1225 -- Trading pane sub-tab: Start/Stop button + status
+- [ ] S3 -- #1226 -- timeline visual: progress across the full replay range
+- [ ] S4 -- #1227 -- feed accumulated drawdown into check_retirement + a new check_graduation refusal gate
+
+S1 must land before S2 (UI calls S1's tools). S2 before S3 (S3 renders inside
+S2's sub-tab). S4 depends only on S1 (the batch loop it hooks into), not S2/S3
+-- could in principle land out of order, but keep it last anyway since it's
+the one slice touching real trading-decision logic and benefits from S1 having
+already accumulated a few real batches to test against.
+
+## Landed PRs
+
+## SAFETY
+
+- **No slice may place an order, real or paper.** This reuses REPLAY.md's
+  exact engine and its exact constraint: `run_replay`/`simulate_period` read
+  history and write a results row, nothing else. `run_gauntlet` must never be
+  called from this path (same reasoning as REPLAY.md's own D1: `auto_promote`
+  would re-register the whole portfolio).
+- **S4 is the one slice that changes real trading-decision logic.** Everything
+  else (S1-S3) is pure accumulation and display, reversible with no behavior
+  change if skipped. S4 must not grow beyond the two named gates
+  (`check_retirement`'s drawdown input, `check_graduation`'s new refusal
+  check) into any broader auto-retire/auto-tune surface.
+- **Conservative-refuse convention**: missing/`None` accumulated replay data
+  must never be treated as a refusal signal anywhere in S4 -- mirrors the
+  existing fundamentals-accession-not-found handling in `check_graduation`
+  ("inventing a refusal here would be a fabricated signal").
+- **A full ~10-year sweep is untested at that scale.** RP9's real 4-week/286-strategy
+  run took ~8 minutes and ran slower than the campaign's own original estimate
+  because of real per-strategy news-API calls. Expect S1's full sweep to take
+  a long time; that's exactly why it's a resumable background job with a stop
+  button, not a single blocking call.
+- **Hand-restart Felix and hand-verify via the IPC bridge after S1 and S4**
+  land, same as every other trading-domain slice in this repo's history --
+  a green test run is necessary, not sufficient (ADR-0028 R6).
