@@ -2024,9 +2024,13 @@ function _renderReplayControl(status) {
     `;
   }
   const running = !!status.running;
-  const month = status.current_month || '—';
+  // get_batch_replay_status's real field names (plugins/trading_replay.py
+  // S1) are cursor_date/months_total, not current_month/total_months --
+  // fixed here, S2 shipped reading the wrong keys so this line always
+  // rendered its placeholder dash regardless of real progress.
+  const month = status.cursor_date && status.cursor_date !== 'N/A' ? status.cursor_date : '—';
   const done = status.months_done ?? 0;
-  const total = status.total_months ?? 0;
+  const total = status.months_total ?? 0;
   const progress = total > 0 ? `${done} / ${total} months` : '';
   const label = running ? 'Stop' : 'Start';
 
@@ -2040,6 +2044,46 @@ function _renderReplayControl(status) {
       <div class="replay-control-row">
         <span class="replay-info">Processing: ${month} &nbsp; ${progress}</span>
       </div>
+      ${_renderReplayTimeline(status)}
+    </div>
+  `;
+}
+
+/**
+ * Batch Replay timeline bar (S3/#1226). Horizontal progress bar spanning
+ * the full available range (batch_replay_start -> today), filled up to
+ * the current cursor position. Purely presentational -- reads
+ * get_batch_replay_status's start_date/cursor_date/end_date, writes
+ * nothing. Renders a 0%-filled bar (not a crash) when no sweep has ever
+ * started (start_date/cursor_date are the "N/A" sentinel S1 returns for
+ * an unset ISO-date setting).
+ */
+function _renderReplayTimeline(status) {
+  const start = status.start_date;
+  const cursor = status.cursor_date;
+  const end = status.end_date;
+
+  let pct = 0;
+  if (start && cursor && end && start !== 'N/A' && cursor !== 'N/A') {
+    const startMs = Date.parse(start);
+    const cursorMs = Date.parse(cursor);
+    const endMs = Date.parse(end);
+    if (!Number.isNaN(startMs) && !Number.isNaN(cursorMs) && !Number.isNaN(endMs) && endMs > startMs) {
+      pct = ((cursorMs - startMs) / (endMs - startMs)) * 100;
+      pct = Math.max(0, Math.min(100, pct));
+    }
+  }
+
+  const startLabel = start && start !== 'N/A' ? start : '—';
+  const endLabel = end && end !== 'N/A' ? end : '—';
+
+  return `
+    <div class="replay-timeline-row">
+      <span class="replay-timeline-label">${startLabel}</span>
+      <div class="replay-timeline-track">
+        <div class="replay-timeline-fill" style="width: ${pct}%;"></div>
+      </div>
+      <span class="replay-timeline-label">${endLabel}</span>
     </div>
   `;
 }
@@ -2085,6 +2129,10 @@ function renderReplayPanel(data, container, sendEventFn) {
       .replay-toggle-btn:disabled { background: var(--border, #ccc); color: var(--text-muted, #888); cursor: default; }
       .replay-status { font-size: 12px; color: var(--text-muted, #555); }
       .replay-info { font-size: 12px; color: var(--text-muted, #555); }
+      .replay-timeline-row { display: flex; align-items: center; gap: 8px; }
+      .replay-timeline-label { font-size: 11px; color: var(--text-muted, #888); white-space: nowrap; }
+      .replay-timeline-track { flex: 1; height: 6px; border-radius: 3px; background: var(--border, #e0e0e0); overflow: hidden; }
+      .replay-timeline-fill { height: 100%; background: #2ecc71; border-radius: 3px; transition: width 0.3s ease; }
     `;
     document.head.appendChild(style);
   }
