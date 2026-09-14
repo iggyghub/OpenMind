@@ -29,12 +29,12 @@ own trading-domain slices needed almost every time.
 
 ## Next slice -- start here
 
-- **Active:** S1 -- #1224
+- **Active:** S2 -- #1225
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] S1 -- #1224 -- backend: start/stop/status tools, 1-month cadence, persisted resumable cursor
+- [x] S1 -- #1224 -- backend: start/stop/status tools, 1-month cadence, persisted resumable cursor
 - [ ] S2 -- #1225 -- Trading pane sub-tab: Start/Stop button + status
 - [ ] S3 -- #1226 -- timeline visual: progress across the full replay range
 - [ ] S4 -- #1227 -- feed accumulated drawdown into check_retirement + a new check_graduation refusal gate
@@ -46,6 +46,15 @@ the one slice touching real trading-decision logic and benefits from S1 having
 already accumulated a few real batches to test against.
 
 ## Landed PRs
+
+- PR #1228 -- S1: batch replay backend (merged 2026-09-14, hand-fixed after
+  self_dev's own attempt correctly self-blocked on tests_failed rather than
+  force-merging red -- real bugs found: cursor advanced by 1 day instead of
+  1 month, missing module-level task-state declarations, new settings keys
+  never registered in cerebral/settings.py's allowlist, batch_replay_start
+  clobbered on every boot-resume, and both new tests touched real production
+  settings via a dead CEREBRAL_DATA_DIR env var plus called asyncio.run()
+  inside a sync test body in an asyncio_mode=auto suite)
 
 ## SAFETY
 
