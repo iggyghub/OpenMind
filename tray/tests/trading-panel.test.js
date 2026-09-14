@@ -1270,3 +1270,91 @@ describe('renderTradeLog', () => {
     });
   });
 });
+
+// S2/#848: Batch Replay sub-tab -- Start/Stop toggle + status display,
+// delegating to S1's start_batch_replay/stop_batch_replay/get_batch_replay_status.
+// Gracefully handles missing S1 data/tools by showing a "Not available" state.
+describe('renderReplayPanel (S2/#848)', () => {
+  test('renders "Not available" placeholder when replay status is missing', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderReplayPanel({ positions: [], alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('Not available');
+      expect(mount.innerHTML).toContain('replay-toggle-btn');
+      expect(mount.innerHTML).not.toContain('Running');
+      expect(mount.innerHTML).not.toContain('Stopped');
+    });
+  });
+
+  test('renders stopped state with Start button when replay data is present but stopped', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        positions: [],
+        alerts: [],
+        replay: { running: false, current_month: '2026-08', months_done: 0, total_months: 12 }
+      };
+      TradingPanel.renderReplayPanel(data, mount);
+      expect(mount.innerHTML).toContain('Stopped');
+      expect(mount.innerHTML).toContain('>Start<');
+      expect(mount.innerHTML).toContain('Processing: 2026-08');
+      expect(mount.innerHTML).toContain('0 / 12 months');
+    });
+  });
+
+  test('renders running state with Stop button and progress when replay is active', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        positions: [],
+        alerts: [],
+        replay: { running: true, current_month: '2026-09', months_done: 5, total_months: 12 }
+      };
+      TradingPanel.renderReplayPanel(data, mount);
+      expect(mount.innerHTML).toContain('Running');
+      expect(mount.innerHTML).toContain('>Stop<');
+      expect(mount.innerHTML).toContain('Processing: 2026-09');
+      expect(mount.innerHTML).toContain('5 / 12 months');
+    });
+  });
+
+  test('handles missing optional fields (months_done/total_months) gracefully', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        positions: [],
+        alerts: [],
+        replay: { running: true }
+      };
+      TradingPanel.renderReplayPanel(data, mount);
+      expect(mount.innerHTML).toContain('Running');
+      expect(mount.innerHTML).not.toContain('undefined');
+      expect(mount.innerHTML).not.toContain('NaN');
+    });
+  });
+
+  test('polls get_batch_replay_status on an interval when sendEventFn is provided', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const calls = [];
+      const mockSendEventFn = (ev) => {
+        calls.push(ev);
+      };
+      // Stub setInterval to avoid real timer in tests
+      const origSetInterval = global.setInterval;
+      global.setInterval = (fn, delay) => {
+        // Advance time immediately to trigger first call
+        fn();
+        return origSetInterval(fn, delay);
+      };
+      
+      TradingPanel.renderReplayPanel({ replay: { running: false } }, mount, mockSendEventFn);
+      
+      // First call is from the poll interval trigger in our stub
+      expect(calls.some(c => c.type === 'call_tool' && c.data.name === 'get_batch_replay_status')).toBe(true);
+      
+      // Restore
+      global.setInterval = origSetInterval;
+    });
+  });
+});
