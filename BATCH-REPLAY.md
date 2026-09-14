@@ -29,14 +29,14 @@ own trading-domain slices needed almost every time.
 
 ## Next slice -- start here
 
-- **Active:** S3 -- #1226
+- **Active:** S4 -- #1227
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1 -- #1224 -- backend: start/stop/status tools, 1-month cadence, persisted resumable cursor
 - [x] S2 -- #1225 -- Trading pane sub-tab: Start/Stop button + status
-- [ ] S3 -- #1226 -- timeline visual: progress across the full replay range
+- [x] S3 -- #1226 -- timeline visual: progress across the full replay range
 - [ ] S4 -- #1227 -- feed accumulated drawdown into check_retirement + a new check_graduation refusal gate
 
 S1 must land before S2 (UI calls S1's tools). S2 before S3 (S3 renders inside
@@ -64,6 +64,15 @@ already accumulated a few real batches to test against.
   -- not valid object-literal syntax, the whole module failed to even
   `require()`. Also a genuine resource leak in the new interval test (a
   real uncleared 2000ms setInterval, "Jest did not exit"))
+- PR #1231 -- S3: timeline bar (merged 2026-09-14, hand-implemented --
+  self_dev_campaign's edit step produced an empty diff twice in a row for
+  this slice, no PR ever opened either time, not retried a third time.
+  Also fixed a real S2 bug found while implementing this: the status
+  text read status.current_month/status.total_months, but
+  get_batch_replay_status's actual field names are
+  cursor_date/months_total -- "Processing: —" has never shown real data
+  since S2 landed. Visual hand-verification in the running tray (light +
+  dark) still outstanding -- not something a passing test confirms.
 
 ## SAFETY
 
