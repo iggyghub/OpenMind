@@ -490,6 +490,7 @@ def dispatch_due_events(
     stock_sentiment_labels: Optional[dict] = None,
     bear_case_fn: Optional[Callable[[str, str, int], "tuple[bool, str]"]] = None,
     correlation_matrix: Optional[pd.DataFrame] = None,
+    dd_cap: Optional[float] = None,
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
 
@@ -505,6 +506,11 @@ def dispatch_due_events(
     (not yet graduated, or graduated but disarmed) keeps trading against
     the ``broker`` passed in (paper), exactly as before this parameter
     existed.
+
+    ``dd_cap`` (BATCH-REPLAY S4/#1227): a positive fraction (e.g. 0.30)
+    threaded through to check_graduation's accumulated-replay drawdown
+    refusal gate. ``None`` (the default) skips that check entirely --
+    same conservative-default shape as every other optional gate here.
     """
     results: List[dict] = []
     # Scoped-down portfolio-manager arbitration: one claim set per dispatch
@@ -596,7 +602,9 @@ def dispatch_due_events(
                 latest_accession_fn=latest_accession_fn,
                 fundamentals_scan_fn=fundamentals_scan_fn,
                 vetted_tickers=vetted_tickers,
-            )  # S17 / S28 (#881)
+                store=store, dd_cap=dd_cap,
+                strategy_spec_id=name,
+            )  # S17 / S28 (#881) / BATCH-REPLAY S4 (#1227)
     return results
 
 
@@ -606,6 +614,9 @@ def _apply_lifecycle(
     latest_accession_fn: Optional[Callable] = None,
     fundamentals_scan_fn: Optional[Callable] = None,
     vetted_tickers: Optional[Any] = None,
+    store: Optional[StrategyStore] = None,
+    dd_cap: Optional[float] = None,
+    strategy_spec_id: Optional[str] = None,
 ) -> None:
     """Graduation / ramp / retirement checks after a dispatch.
 
@@ -619,12 +630,39 @@ def _apply_lifecycle(
     vetted_tickers are threaded straight through to check_graduation's own
     same-named params -- entirely optional, backward compatible when
     unset.
+
+    BATCH-REPLAY S4 (#1227): worst_backtest_dd/dd_cap are both fractions
+    (returns-based, e.g. -0.24 / 0.30). store is the SAME injectable seam
+    dispatch_due_events already threads to _run_paper_strategy (test-only
+    injection, defaults to the real StrategyStore) -- reused here rather
+    than a second, uninjectable bare construction. A strategy never
+    replayed has worst_drawdown=None, which check_graduation treats as
+    "skip this check", not a refusal.
+
+    ``strategy_spec_id`` matters and is NOT the same as ``name``: ``name``
+    here is really ``dispatch_id`` (S17's versioned identity, e.g.
+    "claim@v2", used for lifecycle/forward-record state) but
+    ``StrategyStore.strategy_specs`` is keyed by the bare, unversioned
+    strategy_id -- looking worst_drawdown up by ``name`` directly would
+    silently miss every strategy that has ever gone through save() (i.e.
+    virtually all of them), making this whole gate permanently inert
+    without ever raising an error. Falls back to ``name`` only if the
+    caller genuinely has no bare id to give (defensive, not the expected
+    path from dispatch_due_events).
     """
+    _store = store if store is not None else StrategyStore()
+    _spec = _store.get(strategy_spec_id if strategy_spec_id is not None else name)
+    # getattr, not a direct attribute access: several tests in
+    # test_trading_live_tick.py inject a minimal fake spec/store via this
+    # same store= seam that predates worst_drawdown and doesn't carry it.
+    _worst_dd = getattr(_spec, "worst_drawdown", None) if _spec is not None else None
     if lifecycle.check_graduation(
         name, forward_record, symbol=symbol,
         latest_accession_fn=latest_accession_fn,
         fundamentals_scan_fn=fundamentals_scan_fn,
         vetted_tickers=vetted_tickers,
+        worst_backtest_dd=_worst_dd,
+        dd_cap=dd_cap,
     ):
         size_pct = lifecycle.apply_position_ramp(name)
         logger.warning(
@@ -637,8 +675,23 @@ def _apply_lifecycle(
     # Wired, but inert until live fills exist: check_retirement returns early
     # unless status == "live" AND a live equity curve has been recorded, and
     # the drawdown branch is skipped entirely at worst_backtest_dd=0.0.
-    # 0.0 is honest -- nothing stores the gauntlet's worst backtest drawdown
-    # yet (StrategyCard carries an equity curve but no drawdown metric), and
-    # inventing one would fabricate the very threshold that halts a strategy.
+    #
+    # BATCH-REPLAY S4 (#1227) investigated wiring StrategyStore's real
+    # accumulated-replay worst_drawdown in here too, and deliberately did
+    # NOT: this comparison (`current_live_dd > 2.0 * worst_backtest_dd`,
+    # below) is in raw dollar cumulative-PnL units (peak_live_equity /
+    # live_equity_curve, see StrategyLifecycle.update_live_fill), but
+    # replay's own worst_drawdown is a FRACTION of returns (e.g. -0.24).
+    # Feeding one into the other without a real unit conversion would make
+    # this live-trading circuit breaker either never fire or fire on every
+    # strategy immediately, depending on sign/magnitude -- exactly the kind
+    # of fabricated signal ADR-0028 warns against, just introduced by
+    # accident instead of on purpose. check_graduation's new refusal gate
+    # (immediately above) uses worst_drawdown safely because it's a brand
+    # new fractional comparison with its own threshold, not reused units
+    # from an existing dollar-based one. Closing this one for real needs a
+    # deliberate design choice -- express current_live_dd as a fraction of
+    # some equity basis, or convert worst_drawdown to dollars via the
+    # strategy's qty and a reference price -- not a guess made in passing.
     if lifecycle.check_retirement(name, worst_backtest_dd=0.0):
         result["retired"] = True

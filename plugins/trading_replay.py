@@ -295,6 +295,17 @@ _batch_replay_task: Optional[asyncio.Task] = None
 _batch_replay_stop_flag = False
 
 
+def _rollup_worst_drawdowns() -> None:
+    """BATCH-REPLAY S4 (#1227): recompute every strategy's worst
+    accumulated-replay drawdown and persist it onto its StrategyStore spec.
+    Synchronous (called via run_in_executor from the async batch loop) --
+    plain sqlite calls, no I/O worth making async."""
+    worst_by_strategy = ReplayStore().get_worst_drawdown_by_strategy()
+    store = StrategyStore()
+    for strategy_id, worst in worst_by_strategy.items():
+        store.update_worst_drawdown(strategy_id, worst)
+
+
 def _compute_universe(symbols: Optional[list[str]]) -> list[str]:
     if symbols is not None:
         return list(symbols)
@@ -452,6 +463,13 @@ async def _run_batch_replay(start_date: str) -> None:
             # Reuse the exact run_replay path from simulate_period internals
             specs = StrategyStore().list_all()
             await loop.run_in_executor(None, run_replay, specs, cursor, month_end)
+            # BATCH-REPLAY S4 (#1227): roll up accumulated drawdown evidence
+            # into each strategy's worst_drawdown after every month -- feeds
+            # StrategyLifecycle.check_graduation's refusal gate. A full
+            # rollup over ALL accumulated replay_results, not just this
+            # month's, so it stays correct regardless of which strategies
+            # this particular month actually touched.
+            await loop.run_in_executor(None, _rollup_worst_drawdowns)
         except Exception as exc:
             logger.warning("[trading_replay] Batch replay failed for %s/%s: %s", cursor, month_end, exc)
             

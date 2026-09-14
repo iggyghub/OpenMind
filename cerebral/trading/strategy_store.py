@@ -58,6 +58,11 @@ class StrategySpec:
     qty: float = 1.0
     interval: str = "1d"
     risk_override_pct: Optional[float] = None
+    # BATCH-REPLAY S4 (#1227): worst (most negative) max_drawdown rolled up
+    # from every accumulated historical-replay run for this strategy. A
+    # derived value, recomputed as more replay data lands -- not part of
+    # save()'s versioning, updated via update_worst_drawdown() instead.
+    worst_drawdown: Optional[float] = None
 
 
 class StrategyStore:
@@ -75,6 +80,7 @@ class StrategyStore:
                 qty         REAL NOT NULL DEFAULT 1.0,
                 interval    TEXT NOT NULL DEFAULT '1d',
                 risk_override_pct REAL,
+                worst_drawdown REAL,
                 created_at  TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS strategy_versions (
@@ -102,6 +108,14 @@ class StrategyStore:
         # Migration: add risk_override_pct column if table exists but lacks it
         try:
             self._con.execute("ALTER TABLE strategy_specs ADD COLUMN risk_override_pct REAL")
+            self._con.commit()
+        except OperationalError:
+            pass  # Column already exists
+
+        # Migration: add worst_drawdown column if table exists but lacks it
+        # (BATCH-REPLAY S4/#1227)
+        try:
+            self._con.execute("ALTER TABLE strategy_specs ADD COLUMN worst_drawdown REAL")
             self._con.commit()
         except OperationalError:
             pass  # Column already exists
@@ -198,6 +212,7 @@ class StrategyStore:
             strategy_id=row["strategy_id"], symbol=row["symbol"],
             code=row["code"], qty=row["qty"], interval=row["interval"],
             risk_override_pct=row["risk_override_pct"],
+            worst_drawdown=row["worst_drawdown"],
         )
 
     def list_all(self) -> List[StrategySpec]:
@@ -207,9 +222,22 @@ class StrategyStore:
         return [
             StrategySpec(strategy_id=r["strategy_id"], symbol=r["symbol"],
                          code=r["code"], qty=r["qty"], interval=r["interval"],
-                         risk_override_pct=r["risk_override_pct"])
+                         risk_override_pct=r["risk_override_pct"],
+                         worst_drawdown=r["worst_drawdown"])
             for r in rows
         ]
+
+    def update_worst_drawdown(self, strategy_id: str, value: float) -> None:
+        """Persists the accumulated-replay worst-drawdown rollup (BATCH-REPLAY
+        S4/#1227) -- a derived value recomputed as more replay data lands,
+        not a new strategy version (no strategy_versions row, unlike save()).
+        No-ops silently if strategy_id doesn't exist (a replay run can
+        outlive the strategy it replayed, e.g. after a delete())."""
+        self._con.execute(
+            "UPDATE strategy_specs SET worst_drawdown = ? WHERE strategy_id = ?",
+            (value, strategy_id),
+        )
+        self._con.commit()
 
     def delete(self, strategy_id: str) -> None:
         """Remove a strategy's spec and its full version history.
