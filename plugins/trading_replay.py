@@ -290,6 +290,10 @@ class TradingReplayPlugin:
 _cache_warm_task: Optional[asyncio.Task] = None
 _cache_warm_stop_flag = False
 
+# Background task state for the batch-replay sweep
+_batch_replay_task: Optional[asyncio.Task] = None
+_batch_replay_stop_flag = False
+
 
 def _compute_universe(symbols: Optional[list[str]]) -> list[str]:
     if symbols is not None:
@@ -402,10 +406,23 @@ async def get_batch_replay_status() -> str:
 async def _run_batch_replay(start_date: str) -> None:
     global _batch_replay_task, _batch_replay_stop_flag
     settings = SettingsStore()
-    
-    # Load persisted state
+
+    # Load persisted state. batch_replay_start is only set the FIRST time a
+    # sweep begins -- boot-resume calls start_batch_replay() with no args,
+    # which defaults start_date to "2016-01-01" regardless of what the sweep
+    # actually started from; unconditionally overwriting batch_replay_start
+    # here would silently corrupt get_batch_replay_status's progress-percent
+    # math on every restart. "" (not None) is the "unset" sentinel -- matches
+    # discovery_stop_at's own convention (settings.py), since a still-unset
+    # key's default value must match its declared str type.
     cursor = settings.get("batch_replay_cursor") or start_date
-    settings.set("batch_replay_start", start_date)
+    if not settings.get("batch_replay_start"):
+        settings.set("batch_replay_start", start_date)
+    # Persisted eagerly, not only after the first month completes: if the
+    # process dies before month 1 finishes, a resume must still know where
+    # this sweep actually starts from, not rely on start_batch_replay's own
+    # "2016-01-01" default happening to match.
+    settings.set("batch_replay_cursor", cursor)
     settings.set("batch_replay_running", True)
     
     today = datetime.date.today().isoformat()
@@ -438,8 +455,11 @@ async def _run_batch_replay(start_date: str) -> None:
         except Exception as exc:
             logger.warning("[trading_replay] Batch replay failed for %s/%s: %s", cursor, month_end, exc)
             
-        # Advance the cursor by one calendar month, persist immediately
-        cursor = (start_dt + datetime.timedelta(days=1)).isoformat()
+        # Advance the cursor by one calendar month (next_month_start, not a
+        # single day -- a day-only advance re-replays nearly the same
+        # month on every iteration and never actually reaches today),
+        # persist immediately so a crash loses at most one month.
+        cursor = next_month_start.isoformat()
         settings.set("batch_replay_cursor", cursor)
         
         await asyncio.sleep(0)  # yield control

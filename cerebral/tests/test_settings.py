@@ -77,6 +77,9 @@ class TestSettingsStore:
             "trading_stock_sentiment_gate_enabled",
             "admission_cap",
             "design_system_autofix_enabled",
+            "batch_replay_running",
+            "batch_replay_cursor",
+            "batch_replay_start",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):

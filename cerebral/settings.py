@@ -130,6 +130,14 @@ _DEFAULTS: dict[str, Any] = {
     # logs; this only gates its side effects (filing a GitHub issue + queuing
     # a self_dev_campaign slice for each new gap found). Default OFF.
     "design_system_autofix_enabled": False,
+    # BATCH-REPLAY S1 (#1224): standing 1-month-batch historical replay
+    # sweep. batch_replay_cursor/batch_replay_start are ISO dates ("" means
+    # unset, same "empty string = unset ISO timestamp" convention as
+    # discovery_stop_at above -- not None, since _DEFAULTS.get() is the
+    # fallback for an unset key and must match the declared type.
+    "batch_replay_running":      False,
+    "batch_replay_cursor":       "",
+    "batch_replay_start":        "",
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -170,6 +178,9 @@ _TYPES: dict[str, type] = {
     "scheduler_heartbeat":       str,
     "admission_cap":             int,
     "design_system_autofix_enabled": bool,
+    "batch_replay_running":      bool,
+    "batch_replay_cursor":       str,
+    "batch_replay_start":        str,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
