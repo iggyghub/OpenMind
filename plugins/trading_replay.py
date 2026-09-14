@@ -31,6 +31,7 @@ from cerebral.trading.discovery import DiscoveryWatchlist
 from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.replay import run_replay
 from cerebral.trading.replay_store import ReplayStore
+from cerebral.settings import SettingsStore
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,41 @@ class TradingReplayPlugin:
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="start_batch_replay",
+                description=(
+                    "Begin (or resume) a standing background sweep through the "
+                    "strategy portfolio's full available history in 1-month "
+                    "chunks. Defaults to start_date='2016-01-01'. Resumes from "
+                    "the persisted cursor if a previous sweep is incomplete. "
+                    "Use stop_batch_replay to halt it after the current month."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "start_date": {"type": "string", "description": "Window start date, YYYY-MM-DD. Defaults to '2016-01-01'."},
+                    },
+                },
+            ),
+            Tool(
+                name="stop_batch_replay",
+                description=(
+                    "Signal the running batch-replay background task to finish "
+                    "its current month and stop. Returns a status message."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="get_batch_replay_status",
+                description=(
+                    "Read-only status of the batch replay sweep: running state, "
+                    "cursor position, and progress."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -149,6 +185,12 @@ class TradingReplayPlugin:
             return ToolResult(content=await start_cache_warm(args.get("interval", "1d"), args.get("symbols")))
         if tool_name == "stop_cache_warm":
             return ToolResult(content=await stop_cache_warm())
+        if tool_name == "start_batch_replay":
+            return ToolResult(content=await start_batch_replay(args.get("start_date")))
+        if tool_name == "stop_batch_replay":
+            return ToolResult(content=await stop_batch_replay())
+        if tool_name == "get_batch_replay_status":
+            return ToolResult(content=await get_batch_replay_status())
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _list_strategies(self, args: dict) -> ToolResult:
@@ -308,6 +350,105 @@ async def _run_cache_warm(interval: str, symbols: Optional[list[str]]) -> None:
                 else:
                     logger.warning("Cache warm failed for %s after 3 attempts", symbol)
         await asyncio.sleep(0)  # yield control between symbols
+
+
+async def start_batch_replay(start_date: Optional[str] = None) -> str:
+    global _batch_replay_task, _batch_replay_stop_flag
+    if start_date is None:
+        start_date = "2016-01-01"
+    if _batch_replay_task is not None and not _batch_replay_task.done():
+        return "Batch replay already running."
+    _batch_replay_stop_flag = False
+    _batch_replay_task = asyncio.create_task(_run_batch_replay(start_date))
+    return "Batch replay started."
+
+
+async def stop_batch_replay() -> str:
+    global _batch_replay_task
+    if _batch_replay_task is None or _batch_replay_task.done():
+        return "No batch replay running."
+    global _batch_replay_stop_flag
+    _batch_replay_stop_flag = True
+    await _batch_replay_task
+    return "Batch replay stopped."
+
+
+async def get_batch_replay_status() -> str:
+    settings = SettingsStore()
+    running = settings.get("batch_replay_running") or False
+    cursor = settings.get("batch_replay_cursor") or "N/A"
+    start = settings.get("batch_replay_start") or "N/A"
+    today = datetime.date.today().isoformat()
+    
+    try:
+        start_dt = datetime.date.fromisoformat(start) if start != "N/A" else datetime.date.today()
+        cursor_dt = datetime.date.fromisoformat(cursor) if cursor != "N/A" else start_dt
+        total_months = int((datetime.date.today() - start_dt).days / 30) + 1
+        done_months = int((cursor_dt - start_dt).days / 30)
+    except (ValueError, TypeError):
+        total_months = 0
+        done_months = 0
+
+    return json.dumps({
+        "running": running,
+        "cursor_date": cursor,
+        "start_date": start,
+        "end_date": today,
+        "months_done": done_months,
+        "months_total": total_months
+    })
+
+
+async def _run_batch_replay(start_date: str) -> None:
+    global _batch_replay_task, _batch_replay_stop_flag
+    settings = SettingsStore()
+    
+    # Load persisted state
+    cursor = settings.get("batch_replay_cursor") or start_date
+    settings.set("batch_replay_start", start_date)
+    settings.set("batch_replay_running", True)
+    
+    today = datetime.date.today().isoformat()
+    loop = asyncio.get_event_loop()
+    
+    while True:
+        if _batch_replay_stop_flag:
+            break
+            
+        # Compute current month's [start, end] window from the cursor
+        start_dt = datetime.date.fromisoformat(cursor)
+        if start_dt.month == 12:
+            next_month_start = datetime.date(start_dt.year + 1, 1, 1)
+        else:
+            next_month_start = datetime.date(start_dt.year, start_dt.month + 1, 1)
+        
+        month_end = (next_month_start - datetime.timedelta(days=1)).isoformat()
+        if month_end > today:
+            month_end = today
+            
+        if cursor > today:
+            break
+            
+        logger.info("[trading_replay] Batch replay month: %s to %s", cursor, month_end)
+        
+        try:
+            # Reuse the exact run_replay path from simulate_period internals
+            specs = StrategyStore().list_all()
+            await loop.run_in_executor(None, run_replay, specs, cursor, month_end)
+        except Exception as exc:
+            logger.warning("[trading_replay] Batch replay failed for %s/%s: %s", cursor, month_end, exc)
+            
+        # Advance the cursor by one calendar month, persist immediately
+        cursor = (start_dt + datetime.timedelta(days=1)).isoformat()
+        settings.set("batch_replay_cursor", cursor)
+        
+        await asyncio.sleep(0)  # yield control
+        
+        if cursor >= today:
+            break
+            
+    settings.set("batch_replay_running", False)
+    logger.info("[trading_replay] Batch replay finished.")
 
 
 def create() -> TradingReplayPlugin:
