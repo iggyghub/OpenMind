@@ -1292,12 +1292,16 @@ describe('renderReplayPanel (S2/#848)', () => {
       const data = {
         positions: [],
         alerts: [],
-        replay: { running: false, current_month: '2026-08', months_done: 0, total_months: 12 }
+        // cursor_date/months_total are get_batch_replay_status's real field
+        // names (plugins/trading_replay.py S1) -- the fixture originally
+        // used current_month/total_months, matching a real bug in the S2
+        // code that read those same wrong keys (fixed alongside S3).
+        replay: { running: false, cursor_date: '2026-08-01', months_done: 0, months_total: 12 }
       };
       TradingPanel.renderReplayPanel(data, mount);
       expect(mount.innerHTML).toContain('Stopped');
       expect(mount.innerHTML).toContain('>Start<');
-      expect(mount.innerHTML).toContain('Processing: 2026-08');
+      expect(mount.innerHTML).toContain('Processing: 2026-08-01');
       expect(mount.innerHTML).toContain('0 / 12 months');
     });
   });
@@ -1308,12 +1312,12 @@ describe('renderReplayPanel (S2/#848)', () => {
       const data = {
         positions: [],
         alerts: [],
-        replay: { running: true, current_month: '2026-09', months_done: 5, total_months: 12 }
+        replay: { running: true, cursor_date: '2026-09-01', months_done: 5, months_total: 12 }
       };
       TradingPanel.renderReplayPanel(data, mount);
       expect(mount.innerHTML).toContain('Running');
       expect(mount.innerHTML).toContain('>Stop<');
-      expect(mount.innerHTML).toContain('Processing: 2026-09');
+      expect(mount.innerHTML).toContain('Processing: 2026-09-01');
       expect(mount.innerHTML).toContain('5 / 12 months');
     });
   });
@@ -1356,9 +1360,79 @@ describe('renderReplayPanel (S2/#848)', () => {
 
       // First call is from the poll interval trigger in our stub
       expect(calls.some(c => c.type === 'call_tool' && c.data.name === 'get_batch_replay_status')).toBe(true);
-      
+
       // Restore
       global.setInterval = origSetInterval;
+    });
+  });
+
+  // S3/#1226: timeline bar -- progress across the full available replay
+  // range. Purely presentational, reads get_batch_replay_status only.
+  describe('replay timeline (S3/#1226)', () => {
+    test('renders an empty (0%) bar when nothing has been processed yet', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        const data = {
+          replay: {
+            running: false, months_done: 0, months_total: 12,
+            start_date: '2016-01-01', cursor_date: '2016-01-01', end_date: '2026-09-14',
+          },
+        };
+        TradingPanel.renderReplayPanel(data, mount);
+        expect(mount.innerHTML).toContain('replay-timeline-fill');
+        expect(mount.innerHTML).toMatch(/replay-timeline-fill" style="width: 0(\.\d+)?%;"/);
+        expect(mount.innerHTML).toContain('2016-01-01');
+        expect(mount.innerHTML).toContain('2026-09-14');
+      });
+    });
+
+    test('renders a full (100%) bar when the sweep has reached today', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        const data = {
+          replay: {
+            running: false, months_done: 12, months_total: 12,
+            start_date: '2016-01-01', cursor_date: '2026-09-14', end_date: '2026-09-14',
+          },
+        };
+        TradingPanel.renderReplayPanel(data, mount);
+        expect(mount.innerHTML).toMatch(/replay-timeline-fill" style="width: 100%;"/);
+      });
+    });
+
+    test('renders a partial bar proportional to elapsed range, not month count', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        const data = {
+          replay: {
+            running: true, months_done: 5, months_total: 12,
+            start_date: '2016-01-01', cursor_date: '2021-01-01', end_date: '2026-01-01',
+          },
+        };
+        TradingPanel.renderReplayPanel(data, mount);
+        // 2016-01-01 -> 2026-01-01 is 10 years; 2016-01-01 -> 2021-01-01 is
+        // 5 years -- ~50%, not 5/12 (~42%), since this bar tracks calendar
+        // position, not months-done count.
+        const match = mount.innerHTML.match(/replay-timeline-fill" style="width: ([\d.]+)%;"/);
+        expect(match).not.toBeNull();
+        const pct = parseFloat(match[1]);
+        expect(pct).toBeGreaterThan(45);
+        expect(pct).toBeLessThan(55);
+      });
+    });
+
+    test('renders a 0% bar without crashing when no sweep has ever started (N/A dates)', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        const data = {
+          replay: { running: false, months_done: 0, months_total: 0, start_date: 'N/A', cursor_date: 'N/A', end_date: '2026-09-14' },
+        };
+        TradingPanel.renderReplayPanel(data, mount);
+        expect(mount.innerHTML).toContain('replay-timeline-fill');
+        expect(mount.innerHTML).toMatch(/replay-timeline-fill" style="width: 0(\.\d+)?%;"/);
+        expect(mount.innerHTML).not.toContain('NaN');
+        expect(mount.innerHTML).not.toContain('undefined');
+      });
     });
   });
 });
