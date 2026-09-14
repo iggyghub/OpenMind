@@ -29,13 +29,13 @@ own trading-domain slices needed almost every time.
 
 ## Next slice -- start here
 
-- **Active:** S2 -- #1225
+- **Active:** S3 -- #1226
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1 -- #1224 -- backend: start/stop/status tools, 1-month cadence, persisted resumable cursor
-- [ ] S2 -- #1225 -- Trading pane sub-tab: Start/Stop button + status
+- [x] S2 -- #1225 -- Trading pane sub-tab: Start/Stop button + status
 - [ ] S3 -- #1226 -- timeline visual: progress across the full replay range
 - [ ] S4 -- #1227 -- feed accumulated drawdown into check_retirement + a new check_graduation refusal gate
 
@@ -55,6 +55,15 @@ already accumulated a few real batches to test against.
   clobbered on every boot-resume, and both new tests touched real production
   settings via a dead CEREBRAL_DATA_DIR env var plus called asyncio.run()
   inside a sync test body in an asyncio_mode=auto suite)
+- PR #1230 -- S2: Trading pane sub-tab (merged 2026-09-14, hand-fixed after
+  self_dev's own attempt correctly self-blocked on tests_failed -- but the
+  block's own reason was pytest dots output, meaning verification only ran
+  the Python suite and never actually executed this slice's own Jest tests
+  at all. Real bug: three functions written as bare `function name(){}`
+  declarations directly inside the module's `return {...}` object literal
+  -- not valid object-literal syntax, the whole module failed to even
+  `require()`. Also a genuine resource leak in the new interval test (a
+  real uncleared 2000ms setInterval, "Jest did not exit"))
 
 ## SAFETY
 
