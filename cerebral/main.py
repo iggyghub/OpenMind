@@ -3445,6 +3445,12 @@ _discovery_plugin.ensure_discovery_event()
 _ipo_calendar_plugin.ensure_ipo_calendar_event()
 _design_system_plugin.ensure_design_system_event()
 
+# Boot-resume batch replay if a sweep was interrupted previously
+if _settings.get("batch_replay_running"):
+    import asyncio
+    from plugins.trading_replay import start_batch_replay
+    asyncio.create_task(start_batch_replay())
+
 async def _reset_paper_trading() -> dict:
     """Archives current paper-trading fills as a historical block (does
     NOT delete anything -- see ForwardRecord.reset_paper()) and resets
