@@ -1340,16 +1340,20 @@ describe('renderReplayPanel (S2/#848)', () => {
       const mockSendEventFn = (ev) => {
         calls.push(ev);
       };
-      // Stub setInterval to avoid real timer in tests
+      // Stub setInterval to avoid a real, never-cleared timer leaking past
+      // this test (a genuine 2000ms recurring interval here would keep the
+      // whole jest process alive -- "Jest did not exit one second after the
+      // test run has completed" is exactly that symptom, hit for real
+      // authoring this test). Call fn() once to prove the poll fires, and
+      // return a fake handle -- no real timer needed for that assertion.
       const origSetInterval = global.setInterval;
       global.setInterval = (fn, delay) => {
-        // Advance time immediately to trigger first call
         fn();
-        return origSetInterval(fn, delay);
+        return 1;
       };
-      
+
       TradingPanel.renderReplayPanel({ replay: { running: false } }, mount, mockSendEventFn);
-      
+
       // First call is from the poll interval trigger in our stub
       expect(calls.some(c => c.type === 'call_tool' && c.data.name === 'get_batch_replay_status')).toBe(true);
       

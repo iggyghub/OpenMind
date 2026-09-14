@@ -2001,6 +2001,106 @@ function renderTradeLog(data, container) {
   }
 }
 
+/**
+ * Batch Replay sub-tab helpers (S2/#848). Pure string builder for the
+ * control UI, matching the file's own convention for sub-tab renderers.
+ * Delegates to S1's start/stop_batch_replay tools via sendEventFn.
+ * Shows a clear "Not available" state when S1 hasn't landed yet, never
+ * throws on missing data.
+ */
+function _renderReplayControl(status) {
+  if (!status) {
+    return `
+      <div class="replay-control">
+        <h3>Batch Replay</h3>
+        <div class="replay-control-row">
+          <button class="replay-toggle-btn" disabled>Start</button>
+          <span class="replay-status">Not available</span>
+        </div>
+        <div class="replay-control-row">
+          <span class="replay-info">Requires S1 tools: start_batch_replay / stop_batch_replay</span>
+        </div>
+      </div>
+    `;
+  }
+  const running = !!status.running;
+  const month = status.current_month || '—';
+  const done = status.months_done ?? 0;
+  const total = status.total_months ?? 0;
+  const progress = total > 0 ? `${done} / ${total} months` : '';
+  const label = running ? 'Stop' : 'Start';
+
+  return `
+    <div class="replay-control">
+      <h3>Batch Replay</h3>
+      <div class="replay-control-row">
+        <button class="replay-toggle-btn">${label}</button>
+        <span class="replay-status">${running ? 'Running' : 'Stopped'}</span>
+      </div>
+      <div class="replay-control-row">
+        <span class="replay-info">Processing: ${month} &nbsp; ${progress}</span>
+      </div>
+    </div>
+  `;
+}
+
+function _wireReplayControl(mount, sendEventFn) {
+  const btn = mount.querySelector('.replay-toggle-btn');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      if (!sendEventFn) return;
+      const isRunning = btn.textContent.trim() === 'Stop';
+      const name = isRunning ? 'stop_batch_replay' : 'start_batch_replay';
+      sendEventFn({ type: 'call_tool', data: { name: name, args: {} } });
+      // Immediate poll to update UI quickly after user action
+      sendEventFn({ type: 'call_tool', data: { name: 'get_batch_replay_status', args: {} } });
+    });
+  }
+}
+
+/**
+ * Renders the Batch Replay sub-tab (S2/#848). Start/Stop toggle + status
+ * display, polling `get_batch_replay_status` every 2s while mounted.
+ * @param {Object} data - trading_update payload (expects `replay` or `batch_replay` key)
+ * @param {HTMLElement} [container] - defaults to #trading-replay-mount
+ * @param {Function} [sendEventFn] - IPC transport for call_tool events
+ */
+function renderReplayPanel(data, container, sendEventFn) {
+  const mount = container || document.getElementById('trading-replay-mount');
+  if (!mount) return;
+
+  if (mount._replayPollInterval) {
+    clearInterval(mount._replayPollInterval);
+    delete mount._replayPollInterval;
+  }
+
+  if (!document.getElementById('replay-control-styles')) {
+    const style = document.createElement('style');
+    style.id = 'replay-control-styles';
+    style.textContent = `
+      .replay-control { margin-bottom: 16px; padding: 12px; background: var(--bg-elev, #f8f9fa); border-radius: 6px; border: 1px solid var(--border, #eee); font-family: sans-serif; }
+      .replay-control h3 { margin: 0 0 8px; font-size: 14px; color: var(--text, #333); }
+      .replay-control-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+      .replay-toggle-btn { padding: 4px 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; color: #fff; background: #2ecc71; }
+      .replay-toggle-btn:disabled { background: var(--border, #ccc); color: var(--text-muted, #888); cursor: default; }
+      .replay-status { font-size: 12px; color: var(--text-muted, #555); }
+      .replay-info { font-size: 12px; color: var(--text-muted, #555); }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const status = (data && data.replay) || (data && data.batch_replay) || null;
+
+  mount.innerHTML = _renderReplayControl(status);
+  _wireReplayControl(mount, sendEventFn);
+
+  if (sendEventFn) {
+    mount._replayPollInterval = setInterval(() => {
+      sendEventFn({ type: 'call_tool', data: { name: 'get_batch_replay_status', args: {} } });
+    }, 2000);
+  }
+}
+
 return {
   initTradingPanel:    initTradingPanel,
   renderTradingUpdate: renderTradingUpdate,
@@ -2023,107 +2123,6 @@ return {
   buildDeleteBookEvent: buildDeleteBookEvent,
   buildHaltStrategyEvent: buildHaltStrategyEvent,
   buildResumeStrategyEvent: buildResumeStrategyEvent,
-
-  /**
-   * Batch Replay sub-tab helpers (S2/#848). Pure string builder for the
-   * control UI, matching the file's own convention for sub-tab renderers.
-   * Delegates to S1's start/stop_batch_replay tools via sendEventFn.
-   * Shows a clear "Not available" state when S1 hasn't landed yet, never
-   * throws on missing data.
-   */
-  function _renderReplayControl(status) {
-    if (!status) {
-      return `
-        <div class="replay-control">
-          <h3>Batch Replay</h3>
-          <div class="replay-control-row">
-            <button class="replay-toggle-btn" disabled>Start</button>
-            <span class="replay-status">Not available</span>
-          </div>
-          <div class="replay-control-row">
-            <span class="replay-info">Requires S1 tools: start_batch_replay / stop_batch_replay</span>
-          </div>
-        </div>
-      `;
-    }
-    const running = !!status.running;
-    const month = status.current_month || '—';
-    const done = status.months_done ?? 0;
-    const total = status.total_months ?? 0;
-    const progress = total > 0 ? `${done} / ${total} months` : '';
-    const label = running ? 'Stop' : 'Start';
-    
-    return `
-      <div class="replay-control">
-        <h3>Batch Replay</h3>
-        <div class="replay-control-row">
-          <button class="replay-toggle-btn">${label}</button>
-          <span class="replay-status">${running ? 'Running' : 'Stopped'}</span>
-        </div>
-        <div class="replay-control-row">
-          <span class="replay-info">Processing: ${month} &nbsp; ${progress}</span>
-        </div>
-      </div>
-    `;
-  }
-
-  function _wireReplayControl(mount, sendEventFn) {
-    const btn = mount.querySelector('.replay-toggle-btn');
-    if (btn) {
-      btn.addEventListener('click', () => {
-        if (!sendEventFn) return;
-        const isRunning = btn.textContent.trim() === 'Stop';
-        const name = isRunning ? 'stop_batch_replay' : 'start_batch_replay';
-        sendEventFn({ type: 'call_tool', data: { name: name, args: {} } });
-        // Immediate poll to update UI quickly after user action
-        sendEventFn({ type: 'call_tool', data: { name: 'get_batch_replay_status', args: {} } });
-      });
-    }
-  }
-
-  /**
-   * Renders the Batch Replay sub-tab (S2/#848). Start/Stop toggle + status
-   * display, polling `get_batch_replay_status` every 2s while mounted.
-   * @param {Object} data - trading_update payload (expects `replay` or `batch_replay` key)
-   * @param {HTMLElement} [container] - defaults to #trading-replay-mount
-   * @param {Function} [sendEventFn] - IPC transport for call_tool events
-   */
-  function renderReplayPanel(data, container, sendEventFn) {
-    const mount = container || document.getElementById('trading-replay-mount');
-    if (!mount) return;
-
-    if (mount._replayPollInterval) {
-      clearInterval(mount._replayPollInterval);
-      delete mount._replayPollInterval;
-    }
-
-    if (!document.getElementById('replay-control-styles')) {
-      const style = document.createElement('style');
-      style.id = 'replay-control-styles';
-      style.textContent = `
-        .replay-control { margin-bottom: 16px; padding: 12px; background: var(--bg-elev, #f8f9fa); border-radius: 6px; border: 1px solid var(--border, #eee); font-family: sans-serif; }
-        .replay-control h3 { margin: 0 0 8px; font-size: 14px; color: var(--text, #333); }
-        .replay-control-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-        .replay-toggle-btn { padding: 4px 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; color: #fff; background: #2ecc71; }
-        .replay-toggle-btn:disabled { background: var(--border, #ccc); color: var(--text-muted, #888); cursor: default; }
-        .replay-status { font-size: 12px; color: var(--text-muted, #555); }
-        .replay-info { font-size: 12px; color: var(--text-muted, #555); }
-      `;
-      document.head.appendChild(style);
-    }
-
-    const status = (data && data.replay) || (data && data.batch_replay) || null;
-    
-    mount.innerHTML = _renderReplayControl(status);
-    _wireReplayControl(mount, sendEventFn);
-
-    if (sendEventFn) {
-      mount._replayPollInterval = setInterval(() => {
-        sendEventFn({ type: 'call_tool', data: { name: 'get_batch_replay_status', args: {} } });
-      }, 2000);
-    }
-  },
-
   renderReplayPanel: renderReplayPanel,
 };
 
