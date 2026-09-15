@@ -182,6 +182,17 @@ async def test_cross_stock_replay_processes_all_pairs_and_persists_final_cursor(
     assert isolated_strategies.get("s1").cross_stock_consistency == pytest.approx(1.0)
     assert isolated_strategies.get("s2").cross_stock_consistency == pytest.approx(1.0)
 
+    # S5 (#1238): throughput actually measured and persisted, and the
+    # top-consistent list reflects the real rollup -- not dead fields
+    # nothing ever populates.
+    assert status["last_run_processed"] == 4
+    assert status["last_run_rate_per_hour"] > 0
+    top_ids = {row["strategy_id"] for row in status["top_consistent"]}
+    assert top_ids == {"s1", "s2"}
+    for row in status["top_consistent"]:
+        assert row["consistency"] == pytest.approx(1.0)
+        assert row["stocks_tested"] == 2
+
     results = isolated_cross.get_results_by_strategy("s1")
     assert {r["symbol"] for r in results} == {"X", "Y"}
 

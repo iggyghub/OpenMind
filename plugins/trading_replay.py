@@ -23,6 +23,7 @@ import asyncio
 import datetime
 import json
 import logging
+import time
 from typing import Optional
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
@@ -575,8 +576,28 @@ async def get_cross_stock_replay_status() -> str:
     cursor_strategy = settings.get("cross_stock_cursor_strategy_id") or "N/A"
     cursor_symbol = settings.get("cross_stock_cursor_symbol") or "N/A"
 
-    pairs = build_pairs(StrategyStore().list_all(), BASKET)
+    specs = StrategyStore().list_all()
+    pairs = build_pairs(specs, BASKET)
     pairs_done = _find_cursor_position(pairs, cursor_strategy if cursor_strategy != "N/A" else "", cursor_symbol)
+
+    # S5 (#1238): "most consistent across stocks" list. Ranked by
+    # cross_stock_consistency, but ALWAYS paired with how many stocks that
+    # score is based on -- a 100% consistency off 2 tested stocks reads
+    # very differently than off 80, and showing the bare fraction alone
+    # would misrepresent a small, early sample as a settled result.
+    tested_counts = CrossStockStore().get_tested_count_by_strategy()
+    ranked = sorted(
+        (s for s in specs if s.cross_stock_consistency is not None),
+        key=lambda s: s.cross_stock_consistency, reverse=True,
+    )
+    top_consistent = [
+        {
+            "strategy_id": s.strategy_id,
+            "consistency": s.cross_stock_consistency,
+            "stocks_tested": tested_counts.get(s.strategy_id, 0),
+        }
+        for s in ranked[:5]
+    ]
 
     return json.dumps({
         "running": running,
@@ -584,6 +605,9 @@ async def get_cross_stock_replay_status() -> str:
         "cursor_symbol": cursor_symbol,
         "pairs_done": pairs_done,
         "pairs_total": len(pairs),
+        "last_run_processed": settings.get("cross_stock_last_run_processed") or 0,
+        "last_run_rate_per_hour": settings.get("cross_stock_last_run_rate_per_hour") or 0.0,
+        "top_consistent": top_consistent,
     })
 
 
@@ -607,6 +631,7 @@ async def _run_cross_stock_replay() -> None:
 
     loop = asyncio.get_event_loop()
     processed = 0
+    run_started_mono = time.monotonic()
     for spec, symbol in pairs[start_idx:]:
         if _cross_stock_stop_flag:
             break
@@ -637,6 +662,16 @@ async def _run_cross_stock_replay() -> None:
     # pair's real backtest, but not worth a full GROUP BY over the whole
     # results table after every individual pair.
     rollup_consistency(StrategyStore(), store)
+    # S5 (#1238): measured throughput, persisted (not just logged) so the
+    # UI can read it directly instead of parsing cerebral.err.log. Only
+    # updated when this run actually processed something and took
+    # measurable time -- an interrupted-immediately run (e.g. stopped
+    # right after starting) leaves the prior real measurement in place
+    # rather than overwriting it with a meaningless near-zero rate.
+    elapsed_seconds = time.monotonic() - run_started_mono
+    if processed > 0 and elapsed_seconds > 0:
+        settings.set("cross_stock_last_run_processed", processed)
+        settings.set("cross_stock_last_run_rate_per_hour", processed / elapsed_seconds * 3600)
     # CROSS-STOCK-VALIDATION S3 (#1236): actual pairs-processed-this-run,
     # not just "pairs available" -- this is the real throughput number the
     # nightly soft-cap and any completion estimate calibrate against,

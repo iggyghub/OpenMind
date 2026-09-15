@@ -1436,3 +1436,154 @@ describe('renderReplayPanel (S2/#848)', () => {
     });
   });
 });
+
+// CROSS-STOCK-VALIDATION S5 (#1238): a second, independent sweep section
+// within the same History tab as renderReplayPanel above -- deliberately
+// not repeating that slice's own gap (built + unit-tested, never wired
+// into main.html's tab strip at all).
+describe('renderCrossStockPanel (S5/#1238)', () => {
+  test('renders "Not available" placeholder when cross_stock status is missing', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderCrossStockPanel({}, mount);
+      expect(mount.innerHTML).toContain('Not available');
+      expect(mount.innerHTML).toContain('cross-stock-toggle-btn');
+      expect(mount.innerHTML).not.toContain('Running');
+    });
+  });
+
+  test('renders stopped state with pairs progress', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        cross_stock: {
+          running: false, cursor_strategy_id: 'N/A', cursor_symbol: 'N/A',
+          pairs_done: 0, pairs_total: 28300, last_run_processed: 0,
+          last_run_rate_per_hour: 0, top_consistent: [],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain('Stopped');
+      expect(mount.innerHTML).toContain('>Start<');
+      expect(mount.innerHTML).toContain('Pairs: 0 / 28300');
+      expect(mount.innerHTML).toContain('No throughput measured yet');
+    });
+  });
+
+  test('renders running state with Stop button', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        cross_stock: {
+          running: true, cursor_strategy_id: 'foo', cursor_symbol: 'AAPL',
+          pairs_done: 100, pairs_total: 28300, last_run_processed: 0,
+          last_run_rate_per_hour: 0, top_consistent: [],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain('Running');
+      expect(mount.innerHTML).toContain('>Stop<');
+      expect(mount.innerHTML).toContain('Pairs: 100 / 28300');
+    });
+  });
+
+  test('shows a completion estimate once real throughput is measured', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        cross_stock: {
+          running: false, pairs_done: 700, pairs_total: 28300,
+          last_run_processed: 700, last_run_rate_per_hour: 700,
+          top_consistent: [],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain('700 pairs/hour');
+      expect(mount.innerHTML).toMatch(/est\. \d+ more nights?/);
+      expect(mount.innerHTML).not.toContain('NaN');
+    });
+  });
+
+  test('renders the most-consistent list with strategy id, consistency %, and sample size', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        cross_stock: {
+          running: false, pairs_done: 10, pairs_total: 28300,
+          last_run_processed: 10, last_run_rate_per_hour: 100,
+          top_consistent: [
+            { strategy_id: 'buy when RSI crosses 30', consistency: 0.9, stocks_tested: 80 },
+            { strategy_id: 'sell on death cross', consistency: 0.5, stocks_tested: 2 },
+          ],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain('buy when RSI crosses 30');
+      expect(mount.innerHTML).toContain('90%');
+      expect(mount.innerHTML).toContain('80');
+      expect(mount.innerHTML).toContain('sell on death cross');
+      expect(mount.innerHTML).toContain('50%');
+    });
+  });
+
+  test('shows a placeholder when nothing has a rollup yet', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        cross_stock: {
+          running: false, pairs_done: 0, pairs_total: 28300,
+          last_run_processed: 0, last_run_rate_per_hour: 0, top_consistent: [],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain('No strategies have a rollup yet');
+    });
+  });
+
+  test('handles missing optional fields gracefully', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderCrossStockPanel({ cross_stock: { running: true } }, mount);
+      expect(mount.innerHTML).toContain('Running');
+      expect(mount.innerHTML).not.toContain('undefined');
+      expect(mount.innerHTML).not.toContain('NaN');
+    });
+  });
+
+  test('polls get_cross_stock_replay_status on an interval when sendEventFn is provided', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const calls = [];
+      const mockSendEventFn = (ev) => { calls.push(ev); };
+      const origSetInterval = global.setInterval;
+      global.setInterval = (fn, delay) => { fn(); return 1; };
+
+      TradingPanel.renderCrossStockPanel({ cross_stock: { running: false } }, mount, mockSendEventFn);
+
+      expect(calls.some(c => c.type === 'call_tool' && c.data.name === 'get_cross_stock_replay_status')).toBe(true);
+
+      global.setInterval = origSetInterval;
+    });
+  });
+
+  test('a long strategy-description strategy_id is truncated with a title attribute for the full text', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const longId = 'A'.repeat(120);
+      const data = {
+        cross_stock: {
+          running: false, pairs_done: 1, pairs_total: 1,
+          last_run_processed: 1, last_run_rate_per_hour: 1,
+          top_consistent: [{ strategy_id: longId, consistency: 1.0, stocks_tested: 1 }],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain(`title="${longId}"`);
+      // The visible cell text is truncated with an ellipsis -- the raw
+      // 120-char run only appears once, inside the title attribute
+      // (for a tooltip), not repeated as the displayed content too.
+      expect(mount.innerHTML).toContain('…');
+      expect(mount.innerHTML.split(longId).length - 1).toBe(1);
+    });
+  });
+});
