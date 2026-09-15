@@ -85,6 +85,8 @@ class TestSettingsStore:
             "cross_stock_cursor_strategy_id",
             "cross_stock_cursor_symbol",
             "cross_stock_night_started_at",
+            "cross_stock_last_run_processed",
+            "cross_stock_last_run_rate_per_hour",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):

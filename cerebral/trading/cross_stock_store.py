@@ -102,3 +102,18 @@ class CrossStockStore:
                GROUP BY strategy_id"""
         )
         return {row["strategy_id"]: row["consistency"] for row in cur.fetchall()}
+
+    def get_tested_count_by_strategy(self) -> dict[str, int]:
+        """Returns {strategy_id: count of pairs that actually ran} -- same
+        WHERE net_return IS NOT NULL as get_consistency_by_strategy, so a
+        consistency score is never shown without the sample size it's
+        based on (S5/#1238: a 100% consistency off 2 tested stocks reads
+        very differently than off 80)."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT strategy_id, COUNT(*) AS tested
+               FROM cross_stock_results
+               WHERE net_return IS NOT NULL
+               GROUP BY strategy_id"""
+        )
+        return {row["strategy_id"]: row["tested"] for row in cur.fetchall()}

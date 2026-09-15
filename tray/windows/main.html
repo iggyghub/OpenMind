@@ -6601,6 +6601,7 @@
 
       <div class="trd-panel" data-trd-panel="replay" hidden>
         <div id="trading-replay-mount"></div>
+        <div id="trading-cross-stock-mount"></div>
       </div>
     </section>
 
@@ -7488,6 +7489,20 @@
             const replayMount = document.getElementById('trading-replay-mount');
             if (replayMount) {
               window.TradingPanelMod.renderReplayPanel({ replay: replayStatus }, replayMount, sendEvent);
+            }
+          }
+          // CROSS-STOCK-VALIDATION (#1234-#1238): same one-handler-covers-
+          // activation-and-auto-poll pattern as get_batch_replay_status
+          // just above -- a distinct, concurrently-running sweep with its
+          // own status tool and its own section within the History tab.
+          if (event.data && event.data.name === 'get_cross_stock_replay_status' && window.TradingPanelMod) {
+            let crossStockStatus = null;
+            if (!event.data.is_error) {
+              try { crossStockStatus = JSON.parse(event.data.content); } catch (_e) {}
+            }
+            const crossStockMount = document.getElementById('trading-cross-stock-mount');
+            if (crossStockMount) {
+              window.TradingPanelMod.renderCrossStockPanel({ cross_stock: crossStockStatus }, crossStockMount, sendEvent);
             }
           }
           break;
@@ -12737,6 +12752,12 @@
         // waiting up to 2s for the panel's own internal setInterval to fire.
         window.TradingPanelMod.renderReplayPanel({}, null, sendEvent);
         sendEvent({ type: 'call_tool', data: { name: 'get_batch_replay_status', args: {} } });
+        // CROSS-STOCK-VALIDATION S5 (#1238): same tab, a second independent
+        // section -- mirrors the Batch Replay activation immediately above,
+        // deliberately not repeating that slice's own miss (built + unit-
+        // tested, never wired into main.html).
+        window.TradingPanelMod.renderCrossStockPanel({}, null, sendEvent);
+        sendEvent({ type: 'call_tool', data: { name: 'get_cross_stock_replay_status', args: {} } });
       }
     }
 

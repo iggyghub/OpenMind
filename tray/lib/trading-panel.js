@@ -2149,6 +2149,156 @@ function renderReplayPanel(data, container, sendEventFn) {
   }
 }
 
+/**
+ * Cross-stock sweep section (CROSS-STOCK-VALIDATION S5/#1238). Same
+ * sub-tab-renderer shape as _renderReplayControl above, but a distinct
+ * feature answering a different question -- batch replay tracks one
+ * strategy against its own registered stock over calendar time; this
+ * tracks whether a strategy's rule holds up across a 100-stock basket at
+ * all, so a strategy name here truncates hard (these are full natural-
+ * language descriptions, not short tickers -- see StrategyStore.list_all()).
+ */
+function _truncateStrategyId(id, max) {
+  if (!id || id.length <= max) return id || '';
+  return id.slice(0, max - 1) + '…';
+}
+
+function _renderCrossStockControl(status) {
+  if (!status) {
+    return `
+      <div class="replay-control">
+        <h3>Cross-Stock Validation</h3>
+        <div class="replay-control-row">
+          <button class="cross-stock-toggle-btn" disabled>Start</button>
+          <span class="replay-status">Not available</span>
+        </div>
+      </div>
+    `;
+  }
+  const running = !!status.running;
+  const label = running ? 'Stop' : 'Start';
+  const pairsDone = status.pairs_done ?? 0;
+  const pairsTotal = status.pairs_total ?? 0;
+  const rate = status.last_run_rate_per_hour || 0;
+
+  let etaLine = '<span class="replay-info">No throughput measured yet -- runs the first night to calibrate.</span>';
+  if (rate > 0 && pairsTotal > pairsDone) {
+    const hoursLeft = (pairsTotal - pairsDone) / rate;
+    const nightsLeft = Math.ceil(hoursLeft / 8); // 8h nightly window
+    etaLine = `<span class="replay-info">~${Math.round(rate)} pairs/hour — est. ${nightsLeft} more night${nightsLeft === 1 ? '' : 's'}</span>`;
+  } else if (rate > 0) {
+    etaLine = `<span class="replay-info">~${Math.round(rate)} pairs/hour (last run)</span>`;
+  }
+
+  const topRows = (status.top_consistent || []).map((row) => `
+    <tr>
+      <td class="cross-stock-strat" title="${_escapeHtml(row.strategy_id)}">${_escapeHtml(_truncateStrategyId(row.strategy_id, 60))}</td>
+      <td>${Math.round(row.consistency * 100)}%</td>
+      <td>${row.stocks_tested}</td>
+    </tr>
+  `).join('');
+
+  const topTable = (status.top_consistent && status.top_consistent.length)
+    ? `
+      <table class="cross-stock-top-table">
+        <thead><tr><th>Strategy</th><th>Consistent</th><th>Tested</th></tr></thead>
+        <tbody>${topRows}</tbody>
+      </table>
+    `
+    : '<span class="replay-info">No strategies have a rollup yet.</span>';
+
+  return `
+    <div class="replay-control">
+      <h3>Cross-Stock Validation</h3>
+      <div class="replay-control-row">
+        <button class="cross-stock-toggle-btn">${label}</button>
+        <span class="replay-status">${running ? 'Running' : 'Stopped'}</span>
+      </div>
+      <div class="replay-control-row">
+        <span class="replay-info">Pairs: ${pairsDone} / ${pairsTotal}</span>
+      </div>
+      <div class="replay-control-row">${etaLine}</div>
+      <div class="cross-stock-top-section">
+        <div class="cross-stock-top-label">Most consistent across stocks</div>
+        ${topTable}
+      </div>
+    </div>
+  `;
+}
+
+function _escapeHtml(s) {
+  // Plain string replace, not a document.createElement('div') round-trip
+  // -- this file's own Jest harness (fakeInteractiveMount) doesn't
+  // implement a real DOM, so that pattern silently returns undefined
+  // under test even though it works in the real Electron renderer.
+  return (s == null ? '' : String(s))
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function _wireCrossStockControl(mount, sendEventFn) {
+  const btn = mount.querySelector('.cross-stock-toggle-btn');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      if (!sendEventFn) return;
+      const isRunning = btn.textContent.trim() === 'Stop';
+      const name = isRunning ? 'stop_cross_stock_replay' : 'start_cross_stock_replay';
+      sendEventFn({ type: 'call_tool', data: { name: name, args: {} } });
+      sendEventFn({ type: 'call_tool', data: { name: 'get_cross_stock_replay_status', args: {} } });
+    });
+  }
+}
+
+/**
+ * Renders the Cross-Stock Validation section (S5/#1238), inside the same
+ * History tab as renderReplayPanel -- a second independent control, not a
+ * replacement, since the two sweeps run concurrently and answer different
+ * questions.
+ * @param {Object} data - expects a `cross_stock` key holding
+ *   get_cross_stock_replay_status's parsed JSON, or null/undefined.
+ * @param {HTMLElement} [container] - defaults to #trading-cross-stock-mount
+ * @param {Function} [sendEventFn] - IPC transport for call_tool events
+ */
+function renderCrossStockPanel(data, container, sendEventFn) {
+  const mount = container || document.getElementById('trading-cross-stock-mount');
+  if (!mount) return;
+
+  if (mount._crossStockPollInterval) {
+    clearInterval(mount._crossStockPollInterval);
+    delete mount._crossStockPollInterval;
+  }
+
+  if (!document.getElementById('cross-stock-control-styles')) {
+    const style = document.createElement('style');
+    style.id = 'cross-stock-control-styles';
+    style.textContent = `
+      .cross-stock-top-section { margin-top: 10px; }
+      .cross-stock-top-label { font-size: 11px; color: var(--text-muted, #888); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.02em; }
+      .cross-stock-top-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .cross-stock-top-table th { text-align: left; color: var(--text-muted, #888); font-weight: 500; padding: 2px 6px 2px 0; border-bottom: 1px solid var(--border, #eee); }
+      .cross-stock-top-table td { padding: 3px 6px 3px 0; color: var(--text, #333); }
+      .cross-stock-strat { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .cross-stock-toggle-btn { padding: 4px 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; color: #fff; background: #2ecc71; }
+      .cross-stock-toggle-btn:disabled { background: var(--border, #ccc); color: var(--text-muted, #888); cursor: default; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const status = (data && data.cross_stock) || null;
+
+  mount.innerHTML = _renderCrossStockControl(status);
+  _wireCrossStockControl(mount, sendEventFn);
+
+  if (sendEventFn) {
+    mount._crossStockPollInterval = setInterval(() => {
+      sendEventFn({ type: 'call_tool', data: { name: 'get_cross_stock_replay_status', args: {} } });
+    }, 2000);
+  }
+}
+
 return {
   initTradingPanel:    initTradingPanel,
   renderTradingUpdate: renderTradingUpdate,
@@ -2172,6 +2322,7 @@ return {
   buildHaltStrategyEvent: buildHaltStrategyEvent,
   buildResumeStrategyEvent: buildResumeStrategyEvent,
   renderReplayPanel: renderReplayPanel,
+  renderCrossStockPanel: renderCrossStockPanel,
 };
 
 }));

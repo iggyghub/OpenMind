@@ -55,3 +55,28 @@ def test_get_results_by_strategy_only_returns_that_strategy(store: CrossStockSto
     results = store.get_results_by_strategy("strat_1")
     assert len(results) == 1
     assert results[0]["strategy_id"] == "strat_1"
+
+
+def test_get_tested_count_by_strategy_excludes_failed_pairs(store: CrossStockStore) -> None:
+    """Same WHERE net_return IS NOT NULL as get_consistency_by_strategy --
+    a consistency score must never be shown without the real sample size
+    it's based on (S5/#1238)."""
+    run_id = store.create_run("2021-09-15", "2026-09-15")
+    store.record_result(run_id, "strat_1", "AAPL", net_return=0.1, max_drawdown=-0.1, n_trades=1)
+    store.record_result(run_id, "strat_1", "MSFT", net_return=-0.1, max_drawdown=-0.1, n_trades=1)
+    store.record_result(run_id, "strat_1", "UBER", net_return=None, max_drawdown=None, n_trades=0,
+                         flat_reason="Missing columns in Alpaca response")
+
+    counts = store.get_tested_count_by_strategy()
+
+    assert counts["strat_1"] == 2  # not 3 -- the failed UBER pair doesn't count as "tested"
+
+
+def test_get_tested_count_by_strategy_omits_strategies_with_zero_successful_pairs(store: CrossStockStore) -> None:
+    run_id = store.create_run("2021-09-15", "2026-09-15")
+    store.record_result(run_id, "strat_1", "AAPL", net_return=None, max_drawdown=None, n_trades=0,
+                         flat_reason="Missing columns in Alpaca response")
+
+    counts = store.get_tested_count_by_strategy()
+
+    assert "strat_1" not in counts

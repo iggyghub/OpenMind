@@ -165,6 +165,13 @@ _DEFAULTS: dict[str, Any] = {
     # per-tick check from re-starting the sweep every 5 minutes for the
     # rest of the midnight-8am window once it's already running tonight.
     "cross_stock_night_started_at": "",
+    # S5 (#1238): measured throughput from the most recently finished run
+    # -- the UI's completion estimate reads this instead of guessing, per
+    # this campaign's own "throughput is unknown, on purpose" stance
+    # (BATCH-REPLAY's own timing data didn't transfer to this campaign's
+    # very different per-pair cost). 0 until at least one run finishes.
+    "cross_stock_last_run_processed": 0,
+    "cross_stock_last_run_rate_per_hour": 0.0,
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -213,6 +220,8 @@ _TYPES: dict[str, type] = {
     "cross_stock_cursor_strategy_id": str,
     "cross_stock_cursor_symbol": str,
     "cross_stock_night_started_at": str,
+    "cross_stock_last_run_processed": int,
+    "cross_stock_last_run_rate_per_hour": float,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
