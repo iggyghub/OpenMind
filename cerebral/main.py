@@ -3445,12 +3445,6 @@ _discovery_plugin.ensure_discovery_event()
 _ipo_calendar_plugin.ensure_ipo_calendar_event()
 _design_system_plugin.ensure_design_system_event()
 
-# Boot-resume batch replay if a sweep was interrupted previously
-if _settings.get("batch_replay_running"):
-    import asyncio
-    from plugins.trading_replay import start_batch_replay
-    asyncio.create_task(start_batch_replay())
-
 async def _reset_paper_trading() -> dict:
     """Archives current paper-trading fills as a historical block (does
     NOT delete anything -- see ForwardRecord.reset_paper()) and resets
@@ -8458,6 +8452,16 @@ async def main() -> None:
         _discovery_plugin.ensure_discovery_event()
         _design_system_plugin.ensure_design_system_event()
         _ipo_calendar_plugin.ensure_ipo_calendar_event()
+        # BATCH-REPLAY S1 (#1224) boot-resume. MUST live here, not at module
+        # scope: asyncio.create_task() requires a running event loop, and
+        # module-level code executes at import time, before main()'s own
+        # loop exists. The original module-level version crashed Cerebral's
+        # entire boot with "RuntimeError: no running event loop" the first
+        # time batch_replay_running was ever actually True (found live,
+        # 2026-09-14, the first real sweep start after S1 landed).
+        if _settings.get("batch_replay_running"):
+            from plugins.trading_replay import start_batch_replay
+            asyncio.create_task(start_batch_replay())
         scheduler_task = asyncio.create_task(_scheduler_loop())
         await _shutdown.wait()
         heartbeat.cancel()
