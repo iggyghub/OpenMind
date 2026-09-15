@@ -428,7 +428,18 @@ async def stop_batch_replay() -> str:
         return "No batch replay running."
     global _batch_replay_stop_flag
     _batch_replay_stop_flag = True
-    await _batch_replay_task
+    try:
+        await asyncio.wait_for(asyncio.shield(_batch_replay_task), timeout=_CROSS_STOCK_STOP_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        _batch_replay_task.cancel()
+        try:
+            await _batch_replay_task
+        except asyncio.CancelledError:
+            pass
+        logger.warning(
+            "[trading_replay] Batch replay did not stop in %.0fs after stop flag set; cancelled.",
+            _CROSS_STOCK_STOP_TIMEOUT_S,
+        )
     return "Batch replay stopped."
 
 
@@ -537,6 +548,8 @@ async def _run_batch_replay(start_date: str) -> None:
 _cross_stock_task: Optional[asyncio.Task] = None
 _cross_stock_stop_flag = False
 _CROSS_STOCK_WINDOW_YEARS = 5
+# ponytail: 120s comfortably above a warm pair (~1.5s); upgrade path is a timeout inside bar_cache.get_bars itself
+_CROSS_STOCK_STOP_TIMEOUT_S = 120
 
 
 async def start_cross_stock_replay() -> str:
@@ -554,7 +567,18 @@ async def stop_cross_stock_replay() -> str:
         return "No cross-stock replay running."
     global _cross_stock_stop_flag
     _cross_stock_stop_flag = True
-    await _cross_stock_task
+    try:
+        await asyncio.wait_for(asyncio.shield(_cross_stock_task), timeout=_CROSS_STOCK_STOP_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        _cross_stock_task.cancel()
+        try:
+            await _cross_stock_task
+        except asyncio.CancelledError:
+            pass
+        logger.warning(
+            "[cross_stock] Sweep did not stop in %.0fs after stop flag set; cancelled.",
+            _CROSS_STOCK_STOP_TIMEOUT_S,
+        )
     return "Cross-stock replay stopped."
 
 

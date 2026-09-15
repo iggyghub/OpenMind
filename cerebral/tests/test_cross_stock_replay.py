@@ -6,9 +6,13 @@ mocks assumed a `bar_cache.BarCache` class that doesn't exist anywhere in
 this codebase -- bar_cache.py is a plain module-level get_bars function
 (see cerebral/trading/bar_cache.py), same as run_replay already uses.
 """
+import asyncio
+import logging
+
 import pandas as pd
 import pytest
 
+import plugins.trading_replay as tr
 from cerebral.trading.cross_stock_replay import build_pairs, rollup_consistency, run_pair
 from cerebral.trading.cross_stock_store import CrossStockStore
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
@@ -165,3 +169,35 @@ def test_consistency_rollup_all_failed_pairs_stays_none(tmp_path):
 
     spec = s_store.get("strat4")
     assert spec.cross_stock_consistency is None
+
+
+# F2 (#1247): stop-path bounds tests -- asyncio_mode=auto handles these as async tests automatically.
+
+async def test_stop_cross_stock_replay_cancels_wedged_task(monkeypatch):
+    """A task that never completes must be cancelled within the timeout, not awaited forever."""
+    wedged = asyncio.create_task(asyncio.Event().wait())
+    monkeypatch.setattr(tr, "_cross_stock_task", wedged)
+    monkeypatch.setattr(tr, "_cross_stock_stop_flag", False)
+    monkeypatch.setattr(tr, "_CROSS_STOCK_STOP_TIMEOUT_S", 0.05)
+
+    result = await tr.stop_cross_stock_replay()
+
+    assert result == "Cross-stock replay stopped."
+    assert wedged.cancelled()
+
+
+async def test_stop_cross_stock_replay_normal_path_no_warning(monkeypatch, caplog):
+    """A task that respects the stop flag and exits normally triggers no warning."""
+    async def _respects_stop():
+        while not tr._cross_stock_stop_flag:
+            await asyncio.sleep(0)
+
+    task = asyncio.create_task(_respects_stop())
+    monkeypatch.setattr(tr, "_cross_stock_task", task)
+    monkeypatch.setattr(tr, "_cross_stock_stop_flag", False)
+
+    with caplog.at_level(logging.WARNING, logger="plugins.trading_replay"):
+        result = await tr.stop_cross_stock_replay()
+
+    assert result == "Cross-stock replay stopped."
+    assert not any("cancelled" in r.message for r in caplog.records)
