@@ -62,12 +62,12 @@ def test_get_results_by_strategy_only_returns_that_strategy(store: CrossStockSto
 
 
 def test_get_tested_count_by_strategy_excludes_failed_pairs(store: CrossStockStore) -> None:
-    """Same WHERE net_return IS NOT NULL as get_consistency_by_strategy --
-    a consistency score must never be shown without the real sample size
-    it's based on (S5/#1238)."""
+    """Same WHERE net_return IS NOT NULL AND n_trades >= MIN_TRADES_FLOOR as
+    get_consistency_by_strategy -- a consistency score must never be shown
+    without the real sample size it's based on (S5/#1238)."""
     run_id = store.create_run("2021-09-15", "2026-09-15")
-    store.record_result(run_id, "strat_1", "AAPL", net_return=0.1, max_drawdown=-0.1, n_trades=1)
-    store.record_result(run_id, "strat_1", "MSFT", net_return=-0.1, max_drawdown=-0.1, n_trades=1)
+    store.record_result(run_id, "strat_1", "AAPL", net_return=0.1, max_drawdown=-0.1, n_trades=25)
+    store.record_result(run_id, "strat_1", "MSFT", net_return=-0.1, max_drawdown=-0.1, n_trades=21)
     store.record_result(run_id, "strat_1", "UBER", net_return=None, max_drawdown=None, n_trades=0,
                          flat_reason="Missing columns in Alpaca response")
 

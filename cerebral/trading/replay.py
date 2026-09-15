@@ -5,6 +5,7 @@ RP1: run_bars -- the single source of truth for "strategy code -> equity curve".
 RP5: run_replay -- the portfolio-wide replay loop over cached historical bars.
 """
 import logging
+from typing import Optional
 
 import pandas as pd
 
@@ -46,7 +47,7 @@ def derive_trades(position: pd.Series, close: pd.Series) -> list[Trade]:
 
 
 def run_bars_verbose(
-    code: str, bars: pd.DataFrame, interval: str
+    code: str, bars: pd.DataFrame, interval: str, cost_config: Optional[dict] = None
 ) -> tuple[list[float], pd.Series, dict, "str | None"]:
     """Same as run_bars, but also returns the real sandbox failure reason
     (None on success), via evaluate_signals_verbose -- same pattern as SR1's
@@ -74,8 +75,13 @@ def run_bars_verbose(
     # returns a BacktestResult dataclass (cerebral/trading/cost_model.py), not
     # a dict -- .net_returns/.gross_returns are the real attributes.
     trades = derive_trades(position, bars["Close"])
-    cost_config = {}  # Zero-cost baseline; reuse gauntlet default convention
-    net_result = compute_backtest_result(list(daily_returns), trades, cost_config)
+    # ponytail: {} is NOT zero-cost -- apply_costs_to_returns defaults to min=0.01/max=0.03,
+    # so {} produces the same 2% avg spread as the gauntlet's explicit config.  The original
+    # comment ("Zero-cost baseline; reuse gauntlet default convention") was wrong on both
+    # counts.  F4 (#1249) measured and confirmed parity; pass cost_config explicitly to
+    # override for sensitivity analysis.
+    _cost_config = cost_config if cost_config is not None else {}
+    net_result = compute_backtest_result(list(daily_returns), trades, _cost_config)
     metrics = {
         "max_holding_days": max_holding_days,
         "net_returns": net_result.net_returns,

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def run_pair(strategy_id: str, code: str, symbol: str, start: str, end: str,
-             interval: str = "1d", bar_cache=None) -> dict:
+             interval: str = "1d", bar_cache=None, cost_config: Optional[dict] = None) -> dict:
     """Backtests `code` against `symbol`'s bars over [start, end]. Returns
     {"net_return", "max_drawdown", "n_trades", "flat_reason"} -- flat_reason
     is non-None on a real sandbox failure (bad code, no bars), in which case
@@ -39,7 +39,7 @@ def run_pair(strategy_id: str, code: str, symbol: str, start: str, end: str,
         logger.warning("[cross_stock] %s/%s: bar fetch failed: %s", strategy_id, symbol, exc)
         return {"net_return": None, "max_drawdown": None, "n_trades": 0, "flat_reason": str(exc), "benchmark_return": None}
 
-    equity, position, metrics, reason = run_bars_verbose(code, bars, interval)
+    equity, position, metrics, reason = run_bars_verbose(code, bars, interval, cost_config=cost_config)
     if reason is not None:
         return {"net_return": None, "max_drawdown": None, "n_trades": 0, "flat_reason": reason, "benchmark_return": None}
 
