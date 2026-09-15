@@ -46,14 +46,14 @@ size/schedule together).
 
 ## Next slice -- start here
 
-- **Active:** S2 -- #1235
+- **Active:** S3 -- #1236
 - **Model:** sonnet
 
 ## Queue
 
 - [x] S1 -- #1234 -- classify strategies generic vs stock-specific;
   persist the 100-stock basket and the classification result
-- [ ] S2 -- #1235 -- cross-stock replay backend: resumable
+- [x] S2 -- #1235 -- cross-stock replay backend: resumable
   (strategy_id, symbol) pair cursor, one 5-year backtest per pair (reuses
   `run_bars`/`evaluate_signals`, NOT `run_gauntlet` -- same reasoning as
   BATCH-REPLAY D1), new results table (this is a different shape than
@@ -93,6 +93,21 @@ accumulated results. S5 depends on S2 (status) and S4 (the list).
   for were never implemented, only the bare classification function was.
   Ran against the real strategy_specs.db after landing: 306 strategies
   total, 283 generic (eligible for S2's sweep), 23 stock-specific.
+- PR #1241 -- S2: resumable cross-stock replay backend (merged
+  2026-09-15, hand-implemented from scratch -- self_dev's own attempt
+  (PR #1240) only ever produced a test file; no implementation module
+  was ever written, and the abandoned test's mocks assumed a
+  `bar_cache.BarCache` class that doesn't exist anywhere in this
+  codebase. #1240 closed unmerged. `run_pair()`/`build_pairs()` in
+  `cross_stock_replay.py`, `CrossStockStore` mirroring `ReplayStore`'s
+  shape, and `start_cross_stock_replay`/`stop_cross_stock_replay`/
+  `get_cross_stock_replay_status` in `plugins/trading_replay.py` --
+  same resumable-cursor architecture as batch replay, but the cursor
+  names the last-completed `(strategy_id, symbol)` pair directly rather
+  than a raw index, so a newly-classified strategy landing between
+  nights can't shift an index and silently skip/re-run pairs. Not yet
+  hand-verified live via the IPC bridge -- do that before S3 fires it
+  nightly unattended.
 
 ## SAFETY
 
