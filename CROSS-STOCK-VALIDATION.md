@@ -42,12 +42,44 @@ size/schedule together).
   S3 logs actual pairs/night so later nights (and any completion-estimate
   UI) use measured throughput, not a guess.
 
-## Status: done
+## Status: v1 queue done; follow-up queue open
 
 ## Next slice -- start here
 
-- **Active:** none -- queue complete.
+- **Active:** F1 (#1246) -- make the results table the progress source of
+  truth. Do this one first: F3 and F4 both change the same table, and F1
+  changes its primary key.
 - **Model:** sonnet
+- **Hand-review every diff.** self_dev failed outright on three of the five
+  v1 slices in this campaign (crashed-on-boot code for S3, no commit for
+  S5, test-file-only for S2). Same discipline applies here.
+
+## Follow-up queue (filed 2026-09-15)
+
+From the post-campaign review below. Grouped so each issue is one coherent
+change -- findings 1/2/3/5 are a single fix, not three, and splitting them
+across branches would produce exactly the conflict cascade this repo has
+hit before.
+
+- [ ] F1 -- #1246 -- results table as progress source of truth; delete the
+  settings cursor (findings 1, 2, 3, and most of 5). Net code deletion.
+- [ ] F2 -- #1247 -- bound the stop path with `wait_for` + `cancel` so a
+  wedged pair cannot stall the singular scheduler (finding 4). Independent
+  of the others; can land in any order.
+- [ ] F3 -- #1248 -- record `benchmark_return` (buy-and-hold) per pair
+  (findings 6, 10). Data collection only; commits to no metric decision.
+- [ ] F4 -- #1249 -- minimum-trade floor + cost-model sensitivity
+  (findings 7, 8).
+- [ ] F5 -- #1250 -- **scoping, not a build ticket** -- metric redesign:
+  benchmark-relative and magnitude-aware (findings 6, 9).
+- [ ] F6 -- #1251 -- **scoping, not a build ticket** -- other validation
+  axes: time panel, permutation null, multiple-comparisons deflation,
+  parameter stability (findings 10-13).
+
+**Order: F1 -> F3 -> F4** (each touches `cross_stock_results`). F2 is
+independent. F5/F6 are `needs-triage` and must not be implemented from
+their descriptions -- they record decisions that need a human conversation
+first, same discipline as this campaign's own `check_graduation` deferral.
 
 ## Queue
 
@@ -190,6 +222,130 @@ hand-implemented from scratch rather than iterated on. The nightly sweep
 is wired and will start on its own tonight (midnight-8am ET, 8h soft
 cap); the History tab now shows both this campaign's cross-stock sweep
 and BATCH-REPLAY's own sweep side by side.
+
+## Follow-ups -- review findings 2026-09-15 (not yet scoped into slices)
+
+Found in a post-campaign read of the landed code, before the first real
+nightly run. None of these were regressions introduced by a bad self_dev
+diff -- they survived hand-review because each one reads as correct in
+isolation. Ordered by severity.
+
+**Correctness -- fix before trusting any accumulated results:**
+
+1. **A deleted strategy silently restarts the whole sweep AND corrupts the
+   consistency metric.** `_find_cursor_position` (`plugins/trading_replay.py:570`)
+   returns 0 when the cursor pair isn't found, and its own docstring names
+   "the strategy was deleted" as an expected cause. Deletion is a live,
+   autonomous operation here -- `auto_combine_strategies`
+   (`plugins/trading_strategies.py:445`) hard-deletes the losing strategy via
+   `StrategyStore.delete` (`cerebral/trading/strategy_store.py:307`). The
+   restart wastes a night, but the real damage is silent: each pass calls
+   `create_run()` for a fresh `run_id`, the results PK is
+   `(run_id, strategy_id, symbol)`, and `get_consistency_by_strategy` has no
+   run filter -- so re-swept pairs insert as NEW rows and get averaged
+   twice. Note the `ON CONFLICT` at `cross_stock_store.py:65` can never fire
+   as written (always-fresh `run_id`); it reads as dedupe protection but is
+   dead code.
+2. **Per-pair exceptions leave no row at all.** `store.record_result` sits
+   inside the `try` (`trading_replay.py:643`) while the cursor advance sits
+   correctly outside (`:652`). An unexpected raise from `run_pair` -- as
+   opposed to a `flat_reason` it handles internally -- skips the row, advances
+   past it, and never retries. Those pairs become undiscoverable holes, since
+   `pairs_done` is cursor-derived and never reconciled against the table.
+3. **The sweep never runs again once complete.** At the end of the pairs
+   list `pairs[start_idx:]` is empty, so every subsequent night starts a
+   task, writes an empty `cross_stock_runs` row, processes nothing, exits.
+   No completion state, no refresh cadence, no re-test of stale pairs --
+   while the 5-year window is anchored to `today` (`trading_replay.py:621`),
+   so results freeze at whenever each pair happened to run.
+
+**Recommended fix for 1-3 together: delete the settings cursor and make the
+results table the source of truth.** PK becomes `(strategy_id, symbol)` with
+`run_id` demoted to a plain column; resume by skipping pairs already present.
+This is a net code *deletion* and collapses all three: deletion/reordering/
+new-strategy cases self-heal, re-runs upsert instead of duplicating, the
+holes in (2) retry automatically, `pairs_done` becomes a trivial `COUNT(*)`,
+and (3)'s refresh story becomes `DELETE FROM cross_stock_results WHERE
+created_at < ?`.
+
+**Robustness:**
+
+4. **`stop_cross_stock_replay()` can stall the entire scheduler.**
+   `trading_replay.py:557` does a bare `await _cross_stock_task`, called from
+   `check_cross_stock_night_window` -> `_scheduler_loop`
+   (`cerebral/main.py:3917`). The stop flag is only checked at the top of each
+   pair iteration and nothing in `run_pair` -> `bar_cache.get_bars` has a
+   network timeout, so a hung fetch hangs the await, which hangs the shared
+   5-minute tick -- paper-trade dispatch included. ADR-0028 R5: the scheduler
+   is singular, and a background job must not be able to block it. The 8h
+   soft cap routes through the same await, so it can't rescue this either.
+   Fix: `asyncio.wait_for(..., timeout=120)` + `task.cancel()` on timeout.
+5. **The status poll is heavy and leaks connections.**
+   `get_cross_stock_replay_status` does a full `list_all()`, rebuilds all
+   28,300 pairs, linear-scans them, opens fresh `CrossStockStore()` and
+   `StrategyStore()` -- neither ever closed, no context manager
+   (`cross_stock_store.py:18`) -- plus a full-table `GROUP BY`. S5's UI polls
+   it **every 2 seconds** while the History tab is open, contending with the
+   CPU-bound sweep it reports on. Mostly dissolves once (1)'s fix makes
+   `pairs_done` a `COUNT(*)`.
+
+**The metric itself -- needs its own scoping conversation, same discipline
+as the `check_graduation` deferral in SAFETY below:**
+
+6. **No benchmark.** `AVG(CASE WHEN net_return > 0 ...)` is a sign test
+   against zero, over 100 hand-picked survivors, in a window the market
+   spent mostly rising. Any long-biased strategy scores near 1.0 because the
+   stocks went up, not because the rule generalizes -- so "most consistent
+   across stocks" will rank closet-beta first, defeating this campaign's
+   entire stated purpose. Cheap fix, bars are already fetched: score
+   `strategy_return - buy_and_hold_return` on the same symbol/window. Store
+   excess return per pair so the rollup can be re-derived later without
+   re-running backtests.
+7. **No minimum-trade floor.** This campaign's own S2 verification data
+   shows it: `MSFT -0.01/7 trades`. Seven trades in five years is noise
+   casting a full vote, equal in weight to a 342-trade result. `n_trades` is
+   already stored; `WHERE n_trades >= 20` is one line.
+8. **Zero-cost baseline, on a sign test.** `cerebral/trading/replay.py:77`
+   sets `cost_config = {}` -- an explicit zero-cost baseline that `run_pair`
+   inherits. Every `net_return` here is gross of commissions and slippage.
+   Because the metric thresholds on *sign*, it's maximally sensitive to
+   exactly that offset, and high-turnover strategies are systematically
+   flattered -- compounding with (7), which lets high-turnover noise in
+   unfiltered. At minimum, run the sweep once with a realistic `cost_config`
+   and compare the rankings.
+9. **Binary sign discards magnitude.** +0.1% on 60 stocks and -40% on 40
+   scores 0.60 and reads as "consistent." Median excess return, or
+   mean/stdev across the basket, costs the same query and carries far more
+   signal.
+
+**Methodology gaps -- other axes of the same question, see the review
+conversation 2026-09-15:**
+
+10. **100 correlated large-caps in one window is far less independent than
+    it looks.** Effective sample size is closer to a handful than to 100, so
+    cross-stock breadth alone can't defeat curve-fitting to *this regime* --
+    every pair shares the same 5 years. Time-axis validation is the more
+    orthogonal test, and BATCH-REPLAY already holds that data (per
+    strategy-month since 2016); combining the two sweeps into one panel is
+    strictly more informative than either alone.
+11. **Random-entry / permutation baseline** is the cheapest real
+    null-hypothesis test and reuses `run_bars_verbose` directly: same trade
+    count and holding period, random entry times (or shuffled bar returns).
+    A strategy that can't beat matched-exposure random entry has no edge,
+    which is the rigorous version of (6).
+12. **Multiple-comparisons deflation.** 306 strategies x 100 stocks =
+    28,300 tests; roughly 1,400 will clear p<0.05 by pure chance. Nothing
+    currently tracks the number of trials, so "we found 40 great strategies"
+    is not yet distinguishable from "we found exactly what chance predicts."
+    Relevant precedent: the ~18 near-duplicate strategies already found and
+    deferred elsewhere in the trading campaign -- near-dupes make the
+    "independent" confirmations less independent than the count suggests.
+13. **Parameter-neighborhood stability** has the highest diagnostic power
+    for overfitting and is the most work: perturb the strategy's numeric
+    constants +/-10-20% and check that performance degrades smoothly rather
+    than falling off a cliff. These are LLM-generated strategies so the
+    constants are code literals, not a declared parameter vector -- needs an
+    AST walk over numeric literals, then the existing sandboxed eval.
 
 ## SAFETY
 
