@@ -6,12 +6,12 @@ mocks assumed a `bar_cache.BarCache` class that doesn't exist anywhere in
 this codebase -- bar_cache.py is a plain module-level get_bars function
 (see cerebral/trading/bar_cache.py), same as run_replay already uses.
 """
-import tempfile
 import pandas as pd
 import pytest
 
-from cerebral.trading.cross_stock_replay import build_pairs, run_pair
-from cerebral.trading.strategy_store import StrategySpec
+from cerebral.trading.cross_stock_replay import build_pairs, rollup_consistency, run_pair
+from cerebral.trading.cross_stock_store import CrossStockStore
+from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 
 _ALWAYS_LONG = "def strategy(data):\n    return [1] * len(data)\n"
 
@@ -94,40 +94,74 @@ def test_build_pairs_is_cross_product_of_eligible_specs_and_basket():
     assert (a, "X") in pairs and (b, "Z") in pairs
 
 
-def test_consistency_rollup_8_of_10_positive():
+def test_consistency_rollup_8_of_10_positive(tmp_path):
     """8/10 tested stocks showing positive expectancy rolls up to 0.8."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        strategy_db = f"{tmpdir}/strategy_specs.db"
-        cross_db = f"{tmpdir}/cross_stock_results.db"
-        s_store = StrategyStore(db_path=strategy_db)
-        c_store = CrossStockStore(db_path=cross_db)
+    s_store = StrategyStore(db_path=tmp_path / "strategy_specs.db")
+    c_store = CrossStockStore(db_path=str(tmp_path / "cross_stock_results.db"))
 
-        s_store.save(StrategySpec("strat1", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
+    s_store.save(StrategySpec("strat1", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
 
-        # Record 10 results: 8 positive, 2 negative
-        for i in range(10):
-            net_ret = 0.05 if i < 8 else -0.05
-            c_store.record_result("run1", "strat1", f"SYM{i}", net_ret, 0.0, 10, None)
+    # Record 10 results: 8 positive, 2 negative
+    for i in range(10):
+        net_ret = 0.05 if i < 8 else -0.05
+        c_store.record_result("run1", "strat1", f"SYM{i}", net_ret, 0.0, 10, None)
 
-        rollup_consistency(s_store, c_store)
+    rollup_consistency(s_store, c_store)
 
-        spec = s_store.get("strat1")
-        assert spec.cross_stock_consistency == pytest.approx(0.8)
+    spec = s_store.get("strat1")
+    assert spec.cross_stock_consistency == pytest.approx(0.8)
 
 
-def test_consistency_rollup_zero_stocks():
+def test_consistency_rollup_zero_stocks(tmp_path):
     """Strategy with zero tested stocks stays None (missing data != confirmed inconsistent)."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        strategy_db = f"{tmpdir}/strategy_specs.db"
-        cross_db = f"{tmpdir}/cross_stock_results.db"
-        s_store = StrategyStore(db_path=strategy_db)
-        c_store = CrossStockStore(db_path=cross_db)
+    s_store = StrategyStore(db_path=tmp_path / "strategy_specs.db")
+    c_store = CrossStockStore(db_path=str(tmp_path / "cross_stock_results.db"))
 
-        s_store.save(StrategySpec("strat2", "MSFT", _ALWAYS_LONG, cross_test_eligible=True))
+    s_store.save(StrategySpec("strat2", "MSFT", _ALWAYS_LONG, cross_test_eligible=True))
 
-        # Record 0 results for strat2
+    # Record 0 results for strat2
 
-        rollup_consistency(s_store, c_store)
+    rollup_consistency(s_store, c_store)
 
-        spec = s_store.get("strat2")
-        assert spec.cross_stock_consistency is None
+    spec = s_store.get("strat2")
+    assert spec.cross_stock_consistency is None
+
+
+def test_consistency_rollup_excludes_failed_pairs_from_both_numerator_and_denominator(tmp_path):
+    """A pair that couldn't run (flat_reason set, net_return None -- missing
+    bars, sandbox error) must not count as a negative result. Caught before
+    merging: the original SQL's CASE WHEN net_return > 0 treats NULL as
+    "not positive" and rolls it into the AVG anyway, silently conflating
+    "couldn't test this stock" with "tested it and lost.\""""
+    s_store = StrategyStore(db_path=tmp_path / "strategy_specs.db")
+    c_store = CrossStockStore(db_path=str(tmp_path / "cross_stock_results.db"))
+
+    s_store.save(StrategySpec("strat3", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
+
+    # 2 real results (both positive) + 3 failed pairs (no bars available).
+    c_store.record_result("run1", "strat3", "AAPL", 0.10, -0.05, 10, None)
+    c_store.record_result("run1", "strat3", "MSFT", 0.05, -0.02, 8, None)
+    for symbol in ("UBER", "LYFT", "SNAP"):
+        c_store.record_result("run1", "strat3", symbol, None, None, 0, "Missing columns in Alpaca response")
+
+    rollup_consistency(s_store, c_store)
+
+    spec = s_store.get("strat3")
+    # 2/2 real results positive -- not 2/5, which is what the failed
+    # pairs being counted as negative would have produced.
+    assert spec.cross_stock_consistency == pytest.approx(1.0)
+
+
+def test_consistency_rollup_all_failed_pairs_stays_none(tmp_path):
+    """Every attempt failing is still "missing data," not "confirmed
+    inconsistent" -- must not roll up to 0.0."""
+    s_store = StrategyStore(db_path=tmp_path / "strategy_specs.db")
+    c_store = CrossStockStore(db_path=str(tmp_path / "cross_stock_results.db"))
+
+    s_store.save(StrategySpec("strat4", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
+    c_store.record_result("run1", "strat4", "AAPL", None, None, 0, "Missing columns in Alpaca response")
+
+    rollup_consistency(s_store, c_store)
+
+    spec = s_store.get("strat4")
+    assert spec.cross_stock_consistency is None
