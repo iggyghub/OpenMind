@@ -6521,6 +6521,7 @@
         <button class="trd-tab" data-trd-tab="tickers" type="button">Tickers</button>
         <button class="trd-tab" data-trd-tab="overview" type="button">Overview</button>
         <button class="trd-tab" data-trd-tab="trades" type="button">Trade Log</button>
+        <button class="trd-tab" data-trd-tab="replay" type="button">History</button>
       </div>
 
       <div class="trd-panel" data-trd-panel="strategies">
@@ -6596,6 +6597,10 @@
 
       <div class="trd-panel" data-trd-panel="trades" hidden>
         <div id="trading-log-mount"></div>
+      </div>
+
+      <div class="trd-panel" data-trd-panel="replay" hidden>
+        <div id="trading-replay-mount"></div>
       </div>
     </section>
 
@@ -7469,6 +7474,20 @@
             window.TradingPanelMod.receiveArchiveFills(fills);
             if (lastTradingUpdateData) {
               window.TradingPanelMod.renderOverviewPanel(lastTradingUpdateData, null, sendEvent);
+            }
+          }
+          // BATCH-REPLAY (#1224-#1227): History tab's Start/Stop button and
+          // its own 2s auto-poll (see renderReplayPanel) both go through
+          // get_batch_replay_status -- one handler covers the initial
+          // tab-activation poll and every subsequent auto-poll tick.
+          if (event.data && event.data.name === 'get_batch_replay_status' && window.TradingPanelMod) {
+            let replayStatus = null;
+            if (!event.data.is_error) {
+              try { replayStatus = JSON.parse(event.data.content); } catch (_e) {}
+            }
+            const replayMount = document.getElementById('trading-replay-mount');
+            if (replayMount) {
+              window.TradingPanelMod.renderReplayPanel({ replay: replayStatus }, replayMount, sendEvent);
             }
           }
           break;
@@ -12692,7 +12711,7 @@
     // (Strategies / Tickers / Books). Plain click-driven, not hash-routed
     // like Settings' -- few tabs, no deep-linking requirement.
     function tradingActivateSub(sub) {
-      const KNOWN_SUBS = new Set(['strategies', 'tickers', 'overview', 'trades']);
+      const KNOWN_SUBS = new Set(['strategies', 'tickers', 'overview', 'trades', 'replay']);
       const target = KNOWN_SUBS.has(sub) ? sub : 'strategies';
       document.querySelectorAll('.trd-tab').forEach((btn) => {
         btn.classList.toggle('is-active', btn.dataset.trdTab === target);
@@ -12708,6 +12727,16 @@
         // Redraw, not just unhide -- the canvas was 0x0 while hidden if the
         // last broadcast arrived before this tab became active.
         window.TradingPanelMod.renderOverviewPanel(lastTradingUpdateData, null, sendEvent);
+      }
+      if (target === 'replay' && window.TradingPanelMod) {
+        // BATCH-REPLAY S2/S3 (#1225/#1226): renderReplayPanel was built and
+        // unit-tested but never actually wired into this tab strip -- found
+        // 2026-09-15 when the user looked for it and it wasn't there. Mount
+        // the "Not available" placeholder immediately (status unknown until
+        // the poll below resolves), then poll for real data now rather than
+        // waiting up to 2s for the panel's own internal setInterval to fire.
+        window.TradingPanelMod.renderReplayPanel({}, null, sendEvent);
+        sendEvent({ type: 'call_tool', data: { name: 'get_batch_replay_status', args: {} } });
       }
     }
 
