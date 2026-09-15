@@ -81,6 +81,9 @@ class TestSettingsStore:
             "batch_replay_cursor",
             "batch_replay_start",
             "batch_replay_graduation_dd_cap",
+            "cross_stock_running",
+            "cross_stock_cursor_strategy_id",
+            "cross_stock_cursor_symbol",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):

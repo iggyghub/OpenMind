@@ -146,6 +146,17 @@ _DEFAULTS: dict[str, Any] = {
     # -- conservative enough not to block ordinary variance, tight enough
     # to catch a genuinely bad multi-period history.
     "batch_replay_graduation_dd_cap": 0.30,
+    # CROSS-STOCK-VALIDATION S2 (#1235): resumable pair-cursor sweep.
+    # cursor_strategy_id/cursor_symbol name the LAST COMPLETED pair, not a
+    # raw index -- the pair list is rebuilt fresh each run from
+    # StrategyStore.list_all(), and a newly-classified strategy landing
+    # between nights would shift any integer index, silently skipping or
+    # re-running pairs. Naming the pair directly is immune to that: resume
+    # finds this pair in the freshly-built list and continues right after
+    # it. "" is the unset sentinel, same convention as batch_replay_cursor.
+    "cross_stock_running":       False,
+    "cross_stock_cursor_strategy_id": "",
+    "cross_stock_cursor_symbol": "",
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -190,6 +201,9 @@ _TYPES: dict[str, type] = {
     "batch_replay_cursor":       str,
     "batch_replay_start":        str,
     "batch_replay_graduation_dd_cap": float,
+    "cross_stock_running":       bool,
+    "cross_stock_cursor_strategy_id": str,
+    "cross_stock_cursor_symbol": str,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})

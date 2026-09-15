@@ -31,6 +31,9 @@ from cerebral.trading.discovery import DiscoveryWatchlist
 from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.replay import run_replay
 from cerebral.trading.replay_store import ReplayStore
+from cerebral.trading.cross_stock_replay import build_pairs, run_pair
+from cerebral.trading.cross_stock_store import CrossStockStore
+from cerebral.trading.cross_stock_universe import BASKET
 from cerebral.settings import SettingsStore
 
 logger = logging.getLogger(__name__)
@@ -172,6 +175,40 @@ class TradingReplayPlugin:
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="start_cross_stock_replay",
+                description=(
+                    "CROSS-STOCK-VALIDATION S2 (#1235): begin (or resume) a standing "
+                    "background sweep testing every generic strategy's rule against "
+                    "the full 100-stock basket (5-year window per pair) -- a "
+                    "different question from batch replay's own sweep (that one "
+                    "tracks one strategy against its own one registered symbol over "
+                    "calendar time; this one checks whether a strategy's edge holds "
+                    "up across many stocks, not just the one it happened to register "
+                    "against). Resumes from the persisted (strategy, symbol) cursor "
+                    "if a previous sweep is incomplete."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="stop_cross_stock_replay",
+                description=(
+                    "Signal the running cross-stock sweep to finish its current "
+                    "pair and stop. Returns a status message."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="get_cross_stock_replay_status",
+                description=(
+                    "Read-only status of the cross-stock sweep: running state, "
+                    "cursor pair, and pairs done/total."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -191,6 +228,12 @@ class TradingReplayPlugin:
             return ToolResult(content=await stop_batch_replay())
         if tool_name == "get_batch_replay_status":
             return ToolResult(content=await get_batch_replay_status())
+        if tool_name == "start_cross_stock_replay":
+            return ToolResult(content=await start_cross_stock_replay())
+        if tool_name == "stop_cross_stock_replay":
+            return ToolResult(content=await stop_cross_stock_replay())
+        if tool_name == "get_cross_stock_replay_status":
+            return ToolResult(content=await get_cross_stock_replay_status())
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _list_strategies(self, args: dict) -> ToolResult:
@@ -487,6 +530,106 @@ async def _run_batch_replay(start_date: str) -> None:
             
     settings.set("batch_replay_running", False)
     logger.info("[trading_replay] Batch replay finished.")
+
+
+# CROSS-STOCK-VALIDATION S2 (#1235): resumable (strategy, symbol) pair sweep.
+_cross_stock_task: Optional[asyncio.Task] = None
+_cross_stock_stop_flag = False
+_CROSS_STOCK_WINDOW_YEARS = 5
+
+
+async def start_cross_stock_replay() -> str:
+    global _cross_stock_task, _cross_stock_stop_flag
+    if _cross_stock_task is not None and not _cross_stock_task.done():
+        return "Cross-stock replay already running."
+    _cross_stock_stop_flag = False
+    _cross_stock_task = asyncio.create_task(_run_cross_stock_replay())
+    return "Cross-stock replay started."
+
+
+async def stop_cross_stock_replay() -> str:
+    global _cross_stock_task
+    if _cross_stock_task is None or _cross_stock_task.done():
+        return "No cross-stock replay running."
+    global _cross_stock_stop_flag
+    _cross_stock_stop_flag = True
+    await _cross_stock_task
+    return "Cross-stock replay stopped."
+
+
+def _find_cursor_position(pairs: list, strategy_id: str, symbol: str) -> int:
+    """Index of the pair immediately AFTER the last-completed (strategy_id,
+    symbol) in the freshly-rebuilt pairs list, or 0 if that pair isn't
+    found (e.g. the strategy was deleted, or this is the very first run)."""
+    if not strategy_id:
+        return 0
+    for i, (spec, sym) in enumerate(pairs):
+        if spec.strategy_id == strategy_id and sym == symbol:
+            return i + 1
+    return 0
+
+
+async def get_cross_stock_replay_status() -> str:
+    settings = SettingsStore()
+    running = settings.get("cross_stock_running") or False
+    cursor_strategy = settings.get("cross_stock_cursor_strategy_id") or "N/A"
+    cursor_symbol = settings.get("cross_stock_cursor_symbol") or "N/A"
+
+    pairs = build_pairs(StrategyStore().list_all(), BASKET)
+    pairs_done = _find_cursor_position(pairs, cursor_strategy if cursor_strategy != "N/A" else "", cursor_symbol)
+
+    return json.dumps({
+        "running": running,
+        "cursor_strategy_id": cursor_strategy,
+        "cursor_symbol": cursor_symbol,
+        "pairs_done": pairs_done,
+        "pairs_total": len(pairs),
+    })
+
+
+async def _run_cross_stock_replay() -> None:
+    settings = SettingsStore()
+    settings.set("cross_stock_running", True)
+
+    today = datetime.date.today()
+    # timedelta(days=...), not .replace(year=...) -- the latter raises on
+    # Feb 29 landing on a non-leap year 5 years back.
+    start = (today - datetime.timedelta(days=365 * _CROSS_STOCK_WINDOW_YEARS)).isoformat()
+    end = today.isoformat()
+
+    store = CrossStockStore()
+    run_id = store.create_run(start, end)
+
+    pairs = build_pairs(StrategyStore().list_all(), BASKET)
+    start_idx = _find_cursor_position(
+        pairs, settings.get("cross_stock_cursor_strategy_id"), settings.get("cross_stock_cursor_symbol"),
+    )
+
+    loop = asyncio.get_event_loop()
+    for spec, symbol in pairs[start_idx:]:
+        if _cross_stock_stop_flag:
+            break
+
+        try:
+            result = await loop.run_in_executor(
+                None, run_pair, spec.strategy_id, spec.code, symbol, start, end, spec.interval,
+            )
+            store.record_result(
+                run_id, spec.strategy_id, symbol,
+                result["net_return"], result["max_drawdown"], result["n_trades"], result["flat_reason"],
+            )
+        except Exception as exc:
+            logger.warning("[cross_stock] %s/%s failed: %s", spec.strategy_id, symbol, exc)
+
+        # Persisted after every pair, not just at the end -- a crash loses
+        # at most one pair, same convention as batch_replay_cursor.
+        settings.set("cross_stock_cursor_strategy_id", spec.strategy_id)
+        settings.set("cross_stock_cursor_symbol", symbol)
+
+        await asyncio.sleep(0)  # yield control
+
+    settings.set("cross_stock_running", False)
+    logger.info("[cross_stock] Sweep pass finished (%d pairs available from index %d).", len(pairs), start_idx)
 
 
 def create() -> TradingReplayPlugin:
