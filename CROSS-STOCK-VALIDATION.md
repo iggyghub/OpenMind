@@ -42,11 +42,11 @@ size/schedule together).
   S3 logs actual pairs/night so later nights (and any completion-estimate
   UI) use measured throughput, not a guess.
 
-## Status: active
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S5 -- #1238
+- **Active:** none -- queue complete.
 - **Model:** sonnet
 
 ## Queue
@@ -67,7 +67,7 @@ size/schedule together).
   generic strategy shows positive expectancy, persisted per strategy (a
   NEW field -- explicitly not wired into `check_graduation`/
   `check_retirement` as part of this campaign; see SAFETY)
-- [ ] S5 -- #1238 -- History tab UI section: sweep status/progress
+- [x] S5 -- #1238 -- History tab UI section: sweep status/progress
   (mirrors the Batch Replay control added 2026-09-15), pairs/night rate,
   a "most consistent across stocks" list
 
@@ -153,6 +153,43 @@ accumulated results. S5 depends on S2 (status) and S4 (the list).
   sweep pass. `cross_stock_consistency` stays an informational-only field
   per SAFETY below; nothing in this PR touches `check_graduation` or
   `check_retirement`.
+- PR #1245 -- S5: History tab UI section (merged 2026-09-15, hand-
+  implemented from scratch -- self_dev's own attempt produced no commit
+  at all, "Edit step produced no commit -- aborting," the same UI-slice
+  failure mode BATCH-REPLAY's own S3 timeline hit twice before being
+  hand-implemented; went straight there rather than retrying a third
+  time). `renderCrossStockPanel`, a second independent control inside
+  the same History tab `renderReplayPanel` occupies -- Start/Stop, pairs
+  progress, a completion estimate (only shown once real throughput
+  exists, never fabricated from zero data), and a most-consistent list
+  paired with each strategy's sample size. Needed real backend additions
+  to have data to show: `get_tested_count_by_strategy()`, and
+  `get_cross_stock_replay_status`'s new `last_run_processed`/
+  `last_run_rate_per_hour`/`top_consistent` fields (measured and
+  persisted at the end of each sweep pass, not guessed). A real bug
+  caught by the test suite before landing: `_escapeHtml` used a
+  `document.createElement('div')` round-trip, which silently produced
+  `"undefined"` under this file's own Jest harness (no real DOM) despite
+  presumably working in the real Electron renderer -- switched to a
+  plain string `.replace()`. **Hand-verified live in the actual running
+  tray** (not just Jest, learning directly from this campaign's own S2
+  History-tab wiring gap): opened Trading > History, both sections
+  render side by side, live polling confirmed via the tool-activity feed
+  actually firing `get_cross_stock_replay_status` every 2s, real data
+  displayed (`Pairs: 22 / 28300`, matching the S2 verification run's
+  leftover state; correct empty-state text for throughput/consistency
+  since that 22-pair run predated S4's rollup wiring).
+
+## Campaign complete (2026-09-15)
+
+All 5 slices landed and hand-verified live. self_dev produced a usable
+(if buggy) first attempt on S1 and S4; it failed entirely on S2 (test-
+file-only, invented a nonexistent API), S3 (would have crashed Cerebral
+on boot), and S5 (no commit at all) -- every one of those three was
+hand-implemented from scratch rather than iterated on. The nightly sweep
+is wired and will start on its own tonight (midnight-8am ET, 8h soft
+cap); the History tab now shows both this campaign's cross-stock sweep
+and BATCH-REPLAY's own sweep side by side.
 
 ## SAFETY
 
