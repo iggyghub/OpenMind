@@ -383,3 +383,23 @@ def test_cross_test_eligible_false_persists_correctly(tmp_path):
     fetched = store.get("s1")
     assert fetched is not None
     assert fetched.cross_test_eligible is False
+
+
+def test_update_cross_test_eligible_persists_and_is_readable_via_get_and_list_all(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]"))
+    store.update_cross_test_eligible("s1", True)
+
+    fetched = store.get("s1")
+    assert fetched is not None
+    assert fetched.cross_test_eligible is True
+
+    all_specs = store.list_all()
+    s1 = next(s for s in all_specs if s.strategy_id == "s1")
+    assert s1.cross_test_eligible is True
+
+
+def test_update_cross_test_eligible_on_unknown_strategy_id_does_not_raise(tmp_path):
+    store = _store(tmp_path)
+    store.update_cross_test_eligible("does-not-exist", True)  # no-op, not an error
+    assert store.get("does-not-exist") is None

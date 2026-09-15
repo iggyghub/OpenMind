@@ -1,8 +1,8 @@
 """Basket and classification logic for CROSS-STOCK-VALIDATION S1."""
 import re
-from typing import List
+from typing import List, Optional
 
-from .strategy_store import StrategySpec
+from .strategy_store import StrategySpec, StrategyStore
 
 # 100-stock basket, deduplicated and ordered exactly as user-confirmed.
 # The original hand-typed list totaled 119 unique symbols, not 100 as
@@ -57,3 +57,21 @@ def is_stock_specific(spec: StrategySpec) -> bool:
     tickers = BASKET + [spec.symbol]
     pattern = re.compile(r'\b(' + '|'.join(re.escape(t) for t in tickers) + r')\b')
     return bool(pattern.search(spec.code))
+
+
+def classify_all_strategies(store: Optional[StrategyStore] = None) -> int:
+    """One-shot classification pass (S1's 4th deliverable): runs
+    is_stock_specific over every registered strategy that hasn't been
+    classified yet and persists the result. Idempotent -- only touches
+    specs where cross_test_eligible is still None, so re-running after
+    new strategies register never re-classifies (or overwrites a manual
+    correction on) an already-classified one. Returns the count newly
+    classified."""
+    _store = store if store is not None else StrategyStore()
+    classified = 0
+    for spec in _store.list_all():
+        if spec.cross_test_eligible is not None:
+            continue
+        _store.update_cross_test_eligible(spec.strategy_id, not is_stock_specific(spec))
+        classified += 1
+    return classified

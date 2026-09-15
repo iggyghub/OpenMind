@@ -257,6 +257,17 @@ class StrategyStore:
         )
         self._con.commit()
 
+    def update_cross_test_eligible(self, strategy_id: str, value: bool) -> None:
+        """Persists CROSS-STOCK-VALIDATION S1's generic-vs-stock-specific
+        classification -- a derived value, not a new strategy version (no
+        strategy_versions row, same convention as update_worst_drawdown).
+        No-ops silently if strategy_id doesn't exist."""
+        self._con.execute(
+            "UPDATE strategy_specs SET cross_test_eligible = ? WHERE strategy_id = ?",
+            (bool(value), strategy_id),
+        )
+        self._con.commit()
+
     def delete(self, strategy_id: str) -> None:
         """Remove a strategy's spec and its full version history.
 

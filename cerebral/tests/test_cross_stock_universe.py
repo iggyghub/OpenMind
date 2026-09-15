@@ -1,6 +1,6 @@
 """Tests for cross_stock_universe: BASKET integrity and is_stock_specific heuristic."""
-from cerebral.trading.cross_stock_universe import BASKET, is_stock_specific
-from cerebral.trading.strategy_store import StrategySpec
+from cerebral.trading.cross_stock_universe import BASKET, classify_all_strategies, is_stock_specific
+from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 
 
 def test_basket_count_and_deduplication():
@@ -17,6 +17,28 @@ def test_is_stock_specific_generic_strategy():
         code="def strategy(data):\n    return 1 if data.rsi < 30 else 0\n",
     )
     assert is_stock_specific(spec) is False
+
+
+def test_classify_all_strategies_classifies_only_unclassified(tmp_path):
+    """S1's 4th deliverable: a one-shot pass over every registered strategy,
+    idempotent -- only touches specs still at their None default."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("generic", "AAPL", "def strategy(data):\n    return 1 if data.rsi < 30 else 0\n"))
+    store.save(StrategySpec("specific", "MSFT", "def strategy(data):\n    # Only trade MSFT\n    return 0\n"))
+    store.save(StrategySpec(
+        "already-done", "NVDA", "def strategy(data):\n    return 0\n",
+        cross_test_eligible=False,
+    ))
+
+    classified = classify_all_strategies(store)
+
+    assert classified == 2  # "already-done" was skipped
+    assert store.get("generic").cross_test_eligible is True
+    assert store.get("specific").cross_test_eligible is False
+    assert store.get("already-done").cross_test_eligible is False  # untouched, not re-derived
+
+    # Re-running is a no-op -- everything's classified now.
+    assert classify_all_strategies(store) == 0
 
 
 def test_is_stock_specific_naming_ticker():
