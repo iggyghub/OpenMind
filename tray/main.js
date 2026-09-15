@@ -45,6 +45,15 @@ let _respawnWatchdog = null;
 let _reconnectHalted = false;
 const RECONNECT_FAILURE_THRESHOLD = 5;
 const RESPAWN_WATCHDOG_MS = 15_000;
+// True while a launch-felix.ps1 process spawned by respawnCerebral() is
+// still running. The boot-time respawn (--felix-restart in argv, below) and
+// the SUP-3b watchdog respawn are independent call sites with no shared
+// state; a cold Cerebral boot (port-release wait + Python startup) routinely
+// takes longer than RESPAWN_WATCHDOG_MS, so without this guard the watchdog
+// fires a second launch-felix.ps1 -Restart while the first is still waiting
+// to bind :7766 -- two Cerebral processes then fight over the port and
+// interleave writes into the same cerebral.err.log.
+let _launcherInFlight = false;
 // SD-3 (#556) -- set true when --felix-self-dev-boot is in argv; cleared once
 // health_check is sent on the first Cerebral connection after that boot.
 let _selfDevBootPending  = false;
@@ -106,6 +115,7 @@ function connectToCerebral() {
     // episode can trigger the bounded respawn again fresh.
     _consecutiveFailures = 0;
     _reconnectHalted = false;
+    _launcherInFlight = false;
     if (_respawnWatchdog) { clearTimeout(_respawnWatchdog); _respawnWatchdog = null; }
     console.log('[tray] Connected to Cerebral');
     refreshMenu();
@@ -143,7 +153,7 @@ function connectToCerebral() {
       // this guard the threshold would re-trip ~15s later and respawn again,
       // exactly the "respawn in a loop" the issue says never to do.
       _consecutiveFailures++;
-      if (_consecutiveFailures >= RECONNECT_FAILURE_THRESHOLD && !_reconnectHalted) {
+      if (_consecutiveFailures >= RECONNECT_FAILURE_THRESHOLD && !_reconnectHalted && !_launcherInFlight) {
         trayLog(`respawn: ${_consecutiveFailures} consecutive failed reconnects -- respawning Cerebral once`);
         respawnCerebral();
         _consecutiveFailures = 0;
@@ -1089,7 +1099,18 @@ function manualSelfDevRollback(source) {
 // Runs in the relaunched instance: reboot Cerebral. -Restart makes the
 // launcher wait for :7766 to free (old Cerebral tearing down); -CerebralOnly
 // keeps it from starting a second tray — this instance IS the tray.
+//
+// Single choke point for every launch-felix.ps1 spawn (mirrors _relaunch()'s
+// _restartInProgress guard above): refuses to spawn a second launcher while
+// one from a prior call is still running. _launcherInFlight is cleared when
+// the spawned process exits (successfully bound, or gave up after its own
+// 120s window) or when Cerebral actually reconnects, whichever comes first.
 function respawnCerebral() {
+  if (_launcherInFlight) {
+    trayLog('respawn: a launcher is already in flight -- not spawning a second one');
+    return;
+  }
+  _launcherInFlight = true;
   try {
     const { spawn } = require('child_process');
     const launcher = path.join(__dirname, '..', 'scripts', 'launch-felix.ps1');
@@ -1105,10 +1126,12 @@ function respawnCerebral() {
       // relaunched tray, so nothing needs detaching anyway.
       { stdio: 'ignore', windowsHide: true },
     );
-    child.on('error', (err) => trayLog(`cerebral respawn error: ${err}`));
+    child.on('error', (err) => { trayLog(`cerebral respawn error: ${err}`); _launcherInFlight = false; });
+    child.on('exit', () => { _launcherInFlight = false; });
     child.unref();
     trayLog(`restart: relaunched tray up, spawned launcher for Cerebral (pid ${child.pid})`);
   } catch (e) {
+    _launcherInFlight = false;
     trayLog(`cerebral respawn threw: ${e}`);
   }
 }
