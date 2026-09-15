@@ -27,6 +27,13 @@ from cerebral.paths import data_dir
 _DB_PATH = data_dir() / "strategy_specs.db"
 _VALID_ORIGINS = ('generated', 'user_edited', 'mixed', 'discovered')
 
+
+def _to_optional_bool(value: Optional[float]) -> Optional[bool]:
+    """cross_test_eligible is stored as REAL (SQLite has no BOOLEAN type) --
+    a bare row read gives back 0.0/1.0, not False/True. None passes through
+    unchanged (never-classified, not "classified false")."""
+    return None if value is None else bool(value)
+
 # S39: Convention for expanded strategy_ids
 _SUFFIX_RE = re.compile(r"^(.+) @\S+$")
 
@@ -222,7 +229,7 @@ class StrategyStore:
             code=row["code"], qty=row["qty"], interval=row["interval"],
             risk_override_pct=row["risk_override_pct"],
             worst_drawdown=row["worst_drawdown"],
-            cross_test_eligible=row["cross_test_eligible"],
+            cross_test_eligible=_to_optional_bool(row["cross_test_eligible"]),
         )
 
     def list_all(self) -> List[StrategySpec]:
@@ -234,7 +241,7 @@ class StrategyStore:
                          code=r["code"], qty=r["qty"], interval=r["interval"],
                          risk_override_pct=r["risk_override_pct"],
                          worst_drawdown=r["worst_drawdown"],
-                         cross_test_eligible=r["cross_test_eligible"])
+                         cross_test_eligible=_to_optional_bool(r["cross_test_eligible"]))
             for r in rows
         ]
 
