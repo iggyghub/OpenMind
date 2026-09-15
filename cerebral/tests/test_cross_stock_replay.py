@@ -14,7 +14,7 @@ import pytest
 
 import plugins.trading_replay as tr
 from cerebral.trading.cross_stock_replay import build_pairs, rollup_consistency, run_pair
-from cerebral.trading.cross_stock_store import CrossStockStore
+from cerebral.trading.cross_stock_store import CrossStockStore, MIN_TRADES_FLOOR
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 
 _ALWAYS_LONG = "def strategy(data):\n    return [1] * len(data)\n"
@@ -116,10 +116,10 @@ def test_consistency_rollup_8_of_10_positive(tmp_path):
 
     s_store.save(StrategySpec("strat1", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
 
-    # Record 10 results: 8 positive, 2 negative
+    # Record 10 results: 8 positive, 2 negative (n_trades=25 passes MIN_TRADES_FLOOR)
     for i in range(10):
         net_ret = 0.05 if i < 8 else -0.05
-        c_store.record_result("run1", "strat1", f"SYM{i}", net_ret, 0.0, 10, None)
+        c_store.record_result("run1", "strat1", f"SYM{i}", net_ret, 0.0, 25, None)
 
     rollup_consistency(s_store, c_store)
 
@@ -154,8 +154,8 @@ def test_consistency_rollup_excludes_failed_pairs_from_both_numerator_and_denomi
     s_store.save(StrategySpec("strat3", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
 
     # 2 real results (both positive) + 3 failed pairs (no bars available).
-    c_store.record_result("run1", "strat3", "AAPL", 0.10, -0.05, 10, None)
-    c_store.record_result("run1", "strat3", "MSFT", 0.05, -0.02, 8, None)
+    c_store.record_result("run1", "strat3", "AAPL", 0.10, -0.05, 25, None)
+    c_store.record_result("run1", "strat3", "MSFT", 0.05, -0.02, 21, None)
     for symbol in ("UBER", "LYFT", "SNAP"):
         c_store.record_result("run1", "strat3", symbol, None, None, 0, "Missing columns in Alpaca response")
 
@@ -280,12 +280,96 @@ def test_cross_stock_consistency_unchanged_by_f3(tmp_path):
 
     s_store.save(StrategySpec("guard", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
     # 3 positive net_returns, 1 negative -- consistency should be 0.75 regardless of benchmark.
-    c_store.record_result("run1", "guard", "SYM0", 0.10, -0.05, 5, None, benchmark_return=0.08)
-    c_store.record_result("run1", "guard", "SYM1", 0.05, -0.02, 4, None, benchmark_return=0.06)
-    c_store.record_result("run1", "guard", "SYM2", 0.03, -0.01, 3, None, benchmark_return=0.09)
-    c_store.record_result("run1", "guard", "SYM3", -0.04, -0.10, 6, None, benchmark_return=0.07)
+    c_store.record_result("run1", "guard", "SYM0", 0.10, -0.05, 25, None, benchmark_return=0.08)
+    c_store.record_result("run1", "guard", "SYM1", 0.05, -0.02, 21, None, benchmark_return=0.06)
+    c_store.record_result("run1", "guard", "SYM2", 0.03, -0.01, 20, None, benchmark_return=0.09)
+    c_store.record_result("run1", "guard", "SYM3", -0.04, -0.10, 22, None, benchmark_return=0.07)
 
     rollup_consistency(s_store, c_store)
 
     spec = s_store.get("guard")
     assert spec.cross_stock_consistency == pytest.approx(0.75)
+
+
+# F4 (#1249): minimum-trade floor + cost-model sensitivity
+
+def test_trade_floor_excludes_low_trade_pairs_from_consistency(tmp_path):
+    """A strategy whose only successful pairs are below MIN_TRADES_FLOOR is
+    excluded from the consistency rollup entirely (no qualifying votes), not
+    scored as 1.0 based on noise trades."""
+    s_store = StrategyStore(db_path=tmp_path / "strategy_specs.db")
+    c_store = CrossStockStore(db_path=str(tmp_path / "cross_stock_results.db"))
+
+    s_store.save(StrategySpec("noisy", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
+    # All positive but all below floor -- seven trades over five years is noise.
+    c_store.record_result("run1", "noisy", "SYM0", 0.10, -0.05, MIN_TRADES_FLOOR - 1, None)
+    c_store.record_result("run1", "noisy", "SYM1", 0.20, -0.03, MIN_TRADES_FLOOR - 5, None)
+
+    rollup_consistency(s_store, c_store)
+
+    spec = s_store.get("noisy")
+    assert spec.cross_stock_consistency is None
+
+
+def test_trade_floor_boundary_exactly_at_floor_is_included(tmp_path):
+    """A pair with exactly MIN_TRADES_FLOOR trades IS counted (>= not >)."""
+    s_store = StrategyStore(db_path=tmp_path / "strategy_specs.db")
+    c_store = CrossStockStore(db_path=str(tmp_path / "cross_stock_results.db"))
+
+    s_store.save(StrategySpec("boundary", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
+    c_store.record_result("run1", "boundary", "SYM0", 0.10, -0.05, MIN_TRADES_FLOOR, None)
+
+    rollup_consistency(s_store, c_store)
+
+    spec = s_store.get("boundary")
+    assert spec.cross_stock_consistency == pytest.approx(1.0)
+
+
+def test_consistency_and_tested_count_same_population(tmp_path):
+    """Both rollups filter identically (net_return IS NOT NULL AND n_trades >= floor)
+    so a consistency score is always backed by the same sample size."""
+    c_store = CrossStockStore(db_path=str(tmp_path / "cross_stock_results.db"))
+
+    c_store.record_result("run1", "s1", "SYM0", 0.10, -0.05, MIN_TRADES_FLOOR + 5, None)  # counts
+    c_store.record_result("run1", "s1", "SYM1", -0.05, -0.10, MIN_TRADES_FLOOR, None)      # counts
+    c_store.record_result("run1", "s1", "SYM2", 0.15, -0.02, MIN_TRADES_FLOOR - 1, None)   # below floor
+    c_store.record_result("run1", "s1", "SYM3", None, None, 0, "bad data")                  # failed
+
+    consistency = c_store.get_consistency_by_strategy()
+    counts = c_store.get_tested_count_by_strategy()
+
+    assert set(consistency.keys()) == set(counts.keys())
+    assert counts["s1"] == 2       # SYM0 + SYM1 only
+    assert consistency["s1"] == pytest.approx(0.5)
+
+
+def test_cost_sensitivity_high_turnover_lower_net_return():
+    """High-turnover strategy has materially lower net_return under explicit
+    gauntlet costs than under explicit zero costs.  Same input, two configs,
+    recorded diff -- confirms the run_pair cost_config seam is wired through.
+
+    NOTE: {} is NOT a zero-cost config -- apply_costs_to_returns defaults to
+    min=0.01/max=0.03 (same as the gauntlet), so {} and the gauntlet config
+    produce identical results.  This test uses an explicit {"min_spread_pct":0,
+    "max_spread_pct":0} for actual zero cost."""
+    # Alternates every bar -- maximum possible turnover, so cost drag is maximal.
+    alternating = "def strategy(data): return [1 if i % 2 == 0 else -1 for i in range(len(data))]\n"
+
+    explicit_zero = {"min_spread_pct": 0.0, "max_spread_pct": 0.0}
+    gauntlet_cost = {"min_spread_pct": 0.01, "max_spread_pct": 0.03}
+
+    result_zero = run_pair(
+        strategy_id="s1", code=alternating, symbol="AAPL",
+        start="2021-09-15", end="2026-09-15", interval="1d",
+        bar_cache=FakeBarCache(), cost_config=explicit_zero,
+    )
+    result_gauntlet = run_pair(
+        strategy_id="s1", code=alternating, symbol="AAPL",
+        start="2021-09-15", end="2026-09-15", interval="1d",
+        bar_cache=FakeBarCache(), cost_config=gauntlet_cost,
+    )
+
+    assert result_zero["flat_reason"] is None
+    assert result_gauntlet["flat_reason"] is None
+    # Costs compound on every bar-flip; gauntlet result is strictly worse.
+    assert result_gauntlet["net_return"] < result_zero["net_return"]

@@ -19,6 +19,11 @@ from cerebral.paths import data_dir
 
 DB_PATH = data_dir() / "cross_stock_results.db"
 
+# F4 (#1249): minimum n_trades a pair must have to count as a qualifying vote.
+# Seven trades over five years is noise (per S2 live-verify); 20 is a
+# deliberate floor for a ~5-year window, not an inline magic number.
+MIN_TRADES_FLOOR = 20
+
 
 class CrossStockStore:
     def __init__(self, db_path: Optional[str] = None):
@@ -151,8 +156,9 @@ class CrossStockStore:
         cur.execute(
             """SELECT strategy_id, AVG(CASE WHEN net_return > 0 THEN 1.0 ELSE 0.0 END) AS consistency
                FROM cross_stock_results
-               WHERE net_return IS NOT NULL
-               GROUP BY strategy_id"""
+               WHERE net_return IS NOT NULL AND n_trades >= ?
+               GROUP BY strategy_id""",
+            (MIN_TRADES_FLOOR,),
         )
         return {row["strategy_id"]: row["consistency"] for row in cur.fetchall()}
 
@@ -180,7 +186,8 @@ class CrossStockStore:
         cur.execute(
             """SELECT strategy_id, COUNT(*) AS tested
                FROM cross_stock_results
-               WHERE net_return IS NOT NULL
-               GROUP BY strategy_id"""
+               WHERE net_return IS NOT NULL AND n_trades >= ?
+               GROUP BY strategy_id""",
+            (MIN_TRADES_FLOOR,),
         )
         return {row["strategy_id"]: row["tested"] for row in cur.fetchall()}
