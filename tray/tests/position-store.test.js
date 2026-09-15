@@ -3,7 +3,7 @@
 const os   = require('os');
 const fs   = require('fs');
 const path = require('path');
-const { PositionStore } = require('../lib/position-store');
+const { PositionStore, isPointOnAnyDisplay } = require('../lib/position-store');
 
 function tmpPath() {
   return path.join(os.tmpdir(), `openmind-pos-test-${Date.now()}-${Math.random()}.json`);
@@ -51,4 +51,23 @@ test('overwrites previous position on repeated saves', () => {
   store.save({ x: 99, y: 88 });
   expect(store.load()).toEqual({ x: 99, y: 88 });
   fs.unlinkSync(file);
+});
+
+// ── isPointOnAnyDisplay (#restore-window-state) ────────────────────────────────
+
+const DISPLAYS = [
+  { bounds: { x: 0, y: 0, width: 1920, height: 1080 } },
+  { bounds: { x: 1920, y: 0, width: 1920, height: 1080 } }, // second monitor, to the right
+];
+
+test('point on the primary display', () => {
+  expect(isPointOnAnyDisplay({ x: 100, y: 100 }, DISPLAYS)).toBe(true);
+});
+
+test('point on a secondary display', () => {
+  expect(isPointOnAnyDisplay({ x: 2500, y: 100 }, DISPLAYS)).toBe(true);
+});
+
+test('point off every display (monitor since unplugged)', () => {
+  expect(isPointOnAnyDisplay({ x: 2500, y: 100 }, [DISPLAYS[0]])).toBe(false);
 });

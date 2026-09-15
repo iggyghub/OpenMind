@@ -2,7 +2,7 @@ const { app, Tray, Menu, BrowserWindow, Notification, nativeImage, ipcMain, scre
 const WebSocket = require('ws');
 const path = require('path');
 const { VisualiserState }      = require('./lib/visualiser-state');
-const { PositionStore }        = require('./lib/position-store');
+const { PositionStore, isPointOnAnyDisplay } = require('./lib/position-store');
 const { NotificationManager }  = require('./lib/notification-manager');
 const { ModalManager }         = require('./lib/modal-manager');
 // PermissionsStore is no longer instantiated in main.js (Issue #202).
@@ -14,6 +14,7 @@ const CEREBRAL_URL    = 'ws://localhost:7766';
 const ICON_PATH       = path.join(__dirname, 'assets', 'icon.png');
 const ICO_PATH        = path.join(__dirname, 'assets', 'icon.ico');
 const VIS_POS_PATH    = path.join(__dirname, '..', 'cerebral', 'data', 'visualiser-pos.json');
+const MAIN_WIN_STATE_PATH = path.join(__dirname, '..', 'cerebral', 'data', 'main-window-state.json');
 const LAUNCHER_LOG    = path.join(__dirname, '..', 'launcher.log');
 const CEREBRAL_LOG    = path.join(__dirname, '..', 'cerebral.log');
 const RECONNECT_DELAY_MS = 3000;
@@ -62,6 +63,7 @@ const modalWindows = new Map();
 
 const visState   = new VisualiserState();
 const posStore   = new PositionStore(VIS_POS_PATH);
+const mainWinStateStore = new PositionStore(MAIN_WIN_STATE_PATH);
 
 // In-memory cache of the settings_updated snapshot from Cerebral.
 // Starts from defaults; overwritten on first broadcast (sent on every connect).
@@ -525,9 +527,16 @@ function openMainWindow(hash) {
     return;
   }
 
+  // #restore-window-state -- reopen at the size/position it was closed at.
+  // Ignore a saved (x, y) that no longer lands on any connected display
+  // (e.g. a second monitor was unplugged) so Felix can't reopen offscreen.
+  const savedState = mainWinStateStore.load();
+  const onScreen = savedState && isPointOnAnyDisplay(savedState, screen.getAllDisplays());
+
   mainWindow = new BrowserWindow({
-    width:           1200,
-    height:          800,
+    width:           (savedState && savedState.width)  || 1200,
+    height:          (savedState && savedState.height) || 800,
+    ...(onScreen ? { x: savedState.x, y: savedState.y } : {}),
     minWidth:        720,
     minHeight:       480,
     title:           'Felix',
@@ -538,6 +547,7 @@ function openMainWindow(hash) {
       contextIsolation: true,
     },
   });
+  if (savedState && savedState.maximized) mainWindow.maximize();
 
   mainWindow.loadFile(path.join(__dirname, 'windows', 'main.html'),
     hashStr ? { hash: hashStr } : undefined);
@@ -600,6 +610,7 @@ function openMainWindow(hash) {
 
   // Issue #188 — close button hides to tray; quit is tray-only.
   mainWindow.on('close', (event) => {
+    saveMainWindowState();
     if (!isQuitting) {
       event.preventDefault();
       mainWindow.hide();
@@ -833,6 +844,18 @@ function saveVisualiserPosition() {
   if (!visualiserWindow || visualiserWindow.isDestroyed()) return;
   const [x, y] = visualiserWindow.getPosition();
   posStore.save({ x, y });
+}
+
+// #restore-window-state -- called just before the Main window closes/hides
+// (both a manual close and the quit-then-relaunch restart path go through
+// the 'close' event) so the next openMainWindow() reopens at the same spot.
+function saveMainWindowState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const maximized = mainWindow.isMaximized();
+  // getBounds() while maximized reports the maximized size, not the restored
+  // one -- getNormalBounds() keeps the pre-maximize bounds for next time.
+  const { x, y, width, height } = maximized ? mainWindow.getNormalBounds() : mainWindow.getBounds();
+  mainWinStateStore.save({ x, y, width, height, maximized });
 }
 
 function toggleVisualiser() {

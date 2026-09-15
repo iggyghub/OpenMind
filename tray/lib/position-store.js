@@ -24,4 +24,13 @@ class PositionStore {
   }
 }
 
-module.exports = { PositionStore };
+// True if (x, y) falls within some display's bounds. Used to reject a saved
+// window position that no longer lands on any connected monitor (e.g. a
+// second display was unplugged since the position was saved).
+function isPointOnAnyDisplay(point, displays) {
+  return displays.some(({ bounds: b }) =>
+    point.x >= b.x && point.x < b.x + b.width &&
+    point.y >= b.y && point.y < b.y + b.height);
+}
+
+module.exports = { PositionStore, isPointOnAnyDisplay };
