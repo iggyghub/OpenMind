@@ -104,6 +104,22 @@ class ReplayStore:
         cur.execute("SELECT * FROM replay_results WHERE run_id = ?", (run_id,))
         return cur.fetchall()
 
+    def get_worst_drawdown_by_strategy(self) -> dict:
+        """Worst (most negative) max_drawdown per strategy_id across every
+        accumulated replay_results row -- all runs, not just the latest.
+        BATCH-REPLAY S4 (#1227): feeds this rollup into
+        StrategyStore.worst_drawdown, which StrategyLifecycle's gates read.
+        max_drawdown is stored negative (a fraction of returns), so "worst"
+        is MIN(), not MAX(). Strategies with no replay rows at all are
+        simply absent from the returned dict -- the caller must treat a
+        missing key the same as "never replayed," not zero."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT strategy_id, MIN(max_drawdown) AS worst FROM replay_results "
+            "WHERE max_drawdown IS NOT NULL GROUP BY strategy_id"
+        )
+        return {row["strategy_id"]: row["worst"] for row in cur.fetchall()}
+
     def list_runs(self, limit: Optional[int] = None) -> List[sqlite3.Row]:
         cur = self.conn.cursor()
         if limit is not None:

@@ -62,3 +62,32 @@ def test_list_runs_ordering_and_limit(store: ReplayStore) -> None:
     assert len(limited_runs) == 2
     assert limited_runs[0]["run_id"] == run_id_3
     assert limited_runs[1]["run_id"] == run_id_2
+
+
+# BATCH-REPLAY S4 (#1227): worst-drawdown rollup feeding StrategyLifecycle's
+# gates. max_drawdown is stored negative-or-zero (a min() accumulator over
+# running peak-to-trough, cerebral/trading/replay.py:210) -- "worst" is the
+# most negative value, MIN() not MAX().
+def test_get_worst_drawdown_by_strategy_picks_min_across_all_runs(store: ReplayStore) -> None:
+    run_1 = store.create_run("2023-01-01", "2023-01-31", "1d", 2)
+    run_2 = store.create_run("2023-02-01", "2023-02-28", "1d", 2)
+
+    store.record_result(run_1, "strat_a", "AAPL", 0.0, 0.0, 1, -0.05, 1.0, None)
+    store.record_result(run_2, "strat_a", "AAPL", 0.0, 0.0, 1, -0.20, 1.0, None)
+    store.record_result(run_1, "strat_b", "GOOG", 0.0, 0.0, 1, -0.10, 1.0, None)
+
+    worst = store.get_worst_drawdown_by_strategy()
+    assert worst["strat_a"] == -0.20  # min across both runs, not just the latest
+    assert worst["strat_b"] == -0.10
+
+
+def test_get_worst_drawdown_by_strategy_excludes_null_drawdowns(store: ReplayStore) -> None:
+    run_id = store.create_run("2023-01-01", "2023-01-31", "1d", 1)
+    store.record_result(run_id, "strat_flat", "AAPL", None, None, 0, None, None, "no_signal")
+
+    worst = store.get_worst_drawdown_by_strategy()
+    assert "strat_flat" not in worst
+
+
+def test_get_worst_drawdown_by_strategy_empty_store_returns_empty_dict(store: ReplayStore) -> None:
+    assert store.get_worst_drawdown_by_strategy() == {}

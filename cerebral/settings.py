@@ -138,6 +138,14 @@ _DEFAULTS: dict[str, Any] = {
     "batch_replay_running":      False,
     "batch_replay_cursor":       "",
     "batch_replay_start":        "",
+    # BATCH-REPLAY S4 (#1227): check_graduation refuses paper->live
+    # promotion outright when a strategy's accumulated historical-replay
+    # drawdown is worse than this fraction (0.30 = 30%), even if its own
+    # live paper CI just passed. Default picked from this campaign's own
+    # RP9 live-verify sample (286 real strategies, worst observed -21.17%)
+    # -- conservative enough not to block ordinary variance, tight enough
+    # to catch a genuinely bad multi-period history.
+    "batch_replay_graduation_dd_cap": 0.30,
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -181,6 +189,7 @@ _TYPES: dict[str, type] = {
     "batch_replay_running":      bool,
     "batch_replay_cursor":       str,
     "batch_replay_start":        str,
+    "batch_replay_graduation_dd_cap": float,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})

@@ -3887,6 +3887,7 @@ async def _scheduler_loop() -> None:
                     # None makes bear_case_fn a true no-op in live_tick.py,
                     # not just an always-PROCEED verdict.
                     bear_case_fn=_bear_case_fn if _settings.get("trading_bear_case_gate_enabled") else None,
+                    dd_cap=_settings.get("batch_replay_graduation_dd_cap"),
                 )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")

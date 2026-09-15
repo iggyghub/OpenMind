@@ -660,6 +660,54 @@ def test_dispatch_refuses_graduation_on_a_red_flagged_filing(tmp_path, monkeypat
     assert lifecycle.get_state("s1").status == "paper"
 
 
+def test_dispatch_refuses_graduation_on_bad_accumulated_replay_drawdown(tmp_path, monkeypatch):
+    """BATCH-REPLAY S4 (#1227), exercised through the full dispatch chain:
+    dispatch_due_events threads store=/dd_cap= all the way through
+    _apply_lifecycle into check_graduation's new refusal gate.
+
+    Fills are seeded under "s1@v1", not "s1": store.save() below creates a
+    real strategy_versions row, so dispatch_due_events computes
+    dispatch_id = "s1@v1" (S17's versioned identity) -- that's the id the
+    live paper CI and lifecycle state actually key off of, not the bare
+    strategy_id. This IS the bug BATCH-REPLAY S4 found and fixed in
+    _apply_lifecycle itself: StrategyStore stays keyed by the bare id."""
+    from cerebral.trading.strategy_store import StrategyStore, StrategySpec
+    record = make_record(tmp_path, monkeypatch)
+    for i in range(30):
+        _add_fill_on_day(record, f"2026-0{1 + i // 28}-{1 + i % 28:02d}", "AAPL", "sell", 1.0,
+                          12.0, pnl=2.0, strategy_id="s1@v1")
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]"))
+    store.update_worst_drawdown("s1", -0.50)
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    results = dispatch_due_events(sched, StubBrokerClient(), record, lifecycle=lifecycle,
+                                  store=store, dd_cap=0.30)
+
+    assert results[0].get("graduated") is not True
+    assert lifecycle.get_state("s1@v1").status == "paper"
+
+
+def test_dispatch_graduates_normally_when_accumulated_drawdown_is_within_cap(tmp_path, monkeypatch):
+    from cerebral.trading.strategy_store import StrategyStore, StrategySpec
+    record = make_record(tmp_path, monkeypatch)
+    for i in range(30):
+        _add_fill_on_day(record, f"2026-0{1 + i // 28}-{1 + i % 28:02d}", "AAPL", "sell", 1.0,
+                          12.0, pnl=2.0, strategy_id="s1@v1")
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]"))
+    store.update_worst_drawdown("s1", -0.05)
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    results = dispatch_due_events(sched, StubBrokerClient(), record, lifecycle=lifecycle,
+                                  store=store, dd_cap=0.30)
+
+    assert results[0].get("graduated") is True
+    assert lifecycle.get_state("s1@v1").status == "live"
+
+
 def test_dispatch_does_not_graduate_on_all_zero_pnl(tmp_path, monkeypatch):
     record = make_record(tmp_path, monkeypatch)
     for _ in range(30):
