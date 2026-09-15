@@ -42,16 +42,16 @@ size/schedule together).
   S3 logs actual pairs/night so later nights (and any completion-estimate
   UI) use measured throughput, not a guess.
 
-## Status: not started
+## Status: active
 
 ## Next slice -- start here
 
-- **Active:** S1 -- #1234
+- **Active:** S2 -- #1235
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] S1 -- #1234 -- classify strategies generic vs stock-specific;
+- [x] S1 -- #1234 -- classify strategies generic vs stock-specific;
   persist the 100-stock basket and the classification result
 - [ ] S2 -- #1235 -- cross-stock replay backend: resumable
   (strategy_id, symbol) pair cursor, one 5-year backtest per pair (reuses
@@ -74,6 +74,25 @@ size/schedule together).
 S1 blocks S2 (need to know which strategies are eligible before sweeping).
 S3 depends on S2 (needs the resumable sweep to call). S4 depends on S2's
 accumulated results. S5 depends on S2 (status) and S4 (the list).
+
+## Landed PRs
+
+- PR #1239 -- S1: basket + classification heuristic (merged 2026-09-15,
+  hand-fixed after self_dev's own attempt correctly self-blocked on
+  tests_failed -- real bugs found: the hand-typed 100-stock basket
+  actually totaled 119 unique symbols (my own miscount when first
+  drafting it in conversation, caught by the test's own len==100
+  assertion), `cross_test_eligible` round-tripped as 0.0/1.0 instead of
+  False/True (REAL-typed SQLite column, nothing coerced the read back to
+  bool), and `is_stock_specific`'s case-insensitive ticker match flagged
+  ordinary English words that happen to double as real tickers (ON, GE,
+  F, T, C, MA, V) -- "...based on interest rates" misclassified as
+  ON-specific. Follow-up commit (028dd46, same day) closed a real gap in
+  the merged PR: the one-shot classification pass and the
+  `update_cross_test_eligible` persistence method S1's own issue asked
+  for were never implemented, only the bare classification function was.
+  Ran against the real strategy_specs.db after landing: 306 strategies
+  total, 283 generic (eligible for S2's sweep), 23 stock-specific.
 
 ## SAFETY
 
