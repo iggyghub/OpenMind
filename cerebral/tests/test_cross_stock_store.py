@@ -38,13 +38,17 @@ def test_record_result_flat_reason_on_failure(store: CrossStockStore) -> None:
 
 
 def test_record_result_upsert_overwrites_same_pair(store: CrossStockStore) -> None:
-    run_id = store.create_run("2021-09-15", "2026-09-15")
-    store.record_result(run_id, "strat_1", "AAPL", net_return=0.10, max_drawdown=-0.05, n_trades=5)
-    store.record_result(run_id, "strat_1", "AAPL", net_return=0.20, max_drawdown=-0.08, n_trades=7)
+    """F1 (#1246): PK is now (strategy_id, symbol), so the same pair with a
+    different run_id still upserts to a single row -- no duplicate-averaging."""
+    run1 = store.create_run("2021-09-15", "2026-09-15")
+    run2 = store.create_run("2021-09-15", "2026-09-15")
+    store.record_result(run1, "strat_1", "AAPL", net_return=0.10, max_drawdown=-0.05, n_trades=5)
+    store.record_result(run2, "strat_1", "AAPL", net_return=0.20, max_drawdown=-0.08, n_trades=7)
 
     results = store.get_results_by_strategy("strat_1")
-    assert len(results) == 1  # not duplicated
+    assert len(results) == 1  # not duplicated even across run_ids
     assert results[0]["net_return"] == 0.20
+    assert results[0]["run_id"] == run2  # provenance updated to the latest run
 
 
 def test_get_results_by_strategy_only_returns_that_strategy(store: CrossStockStore) -> None:
@@ -80,3 +84,25 @@ def test_get_tested_count_by_strategy_omits_strategies_with_zero_successful_pair
     counts = store.get_tested_count_by_strategy()
 
     assert "strat_1" not in counts
+
+
+def test_get_done_pairs_returns_all_recorded_pairs(store: CrossStockStore) -> None:
+    """F1 (#1246): get_done_pairs is the resume skip-set -- includes both
+    successful and failed pairs (a failed pair is still a tracked attempt)."""
+    run_id = store.create_run("2021-09-15", "2026-09-15")
+    store.record_result(run_id, "strat_1", "AAPL", net_return=0.1, max_drawdown=-0.05, n_trades=3)
+    store.record_result(run_id, "strat_1", "MSFT", net_return=None, max_drawdown=None, n_trades=0,
+                         flat_reason="Missing columns in Alpaca response")
+
+    done = store.get_done_pairs()
+
+    assert done == {("strat_1", "AAPL"), ("strat_1", "MSFT")}
+
+
+def test_get_done_count_counts_all_rows(store: CrossStockStore) -> None:
+    run_id = store.create_run("2021-09-15", "2026-09-15")
+    assert store.get_done_count() == 0
+    store.record_result(run_id, "strat_1", "AAPL", net_return=0.1, max_drawdown=-0.05, n_trades=3)
+    store.record_result(run_id, "strat_1", "MSFT", net_return=None, max_drawdown=None, n_trades=0,
+                         flat_reason="bad data")
+    assert store.get_done_count() == 2

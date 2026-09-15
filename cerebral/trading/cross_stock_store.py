@@ -1,7 +1,15 @@
 """Results store for CROSS-STOCK-VALIDATION S2 -- mirrors ReplayStore's
 shape (cerebral/trading/replay_store.py), but a different table: one row
 per (strategy, symbol) pair over the full 5-year window, not per
-strategy-month."""
+strategy-month.
+
+F1 (#1246): primary key changed from (run_id, strategy_id, symbol) to
+(strategy_id, symbol) -- run_id is now provenance-only.  This makes the
+ON CONFLICT upsert actually fire on re-runs, and lets resume logic use
+"which pairs are already in the table" as the progress source of truth
+instead of a settings cursor.  created_at lets future refresh logic
+select stale pairs by age (no automatic cadence added here; see ADR-0028
+rule 2)."""
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -29,16 +37,37 @@ class CrossStockStore:
                 created_at TEXT NOT NULL
             );
         """)
+
+        # F1 (#1246): detect old schema (PK includes run_id) and migrate.
+        # As of 2026-09-15 the table holds exactly 22 leftover S2 verification
+        # rows (confirmed via direct DB query before this branch was cut) --
+        # dropping and recreating is safe and simpler than ALTER TABLE (SQLite
+        # cannot change a PK constraint in-place).
+        cur.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='cross_stock_results'"
+        )
+        row = cur.fetchone()
+        if row and "PRIMARY KEY (run_id" in row[0]:
+            cur.execute("SELECT COUNT(*) FROM cross_stock_results")
+            count = cur.fetchone()[0]
+            if count > 100:
+                raise RuntimeError(
+                    f"cross_stock_results has {count} rows -- write a migration "
+                    "instead of dropping (F1 expected <= 100 verification rows)"
+                )
+            cur.execute("DROP TABLE cross_stock_results")
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS cross_stock_results (
-                run_id TEXT NOT NULL,
                 strategy_id TEXT NOT NULL,
                 symbol TEXT NOT NULL,
+                run_id TEXT,
                 net_return REAL,
                 max_drawdown REAL,
                 n_trades INTEGER,
                 flat_reason TEXT,
-                PRIMARY KEY (run_id, strategy_id, symbol)
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (strategy_id, symbol)
             );
         """)
         self.conn.commit()
@@ -58,16 +87,19 @@ class CrossStockStore:
         net_return: Optional[float], max_drawdown: Optional[float],
         n_trades: int, flat_reason: Optional[str] = None,
     ) -> None:
+        created_at = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """INSERT INTO cross_stock_results (
-                run_id, strategy_id, symbol, net_return, max_drawdown, n_trades, flat_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(run_id, strategy_id, symbol) DO UPDATE SET
+                strategy_id, symbol, run_id, net_return, max_drawdown, n_trades, flat_reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(strategy_id, symbol) DO UPDATE SET
+                run_id=excluded.run_id,
                 net_return=excluded.net_return,
                 max_drawdown=excluded.max_drawdown,
                 n_trades=excluded.n_trades,
-                flat_reason=excluded.flat_reason""",
-            (run_id, strategy_id, symbol, net_return, max_drawdown, n_trades, flat_reason),
+                flat_reason=excluded.flat_reason,
+                created_at=excluded.created_at""",
+            (strategy_id, symbol, run_id, net_return, max_drawdown, n_trades, flat_reason, created_at),
         )
         self.conn.commit()
 
@@ -77,6 +109,19 @@ class CrossStockStore:
             "SELECT * FROM cross_stock_results WHERE strategy_id = ?", (strategy_id,)
         )
         return cur.fetchall()
+
+    def get_done_pairs(self) -> set:
+        """Returns the set of (strategy_id, symbol) tuples already recorded.
+        Used by _run_cross_stock_replay to skip pairs on resume."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT strategy_id, symbol FROM cross_stock_results")
+        return {(row["strategy_id"], row["symbol"]) for row in cur.fetchall()}
+
+    def get_done_count(self) -> int:
+        """Total rows in the results table (includes failed pairs)."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM cross_stock_results")
+        return cur.fetchone()[0]
 
     def get_consistency_by_strategy(self) -> dict[str, float]:
         """Returns {strategy_id: fraction_of_positive_expectancy} for every
