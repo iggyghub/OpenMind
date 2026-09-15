@@ -3904,6 +3904,17 @@ async def _scheduler_loop() -> None:
                     ),
                     "results": results,
                 })
+
+            # CROSS-STOCK-VALIDATION S3 (#1236): nightly cross-stock sweep,
+            # midnight-8am ET, soft-capped at 8 real-clock hours. Logic
+            # lives in plugins.trading_replay (injectable `now`, directly
+            # unit-testable) -- this is just the call site on the existing
+            # 5-minute tick, not a new SchedulerPlugin recurring event
+            # (list_due_events()'s "daily" recurrence is elapsed-time-
+            # since-last-run, not anchored to a clock hour, and would
+            # drift across restarts).
+            from plugins.trading_replay import check_cross_stock_night_window
+            await check_cross_stock_night_window(_settings)
         except Exception as e:
             logger.warning(f"[cerebral] Scheduler loop iteration failed (backing off): {e}", exc_info=True)
         await asyncio.sleep(300)
