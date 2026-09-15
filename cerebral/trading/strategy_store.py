@@ -63,6 +63,8 @@ class StrategySpec:
     # derived value, recomputed as more replay data lands -- not part of
     # save()'s versioning, updated via update_worst_drawdown() instead.
     worst_drawdown: Optional[float] = None
+    # CROSS-STOCK-VALIDATION S1: generic vs stock-specific eligibility
+    cross_test_eligible: Optional[bool] = None
 
 
 class StrategyStore:
@@ -120,6 +122,13 @@ class StrategyStore:
         except OperationalError:
             pass  # Column already exists
 
+        # CROSS-STOCK-VALIDATION S1: add cross_test_eligible column
+        try:
+            self._con.execute("ALTER TABLE strategy_specs ADD COLUMN cross_test_eligible REAL")
+            self._con.commit()
+        except OperationalError:
+            pass  # Column already exists
+
         # S25 migration: drop legacy CHECK constraint on origin
         try:
             ddl_row = self._con.execute(
@@ -163,8 +172,8 @@ class StrategyStore:
         )
         self._con.execute(
             "INSERT OR REPLACE INTO strategy_specs "
-            "(strategy_id, symbol, code, qty, interval, risk_override_pct, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (spec.strategy_id, spec.symbol, spec.code, float(spec.qty), spec.interval, spec.risk_override_pct, ts),
+            "(strategy_id, symbol, code, qty, interval, risk_override_pct, cross_test_eligible, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (spec.strategy_id, spec.symbol, spec.code, float(spec.qty), spec.interval, spec.risk_override_pct, spec.cross_test_eligible, ts),
         )
         self._con.commit()
 
@@ -213,6 +222,7 @@ class StrategyStore:
             code=row["code"], qty=row["qty"], interval=row["interval"],
             risk_override_pct=row["risk_override_pct"],
             worst_drawdown=row["worst_drawdown"],
+            cross_test_eligible=row["cross_test_eligible"],
         )
 
     def list_all(self) -> List[StrategySpec]:
@@ -223,7 +233,8 @@ class StrategyStore:
             StrategySpec(strategy_id=r["strategy_id"], symbol=r["symbol"],
                          code=r["code"], qty=r["qty"], interval=r["interval"],
                          risk_override_pct=r["risk_override_pct"],
-                         worst_drawdown=r["worst_drawdown"])
+                         worst_drawdown=r["worst_drawdown"],
+                         cross_test_eligible=r["cross_test_eligible"])
             for r in rows
         ]
 

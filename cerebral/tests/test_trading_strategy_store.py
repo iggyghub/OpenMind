@@ -352,3 +352,34 @@ def test_update_worst_drawdown_on_unknown_strategy_id_does_not_raise(tmp_path):
     store = _store(tmp_path)
     store.update_worst_drawdown("does-not-exist", -0.10)  # no-op, not an error
     assert store.get("does-not-exist") is None
+
+
+# CROSS-STOCK-VALIDATION S1: cross_test_eligible migration & persistence
+def test_cross_test_eligible_defaults_to_none(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]"))
+    fetched = store.get("s1")
+    assert fetched is not None
+    assert fetched.cross_test_eligible is None
+
+
+def test_cross_test_eligible_persists_and_is_readable_via_get_and_list_all(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]", cross_test_eligible=True))
+
+    fetched = store.get("s1")
+    assert fetched is not None
+    assert fetched.cross_test_eligible is True
+
+    all_specs = store.list_all()
+    s1 = next(s for s in all_specs if s.strategy_id == "s1")
+    assert s1.cross_test_eligible is True
+
+
+def test_cross_test_eligible_false_persists_correctly(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]", cross_test_eligible=False))
+
+    fetched = store.get("s1")
+    assert fetched is not None
+    assert fetched.cross_test_eligible is False
