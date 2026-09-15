@@ -597,6 +597,7 @@ async def get_cross_stock_replay_status() -> str:
     # very differently than off 80, and showing the bare fraction alone
     # would misrepresent a small, early sample as a settled result.
     tested_counts = store.get_tested_count_by_strategy()
+    excess_returns = store.get_mean_excess_return_by_strategy()
     ranked = sorted(
         (s for s in specs if s.cross_stock_consistency is not None),
         key=lambda s: s.cross_stock_consistency, reverse=True,
@@ -606,6 +607,7 @@ async def get_cross_stock_replay_status() -> str:
             "strategy_id": s.strategy_id,
             "consistency": s.cross_stock_consistency,
             "stocks_tested": tested_counts.get(s.strategy_id, 0),
+            "mean_excess_return": excess_returns.get(s.strategy_id),
         }
         for s in ranked[:5]
     ]
@@ -654,6 +656,7 @@ async def _run_cross_stock_replay() -> None:
             store.record_result(
                 run_id, spec.strategy_id, symbol,
                 result["net_return"], result["max_drawdown"], result["n_trades"], result["flat_reason"],
+                result.get("benchmark_return"),
             )
         except Exception as exc:
             # Hard exception (not a flat_reason from run_pair itself) --
