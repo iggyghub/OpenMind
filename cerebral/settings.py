@@ -157,6 +157,14 @@ _DEFAULTS: dict[str, Any] = {
     "cross_stock_running":       False,
     "cross_stock_cursor_strategy_id": "",
     "cross_stock_cursor_symbol": "",
+    # CROSS-STOCK-VALIDATION S3 (#1236): UTC ISO timestamp of when
+    # tonight's nightly sweep started, "" when not currently in a nightly
+    # run. Distinct from cross_stock_running (which a manual start/stop
+    # can also flip) -- this is what the 8-real-clock-hour soft cap
+    # measures elapsed time against, and what stops _scheduler_loop's
+    # per-tick check from re-starting the sweep every 5 minutes for the
+    # rest of the midnight-8am window once it's already running tonight.
+    "cross_stock_night_started_at": "",
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -204,6 +212,7 @@ _TYPES: dict[str, type] = {
     "cross_stock_running":       bool,
     "cross_stock_cursor_strategy_id": str,
     "cross_stock_cursor_symbol": str,
+    "cross_stock_night_started_at": str,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})

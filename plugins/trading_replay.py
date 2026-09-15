@@ -606,6 +606,7 @@ async def _run_cross_stock_replay() -> None:
     )
 
     loop = asyncio.get_event_loop()
+    processed = 0
     for spec, symbol in pairs[start_idx:]:
         if _cross_stock_stop_flag:
             break
@@ -625,11 +626,79 @@ async def _run_cross_stock_replay() -> None:
         # at most one pair, same convention as batch_replay_cursor.
         settings.set("cross_stock_cursor_strategy_id", spec.strategy_id)
         settings.set("cross_stock_cursor_symbol", symbol)
+        processed += 1
 
         await asyncio.sleep(0)  # yield control
 
     settings.set("cross_stock_running", False)
-    logger.info("[cross_stock] Sweep pass finished (%d pairs available from index %d).", len(pairs), start_idx)
+    # CROSS-STOCK-VALIDATION S3 (#1236): actual pairs-processed-this-run,
+    # not just "pairs available" -- this is the real throughput number the
+    # nightly soft-cap and any completion estimate calibrate against,
+    # since the only prior timing data point (BATCH-REPLAY's own) doesn't
+    # transfer to this campaign's very different per-pair cost.
+    logger.info(
+        "[cross_stock] Sweep pass finished: %d pairs processed this run (%d total pairs, %d remaining).",
+        processed, len(pairs), len(pairs) - start_idx - processed,
+    )
+
+
+async def check_cross_stock_night_window(
+    settings: Optional[SettingsStore] = None, now: Optional[datetime.datetime] = None,
+) -> None:
+    """CROSS-STOCK-VALIDATION S3 (#1236): nightly cross-stock sweep,
+    midnight-8am ET, soft-capped at 8 real-clock hours. Called from
+    cerebral.main's _scheduler_loop on its existing 5-minute tick -- not a
+    new SchedulerPlugin recurring event, since list_due_events()'s "daily"
+    recurrence is elapsed-time-since-last-run, not anchored to a clock
+    hour (see plugins/scheduler.py's own _recurrence_interval), and would
+    drift across restarts.
+
+    `now` is injectable (naive treated as already NY-local, tz-aware
+    converted), same convention as cerebral.trading.market_hours's own
+    is_market_hours -- so a test can build one directly without fighting
+    the real system clock.
+
+    cross_stock_night_started_at (not just cross_stock_running) is what
+    the soft cap measures elapsed time against and what stops this from
+    re-firing start_cross_stock_replay every tick for the rest of the
+    window once tonight's run is already going -- cross_stock_running
+    alone can't do either job, since a manual start via the tray sets it
+    too without setting a night-start timestamp.
+    """
+    if settings is None:
+        settings = SettingsStore()
+    from zoneinfo import ZoneInfo
+    ny_tz = ZoneInfo("America/New_York")
+    if now is None:
+        now_ny = datetime.datetime.now(ny_tz)
+    elif now.tzinfo is None:
+        now_ny = now.replace(tzinfo=ny_tz)
+    else:
+        now_ny = now.astimezone(ny_tz)
+
+    # Derived from the SAME now_ny basis as the hour check below, not a
+    # fresh real-clock read -- otherwise `now` injection wouldn't actually
+    # make this deterministic/testable, and production would silently mix
+    # two different clock readings within one tick.
+    now_utc = now_ny.astimezone(datetime.timezone.utc)
+
+    night_started_at = settings.get("cross_stock_night_started_at")
+    if night_started_at:
+        # Already in a nightly run -- check the soft cap. Checked every
+        # tick regardless of hour, not just "if now_ny.hour >= 8", so a
+        # clock/timezone edge case can't strand the sweep running past
+        # its cap indefinitely.
+        elapsed_hours = (
+            now_utc - datetime.datetime.fromisoformat(night_started_at)
+        ).total_seconds() / 3600
+        if now_ny.hour >= 8 or elapsed_hours >= 8:
+            await stop_cross_stock_replay()
+            settings.set("cross_stock_night_started_at", "")
+    elif now_ny.hour < 8 and not settings.get("cross_stock_running"):
+        # Not already running (a manual start elsewhere is left alone)
+        # and inside the window -- start tonight's run.
+        await start_cross_stock_replay()
+        settings.set("cross_stock_night_started_at", now_utc.isoformat())
 
 
 def create() -> TradingReplayPlugin:

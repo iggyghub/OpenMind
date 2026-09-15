@@ -8,11 +8,14 @@ import asyncio
 import json
 import unittest.mock
 
+from datetime import datetime
+
 from cerebral.settings import SettingsStore
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore
 from plugins.trading_replay import (
     REQUIRED_CAPABILITIES, create, start_batch_replay, stop_batch_replay, get_batch_replay_status,
     start_cross_stock_replay, stop_cross_stock_replay, get_cross_stock_replay_status,
+    check_cross_stock_night_window,
 )
 
 
@@ -205,3 +208,79 @@ async def test_cross_stock_replay_resumes_from_persisted_cursor_not_from_start(t
         await asyncio.sleep(0.3)
 
     assert calls == [("s2", "X"), ("s2", "Y")]
+
+
+# CROSS-STOCK-VALIDATION S3 (#1236): nightly window function. Real system
+# clock never touched -- `now` is injected, same convention as
+# cerebral.trading.market_hours.is_market_hours's own tests.
+
+async def test_night_window_starts_the_sweep_when_inside_window_and_idle(tmp_path):
+    settings = _isolated_settings(tmp_path)
+    with unittest.mock.patch("plugins.trading_replay.start_cross_stock_replay", new_callable=unittest.mock.AsyncMock) as mock_start:
+        await check_cross_stock_night_window(settings, now=datetime(2026, 9, 16, 2, 0))  # 2am ET
+
+    mock_start.assert_awaited_once()
+    assert settings.get("cross_stock_night_started_at") != ""
+
+
+async def test_night_window_does_not_start_twice_once_already_marked(tmp_path):
+    """The night_started_at marker (not cross_stock_running) is what
+    prevents re-starting every 5-minute tick for the rest of the window."""
+    settings = _isolated_settings(tmp_path)
+    settings.set("cross_stock_night_started_at", "2026-09-16T05:00:00+00:00")
+    with unittest.mock.patch("plugins.trading_replay.start_cross_stock_replay", new_callable=unittest.mock.AsyncMock) as mock_start, \
+         unittest.mock.patch("plugins.trading_replay.stop_cross_stock_replay", new_callable=unittest.mock.AsyncMock) as mock_stop:
+        await check_cross_stock_night_window(settings, now=datetime(2026, 9, 16, 3, 0))  # still 3am, well under cap
+
+    mock_start.assert_not_awaited()
+    mock_stop.assert_not_awaited()
+    assert settings.get("cross_stock_night_started_at") == "2026-09-16T05:00:00+00:00"  # untouched
+
+
+async def test_night_window_does_not_start_when_already_running_without_marker(tmp_path):
+    """A manual start (tray button) sets cross_stock_running without a
+    night_started_at marker -- the nightly check must not treat that as
+    something to start on top of."""
+    settings = _isolated_settings(tmp_path)
+    settings.set("cross_stock_running", True)
+    with unittest.mock.patch("plugins.trading_replay.start_cross_stock_replay", new_callable=unittest.mock.AsyncMock) as mock_start:
+        await check_cross_stock_night_window(settings, now=datetime(2026, 9, 16, 2, 0))
+
+    mock_start.assert_not_awaited()
+    assert settings.get("cross_stock_night_started_at") == ""
+
+
+async def test_night_window_stops_at_8am_et_regardless_of_elapsed_time(tmp_path):
+    settings = _isolated_settings(tmp_path)
+    # Started 30 minutes ago -- nowhere near the 8-hour cap, but 8am ET
+    # is its own independent stop condition.
+    settings.set("cross_stock_night_started_at", "2026-09-16T11:30:00+00:00")  # 7:30am ET
+    with unittest.mock.patch("plugins.trading_replay.stop_cross_stock_replay", new_callable=unittest.mock.AsyncMock) as mock_stop:
+        await check_cross_stock_night_window(settings, now=datetime(2026, 9, 16, 8, 0))  # 8am ET
+
+    mock_stop.assert_awaited_once()
+    assert settings.get("cross_stock_night_started_at") == ""
+
+
+async def test_night_window_stops_after_8_hours_even_if_still_before_8am(tmp_path):
+    """The elapsed-hours cap is independent of the hour check -- covers a
+    stuck/drifted clock scenario, not just the normal midnight-start case
+    that would naturally hit 8am first."""
+    settings = _isolated_settings(tmp_path)
+    settings.set("cross_stock_night_started_at", "2026-09-15T18:00:00+00:00")  # 2pm ET the prior day
+    with unittest.mock.patch("plugins.trading_replay.stop_cross_stock_replay", new_callable=unittest.mock.AsyncMock) as mock_stop:
+        # now_ny.hour is 7am (< 8), but 17 real hours have elapsed since start.
+        await check_cross_stock_night_window(settings, now=datetime(2026, 9, 16, 7, 0))
+
+    mock_stop.assert_awaited_once()
+    assert settings.get("cross_stock_night_started_at") == ""
+
+
+async def test_night_window_does_nothing_outside_the_window_when_idle(tmp_path):
+    settings = _isolated_settings(tmp_path)
+    with unittest.mock.patch("plugins.trading_replay.start_cross_stock_replay", new_callable=unittest.mock.AsyncMock) as mock_start, \
+         unittest.mock.patch("plugins.trading_replay.stop_cross_stock_replay", new_callable=unittest.mock.AsyncMock) as mock_stop:
+        await check_cross_stock_night_window(settings, now=datetime(2026, 9, 16, 14, 0))  # 2pm ET
+
+    mock_start.assert_not_awaited()
+    mock_stop.assert_not_awaited()
