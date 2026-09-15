@@ -46,7 +46,7 @@ size/schedule together).
 
 ## Next slice -- start here
 
-- **Active:** S3 -- #1236
+- **Active:** S4 -- #1237
 - **Model:** sonnet
 
 ## Queue
@@ -58,7 +58,7 @@ size/schedule together).
   `run_bars`/`evaluate_signals`, NOT `run_gauntlet` -- same reasoning as
   BATCH-REPLAY D1), new results table (this is a different shape than
   `replay_results` -- per pair, not per strategy-month)
-- [ ] S3 -- #1236 -- nightly scheduler wiring: one new recurring event
+- [x] S3 -- #1236 -- nightly scheduler wiring: one new recurring event
   (same `SchedulerPlugin`/`_scheduler_loop` machinery already driving
   paper-trade dispatch, not a new OS-level scheduled task), fires at
   midnight ET, soft-stops at 8 real-clock hours or 8am ET (whichever
@@ -115,6 +115,28 @@ accumulated results. S5 depends on S2 (status) and S4 (the list).
   actually surfacing real cross-stock variance, not a stub. Stopped
   manually after verification; S3 owns deciding when this runs
   unattended.
+- PR #1243 -- S3: nightly scheduler wiring (merged 2026-09-15, hand-
+  implemented from scratch -- self_dev's own attempt (PR #1242) would
+  have **crashed Cerebral on next boot**: `_scheduler_plugin.events.append(...)`
+  at module level, but `SchedulerPlugin` has no `events` attribute (it's
+  SQLite-backed, not a list) -- an `AttributeError` at import time, which
+  is exactly why the sandbox's own test collection failed on an unrelated
+  file that merely imports `cerebral.main`. Also used `time.monotonic()`
+  with no `import time`, and defined a soft-cap checker nothing ever
+  called. #1242 closed unmerged. Real implementation is a plain NY-hour
+  check on `_scheduler_loop`'s existing 5-minute tick (not a new
+  recurring event -- confirmed by reading `_recurrence_interval` first
+  that "daily" recurrence is elapsed-time-since-last-run, not clock-hour-
+  anchored, exactly the drift risk this issue's own text flagged), via
+  `check_cross_stock_night_window()` with an injectable `now` for direct
+  unit testing. Also fixed S2's sweep loop to log actual pairs processed
+  per run, not just "pairs available" -- this issue's own throughput-
+  logging ask. Hand-verified live: restarted Cerebral, confirmed **no
+  AttributeError anywhere in the fresh boot log**, `scheduler_heartbeat`
+  advancing normally with zero "Scheduler loop iteration failed"
+  warnings, and `get_cross_stock_replay_status` still working post-
+  restart -- this was the highest-stakes verification in the campaign so
+  far given what the original attempt would have done to a live restart.
 
 ## SAFETY
 
