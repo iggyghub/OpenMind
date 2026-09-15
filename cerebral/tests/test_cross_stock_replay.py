@@ -6,6 +6,7 @@ mocks assumed a `bar_cache.BarCache` class that doesn't exist anywhere in
 this codebase -- bar_cache.py is a plain module-level get_bars function
 (see cerebral/trading/bar_cache.py), same as run_replay already uses.
 """
+import tempfile
 import pandas as pd
 import pytest
 
@@ -91,3 +92,42 @@ def test_build_pairs_is_cross_product_of_eligible_specs_and_basket():
 
     assert len(pairs) == 6
     assert (a, "X") in pairs and (b, "Z") in pairs
+
+
+def test_consistency_rollup_8_of_10_positive():
+    """8/10 tested stocks showing positive expectancy rolls up to 0.8."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        strategy_db = f"{tmpdir}/strategy_specs.db"
+        cross_db = f"{tmpdir}/cross_stock_results.db"
+        s_store = StrategyStore(db_path=strategy_db)
+        c_store = CrossStockStore(db_path=cross_db)
+
+        s_store.save(StrategySpec("strat1", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
+
+        # Record 10 results: 8 positive, 2 negative
+        for i in range(10):
+            net_ret = 0.05 if i < 8 else -0.05
+            c_store.record_result("run1", "strat1", f"SYM{i}", net_ret, 0.0, 10, None)
+
+        rollup_consistency(s_store, c_store)
+
+        spec = s_store.get("strat1")
+        assert spec.cross_stock_consistency == pytest.approx(0.8)
+
+
+def test_consistency_rollup_zero_stocks():
+    """Strategy with zero tested stocks stays None (missing data != confirmed inconsistent)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        strategy_db = f"{tmpdir}/strategy_specs.db"
+        cross_db = f"{tmpdir}/cross_stock_results.db"
+        s_store = StrategyStore(db_path=strategy_db)
+        c_store = CrossStockStore(db_path=cross_db)
+
+        s_store.save(StrategySpec("strat2", "MSFT", _ALWAYS_LONG, cross_test_eligible=True))
+
+        # Record 0 results for strat2
+
+        rollup_consistency(s_store, c_store)
+
+        spec = s_store.get("strat2")
+        assert spec.cross_stock_consistency is None

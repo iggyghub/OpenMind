@@ -77,3 +77,16 @@ class CrossStockStore:
             "SELECT * FROM cross_stock_results WHERE strategy_id = ?", (strategy_id,)
         )
         return cur.fetchall()
+
+    def get_consistency_by_strategy(self) -> dict[str, float]:
+        """Returns {strategy_id: fraction_of_positive_expectancy} for all
+        strategies that have at least one tested stock. Returns None
+        (omits strategy) if zero stocks tested, matching the convention
+        that missing data != confirmed inconsistent."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT strategy_id, AVG(CASE WHEN net_return > 0 THEN 1.0 ELSE 0.0 END) AS consistency
+               FROM cross_stock_results
+               GROUP BY strategy_id"""
+        )
+        return {row["strategy_id"]: row["consistency"] for row in cur.fetchall()}

@@ -13,6 +13,8 @@ from typing import Optional
 import pandas as pd
 
 from cerebral.trading.replay import _compound, _warmup_days, derive_trades, run_bars_verbose
+from cerebral.trading.strategy_store import StrategyStore
+from cerebral.trading.cross_stock_store import CrossStockStore
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,14 @@ def run_pair(strategy_id: str, code: str, symbol: str, start: str, end: str,
         max_dd = 0.0
 
     return {"net_return": net_return, "max_drawdown": max_dd, "n_trades": n_trades, "flat_reason": None}
+
+
+def rollup_consistency(strategy_store: StrategyStore, cross_stock_store: CrossStockStore) -> None:
+    """Compute cross-stock consistency rollup and persist it per strategy.
+    Call this after each pair completes or at the end of a sweep."""
+    by_strategy = cross_stock_store.get_consistency_by_strategy()
+    for strategy_id, consistency in by_strategy.items():
+        strategy_store.update_cross_stock_consistency(strategy_id, consistency)
 
 
 def build_pairs(specs: list, basket: list[str]) -> list[tuple]:
