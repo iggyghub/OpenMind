@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from sqlite3 import OperationalError
 from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 import numpy as np
@@ -38,6 +39,12 @@ class StrategyState:
     live_equity_curve: List[float] = field(default_factory=list)
     promoted_at: Optional[datetime] = None
     peak_live_equity: float = 0.0
+    # BATCH-REPLAY S4 follow-up: most recent live fill price (open or
+    # close), independent of the equity-curve/pnl bookkeeping below. The
+    # dollar-notional reference _apply_lifecycle needs to convert replay's
+    # fractional worst_drawdown into a dollar figure comparable to
+    # check_retirement's existing dollar-based current_live_dd.
+    last_live_price: float = 0.0
 
 
 class StrategyLifecycle:
@@ -69,9 +76,14 @@ class StrategyLifecycle:
                 position_size_pct REAL NOT NULL DEFAULT 0.25,
                 live_equity_curve TEXT NOT NULL DEFAULT '[]',
                 promoted_at TEXT,
-                peak_live_equity REAL NOT NULL DEFAULT 0.0
+                peak_live_equity REAL NOT NULL DEFAULT 0.0,
+                last_live_price REAL NOT NULL DEFAULT 0.0
             )
         """)
+        try:
+            conn.execute("ALTER TABLE strategy_states ADD COLUMN last_live_price REAL NOT NULL DEFAULT 0.0")
+        except OperationalError:
+            pass  # Column already exists
         conn.commit()
         conn.close()
 
@@ -89,19 +101,21 @@ class StrategyLifecycle:
                 live_equity_curve=json.loads(row["live_equity_curve"]),
                 promoted_at=datetime.fromisoformat(row["promoted_at"]) if row["promoted_at"] else None,
                 peak_live_equity=row["peak_live_equity"],
+                last_live_price=row["last_live_price"],
             )
 
     def _save_state(self, state: StrategyState) -> None:
         conn = sqlite3.connect(str(self._db_path))
         conn.execute("""
             INSERT OR REPLACE INTO strategy_states
-            (name, status, live_trade_count, position_size_pct, live_equity_curve, promoted_at, peak_live_equity)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (name, status, live_trade_count, position_size_pct, live_equity_curve, promoted_at, peak_live_equity, last_live_price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             state.name, state.status, state.live_trade_count, state.position_size_pct,
             json.dumps(state.live_equity_curve),
             state.promoted_at.isoformat() if state.promoted_at else None,
             state.peak_live_equity,
+            state.last_live_price,
         ))
         conn.commit()
         conn.close()
@@ -122,6 +136,19 @@ class StrategyLifecycle:
         state.live_equity_curve.append(pnl if not state.live_equity_curve else state.live_equity_curve[-1] + pnl)
         state.peak_live_equity = max(state.peak_live_equity, state.live_equity_curve[-1])
         state.live_trade_count += 1
+        self._save_state(state)
+
+    def record_live_price(self, name: str, price: float) -> None:
+        """Tracks the most recent live fill price, on every fill (open or
+        close) -- independent of update_live_fill's pnl/equity-curve
+        bookkeeping, which fires close-only. This is the dollar-notional
+        reference _apply_lifecycle multiplies replay's fractional
+        worst_drawdown by, to get a figure comparable to check_retirement's
+        existing dollar-based current_live_dd."""
+        state = self.get_state(name)
+        if state.status == "halted":
+            return
+        state.last_live_price = price
         self._save_state(state)
 
     def check_graduation(

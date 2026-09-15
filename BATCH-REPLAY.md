@@ -30,8 +30,10 @@ own trading-domain slices needed almost every time.
 ## Next slice -- start here
 
 - **Active:** none -- queue complete. check_retirement's unit-mismatch
-  follow-up (see SAFETY) and the risk-cap sizing investigation (separate
-  from this campaign) are the only open threads.
+  follow-up landed 2026-09-15 (see Landed PRs) via option (b), dollar-
+  converting the backtest side rather than fraction-izing the live side.
+  The risk-cap sizing investigation (separate from this campaign) is the
+  only open thread.
 - **Model:** sonnet
 
 ## Queue
@@ -83,7 +85,26 @@ already accumulated a few real batches to test against.
   deliberately left alone -- see SAFETY below, unit mismatch is a real open
   design question, not a bug to hand-fix in passing. Full suite green
   (5804 passed, 2 known pre-existing pollution failures unrelated to this
-  change). Hand-restart + IPC verify still to do.
+  change). Hand-restart + IPC verify done same day -- one round hit the
+  known tray duplicate-launcher race (PR #1229, unmerged), self-recovered
+  via the tray's own cooldown without manual intervention; persisted cursor
+  survived the restart intact.)
+- (no PR number yet, hand-implemented 2026-09-15) -- check_retirement
+  unit-mismatch follow-up, user chose option (b): `_apply_lifecycle`
+  (live_tick.py) now converts replay's fractional `worst_drawdown` to
+  dollars (`abs(fraction) x qty x last_live_price`) before passing it into
+  `check_retirement`, instead of the hardcoded `0.0` -- `check_retirement`
+  itself untouched, so its existing dollar-based comparison/tests stay
+  valid. New `StrategyLifecycle.record_live_price()` tracks the reference
+  price on every live fill (open or close, piggybacking on `result["price"]`
+  already in flight -- no new price fetch needed, despite BATCH-REPLAY.md's
+  original worry). Also closed stale issue #1004 found in passing: its
+  `update_live_fill` fix had already landed (commit 854de23/PR #1027) but
+  the issue was never closed, and its second half (a stale "live execution
+  is not wired" log message, false since S11) was still there -- fixed in
+  the same pass. Full suite green (5806 passed, same 2-3 known ordering-
+  pollution flakes, none touching trading code -- confirmed by running the
+  failures in isolation).
 
 ## SAFETY
 
