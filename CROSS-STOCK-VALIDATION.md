@@ -46,7 +46,7 @@ size/schedule together).
 
 ## Next slice -- start here
 
-- **Active:** S4 -- #1237
+- **Active:** S5 -- #1238
 - **Model:** sonnet
 
 ## Queue
@@ -63,7 +63,7 @@ size/schedule together).
   paper-trade dispatch, not a new OS-level scheduled task), fires at
   midnight ET, soft-stops at 8 real-clock hours or 8am ET (whichever
   first), logs actual pairs/night for throughput calibration
-- [ ] S4 -- #1237 -- rollup metric: % of the 100-stock basket where a
+- [x] S4 -- #1237 -- rollup metric: % of the 100-stock basket where a
   generic strategy shows positive expectancy, persisted per strategy (a
   NEW field -- explicitly not wired into `check_graduation`/
   `check_retirement` as part of this campaign; see SAFETY)
@@ -137,6 +137,22 @@ accumulated results. S5 depends on S2 (status) and S4 (the list).
   warnings, and `get_cross_stock_replay_status` still working post-
   restart -- this was the highest-stakes verification in the campaign so
   far given what the original attempt would have done to a live restart.
+- PR #1244 -- S4: rollup consistency metric (merged 2026-09-15, hand-
+  fixed after self_dev's own attempt blocked on tests_failed with a
+  truncated reason string that never showed the real error -- root cause:
+  the new tests referenced `StrategyStore`/`CrossStockStore`/
+  `rollup_consistency` without importing any of them, a `NameError` at
+  test execution). Also found while reviewing (self_dev's own tests never
+  recorded a failed pair, so this never surfaced): the rollup SQL had no
+  `WHERE net_return IS NOT NULL`, so a failed pair (missing bars, sandbox
+  error) evaluated its CASE to 0.0 and got averaged in as a NEGATIVE
+  result -- conflating "couldn't test this stock" with "tested it and
+  lost," exactly the fabricated-signal class this campaign's own SAFETY
+  section warns against. And separately: nothing in the real sweep loop
+  ever called `rollup_consistency` at all -- wired it to run once per
+  sweep pass. `cross_stock_consistency` stays an informational-only field
+  per SAFETY below; nothing in this PR touches `check_graduation` or
+  `check_retirement`.
 
 ## SAFETY
 
