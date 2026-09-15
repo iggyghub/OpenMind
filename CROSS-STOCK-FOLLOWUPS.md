@@ -13,7 +13,7 @@ there is no parent epic issue, so every PR closes its own.
 
 ## Next slice -- start here
 
-- **Active:** F3 -- #1248
+- **Active:** F4 -- #1249
 - **Model:** sonnet
 
 ## Queue
@@ -25,7 +25,7 @@ there is no parent epic issue, so every PR closes its own.
 - [x] F2 -- #1247 -- bound the sweep stop path with `wait_for` + `cancel`
   so a wedged pair cannot stall the singular scheduler (finding 4,
   ADR-0028 rule 5). Independent of the other three; safe in any order.
-- [ ] F3 -- #1248 -- record `benchmark_return` (buy-and-hold) per pair
+- [x] F3 -- #1248 -- record `benchmark_return` (buy-and-hold) per pair
   (findings 6, 10). Data collection only -- commits to no metric decision.
 - [ ] F4 -- #1249 -- minimum-trade floor + cost-model sensitivity
   (findings 7, 8). Reads most naturally after F3.
@@ -48,6 +48,7 @@ cascades.
 
 - PR #1253 -- F1 (#1246) -- results table as progress source of truth
 - PR #1254 -- F2 (#1247) -- bound sweep stop path with wait_for + cancel
+- PR #1255 -- F3 (#1248) -- record benchmark_return (buy-and-hold) per pair
 
 ## SAFETY
 
