@@ -25,11 +25,13 @@ every merge), nothing here blocks a bad PR from landing on its own. Hand-review
 every landed PR's actual diff before trusting it, same discipline REPLAY.md's
 own trading-domain slices needed almost every time.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S4 -- #1227
+- **Active:** none -- queue complete. check_retirement's unit-mismatch
+  follow-up (see SAFETY) and the risk-cap sizing investigation (separate
+  from this campaign) are the only open threads.
 - **Model:** sonnet
 
 ## Queue
@@ -37,7 +39,7 @@ own trading-domain slices needed almost every time.
 - [x] S1 -- #1224 -- backend: start/stop/status tools, 1-month cadence, persisted resumable cursor
 - [x] S2 -- #1225 -- Trading pane sub-tab: Start/Stop button + status
 - [x] S3 -- #1226 -- timeline visual: progress across the full replay range
-- [ ] S4 -- #1227 -- feed accumulated drawdown into check_retirement + a new check_graduation refusal gate
+- [x] S4 -- #1227 -- feed accumulated drawdown into check_retirement + a new check_graduation refusal gate
 
 S1 must land before S2 (UI calls S1's tools). S2 before S3 (S3 renders inside
 S2's sub-tab). S4 depends only on S1 (the batch loop it hooks into), not S2/S3
@@ -73,6 +75,15 @@ already accumulated a few real batches to test against.
   cursor_date/months_total -- "Processing: —" has never shown real data
   since S2 landed. Visual hand-verification in the running tray (light +
   dark) still outstanding -- not something a passing test confirms.
+- PR #1232 -- S4: accumulated drawdown into lifecycle gates (merged
+  2026-09-14, hand-implemented after S3's self_dev misses. `check_graduation`
+  gets a real refusal gate off `StrategyStore.worst_drawdown` (rolled up
+  from every accumulated replay run) vs. `batch_replay_graduation_dd_cap`
+  (default 0.30). `check_retirement`'s `worst_backtest_dd=0.0` hardcode was
+  deliberately left alone -- see SAFETY below, unit mismatch is a real open
+  design question, not a bug to hand-fix in passing. Full suite green
+  (5804 passed, 2 known pre-existing pollution failures unrelated to this
+  change). Hand-restart + IPC verify still to do.
 
 ## SAFETY
 
@@ -98,3 +109,15 @@ already accumulated a few real batches to test against.
 - **Hand-restart Felix and hand-verify via the IPC bridge after S1 and S4**
   land, same as every other trading-domain slice in this repo's history --
   a green test run is necessary, not sufficient (ADR-0028 R6).
+- **`check_retirement`'s unit mismatch is unresolved, on purpose (post-S4).**
+  `current_live_dd` (the live circuit breaker) is a raw dollar amount --
+  cumulative PnL peak minus current. Replay's `worst_drawdown` is a
+  fraction of returns (e.g. -0.24). Feeding one into the other needs
+  either (a) tracking `current_live_dd` as a fraction of the strategy's
+  own peak equity too -- cleaner, but a ramping position size (25%->50%->
+  100%) distorts what "peak equity" even means -- or (b) converting
+  replay's fraction to dollars via `qty` x a reference price -- more
+  faithful to the existing dollar design, but needs a real price fetch in
+  the live dispatch hot path and "reference price" (at registration? at
+  replay time? current?) is ambiguous. User has not chosen an approach --
+  ask before implementing either one.
