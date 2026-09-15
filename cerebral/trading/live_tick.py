@@ -592,6 +592,8 @@ def dispatch_due_events(
         result["strategy"] = name
         results.append(result)
 
+        if lifecycle is not None and is_live and result.get("status") in ("opened", "closed"):
+            lifecycle.record_live_price(dispatch_id, result.get("price", 0.0))
         if lifecycle is not None and is_live and result.get("status") == "closed":
             lifecycle.update_live_fill(dispatch_id, result.get("pnl", 0.0))
 
@@ -666,32 +668,26 @@ def _apply_lifecycle(
     ):
         size_pct = lifecycle.apply_position_ramp(name)
         logger.warning(
-            "[trading] Strategy '%s' met the paper graduation bar (ramp %.0f%%). "
-            "No live orders placed -- live execution is not wired.",
+            "[trading] Strategy '%s' met the paper graduation bar -- lifecycle "
+            "status flipped to live at %.0f%% size. Still requires the manual "
+            "arm toggle to actually place live orders.",
             name, size_pct * 100,
         )
         result["graduated"] = True
 
-    # Wired, but inert until live fills exist: check_retirement returns early
-    # unless status == "live" AND a live equity curve has been recorded, and
-    # the drawdown branch is skipped entirely at worst_backtest_dd=0.0.
-    #
-    # BATCH-REPLAY S4 (#1227) investigated wiring StrategyStore's real
-    # accumulated-replay worst_drawdown in here too, and deliberately did
-    # NOT: this comparison (`current_live_dd > 2.0 * worst_backtest_dd`,
-    # below) is in raw dollar cumulative-PnL units (peak_live_equity /
-    # live_equity_curve, see StrategyLifecycle.update_live_fill), but
-    # replay's own worst_drawdown is a FRACTION of returns (e.g. -0.24).
-    # Feeding one into the other without a real unit conversion would make
-    # this live-trading circuit breaker either never fire or fire on every
-    # strategy immediately, depending on sign/magnitude -- exactly the kind
-    # of fabricated signal ADR-0028 warns against, just introduced by
-    # accident instead of on purpose. check_graduation's new refusal gate
-    # (immediately above) uses worst_drawdown safely because it's a brand
-    # new fractional comparison with its own threshold, not reused units
-    # from an existing dollar-based one. Closing this one for real needs a
-    # deliberate design choice -- express current_live_dd as a fraction of
-    # some equity basis, or convert worst_drawdown to dollars via the
-    # strategy's qty and a reference price -- not a guess made in passing.
-    if lifecycle.check_retirement(name, worst_backtest_dd=0.0):
+    # BATCH-REPLAY S4 follow-up: check_retirement's current_live_dd is raw
+    # dollars (peak_live_equity - live_equity_curve[-1]), but replay's own
+    # worst_drawdown is a FRACTION of returns (e.g. -0.24) -- converted to
+    # dollars here (qty x last live fill price), not inside check_retirement,
+    # so its existing dollar-based comparison/tests stay untouched. abs()
+    # handles replay's negative-drawdown storage convention. Falls back to
+    # 0.0 (check_retirement's own "skip this branch" value) whenever any
+    # input is missing -- never replayed, no qty, or no live fill yet --
+    # same conservative-refuse convention as check_graduation's gate above.
+    _last_price = lifecycle.get_state(name).last_live_price
+    if _worst_dd is not None and _spec is not None and _last_price > 0:
+        _dollar_worst_dd = abs(_worst_dd) * _spec.qty * _last_price
+    else:
+        _dollar_worst_dd = 0.0
+    if lifecycle.check_retirement(name, worst_backtest_dd=_dollar_worst_dd):
         result["retired"] = True

@@ -708,6 +708,55 @@ def test_dispatch_graduates_normally_when_accumulated_drawdown_is_within_cap(tmp
     assert lifecycle.get_state("s1@v1").status == "live"
 
 
+def test_dispatch_retires_on_dollar_converted_replay_drawdown_breach(tmp_path, monkeypatch):
+    """BATCH-REPLAY S4 follow-up: check_retirement's dollar-based
+    current_live_dd is compared against replay's worst_drawdown fraction
+    converted to dollars (qty x last live fill price) in _apply_lifecycle,
+    not the raw fraction -- units wouldn't match check_retirement's
+    existing dollar-based comparison otherwise."""
+    from cerebral.trading.strategy_store import StrategyStore, StrategySpec
+    record = make_record(tmp_path, monkeypatch)
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    state = lifecycle.get_state("s1@v1")  # S17 versioned id, see graduation test above
+    state.status = "live"
+    state.peak_live_equity = 100.0
+    state.live_equity_curve = [100.0, 80.0]  # current_live_dd = 20.0
+    lifecycle.record_live_price("s1@v1", 40.0)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]", qty=2.0))
+    store.update_worst_drawdown("s1", -0.05)  # dollar_worst_dd = 0.05*2*40 = 4.0; 2x = 8.0 < 20.0
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    results = dispatch_due_events(sched, StubBrokerClient(), record, lifecycle=lifecycle, store=store)
+
+    assert results[0].get("retired") is True
+    assert lifecycle.get_state("s1@v1").status == "halted"
+
+
+def test_dispatch_does_not_retire_on_replay_drawdown_before_any_live_fill(tmp_path, monkeypatch):
+    """Conservative-refuse: a real worst_drawdown alone isn't enough to
+    convert to dollars -- without a real last_live_price (no live fill has
+    happened yet), the retirement check must stay inert rather than guess
+    a price, even against a catastrophic live equity-curve drawdown."""
+    from cerebral.trading.strategy_store import StrategyStore, StrategySpec
+    record = make_record(tmp_path, monkeypatch)
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    state = lifecycle.get_state("s1@v1")
+    state.status = "live"
+    state.peak_live_equity = 100.0
+    state.live_equity_curve = [100.0, 0.0]  # current_live_dd = 100.0
+    # last_live_price left at its 0.0 default -- never live-filled yet
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]", qty=2.0))
+    store.update_worst_drawdown("s1", -0.50)
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    results = dispatch_due_events(sched, StubBrokerClient(), record, lifecycle=lifecycle, store=store)
+
+    assert results[0].get("retired") is not True
+    assert lifecycle.get_state("s1@v1").status == "live"
+
+
 def test_dispatch_does_not_graduate_on_all_zero_pnl(tmp_path, monkeypatch):
     record = make_record(tmp_path, monkeypatch)
     for _ in range(30):

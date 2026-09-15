@@ -88,6 +88,22 @@ def test_halted_strategies_ignore_fills(lifecycle):
     assert state.live_trade_count == 0
 
 
+def test_record_live_price_persists_and_is_ignored_when_halted(lifecycle):
+    """BATCH-REPLAY S4 follow-up: last_live_price is the dollar-notional
+    reference _apply_lifecycle needs to convert replay's fractional
+    worst_drawdown into check_retirement's dollar-based comparison --
+    tracked separately from update_live_fill's pnl/equity-curve bookkeeping
+    since it must update on opens too, which carry no pnl."""
+    state = lifecycle.get_state("price_test")
+    state.status = "live"
+    lifecycle.record_live_price("price_test", 123.45)
+    assert state.last_live_price == 123.45
+
+    state.status = "halted"
+    lifecycle.record_live_price("price_test", 999.0)
+    assert state.last_live_price == 123.45  # unchanged once halted
+
+
 # ── halt_strategy / resume_strategy (S32/#898, 2026-08-27) ──────────────
 # Manual counterpart to the automatic CI/drawdown halt in check_retirement
 # -- user-triggered instead of computed, same effect.
