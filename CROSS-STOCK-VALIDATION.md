@@ -305,14 +305,25 @@ as the `check_graduation` deferral in SAFETY below:**
    shows it: `MSFT -0.01/7 trades`. Seven trades in five years is noise
    casting a full vote, equal in weight to a 342-trade result. `n_trades` is
    already stored; `WHERE n_trades >= 20` is one line.
-8. **Zero-cost baseline, on a sign test.** `cerebral/trading/replay.py:77`
-   sets `cost_config = {}` -- an explicit zero-cost baseline that `run_pair`
-   inherits. Every `net_return` here is gross of commissions and slippage.
-   Because the metric thresholds on *sign*, it's maximally sensitive to
-   exactly that offset, and high-turnover strategies are systematically
-   flattered -- compounding with (7), which lets high-turnover noise in
-   unfiltered. At minimum, run the sweep once with a realistic `cost_config`
-   and compare the rankings.
+8. **Zero-cost baseline, on a sign test -- and inconsistent with the
+   gauntlet.** `cerebral/trading/replay.py:77` sets `cost_config = {}` -- an
+   explicit zero-cost baseline that `run_pair` inherits, so every
+   `net_return` here is gross of commissions and slippage. Because the
+   metric thresholds on *sign*, it's maximally sensitive to exactly that
+   offset, and high-turnover strategies are systematically flattered --
+   compounding with (7), which lets high-turnover noise in unfiltered.
+   The sharper problem: the gauntlet, which decides whether a strategy
+   actually graduates, uses real spread costs
+   (`cerebral/trading/gauntlet.py:77` and `:122`:
+   `{"min_spread_pct": 0.01, "max_spread_pct": 0.03}`). So strategies are
+   **validated for promotion under realistic costs but measured for
+   cross-stock consistency under zero costs** -- the two numbers aren't
+   comparable, and the cross-stock one is the more optimistic. Directly
+   relevant to (6)/F5: wiring consistency into a graduation gate would mix
+   a zero-cost signal into a cost-aware one. Note `replay.py:77`'s comment
+   justifies itself as "reuse gauntlet default convention" when the
+   gauntlet's convention is not zero-cost -- the comment is wrong about
+   what it cites, which is likely how this survived review.
 9. **Binary sign discards magnitude.** +0.1% on 60 stocks and -40% on 40
    scores 0.60 and reads as "consistent." Median excess return, or
    mean/stdev across the basket, costs the same query and carries far more
