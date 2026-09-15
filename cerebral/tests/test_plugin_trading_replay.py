@@ -172,8 +172,6 @@ async def test_cross_stock_replay_processes_all_pairs_and_persists_final_cursor(
     assert status["running"] is False
     assert status["pairs_total"] == 4
     assert status["pairs_done"] == 4
-    assert status["cursor_strategy_id"] == "s2"
-    assert status["cursor_symbol"] == "Y"
 
     # CROSS-STOCK-VALIDATION S4 (#1237): a real sweep pass must actually
     # roll up consistency, not just leave rollup_consistency as dead code
@@ -197,10 +195,11 @@ async def test_cross_stock_replay_processes_all_pairs_and_persists_final_cursor(
     assert {r["symbol"] for r in results} == {"X", "Y"}
 
 
-async def test_cross_stock_replay_resumes_from_persisted_cursor_not_from_start(tmp_path, monkeypatch):
-    """The exact resumability requirement from #1235: a pair already marked
-    done must not be re-run, and pairs before it in the list must be
-    skipped too -- resuming means continuing, not restarting."""
+async def test_cross_stock_replay_resumes_from_results_table_not_settings_cursor(tmp_path, monkeypatch):
+    """F1 (#1246): resumability is table-based, not cursor-based.  Pairs
+    already present in cross_stock_results are skipped on the next pass --
+    deletion, reordering, and new strategies all self-heal with no special
+    cases."""
     isolated_settings = _isolated_settings(tmp_path)
     monkeypatch.setattr("plugins.trading_replay.SettingsStore", lambda: isolated_settings)
     s1 = StrategySpec("s1", "AAPL", "def strategy(data): return [0]", cross_test_eligible=True)
@@ -213,9 +212,10 @@ async def test_cross_stock_replay_resumes_from_persisted_cursor_not_from_start(t
     monkeypatch.setattr("plugins.trading_replay.BASKET", ["X", "Y"])
 
     # Pairs in order: (s1,X), (s1,Y), (s2,X), (s2,Y) -- pretend a previous
-    # run already completed through (s1, Y).
-    isolated_settings.set("cross_stock_cursor_strategy_id", "s1")
-    isolated_settings.set("cross_stock_cursor_symbol", "Y")
+    # run already recorded rows for (s1, X) and (s1, Y).
+    prior_run = isolated_cross.create_run("2021-09-15", "2026-09-15")
+    isolated_cross.record_result(prior_run, "s1", "X", net_return=0.05, max_drawdown=-0.02, n_trades=2)
+    isolated_cross.record_result(prior_run, "s1", "Y", net_return=0.03, max_drawdown=-0.01, n_trades=1)
 
     calls = []
 
@@ -304,3 +304,73 @@ async def test_night_window_does_nothing_outside_the_window_when_idle(tmp_path):
 
     mock_start.assert_not_awaited()
     mock_stop.assert_not_awaited()
+
+
+# F1 (#1246) -- new behaviour tests.
+
+def _isolated_cross_store(tmp_path):
+    from cerebral.trading.cross_stock_store import CrossStockStore
+    return CrossStockStore(db_path=str(tmp_path / "cross_stock.db"))
+
+
+async def test_cross_stock_replay_hard_exception_records_flat_reason_row(tmp_path, monkeypatch):
+    """F1 (#1246): an unexpected exception from run_pair must leave a row in
+    the results table (so the pair is visible and retryable) rather than
+    silently becoming a permanent hole."""
+    isolated_settings = _isolated_settings(tmp_path)
+    monkeypatch.setattr("plugins.trading_replay.SettingsStore", lambda: isolated_settings)
+    spec = StrategySpec("s1", "AAPL", "def strategy(data): return [0]", cross_test_eligible=True)
+    isolated_strategies = _isolated_strategy_store(tmp_path, [spec])
+    monkeypatch.setattr("plugins.trading_replay.StrategyStore", lambda: isolated_strategies)
+    isolated_cross = _isolated_cross_store(tmp_path)
+    monkeypatch.setattr("plugins.trading_replay.CrossStockStore", lambda: isolated_cross)
+    monkeypatch.setattr("plugins.trading_replay.BASKET", ["X"])
+
+    def exploding_run_pair(strategy_id, code, symbol, start, end, interval="1d"):
+        raise RuntimeError("executor exploded")
+
+    with unittest.mock.patch("plugins.trading_replay.run_pair", side_effect=exploding_run_pair):
+        await start_cross_stock_replay()
+        await asyncio.sleep(0.3)
+
+    results = isolated_cross.get_results_by_strategy("s1")
+    assert len(results) == 1
+    assert results[0]["net_return"] is None
+    assert "exploded" in results[0]["flat_reason"]
+
+
+async def test_cross_stock_replay_deleted_strategy_does_not_restart_or_duplicate(tmp_path, monkeypatch):
+    """F1 (#1246): if a strategy is deleted between runs, the results table
+    still contains its old rows.  A new sweep pass only processes pairs NOT
+    already in the table -- the deleted strategy's rows don't affect the
+    surviving strategies, and no pair is swept twice."""
+    isolated_settings = _isolated_settings(tmp_path)
+    monkeypatch.setattr("plugins.trading_replay.SettingsStore", lambda: isolated_settings)
+    s1 = StrategySpec("s1", "AAPL", "def strategy(data): return [0]", cross_test_eligible=True)
+    s2 = StrategySpec("s2", "MSFT", "def strategy(data): return [0]", cross_test_eligible=True)
+    # Only s2 survives -- s1 was deleted before this run.
+    isolated_strategies = _isolated_strategy_store(tmp_path, [s2])
+    monkeypatch.setattr("plugins.trading_replay.StrategyStore", lambda: isolated_strategies)
+    isolated_cross = _isolated_cross_store(tmp_path)
+    monkeypatch.setattr("plugins.trading_replay.CrossStockStore", lambda: isolated_cross)
+    monkeypatch.setattr("plugins.trading_replay.BASKET", ["X"])
+
+    # Previous run recorded results for s1 (now deleted) and s2.
+    prior_run = isolated_cross.create_run("2021-09-15", "2026-09-15")
+    isolated_cross.record_result(prior_run, "s1", "X", net_return=0.05, max_drawdown=-0.02, n_trades=2)
+    isolated_cross.record_result(prior_run, "s2", "X", net_return=0.03, max_drawdown=-0.01, n_trades=1)
+
+    calls = []
+
+    def recording_run_pair(strategy_id, code, symbol, start, end, interval="1d"):
+        calls.append((strategy_id, symbol))
+        return _mock_run_pair_result()
+
+    with unittest.mock.patch("plugins.trading_replay.run_pair", side_effect=recording_run_pair):
+        await start_cross_stock_replay()
+        await asyncio.sleep(0.3)
+
+    # s2/X already in table -- no pair should be re-run.
+    assert calls == []
+    # Exactly the original two rows, untouched.
+    assert isolated_cross.get_done_count() == 2

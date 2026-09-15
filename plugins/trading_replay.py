@@ -558,34 +558,21 @@ async def stop_cross_stock_replay() -> str:
     return "Cross-stock replay stopped."
 
 
-def _find_cursor_position(pairs: list, strategy_id: str, symbol: str) -> int:
-    """Index of the pair immediately AFTER the last-completed (strategy_id,
-    symbol) in the freshly-rebuilt pairs list, or 0 if that pair isn't
-    found (e.g. the strategy was deleted, or this is the very first run)."""
-    if not strategy_id:
-        return 0
-    for i, (spec, sym) in enumerate(pairs):
-        if spec.strategy_id == strategy_id and sym == symbol:
-            return i + 1
-    return 0
-
-
 async def get_cross_stock_replay_status() -> str:
     settings = SettingsStore()
     running = settings.get("cross_stock_running") or False
-    cursor_strategy = settings.get("cross_stock_cursor_strategy_id") or "N/A"
-    cursor_symbol = settings.get("cross_stock_cursor_symbol") or "N/A"
 
     specs = StrategyStore().list_all()
     pairs = build_pairs(specs, BASKET)
-    pairs_done = _find_cursor_position(pairs, cursor_strategy if cursor_strategy != "N/A" else "", cursor_symbol)
+    store = CrossStockStore()
+    pairs_done = store.get_done_count()
 
     # S5 (#1238): "most consistent across stocks" list. Ranked by
     # cross_stock_consistency, but ALWAYS paired with how many stocks that
     # score is based on -- a 100% consistency off 2 tested stocks reads
     # very differently than off 80, and showing the bare fraction alone
     # would misrepresent a small, early sample as a settled result.
-    tested_counts = CrossStockStore().get_tested_count_by_strategy()
+    tested_counts = store.get_tested_count_by_strategy()
     ranked = sorted(
         (s for s in specs if s.cross_stock_consistency is not None),
         key=lambda s: s.cross_stock_consistency, reverse=True,
@@ -601,8 +588,6 @@ async def get_cross_stock_replay_status() -> str:
 
     return json.dumps({
         "running": running,
-        "cursor_strategy_id": cursor_strategy,
-        "cursor_symbol": cursor_symbol,
         "pairs_done": pairs_done,
         "pairs_total": len(pairs),
         "last_run_processed": settings.get("cross_stock_last_run_processed") or 0,
@@ -625,14 +610,16 @@ async def _run_cross_stock_replay() -> None:
     run_id = store.create_run(start, end)
 
     pairs = build_pairs(StrategyStore().list_all(), BASKET)
-    start_idx = _find_cursor_position(
-        pairs, settings.get("cross_stock_cursor_strategy_id"), settings.get("cross_stock_cursor_symbol"),
-    )
+    # F1 (#1246): resume by skipping pairs already in the results table, not
+    # by seeking a cursor index.  Deletion, reordering, and newly-created
+    # strategies all self-heal -- no cursor ever goes stale.
+    done_pairs = store.get_done_pairs()
+    pending = [(spec, sym) for spec, sym in pairs if (spec.strategy_id, sym) not in done_pairs]
 
     loop = asyncio.get_event_loop()
     processed = 0
     run_started_mono = time.monotonic()
-    for spec, symbol in pairs[start_idx:]:
+    for spec, symbol in pending:
         if _cross_stock_stop_flag:
             break
 
@@ -645,14 +632,13 @@ async def _run_cross_stock_replay() -> None:
                 result["net_return"], result["max_drawdown"], result["n_trades"], result["flat_reason"],
             )
         except Exception as exc:
+            # Hard exception (not a flat_reason from run_pair itself) --
+            # record a row so the pair is visible and retryable next pass,
+            # rather than silently becoming a permanent hole in the table.
             logger.warning("[cross_stock] %s/%s failed: %s", spec.strategy_id, symbol, exc)
+            store.record_result(run_id, spec.strategy_id, symbol, None, None, 0, str(exc))
 
-        # Persisted after every pair, not just at the end -- a crash loses
-        # at most one pair, same convention as batch_replay_cursor.
-        settings.set("cross_stock_cursor_strategy_id", spec.strategy_id)
-        settings.set("cross_stock_cursor_symbol", symbol)
         processed += 1
-
         await asyncio.sleep(0)  # yield control
 
     settings.set("cross_stock_running", False)
@@ -679,7 +665,7 @@ async def _run_cross_stock_replay() -> None:
     # transfer to this campaign's very different per-pair cost.
     logger.info(
         "[cross_stock] Sweep pass finished: %d pairs processed this run (%d total pairs, %d remaining).",
-        processed, len(pairs), len(pairs) - start_idx - processed,
+        processed, len(pairs), len(pending) - processed,
     )
 
 
