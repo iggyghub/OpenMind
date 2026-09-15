@@ -77,3 +77,28 @@ class CrossStockStore:
             "SELECT * FROM cross_stock_results WHERE strategy_id = ?", (strategy_id,)
         )
         return cur.fetchall()
+
+    def get_consistency_by_strategy(self) -> dict[str, float]:
+        """Returns {strategy_id: fraction_of_positive_expectancy} for every
+        strategy with at least one PAIR THAT ACTUALLY RAN. Omits a
+        strategy entirely if it has zero successful pairs (whether that's
+        zero attempts, or every attempt failing on missing bars/sandbox
+        errors) -- missing data must never read as confirmed
+        inconsistency, same convention worst_drawdown/cross_test_eligible
+        already hold to.
+
+        WHERE net_return IS NOT NULL matters, not just cosmetic: a failed
+        pair (flat_reason set, net_return NULL) would otherwise count as
+        0.0 in the CASE/AVG below -- a real bug caught before merging,
+        since that conflates "couldn't test this stock" with "tested it
+        and lost," silently dragging every strategy's score down by
+        however many stocks happened to have bad data, for reasons having
+        nothing to do with the strategy itself."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT strategy_id, AVG(CASE WHEN net_return > 0 THEN 1.0 ELSE 0.0 END) AS consistency
+               FROM cross_stock_results
+               WHERE net_return IS NOT NULL
+               GROUP BY strategy_id"""
+        )
+        return {row["strategy_id"]: row["consistency"] for row in cur.fetchall()}

@@ -31,7 +31,7 @@ from cerebral.trading.discovery import DiscoveryWatchlist
 from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.replay import run_replay
 from cerebral.trading.replay_store import ReplayStore
-from cerebral.trading.cross_stock_replay import build_pairs, run_pair
+from cerebral.trading.cross_stock_replay import build_pairs, rollup_consistency, run_pair
 from cerebral.trading.cross_stock_store import CrossStockStore
 from cerebral.trading.cross_stock_universe import BASKET
 from cerebral.settings import SettingsStore
@@ -631,6 +631,12 @@ async def _run_cross_stock_replay() -> None:
         await asyncio.sleep(0)  # yield control
 
     settings.set("cross_stock_running", False)
+    # CROSS-STOCK-VALIDATION S4 (#1237): roll up per-strategy consistency
+    # once per sweep pass (matches BATCH-REPLAY S4's own once-per-month
+    # cadence for _rollup_worst_drawdowns) -- cheap relative to a single
+    # pair's real backtest, but not worth a full GROUP BY over the whole
+    # results table after every individual pair.
+    rollup_consistency(StrategyStore(), store)
     # CROSS-STOCK-VALIDATION S3 (#1236): actual pairs-processed-this-run,
     # not just "pairs available" -- this is the real throughput number the
     # nightly soft-cap and any completion estimate calibrate against,

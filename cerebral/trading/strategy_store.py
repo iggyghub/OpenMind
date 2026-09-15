@@ -72,6 +72,10 @@ class StrategySpec:
     worst_drawdown: Optional[float] = None
     # CROSS-STOCK-VALIDATION S1: generic vs stock-specific eligibility
     cross_test_eligible: Optional[bool] = None
+    # CROSS-STOCK-VALIDATION S4: fraction of tested stocks showing positive
+    # expectancy for this strategy. Derived from sweep results, updated via
+    # update_cross_stock_consistency() instead of save().
+    cross_stock_consistency: Optional[float] = None
 
 
 class StrategyStore:
@@ -136,6 +140,13 @@ class StrategyStore:
         except OperationalError:
             pass  # Column already exists
 
+        # CROSS-STOCK-VALIDATION S4: add cross_stock_consistency column
+        try:
+            self._con.execute("ALTER TABLE strategy_specs ADD COLUMN cross_stock_consistency REAL")
+            self._con.commit()
+        except OperationalError:
+            pass  # Column already exists
+
         # S25 migration: drop legacy CHECK constraint on origin
         try:
             ddl_row = self._con.execute(
@@ -179,8 +190,8 @@ class StrategyStore:
         )
         self._con.execute(
             "INSERT OR REPLACE INTO strategy_specs "
-            "(strategy_id, symbol, code, qty, interval, risk_override_pct, cross_test_eligible, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (spec.strategy_id, spec.symbol, spec.code, float(spec.qty), spec.interval, spec.risk_override_pct, spec.cross_test_eligible, ts),
+            "(strategy_id, symbol, code, qty, interval, risk_override_pct, cross_test_eligible, cross_stock_consistency, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (spec.strategy_id, spec.symbol, spec.code, float(spec.qty), spec.interval, spec.risk_override_pct, spec.cross_test_eligible, spec.cross_stock_consistency, ts),
         )
         self._con.commit()
 
@@ -230,6 +241,7 @@ class StrategyStore:
             risk_override_pct=row["risk_override_pct"],
             worst_drawdown=row["worst_drawdown"],
             cross_test_eligible=_to_optional_bool(row["cross_test_eligible"]),
+            cross_stock_consistency=row["cross_stock_consistency"],
         )
 
     def list_all(self) -> List[StrategySpec]:
@@ -241,7 +253,8 @@ class StrategyStore:
                          code=r["code"], qty=r["qty"], interval=r["interval"],
                          risk_override_pct=r["risk_override_pct"],
                          worst_drawdown=r["worst_drawdown"],
-                         cross_test_eligible=_to_optional_bool(r["cross_test_eligible"]))
+                         cross_test_eligible=_to_optional_bool(r["cross_test_eligible"]),
+                         cross_stock_consistency=r["cross_stock_consistency"])
             for r in rows
         ]
 
@@ -265,6 +278,17 @@ class StrategyStore:
         self._con.execute(
             "UPDATE strategy_specs SET cross_test_eligible = ? WHERE strategy_id = ?",
             (bool(value), strategy_id),
+        )
+        self._con.commit()
+
+    def update_cross_stock_consistency(self, strategy_id: str, value: Optional[float]) -> None:
+        """Persists CROSS-STOCK-VALIDATION S4's rollup consistency metric --
+        a derived value recomputed as more sweep data lands, not a new
+        strategy version (no strategy_versions row, same convention as
+        update_worst_drawdown). No-ops silently if strategy_id doesn't exist."""
+        self._con.execute(
+            "UPDATE strategy_specs SET cross_stock_consistency = ? WHERE strategy_id = ?",
+            (value, strategy_id),
         )
         self._con.commit()
 

@@ -8,6 +8,8 @@ import asyncio
 import json
 import unittest.mock
 
+import pytest
+
 from datetime import datetime
 
 from cerebral.settings import SettingsStore
@@ -172,6 +174,13 @@ async def test_cross_stock_replay_processes_all_pairs_and_persists_final_cursor(
     assert status["pairs_done"] == 4
     assert status["cursor_strategy_id"] == "s2"
     assert status["cursor_symbol"] == "Y"
+
+    # CROSS-STOCK-VALIDATION S4 (#1237): a real sweep pass must actually
+    # roll up consistency, not just leave rollup_consistency as dead code
+    # nothing calls -- every mocked pair returned a positive net_return,
+    # so both strategies land at 1.0.
+    assert isolated_strategies.get("s1").cross_stock_consistency == pytest.approx(1.0)
+    assert isolated_strategies.get("s2").cross_stock_consistency == pytest.approx(1.0)
 
     results = isolated_cross.get_results_by_strategy("s1")
     assert {r["symbol"] for r in results} == {"X", "Y"}
