@@ -105,9 +105,16 @@ accumulated results. S5 depends on S2 (status) and S4 (the list).
   same resumable-cursor architecture as batch replay, but the cursor
   names the last-completed `(strategy_id, symbol)` pair directly rather
   than a raw index, so a newly-classified strategy landing between
-  nights can't shift an index and silently skip/re-run pairs. Not yet
-  hand-verified live via the IPC bridge -- do that before S3 fires it
-  nightly unattended.
+  nights can't shift an index and silently skip/re-run pairs.
+  Hand-verified live via the IPC bridge same day: `get_cross_stock_replay_status`
+  correctly reported 28,300 total pairs (283 eligible strategies x 100
+  basket symbols); a real ~20s run processed 13 pairs against live Alpaca
+  data (~1.5s/pair once bar_cache is warm) with genuinely varied real
+  results per symbol (e.g. one strategy: AAPL net_return +0.55/323 trades,
+  MSFT -0.01/7 trades, GOOGL +0.52/342 trades) -- confirming the sweep is
+  actually surfacing real cross-stock variance, not a stub. Stopped
+  manually after verification; S3 owns deciding when this runs
+  unattended.
 
 ## SAFETY
 
