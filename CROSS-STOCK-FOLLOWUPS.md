@@ -13,12 +13,12 @@ there is no parent epic issue, so every PR closes its own.
 
 ## Next slice -- start here
 
-- **Active:** F1 -- #1246
+- **Active:** F2 -- #1247
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] F1 -- #1246 -- make the results table the progress source of truth;
+- [x] F1 -- #1246 -- make the results table the progress source of truth;
   delete the settings cursor (review findings 1, 2, 3 and most of 5).
   Net code deletion. **Must land first** -- changes the
   `cross_stock_results` primary key that F3 and F4 both build on.
@@ -45,6 +45,8 @@ cascades.
   must never implement their content as a side effect of another slice.
 
 ## Landed PRs
+
+- PR #1253 -- F1 (#1246) -- results table as progress source of truth
 
 ## SAFETY
 
