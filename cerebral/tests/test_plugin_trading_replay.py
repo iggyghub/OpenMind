@@ -9,7 +9,11 @@ import json
 import unittest.mock
 
 from cerebral.settings import SettingsStore
-from plugins.trading_replay import REQUIRED_CAPABILITIES, create, start_batch_replay, stop_batch_replay, get_batch_replay_status
+from cerebral.trading.strategy_store import StrategySpec, StrategyStore
+from plugins.trading_replay import (
+    REQUIRED_CAPABILITIES, create, start_batch_replay, stop_batch_replay, get_batch_replay_status,
+    start_cross_stock_replay, stop_cross_stock_replay, get_cross_stock_replay_status,
+)
 
 
 def test_required_capabilities():
@@ -94,3 +98,110 @@ async def test_batch_replay_stop_mid_sweep(tmp_path, monkeypatch):
         data = json.loads(status)
         assert data["running"] is False
         assert data["cursor_date"] >= "2016-02-01"
+
+
+# CROSS-STOCK-VALIDATION S2 (#1235): same three isolation seams as batch
+# replay's own tests above -- SettingsStore, StrategyStore, and (new here)
+# CrossStockStore all get bare, uninjectable constructions inside
+# plugins.trading_replay, so isolating a test means monkeypatching the
+# module-level name, not passing a constructor arg.
+
+def _isolated_strategy_store(tmp_path, specs):
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    for spec in specs:
+        store.save(spec)
+    return store
+
+
+def _mock_run_pair_result(net_return=0.1, max_drawdown=-0.05, n_trades=3, flat_reason=None):
+    return {"net_return": net_return, "max_drawdown": max_drawdown, "n_trades": n_trades, "flat_reason": flat_reason}
+
+
+async def test_cross_stock_replay_eager_state_and_already_running_guard(tmp_path, monkeypatch):
+    isolated_settings = _isolated_settings(tmp_path)
+    monkeypatch.setattr("plugins.trading_replay.SettingsStore", lambda: isolated_settings)
+    isolated_strategies = _isolated_strategy_store(tmp_path, [
+        StrategySpec("s1", "AAPL", "def strategy(data): return [0]", cross_test_eligible=True),
+    ])
+    monkeypatch.setattr("plugins.trading_replay.StrategyStore", lambda: isolated_strategies)
+    from cerebral.trading.cross_stock_store import CrossStockStore
+    isolated_cross = CrossStockStore(db_path=str(tmp_path / "cross_stock.db"))
+    monkeypatch.setattr("plugins.trading_replay.CrossStockStore", lambda: isolated_cross)
+    monkeypatch.setattr("plugins.trading_replay.BASKET", ["X", "Y"])
+
+    with unittest.mock.patch("plugins.trading_replay.run_pair", return_value=_mock_run_pair_result()):
+        await start_cross_stock_replay()
+        # Eager state only -- set before the loop's first iteration, same
+        # style as test_batch_replay_resumability's own asyncio.sleep(0).
+        await asyncio.sleep(0)
+        try:
+            assert isolated_settings.get("cross_stock_running") is True
+
+            msg = await start_cross_stock_replay()
+            assert msg == "Cross-stock replay already running."
+        finally:
+            await stop_cross_stock_replay()
+
+    assert isolated_settings.get("cross_stock_running") is False
+
+
+async def test_cross_stock_replay_processes_all_pairs_and_persists_final_cursor(tmp_path, monkeypatch):
+    isolated_settings = _isolated_settings(tmp_path)
+    monkeypatch.setattr("plugins.trading_replay.SettingsStore", lambda: isolated_settings)
+    s1 = StrategySpec("s1", "AAPL", "def strategy(data): return [0]", cross_test_eligible=True)
+    s2 = StrategySpec("s2", "MSFT", "def strategy(data): return [0]", cross_test_eligible=True)
+    isolated_strategies = _isolated_strategy_store(tmp_path, [s1, s2])
+    monkeypatch.setattr("plugins.trading_replay.StrategyStore", lambda: isolated_strategies)
+    from cerebral.trading.cross_stock_store import CrossStockStore
+    isolated_cross = CrossStockStore(db_path=str(tmp_path / "cross_stock.db"))
+    monkeypatch.setattr("plugins.trading_replay.CrossStockStore", lambda: isolated_cross)
+    monkeypatch.setattr("plugins.trading_replay.BASKET", ["X", "Y"])
+
+    with unittest.mock.patch("plugins.trading_replay.run_pair", return_value=_mock_run_pair_result()):
+        await start_cross_stock_replay()
+        # 2 strategies x 2 symbols = 4 pairs, each an instant mocked call --
+        # comfortably finishes within a short real sleep.
+        await asyncio.sleep(0.3)
+
+    status = json.loads(await get_cross_stock_replay_status())
+    assert status["running"] is False
+    assert status["pairs_total"] == 4
+    assert status["pairs_done"] == 4
+    assert status["cursor_strategy_id"] == "s2"
+    assert status["cursor_symbol"] == "Y"
+
+    results = isolated_cross.get_results_by_strategy("s1")
+    assert {r["symbol"] for r in results} == {"X", "Y"}
+
+
+async def test_cross_stock_replay_resumes_from_persisted_cursor_not_from_start(tmp_path, monkeypatch):
+    """The exact resumability requirement from #1235: a pair already marked
+    done must not be re-run, and pairs before it in the list must be
+    skipped too -- resuming means continuing, not restarting."""
+    isolated_settings = _isolated_settings(tmp_path)
+    monkeypatch.setattr("plugins.trading_replay.SettingsStore", lambda: isolated_settings)
+    s1 = StrategySpec("s1", "AAPL", "def strategy(data): return [0]", cross_test_eligible=True)
+    s2 = StrategySpec("s2", "MSFT", "def strategy(data): return [0]", cross_test_eligible=True)
+    isolated_strategies = _isolated_strategy_store(tmp_path, [s1, s2])
+    monkeypatch.setattr("plugins.trading_replay.StrategyStore", lambda: isolated_strategies)
+    from cerebral.trading.cross_stock_store import CrossStockStore
+    isolated_cross = CrossStockStore(db_path=str(tmp_path / "cross_stock.db"))
+    monkeypatch.setattr("plugins.trading_replay.CrossStockStore", lambda: isolated_cross)
+    monkeypatch.setattr("plugins.trading_replay.BASKET", ["X", "Y"])
+
+    # Pairs in order: (s1,X), (s1,Y), (s2,X), (s2,Y) -- pretend a previous
+    # run already completed through (s1, Y).
+    isolated_settings.set("cross_stock_cursor_strategy_id", "s1")
+    isolated_settings.set("cross_stock_cursor_symbol", "Y")
+
+    calls = []
+
+    def recording_run_pair(strategy_id, code, symbol, start, end, interval="1d"):
+        calls.append((strategy_id, symbol))
+        return _mock_run_pair_result()
+
+    with unittest.mock.patch("plugins.trading_replay.run_pair", side_effect=recording_run_pair):
+        await start_cross_stock_replay()
+        await asyncio.sleep(0.3)
+
+    assert calls == [("s2", "X"), ("s2", "Y")]
