@@ -80,6 +80,7 @@ class TestSettingsStore:
             "batch_replay_running",
             "batch_replay_cursor",
             "batch_replay_start",
+            "batch_replay_graduation_dd_cap",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):
