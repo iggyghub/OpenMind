@@ -250,6 +250,7 @@ from plugins.discovery import DiscoveryPlugin as _DiscoveryPlugin
 from plugins.ipo_calendar import IpoCalendarPlugin as _IpoCalendarPlugin
 from plugins.trading_control import TradingControlPlugin as _TradingControlPlugin
 from cerebral.trading.broker import StubBrokerClient, AlpacaBrokerClient
+from cerebral.trading.cross_stock_replay import start_cross_stock_replay, stop_cross_stock_replay
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
 from cerebral.trading.alerts import AlertDispatcher
@@ -3444,6 +3445,37 @@ _ipo_calendar_plugin._record_activity_fn = _record_activity
 _discovery_plugin.ensure_discovery_event()
 _ipo_calendar_plugin.ensure_ipo_calendar_event()
 _design_system_plugin.ensure_design_system_event()
+
+# ── CROSS-STOCK-VALIDATION S3: nightly scheduler wiring ───────────────────────
+# Recurring daily event for the midnight ET cross-stock sweep. Fires once
+# around midnight ET. SchedulerPlugin.list_due_events() handles the daily
+# recurrence; we pass a target_hour_ny to anchor it to 00:00 ET to prevent
+# drift (elapsed-since-last-run would slide the window).
+_scheduler_plugin.events.append({
+    "id": "cross_stock_night",
+    "recurrence": "daily",
+    "target_hour_ny": 0,  # 12 AM ET
+    "last_run": None,
+})
+
+# Soft-cap tracker for the cross-stock night sweep. Set on start, cleared on
+# stop. _scheduler_loop's per-tick pass calls _cross_stock_night_check().
+_cross_stock_night_start_mono: float | None = None
+
+
+def _cross_stock_night_check() -> None:
+    """Called from _scheduler_loop every tick (every ~5m). Stops the sweep
+    if 8 real-clock hours have elapsed or 8am ET is reached."""
+    global _cross_stock_night_start_mono
+    if _cross_stock_night_start_mono is None:
+        return
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    if now_et.hour == 8 or (time.monotonic() - _cross_stock_night_start_mono) >= 8 * 3600:
+        stop_cross_stock_replay()
+        logger.info("[cross_stock] Night sweep stopped: soft-cap hit (8h elapsed or 8am ET)")
+        _cross_stock_night_start_mono = None
 
 async def _reset_paper_trading() -> dict:
     """Archives current paper-trading fills as a historical block (does
