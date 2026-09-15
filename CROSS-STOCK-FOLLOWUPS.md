@@ -9,11 +9,11 @@ the review found afterwards, before the accumulated sweep data is trusted.
 Scoped 2026-09-15. Four agent-ready slices, filed as standalone issues --
 there is no parent epic issue, so every PR closes its own.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** F4 -- #1249
+- **Active:** (all slices landed)
 - **Model:** sonnet
 
 ## Queue
@@ -27,7 +27,7 @@ there is no parent epic issue, so every PR closes its own.
   ADR-0028 rule 5). Independent of the other three; safe in any order.
 - [x] F3 -- #1248 -- record `benchmark_return` (buy-and-hold) per pair
   (findings 6, 10). Data collection only -- commits to no metric decision.
-- [ ] F4 -- #1249 -- minimum-trade floor + cost-model sensitivity
+- [x] F4 -- #1249 -- minimum-trade floor + cost-model sensitivity
   (findings 7, 8). Reads most naturally after F3.
 
 **Order: F1 -> F3 -> F4.** All three touch `cross_stock_results`. F2 is
@@ -49,6 +49,7 @@ cascades.
 - PR #1253 -- F1 (#1246) -- results table as progress source of truth
 - PR #1254 -- F2 (#1247) -- bound sweep stop path with wait_for + cancel
 - PR #1255 -- F3 (#1248) -- record benchmark_return (buy-and-hold) per pair
+- PR #1256 -- F4 (#1249) -- minimum-trade floor + cost-model sensitivity
 
 ## SAFETY
 
