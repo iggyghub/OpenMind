@@ -66,10 +66,16 @@ class CrossStockStore:
                 max_drawdown REAL,
                 n_trades INTEGER,
                 flat_reason TEXT,
+                benchmark_return REAL,
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (strategy_id, symbol)
             );
         """)
+        # F3 (#1248): add benchmark_return to existing tables that predate this column.
+        cur.execute("PRAGMA table_info(cross_stock_results)")
+        existing_cols = {row[1] for row in cur.fetchall()}
+        if "benchmark_return" not in existing_cols:
+            cur.execute("ALTER TABLE cross_stock_results ADD COLUMN benchmark_return REAL")
         self.conn.commit()
 
     def create_run(self, start: str, end: str) -> str:
@@ -86,20 +92,22 @@ class CrossStockStore:
         self, run_id: str, strategy_id: str, symbol: str,
         net_return: Optional[float], max_drawdown: Optional[float],
         n_trades: int, flat_reason: Optional[str] = None,
+        benchmark_return: Optional[float] = None,
     ) -> None:
         created_at = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """INSERT INTO cross_stock_results (
-                strategy_id, symbol, run_id, net_return, max_drawdown, n_trades, flat_reason, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                strategy_id, symbol, run_id, net_return, max_drawdown, n_trades, flat_reason, benchmark_return, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(strategy_id, symbol) DO UPDATE SET
                 run_id=excluded.run_id,
                 net_return=excluded.net_return,
                 max_drawdown=excluded.max_drawdown,
                 n_trades=excluded.n_trades,
                 flat_reason=excluded.flat_reason,
+                benchmark_return=excluded.benchmark_return,
                 created_at=excluded.created_at""",
-            (strategy_id, symbol, run_id, net_return, max_drawdown, n_trades, flat_reason, created_at),
+            (strategy_id, symbol, run_id, net_return, max_drawdown, n_trades, flat_reason, benchmark_return, created_at),
         )
         self.conn.commit()
 
@@ -147,6 +155,20 @@ class CrossStockStore:
                GROUP BY strategy_id"""
         )
         return {row["strategy_id"]: row["consistency"] for row in cur.fetchall()}
+
+    def get_mean_excess_return_by_strategy(self) -> dict[str, Optional[float]]:
+        """Returns {strategy_id: mean(net_return - benchmark_return)} for pairs
+        where both values are non-NULL.  A strategy with no qualifying pairs is
+        absent from the dict (same missing-data convention as the other rollups).
+        Used to surface excess-over-benchmark alongside consistency in status."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT strategy_id, AVG(net_return - benchmark_return) AS mean_excess
+               FROM cross_stock_results
+               WHERE net_return IS NOT NULL AND benchmark_return IS NOT NULL
+               GROUP BY strategy_id"""
+        )
+        return {row["strategy_id"]: row["mean_excess"] for row in cur.fetchall()}
 
     def get_tested_count_by_strategy(self) -> dict[str, int]:
         """Returns {strategy_id: count of pairs that actually ran} -- same

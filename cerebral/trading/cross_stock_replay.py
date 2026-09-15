@@ -37,11 +37,11 @@ def run_pair(strategy_id: str, code: str, symbol: str, start: str, end: str,
         bars = bar_cache.get_bars(symbol, fetch_start, end, interval)
     except Exception as exc:
         logger.warning("[cross_stock] %s/%s: bar fetch failed: %s", strategy_id, symbol, exc)
-        return {"net_return": None, "max_drawdown": None, "n_trades": 0, "flat_reason": str(exc)}
+        return {"net_return": None, "max_drawdown": None, "n_trades": 0, "flat_reason": str(exc), "benchmark_return": None}
 
     equity, position, metrics, reason = run_bars_verbose(code, bars, interval)
     if reason is not None:
-        return {"net_return": None, "max_drawdown": None, "n_trades": 0, "flat_reason": reason}
+        return {"net_return": None, "max_drawdown": None, "n_trades": 0, "flat_reason": reason, "benchmark_return": None}
 
     in_window = bars.index >= start_dt
     net_window = [r for r, keep in zip(metrics["net_returns"], in_window) if keep]
@@ -50,6 +50,15 @@ def run_pair(strategy_id: str, code: str, symbol: str, start: str, end: str,
     n_trades = sum(1 for t in trades if in_window[t.index]) if len(in_window) else 0
 
     net_return = _compound(net_window)
+
+    # F3 (#1248): buy-and-hold return over the same in-window slice, so
+    # strategy and benchmark are directly comparable (same bars, same span).
+    close_window = bars["Close"][in_window]
+    if len(close_window) >= 2:
+        bh_rets = close_window.pct_change().dropna().tolist()
+        benchmark_return = _compound(bh_rets)
+    else:
+        benchmark_return = None
 
     if equity_window:
         running_max = equity_window[0]
@@ -60,7 +69,7 @@ def run_pair(strategy_id: str, code: str, symbol: str, start: str, end: str,
     else:
         max_dd = 0.0
 
-    return {"net_return": net_return, "max_drawdown": max_dd, "n_trades": n_trades, "flat_reason": None}
+    return {"net_return": net_return, "max_drawdown": max_dd, "n_trades": n_trades, "flat_reason": None, "benchmark_return": benchmark_return}
 
 
 def rollup_consistency(strategy_store: StrategyStore, cross_stock_store: CrossStockStore) -> None:

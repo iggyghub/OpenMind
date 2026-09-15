@@ -33,6 +33,17 @@ class FakeBarCache:
         )
 
 
+class FlatBarCache:
+    """Constant close price -- buy-and-hold return should be ~0."""
+    def get_bars(self, symbol, start, end, interval):
+        idx = pd.date_range(start="2021-01-01", periods=1400, freq="B")
+        close = [100.0] * 1400
+        return pd.DataFrame(
+            {"Open": close, "High": close, "Low": close, "Close": close, "Volume": [1e6] * 1400},
+            index=idx,
+        )
+
+
 class FailingBarCache:
     def get_bars(self, symbol, start, end, interval):
         raise ValueError("Missing columns in Alpaca response for " + symbol)
@@ -201,3 +212,80 @@ async def test_stop_cross_stock_replay_normal_path_no_warning(monkeypatch, caplo
 
     assert result == "Cross-stock replay stopped."
     assert not any("cancelled" in r.message for r in caplog.records)
+
+
+# F3 (#1248): benchmark_return tests
+
+def test_benchmark_return_is_populated_and_positive_for_rising_series():
+    """Rising close series -> positive buy-and-hold benchmark_return."""
+    result = run_pair(
+        strategy_id="s1", code=_ALWAYS_LONG, symbol="AAPL",
+        start="2021-09-15", end="2026-09-15", interval="1d",
+        bar_cache=FakeBarCache(),
+    )
+    assert result["flat_reason"] is None
+    assert result["benchmark_return"] is not None
+    assert result["benchmark_return"] > 0
+
+
+def test_benchmark_return_is_near_zero_for_flat_series():
+    """Constant close -> buy-and-hold return is 0 (all pct_changes are 0)."""
+    result = run_pair(
+        strategy_id="s1", code=_ALWAYS_LONG, symbol="AAPL",
+        start="2021-09-15", end="2026-09-15", interval="1d",
+        bar_cache=FlatBarCache(),
+    )
+    assert result["flat_reason"] is None
+    assert result["benchmark_return"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_benchmark_return_is_null_when_bars_missing():
+    """Missing bars -> benchmark_return is None, not 0.0."""
+    result = run_pair(
+        strategy_id="s1", code=_ALWAYS_LONG, symbol="XYZ",
+        start="2021-09-15", end="2026-09-15", interval="1d",
+        bar_cache=FailingBarCache(),
+    )
+    assert result["benchmark_return"] is None
+
+
+def test_benchmark_return_is_null_when_strategy_run_failed():
+    """Broken strategy code -> benchmark_return is None, not 0.0."""
+    result = run_pair(
+        strategy_id="s1", code="def strategy(data):\n    raise RuntimeError('kaboom')\n",
+        symbol="AAPL", start="2021-09-15", end="2026-09-15", interval="1d",
+        bar_cache=FakeBarCache(),
+    )
+    assert result["benchmark_return"] is None
+
+
+def test_always_long_net_return_matches_benchmark_return():
+    """Always-long strategy tracks buy-and-hold closely (same in-window slice).
+    Not exactly equal: run_bars_verbose applies simulated transaction costs,
+    so net_return is slightly below the raw close-pct-change compound."""
+    result = run_pair(
+        strategy_id="s1", code=_ALWAYS_LONG, symbol="AAPL",
+        start="2021-09-15", end="2026-09-15", interval="1d",
+        bar_cache=FakeBarCache(),
+    )
+    assert result["flat_reason"] is None
+    assert result["net_return"] == pytest.approx(result["benchmark_return"], rel=0.05)
+
+
+def test_cross_stock_consistency_unchanged_by_f3(tmp_path):
+    """Regression guard: benchmark_return being recorded must not alter the
+    cross_stock_consistency rollup -- it stays a sign test on net_return only."""
+    s_store = StrategyStore(db_path=tmp_path / "strategy_specs.db")
+    c_store = CrossStockStore(db_path=str(tmp_path / "cross_stock_results.db"))
+
+    s_store.save(StrategySpec("guard", "AAPL", _ALWAYS_LONG, cross_test_eligible=True))
+    # 3 positive net_returns, 1 negative -- consistency should be 0.75 regardless of benchmark.
+    c_store.record_result("run1", "guard", "SYM0", 0.10, -0.05, 5, None, benchmark_return=0.08)
+    c_store.record_result("run1", "guard", "SYM1", 0.05, -0.02, 4, None, benchmark_return=0.06)
+    c_store.record_result("run1", "guard", "SYM2", 0.03, -0.01, 3, None, benchmark_return=0.09)
+    c_store.record_result("run1", "guard", "SYM3", -0.04, -0.10, 6, None, benchmark_return=0.07)
+
+    rollup_consistency(s_store, c_store)
+
+    spec = s_store.get("guard")
+    assert spec.cross_stock_consistency == pytest.approx(0.75)
