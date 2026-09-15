@@ -13,7 +13,7 @@ there is no parent epic issue, so every PR closes its own.
 
 ## Next slice -- start here
 
-- **Active:** F2 -- #1247
+- **Active:** F3 -- #1248
 - **Model:** sonnet
 
 ## Queue
@@ -22,7 +22,7 @@ there is no parent epic issue, so every PR closes its own.
   delete the settings cursor (review findings 1, 2, 3 and most of 5).
   Net code deletion. **Must land first** -- changes the
   `cross_stock_results` primary key that F3 and F4 both build on.
-- [ ] F2 -- #1247 -- bound the sweep stop path with `wait_for` + `cancel`
+- [x] F2 -- #1247 -- bound the sweep stop path with `wait_for` + `cancel`
   so a wedged pair cannot stall the singular scheduler (finding 4,
   ADR-0028 rule 5). Independent of the other three; safe in any order.
 - [ ] F3 -- #1248 -- record `benchmark_return` (buy-and-hold) per pair
@@ -47,6 +47,7 @@ cascades.
 ## Landed PRs
 
 - PR #1253 -- F1 (#1246) -- results table as progress source of truth
+- PR #1254 -- F2 (#1247) -- bound sweep stop path with wait_for + cancel
 
 ## SAFETY
 
