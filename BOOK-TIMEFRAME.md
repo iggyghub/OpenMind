@@ -18,11 +18,11 @@ save path for book claims in the first place.
 
 Scoped 2026-09-16.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** S2 -- #1267
+- **Active:** none -- queue complete.
 - **Model:** sonnet
 
 ## Queue
@@ -30,7 +30,7 @@ Scoped 2026-09-16.
 - [x] S1 -- #1266 -- `Idea.interval` field + `infer_interval()` keyword
   heuristic over claim prose (pure functions, no wiring into the live
   ingestion path yet)
-- [ ] S2 -- #1267 -- wire `Idea.interval` into `book_library.py`'s
+- [x] S2 -- #1267 -- wire `Idea.interval` into `book_library.py`'s
   `run_gauntlet_fn` (mirrors `discovery.py`'s existing pattern)
 
 S1 blocks S2 (the field/function must exist before anything can consume
@@ -68,6 +68,52 @@ it).
   implementation's boundaries were just one bucket off. Fixed directly on
   the PR's branch; full `test_trading_ideas.py` 37/37 green after, broader
   `trading_ideas or book_library` sweep 43/43 green.
+- PR #1270 -- self_dev's S2 attempt -- **closed unmerged, hand-implemented
+  from scratch instead.** Threaded `interval` through
+  `cerebral/trading/books.py`'s `ingest_book` into `process_idea`'s
+  kwargs -- but `process_idea` (`discovery.py`) has no `interval`
+  parameter, so this would raise `TypeError` on exactly the claims with a
+  detected timeframe, the entire point of the slice. Also the wrong file:
+  the issue asked for `book_library.py`'s `run_gauntlet_fn` closure, which
+  already has `idea` (and `.interval`, from S1) in scope and needs no new
+  plumbing. No tests were added in this attempt at all (0 test-file
+  changes in the diff).
+- **Hand-implemented S2** (commit `694a090`, merged 2026-09-16): two lines
+  in `book_library.py`'s `run_gauntlet_fn` closure -- `if idea.interval:
+  gauntlet_args["interval"] = idea.interval`. Two new regression tests in
+  `test_plugin_book_library.py` exercise `_run_book_ingestion` end to end
+  (a ticker-naming claim routes straight to `run_gauntlet_fn`, skipping
+  the judge/watchlist machinery): a claim with detected timeframe language
+  produces that interval in `gauntlet_args`, a claim with none omits the
+  key. Verified the first test fails without the fix (`KeyError`).
+  `test_plugin_book_library.py` 4/4 green, broader `book_library or
+  trading_books or trading_ideas or discovery` sweep 174/174 green.
+  **Live verification:** restarted Cerebral via the real `restart_felix`
+  IPC path (not the launcher directly -- see the launcher-fix issues
+  #1262/#1268 for why that matters) and confirmed the new code is loaded
+  (commit timestamp precedes the restart). Did not force a real book
+  upload through to a `VALIDATED` gauntlet verdict to observe the final
+  saved `StrategySpec.interval` end-to-end live -- the full trading
+  validation gauntlet (out-of-sample, walk-forward, Monte Carlo,
+  vs-random, vs-benchmark, noise, parameter sensitivity, costs, capacity)
+  makes a real claim reliably validating a live-data gamble, not something
+  worth forcing just to watch one field. The two halves of this path are
+  each independently, automatically verified instead: this slice's own
+  tests prove `gauntlet_args["interval"]` gets set correctly, and #1265's
+  tests (already live, verified earlier the same day) prove a `VALIDATED`
+  save correctly threads whatever `args["interval"]` was into the saved
+  spec. The join between them is a single dict key read via
+  `args.get("interval", "1d")` -- confirmed by direct code inspection, not
+  additionally re-proven live.
+
+## Campaign complete (2026-09-16)
+
+Both slices landed. self_dev's own attempts needed hand-fixing on both:
+S1 had a real off-by-one caught by running its own tests properly; S2's
+approach was fundamentally wrong (wrong file, a kwarg the target function
+doesn't accept) and was replaced outright. Consistent with every other
+trading-domain campaign in this repo's self_dev history -- hand-review
+every diff, never trust a `self_dev_campaign_status` report alone.
 
 ## SAFETY
 
