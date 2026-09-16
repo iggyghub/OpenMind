@@ -456,11 +456,19 @@ async def ingest_book(
         for claim in claims:
             claims_seen += 1
             idea = from_book_claim(claim, title, f"chunk {i + 1}")
+            # Wire inferred interval to the gauntlet call; mirroring the explicit
+            # "interval": interval line in discovery.py. Omit the key entirely
+            # when idea.interval is None so _run_gauntlet's existing
+            # args.get("interval", "1d") fallback remains the sole default.
+            gauntlet_kwargs = (
+                {"interval": idea.interval} if idea.interval is not None else {}
+            )
             results = await process_idea(
                 idea, watchlist, run_gauntlet_fn,
                 judge_idea_fn=judge_idea_fn, record_activity_fn=record_activity_fn,
                 record_attempt_fn=record_attempt_fn, rank_fn=rank_fn,
                 candidate_limit=candidate_limit,
+                **gauntlet_kwargs,
             )
             dispatched += len(results)
         if on_progress is not None:
