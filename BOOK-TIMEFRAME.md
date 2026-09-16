@@ -22,12 +22,12 @@ Scoped 2026-09-16.
 
 ## Next slice -- start here
 
-- **Active:** S1 -- #1266
+- **Active:** S2 -- #1267
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] S1 -- #1266 -- `Idea.interval` field + `infer_interval()` keyword
+- [x] S1 -- #1266 -- `Idea.interval` field + `infer_interval()` keyword
   heuristic over claim prose (pure functions, no wiring into the live
   ingestion path yet)
 - [ ] S2 -- #1267 -- wire `Idea.interval` into `book_library.py`'s
@@ -53,6 +53,22 @@ it).
 
 ## Landed PRs
 
+- PR #1269 -- S1: `Idea.interval` + `infer_interval()` (merged 2026-09-16).
+  self_dev's own first attempt correctly self-blocked on `tests_failed`
+  rather than auto-merging a broken diff (the "auto-merges regardless of
+  test status" SAFETY note below turned out not to hold for this failure
+  class -- corrected there). The truncated reason string (a bare pytest
+  dot-progress dump, no real error) was useless on its own, same known gap
+  as every other trading-domain campaign's self_dev history here --
+  running the actual test suite against the branch in an isolated worktree
+  found two real off-by-one boundary bugs: `infer_interval`'s minutes
+  bucketing used `n<=4`/`n<=14` where it needed `n<=5`/`n<=15`, so "5
+  minute" claims landed as `"15m"` and "15-minute" claims as `"30m"` --
+  self_dev's own generated tests had the right expected values, the
+  implementation's boundaries were just one bucket off. Fixed directly on
+  the PR's branch; full `test_trading_ideas.py` 37/37 green after, broader
+  `trading_ideas or book_library` sweep 43/43 green.
+
 ## SAFETY
 
 - **No slice may place an order, real or paper.** This changes what
@@ -69,9 +85,14 @@ it).
   green tests are necessary, not sufficient. S2's issue spells out the
   exact live-verification steps (restart Cerebral, process a real claim
   with explicit timeframe language, confirm the saved spec's interval).
-- **self_dev_campaign auto-merges every slice regardless of test status**
-  (2026-08-21 full-auto-merge amendment) -- whoever runs this campaign
-  (Foreman loop: fire -> hand-verify the real PR diff -> fix bugs found ->
-  retrigger) must review each landed PR's actual diff before trusting it,
-  same discipline as every other trading-domain campaign in this repo's
-  history.
+- **Do not assume self_dev_campaign auto-merges regardless of test status.**
+  The plugin's own description says it does (2026-08-21 full-auto-merge
+  amendment), but S1's real run set `Status: blocked` on `tests_failed`
+  and left the PR open rather than merging a broken diff -- whatever the
+  intended policy, `tests_failed` observably blocks in practice. Either
+  way, whoever runs this campaign (Foreman loop: fire -> hand-verify the
+  real PR diff -> fix bugs found -> retrigger) must review each landed
+  PR's actual diff before trusting it, same discipline as every other
+  trading-domain campaign in this repo's history -- S1's own bug (a
+  boundary off-by-one) would have shipped silently on a pure "trust green"
+  read of the campaign status.
