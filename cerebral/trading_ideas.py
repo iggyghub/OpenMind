@@ -71,12 +71,46 @@ def _extract_code(reply: str) -> str:
     return code
 
 
+def infer_interval(claim_text: str) -> Optional[str]:
+    """Keyword heuristic to map claim prose to recognized trading intervals."""
+    text = claim_text.lower()
+    if re.search(r'intraday', text):
+        return "1h"
+    m = re.search(r'(\d+)\s*-?\s*minutes?', text)
+    if m:
+        n = int(m.group(1))
+        # <=5/<=15, not <=4/<=14 -- off-by-one found in review (self_dev's own
+        # generated tests expected "5 minute" -> "5m" and "15-minute" -> "15m",
+        # both landed one bucket high under the original boundaries).
+        if n <= 1: return "1m"
+        if n <= 5: return "5m"
+        if n <= 15: return "15m"
+        return "30m"
+    if re.search(r'\bminutes?\b', text):
+        return "15m"
+    m = re.search(r'(\d+)\s*-?\s*hours?', text)
+    if m:
+        n = int(m.group(1))
+        if n <= 1: return "1h"
+        return "4h"
+    if re.search(r'\bhours?\b', text):
+        return "1h"
+    if re.search(r'\bday[s]?\b', text) or re.search(r'\bdaily\b', text):
+        return "1d"
+    if re.search(r'\bweeks?\b', text) or re.search(r'\bweekly\b', text):
+        return "1d"
+    if re.search(r'\bmonths?\b', text) or re.search(r'\bmonthly\b', text):
+        return "1d"
+    return None
+
+
 @dataclass
 class Idea:
     """Testable trading hypothesis with full provenance."""
     source_url: Optional[str] = None
     page_title: Optional[str] = None
     claim_text: str = ""
+    interval: Optional[str] = None
     date_accessed: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
     provenance: str = ""
     book_info: Optional[Dict[str, str]] = None
@@ -144,6 +178,7 @@ def from_prose(text: str) -> Idea:
         claim_text=text,
         provenance="user, verbatim",
         author_claim_text=f"User claims: {text}",
+        interval=infer_interval(text),
     )
 
 
@@ -154,6 +189,7 @@ def from_book_claim(claim: str, book: str, chapter: str) -> Idea:
         provenance=f"book: {book} ch {chapter}",
         book_info={"book": book, "chapter": chapter},
         author_claim_text=f"Book '{book}' Chapter '{chapter}' claims: {claim}",
+        interval=infer_interval(claim),
     )
 
 

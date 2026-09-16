@@ -11,6 +11,7 @@ from cerebral.trading_ideas import (
     _compile_strategy as compile_strategy,
     _extract_code,
     _run_tally,
+    infer_interval,
 )
 
 
@@ -424,6 +425,49 @@ class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
             success, pos, total = _run_tally("some claim")
 
         self.assertEqual((success, pos, total), (True, 2, 3))
+
+
+class TestInferInterval(unittest.TestCase):
+    def test_minutes_to_interval(self):
+        self.assertEqual(infer_interval("Hold for 45 minutes from entry"), "30m")
+        self.assertEqual(infer_interval("Scalp in 5 minute trades"), "5m")
+        self.assertEqual(infer_interval("1 minute chart is best"), "1m")
+        self.assertEqual(infer_interval("Trade in 15-minute intervals"), "15m")
+
+    def test_hours_to_interval(self):
+        self.assertEqual(infer_interval("Check the 1 hour chart"), "1h")
+        self.assertEqual(infer_interval("Rebalance every 4 hours"), "4h")
+        self.assertEqual(infer_interval("Intraday swing"), "1h")
+        self.assertEqual(infer_interval("Trade the hour market"), "1h")
+
+    def test_days_weeks_months(self):
+        self.assertEqual(infer_interval("Hold for 3 days"), "1d")
+        self.assertEqual(infer_interval("Daily review"), "1d")
+        self.assertEqual(infer_interval("Weekly portfolio rebalance"), "1d")
+        self.assertEqual(infer_interval("Monthly options expiry"), "1d")
+
+    def test_no_match_returns_none(self):
+        self.assertIsNone(infer_interval("Buy low sell high without time constraints"))
+        self.assertIsNone(infer_interval("Long term value investing"))
+
+    def test_from_prose_populates_interval(self):
+        idea = from_prose("Scalp 5 minute chart.")
+        self.assertEqual(idea.interval, "5m")
+
+    def test_from_prose_no_signal_is_none(self):
+        idea = from_prose("Buy and hold forever.")
+        self.assertIsNone(idea.interval)
+
+    def test_from_book_claim_populates_interval(self):
+        idea = from_book_claim(
+            "Exit any trade that remains in a loss after holding for 45 minutes from entry",
+            "The Trading Book", "4"
+        )
+        self.assertEqual(idea.interval, "30m")
+
+    def test_from_book_claim_no_signal_is_none(self):
+        idea = from_book_claim("Trend following works over time.", "Quant Strategies", "1")
+        self.assertIsNone(idea.interval)
 
 
 class TestExtractCode(unittest.TestCase):
