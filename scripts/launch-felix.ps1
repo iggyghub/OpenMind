@@ -57,6 +57,37 @@ function Test-TrayRunning {
         Where-Object { $_.CommandLine -like $trayPattern })
 }
 
+# 2026-09-16 -- found live: the -Restart port-free wait above is not proof
+# the OLD Cerebral actually exited, only that it stopped listening. Its
+# shutdown path can close the WebSocket listener before the process itself
+# finishes tearing down, so "port free" fires while the old PID keeps
+# running (observed: it survived as an orphan for 30+ minutes, still
+# ticking its own paper-trade scheduler loop in parallel with the new one --
+# two live Cerebrals is worse than the double-launch this script otherwise
+# guards against). A launcher racing itself compounds this: launcher.log
+# showed two "-Restart" invocations firing ~12s apart for one restart
+# request, each independently seeing the port free and spawning its own
+# cerebral.main, so relying on the pre-spawn port check alone cannot be
+# made race-proof against a second, uninvited invocation of this same
+# script.
+#
+# Fix applied once we DO have unambiguous information: right after THIS
+# invocation confirms its own spawn is the one actually listening on
+# :$CEREBRAL_PORT, reap every OTHER python.exe process running
+# cerebral.main by PID (not by port state) -- whether it's an old instance
+# that failed to fully exit, or the loser of a racing double-invocation
+# that crashed on bind but didn't fully unwind. $keepId is the PID this
+# invocation itself spawned (from Start-Process -PassThru), so the winner
+# is never at risk of killing itself.
+function Remove-OrphanedCerebral($keepId) {
+    $stray = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match 'cerebral\.main' -and $_.ProcessId -ne $keepId }
+    foreach ($p in $stray) {
+        Log ("Reaping orphaned Cerebral: pid={0} (not the process this launch spawned)" -f $p.ProcessId)
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # ---- 0. precheck: prerequisites + first-run install state ---------------------
 #
 # Catches the common "I cloned the repo and double-clicked Felix" failure
@@ -193,6 +224,7 @@ if (-not $ready) {
     exit 1
 }
 Log "Cerebral is listening on :$CEREBRAL_PORT."
+Remove-OrphanedCerebral $cerebral.Id
 
 if ($CerebralOnly) {
     Log "CerebralOnly: tray already running -- skipping tray launch."
