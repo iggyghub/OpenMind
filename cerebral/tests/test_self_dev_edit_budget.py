@@ -91,6 +91,27 @@ async def test_small_file_set_inlined_whole_no_regression(tmp_path, monkeypatch)
     assert len(sdio_calls["commit"]) == 1
 
 
+# ── test discipline: instructed in every edit prompt ─────────────────────────
+
+async def test_edit_instructions_require_a_regression_test(tmp_path, monkeypatch):
+    """S27 follow-up: every edit prompt must tell the model to add/update a
+    test alongside a behavior change (the failure mode behind PR #840/#842)."""
+    (tmp_path / "cerebral").mkdir()
+    (tmp_path / "cerebral" / "a.py").write_text("print('hi')\n", encoding="utf-8")
+
+    router = _FakeRouter(
+        context_window=8192,
+        responses=['["cerebral/a.py"]', "<<<FILE: cerebral/a.py>>>\n<<<SEARCH>>>\nx\n<<<REPLACE>>>\ny\n<<<END>>>"],
+    )
+    monkeypatch.setattr(main_mod, "_router", router)
+    _patch_sdio(monkeypatch, written=["cerebral/a.py"], committed=True)
+
+    await main_mod._self_dev_edit(str(tmp_path), "add a bye print")
+
+    edit_prompt = router.calls[1][0]
+    assert "include a test" in edit_prompt.lower()
+
+
 # ── oversized file: excerpted, not dropped ───────────────────────────────────
 
 async def test_oversized_file_excerpted_under_budget(tmp_path, monkeypatch):
