@@ -118,7 +118,14 @@ def _isolated_strategy_store(tmp_path, specs):
     return store
 
 
-def _mock_run_pair_result(net_return=0.1, max_drawdown=-0.05, n_trades=3, flat_reason=None):
+def _mock_run_pair_result(net_return=0.1, max_drawdown=-0.05, n_trades=25, flat_reason=None):
+    # n_trades=25, not 3: F4 (#1249) added MIN_TRADES_FLOOR=20 to the
+    # consistency rollup query. A pair below the floor is real data but
+    # doesn't count as a qualifying vote, which silently broke this
+    # helper's callers that assert on cross_stock_consistency (it stayed
+    # None -- nothing met the floor) without anyone having to touch F4's
+    # own dedicated floor tests, which set n_trades explicitly and are
+    # unaffected by this default.
     return {"net_return": net_return, "max_drawdown": max_drawdown, "n_trades": n_trades, "flat_reason": flat_reason}
 
 

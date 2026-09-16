@@ -234,8 +234,24 @@ _SETTINGS_PATH = data_dir() / "felix-settings.json"
 class SettingsStore:
     """Thin JSON-backed store for system settings.
 
-    Designed as a process-wide singleton in main.py.  Thread-safe enough
-    for the single asyncio event loop — all reads/writes happen there.
+    Documented as a process-wide singleton in main.py, but not actually
+    enforced anywhere -- several plugins construct their own short-lived
+    SettingsStore() (e.g. plugins/trading_replay.py's cross-stock sweep).
+    Each instance used to cache _data at construction and never refresh it,
+    so two instances whose lifetimes overlapped could silently clobber each
+    other's writes with a stale full-dict snapshot: a 2026-09-15/16
+    overnight cross-stock run wrote real throughput stats
+    (cross_stock_last_run_processed=19805) that were then immediately
+    stomped back to 0 by check_cross_stock_night_window's own stop-path
+    write, made through the scheduler's long-lived singleton whose
+    in-memory copy predated the run. get()/set() now always reload from
+    disk first, so every call reflects the latest state on disk regardless
+    of which instance last wrote it or when this instance was constructed
+    -- the in-memory cache is now only a same-call convenience, not
+    something callers should rely on staying valid between calls. Settings
+    changes are human/scheduler-cadence (never a per-bar/per-pair hot
+    loop -- checked before making this change), so the extra reads are free
+    in practice.
     """
 
     def __init__(self, path: Path = _SETTINGS_PATH) -> None:
@@ -245,6 +261,7 @@ class SettingsStore:
     # ── public ─────────────────────────────────────────────────────────────────
 
     def get(self, key: str) -> Any:
+        self._data = self._load()
         return self._data.get(key, _DEFAULTS.get(key))
 
     def set(self, key: str, value: Any) -> None:
@@ -283,11 +300,18 @@ class SettingsStore:
             raise ValueError("setvalue_roles must be a list of str")
         if key == "discovery_queries" and not all(isinstance(i, str) for i in value):
             raise ValueError("discovery_queries must be a list of str")
+        # Reload immediately before applying the change (not just at
+        # construction) -- see the class docstring. Without this, a
+        # different SettingsStore instance's write between this instance's
+        # construction and this .set() call would get silently overwritten
+        # by this instance's now-stale in-memory copy of every OTHER key.
+        self._data = self._load()
         self._data[key] = value
         self._save()
 
     def all(self) -> dict[str, Any]:
-        """Return a snapshot of all settings."""
+        """Return a snapshot of all settings, freshly loaded (see get())."""
+        self._data = self._load()
         return {k: self._data.get(k, v) for k, v in _DEFAULTS.items()}
 
     def is_default(self, key: str) -> bool:
