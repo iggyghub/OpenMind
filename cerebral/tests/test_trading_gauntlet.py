@@ -348,12 +348,21 @@ class TestAutoPromote:
             make_positions(), hypothesis="MA cross test", provenance="internal",
             scheduler=FakeScheduler(), paper_broker=object(), seed=42,
             symbol="AAPL", strategy_code=code, strategy_store=store, position_qty=3.0,
+            interval="15m",
         )
 
         assert card.verdict == "VALIDATED"
         spec = store.get("MA cross test")
         assert spec is not None
         assert (spec.symbol, spec.code, spec.qty) == ("AAPL", code, 3.0)
+        # Found 2026-09-16: run_gauntlet's own interval param was used
+        # correctly for backtest sizing/annualization but never threaded
+        # into the saved spec, so every strategy silently persisted as
+        # "1d" regardless of what it was actually validated at (306/306
+        # live strategies affected, including ones discovery.py explicitly
+        # validates at "15m"). Non-default interval here catches a
+        # regression back to the dataclass default masking the bug.
+        assert spec.interval == "15m"
         assert calls[0]["title"] == "MA cross test"  # still scheduled
 
         # S16/#861: a VALIDATED pass must also record real lineage, not
