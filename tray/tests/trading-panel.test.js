@@ -1359,7 +1359,12 @@ describe('renderReplayPanel (S2/#848)', () => {
       TradingPanel.renderReplayPanel({ replay: { running: false } }, mount, mockSendEventFn);
 
       // First call is from the poll interval trigger in our stub
-      expect(calls.some(c => c.type === 'call_tool' && c.data.name === 'get_batch_replay_status')).toBe(true);
+      const pollCall = calls.find(c => c.type === 'call_tool' && c.data.name === 'get_batch_replay_status');
+      expect(pollCall).toBeTruthy();
+      // record: false -- a background display refresh must not flood the
+      // tool-activity feed with a tool_call/tool_result pair every 2s
+      // (found 2026-09-16: the feed showed almost nothing else).
+      expect(pollCall.data.record).toBe(false);
 
       // Restore
       global.setInterval = origSetInterval;
@@ -1560,7 +1565,9 @@ describe('renderCrossStockPanel (S5/#1238)', () => {
 
       TradingPanel.renderCrossStockPanel({ cross_stock: { running: false } }, mount, mockSendEventFn);
 
-      expect(calls.some(c => c.type === 'call_tool' && c.data.name === 'get_cross_stock_replay_status')).toBe(true);
+      const pollCall = calls.find(c => c.type === 'call_tool' && c.data.name === 'get_cross_stock_replay_status');
+      expect(pollCall).toBeTruthy();
+      expect(pollCall.data.record).toBe(false);
 
       global.setInterval = origSetInterval;
     });
