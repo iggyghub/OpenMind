@@ -292,6 +292,15 @@ class BookLibraryPlugin:
                 gauntlet_args["book"] = idea.book_info.get("book", "")
                 gauntlet_args["chapter"] = idea.book_info.get("chapter", "")
                 gauntlet_args["claim"] = idea.claim_text
+            # BOOK-TIMEFRAME S2 (#1267): thread the claim's own inferred
+            # timeframe through, mirroring discovery.py's explicit
+            # "interval": interval line. Key omitted entirely when
+            # idea.interval is None (no signal in the claim text) -- the
+            # existing _run_gauntlet default (args.get("interval", "1d"))
+            # already handles that fallback; duplicating it here would be
+            # a second place to keep in sync for no benefit.
+            if idea.interval:
+                gauntlet_args["interval"] = idea.interval
             result = await self._gauntlet._run_gauntlet(
                 # "discovered", not a new "book" bucket -- origin is a
                 # deliberately closed enum (strategy_store._VALID_ORIGINS)
