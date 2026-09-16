@@ -47,6 +47,23 @@ function Test-CerebralPort {
         -ErrorAction SilentlyContinue)
 }
 
+# 2026-09-16 -- companion to Remove-OrphanedCerebral below, added after that
+# function caused a real outage the same day it landed. Test-CerebralPort
+# only answers "is ANYONE listening," which is exactly the gap that made
+# the reap dangerous: when the tray's reconnect-watchdog fires a second
+# launcher invocation, the LOSER's own spawn can crash on OSError (the
+# port the winner already bound) while its wait loop still sees the
+# WINNER's process satisfying Test-CerebralPort -- so the loser declares
+# itself "ready" and then reaps everyone except its own (already-dead)
+# PID, killing the actual winner. Get-CerebralListenerPid answers "WHO is
+# listening," so the wait loop and the reap can both check identity, not
+# just presence.
+function Get-CerebralListenerPid {
+    $conn = Get-NetTCPConnection -LocalPort $CEREBRAL_PORT -State Listen `
+        -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($conn) { $conn.OwningProcess } else { $null }
+}
+
 # #521 -- "port listening" is not "Felix running": the tray can die while
 # Cerebral keeps heartbeating (and vice versa). Match electron.exe main
 # processes launched from THIS repo's tray dir.
@@ -205,9 +222,25 @@ $cerebral = Start-Process `
 Log "Waiting for Cerebral to bind :$CEREBRAL_PORT (up to ${WAIT_SECONDS}s)..."
 $deadline = (Get-Date).AddSeconds($WAIT_SECONDS)
 $ready = $false
+$stoodDown = $false
 $lastTick = 0
 while ((Get-Date) -lt $deadline) {
-    if (Test-CerebralPort) { $ready = $true; break }
+    $listenerPid = Get-CerebralListenerPid
+    if ($listenerPid -eq $cerebral.Id) { $ready = $true; break }
+    if ($listenerPid) {
+        # Someone else already bound the port -- not this invocation's own
+        # spawn. Almost certainly a sibling launcher invocation (the tray's
+        # reconnect-watchdog can fire this script twice for one restart,
+        # observed live) that won the race. That other process is the real
+        # Cerebral, not an orphan -- stand down instead of reaping it.
+        Log "Another Cerebral (pid=$listenerPid) already bound :$CEREBRAL_PORT -- standing down (this looks like a duplicate launcher invocation)."
+        if (-not $cerebral.HasExited) {
+            Log "Terminating this invocation's own redundant spawn (pid=$($cerebral.Id))."
+            Stop-Process -Id $cerebral.Id -Force -ErrorAction SilentlyContinue
+        }
+        $stoodDown = $true
+        break
+    }
     if ($cerebral.HasExited) {
         Log "Cerebral exited (code=$($cerebral.ExitCode)) before binding -- check the Python console."
         exit 1
@@ -218,6 +251,10 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds $POLL_MS
 }
 
+if ($stoodDown) {
+    Log "=== launcher done (stood down for another instance) ==="
+    exit 0
+}
 if (-not $ready) {
     Log "Cerebral did not bind :$CEREBRAL_PORT within ${WAIT_SECONDS}s -- aborting tray launch."
     Log "Check cerebral.log / cerebral.err.log for errors (tray menu -> Show Logs)."
