@@ -263,7 +263,7 @@ class DiscoveryPlugin:
                 "symbol": ticker,
                 "hypothesis": idea.claim_text or "discovered hypothesis",
                 "provenance": idea.provenance,
-                "interval": interval,
+                "interval": idea.interval or interval,
             }
             if idea.source_url:
                 gauntlet_args["url"] = idea.source_url
