@@ -49,6 +49,25 @@ class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(idea.provenance, "url: http://test.com")
         self.assertIn("Author claims:", idea.author_claim_text)
         self.assertIsInstance(idea.date_accessed, str)
+        # #1272: StubFetcher's page text ("Market goes up on Mondays.") has
+        # no timeframe language -- interval must stay None, not a guessed
+        # default (infer_interval's own no-signal convention).
+        self.assertIsNone(idea.interval)
+
+    def test_extract_from_url_infers_interval_from_page_text(self):
+        class IntradayFetcher:
+            def __call__(self, url: str):
+                return {
+                    "html": "<html><body>x</body></html>",
+                    "title": "Scalping AAPL",
+                    "text": "Scalp AAPL on the 5 minute chart after the open.",
+                    "links": [],
+                }
+
+        ideas = extract_from_url(
+            "http://test.com", fetcher=IntradayFetcher(), crawler=StubCrawler()
+        )
+        self.assertEqual(ideas[0].interval, "5m")
 
     def test_from_prose(self):
         idea = from_prose("Bought AAPL because it's cheap.")

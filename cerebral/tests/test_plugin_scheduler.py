@@ -1069,6 +1069,36 @@ async def test_run_discovery_accepts_an_explicit_interval_override(tmp_path):
     assert ("AAPL", "5m") in seen_intervals
 
 
+async def test_run_discovery_prefers_the_claims_own_detected_interval(tmp_path):
+    """#1272: _source_ideas (the REAL Idea-construction site _run_discovery
+    uses -- extract_from_url is a separate crawler utility not actually
+    called from this path) must set Idea.interval from the search hit's
+    own snippet, and run_gauntlet_fn must prefer that per-claim value over
+    the run-level default. Snippet says "1 hour chart" -- must win over
+    the run-level "15m" default, proving per-claim inference takes
+    priority rather than always falling back."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    seen_intervals = []
+
+    def fetch(symbol, start, end, interval="1d"):
+        seen_intervals.append((symbol, interval))
+        return _trend_prices()
+
+    router = FakeRouterReturningCode()
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/aapl-breakout",
+        "title": "AAPL breakout",
+        "snippet": "AAPL breaks out on the 1 hour chart after consolidation.",
+    }))
+
+    result = await disc._run_discovery(
+        {"queries": ["aapl breakout"]}, strategy_store=store, fetch=fetch,
+    )
+
+    assert not result.is_error, result.content
+    assert ("AAPL", "1h") in seen_intervals
+
+
 # ── S31 (#896): manual discovery start/stop + duration ────────────────────
 
 def test_discovery_defaults_to_disabled(tmp_path):
