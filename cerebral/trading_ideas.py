@@ -79,9 +79,12 @@ def infer_interval(claim_text: str) -> Optional[str]:
     m = re.search(r'(\d+)\s*-?\s*minutes?', text)
     if m:
         n = int(m.group(1))
+        # <=5/<=15, not <=4/<=14 -- off-by-one found in review (self_dev's own
+        # generated tests expected "5 minute" -> "5m" and "15-minute" -> "15m",
+        # both landed one bucket high under the original boundaries).
         if n <= 1: return "1m"
-        if n <= 4: return "5m"
-        if n <= 14: return "15m"
+        if n <= 5: return "5m"
+        if n <= 15: return "15m"
         return "30m"
     if re.search(r'\bminutes?\b', text):
         return "15m"
