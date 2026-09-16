@@ -743,3 +743,16 @@ async def test_verify_reflects_red_run(tmp_path):
     result = plugin.verify()
     assert result.passed is False
     assert result.evidence == "1 failed, 0 passed"
+
+
+async def test_test_summary_truncation_keeps_tail(tmp_path):
+    """#1271: test_summary should preserve the tail of pytest output (FAILURES),
+    not the dot-progress noise at the start."""
+    # 2500 chars of noise + distinct tail
+    long_output = "x" * 2500 + "TAIL_DETAIL_HERE"
+    plugin = _make(tmp_path, test_fn=lambda d: (True, long_output))
+    result = await plugin.call_tool("self_dev", {"change_description": "x"})
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    # With the fix, test_summary is test_output[-2000:], so it must contain the tail.
+    assert data["test_summary"] == long_output[-2000:]

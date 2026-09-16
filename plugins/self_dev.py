@@ -659,9 +659,10 @@ class SelfDevPlugin:
                     "issue (injectable issue_fn seam), calls self_dev per slice, "
                     "and rewrites the driver file after each auto-merge (tick "
                     "queue entry, advance Active + Model, append to Landed PRs). "
-                    "Every slice auto-merges regardless of guardrail/test status "
-                    "(2026-08-21 full-auto-merge amendment); stops only on error, "
-                    "setting Status: blocked. Deny-by-default per ADR-0005. "
+                    "Only guardrail hits are informational/non-blocking (2026-08-21 amendment); "
+                    "a real test failure (tests_failed) still sets Status: blocked and leaves "
+                    "the PR open. Every successful slice auto-merges. "
+                    "Stops only on error, setting Status: blocked. Deny-by-default per ADR-0005. "
                     "Requires sandbox."
                 ),
                 plugin=PLUGIN_NAME,
@@ -903,7 +904,7 @@ class SelfDevPlugin:
                 "clone_dir": str(clone_dir),
                 "branch": branch,
                 "test_passed": test_passed,
-                "test_summary": test_output[:500],
+                "test_summary": test_output[-2000:],
                 "pr_url": pr_url,
                 "merge_decision": "tests_failed",
                 "guardrail_hit": guardrail_hit,
@@ -938,7 +939,7 @@ class SelfDevPlugin:
                 "clone_dir": str(clone_dir),
                 "branch": branch,
                 "test_passed": test_passed,
-                "test_summary": test_output[:500],
+                "test_summary": test_output[-2000:],
                 "pr_url": pr_url,
                 "merge_decision": "auto_merge",
                 "guardrail_hit": guardrail_hit,
