@@ -21,6 +21,7 @@ from plugins.self_dev import (
     GUARDRAIL_PATHS,
     SelfDevPlugin,
     is_guardrail_diff,
+    named_paths_in_text,
 )
 
 # ---------------------------------------------------------------------------
@@ -345,6 +346,7 @@ async def test_guardrail_hit_records_informational_system_event(tmp_path):
         "branch": "selfdev/abc123",
         "reason": data["guardrail_reason"],
         "test_passed": True,
+        "untouched_named_paths": [],
     }
 
 
@@ -453,4 +455,67 @@ async def test_mixed_guardrail_and_safe_still_auto_merges(tmp_path):
     data = json.loads(result.content)
     assert data["merge_decision"] == "auto_merge"
     assert data["guardrail_hit"] is True
+
+
+# ---------------------------------------------------------------------------
+# named_paths_in_text -- pure function (informational acceptance-criteria
+# coverage check, #1148 rework of a bad self_dev attempt at the same task)
+# ---------------------------------------------------------------------------
+
+def test_named_paths_extracts_backtick_source_path():
+    text = "Route `cerebral/video/store.py` through the shared helper."
+    assert named_paths_in_text(text) == {"cerebral/video/store.py"}
+
+
+def test_named_paths_ignores_bare_words_and_slash_commands():
+    text = "Run `/grill-me` first, then check `pytest` output."
+    assert named_paths_in_text(text) == set()
+
+
+def test_named_paths_ignores_urls():
+    text = "Connects to `ws://localhost:7766` and posts to `accounts.google.com/o`."
+    assert named_paths_in_text(text) == set()
+
+
+def test_named_paths_multiple():
+    text = "Touch `cerebral/db/recipes.py` and `cerebral/db/profiles.py`."
+    assert named_paths_in_text(text) == {
+        "cerebral/db/recipes.py", "cerebral/db/profiles.py",
+    }
+
+
+# ---------------------------------------------------------------------------
+# untouched_named_paths -- SelfDevPlugin._run integration
+# ---------------------------------------------------------------------------
+
+async def test_untouched_named_paths_empty_when_issue_names_no_paths(tmp_path):
+    plugin = _make(tmp_path)
+    result = await plugin.call_tool("self_dev", {"change_description": "Add a README comment"})
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["untouched_named_paths"] == []
+
+
+async def test_untouched_named_paths_flags_files_the_diff_never_touched(tmp_path):
+    """#1145-shaped case: the issue names several files but the diff only
+    touches one of them -- informational only, must not affect merge."""
+    merge_calls = []
+
+    plugin = _make(
+        tmp_path,
+        diff_fn=lambda url: ["cerebral/db/recipes.py"],
+        merge_fn=lambda url: merge_calls.append(url),
+    )
+    description = (
+        "Route `cerebral/db/recipes.py` and `cerebral/db/profiles.py` "
+        "through the shared helper."
+    )
+    result = await plugin.call_tool("self_dev", {"change_description": description})
+
+    assert not result.is_error, result.content
+    data = json.loads(result.content)
+    assert data["untouched_named_paths"] == ["cerebral/db/profiles.py"]
+    assert data["merge_decision"] == "auto_merge"
+    assert merge_calls == [_PR_URL], "coverage gap must not block merge"
     assert merge_calls == [_PR_URL]
