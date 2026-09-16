@@ -113,6 +113,25 @@ class TestSettingsStore:
         s2 = SettingsStore(p)
         assert s2.get("reminder_interval_minutes") == 30
 
+    def test_two_instances_do_not_clobber_each_others_writes(self, tmp_path):
+        """Regression for the 2026-09-15/16 cross-stock throughput-stats bug:
+        two SettingsStore instances constructed at different times (so each
+        cached a different snapshot of _data) must not silently overwrite
+        each other's key when they both write, even without either one
+        being reconstructed in between. Before the fix, s2's write of
+        camera_enabled used its OWN stale in-memory copy of
+        reminder_interval_minutes (30, from before s1's write) and clobbered
+        s1's fresher value (45) back to the pre-s1 default (30)."""
+        p = tmp_path / "s.json"
+        s1 = SettingsStore(p)
+        s2 = SettingsStore(p)  # constructed at the same time, same stale snapshot
+        s1.set("reminder_interval_minutes", 30)
+        s1.set("reminder_interval_minutes", 45)  # s1's own snapshot is fresh
+        s2.set("camera_enabled", True)  # s2's snapshot predates BOTH s1 writes
+        assert s1.get("reminder_interval_minutes") == 45
+        assert s2.get("reminder_interval_minutes") == 45
+        assert SettingsStore(p).get("camera_enabled") is True
+
     def test_corrupt_file_falls_back_to_defaults(self, tmp_path):
         p = tmp_path / "s.json"
         p.write_text("not { valid json", encoding="utf-8")
