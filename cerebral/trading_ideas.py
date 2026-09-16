@@ -145,6 +145,7 @@ def extract_from_url(
             provenance=f"url: {current_url}",
             author_claim_text=f"Author claims: {title}",
             raw_content=html,
+            interval=infer_interval(text_content[:1000]),
         ))
 
         links = cw(current_url)

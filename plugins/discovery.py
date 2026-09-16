@@ -15,7 +15,7 @@ from cerebral.trading.discovery import (
     rank_for_day_trading,
     run_discovery_pass,
 )
-from cerebral.trading_ideas import Idea, judge_idea as _judge_idea
+from cerebral.trading_ideas import Idea, infer_interval, judge_idea as _judge_idea
 from cerebral.settings import SettingsStore
 from cerebral.paths import data_dir
 
@@ -238,6 +238,14 @@ class DiscoveryPlugin:
                     source_url=url, page_title=title, claim_text=snippet,
                     provenance=f"url: {url}" if url else f"web_search: {query}",
                     author_claim_text=f"Author claims: {snippet}",
+                    # #1272 follow-up: this is the REAL idea-construction site
+                    # _run_discovery uses (extract_from_url, also patched in
+                    # this same PR, is a separate crawler utility not actually
+                    # called from this path) -- without this, idea.interval
+                    # was always None here and run_gauntlet_fn's new
+                    # `idea.interval or interval` fallback silently always
+                    # took the run-level default, same as before the fix.
+                    interval=infer_interval(snippet),
                 ))
         return ideas
 
@@ -263,7 +271,7 @@ class DiscoveryPlugin:
                 "symbol": ticker,
                 "hypothesis": idea.claim_text or "discovered hypothesis",
                 "provenance": idea.provenance,
-                "interval": interval,
+                "interval": idea.interval or interval,
             }
             if idea.source_url:
                 gauntlet_args["url"] = idea.source_url
