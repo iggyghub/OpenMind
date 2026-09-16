@@ -409,9 +409,16 @@ def run_gauntlet(
         if symbol and strategy_code:
             from cerebral.trading.strategy_store import StrategySpec, StrategyStore
             store = strategy_store if strategy_store is not None else StrategyStore()
+            # interval=interval -- this function's own parameter (used correctly
+            # above for ann_factor/backtest sizing) was never threaded into the
+            # SAVED spec, so every strategy silently persisted as StrategySpec's
+            # "1d" default regardless of what it was actually validated at.
+            # Found 2026-09-16: 306/306 live strategies were "1d", including ones
+            # discovery.py explicitly validates at "15m" -- the value was correct
+            # throughout the gauntlet run and only lost at this save call.
             store.save(StrategySpec(
                 strategy_id=strategy_name, symbol=symbol,
-                code=strategy_code, qty=position_qty,
+                code=strategy_code, qty=position_qty, interval=interval,
             ), origin=origin, provenance_json={"source": provenance}, hypothesis=hypothesis,
                parent_version=parent_version, components_json=components_json)
         scheduler._create_event({
