@@ -491,7 +491,7 @@ function openMainWindow(hash) {
   // #820 -- restore the last position/size if it's still on a connected
   // display (e.g. not left stranded on a monitor that's since been
   // unplugged); otherwise fall back to the hardcoded default like before.
-  const savedBounds = _sanitizedMainWindowBounds();
+  const { maximized: savedMaximized, ...savedBounds } = _sanitizedMainWindowBounds();
 
   mainWindow = new BrowserWindow({
     width:           1200,
@@ -554,11 +554,21 @@ function openMainWindow(hash) {
   // (no debounce there either -- these are tiny sync JSON writes).
   mainWindow.on('moved', _saveMainWindowBounds);
   mainWindow.on('resize', _saveMainWindowBounds);
+  // 'moved'/'resize' don't fire for maximize/unmaximize on every platform,
+  // so track that transition explicitly too.
+  mainWindow.on('maximize', _saveMainWindowBounds);
+  mainWindow.on('unmaximize', _saveMainWindowBounds);
+  if (savedMaximized) mainWindow.maximize();
 }
 
 function _saveMainWindowBounds() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainPosStore.save(mainWindow.getBounds());
+  const maximized = mainWindow.isMaximized();
+  // getBounds() while maximized reports the maximized size, not the
+  // restored one -- getNormalBounds() keeps the pre-maximize bounds so
+  // un-maximizing next time lands back at a sane size.
+  const bounds = maximized ? mainWindow.getNormalBounds() : mainWindow.getBounds();
+  mainPosStore.save({ ...bounds, maximized });
 }
 
 // #820 -- only trust a saved position if its center point still falls on
