@@ -179,6 +179,53 @@ async def test_call_tool_records_tool_call_and_result(conv_rig, monkeypatch):
     assert tr.content["is_error"] is False
 
 
+async def test_call_tool_record_false_skips_transcript_and_broadcast(conv_rig, monkeypatch):
+    """A UI panel's own background status poller (e.g. trading-panel.js's 2s
+    Batch Replay / Cross-Stock Replay polls) sets "record": false so it
+    doesn't flood the tool-activity feed with a tool_call/tool_result pair
+    every 2 seconds -- found 2026-09-16 when the feed showed almost nothing
+    else. Mirrors the existing plugins:test_call precedent
+    (_dispatch_tray_call_tool's record=False path), just reachable from the
+    generic call_tool message instead of being hardcoded to one endpoint."""
+    import cerebral.main as main_mod
+    from cerebral.mcp.orchestrator import ToolResult
+
+    async def fake_call_tool(name: str, args: dict) -> ToolResult:
+        return ToolResult(content="ok", is_error=False)
+
+    monkeypatch.setattr(main_mod._orc, "call_tool", fake_call_tool)
+
+    await conv_rig.handle({
+        "type": "call_tool",
+        "data": {"name": "get_cross_stock_replay_status", "args": {}, "record": False},
+    })
+
+    assert conv_rig.store.list_recent(1) == []
+    assert conv_rig.sent == []
+
+
+async def test_call_tool_record_omitted_still_records(conv_rig, monkeypatch):
+    """Regression guard on the default: omitting "record" entirely (every
+    real chat/voice-driven call_tool caller) must still record, same as
+    before this change -- only an explicit "record": false opts out."""
+    import cerebral.main as main_mod
+    from cerebral.mcp.orchestrator import ToolResult
+
+    async def fake_call_tool(name: str, args: dict) -> ToolResult:
+        return ToolResult(content="ok", is_error=False)
+
+    monkeypatch.setattr(main_mod._orc, "call_tool", fake_call_tool)
+
+    await conv_rig.handle({
+        "type": "call_tool",
+        "data": {"name": "memory_search", "args": {}},
+    })
+
+    kinds = [t.kind for t in conv_rig.store.list_recent(1)]
+    assert KIND_TOOL_CALL in kinds
+    assert KIND_TOOL_RESULT in kinds
+
+
 # ── switch_model ─────────────────────────────────────────────────────────────
 
 async def test_switch_model_records_system_event(conv_rig, monkeypatch):

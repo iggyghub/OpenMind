@@ -2144,7 +2144,9 @@ function renderReplayPanel(data, container, sendEventFn) {
 
   if (sendEventFn) {
     mount._replayPollInterval = setInterval(() => {
-      sendEventFn({ type: 'call_tool', data: { name: 'get_batch_replay_status', args: {} } });
+      // record: false -- a background display refresh, not something Felix
+      // decided to do; must not spam the tool-activity feed every 2s.
+      sendEventFn({ type: 'call_tool', data: { name: 'get_batch_replay_status', args: {}, record: false } });
     }, 2000);
   }
 }
@@ -2294,7 +2296,8 @@ function renderCrossStockPanel(data, container, sendEventFn) {
 
   if (sendEventFn) {
     mount._crossStockPollInterval = setInterval(() => {
-      sendEventFn({ type: 'call_tool', data: { name: 'get_cross_stock_replay_status', args: {} } });
+      // record: false -- see the matching comment on the Batch Replay poll above.
+      sendEventFn({ type: 'call_tool', data: { name: 'get_cross_stock_replay_status', args: {}, record: false } });
     }, 2000);
   }
 }

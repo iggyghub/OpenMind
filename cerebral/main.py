@@ -5915,8 +5915,21 @@ async def _handle_message(msg: dict) -> None:
         # shared ACL/consent gate ladder in ``_dispatch_tray_call_tool`` so
         # the permissions layer + transcript recording apply identically to
         # the harness ``plugins:test_call`` path (S4 #472).
+        #
+        # ``record`` defaults True (unlike plugins:test_call, which is
+        # always a silent debug hook) but a caller may opt out per-call by
+        # setting "record": false in the message -- same escape hatch
+        # _dispatch_tray_call_tool already offers plugins:test_call,
+        # exposed here for a UI panel's own background status poller (e.g.
+        # trading-panel.js's 2s Batch Replay / Cross-Stock Replay polls),
+        # which is UI chrome refreshing a display, not something Felix
+        # decided to do -- it must not flood the tool-activity feed with a
+        # tool_call/tool_result pair every 2 seconds while that tab is open
+        # (found 2026-09-16: the feed was showing almost nothing else).
         d = msg.get("data", {})
-        await _dispatch_tray_call_tool(d.get("name", ""), d.get("args", {}))
+        await _dispatch_tray_call_tool(
+            d.get("name", ""), d.get("args", {}), record=bool(d.get("record", True))
+        )
 
     elif t == "computer_use_stop":
         # S2 #576 -- (c) leg of the ADR-0016 three-part kill switch. Fired by
