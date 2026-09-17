@@ -99,6 +99,42 @@ def test_get_done_pairs_returns_all_recorded_pairs(store: CrossStockStore) -> No
     assert done == {("strat_1", "AAPL"), ("strat_1", "MSFT")}
 
 
+def test_dynamic_floor_scales_up_for_a_faster_interval() -> None:
+    """#1277 follow-up (2026-09-17): MIN_TRADES_FLOOR=20 was sized for '1d'
+    over a 5-year window. A 1h strategy gets that same quota of chances in
+    days, not months, so the flat 20 barely filters noise for it -- the
+    floor should scale with how often the interval trades."""
+    from cerebral.trading.cross_stock_store import _min_trades_floor_for_interval
+    assert _min_trades_floor_for_interval("1d") == 20
+    assert _min_trades_floor_for_interval(None) == 20  # unlabeled -- same as '1d'
+    assert _min_trades_floor_for_interval("1h") > 20
+    assert _min_trades_floor_for_interval("15m") > _min_trades_floor_for_interval("1h")
+
+
+def test_get_consistency_by_strategy_applies_per_strategy_interval_floor(store: CrossStockStore) -> None:
+    """25 trades clears the flat '1d' floor (20) but not the '1h' floor
+    (130) -- the same pair should qualify or not depending on which
+    interval its strategy is tagged with."""
+    run_id = store.create_run("2021-09-15", "2026-09-15")
+    store.record_result(run_id, "daily_strat", "AAPL", net_return=0.1, max_drawdown=-0.1, n_trades=25)
+    store.record_result(run_id, "hourly_strat", "AAPL", net_return=0.1, max_drawdown=-0.1, n_trades=25)
+
+    result = store.get_consistency_by_strategy({"daily_strat": "1d", "hourly_strat": "1h"})
+
+    assert "daily_strat" in result
+    assert "hourly_strat" not in result  # 25 < the scaled 1h floor
+
+
+def test_get_tested_count_by_strategy_applies_per_strategy_interval_floor(store: CrossStockStore) -> None:
+    run_id = store.create_run("2021-09-15", "2026-09-15")
+    store.record_result(run_id, "hourly_strat", "AAPL", net_return=0.1, max_drawdown=-0.1, n_trades=25)
+    store.record_result(run_id, "hourly_strat", "MSFT", net_return=0.1, max_drawdown=-0.1, n_trades=200)
+
+    counts = store.get_tested_count_by_strategy({"hourly_strat": "1h"})
+
+    assert counts["hourly_strat"] == 1  # only MSFT (200 trades) clears the 1h floor
+
+
 def test_get_done_count_counts_all_rows(store: CrossStockStore) -> None:
     run_id = store.create_run("2021-09-15", "2026-09-15")
     assert store.get_done_count() == 0

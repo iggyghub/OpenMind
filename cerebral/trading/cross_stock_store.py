@@ -13,7 +13,7 @@ rule 2)."""
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from cerebral.paths import data_dir
 
@@ -21,8 +21,25 @@ DB_PATH = data_dir() / "cross_stock_results.db"
 
 # F4 (#1249): minimum n_trades a pair must have to count as a qualifying vote.
 # Seven trades over five years is noise (per S2 live-verify); 20 is a
-# deliberate floor for a ~5-year window, not an inline magic number.
+# deliberate floor for a ~5-year window, not an inline magic number. Sized
+# for '1d' -- see _min_trades_floor_for_interval below for how a faster
+# interval scales it up.
 MIN_TRADES_FLOOR = 20
+
+
+def _min_trades_floor_for_interval(interval: Optional[str]) -> int:
+    """Scale MIN_TRADES_FLOOR by how often the strategy actually gets a
+    chance to trade (#1277 follow-up, 2026-09-17). MIN_TRADES_FLOOR was
+    sized for '1d' over a ~5-year window; an intraday strategy gets that
+    same '1d' quota of opportunities in days, not months, so the flat 20
+    barely filters noise for it. Reuses gauntlet._bars_per_year -- the same
+    bars-per-year table already used to annualize Sharpe per interval --
+    as the one source of truth for "how much more often does this interval
+    trade than 1d," rather than inventing a second one here.
+    """
+    from cerebral.trading.gauntlet import _bars_per_year
+    scale = _bars_per_year(interval or "1d") / _bars_per_year("1d")
+    return max(MIN_TRADES_FLOOR, round(MIN_TRADES_FLOOR * scale))
 
 
 class CrossStockStore:
@@ -136,7 +153,9 @@ class CrossStockStore:
         cur.execute("SELECT COUNT(*) FROM cross_stock_results")
         return cur.fetchone()[0]
 
-    def get_consistency_by_strategy(self) -> dict[str, float]:
+    def get_consistency_by_strategy(
+        self, interval_by_strategy: Optional[Dict[str, str]] = None,
+    ) -> dict[str, float]:
         """Returns {strategy_id: fraction_of_positive_expectancy} for every
         strategy with at least one PAIR THAT ACTUALLY RAN. Omits a
         strategy entirely if it has zero successful pairs (whether that's
@@ -151,16 +170,36 @@ class CrossStockStore:
         since that conflates "couldn't test this stock" with "tested it
         and lost," silently dragging every strategy's score down by
         however many stocks happened to have bad data, for reasons having
-        nothing to do with the strategy itself."""
+        nothing to do with the strategy itself.
+
+        `interval_by_strategy` (optional {strategy_id: interval}) applies
+        the dynamic per-interval floor (_min_trades_floor_for_interval) to
+        each PAIR's own n_trades -- a strategy missing from the map, or no
+        map at all, keeps the flat MIN_TRADES_FLOOR ('1d' behavior), same
+        as before this existed. The floor now varies per strategy, so it
+        can't stay a single SQL bind param: MIN_TRADES_FLOOR still prunes
+        in SQL first (cheap, and never wrongly excludes a row -- the
+        dynamic floor is always >= it), the real per-strategy floor is
+        applied in Python on what's left."""
+        interval_by_strategy = interval_by_strategy or {}
         cur = self.conn.cursor()
         cur.execute(
-            """SELECT strategy_id, AVG(CASE WHEN net_return > 0 THEN 1.0 ELSE 0.0 END) AS consistency
+            """SELECT strategy_id, net_return, n_trades
                FROM cross_stock_results
-               WHERE net_return IS NOT NULL AND n_trades >= ?
-               GROUP BY strategy_id""",
+               WHERE net_return IS NOT NULL AND n_trades >= ?""",
             (MIN_TRADES_FLOOR,),
         )
-        return {row["strategy_id"]: row["consistency"] for row in cur.fetchall()}
+        by_strategy: Dict[str, List[float]] = {}
+        for row in cur.fetchall():
+            sid = row["strategy_id"]
+            floor = _min_trades_floor_for_interval(interval_by_strategy.get(sid))
+            if row["n_trades"] < floor:
+                continue
+            by_strategy.setdefault(sid, []).append(row["net_return"])
+        return {
+            strategy_id: sum(1.0 for r in returns if r > 0) / len(returns)
+            for strategy_id, returns in by_strategy.items()
+        }
 
     def get_mean_excess_return_by_strategy(self) -> dict[str, Optional[float]]:
         """Returns {strategy_id: mean(net_return - benchmark_return)} for pairs
@@ -176,18 +215,30 @@ class CrossStockStore:
         )
         return {row["strategy_id"]: row["mean_excess"] for row in cur.fetchall()}
 
-    def get_tested_count_by_strategy(self) -> dict[str, int]:
+    def get_tested_count_by_strategy(
+        self, interval_by_strategy: Optional[Dict[str, str]] = None,
+    ) -> dict[str, int]:
         """Returns {strategy_id: count of pairs that actually ran} -- same
         WHERE net_return IS NOT NULL as get_consistency_by_strategy, so a
         consistency score is never shown without the sample size it's
         based on (S5/#1238: a 100% consistency off 2 tested stocks reads
-        very differently than off 80)."""
+        very differently than off 80).
+
+        Same dynamic-floor convention as get_consistency_by_strategy (see
+        its docstring) via the optional `interval_by_strategy` map."""
+        interval_by_strategy = interval_by_strategy or {}
         cur = self.conn.cursor()
         cur.execute(
-            """SELECT strategy_id, COUNT(*) AS tested
+            """SELECT strategy_id, n_trades
                FROM cross_stock_results
-               WHERE net_return IS NOT NULL AND n_trades >= ?
-               GROUP BY strategy_id""",
+               WHERE net_return IS NOT NULL AND n_trades >= ?""",
             (MIN_TRADES_FLOOR,),
         )
-        return {row["strategy_id"]: row["tested"] for row in cur.fetchall()}
+        counts: Dict[str, int] = {}
+        for row in cur.fetchall():
+            sid = row["strategy_id"]
+            floor = _min_trades_floor_for_interval(interval_by_strategy.get(sid))
+            if row["n_trades"] < floor:
+                continue
+            counts[sid] = counts.get(sid, 0) + 1
+        return counts

@@ -596,7 +596,8 @@ async def get_cross_stock_replay_status() -> str:
     # score is based on -- a 100% consistency off 2 tested stocks reads
     # very differently than off 80, and showing the bare fraction alone
     # would misrepresent a small, early sample as a settled result.
-    tested_counts = store.get_tested_count_by_strategy()
+    interval_by_strategy = {s.strategy_id: s.interval for s in specs}
+    tested_counts = store.get_tested_count_by_strategy(interval_by_strategy)
     excess_returns = store.get_mean_excess_return_by_strategy()
     ranked = sorted(
         (s for s in specs if s.cross_stock_consistency is not None),
