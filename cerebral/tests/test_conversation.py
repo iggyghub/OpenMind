@@ -179,14 +179,24 @@ async def test_call_tool_records_tool_call_and_result(conv_rig, monkeypatch):
     assert tr.content["is_error"] is False
 
 
-async def test_call_tool_record_false_skips_transcript_and_broadcast(conv_rig, monkeypatch):
+async def test_call_tool_record_false_skips_transcript_but_still_replies(conv_rig, monkeypatch):
     """A UI panel's own background status poller (e.g. trading-panel.js's 2s
     Batch Replay / Cross-Stock Replay polls) sets "record": false so it
     doesn't flood the tool-activity feed with a tool_call/tool_result pair
     every 2 seconds -- found 2026-09-16 when the feed showed almost nothing
     else. Mirrors the existing plugins:test_call precedent
     (_dispatch_tray_call_tool's record=False path), just reachable from the
-    generic call_tool message instead of being hardcoded to one endpoint."""
+    generic call_tool message instead of being hardcoded to one endpoint.
+
+    REGRESSION (same day): the transcript-skip is real, but a record=False
+    caller still needs its answer -- _dispatch_tray_call_tool's record=False
+    also skips the tool_result broadcast (by design, for plugins:test_call's
+    silent debug hook), and this handler originally just discarded the
+    return value with no other reply path. That silently broke the History
+    tab's own live-updating panels, since the broadcast was their only way
+    back to a response. Fixed: this handler now re-broadcasts the same
+    tool_result shape itself, outside the transcript path, whenever
+    record=False."""
     import cerebral.main as main_mod
     from cerebral.mcp.orchestrator import ToolResult
 
@@ -201,7 +211,10 @@ async def test_call_tool_record_false_skips_transcript_and_broadcast(conv_rig, m
     })
 
     assert conv_rig.store.list_recent(1) == []
-    assert conv_rig.sent == []
+    assert conv_rig.sent == [{
+        "type": "tool_result",
+        "data": {"name": "get_cross_stock_replay_status", "content": "ok", "is_error": False},
+    }]
 
 
 async def test_call_tool_record_omitted_still_records(conv_rig, monkeypatch):

@@ -5927,9 +5927,28 @@ async def _handle_message(msg: dict) -> None:
         # tool_call/tool_result pair every 2 seconds while that tab is open
         # (found 2026-09-16: the feed was showing almost nothing else).
         d = msg.get("data", {})
-        await _dispatch_tray_call_tool(
-            d.get("name", ""), d.get("args", {}), record=bool(d.get("record", True))
-        )
+        tool_name = d.get("name", "")
+        record = bool(d.get("record", True))
+        result = await _dispatch_tray_call_tool(tool_name, d.get("args", {}), record=record)
+        if not record:
+            # _dispatch_tray_call_tool's record=False also skips the
+            # tool_result broadcast (by design, for plugins:test_call's
+            # silent-debug-hook use case) -- but a record=False caller here
+            # is a UI poller (e.g. trading-panel.js's Batch Replay /
+            # Cross-Stock 2s polls), not a debug hook, and it still needs
+            # its answer. Broadcasting the same tool_result shape here,
+            # outside the transcript path, keeps every existing `case
+            # 'tool_result':` handler in main.html working unchanged.
+            # REGRESSION found 2026-09-16, same day as the record=False fix
+            # that caused it: suppressing the broadcast entirely silently
+            # broke the History tab's own live-updating panels, since that
+            # was their only path back to a response -- this call_tool
+            # handler discarded _dispatch_tray_call_tool's return value and
+            # never replied any other way.
+            await _broadcast({
+                "type": "tool_result",
+                "data": {"name": tool_name, "content": result.content, "is_error": result.is_error},
+            })
 
     elif t == "computer_use_stop":
         # S2 #576 -- (c) leg of the ADR-0016 three-part kill switch. Fired by
