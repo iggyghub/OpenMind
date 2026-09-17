@@ -514,7 +514,79 @@
       letter-spacing: 0.03em;
       padding: 4px 9px;
       cursor: pointer;
-      transition: background 0.15s, color 0.15s;
+      transition: background 0.15s, color 0.15</style>
+
+  <!-- Active Systems DOM (Issue #1277) -->
+  <div id="active-systems" class="lib-sub" hidden></div>
+
+  <script>
+    // ── Active Systems (Issue #1277) ─────────────────────────
+    const activeSystemsState = { batchReplay: null, crossStockSweep: null };
+    let activeSystemsPollId = null;
+
+    function renderActiveSystems() {
+      const container = document.getElementById('active-systems');
+      if (!container) return;
+      let html = '<div class="active-sys-header">Active Systems</div>';
+      const systems = [
+        { key: 'batchReplay', label: 'Batch Replay' },
+        { key: 'crossStockSweep', label: 'Cross-Stock Sweep' }
+      ];
+      systems.forEach(sys => {
+        const status = activeSystemsState[sys.key];
+        const isRunning = status === 'running';
+        html += `
+          <div class="active-sys-row" data-status="${isRunning ? 'running' : 'idle'}">
+            <span>${sys.label}</span>
+            <span class="active-sys-dot ${isRunning ? 'is-running' : 'is-idle'}"></span>
+          </div>`;
+      });
+      container.innerHTML = html;
+    }
+
+    function pollActiveSystems(record) {
+      // Triggers the backend status tool; response flows back via existing tool_result path
+      window.dispatchEvent(new CustomEvent('request-active-systems', {
+        detail: { record: !!record }
+      }));
+    }
+
+    function initActiveSystems() {
+      if (activeSystemsPollId) clearInterval(activeSystemsPollId);
+      renderActiveSystems();
+      pollActiveSystems(false); // fired once immediately on WS connect
+      activeSystemsPollId = setInterval(() => pollActiveSystems(false), 10000);
+    }
+
+    // Wire into existing tool_result handler (Issue #1277)
+    // Attaches to the message dispatch chain without duplicating the switch case.
+    // Assumes existing window.handleToolResult or equivalent message router exists.
+    const originalHandleToolResult = window.handleToolResult || null;
+    window.handleToolResult = function(msg) {
+      if (msg && msg.content && msg.content.tool_name) {
+        // Patch existing status blocks to update our shared state & render
+        if (msg.content.tool_name === 'get_batch_replay_status' && msg.content.result !== undefined) {
+          activeSystemsState.batchReplay = msg.content.result;
+        }
+        if (msg.content.tool_name === 'get_cross_stock_replay_status' && msg.content.result !== undefined) {
+          activeSystemsState.crossStockSweep = msg.content.result;
+        }
+        // Combined status response (if backend emits it)
+        if (msg.content.tool_name === 'get_active_systems_status' && msg.content.result) {
+          activeSystemsState.batchReplay = msg.content.result.batchReplay;
+          activeSystemsState.crossStockSweep = msg.content.result.crossStockSweep;
+        }
+        renderActiveSystems();
+      }
+      if (originalHandleToolResult) originalHandleToolResult(msg);
+    };
+
+    // Auto-init when DOM is ready
+    if (document.readyState === 'complete') initActiveSystems();
+    else document.addEventListener('DOMContentLoaded', initActiveSystems);
+  </script>
+</body>
+</html>s;
       white-space: nowrap;
     }
     .hdr-mic-seg:hover { color: var(--text); }
@@ -3910,6 +3982,37 @@
       flex-direction: column;
       gap: 4px;
     }
+
+    /* ── Active Systems section (Issue #1277) ─────────────────── */
+    #active-systems {
+      padding: 8px 10px 4px;
+      border-top: 1px solid var(--border);
+      margin-top: 8px;
+    }
+    .active-sys-header {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--state-active);
+      margin-bottom: 6px;
+    }
+    .active-sys-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+    }
+    .active-sys-row[data-status="running"] { color: var(--color-success); }
+    .active-sys-row[data-status="idle"]    { color: var(--text-muted); }
+    .active-sys-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-muted); flex-shrink: 0;
+    }
+    .active-sys-dot.is-running { background: var(--color-success); box-shadow: 0 0 6px var(--color-success); }
+    .active-sys-dot.is-idle    { background: var(--text-muted); }
     .thinking-row {
       font-size: 12px;
       line-height: 1.4;
