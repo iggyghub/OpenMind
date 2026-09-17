@@ -15,6 +15,7 @@ ticker's own payload gets in.
 """
 import json
 import logging
+import re
 import shutil
 import sys
 import uuid
@@ -26,6 +27,20 @@ import pandas as pd
 from cerebral.sandbox._windows import WindowsSandbox
 
 logger = logging.getLogger(__name__)
+
+# strategy(data) gets the WHOLE bars dataframe at once (see _RUNNER below) --
+# nothing stops a generated strategy from reading rows past "now" via a
+# negative shift/iloc offset. Found 2026-09-17: an NR7-breakout strategy
+# used `data['Close'].shift(-1)` (tomorrow's close) to decide today's
+# signal, producing a fake 314,000% backtest return. A real walk-forward
+# evaluator (feed bars up to t only) would make this structurally
+# impossible; this regex guard is the lazy version -- reject the obvious
+# cheat before it ever reaches the sandbox.
+_LOOKAHEAD_RE = re.compile(r'\.shift\(\s*-')
+
+
+def _has_lookahead(code: str) -> bool:
+    return bool(_LOOKAHEAD_RE.search(code))
 
 # Not data_dir() -- that's under the repo, which isn't AppContainer-traversable
 # (the existing AppContainer test fixture's own rationale: the full parent
@@ -70,6 +85,11 @@ _RUNNER = (
 def evaluate_signals_verbose(code: str, bars: pd.DataFrame) -> "tuple[List[int], Optional[str]]":
     """Same as evaluate_signals, but also returns the failure reason (None on
     success or a clean explicit flat-signal result)."""
+    if _has_lookahead(code):
+        reason = "strategy code reads a future bar via shift(-N) -- lookahead, degrading to flat"
+        logger.warning("[sandboxed_eval] %s", reason)
+        return [0] * len(bars), reason
+
     workdir = _WORKDIR_ROOT / str(uuid.uuid4())
     workdir.mkdir(parents=True, exist_ok=True)
 

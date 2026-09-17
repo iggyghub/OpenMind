@@ -469,6 +469,22 @@ class TestInferInterval(unittest.TestCase):
         self.assertIsNone(infer_interval("Buy low sell high without time constraints"))
         self.assertIsNone(infer_interval("Long term value investing"))
 
+    def test_chart_pattern_claims_default_short_term_not_none(self):
+        """Regression (#1277, 2026-09-17): an unlabeled chart-pattern claim
+        used to fall through to None -> StrategySpec's '1d' schema default,
+        silently mislabeling 306/307 stored strategies as daily/swing even
+        though NR7/gap/breakout-style claims are short-term setups."""
+        self.assertEqual(infer_interval("If an NR7 bar fails to break out"), "1h")
+        self.assertEqual(infer_interval("Fade a gap fill near support"), "1h")
+        self.assertEqual(infer_interval("Opening range breakout to the upside"), "1h")
+        self.assertEqual(infer_interval("A bullish engulfing candlestick reverses the trend"), "1h")
+
+    def test_explicit_timeframe_still_wins_over_pattern_keyword(self):
+        """A claim naming both a pattern and an explicit timeframe should
+        keep using the explicit one -- the pattern fallback only fires when
+        no timeframe keyword matched at all."""
+        self.assertEqual(infer_interval("NR7 breakout held for 3 days"), "1d")
+
     def test_from_prose_populates_interval(self):
         idea = from_prose("Scalp 5 minute chart.")
         self.assertEqual(idea.interval, "5m")

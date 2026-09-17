@@ -224,3 +224,23 @@ def test_evaluate_signals_verbose_success_returns_none_reason():
     expected = _expected_ma_cross_signals(bars)
     assert signals == expected
     assert reason is None
+
+
+def test_lookahead_shift_negative_is_rejected_without_running():
+    """Regression (2026-09-17): an NR7-breakout strategy used
+    data['Close'].shift(-1) (tomorrow's close) to decide today's signal,
+    producing a fake 314,000% backtest return -- a real edge can't exist
+    if the strategy is reading the future. The guard itself runs before
+    the sandbox is ever touched (see evaluate_signals_verbose), so this
+    only needs the module's WindowsSandbox skip for consistency with its
+    neighbors, not because the check depends on it."""
+    bars = _bars(10)
+    lookahead_code = (
+        "def strategy(data):\n"
+        "    future = data['Close'].shift(-1)\n"
+        "    return (future > data['Close']).astype(int).tolist()\n"
+    )
+    signals, reason = evaluate_signals_verbose(lookahead_code, bars)
+    assert all(s == 0 for s in signals)
+    assert reason is not None
+    assert "lookahead" in reason

@@ -101,6 +101,17 @@ def infer_interval(claim_text: str) -> Optional[str]:
         return "1d"
     if re.search(r'\bmonths?\b', text) or re.search(r'\bmonthly\b', text):
         return "1d"
+    # Classic chart-pattern/candlestick claims (NR7, gaps, breakouts, inside
+    # bars, candlestick shapes) are intraday-to-few-bar setups even when the
+    # claim never states a timeframe. Falling through to StrategySpec's '1d'
+    # schema default silently mislabeled 306/307 of the current strategy
+    # universe as daily/swing (#1277 finding, 2026-09-17) when the actual
+    # source material is short-term pattern trading.
+    if re.search(
+        r'\b(nr7|inside bar|opening range|breakout|gap|doji|hammer|engulfing|'
+        r'pin bar|vwap|pullback|reversal|candlestick|scalp)\b', text,
+    ):
+        return "1h"
     return None
 
 
