@@ -15,7 +15,7 @@ Scoped 2026-09-17.
 
 ## Next slice -- start here
 
-- **Active:** S6a -- #1307
+- **Active:** S6c -- #1308
 - **Model:** sonnet
 
 ## S0 -- the unlock (DONE, hand-built)
@@ -90,8 +90,8 @@ main.py slice silently sees a third of the file.**
 - [x] S4 -- #1286 -- F6: bound non-`chat` calls when a `chat` waiter is queued
   (`cerebral/llm/router.py`)
 - [x] S5 -- #1287 -- F1: `_handle_message` chain into a dispatch table (PR #1306, hand codemod)
-- [ ] S6a -- #1307 -- F10: `GATE_EXEMPT` sentinel in `MCPOrchestrator.call_tool` (`cerebral/mcp/orchestrator.py` only)
-- **S6b (HAND, no issue) -- mark every bare `_orc.call_tool(` site in `main.py` `capability=GATE_EXEMPT`. MUST land between S6a and S6c.**
+- [x] S6a -- #1307 -- F10: `GATE_EXEMPT` sentinel in `MCPOrchestrator.call_tool` (`cerebral/mcp/orchestrator.py` only)
+- [x] S6b (HAND, PR #1310) -- all 18 bare `_orc.call_tool(` sites in `main.py` marked `capability=GATE_EXEMPT` with a reason; AST guard test added
 - [ ] S6c -- #1308 -- F10: `capability=None` resolves from the tool's declared capabilities (`cerebral/mcp/orchestrator.py` + tests)
 - [ ] S7 -- #1289 -- F5: plugin-registered periodic jobs
   (`cerebral/main.py` `_scheduler_loop`)
@@ -352,6 +352,21 @@ S6b (hand: mark all bare sites `GATE_EXEMPT`, behaviour-identical), S6c (orchest
 flip `None` to gate). Every step is green and independently landable; the *policy*
 question of which exempted sites should really be gated (scheduler `self_dev_campaign`,
 RSS poll) is deliberately left as a follow-up, not decided by this campaign.
+
+- PR #1309 -- S6a (self_dev-built; auto-merge blocked by a spurious `tests_failed`, hand-verified and merged by hand)
+- PR #1310 -- S6b (hand-built)
+
+S6a note: Felix's diff was exactly as specified. Its run reported `tests_failed` although
+the captured pytest summary read "5937 passed"; re-running `self_dev_io.test_fn` on the same
+clone returned PASSED=True (783s), so the verdict is not reproducible. Suspect a transient
+non-zero pytest exit under load (Felix runs its trading scheduler concurrently and
+`test_sandboxed_eval::test_workdir_is_cleaned_up_after_a_run` diffs a shared dir, so it is
+environment-flaky). Merged by hand. S6b note: 16 tests failed on first full run -- test
+fakes for `call_tool` didn't accept the new `capability` kwarg (15) plus one flaky browser
+test; fakes fixed, full suite 5903 passed exit 0. **S6c may now run** (Felix restart needed:
+main.py changed on master). Still open, deliberately not decided by this campaign: whether
+the scheduler `self_dev_campaign`, RSS poll and `_send_channel_reply` exemptions should become
+real gates (grep `gate-exempt:` in main.py).
 
 ## Explicitly NOT in this campaign
 
