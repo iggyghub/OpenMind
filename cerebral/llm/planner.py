@@ -14,6 +14,7 @@ both. A system-prompt instruction tells the model to ask a clarifying question
 import re
 
 from cerebral.llm.router import ToolCall
+from cerebral.llm import tool_index
 
 _SYSTEM_PROMPT = (
     "You are Felix, a personal AI assistant with access to tools. "
@@ -208,7 +209,8 @@ def shortlist_tools(
     Words shorter than 4 chars are ignored (drops "my/as/the" noise); a word
     matching the tool *name* counts triple. Ties keep registration order
     (sorted() is stable).
-    ponytail: lexical overlap; upgrade to embedding recall if misses show up.
+    Embedding recall (``tool_index``) ranks first; any failure there falls back
+    to this lexical scoring.
 
     ADR-0016 S7 (#580): when the transcript names a URL, tools get pre-biased
     by ``prefer_web_path`` so the stealth-vs-fast family wins ties.
@@ -220,7 +222,9 @@ def shortlist_tools(
     if _CAPABILITY_META_RE.search(transcript or ""):
         return list(tools)
 
-    tools = prefer_web_path(transcript, list(tools))
+    biased = prefer_web_path(transcript, list(tools))
+    web_biased = biased != list(tools)
+    tools = biased
     words = {w for w in re.findall(r"[a-z0-9]+", transcript.lower()) if len(w) >= 4}
     if not words or len(tools) <= limit:
         return list(tools)
@@ -235,8 +239,17 @@ def shortlist_tools(
         desc_words = set(re.findall(r"[a-z0-9]+", (t.get("description") or "").lower()))
         return 3 * len(words & name_words) + len(words & desc_words)
 
+    room = limit - len(pinned)
+    # Embedding recall (F3) unless a URL bias reordered the tools: the
+    # stealth-vs-fast tie-break (ADR-0016 S7) only survives lexical stable sort.
+    if not web_biased:
+        try:
+            emb = tool_index.rank(transcript, tools, limit)
+            return pinned + [t for t in emb if t not in pinned][:room]
+        except Exception:
+            pass  # fall through to lexical scoring
     ranked = sorted(unpinned, key=score, reverse=True)
-    return pinned + ranked[:limit - len(pinned)]
+    return pinned + ranked[:room]
 
 
 class Planner:
