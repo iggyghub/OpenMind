@@ -52,6 +52,15 @@ logger = logging.getLogger(__name__)
 _MISSING = object()
 
 
+class _GateExempt:
+    """Explicit marker: this call site deliberately skips the capability gate."""
+    def __repr__(self) -> str:
+        return "GATE_EXEMPT"
+
+
+GATE_EXEMPT = _GateExempt()
+
+
 # Decision strictness order for the AND-across-capabilities check (#52).
 # A higher rank means "more restrictive" — DENY trumps ASK trumps SILENT.
 _DECISION_RANK: dict[Decision, int] = {
@@ -652,7 +661,7 @@ class MCPOrchestrator:
         self,
         name: str,
         args: dict,
-        capability: Capability | None = None,
+        capability: Capability | _GateExempt | None = None,
         flags: CallFlags | None = None,
     ) -> ToolResult:
         if name not in self._tool_index:
@@ -663,7 +672,7 @@ class MCPOrchestrator:
         # via ``Tool(irreversible=True)`` route through the modal even when
         # the caller passed ``flags=None``.
         flags = self._merge_irreversible(flags, name)
-        if capability is not None:
+        if capability is not None and capability is not GATE_EXEMPT:
             # Issue #45 — the per-profile ACL resolver (when set) layers
             # per-tool overrides + once/session grants on top of the gate's
             # default-policy lookup. Without an ACL we fall back to the
