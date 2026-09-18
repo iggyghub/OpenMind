@@ -281,8 +281,15 @@ def test_terminate_worker_process_non_windows_no_op():
 # Heartbeat sender task starts / stops with worker connect / disconnect
 # ---------------------------------------------------------------------------
 
-def test_heartbeat_task_starts_on_wire():
-    """_wire_session_worker starts the heartbeat task."""
+async def test_heartbeat_task_starts_on_wire():
+    """_wire_session_worker starts the heartbeat task.
+
+    async def, like its test_heartbeat_task_cancelled_on_unwire sibling below.
+    _wire_session_worker calls asyncio.create_task(), which needs a RUNNING
+    loop; a sync body has none of its own and depends entirely on whatever
+    loop state earlier tests happened to leave behind. That made this pass
+    alone and fail in the full suite (issue #1274).
+    """
     import cerebral.main as main_mod
 
     fake_ws = object()
