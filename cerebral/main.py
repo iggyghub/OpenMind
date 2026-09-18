@@ -3676,6 +3676,162 @@ def _parse_context_window(raw, kind: str = "") -> int | None:
     return n if n > 0 else None
 
 
+# ── Scheduler jobs (FELIX-AUDIT S7, F5) ─────────────────────────────────────
+# One table of title -> handler for the recurring events `_scheduler_loop`
+# consumes, replacing three separate `list_due_events()` scans with title
+# string-matches. A handler returns True to mark the event run (the default;
+# also what a handler that swallows its own failure returns, so a persistently
+# failing job retries at its normal interval, not every tick) or False to leave
+# it due (discovery disabled / auto-stopped). An exception that escapes a
+# handler is logged and leaves the event un-marked; it never stops the other jobs.
+# ponytail: main.py-local table -- a plugin-level periodic_jobs() registration
+# API (the audit's wider ask) is deferred until a second registrant exists (R2).
+
+
+async def _job_ipo_dispatch() -> None:
+    # IPO6: cheap per-tick check (a date compare over a short list) --
+    # not gated by the weekly calendar-refresh event, since it needs to
+    # catch the actual listing day promptly, not wait up to a week.
+    try:
+        dispatch_result = await _ipo_calendar_plugin.call_tool("dispatch_due_ipos", {})
+        if json.loads(dispatch_result.content).get("dispatched"):
+            logger.info(f"[cerebral] IPO dispatch: {dispatch_result.content}")
+    except Exception:
+        logger.exception("[cerebral] IPO dispatch check failed")
+
+
+async def _job_ipo_calendar(evt: dict) -> bool:
+    # IPO6: weekly IPO-calendar refresh, mirroring the discovery
+    # due-event block below exactly but simpler -- no enabled/duration
+    # settings to check, it always runs on its own recurrence.
+    try:
+        result = await _ipo_calendar_plugin.call_tool("check_ipo_calendar", {})
+        logger.info(f"[cerebral] IPO calendar check: {result.content}")
+    except Exception:
+        logger.exception("[cerebral] IPO calendar check failed")
+    return True
+
+
+async def _job_design_system_scan(evt: dict) -> bool:
+    # 2026-09-08: base design system scan (BASE-DESIGN-SYSTEM.md) --
+    # mirrors the IPO-calendar block exactly: always runs on its own
+    # recurrence, no enabled/duration settings gating the scan
+    # itself. Only the side-effecting part (filing a GitHub issue +
+    # driving self_dev_campaign for each new gap) is gated behind
+    # design_system_autofix_enabled (default OFF, discovery_enabled's
+    # own precedent) -- a rule already queued (any state) is never
+    # re-filed; a regression needs a human to reopen it.
+    try:
+        repo_root = Path(__file__).resolve().parent.parent
+        violations = _design_system.scan(repo_root / "tray")
+        logger.info(f"[cerebral] base design system scan: {len(violations)} violation(s)")
+        if violations and _settings.get("design_system_autofix_enabled"):
+            driver_path = repo_root / "BASE-DESIGN-SYSTEM.md"
+            driver_text = driver_path.read_text(encoding="utf-8")
+            by_rule: dict = {}
+            for v in violations:
+                by_rule.setdefault(v.rule_id, []).append(v)
+            already_queued = _design_system.queued_rule_ids(driver_text)
+            issue_numbers: dict = {}
+            for rule_id, rule_violations in by_rule.items():
+                if rule_id in already_queued:
+                    continue
+                title = f"Base design system: {rule_id} ({len(rule_violations)} gap(s))"
+                body = "\n".join(
+                    f"- `{v.file}:{v.line}` -- {v.description}"
+                    for v in rule_violations
+                ) + "\n\nFiled automatically by the base design system scan -- see BASE-DESIGN-SYSTEM.md."
+                issue_no = _design_system.create_issue(repo_root, title, body)
+                if issue_no is not None:
+                    issue_numbers[rule_id] = issue_no
+                else:
+                    logger.warning(f"[cerebral] design system: failed to file issue for rule {rule_id!r}")
+            if issue_numbers:
+                new_text, filed = _design_system.sync_driver_queue(
+                    driver_text, violations, lambda r, v: issue_numbers.get(r),
+                )
+                if filed:
+                    driver_path.write_text(new_text, encoding="utf-8")
+                    logger.info(f"[cerebral] design system: queued {filed}")
+                    # gate-exempt: autonomous scheduler fires self_dev_campaign -- exempt pending the F10 policy follow-up (should this be gated?)
+                    await _orc.call_tool(
+                        "self_dev_campaign", {"driver_file": str(driver_path)},
+                        capability=GATE_EXEMPT,
+                    )
+    except Exception:
+        logger.exception("[cerebral] base design system scan failed")
+    return True
+
+
+async def _job_discovery(evt: dict) -> bool:
+    # S27 (#880): the autonomous discovery loop's own recurring
+    # event, checked and consumed BEFORE dispatch_due_events gets
+    # its own list_due_events() call -- mark_event_run here means
+    # the per-strategy dispatcher below never mistakes this event
+    # for a strategy to run (list_due_events/_run_paper_strategy
+    # share the same `events` table; this is the one title that
+    # means "run discovery", not "dispatch a strategy").
+    # S31 (#896): manually stopped -- skip without mark_event_run,
+    # so re-enabling makes it immediately due again instead of
+    # waiting out the rest of its last real interval.
+    if not _settings.get("discovery_enabled"):
+        return False
+    # Auto-stop: an expired duration timer disables discovery on
+    # its own next due tick, logged so it's visible rather than
+    # silently going quiet. Also skipped without mark_event_run.
+    stop_at = _settings.get("discovery_stop_at")
+    if stop_at:
+        from datetime import datetime, timezone
+        try:
+            stop_dt = datetime.fromisoformat(stop_at)
+        except ValueError:
+            stop_dt = None
+        if stop_dt is not None and stop_dt.tzinfo is not None:
+            stop_dt = stop_dt.astimezone(timezone.utc).replace(tzinfo=None)
+        if stop_dt is not None and stop_dt <= datetime.now(timezone.utc).replace(tzinfo=None):
+            await _discovery_plugin.call_tool("stop_discovery", {})
+            await _record_activity("activity", {
+                "source": "trading",
+                "summary": "Discovery auto-stopped: its duration timer expired",
+            })
+            return False
+    try:
+        discovery_args = {
+            "queries": _settings.get("discovery_queries") or None,
+            "interval": _settings.get("discovery_interval"),
+        }
+        discovery_result = await _discovery_plugin.call_tool("run_discovery", discovery_args)
+        logger.info(f"[cerebral] Discovery pass: {discovery_result.content}")
+    except Exception:
+        logger.exception("[cerebral] Discovery pass failed")
+    return True
+
+
+def _due_event_jobs() -> dict:
+    """title -> handler for every recurring event the scheduler tick consumes."""
+    return {
+        _ipo_calendar_plugin.IPO_CALENDAR_EVENT_TITLE: _job_ipo_calendar,
+        _design_system_plugin.DESIGN_SYSTEM_EVENT_TITLE: _job_design_system_scan,
+        _discovery_plugin.DISCOVERY_EVENT_TITLE: _job_discovery,
+    }
+
+
+async def _run_due_event_jobs() -> None:
+    """One pass over the due events, dispatching each to its registered job."""
+    jobs = _due_event_jobs()
+    for evt in _scheduler_plugin.list_due_events():
+        job = jobs.get(evt["title"])
+        if job is None:
+            continue  # not a scheduler job (e.g. a paper-trade strategy) -- dispatched below
+        try:
+            mark = await job(evt)
+        except Exception:
+            logger.exception("[cerebral] scheduler job %r failed", evt["title"])
+            continue
+        if mark:
+            _scheduler_plugin.mark_event_run(evt["id"])
+
+
 async def _scheduler_loop() -> None:
     """Background loop that polls for due scheduler events and triggers paper
     trades (S7-S9). Runs every 5 minutes. Idempotent via
@@ -3711,125 +3867,12 @@ async def _scheduler_loop() -> None:
                 await asyncio.sleep(300)
                 continue
 
-            # IPO6: cheap per-tick check (a date compare over a short list) --
-            # not gated by the weekly calendar-refresh event, since it needs to
-            # catch the actual listing day promptly, not wait up to a week.
-            try:
-                dispatch_result = await _ipo_calendar_plugin.call_tool("dispatch_due_ipos", {})
-                if json.loads(dispatch_result.content).get("dispatched"):
-                    logger.info(f"[cerebral] IPO dispatch: {dispatch_result.content}")
-            except Exception:
-                logger.exception("[cerebral] IPO dispatch check failed")
+            await _job_ipo_dispatch()
 
-            # IPO6: weekly IPO-calendar refresh, mirroring the discovery
-            # due-event block below exactly but simpler -- no enabled/duration
-            # settings to check, it always runs on its own recurrence.
-            for evt in _scheduler_plugin.list_due_events():
-                if evt["title"] != _ipo_calendar_plugin.IPO_CALENDAR_EVENT_TITLE:
-                    continue
-                try:
-                    result = await _ipo_calendar_plugin.call_tool("check_ipo_calendar", {})
-                    logger.info(f"[cerebral] IPO calendar check: {result.content}")
-                except Exception:
-                    logger.exception("[cerebral] IPO calendar check failed")
-                _scheduler_plugin.mark_event_run(evt["id"])
-
-            # 2026-09-08: base design system scan (BASE-DESIGN-SYSTEM.md) --
-            # mirrors the IPO-calendar block exactly: always runs on its own
-            # recurrence, no enabled/duration settings gating the scan
-            # itself. Only the side-effecting part (filing a GitHub issue +
-            # driving self_dev_campaign for each new gap) is gated behind
-            # design_system_autofix_enabled (default OFF, discovery_enabled's
-            # own precedent) -- a rule already queued (any state) is never
-            # re-filed; a regression needs a human to reopen it.
-            for evt in _scheduler_plugin.list_due_events():
-                if evt["title"] != _design_system_plugin.DESIGN_SYSTEM_EVENT_TITLE:
-                    continue
-                try:
-                    repo_root = Path(__file__).resolve().parent.parent
-                    violations = _design_system.scan(repo_root / "tray")
-                    logger.info(f"[cerebral] base design system scan: {len(violations)} violation(s)")
-                    if violations and _settings.get("design_system_autofix_enabled"):
-                        driver_path = repo_root / "BASE-DESIGN-SYSTEM.md"
-                        driver_text = driver_path.read_text(encoding="utf-8")
-                        by_rule: dict = {}
-                        for v in violations:
-                            by_rule.setdefault(v.rule_id, []).append(v)
-                        already_queued = _design_system.queued_rule_ids(driver_text)
-                        issue_numbers: dict = {}
-                        for rule_id, rule_violations in by_rule.items():
-                            if rule_id in already_queued:
-                                continue
-                            title = f"Base design system: {rule_id} ({len(rule_violations)} gap(s))"
-                            body = "\n".join(
-                                f"- `{v.file}:{v.line}` -- {v.description}"
-                                for v in rule_violations
-                            ) + "\n\nFiled automatically by the base design system scan -- see BASE-DESIGN-SYSTEM.md."
-                            issue_no = _design_system.create_issue(repo_root, title, body)
-                            if issue_no is not None:
-                                issue_numbers[rule_id] = issue_no
-                            else:
-                                logger.warning(f"[cerebral] design system: failed to file issue for rule {rule_id!r}")
-                        if issue_numbers:
-                            new_text, filed = _design_system.sync_driver_queue(
-                                driver_text, violations, lambda r, v: issue_numbers.get(r),
-                            )
-                            if filed:
-                                driver_path.write_text(new_text, encoding="utf-8")
-                                logger.info(f"[cerebral] design system: queued {filed}")
-                                # gate-exempt: autonomous scheduler fires self_dev_campaign -- exempt pending the F10 policy follow-up (should this be gated?)
-                                await _orc.call_tool(
-                                    "self_dev_campaign", {"driver_file": str(driver_path)},
-                                    capability=GATE_EXEMPT,
-                                )
-                except Exception:
-                    logger.exception("[cerebral] base design system scan failed")
-                _scheduler_plugin.mark_event_run(evt["id"])
-
-            # S27 (#880): the autonomous discovery loop's own recurring
-            # event, checked and consumed BEFORE dispatch_due_events gets
-            # its own list_due_events() call -- mark_event_run here means
-            # the per-strategy dispatcher below never mistakes this event
-            # for a strategy to run (list_due_events/_run_paper_strategy
-            # share the same `events` table; this is the one title that
-            # means "run discovery", not "dispatch a strategy").
-            for evt in _scheduler_plugin.list_due_events():
-                if evt["title"] != _discovery_plugin.DISCOVERY_EVENT_TITLE:
-                    continue
-                # S31 (#896): manually stopped -- skip without mark_event_run,
-                # so re-enabling makes it immediately due again instead of
-                # waiting out the rest of its last real interval.
-                if not _settings.get("discovery_enabled"):
-                    continue
-                # Auto-stop: an expired duration timer disables discovery on
-                # its own next due tick, logged so it's visible rather than
-                # silently going quiet. Also skipped without mark_event_run.
-                stop_at = _settings.get("discovery_stop_at")
-                if stop_at:
-                    from datetime import datetime, timezone
-                    try:
-                        stop_dt = datetime.fromisoformat(stop_at)
-                    except ValueError:
-                        stop_dt = None
-                    if stop_dt is not None and stop_dt.tzinfo is not None:
-                        stop_dt = stop_dt.astimezone(timezone.utc).replace(tzinfo=None)
-                    if stop_dt is not None and stop_dt <= datetime.now(timezone.utc).replace(tzinfo=None):
-                        await _discovery_plugin.call_tool("stop_discovery", {})
-                        await _record_activity("activity", {
-                            "source": "trading",
-                            "summary": "Discovery auto-stopped: its duration timer expired",
-                        })
-                        continue
-                try:
-                    discovery_args = {
-                        "queries": _settings.get("discovery_queries") or None,
-                        "interval": _settings.get("discovery_interval"),
-                    }
-                    discovery_result = await _discovery_plugin.call_tool("run_discovery", discovery_args)
-                    logger.info(f"[cerebral] Discovery pass: {discovery_result.content}")
-                except Exception:
-                    logger.exception("[cerebral] Discovery pass failed")
-                _scheduler_plugin.mark_event_run(evt["id"])
+            # Recurring events (IPO calendar, design-system scan, discovery) --
+            # consumed BEFORE the per-strategy dispatch below, which shares the
+            # same `events` table and must not mistake them for strategies.
+            await _run_due_event_jobs()
 
             # The whole pass -- due-event lookup, per-strategy signal
             # evaluation, position diff, order, realized P&L, then
