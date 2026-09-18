@@ -672,7 +672,18 @@ class MCPOrchestrator:
         # via ``Tool(irreversible=True)`` route through the modal even when
         # the caller passed ``flags=None``.
         flags = self._merge_irreversible(flags, name)
-        if capability is not None and capability is not GATE_EXEMPT:
+        if capability is None:
+            decision = await self.check_capabilities(name, frozenset(), flags, args)
+            if decision is not Decision.SILENT:
+                logger.info(
+                    "[mcp] Gate denied '%s' (capability=None, decision=%s)",
+                    name, decision.value,
+                )
+                return ToolResult(
+                    content=f"Denied: '{name}' requires its declared capabilities (policy: {decision.value})",
+                    is_error=True,
+                )
+        elif capability is not GATE_EXEMPT:
             # Issue #45 — the per-profile ACL resolver (when set) layers
             # per-tool overrides + once/session grants on top of the gate's
             # default-policy lookup. Without an ACL we fall back to the

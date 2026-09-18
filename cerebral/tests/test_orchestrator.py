@@ -1659,16 +1659,43 @@ async def test_call_tool_real_capability_denies():
     plugin.call_tool.assert_not_called()
 
 
-async def test_call_tool_none_still_dispatches():
-    """S6a: capability=None still dispatches (documents pre-S6c behaviour; S6c will gate None)."""
+async def test_call_tool_none_gates_on_declared_capabilities():
+    """S6c: capability=None resolves from the tool's declared capabilities.
+    Replaces S6a's "None still dispatches" test."""
     orc = MCPOrchestrator()
+    # shell_exec DENYs by default in the bare gate.
     plugin = _make_plugin("shell", ["run"])
-    orc.register(plugin)
+    orc.register(plugin, required_capabilities=frozenset({"shell_exec"}))
 
     result = await orc.call_tool("run", {"cmd": "ls"}, capability=None)
 
+    assert result.is_error
+    assert "declared capabilities" in result.content
+    plugin.call_tool.assert_not_called()
+
+
+async def test_call_tool_none_silent_capability_dispatches():
+    """S6c: capability=None dispatches when the tool's declared caps resolve SILENT."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("files", ["read_file"])
+    orc.register(plugin, required_capabilities=frozenset({"fs_read"}))
+
+    result = await orc.call_tool("read_file", {"path": "x"}, capability=None)
+
     assert not result.is_error
-    plugin.call_tool.assert_called_once_with("run", {"cmd": "ls"})
+    plugin.call_tool.assert_called_once_with("read_file", {"path": "x"})
+
+
+async def test_call_tool_none_no_declared_capabilities_dispatches():
+    """S6c: capability=None dispatches when the tool declares no capabilities."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("net", ["ping"])
+    orc.register(plugin, required_capabilities=frozenset())
+
+    result = await orc.call_tool("ping", {}, capability=None)
+
+    assert not result.is_error
+    plugin.call_tool.assert_called_once_with("ping", {})
 
 
 def test_gate_exempt_importable():
