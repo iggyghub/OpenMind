@@ -245,3 +245,43 @@ async def test_candidate_list_skips_node_modules(tmp_path, monkeypatch):
     await main_mod._self_dev_edit(str(tmp_path), "touch a")
 
     assert "node_modules" not in router.calls[0][0]
+
+
+# ── single-file slice gets the whole budget, not a fixed fraction ───────────
+
+async def test_single_file_slice_gets_more_than_the_old_fixed_fraction(
+    tmp_path, monkeypatch
+):
+    """A 1-file slice must not be truncated to the old 0.4 per-file share.
+
+    The retired `_SELF_DEV_PER_FILE_FRACTION = 0.4` capped every file at 40%
+    of the prompt budget even when the slice touched exactly one file, so
+    nothing could crowd it out. On a real 131k window that cut
+    cerebral/main.py to 38% of its length -- putting _handle_message,
+    _scheduler_loop and _greet permanently outside self_dev's reach. The
+    budget is now split across the files a slice actually touches, so one
+    file gets all of it.
+    """
+    (tmp_path / "cerebral").mkdir()
+    # ~700 tokens: comfortably over the old 40% cap (560) for this window,
+    # comfortably under the whole budget (1400) once overhead is paid.
+    body = "y = 1\n" * 466
+    (tmp_path / "cerebral" / "only.py").write_text(body, encoding="utf-8")
+
+    router = _FakeRouter(
+        context_window=2000,  # budget = 1400 tokens after reserve
+        responses=['["cerebral/only.py"]', "no edits"],
+    )
+    monkeypatch.setattr(main_mod, "_router", router)
+    _patch_sdio(monkeypatch, written=[], committed=False)
+
+    await main_mod._self_dev_edit(str(tmp_path), "edit the only file")
+
+    edit_prompt = router.calls[1][0]
+    # Whole file present, untruncated -- the old fraction would have cut it.
+    assert f"=== FILE: cerebral/only.py ===\n{body}" in edit_prompt
+    assert "TRUNCATED to fit prompt budget" not in edit_prompt
+
+    from cerebral.llm.context_budget import estimate_tokens
+    prompt_budget = int(router.context_window * (1 - main_mod._SELF_DEV_RESPONSE_RESERVE))
+    assert estimate_tokens(edit_prompt) <= prompt_budget
