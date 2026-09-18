@@ -15,7 +15,7 @@ Scoped 2026-09-17.
 
 ## Next slice -- start here
 
-- **Active:** S4 -- #1286
+- **Active:** S5 -- #1287
 - **Model:** sonnet
 
 ## S0 -- the unlock (DONE, hand-built)
@@ -87,7 +87,7 @@ main.py slice silently sees a third of the file.**
   logs (`scripts/launch-felix.ps1`)
 - [x] S3 -- #1285 -- F3: embedding tool shortlist with lexical fallback
   (`cerebral/llm/planner.py`)
-- [ ] S4 -- #1286 -- F6: bound non-`chat` calls when a `chat` waiter is queued
+- [x] S4 -- #1286 -- F6: bound non-`chat` calls when a `chat` waiter is queued
   (`cerebral/llm/router.py`)
 - [ ] S5 -- #1287 -- F1: `_handle_message` 159-branch chain into a dispatch
   table (`cerebral/main.py`)
@@ -302,6 +302,16 @@ the **first live turn after restart** (index empty) -- follow-up: warm the index
 boot. `test_sandboxed_eval.py::test_workdir_is_cleaned_up_after_a_run` fails on
 master in isolation (stray dir under Public/OpenMind-sbx/trading): not S3's, not a
 #1274 flake, unfixed.
+
+- PR #1298 -- S4 (self_dev-built; tests_failed, hand-repaired and merged by hand)
+
+S4 note: the issue as first written asked for an unspecified timeout on every
+non-chat call, which would have killed self_dev's own 300s calls; rewritten so the
+bound starts only when a chat waiter queues (`_NONCHAT_GRACE_S` = 30s policy value,
+env `NONCHAT_GRACE_S`). Felix's first cut passed a bare coroutine to `asyncio.wait`
+(TypeError on every non-chat call through a capped domain), did `raise ... from task`,
+and its tests leaked an unrestored `pytest.MonkeyPatch()`. Hand-repaired; full suite
+green (5892 passed, sandbox test deselected).
 
 ## Explicitly NOT in this campaign
 
