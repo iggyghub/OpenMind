@@ -217,7 +217,16 @@ function Rotate-Log($logPath) {
         $size = (Get-Item $logPath).Length
         if ($size -gt 0) {
             $timestamp = Get-Date -Format "yyyyMMddTHHmmss"
-            $dest = $logPath -replace '(\.log)$', "_${timestamp}$$1"
+            # No regex backreference here on purpose. "_${timestamp}$$1" looks
+            # like it appends $1, but PowerShell expands $$ inside a
+            # double-quoted string before -replace ever sees it, so the result
+            # was 'cerebral_20260917T223909' + a literal '1' -- the .log
+            # extension silently destroyed. That also made the retention sweep
+            # below (-Filter "cerebral_*.log") match nothing, so rotated logs
+            # would have accumulated forever. Substituting the literal
+            # extension needs no backreference at all.
+            $leaf = Split-Path $logPath -Leaf
+            $dest = $leaf -replace '\.log$', "_$timestamp.log"
             Rename-Item -LiteralPath $logPath -NewName $dest -Force -ErrorAction SilentlyContinue
         }
     }
