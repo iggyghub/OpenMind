@@ -106,6 +106,28 @@ def _claw_conn_error_detail(exc: Exception) -> str:
     return str(exc) or f"{type(exc).__name__} (timeout={_claw_timeout_s()}s)"
 
 
+def _nonchat_grace_s() -> float:
+    """Non-chat grace period in seconds when a chat waiter queues (FELIX-AUDIT S4). Override via NONCHAT_GRACE_S."""
+    raw = os.environ.get("NONCHAT_GRACE_S")
+    if raw is None:
+        return 30.0
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "[router] NONCHAT_GRACE_S=%r is not a number; using default 30.0s",
+            raw,
+        )
+        return 30.0
+    if value <= 0:
+        logger.warning(
+            "[router] NONCHAT_GRACE_S=%r must be > 0; using default 30.0s",
+            raw,
+        )
+        return 30.0
+    return value
+
+
 class ModelUnavailableError(Exception):
     """Raised when the active backend cannot be reached. Never silently falls back."""
 
@@ -189,13 +211,14 @@ class _DomainSemaphore:
     under an already-queued, possibly chat-priority, waiter.
     """
 
-    __slots__ = ("cap", "active", "waiters", "_lock")
+    __slots__ = ("cap", "active", "waiters", "_lock", "chat_queued")
 
     def __init__(self, cap: int = 1) -> None:
         self.cap = cap
         self.active = 0
         self.waiters: list[tuple[str, "asyncio.Future[None]"]] = []
         self._lock = asyncio.Lock()
+        self.chat_queued = asyncio.Event()
 
     async def acquire(self, task_type: str) -> None:
         async with self._lock:
@@ -204,6 +227,8 @@ class _DomainSemaphore:
                 return
             fut: "asyncio.Future[None]" = asyncio.get_running_loop().create_future()
             self.waiters.append((task_type, fut))
+            if task_type == "chat":
+                self.chat_queued.set()
             # Stable sort: chat waiters move to the front; FIFO order is
             # preserved within each priority band.
             self.waiters.sort(key=lambda w: w[0] != "chat")
@@ -216,6 +241,8 @@ class _DomainSemaphore:
                 fut.set_result(None)  # hand the slot off directly
             else:
                 self.active -= 1
+            if not any(w[0] == "chat" for w in self.waiters):
+                self.chat_queued.clear()
 
     async def set_cap(self, new_cap: int) -> None:
         """Live-update the cap (ADR-0036 M). A raised cap admits
@@ -227,6 +254,8 @@ class _DomainSemaphore:
                 self.active += 1
                 _, fut = self.waiters.pop(0)
                 fut.set_result(None)
+            if not any(w[0] == "chat" for w in self.waiters):
+                self.chat_queued.clear()
 
 
 class ModelRouter:
@@ -628,16 +657,35 @@ class ModelRouter:
     async def _admit(self, model_id: str, task_type: str, call):
         """Run the zero-arg async ``call`` under model_id's Failure-domain
         admission cap (ADR-0036). A backend with no shared endpoint to cap
-        (cloud) runs uncapped."""
+        (cloud) runs uncapped. Non-chat calls bound by grace period when
+        a chat waiter queues (FELIX-AUDIT S4)."""
         domain = self._domain_key(model_id)
         if domain is None:
             return await call()
         sem = await self._get_sem(domain)
         await sem.acquire(task_type)
-        try:
-            return await call()
-        finally:
-            await sem.release()
+        
+        if domain is not None and task_type != "chat":
+            task = asyncio.create_task(call())
+            try:
+                done, _ = await asyncio.wait({task, sem.chat_queued.wait()}, return_when=asyncio.FIRST_COMPLETED)
+                if task in done:
+                    return task.result()
+                else:
+                    # chat waiter queued. Run for grace period, then cancel.
+                    try:
+                        await asyncio.wait_for(task, _nonchat_grace_s())
+                        return task.result()
+                    except asyncio.TimeoutError:
+                        task.cancel()
+                        raise TimeoutError from task
+            finally:
+                await sem.release()
+        else:
+            try:
+                return await call()
+            finally:
+                await sem.release()
 
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         top = self.active_model
