@@ -37,6 +37,7 @@ from cerebral.paths import data_dir
 
 DB_PATH = data_dir() / "openmind.db"
 CHROMA_PATH = data_dir() / "chroma"
+MAX_RECALL_DISTANCE = 1.0
 
 
 @dataclass
@@ -147,7 +148,11 @@ class MemoryManager:
         dists = results["distances"][0]
         metas = results["metadatas"][0]
 
+        dropped = 0
         for mem_id, doc, dist, meta in zip(ids, docs, dists, metas):
+            if dist > MAX_RECALL_DISTANCE:
+                dropped += 1
+                continue
             created_at = meta.get("created_at", "")
             memories.append(Memory(
                 id=mem_id,
@@ -158,6 +163,8 @@ class MemoryManager:
                 category=(meta or {}).get("category", ""),
                 order=_order_of(meta, created_at),
             ))
+        if dropped:
+            logger.info("[memory] recall() filtered %d results by distance threshold %s", dropped, MAX_RECALL_DISTANCE)
         return memories
 
     async def forget(self, memory_id: str) -> bool:
