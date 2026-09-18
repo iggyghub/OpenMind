@@ -664,28 +664,25 @@ class ModelRouter:
             return await call()
         sem = await self._get_sem(domain)
         await sem.acquire(task_type)
-        
-        if domain is not None and task_type != "chat":
-            task = asyncio.create_task(call())
-            try:
-                done, _ = await asyncio.wait({task, sem.chat_queued.wait()}, return_when=asyncio.FIRST_COMPLETED)
-                if task in done:
-                    return task.result()
-                else:
-                    # chat waiter queued. Run for grace period, then cancel.
-                    try:
-                        await asyncio.wait_for(task, _nonchat_grace_s())
-                        return task.result()
-                    except asyncio.TimeoutError:
-                        task.cancel()
-                        raise TimeoutError from task
-            finally:
-                await sem.release()
-        else:
+        if task_type == "chat":
             try:
                 return await call()
             finally:
                 await sem.release()
+        # Non-chat: unbounded until a chat waiter queues behind us, then at most
+        # the grace period more. The call observes its own bounded wait -- no
+        # external preemption (R5).
+        task = asyncio.ensure_future(call())
+        queued = asyncio.ensure_future(sem.chat_queued.wait())
+        try:
+            await asyncio.wait({task, queued}, return_when=asyncio.FIRST_COMPLETED)
+            if not task.done():
+                await asyncio.wait_for(task, _nonchat_grace_s())  # cancels task, raises TimeoutError
+            return task.result()
+        finally:
+            queued.cancel()
+            task.cancel()  # no-op when done; covers cancellation of the caller
+            await sem.release()
 
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         top = self.active_model

@@ -2056,8 +2056,10 @@ class _SlowBackend:
     async def complete(self, prompt: str, task_type: str) -> str:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
-        await self._release.wait()
-        self.active -= 1
+        try:
+            await self._release.wait()
+        finally:
+            self.active -= 1
         return f"{prompt}:{task_type}"
 
     def release_all(self) -> None:
@@ -2226,103 +2228,59 @@ async def test_admission_cap_constructor_param_seeds_new_domains():
 
 
 # ---------------------------------------------------------------------------
-# FELIX-AUDIT S4 -- non-chat bound when chat waiter queued
+# FELIX-AUDIT S4 -- non-chat bound when a chat waiter is queued behind it
 # ---------------------------------------------------------------------------
 
-async def test_nonchat_bound_when_chat_queues():
-    """A non-chat call holding the slot is timed out after grace when a chat waiter queues."""
-    from cerebral.llm.router import _nonchat_grace_s
-    import cerebral.llm.router as router_module
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(router_module, "_nonchat_grace_s", lambda: 0.05)
-
+async def test_nonchat_cut_after_grace_when_chat_queued(monkeypatch):
+    """A non-chat call holding the slot is cut after the grace period once a
+    chat waiter queues; the chat call is then admitted and the slot frees."""
+    monkeypatch.setenv("NONCHAT_GRACE_S", "0.05")
     backend = _SlowBackend()
     router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
-    
-    order: list[str] = []
-    async def call(tag: str, task_type: str) -> str:
-        try:
-            return await router.complete(tag, task_type=task_type)
-        except TimeoutError:
-            order.append(f"{tag}:timeout")
-            raise
 
-    # first holds slot, blocks inside complete()
-    first = asyncio.create_task(call("first", "background"))
+    first = asyncio.create_task(router.complete("bg", task_type="background"))
     await asyncio.sleep(0.02)
     assert backend.active == 1
+    chat = asyncio.create_task(router.complete("hi", task_type="chat"))
 
-    # chat waiter queues behind it
-    chat = asyncio.create_task(call("chat", "chat"))
+    # complete() maps the OSError-family TimeoutError to ModelUnavailableError
+    # (the caller's existing retry/fallback path), keeping it as __cause__.
+    with pytest.raises(ModelUnavailableError) as ei:
+        await asyncio.wait_for(first, 1.0)
+    assert isinstance(ei.value.__cause__, TimeoutError)
     await asyncio.sleep(0.02)
-
-    # chat should be admitted within grace, first should time out
-    await asyncio.sleep(0.1)
+    assert backend.active == 1  # chat is now inside complete()
     backend.release_all()
-    
-    results = await asyncio.gather(chat)
-    assert results[0] == "chat:chat"
-    with pytest.raises(TimeoutError):
-        await first
-    assert "first:timeout" in order
-
-
-async def test_nonchat_completes_without_chat_waiter():
-    """If no chat waiter queues, the non-chat call runs to completion regardless of duration."""
-    from cerebral.llm.router import _nonchat_grace_s
-    import cerebral.llm.router as router_module
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(router_module, "_nonchat_grace_s", lambda: 0.05)
-
-    backend = _SlowBackend()
-    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
-    
-    result = await router.complete("long", task_type="background")
-    assert result == "long:background"
-
-
-async def test_chat_call_not_time_limited():
-    """Chat calls are never time-limited by the non-chat grace bound."""
-    from cerebral.llm.router import _nonchat_grace_s
-    import cerebral.llm.router as router_module
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(router_module, "_nonchat_grace_s", lambda: 0.05)
-
-    backend = _SlowBackend()
-    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
-    
-    # chat call should complete normally
-    result = await router.complete("hi", task_type="chat")
-    assert result == "hi:chat"
-
-
-async def test_slot_released_after_nonchat_timeout():
-    """After a non-chat call times out, the semaphore slot is released."""
-    from cerebral.llm.router import _nonchat_grace_s, _DomainSemaphore
-    import cerebral.llm.router as router_module
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(router_module, "_nonchat_grace_s", lambda: 0.05)
-
-    backend = _SlowBackend()
-    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
-    
-    first = asyncio.create_task(router.complete("p1", task_type="background"))
-    await asyncio.sleep(0.02)
-    assert backend.active == 1
-
-    # queue a chat waiter to trigger bound
-    chat = asyncio.create_task(router.complete("p2", task_type="chat"))
-    await asyncio.sleep(0.1)
-    backend.release_all()
-
-    # first should have timed out, chat should succeed
-    with pytest.raises(TimeoutError):
-        await first
-    assert await chat == "p2:chat"
-    
-    # slot should be free now
+    assert await asyncio.wait_for(chat, 1.0) == "hi:chat"
     assert backend.active == 0
+    sem = next(iter(router._domain_semaphores.values()))
+    assert sem.active == 0 and not sem.chat_queued.is_set()
+
+
+async def test_nonchat_not_cut_without_chat_waiter(monkeypatch):
+    """No chat waiter queued: a non-chat call may outlive the grace period."""
+    monkeypatch.setenv("NONCHAT_GRACE_S", "0.05")
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
+
+    task = asyncio.create_task(router.complete("bg", task_type="background"))
+    await asyncio.sleep(0.2)
+    assert not task.done()
+    backend.release_all()
+    assert await asyncio.wait_for(task, 1.0) == "bg:background"
+
+
+async def test_chat_call_never_cut_by_grace(monkeypatch):
+    """A chat call holding the slot is unbounded even with another chat queued."""
+    monkeypatch.setenv("NONCHAT_GRACE_S", "0.05")
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
+
+    first = asyncio.create_task(router.complete("a", task_type="chat"))
+    await asyncio.sleep(0.02)
+    second = asyncio.create_task(router.complete("b", task_type="chat"))
+    await asyncio.sleep(0.2)
+    assert not first.done()
+    backend.release_all()
+    assert await asyncio.wait_for(first, 1.0) == "a:chat"
+    assert await asyncio.wait_for(second, 1.0) == "b:chat"
