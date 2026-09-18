@@ -15,7 +15,7 @@ Scoped 2026-09-17.
 
 ## Next slice -- start here
 
-- **Active:** S6c -- #1308
+- **Active:** S7 -- #1289
 - **Model:** sonnet
 
 ## S0 -- the unlock (DONE, hand-built)
@@ -92,7 +92,7 @@ main.py slice silently sees a third of the file.**
 - [x] S5 -- #1287 -- F1: `_handle_message` chain into a dispatch table (PR #1306, hand codemod)
 - [x] S6a -- #1307 -- F10: `GATE_EXEMPT` sentinel in `MCPOrchestrator.call_tool` (`cerebral/mcp/orchestrator.py` only)
 - [x] S6b (HAND, PR #1310) -- all 18 bare `_orc.call_tool(` sites in `main.py` marked `capability=GATE_EXEMPT` with a reason; AST guard test added
-- [ ] S6c -- #1308 -- F10: `capability=None` resolves from the tool's declared capabilities (`cerebral/mcp/orchestrator.py` + tests)
+- [x] S6c -- #1308 -- F10: `capability=None` resolves from the tool's declared capabilities (`cerebral/mcp/orchestrator.py` + tests)
 - [ ] S7 -- #1289 -- F5: plugin-registered periodic jobs
   (`cerebral/main.py` `_scheduler_loop`)
 - [ ] S8 -- #1290 -- F7: one snapshot registry replacing `_greet` + `onOpen`
@@ -367,6 +367,19 @@ test; fakes fixed, full suite 5903 passed exit 0. **S6c may now run** (Felix res
 main.py changed on master). Still open, deliberately not decided by this campaign: whether
 the scheduler `self_dev_campaign`, RSS poll and `_send_channel_reply` exemptions should become
 real gates (grep `gate-exempt:` in main.py).
+
+- PR #1311 -- S6c (self_dev-built; tests_failed on its own new test, hand-repaired and merged by hand)
+
+S6c note: the issue's suggested `check_capabilities(name, frozenset(), ...)` was WRONG --
+it only sees per-tool `Tool.required_capabilities` (usually None); production plugins declare
+capabilities at plugin level (`_plugin_capabilities`), so the flip would have been a silent
+no-op. Repaired to look up `_plugin_capabilities` for the tool's plugin. Felix implemented my
+spec exactly, so the bug was in the spec (same lesson as S1: verify what a spec assumes).
+Also found and fixed two side doors the audit missed: `execute_fn=_orc.call_tool` bare
+references (sub-agent + delegate) would have double-gated behind their `gate_fn`; wrapped in
+`_execute_after_gate`, guard test extended. Full suite green bar the fixed video-verify assertion.
+Verified live over IPC after restart (`get_time` through the tray call_tool path). **F10 is
+closed for the default; exemptions remain and are marked `# gate-exempt:` in main.py.**
 
 ## Explicitly NOT in this campaign
 
