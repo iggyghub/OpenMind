@@ -46,7 +46,7 @@ from cerebral.llm.chain_engine import ChainEngine
 from cerebral.llm.context_summarizer import should_summarize, summarize_oldest
 from cerebral.llm.context_budget import estimate_tokens
 from cerebral.llm.subagent import run_subagent
-from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
+from cerebral.mcp.orchestrator import GATE_EXEMPT, MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
 from cerebral.passive.extractor import FiveW1HExtractor
 from cerebral.action_queue.manager import KIND_MEMORY_PROPOSAL, KIND_RECIPE_PROPOSAL, QueueManager
@@ -1218,7 +1218,8 @@ async def _ensure_panel_browser_session() -> bool:
     """
     if _get_open_browser_session() is not None:
         return True
-    res = await _orc.call_tool("browser_open_session", {})
+    # gate-exempt: jobs pipeline internal step (user-initiated Apply flow)
+    res = await _orc.call_tool("browser_open_session", {}, capability=GATE_EXEMPT)
     if res.is_error:
         await _notify_user(
             "Felix could not open the browser session",
@@ -1240,7 +1241,8 @@ async def _run_panel_apply(url: str) -> None:
         try:
             if not await _ensure_panel_browser_session():
                 return
-            res = await _orc.call_tool("jobs_apply_start", {"url": url})
+            # gate-exempt: jobs pipeline internal step (user-initiated Apply flow)
+            res = await _orc.call_tool("jobs_apply_start", {"url": url}, capability=GATE_EXEMPT)
             await _notify_apply_outcome(res)
         except Exception as exc:
             logger.warning("[cerebral] jobs_apply_start failed: %s", exc)
@@ -1323,7 +1325,8 @@ async def _run_panel_apply_all(limit: int = 100) -> None:
                 if not await _ensure_panel_browser_session():
                     stopped = True
                     break
-                res = await _orc.call_tool("jobs_apply_start", {"url": url})
+                # gate-exempt: jobs pipeline internal step (user-initiated Apply flow)
+                res = await _orc.call_tool("jobs_apply_start", {"url": url}, capability=GATE_EXEMPT)
                 await _broadcast(_jobs_update_event())
                 if res.is_error:
                     # failed / awaiting-input / skipped row already logged by the plugin.
@@ -1334,7 +1337,8 @@ async def _run_panel_apply_all(limit: int = 100) -> None:
                     else:
                         failed += 1
                     continue
-                sub = await _orc.call_tool("jobs_apply_submit", {})
+                # gate-exempt: jobs pipeline internal step (user-initiated Apply flow)
+                sub = await _orc.call_tool("jobs_apply_submit", {}, capability=GATE_EXEMPT)
                 await _broadcast(_jobs_update_event())
                 if sub.is_error:
                     # Modal declined or timed out — the user wants to look.
@@ -1359,7 +1363,8 @@ async def _run_panel_submit() -> None:
     websocket receive loop while the ADR-0005 modal waited for a confirm that
     arrives on that same loop — the modal could only ever time out."""
     try:
-        res = await _orc.call_tool("jobs_apply_submit", {})
+        # gate-exempt: jobs pipeline internal step (user-initiated Apply flow)
+        res = await _orc.call_tool("jobs_apply_submit", {}, capability=GATE_EXEMPT)
         if res.is_error:
             logger.warning("[cerebral] jobs_apply_submit error: %s", res.content)
     except Exception as exc:
@@ -1388,12 +1393,14 @@ async def _run_jobs_fetch() -> None:
         return
     async with _jobs_scan_lock:
         try:
-            await _orc.call_tool("jobs_fetch_postings", {})
+            # gate-exempt: jobs pipeline internal step (user-initiated fetch)
+            await _orc.call_tool("jobs_fetch_postings", {}, capability=GATE_EXEMPT)
         except Exception as exc:
             logger.warning("[cerebral] jobs_fetch_postings failed: %s", exc)
         if _active_profile and _job_search_store.get_dossier(_active_profile.id):
             try:
-                await _orc.call_tool("jobs_score_shortlist", {})
+                # gate-exempt: jobs pipeline internal step (user-initiated scoring)
+                await _orc.call_tool("jobs_score_shortlist", {}, capability=GATE_EXEMPT)
             except Exception as exc:
                 logger.warning("[cerebral] auto-score after fetch failed: %s", exc)
         await _broadcast(_jobs_update_event())
@@ -1406,7 +1413,8 @@ async def _run_jobs_score() -> None:
         return
     async with _jobs_scan_lock:
         try:
-            await _orc.call_tool("jobs_score_shortlist", {})
+            # gate-exempt: jobs pipeline internal step (user-initiated scoring)
+            await _orc.call_tool("jobs_score_shortlist", {}, capability=GATE_EXEMPT)
         except Exception as exc:
             logger.warning("[cerebral] jobs_score_shortlist failed: %s", exc)
         await _broadcast(_jobs_update_event())
@@ -3762,8 +3770,10 @@ async def _scheduler_loop() -> None:
                             if filed:
                                 driver_path.write_text(new_text, encoding="utf-8")
                                 logger.info(f"[cerebral] design system: queued {filed}")
+                                # gate-exempt: autonomous scheduler fires self_dev_campaign -- exempt pending the F10 policy follow-up (should this be gated?)
                                 await _orc.call_tool(
                                     "self_dev_campaign", {"driver_file": str(driver_path)},
+                                    capability=GATE_EXEMPT,
                                 )
                 except Exception:
                     logger.exception("[cerebral] base design system scan failed")
@@ -4604,7 +4614,8 @@ async def _dispatch_tray_call_tool(
     else:
         decision = Decision.SILENT
     if decision is Decision.SILENT:
-        result = await _orc.call_tool(tool_name, tool_args)
+        # gate-exempt: gated above via check_capabilities (with computer-use effective caps)
+        result = await _orc.call_tool(tool_name, tool_args, capability=GATE_EXEMPT)
     else:
         logger.info(
             "[cerebral] Tray-IPC call_tool denied: %s (decision=%s)",
@@ -6592,8 +6603,10 @@ async def _msg_approve_item(msg: dict) -> None:
             # ``check_capabilities`` already routed through ACL +
             # consent. Dispatch without re-invoking the gate inside
             # ``call_tool`` (capability=None, flags=None).
+            # gate-exempt: gated above via check_capabilities (approve_item queue overlay)
             result = await _orc.call_tool(
                 item.tool_name, item.tool_args or {},
+                capability=GATE_EXEMPT,
             )
         else:
             # ASK is never returned (check_capabilities collapses it to
@@ -6812,10 +6825,11 @@ async def _msg_jobs_score_shortlist(msg: dict) -> None:
 async def _msg_jobs_set_approval(msg: dict) -> None:
     d = msg.get("data", {})
     try:
+        # gate-exempt: tray UI action -- the click is the consent
         await _orc.call_tool("jobs_set_approval", {
             "url": d.get("url", ""),
             "approved": bool(d.get("approved")),
-        })
+        }, capability=GATE_EXEMPT)
     except Exception as exc:
         logger.warning("[cerebral] jobs_set_approval failed: %s", exc)
     await _broadcast(_jobs_update_event())
@@ -6947,9 +6961,10 @@ async def _msg_jobs_apply_all(msg: dict) -> None:
 async def _msg_jobs_set_auto_submit(msg: dict) -> None:
     d = msg.get("data", {})
     try:
+        # gate-exempt: tray UI action -- the click is the consent
         await _orc.call_tool("jobs_set_auto_submit", {
             "enabled": bool(d.get("enabled")),
-        })
+        }, capability=GATE_EXEMPT)
     except Exception as exc:
         logger.warning("[cerebral] jobs_set_auto_submit failed: %s", exc)
     await _broadcast(_jobs_update_event())
@@ -6959,10 +6974,11 @@ async def _msg_jobs_set_auto_submit(msg: dict) -> None:
 async def _msg_jobs_update_dossier_field(msg: dict) -> None:
     d = msg.get("data", {})
     try:
+        # gate-exempt: tray UI action -- the click is the consent
         await _orc.call_tool("jobs_update_dossier_field", {
             "field": str(d.get("field", "")),
             "value": str(d.get("value", "")),
-        })
+        }, capability=GATE_EXEMPT)
     except Exception as exc:
         logger.warning("[cerebral] jobs_update_dossier_field failed: %s", exc)
     await _broadcast(_jobs_update_event())
@@ -7605,7 +7621,8 @@ async def _process_command(
     async def _execute(tool_name: str, tool_args: dict) -> ToolResult:
         if tool_name.startswith("recipe_") and profile_id is not None:
             return await _replay_recipe(tool_name, profile_id)
-        return await _orc.call_tool(tool_name, tool_args)
+        # gate-exempt: chain path: ChainEngine calls gate_fn before execute_fn
+        return await _orc.call_tool(tool_name, tool_args, capability=GATE_EXEMPT)
 
     async def _on_chain_done(completed_steps: list[dict]) -> None:
         if profile_id is None:
@@ -7709,7 +7726,8 @@ async def _replay_recipe(synthetic_name: str, profile_id: int) -> ToolResult:
                 is_error=True,
             )
 
-        tool_result = await _orc.call_tool(tool_name, tool_args)
+        # gate-exempt: gated above via check_capabilities (recipe replay)
+        tool_result = await _orc.call_tool(tool_name, tool_args, capability=GATE_EXEMPT)
         await _record_turn(KIND_TOOL_RESULT, {"name": tool_name, "is_error": tool_result.is_error})
         if tool_result.is_error:
             return ToolResult(
@@ -8496,9 +8514,11 @@ async def _send_channel_reply(session_key: str, text: str) -> tuple[bool, str]:
     if not isinstance(text, str) or not text.strip():
         return False, "missing reply text"
     try:
+        # gate-exempt: tray UI reply -- exempt for now; docstring claims external_data_write gating, F10 policy follow-up
         result = await _orc.call_tool(
             "openclaw_messages_send",
             {"session_key": session_key, "text": text},
+            capability=GATE_EXEMPT,
         )
     except Exception as exc:  # pragma: no cover -- defensive
         return False, f"openclaw_messages_send raised: {exc}"
@@ -8670,7 +8690,8 @@ async def _rss_poll_once() -> None:
     entries).
     """
     try:
-        result = await _orc.call_tool("rss_check", {})
+        # gate-exempt: autonomous RSS poll -- exempt pending the F10 policy follow-up
+        result = await _orc.call_tool("rss_check", {}, capability=GATE_EXEMPT)
     except Exception as exc:
         logger.warning("[cerebral] RSS poll: rss_check raised: %s", exc)
         return

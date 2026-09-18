@@ -89,7 +89,7 @@ def inbox_rig():
             self.content = content
 
     class _FakeOrc:
-        async def call_tool(self, name, args):
+        async def call_tool(self, name, args, capability=None):
             tool_calls.append((name, dict(args)))
             return _FakeToolResult(
                 is_error=tool_result["is_error"],
