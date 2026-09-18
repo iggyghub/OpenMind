@@ -40,7 +40,7 @@ async def test_video_verify_delegates_with_scoped_args(monkeypatch):
     # bound methods aren't `is`-identical across attribute accesses in CPython
     # (a fresh bound-method object is created each time); == compares the
     # same (function, instance) pair, which is the real invariant here.
-    assert recorded["execute_fn"] == main._orc.call_tool
+    assert recorded["execute_fn"] is main._execute_after_gate  # S6c: gate_fn already ran
     assert recorded["router"] is main._router
     # tools_for_llm is a @property that builds a fresh list each access, so
     # (like execute_fn above) equality is the achievable invariant, not `is`.
