@@ -15,7 +15,7 @@ Scoped 2026-09-17.
 
 ## Next slice -- start here
 
-- **Active:** S5 -- #1287
+- **Active:** S5a -- #1299
 - **Model:** sonnet
 
 ## S0 -- the unlock (DONE, hand-built)
@@ -89,8 +89,12 @@ main.py slice silently sees a third of the file.**
   (`cerebral/llm/planner.py`)
 - [x] S4 -- #1286 -- F6: bound non-`chat` calls when a `chat` waiter is queued
   (`cerebral/llm/router.py`)
-- [ ] S5 -- #1287 -- F1: `_handle_message` 159-branch chain into a dispatch
-  table (`cerebral/main.py`)
+- [ ] S5a -- #1299 -- F1: dispatch table scaffold + first block of `_handle_message`
+  branches (`cerebral/main.py`)
+- [ ] S5b -- #1300 -- F1: `_handle_message` block 2 of 5
+- [ ] S5c -- #1301 -- F1: `_handle_message` block 3 of 5
+- [ ] S5d -- #1302 -- F1: `_handle_message` block 4 of 5
+- [ ] S5e -- #1303 -- F1: `_handle_message` block 5 of 5, remove the chain, freeze the type set
 - [ ] S6 -- #1288 -- F10: capability gate fails closed by default
   (`cerebral/mcp/orchestrator.py` + call sites)
 - [ ] S7 -- #1289 -- F5: plugin-registered periodic jobs
@@ -110,7 +114,7 @@ is what ADR-0034 and R6 forbid relying on. S1 is pure Python and genuinely
 testable, so it proves the plumbing **and** the test gate in one run.
 Operator decision 2026-09-17.
 
-**S5 is a hard barrier. S6, S7 and S8 all edit `cerebral/main.py`, and S5
+**S5 (now S5a-S5e) is a hard barrier. S6, S7 and S8 all edit `cerebral/main.py`, and S5
 relocates most of it.** None of them may start until S5 is MERGED to
 origin/master -- not merely committed, not merely PR-opened. Starting one
 early guarantees the conflict cascade described in "Known campaign-loop
@@ -312,6 +316,12 @@ env `NONCHAT_GRACE_S`). Felix's first cut passed a bare coroutine to `asyncio.wa
 (TypeError on every non-chat call through a capped domain), did `raise ... from task`,
 and its tests leaked an unrestored `pytest.MonkeyPatch()`. Hand-repaired; full suite
 green (5892 passed, sandbox test deselected).
+
+S5 note (2026-09-18): the single-shot S5 (#1287) failed with "Edit step produced
+no commit" -- a 2,190-line restructure exceeds self_dev's one-call edit budget (edit
+prompt ~55k tokens; response reserve ~39k shared with hermes-agent reasoning). Split
+into S5a-S5e (#1299-#1303), ~440 source lines each; #1287 is now the umbrella and is
+closed when S5e merges. **S6/S7/S8 need S5e merged, not S5a.**
 
 ## Explicitly NOT in this campaign
 
