@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import websockets
@@ -4767,9 +4768,26 @@ async def _handle_plugins_set_enabled(msg: dict) -> None:
 
 # ── Message dispatcher ────────────────────────────────────────────────────────
 
+# FELIX-AUDIT S5 (F1): branches migrate out of the if/elif chain below into
+# module-level handlers registered here, a block at a time (S5a-S5e).
+_MESSAGE_HANDLERS: dict[str, Callable[[dict], Awaitable[None]]] = {}
+
+
+def _message_handler(msg_type: str):
+    def deco(fn):
+        _MESSAGE_HANDLERS[msg_type] = fn
+        return fn
+    return deco
+
+
 async def _handle_message(msg: dict) -> None:
     global _active_profile
     t = msg.get("type")
+
+    handler = _MESSAGE_HANDLERS.get(t) if isinstance(t, str) else None
+    if handler is not None:
+        await handler(msg)
+        return
 
     if t == "shutdown":
         logger.info("[cerebral] Shutdown requested by tray")

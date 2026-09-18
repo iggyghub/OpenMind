@@ -323,6 +323,17 @@ prompt ~55k tokens; response reserve ~39k shared with hermes-agent reasoning). S
 into S5a-S5e (#1299-#1303), ~440 source lines each; #1287 is now the umbrella and is
 closed when S5e merges. **S6/S7/S8 need S5e merged, not S5a.**
 
+S5a first attempt (PR #1304, closed): Felix wrote only the new test file and no
+`main.py` edit. Root cause: self_dev splits the edit budget evenly across the files a
+slice names (S0), so a 2-file slice (main.py + tests) shows main.py at ~50% and
+`_handle_message` (line ~4770) is outside the excerpt -- no anchor to edit, and the
+run still "committed" the test file so it read as a test failure. **Rule: a slice that
+must edit `main.py` may name `main.py` only.** Enabling change hand-built (S0
+precedent): the `_MESSAGE_HANDLERS` scaffold in `main.py` + `cerebral/tests/test_message_dispatch.py`
+(516 tests calling `_handle_message` green). Issues #1299-#1303 rewritten to
+main.py-only; the exact-150-types freeze test is added by hand after S5e.
+
+
 ## Explicitly NOT in this campaign
 
 - **F4** -- self_dev as a real agent loop. See its finding above for why.
