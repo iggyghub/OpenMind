@@ -1,33 +1,40 @@
-import chromadb
+"""Embedding ranking of tool name+description for ``planner.shortlist_tools`` (F3).
 
-_DB_PATH = ".chroma_tool_index"
-_COLLECTION = "tool_catalog"
+Raises on any Chroma/embedder failure -- the caller falls back to lexical scoring.
 
-_client = chromadb.PersistentClient(path=_DB_PATH)
+Measured 2026-09-18: embedding ~311 tools costs ~21s on CPU, so the index is
+persistent and incremental: only tools whose text is new or changed are
+embedded (~65ms each), never the whole registry per turn.
+"""
+from cerebral.paths import data_dir
+
+INDEX_PATH = data_dir() / "tool_index"
+_state: dict = {"coll": None}
+
+
+def _collection():
+    if _state["coll"] is None:
+        import chromadb
+
+        INDEX_PATH.mkdir(parents=True, exist_ok=True)
+        _state["coll"] = chromadb.PersistentClient(path=str(INDEX_PATH)).get_or_create_collection(
+            "tools", metadata={"hnsw:space": "cosine"}
+        )
+    return _state["coll"]
 
 
 def rank(transcript: str, tools: list[dict], limit: int = 30) -> list[dict]:
-    """Rank tools by embedding similarity to the transcript.
-    
-    Populates the Chroma collection on first call if needed.
-    Raises on Chroma failure so the caller can fall back to lexical scoring.
-    """
-    coll = _client.get_or_create_collection(
-        name=_COLLECTION,
-        metadata={"hnsw:space": "cosine"},
-    )
-    
-    # Populate missing tools
-    current_count = coll.count()
-    if current_count < len(tools):
-        to_add = tools[current_count:]
-        coll.upsert(
-            ids=[str(i) for i in range(current_count, len(tools))],
-            documents=[f"{t.get('name', '')} {t.get('description', '')}" for t in to_add],
-        )
-        
-    results = coll.query(query_texts=[transcript], n_results=limit)
-    ranked_ids = results["ids"][0]
-    if not ranked_ids:
-        return list(tools)
-    return [tools[int(idx)] for idx in ranked_ids if int(idx) < len(tools)]
+    """Return up to ``limit`` of ``tools`` ordered by embedding distance to ``transcript``."""
+    by_name = {t["name"]: t for t in tools}
+    docs = {n: f"{n.replace('_', ' ')} {t.get('description') or ''}" for n, t in by_name.items()}
+    coll = _collection()
+    have = coll.get(ids=list(docs))
+    stale = dict(docs)
+    for i, d in zip(have["ids"], have["documents"]):
+        if docs[i] == d:
+            del stale[i]
+    if stale:
+        coll.upsert(ids=list(stale), documents=list(stale.values()))
+    # The persistent index may hold tools no longer registered: fetch all, filter to ``tools``.
+    res = coll.query(query_texts=[transcript], n_results=coll.count())
+    return [by_name[n] for n in res["ids"][0] if n in by_name][:limit]

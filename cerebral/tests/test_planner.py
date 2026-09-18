@@ -267,6 +267,18 @@ async def test_claw_complete_with_tools_fail_soft():
 
 # ── shortlist_tools — context-window tool pre-selection ───────────────────────
 
+@pytest.fixture(autouse=True)
+def _lexical_only(monkeypatch):
+    """Pin shortlist tests to the lexical path (deterministic, no embedder);
+    embedding behaviour is covered in test_tool_index.py and the wiring tests below."""
+    from cerebral.llm import tool_index
+
+    def off(*a, **k):
+        raise RuntimeError("embeddings disabled in test_planner")
+
+    monkeypatch.setattr(tool_index, "rank", off)
+
+
 def _fake_registry(n: int = 200) -> list[dict]:
     tools = [
         {
@@ -433,19 +445,26 @@ def test_coexistence_browser_plugin_still_registers_three_tools():
     assert names == {"web_search", "navigate", "read_pdf"}
 
 
-def test_shortlist_falls_back_to_lexical_on_embedding_failure():
-    from unittest.mock import patch
+def test_shortlist_falls_back_to_lexical_on_embedding_failure(monkeypatch):
+    from cerebral.llm import tool_index
     from cerebral.llm.planner import shortlist_tools
-    
-    tools = [
-        {"name": "alpha_tool", "description": "Does alpha things"},
-        {"name": "beta_tool", "description": "Does beta things"},
-        {"name": "gamma_tool", "description": "Does gamma things"},
-    ]
-    
-    with patch("cerebral.llm.tool_index.rank", side_effect=RuntimeError("Chroma down")):
-        out = shortlist_tools("alpha gamma", tools, limit=3)
-        names = [t["name"] for t in out]
-        assert "alpha_tool" in names
-        assert "gamma_tool" in names
-        assert "beta_tool" not in names
+
+    def boom(*a, **k):
+        raise RuntimeError("Chroma down")
+
+    monkeypatch.setattr(tool_index, "rank", boom)
+    tools = [{"name": f"filler_{i}", "description": "unrelated"} for i in range(5)]
+    tools.append({"name": "calendar_events", "description": "list calendar events"})
+    out = shortlist_tools("show my calendar events", tools, limit=2)
+    assert "calendar_events" in [t["name"] for t in out]
+    assert len(out) == 2
+
+
+def test_shortlist_uses_embedding_rank_when_available(monkeypatch):
+    from cerebral.llm import tool_index
+    from cerebral.llm.planner import shortlist_tools
+
+    tools = _fake_registry(10)
+    want = [tools[7], tools[3]]
+    monkeypatch.setattr(tool_index, "rank", lambda transcript, ts, limit: want)
+    assert shortlist_tools("find me somewhere to eat tonight", tools, limit=2) == want
