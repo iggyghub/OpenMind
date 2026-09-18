@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from cerebral.mcp.orchestrator import (
+    GATE_EXEMPT,
     MCPOrchestrator,
     PluginRegistrationError,
     REASON_INVALID_TYPE,
@@ -1623,3 +1624,54 @@ def test_irreversible_marking_is_allowlisted(plugin_path):
             "not on the irreversible allowlist. Add it deliberately to "
             "_IRREVERSIBLE_PLUGINS above when marking another tool."
         )
+
+
+# ---------------------------------------------------------------------------
+# Slice 6a — GATE_EXEMPT sentinel (Issue #1288, ADR-0005)
+# ---------------------------------------------------------------------------
+
+
+async def test_call_tool_gate_exempt_dispatches_denied_tool():
+    """S6a: GATE_EXEMPT bypasses the gate, even for a capability that DENIES."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("shell", ["run"])
+    orc.register(plugin)
+
+    result = await orc.call_tool(
+        "run", {"cmd": "ls"}, capability=GATE_EXEMPT,
+    )
+
+    assert not result.is_error
+    plugin.call_tool.assert_called_once_with("run", {"cmd": "ls"})
+
+
+async def test_call_tool_real_capability_denies():
+    """S6a: A real Capability still gates correctly (SANITY: gates aren't broken by GATE_EXEMPT support)."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("shell", ["run"])
+    orc.register(plugin)
+
+    result = await orc.call_tool(
+        "run", {"cmd": "ls"}, capability=Capability.SHELL_EXEC,
+    )
+
+    assert result.is_error
+    plugin.call_tool.assert_not_called()
+
+
+async def test_call_tool_none_still_dispatches():
+    """S6a: capability=None still dispatches (documents pre-S6c behaviour; S6c will gate None)."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("shell", ["run"])
+    orc.register(plugin)
+
+    result = await orc.call_tool("run", {"cmd": "ls"}, capability=None)
+
+    assert not result.is_error
+    plugin.call_tool.assert_called_once_with("run", {"cmd": "ls"})
+
+
+def test_gate_exempt_importable():
+    """S6a: GATE_EXEMPT is importable from cerebral.mcp.orchestrator."""
+    from cerebral.mcp.orchestrator import GATE_EXEMPT
+    assert repr(GATE_EXEMPT) == "GATE_EXEMPT"
