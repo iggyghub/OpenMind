@@ -209,13 +209,40 @@ $cerebralLog = Join-Path $repoRoot "cerebral.log"
 # reply still returns immediately.
 if (-not $env:CLAW_TIMEOUT_S) { $env:CLAW_TIMEOUT_S = "1200" }
 Log ("  CLAW_TIMEOUT_S = {0}s" -f $env:CLAW_TIMEOUT_S)
+$cerebralErr = ($cerebralLog -replace '\.log$', '.err.log')
+
+# Rotate existing logs before overwriting (S2: ADR-0032 / FELIX-AUDIT S2)
+function Rotate-Log($logPath) {
+    if (Test-Path $logPath -ErrorAction SilentlyContinue) {
+        $size = (Get-Item $logPath).Length
+        if ($size -gt 0) {
+            $timestamp = Get-Date -Format "yyyyMMddTHHmmss"
+            $dest = $logPath -replace '(\.log)$', "_${timestamp}$$1"
+            Rename-Item -LiteralPath $logPath -NewName $dest -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+Rotate-Log $cerebralLog
+Rotate-Log $cerebralErr
+
+# Keep only the 5 newest rotated logs per kind
+$logsDir = Split-Path $cerebralLog
+Get-ChildItem -Path $logsDir -Filter "cerebral_*.log" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -Skip 5 |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $logsDir -Filter "cerebral.err_*.log" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -Skip 5 |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
 $cerebral = Start-Process `
     -FilePath "python" `
     -ArgumentList "-m","cerebral.main" `
     -WorkingDirectory $repoRoot `
     -WindowStyle Hidden `
     -RedirectStandardOutput $cerebralLog `
-    -RedirectStandardError  ($cerebralLog -replace '\.log$', '.err.log') `
+    -RedirectStandardError $cerebralErr `
     -PassThru
 
 # ---- 3. wait for Cerebral to bind ws://localhost:7766 -------------------------
