@@ -280,7 +280,7 @@ async def test_slow_jobs_score_does_not_block_next_message(dispatcher_rig, monke
     release = asyncio.Event()
     calls: list[str] = []
 
-    async def slow_call_tool(name, args):
+    async def slow_call_tool(name, args, capability=None):
         calls.append(name)
         await release.wait()
         return ToolResult(content="{}")

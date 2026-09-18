@@ -156,7 +156,7 @@ async def test_call_tool_records_tool_call_and_result(conv_rig, monkeypatch):
     import cerebral.main as main_mod
     from cerebral.mcp.orchestrator import ToolResult
 
-    async def fake_call_tool(name: str, args: dict) -> ToolResult:
+    async def fake_call_tool(name: str, args: dict, capability=None) -> ToolResult:
         return ToolResult(content="ok", is_error=False)
 
     monkeypatch.setattr(main_mod._orc, "call_tool", fake_call_tool)
@@ -200,7 +200,7 @@ async def test_call_tool_record_false_skips_transcript_but_still_replies(conv_ri
     import cerebral.main as main_mod
     from cerebral.mcp.orchestrator import ToolResult
 
-    async def fake_call_tool(name: str, args: dict) -> ToolResult:
+    async def fake_call_tool(name: str, args: dict, capability=None) -> ToolResult:
         return ToolResult(content="ok", is_error=False)
 
     monkeypatch.setattr(main_mod._orc, "call_tool", fake_call_tool)
@@ -224,7 +224,7 @@ async def test_call_tool_record_omitted_still_records(conv_rig, monkeypatch):
     import cerebral.main as main_mod
     from cerebral.mcp.orchestrator import ToolResult
 
-    async def fake_call_tool(name: str, args: dict) -> ToolResult:
+    async def fake_call_tool(name: str, args: dict, capability=None) -> ToolResult:
         return ToolResult(content="ok", is_error=False)
 
     monkeypatch.setattr(main_mod._orc, "call_tool", fake_call_tool)

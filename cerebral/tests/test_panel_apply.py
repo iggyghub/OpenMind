@@ -18,7 +18,7 @@ class _Recorder:
         self.results = results
         self.calls: list[tuple[str, dict]] = []
 
-    async def call_tool(self, name: str, args: dict) -> ToolResult:
+    async def call_tool(self, name: str, args: dict, capability=None) -> ToolResult:
         self.calls.append((name, args))
         return self.results.get(name, ToolResult(content="{}"))
 
@@ -166,7 +166,7 @@ async def test_apply_all_sequential_skips_and_submits(monkeypatch):
     rec = _Recorder({})
     orig = rec.call_tool
 
-    async def call_tool(name, args):
+    async def call_tool(name, args, capability=None):
         if name == "jobs_apply_start" and args.get("url") == "u4":
             rec.calls.append((name, args))
             return ToolResult(content='{"status": "failed"}', is_error=True)
@@ -316,7 +316,7 @@ async def test_submit_event_does_not_block_receive_loop(monkeypatch):
     release = asyncio.Event()
     calls: list[str] = []
 
-    async def slow_call_tool(name, args):
+    async def slow_call_tool(name, args, capability=None):
         calls.append(name)
         await release.wait()  # parked on the "modal" until we release it
         return ToolResult(content="{}")
