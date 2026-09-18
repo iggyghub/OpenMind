@@ -11,11 +11,11 @@ because self_dev could see only 38% of `cerebral/main.py`. S0 raised that to
 
 Scoped 2026-09-17.
 
-## Status: blocked -- PR https://github.com/iggyghub/OpenMind/pull/1297 not merged (tests_failed): ests/test_trading_gauntlet.py::TestFailsEachGate::test_fails_vs_random cerebral/tests/test_trading_gauntlet.py::TestFailsEachGate::test_fails_vs_benchmark C:\Users\iggy\AppData\Local\Programs\Python\Python312\Lib\site-packages\numpy\_core\_methods.py:188: RuntimeWarning: invalid value encountered in subtract x = um.subtract(arr, arrmean, out=...) cerebral/tests/test_trading_gauntlet.py::TestFailsEachGate::test_fails_vs_random cerebral/tests/test_trading_gauntlet.py::TestFailsEachGate::test_fails_vs_benchmark C:\Users\iggy\AppData\Local\Programs\Python\Python312\Lib\site-packages\numpy\lib\_function_base_impl.py:4608: RuntimeWarning: invalid value encountered in scalar subtract diff_b_a = b - a cerebral/tests/test_trading_gauntlet.py::TestFailsEachGate::test_fails_vs_random cerebral/tests/test_trading_gauntlet.py::TestFailsEachGate::test_fails_vs_benchmark C:\Users\iggy\AppData\Local\Programs\Python\Python312\Lib\site-packages\numpy\_core\fromnumeric.py:54: RuntimeWarning: invalid value encountered in accumulate return bound(*args, **kwds) -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html =========================== short test summary info =========================== FAILED cerebral/tests/test_planner.py::test_shortlist_small_registry_passes_through FAILED cerebral/tests/test_planner.py::test_shortlist_drops_offtopic_recipe_tool FAILED cerebral/tests/test_planner.py::test_shortlist_no_usable_words_passes_through FAILED cerebral/tests/test_planner.py::test_shortlist_biases_stealth_url_toward_computer_use FAILED cerebral/tests/test_planner.py::test_shortlist_biases_benign_url_toward_browser_plugin FAILED cerebral/tests/test_planner.py::test_shortlist_falls_back_to_lexical_on_embedding_failure FAILED cerebral/tests/test_sandboxed_eval.py::test_workdir_is_cleaned_up_after_a_run FAILED cerebral/tests/test_tool_index.py::test_rank_returns_semantically_related_first 8 failed, 5914 passed, 7 skipped, 45 warnings in 596.54s (0:09:56)
+## Status: ready
 
 ## Next slice -- start here
 
-- **Active:** S3 -- #1285
+- **Active:** S4 -- #1286
 - **Model:** sonnet
 
 ## S0 -- the unlock (DONE, hand-built)
@@ -85,7 +85,7 @@ main.py slice silently sees a third of the file.**
   (`cerebral/memory/manager.py`)
 - [x] S2 -- #1284 -- F9: stop `launch-felix.ps1` truncating the previous run's
   logs (`scripts/launch-felix.ps1`)
-- [ ] S3 -- #1285 -- F3: embedding tool shortlist with lexical fallback
+- [x] S3 -- #1285 -- F3: embedding tool shortlist with lexical fallback
   (`cerebral/llm/planner.py`)
 - [ ] S4 -- #1286 -- F6: bound non-`chat` calls when a `chat` waiter is queued
   (`cerebral/llm/router.py`)
@@ -289,6 +289,20 @@ run were the known #1274 full-suite pollution, not S1's. Lesson for the
 remaining slices: **do not put an unmeasured magic number in an issue body** --
 self_dev implements it literally and exactly, which is what it should do.
 - PR #1295 -- S2 (auto-merged by self_dev_campaign)
+- PR #1297 -- S3 (self_dev-built; tests_failed, hand-repaired and merged by hand)
+
+S3 note: Felix's first cut failed 7 tests in its own files. It ran the embedding
+path before the passthrough guards, kept a cwd-relative Chroma client created at
+import, keyed the cache by list position, and its fallback test patched the wrong
+symbol. Hand-repaired: lazy persistent index at `data_dir()/tool_index`, keyed by
+tool name and re-embedded only when a tool's text changes; embedding runs after the
+guards and is skipped when `prefer_web_path` reordered tools (ADR-0016 S7). Measured:
+embedding all 311 tools costs ~21s on CPU. That is a one-time cost, but it lands on
+the **first live turn after restart** (index empty) -- follow-up: warm the index at
+boot. `test_sandboxed_eval.py::test_workdir_is_cleaned_up_after_a_run` fails on
+master in isolation (stray dir under Public/OpenMind-sbx/trading): not S3's, not a
+#1274 flake, unfixed.
+
 ## Explicitly NOT in this campaign
 
 - **F4** -- self_dev as a real agent loop. See its finding above for why.
