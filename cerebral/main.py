@@ -3069,9 +3069,10 @@ def _self_dev_candidates(clone_dir) -> list[str]:
 # ponytail: fixed fraction, not measured per-edit-size -- revisit if self_dev
 # edits start needing bigger replies than 30% of window can hold.
 _SELF_DEV_RESPONSE_RESERVE = 0.3
-# One file cannot eat more than this fraction of the prompt budget, so a
-# single huge file can't crowd out the other files the plan step picked.
-_SELF_DEV_PER_FILE_FRACTION = 0.4
+# (retired) _SELF_DEV_PER_FILE_FRACTION = 0.4 -- a fixed per-file share of the
+# prompt budget. Replaced by an even split across the files a slice actually
+# touches: the fraction only ever needed to stop one file crowding out others,
+# but it applied just as hard to 1-file slices, which are most of them.
 # Floor below which a truncated excerpt stops being worth showing at all --
 # used only to size the fail-fast check (item 3), not to block assembly.
 _SELF_DEV_MIN_EXCERPT_TOKENS = 100
@@ -3183,13 +3184,31 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
             "touch fewer/smaller files."
         )
 
+    # Share the budget across however many files this slice actually touches,
+    # rather than capping every file at a fixed fraction. The fraction existed
+    # to stop one big file crowding out the others -- which only bites when
+    # there ARE others. A 1-file slice was still being truncated to 40% of the
+    # budget for no reason: on a 131k window that cut cerebral/main.py to 38%
+    # (line 3,452 of 8,530), putting _handle_message, _scheduler_loop and
+    # _greet permanently out of self_dev's reach. Dividing by the file count
+    # gives a single file the whole budget (main.py -> 96%) and still splits
+    # evenly when a slice legitimately spans several.
+    # ponytail: even split, not size-weighted -- a slice mixing one huge file
+    # with small ones wastes the small ones' share. Weight by actual size if
+    # that shows up; even-split is right for the 1-2 file slices self_dev does.
+    # estimate_tokens is floor(len/4), so the assembled prompt can come out a
+    # token or two over the sum of its parts' estimates (floor(a/4)+floor(b/4)
+    # <= floor((a+b)/4)), plus 2 chars per "\n\n" join. The old fixed 0.4 cap
+    # left enough slack that this never showed; filling the budget exactly does.
+    assembly_slack = 2 + 2 * len(raw_contents)
+    effective_budget = max(prompt_budget - assembly_slack, 0)
     per_file_cap = max(
-        int(prompt_budget * _SELF_DEV_PER_FILE_FRACTION), _SELF_DEV_MIN_EXCERPT_TOKENS
+        effective_budget // max(1, len(raw_contents)), _SELF_DEV_MIN_EXCERPT_TOKENS
     )
     blocks: list[str] = []
     running = overhead_tokens
     for rel, content in raw_contents:
-        cap = min(per_file_cap, max(prompt_budget - running, 0))
+        cap = min(per_file_cap, max(effective_budget - running, 0))
         block = _self_dev_bounded_block(rel, content, cap)
         blocks.append(block)
         running += estimate_tokens(block)
