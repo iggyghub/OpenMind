@@ -673,7 +673,11 @@ class MCPOrchestrator:
         # the caller passed ``flags=None``.
         flags = self._merge_irreversible(flags, name)
         if capability is None:
-            decision = await self.check_capabilities(name, frozenset(), flags, args)
+            # Plugin-level REQUIRED_CAPABILITIES live in _plugin_capabilities; a
+            # per-tool declaration (Tool.required_capabilities) overrides inside
+            # check_capabilities. Unknown/undeclared -> empty -> SILENT (as before).
+            caps = self._plugin_capabilities.get(self._tool_index[name]) or frozenset()
+            decision = await self.check_capabilities(name, caps, flags, args)
             if decision is not Decision.SILENT:
                 logger.info(
                     "[mcp] Gate denied '%s' (capability=None, decision=%s)",

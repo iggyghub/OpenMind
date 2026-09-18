@@ -1742,6 +1742,13 @@ def _modal_auto_gate(tool_name: str, args: object) -> bool:
 
 # Module-level (not a turn-handler closure) so sub-agents (ADR-0020) reuse the
 # same ADR-0005 capability gate rather than duplicating it.
+async def _execute_after_gate(tool_name: str, tool_args: dict) -> ToolResult:
+    """execute_fn for sub-agents / delegate: their gate_fn (_gate_tool) already
+    ran, so dispatch without re-running the gate inside call_tool."""
+    # gate-exempt: gated above via _gate_tool (sub-agent / delegate chain)
+    return await _orc.call_tool(tool_name, tool_args, capability=GATE_EXEMPT)
+
+
 async def _gate_tool(tool_name: str, tool_args: dict) -> Decision:
     # Recipe synthetic tools don't have a plugin; treat them as SILENT at
     # the gate level -- per-step gates fire inside _replay_recipe.
@@ -8193,7 +8200,7 @@ async def _video_verify(cluster_label: str, idea_text: str, category: str = "mon
             f"evidence you find, briefly: {idea_text}",
             router=_router,
             gate_fn=_gate_tool,
-            execute_fn=_orc.call_tool,
+            execute_fn=_execute_after_gate,
             all_tools=_orc.tools_for_llm,
             tools=["web_search"],
             max_steps=3,
@@ -8332,7 +8339,7 @@ def _wire_plugin_seams() -> None:
         ("video", "set_commit_fn", _video_commit),                                    # S7 #645 (ADR-0017)
         ("github_ingest", "set_route_extraction_local_fn", _route_extraction_local),  # ADR-0019 S3 drain
         ("delegate", "set_subagent_context",
-         lambda: {"router": _router, "gate_fn": _gate_tool, "execute_fn": _orc.call_tool,
+         lambda: {"router": _router, "gate_fn": _gate_tool, "execute_fn": _execute_after_gate,
                   "all_tools": _orc.tools_for_llm}),                                 # S4 #730 (ADR-0020)
     ]
     for name, seam, factory in seams:
