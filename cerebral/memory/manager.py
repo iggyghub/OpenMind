@@ -37,6 +37,26 @@ from cerebral.paths import data_dir
 
 DB_PATH = data_dir() / "openmind.db"
 CHROMA_PATH = data_dir() / "chroma"
+# Chroma cosine distance above which a match is treated as irrelevant and
+# dropped rather than injected into the prompt. Measured 2026-09-17 against the
+# default embedding function:
+#
+#   related    "swimming"->swimming 0.754   "coffee"->coffee 0.761
+#              "sister"->Alice 0.984        "outdoor activity"->hiking 1.140
+#              "where am i based"->Berlin 1.344  "exercise"->swimming 1.415
+#              "outdoor activity"->swimming 1.585
+#   unrelated  "remind me"->Alice 1.678     "what time is it" 1.800
+#              "kubernetes" 1.942           "quantum chromodynamics" 1.983
+#
+# The usable gap is 1.585 .. 1.678 and 1.63 sits in it. Note how narrow that
+# is: ~0.05 either side on a 0..2 scale. A single global threshold separates
+# these classes, but only just -- loose-but-real matches ("outdoor activity"
+# -> swimming) land closer to the unrelated floor than to the related ones.
+# ponytail: absolute global cutoff, small sample. If drops start looking wrong
+# in the INFO log, the upgrade is a relative rule (keep results near the best
+# match, not near a constant), not a nudged number. An earlier guess of 1.0
+# broke 5 existing memory tests by cutting real matches.
+MAX_RECALL_DISTANCE = 1.63
 
 
 @dataclass
@@ -147,7 +167,11 @@ class MemoryManager:
         dists = results["distances"][0]
         metas = results["metadatas"][0]
 
+        dropped = 0
         for mem_id, doc, dist, meta in zip(ids, docs, dists, metas):
+            if dist > MAX_RECALL_DISTANCE:
+                dropped += 1
+                continue
             created_at = meta.get("created_at", "")
             memories.append(Memory(
                 id=mem_id,
@@ -158,6 +182,8 @@ class MemoryManager:
                 category=(meta or {}).get("category", ""),
                 order=_order_of(meta, created_at),
             ))
+        if dropped:
+            logger.info("[memory] recall() filtered %d results by distance threshold %s", dropped, MAX_RECALL_DISTANCE)
         return memories
 
     async def forget(self, memory_id: str) -> bool:

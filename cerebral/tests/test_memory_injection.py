@@ -210,7 +210,13 @@ async def test_bridge_history_empty_recall_byte_identical(inj_rig):
 async def test_bridge_injects_block_above_history(inj_rig):
     await inj_rig.mgr.remember("The user lives in Berlin")
     history = [{"role": "user", "text": "where am i based"}]
-    result = await inj_rig.module._bridge_process("remind me", history)
+    # The transcript must actually be relevant to the stored fact. This used to
+    # be "remind me", which sits at distance 1.678 from "The user lives in
+    # Berlin" -- i.e. unrelated, and now correctly dropped by
+    # MAX_RECALL_DISTANCE. This test is about the preamble's POSITION (above
+    # the history block), not about whether an off-topic query pulls memories
+    # in, so the fix is a relevant query rather than a looser threshold.
+    result = await inj_rig.module._bridge_process("where am i based", history)
     prompt = inj_rig.router.last_prompt
     assert prompt.startswith(inj_rig.module._MEMORY_PREAMBLE_HEADER)
     assert prompt.index("</memory>") < prompt.index("Conversation so far:")
