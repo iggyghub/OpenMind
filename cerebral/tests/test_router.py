@@ -2056,8 +2056,10 @@ class _SlowBackend:
     async def complete(self, prompt: str, task_type: str) -> str:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
-        await self._release.wait()
-        self.active -= 1
+        try:
+            await self._release.wait()
+        finally:
+            self.active -= 1
         return f"{prompt}:{task_type}"
 
     def release_all(self) -> None:
@@ -2223,3 +2225,62 @@ async def test_admission_cap_constructor_param_seeds_new_domains():
 
     backend.release_all()
     await asyncio.gather(*tasks)
+
+
+# ---------------------------------------------------------------------------
+# FELIX-AUDIT S4 -- non-chat bound when a chat waiter is queued behind it
+# ---------------------------------------------------------------------------
+
+async def test_nonchat_cut_after_grace_when_chat_queued(monkeypatch):
+    """A non-chat call holding the slot is cut after the grace period once a
+    chat waiter queues; the chat call is then admitted and the slot frees."""
+    monkeypatch.setenv("NONCHAT_GRACE_S", "0.05")
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
+
+    first = asyncio.create_task(router.complete("bg", task_type="background"))
+    await asyncio.sleep(0.02)
+    assert backend.active == 1
+    chat = asyncio.create_task(router.complete("hi", task_type="chat"))
+
+    # complete() maps the OSError-family TimeoutError to ModelUnavailableError
+    # (the caller's existing retry/fallback path), keeping it as __cause__.
+    with pytest.raises(ModelUnavailableError) as ei:
+        await asyncio.wait_for(first, 1.0)
+    assert isinstance(ei.value.__cause__, TimeoutError)
+    await asyncio.sleep(0.02)
+    assert backend.active == 1  # chat is now inside complete()
+    backend.release_all()
+    assert await asyncio.wait_for(chat, 1.0) == "hi:chat"
+    assert backend.active == 0
+    sem = next(iter(router._domain_semaphores.values()))
+    assert sem.active == 0 and not sem.chat_queued.is_set()
+
+
+async def test_nonchat_not_cut_without_chat_waiter(monkeypatch):
+    """No chat waiter queued: a non-chat call may outlive the grace period."""
+    monkeypatch.setenv("NONCHAT_GRACE_S", "0.05")
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
+
+    task = asyncio.create_task(router.complete("bg", task_type="background"))
+    await asyncio.sleep(0.2)
+    assert not task.done()
+    backend.release_all()
+    assert await asyncio.wait_for(task, 1.0) == "bg:background"
+
+
+async def test_chat_call_never_cut_by_grace(monkeypatch):
+    """A chat call holding the slot is unbounded even with another chat queued."""
+    monkeypatch.setenv("NONCHAT_GRACE_S", "0.05")
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
+
+    first = asyncio.create_task(router.complete("a", task_type="chat"))
+    await asyncio.sleep(0.02)
+    second = asyncio.create_task(router.complete("b", task_type="chat"))
+    await asyncio.sleep(0.2)
+    assert not first.done()
+    backend.release_all()
+    assert await asyncio.wait_for(first, 1.0) == "a:chat"
+    assert await asyncio.wait_for(second, 1.0) == "b:chat"
