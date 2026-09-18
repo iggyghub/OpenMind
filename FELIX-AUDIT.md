@@ -15,7 +15,7 @@ Scoped 2026-09-17.
 
 ## Next slice -- start here
 
-- **Active:** S5a -- #1299
+- **Active:** S6a -- #1307
 - **Model:** sonnet
 
 ## S0 -- the unlock (DONE, hand-built)
@@ -89,14 +89,10 @@ main.py slice silently sees a third of the file.**
   (`cerebral/llm/planner.py`)
 - [x] S4 -- #1286 -- F6: bound non-`chat` calls when a `chat` waiter is queued
   (`cerebral/llm/router.py`)
-- [ ] S5a -- #1299 -- F1: dispatch table scaffold + first block of `_handle_message`
-  branches (`cerebral/main.py`)
-- [ ] S5b -- #1300 -- F1: `_handle_message` block 2 of 5
-- [ ] S5c -- #1301 -- F1: `_handle_message` block 3 of 5
-- [ ] S5d -- #1302 -- F1: `_handle_message` block 4 of 5
-- [ ] S5e -- #1303 -- F1: `_handle_message` block 5 of 5, remove the chain, freeze the type set
-- [ ] S6 -- #1288 -- F10: capability gate fails closed by default
-  (`cerebral/mcp/orchestrator.py` + call sites)
+- [x] S5 -- #1287 -- F1: `_handle_message` chain into a dispatch table (PR #1306, hand codemod)
+- [ ] S6a -- #1307 -- F10: `GATE_EXEMPT` sentinel in `MCPOrchestrator.call_tool` (`cerebral/mcp/orchestrator.py` only)
+- **S6b (HAND, no issue) -- mark every bare `_orc.call_tool(` site in `main.py` `capability=GATE_EXEMPT`. MUST land between S6a and S6c.**
+- [ ] S6c -- #1308 -- F10: `capability=None` resolves from the tool's declared capabilities (`cerebral/mcp/orchestrator.py` + tests)
 - [ ] S7 -- #1289 -- F5: plugin-registered periodic jobs
   (`cerebral/main.py` `_scheduler_loop`)
 - [ ] S8 -- #1290 -- F7: one snapshot registry replacing `_greet` + `onOpen`
@@ -335,6 +331,27 @@ main.py-only; **re-running a slice replays the old failure**: campaign run_ids a
 S5a's ledger rows (edit/test/pr) from the closed attempt had to be cleared with `StepLedger().clear(run_id)` and the
 clone moved aside before a retry -- check this after any failed slice. The exact-150-types freeze test is added by hand after S5e.
 
+
+- PR #1306 -- S5 (HAND-built AST codemod; Felix's S5a/S5 attempts failed, see note)
+
+S5 outcome (2026-09-18): three Felix attempts failed for three different reasons, all
+now known. (1) single-shot: 2,190-line restructure exceeds one edit call. (2) S5a with
+main.py + a test file: the even budget split showed main.py at ~50%, `_handle_message`
+out of view; the run committed only the test file. (3) S5a main.py-only: model emitted a
+delete block for 21 branches but its handler-insert block silently failed to apply --
+**self_dev's SEARCH/REPLACE applier drops non-matching blocks silently, so a half-applied
+edit can delete behaviour**; tests caught it. Landed instead as a deterministic AST
+codemod (150 handlers, bodies verbatim, `git diff -w` = headers only), full suite 5897
+green, verified live over IPC after restart. Issues #1299-#1303 closed as superseded.
+Rule for the rest: **main.py slices must be small, single-purpose and main.py-only; a
+bulk verbatim move is a codemod job, not an LLM edit job.**
+
+S6 plan (2026-09-18): the original S6 spans orchestrator.py + ~15 main.py call sites and
+must not land half-done. Split into S6a (orchestrator: sentinel, behaviour-identical),
+S6b (hand: mark all bare sites `GATE_EXEMPT`, behaviour-identical), S6c (orchestrator:
+flip `None` to gate). Every step is green and independently landable; the *policy*
+question of which exempted sites should really be gated (scheduler `self_dev_campaign`,
+RSS poll) is deliberately left as a follow-up, not decided by this campaign.
 
 ## Explicitly NOT in this campaign
 
