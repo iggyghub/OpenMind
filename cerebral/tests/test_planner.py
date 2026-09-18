@@ -431,3 +431,21 @@ def test_coexistence_browser_plugin_still_registers_three_tools():
     from plugins.browser import BrowserPlugin
     names = {t.name for t in BrowserPlugin().list_tools()}
     assert names == {"web_search", "navigate", "read_pdf"}
+
+
+def test_shortlist_falls_back_to_lexical_on_embedding_failure():
+    from unittest.mock import patch
+    from cerebral.llm.planner import shortlist_tools
+    
+    tools = [
+        {"name": "alpha_tool", "description": "Does alpha things"},
+        {"name": "beta_tool", "description": "Does beta things"},
+        {"name": "gamma_tool", "description": "Does gamma things"},
+    ]
+    
+    with patch("cerebral.llm.tool_index.rank", side_effect=RuntimeError("Chroma down")):
+        out = shortlist_tools("alpha gamma", tools, limit=3)
+        names = [t["name"] for t in out]
+        assert "alpha_tool" in names
+        assert "gamma_tool" in names
+        assert "beta_tool" not in names

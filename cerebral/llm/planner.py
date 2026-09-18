@@ -14,6 +14,7 @@ both. A system-prompt instruction tells the model to ask a clarifying question
 import re
 
 from cerebral.llm.router import ToolCall
+from cerebral.llm.tool_index import rank as embed_rank
 
 _SYSTEM_PROMPT = (
     "You are Felix, a personal AI assistant with access to tools. "
@@ -221,6 +222,13 @@ def shortlist_tools(
         return list(tools)
 
     tools = prefer_web_path(transcript, list(tools))
+    
+    # Try embedding-based ranking first (S3)
+    try:
+        return embed_rank(transcript, tools, limit)
+    except Exception:
+        pass  # Fallback to lexical scoring below
+
     words = {w for w in re.findall(r"[a-z0-9]+", transcript.lower()) if len(w) >= 4}
     if not words or len(tools) <= limit:
         return list(tools)
