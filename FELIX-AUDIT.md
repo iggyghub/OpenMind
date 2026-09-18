@@ -331,7 +331,9 @@ run still "committed" the test file so it read as a test failure. **Rule: a slic
 must edit `main.py` may name `main.py` only.** Enabling change hand-built (S0
 precedent): the `_MESSAGE_HANDLERS` scaffold in `main.py` + `cerebral/tests/test_message_dispatch.py`
 (516 tests calling `_handle_message` green). Issues #1299-#1303 rewritten to
-main.py-only; the exact-150-types freeze test is added by hand after S5e.
+main.py-only; **re-running a slice replays the old failure**: campaign run_ids are label-derived, so
+S5a's ledger rows (edit/test/pr) from the closed attempt had to be cleared with `StepLedger().clear(run_id)` and the
+clone moved aside before a retry -- check this after any failed slice. The exact-150-types freeze test is added by hand after S5e.
 
 
 ## Explicitly NOT in this campaign
