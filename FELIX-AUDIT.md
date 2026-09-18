@@ -15,7 +15,7 @@ Scoped 2026-09-17.
 
 ## Next slice -- start here
 
-- **Active:** S1 -- #1283
+- **Active:** S2 -- #1284
 - **Model:** sonnet
 
 ## S0 -- the unlock (DONE, hand-built)
@@ -81,7 +81,7 @@ main.py slice silently sees a third of the file.**
 
 ## Queue
 
-- [ ] S1 -- #1283 -- F2: relevance threshold in `MemoryManager.recall()`
+- [x] S1 -- #1283 -- F2: relevance threshold in `MemoryManager.recall()`
   (`cerebral/memory/manager.py`)
 - [ ] S2 -- #1284 -- F9: stop `launch-felix.ps1` truncating the previous run's
   logs (`scripts/launch-felix.ps1`)
@@ -277,6 +277,17 @@ UI ideas from the same survey, none queued:
 
 - PR #1282 -- S0 (hand-built, the unlock)
 
+- PR #1292 -- S1 (self_dev-built; blocked on tests_failed, hand-calibrated and
+  merged by hand -- see below)
+
+S1 note: Felix's implementation was exactly as specified. The
+`MAX_RECALL_DISTANCE = 1.0` the issue prescribed was an unmeasured guess and
+cut real matches ("where do I live" -> "I live in Berlin" = 1.001), failing 5
+existing memory tests. Calibrated to 1.63 from a measured distribution
+(related 0.754..1.585, unrelated 1.678..1.983). The other 2 failures in that
+run were the known #1274 full-suite pollution, not S1's. Lesson for the
+remaining slices: **do not put an unmeasured magic number in an issue body** --
+self_dev implements it literally and exactly, which is what it should do.
 ## Explicitly NOT in this campaign
 
 - **F4** -- self_dev as a real agent loop. See its finding above for why.
