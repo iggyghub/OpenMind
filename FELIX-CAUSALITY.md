@@ -31,3 +31,19 @@ or `auto_promote`, and no slice places an order.
 - PR #1326 -- C3 (self_dev wrote only the test file; plugin half hand-built, existing sweep tests stub the causality pass; full suite 5931 green)
 
 Note: 3 of 3 Felix slices in this campaign dropped one edit block (C1 clean; C2 missed CREATE TABLE; C3 missed the whole plugin edit) -- see FELIX-AUDIT.md handoff item 1.
+
+## Result of the first full run (2026-09-19)
+
+- **PR #1327 strengthened the gate after real data showed the first version was too weak:** 11 cut points
+  passed two Force Index strategies that 60 caught leaking (6/60, 8/60 on AAPL); the `shift(-N)` static guard
+  was treated as "untestable" although it proves a future read. Now: 60 cuts, stop at first mismatch, static
+  guard = non-causal, 4 workers.
+- **Backfill (283 strategies, ~95 min):** 22 non-causal (2,068 pairs, median return +86.6%), 260 causal, 1
+  untestable. Their persisted `cross_stock_consistency` is cleared, so they drop out of the History tab.
+- **Clean set (23,629 pairs):** median return -6.1% vs median buy-and-hold +41.9%; 28.6% of pairs beat
+  buy-and-hold. Only 3 of 251 clean strategies beat buy-and-hold on >=50% of stocks and their median excess is
+  +0.00..+0.08 -- indistinguishable from noise. **No cross-stock edge survives the leak screen.**
+- Caveats: the check is a LOWER bound (a leak that shows on no sampled bar is missed); 100 correlated large caps
+  in one bull-market window; 1-3% per-trade costs penalise high-turnover rules; effective sample size is small.
+- Side find: `conversation_turns` last-N queries sorted a whole 36k-row thread (~9s, blocked the event loop on
+  every connect); fixed with (thread_id,id)/(profile_id,id) indexes (commit 6543a58).
