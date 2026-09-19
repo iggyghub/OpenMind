@@ -233,6 +233,10 @@ function sendToCerebral(event) {
 
 function handleCerebralEvent(event) {
   switch (event.type) {
+    case 'snapshot':  // connect-time bundle of state events (main.py _snapshot_events)
+      ((event.data && event.data.events) || []).forEach(handleCerebralEvent);
+      break;
+
     case 'first_run':
       // Profile-setup popup retired in Issue #204 — open the Main
       // window's Profiles pane; the renderer flips into first-run

@@ -250,7 +250,8 @@ async def test_broken_greeting_builder_does_not_abort_handshake(dispatcher_rig):
 
     await dispatcher_rig.module._ws_handler(ws)
 
-    sent_types = [e["type"] for e in ws.sent]
+    snapshot = next(e for e in ws.sent if e["type"] == "snapshot")
+    sent_types = [e["type"] for e in snapshot["data"]["events"]]
     # The broken builder is skipped, but the surrounding ones still fire.
     assert "first_run" in sent_types
     assert "voices_list" in sent_types
@@ -259,6 +260,13 @@ async def test_broken_greeting_builder_does_not_abort_handshake(dispatcher_rig):
     # exception didn't terminate _ws_handler before async-for started.
     # (If it had, no greeting events past credentials_state would exist
     #  AND the loop would never run; the handler's stub accepts cleanly.)
+
+
+async def test_snapshot_registry_names_resolve_to_builders(dispatcher_rig):
+    """S8 (#1290): every registered builder name must exist on the module, or
+    the snapshot silently loses that panel's state (logged, not raised)."""
+    for name in dispatcher_rig.module._SNAPSHOT_BUILDERS:
+        assert callable(getattr(dispatcher_rig.module, name)), name
 
 
 # ── jobs scan lane (#403) ────────────────────────────────────────────────────

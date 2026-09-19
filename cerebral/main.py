@@ -5377,9 +5377,13 @@ async def _msg_discover_models(msg: dict) -> None:
     await _broadcast({"type": "models_discovered", "data": {"kind": kind, "models": models}})
 
 
+def _tools_list_event() -> dict:
+    return {"type": "tools_list", "data": {"tools": _orc.tools_for_llm}}
+
+
 @_message_handler("list_tools")
 async def _msg_list_tools(msg: dict) -> None:
-    await _broadcast({"type": "tools_list", "data": {"tools": _orc.tools_for_llm}})
+    await _broadcast(_tools_list_event())
 
 
 @_message_handler("list_plugins")
@@ -7353,46 +7357,61 @@ async def _handle_message(msg: dict) -> None:
 
 # ── WebSocket handler ─────────────────────────────────────────────────────────
 
-async def _greet(websocket) -> None:
-    """Send the welcome snapshot. Each event is isolated: if one state
-    builder raises (e.g., a transiently broken keyring backend), the
-    failure is logged and the remaining events still flow — a bad state
-    builder must not poison the handshake or close the connection.
-    Per-event recovery is the dispatcher-isolation invariant (#151)
-    applied to the greeting phase."""
+# S8 (#1290) -- the one list of state builders a client needs to paint every
+# panel. A new panel's state event is added HERE and nowhere else: the renderer
+# no longer keeps a parallel pull list. Names, not function objects, so each
+# builder is resolved at call time (tests and plugins can rebind them).
+_SNAPSHOT_BUILDERS: tuple[str, ...] = (
+    "_profiles_list_event",
+    "_voices_list_event",
+    "_queue_update_event",
+    "_insights_update_event",
+    "_memory_update_event",
+    "_env_context_event",
+    "_models_list_event",
+    "_plugins_list_event",
+    "_tools_list_event",
+    "_plugins_list_v2_event",
+    "_plugins_panels_event",
+    "_plugins_changed_event",
+    "_permissions_state_event",
+    "_credentials_state_event",
+    "_settings_state_event",
+    "_harness_status_event",
+    "_channel_inbox_event",
+    "_conversation_turns_event",
+    "_threads_list_event",
+    "_projects_list_event",
+    "_recipes_update_event",
+)
+
+
+def _snapshot_events() -> list:
+    """Every state event a fresh client needs, in order. Each builder is
+    isolated: if one raises (e.g., a transiently broken keyring backend), the
+    failure is logged and the rest still flow -- a bad state builder must not
+    poison the handshake or close the connection. Per-event recovery is the
+    dispatcher-isolation invariant (#151) applied to the greeting phase."""
     if _active_profile:
-        greetings: list = [lambda: _profile_event(_active_profile)]
+        builders: list = [lambda: _profile_event(_active_profile)]
     else:
-        greetings = [lambda: {"type": "first_run"}]
-    greetings += [
-        _profiles_list_event,
-        _voices_list_event,
-        _queue_update_event,
-        _insights_update_event,
-        _memory_update_event,
-        _env_context_event,
-        _models_list_event,
-        _plugins_list_event,
-        _plugins_changed_event,
-        _permissions_state_event,
-        _credentials_state_event,
-        _settings_state_event,
-        _harness_status_event,
-        _channel_inbox_event,
-        _conversation_turns_event,
-        _threads_list_event,
-        _projects_list_event,
-        _recipes_update_event,
-    ]
-    for build in greetings:
+        builders = [lambda: {"type": "first_run"}]
+    builders += [globals()[name] for name in _SNAPSHOT_BUILDERS]
+    events = []
+    for build in builders:
         try:
-            event = build()
+            events.append(build())
         except Exception:
             logger.exception(
-                "[cerebral] Greeting state builder failed: %s", getattr(build, "__name__", "<lambda>")
+                "[cerebral] Snapshot state builder failed: %s", getattr(build, "__name__", "<lambda>")
             )
-            continue
-        await _send(websocket, event)
+    return events
+
+
+async def _greet(websocket) -> None:
+    """Send the welcome snapshot: one ``snapshot`` message carrying every
+    state event, which clients replay through their normal event handler."""
+    await _send(websocket, {"type": "snapshot", "data": {"events": _snapshot_events()}})
 
 
 async def _ws_handler(websocket) -> None:
