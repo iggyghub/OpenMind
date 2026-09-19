@@ -75,11 +75,16 @@ def run_pair(strategy_id: str, code: str, symbol: str, start: str, end: str,
 def rollup_consistency(strategy_store: StrategyStore, cross_stock_store: CrossStockStore) -> None:
     """Compute cross-stock consistency rollup and persist it per strategy.
     Call this after each pair completes or at the end of a sweep."""
+    non_causal = cross_stock_store.get_non_causal_ids()
     specs = strategy_store.list_all()
     interval_by_strategy = {s.strategy_id: s.interval for s in specs}
     by_strategy = cross_stock_store.get_consistency_by_strategy(interval_by_strategy)
     for strategy_id, consistency in by_strategy.items():
-        strategy_store.update_cross_stock_consistency(strategy_id, consistency)
+        if strategy_id not in non_causal:
+            strategy_store.update_cross_stock_consistency(strategy_id, consistency)
+    # A look-ahead strategy's score is an artifact: clear any earlier value too.
+    for strategy_id in non_causal:
+        strategy_store.update_cross_stock_consistency(strategy_id, None)
 
 
 def build_pairs(specs: list, basket: list[str]) -> list[tuple]:

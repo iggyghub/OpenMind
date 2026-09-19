@@ -59,6 +59,18 @@ class CrossStockStore:
                 created_at TEXT NOT NULL
             );
         """)
+        # CAUSALITY C2: per-strategy look-ahead verdict (1 causal / 0 non-causal /
+        # NULL untestable). Untestable rows still count as checked, so they are not
+        # re-run every night.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_causality (
+                strategy_id TEXT PRIMARY KEY,
+                causal INTEGER,
+                mismatches INTEGER NOT NULL,
+                tested INTEGER NOT NULL,
+                checked_at TEXT NOT NULL
+            );
+        """)
 
         # F1 (#1246): detect old schema (PK includes run_id) and migrate.
         # As of 2026-09-15 the table holds exactly 22 leftover S2 verification
@@ -242,3 +254,28 @@ class CrossStockStore:
                 continue
             counts[sid] = counts.get(sid, 0) + 1
         return counts
+
+    def record_causality(self, strategy_id, causal: Optional[bool], mismatches: int, tested: int) -> None:
+        causal_val = None if causal is None else 1 if causal else 0
+        checked_at = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT INTO strategy_causality (strategy_id, causal, mismatches, tested, checked_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(strategy_id) DO UPDATE SET
+                   causal=excluded.causal,
+                   mismatches=excluded.mismatches,
+                   tested=excluded.tested,
+                   checked_at=excluded.checked_at""",
+            (strategy_id, causal_val, mismatches, tested, checked_at),
+        )
+        self.conn.commit()
+
+    def get_causality_checked_ids(self) -> set:
+        cur = self.conn.cursor()
+        cur.execute("SELECT strategy_id FROM strategy_causality")
+        return {row["strategy_id"] for row in cur.fetchall()}
+
+    def get_non_causal_ids(self) -> set:
+        cur = self.conn.cursor()
+        cur.execute("SELECT strategy_id FROM strategy_causality WHERE causal = 0")
+        return {row["strategy_id"] for row in cur.fetchall()}
