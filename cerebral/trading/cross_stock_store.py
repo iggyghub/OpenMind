@@ -242,3 +242,28 @@ class CrossStockStore:
                 continue
             counts[sid] = counts.get(sid, 0) + 1
         return counts
+
+    def record_causality(self, strategy_id, causal: Optional[bool], mismatches: int, tested: int) -> None:
+        causal_val = None if causal is None else 1 if causal else 0
+        checked_at = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT INTO strategy_causality (strategy_id, causal, mismatches, tested, checked_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(strategy_id) DO UPDATE SET
+                   causal=excluded.causal,
+                   mismatches=excluded.mismatches,
+                   tested=excluded.tested,
+                   checked_at=excluded.checked_at""",
+            (strategy_id, causal_val, mismatches, tested, checked_at),
+        )
+        self.conn.commit()
+
+    def get_causality_checked_ids(self) -> set:
+        cur = self.conn.cursor()
+        cur.execute("SELECT strategy_id FROM strategy_causality")
+        return {row["strategy_id"] for row in cur.fetchall()}
+
+    def get_non_causal_ids(self) -> set:
+        cur = self.conn.cursor()
+        cur.execute("SELECT strategy_id FROM strategy_causality WHERE causal = 0")
+        return {row["strategy_id"] for row in cur.fetchall()}
