@@ -390,6 +390,14 @@ change the issue asked for were NOT built: nothing but main.py registers jobs (A
 Paper-trade dispatch stays the tick body. Verified live: scheduler_heartbeat advanced on the
 restarted process, no loop errors.
 
+F10 follow-up (2026-09-18, operator decision "make it a real gate"): the scheduler `self_dev_campaign`,
+`_send_channel_reply` and RSS-poll sites are now real gates (`capability=None`), built by Felix via a
+separate driver `FELIX-GATE-FOLLOWUP.md` (G1 PR #1314 landed only 1 of 3 edits -- Felix silently dropped
+two blocks; G2 PR #1317 landed the other two with exact quoted anchors) + regression test. Note the
+consequence: `_send_channel_reply` (ASK via external_data_write) now raises a consent card for a manual
+tray reply, and the autonomous design-system autofix's `self_dev_campaign` call follows the same ACL
+(shell_exec DENY unless a per-tool override allows it) as manual runs.
+
 ## Handoff -- S8 and S9 (fresh session)
 
 S1-S7 are landed (S1/S2 auto by Felix; S3, S4, S6a, S6c Felix-built + hand-repaired; S5, S6b, S7
