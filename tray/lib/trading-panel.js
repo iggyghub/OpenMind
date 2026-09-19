@@ -2218,6 +2218,7 @@ function _renderCrossStockControl(status) {
         </table>
         <span class="replay-info">${nSig} of ${nRanked} strategies significant after multiple-comparisons adjustment.</span>
         <span class="replay-info">${_escapeHtml(status.vs_benchmark_caveat || '')}</span>
+        ${status.perm_ranked ? `<span class="replay-info">Random-timing test: ${status.perm_significant ?? 0} of ${status.perm_ranked} strategies beat random timing after adjustment. ${_escapeHtml(status.perm_caveat || '')}</span>` : ''}
       `
       : '<span class="replay-info">No strategy has enough tested stocks to rank yet.</span>';
   } else {
