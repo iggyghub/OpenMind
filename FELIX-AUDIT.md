@@ -15,7 +15,7 @@ Scoped 2026-09-17.
 
 ## Next slice -- start here
 
-- **Active:** S7 -- #1289
+- **Active:** S8 -- #1290
 - **Model:** sonnet
 
 ## S0 -- the unlock (DONE, hand-built)
@@ -93,7 +93,7 @@ main.py slice silently sees a third of the file.**
 - [x] S6a -- #1307 -- F10: `GATE_EXEMPT` sentinel in `MCPOrchestrator.call_tool` (`cerebral/mcp/orchestrator.py` only)
 - [x] S6b (HAND, PR #1310) -- all 18 bare `_orc.call_tool(` sites in `main.py` marked `capability=GATE_EXEMPT` with a reason; AST guard test added
 - [x] S6c -- #1308 -- F10: `capability=None` resolves from the tool's declared capabilities (`cerebral/mcp/orchestrator.py` + tests)
-- [ ] S7 -- #1289 -- F5: plugin-registered periodic jobs
+- [x] S7 -- #1289 -- F5: scheduler jobs table (PR #1312, hand-built, lean form)
   (`cerebral/main.py` `_scheduler_loop`)
 - [ ] S8 -- #1290 -- F7: one snapshot registry replacing `_greet` + `onOpen`
   (`cerebral/main.py` + `tray/windows/main.html`)
@@ -380,6 +380,35 @@ references (sub-agent + delegate) would have double-gated behind their `gate_fn`
 `_execute_after_gate`, guard test extended. Full suite green bar the fixed video-verify assertion.
 Verified live over IPC after restart (`get_time` through the tray call_tool path). **F10 is
 closed for the default; exemptions remain and are marked `# gate-exempt:` in main.py.**
+
+- PR #1312 -- S7 (HAND-built, main.py only)
+
+S7 note: built lean. `_scheduler_loop`'s three `list_due_events()` scans + title string-matches
+became a title->handler table (`_due_event_jobs` / `_run_due_event_jobs`), one scan per tick,
+per-job isolation, bodies moved verbatim. The plugin-level `periodic_jobs()` API and orchestrator
+change the issue asked for were NOT built: nothing but main.py registers jobs (ADR-0028 R2).
+Paper-trade dispatch stays the tick body. Verified live: scheduler_heartbeat advanced on the
+restarted process, no loop errors.
+
+## Handoff -- S8 and S9 (fresh session)
+
+S1-S7 are landed (S1/S2 auto by Felix; S3, S4, S6a, S6c Felix-built + hand-repaired; S5, S6b, S7
+hand-built). **S8 (#1290) and S9 (#1291) remain and both are tray-renderer work in
+`tray/windows/main.html` (13.6k lines).** Read before starting:
+
+1. self_dev cannot do multi-file edits touching `main.py` or `main.html` (edit budget splits
+   evenly per file, so a 2nd file halves the excerpt) and its SEARCH/REPLACE applier silently
+   drops non-matching blocks (a half-applied edit can delete behaviour). Slice for self_dev only
+   when a slice edits ONE small file; otherwise hand-build/codemod.
+2. Re-running a failed slice replays the old failure (run_id is label-derived): clear
+   `StepLedger().clear("campaign-felix-audit-<label>")` and move the clone dir aside first.
+3. Verify a spec's assumptions against the code before handing it to Felix (S1 threshold, S6c
+   `check_capabilities` no-op both came from spec errors).
+4. S8 is the recurring stale-panel bug (`_greet` vs `onOpen`, no `latestByType` cache): needs the
+   real tray verified (R6), not just jest. S9: one panel before line 9,573, extract to `tray/lib/`.
+5. Restart Felix after any main.py change on master before running a slice (guard rail enforces).
+   Full-suite gate is ~10 min; `test_sandboxed_eval::test_workdir_is_cleaned_up_after_a_run` and
+   `test_plugins_browser::...real_openclaw...` are environment-flaky, pass in isolation.
 
 ## Explicitly NOT in this campaign
 
