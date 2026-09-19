@@ -3753,11 +3753,13 @@ async def _job_design_system_scan(evt: dict) -> bool:
                 if filed:
                     driver_path.write_text(new_text, encoding="utf-8")
                     logger.info(f"[cerebral] design system: queued {filed}")
-                    # gate-exempt: autonomous scheduler fires self_dev_campaign -- exempt pending the F10 policy follow-up (should this be gated?)
-                    await _orc.call_tool(
+                    # gated: resolves the tool's declared capabilities (FELIX-AUDIT F10)
+                    res = await _orc.call_tool(
                         "self_dev_campaign", {"driver_file": str(driver_path)},
-                        capability=GATE_EXEMPT,
+                        capability=None,
                     )
+                    if res.is_error:
+                        logger.warning("[cerebral] design system: self_dev_campaign not run: %s", res.content)
     except Exception:
         logger.exception("[cerebral] base design system scan failed")
     return True
