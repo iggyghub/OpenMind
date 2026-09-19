@@ -68,3 +68,15 @@ def test_rollup_consistency_skips_non_causal(store: CrossStockStore):
     assert fake_store.consistency_values["causal_strat"] == 0.8
     # Non-causal strategy is explicitly set to None (clears stale value)
     assert fake_store.consistency_values["non_causal_strat"] is None
+
+
+def test_schema_creates_strategy_causality_table(store: CrossStockStore):
+    cols = {r[1] for r in store.conn.execute("PRAGMA table_info(strategy_causality)")}
+    assert cols == {"strategy_id", "causal", "mismatches", "tested", "checked_at"}
+
+
+def test_rollup_clears_a_non_causal_strategy_that_has_no_result_rows(store: CrossStockStore):
+    fake_store = FakeStrategyStore()
+    store.record_causality("ghost", False, mismatches=3, tested=11)  # never swept
+    rollup_consistency(fake_store, store)
+    assert fake_store.consistency_values["ghost"] is None
