@@ -6691,6 +6691,7 @@
        Documents sidebar panel. Dual-mode: window.DocumentsPanel here,
        module.exports for Node tests. -->
   <script src="../lib/documents-panel.js"></script>
+  <script src="../lib/recipes-panel.js"></script>
 
   <!-- Campaign driver viewer -- pure data shapers (list rows + minimal
        Markdown renderer) for the Documents "Campaign Plans" sub-view.
@@ -8909,13 +8910,6 @@
 
     const getRcpSort = wireSortSelect('rcp-sort', 'lib-sort:recipes', 'alpha', () => renderRecipes());
 
-    function sortedRecipes(recipes) {
-      const mode = getRcpSort();
-      if (mode === 'last_run_desc')  return _sort.sortBy(recipes, (x) => _sort.dateKey(x.last_run_at), 'desc');
-      if (mode === 'run_count_desc') return _sort.sortBy(recipes, (x) => x.run_count || 0, 'desc');
-      return _sort.sortBy(recipes, (x) => _sort.alphaKey(x.name), 'asc');
-    }
-
     // ADR-0035 J: rows render through the shared registry widget (same
     // renderer as Skills) -- name / step+run meta / VerifyResult badge /
     // Run+Delete as declared recipe_run / recipe_delete tool calls, instead
@@ -8924,7 +8918,6 @@
       const existingWrap = rcpListEl.querySelector('.rcp-registry-wrap');
       if (existingWrap) existingWrap.remove();
       const recipes = (recipesData && recipesData.recipes) || [];
-      const staleIds = new Set((recipesData && recipesData.stale_ids) || []);
       const rcpSortBar = document.getElementById('rcp-sort-bar');
       if (recipes.length === 0) {
         rcpEmptyEl.style.display = 'flex';
@@ -8935,28 +8928,8 @@
       if (rcpSortBar) rcpSortBar.style.display = 'flex';
       if (typeof window.PanelSpec === 'undefined') return;
 
-      const items = sortedRecipes(recipes).map(function (rcp) {
-        const stepCount = Array.isArray(rcp.steps) ? rcp.steps.length : 0;
-        const metaParts = [
-          stepCount + ' step' + (stepCount === 1 ? '' : 's'),
-          'run ' + (rcp.run_count || 0) + '\xd7',
-        ];
-        if (rcp.last_run_at) {
-          metaParts.push('last ' + fmtDate(rcp.last_run_at));
-        }
-        if (staleIds.has(rcp.id)) {
-          metaParts.push('stale');
-        }
-        return {
-          name: rcp.name,
-          status: metaParts.join(' \xb7 '),
-          verify: rcp.verify || null,
-          actions: [
-            { id: 'recipe-run-' + rcp.id, label: 'Run', tool: 'recipe_run', tool_args: { recipe_id: rcp.id } },
-            { id: 'recipe-delete-' + rcp.id, label: 'Delete', tool: 'recipe_delete', tool_args: { recipe_id: rcp.id } },
-          ],
-        };
-      });
+      // Item shaping + sort live in tray/lib/recipes-panel.js (S9).
+      const items = window.RecipesPanel.buildItems(recipesData, { mode: getRcpSort(), sort: _sort, fmtDate: fmtDate });
 
       const wrap = document.createElement('div');
       wrap.className = 'rcp-registry-wrap';
@@ -8976,7 +8949,7 @@
       const btn = row.querySelector('.ps-action-btn');
       const status = row.querySelector('.ps-action-status');
       if (btn) btn.disabled = false;
-      if (status) status.textContent = data.ok ? 'Done.' : ('Error: ' + (data.message || 'unknown'));
+      if (status) status.textContent = window.RecipesPanel.runResultText(data);
     }
 
     // ── Documents panel (S6 #457) ─────────────────────────────────────────────
