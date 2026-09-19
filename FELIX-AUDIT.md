@@ -11,7 +11,7 @@ because self_dev could see only 38% of `cerebral/main.py`. S0 raised that to
 
 Scoped 2026-09-17.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
@@ -96,7 +96,7 @@ main.py slice silently sees a third of the file.**
 - [x] S7 -- #1289 -- F5: scheduler jobs table (PR #1312, hand-built, lean form)
   (`cerebral/main.py` `_scheduler_loop`)
 - [x] S8 -- #1290 -- F7: one snapshot registry replacing `_greet` + `onOpen` (HAND-built; PR pending)
-- [ ] S9 -- #1291 -- F8: extract panels out of `main.html` (first tranche)
+- [x] S9 -- #1291 -- F8: extract panels out of `main.html` (first tranche)
 
 ### Ordering and dependencies -- read before reordering
 
@@ -428,6 +428,26 @@ hand-built). **S8 (#1290) and S9 (#1291) remain and both are tray-renderer work 
 5. Restart Felix after any main.py change on master before running a slice (guard rail enforces).
    Full-suite gate is ~10 min; `test_sandboxed_eval::test_workdir_is_cleaned_up_after_a_run` and
    `test_plugins_browser::...real_openclaw...` are environment-flaky, pass in isolation.
+
+- PR #1316 -- S8 (built in a fresh session; conflicts with master resolved and merged by hand, full suite 5914 + jest 929 green)
+- PR #1318 -- S9 (HAND-built: Recipes panel -> `tray/lib/recipes-panel.js`, jest 941 green)
+
+## Campaign complete (2026-09-19)
+
+S0-S9 all landed. Live-verified after the final restart: Cerebral sends one `snapshot` (22 events, zero
+builder failures); the real renderer, served from `tray/` against live Cerebral, unpacks it into
+`latestByType` (22 cached types), and a state event that arrives before its panel mounts is repainted
+on mount (observed: `renderOverviewPanel` re-invoked with the early event on route activation).
+Source-scan regression tests for S8 added to `tray/tests/render-smoke.test.js` (jest cannot run the page).
+
+Findings to carry forward (none blocks the campaign):
+- **Pre-existing bug found while verifying:** `tray/windows/main.html` loads `../lib/campaign-panel.js`,
+  which has never existed in git, so `_campPanel.renderDriverList` throws whenever campaign drivers render.
+  Spun off as its own task.
+- S3's embedding tool index costs ~21s once (first turn after a fresh index) -- warm it at boot (speed follow-up).
+- `test_sandboxed_eval::test_workdir_is_cleaned_up_after_a_run` and
+  `test_plugins_browser::...real_openclaw...` are environment-flaky (pass in isolation).
+- S9 only extracted one panel; the rest of `main.html` (13.6k lines) remains -- the same pattern applies.
 
 ## Explicitly NOT in this campaign
 

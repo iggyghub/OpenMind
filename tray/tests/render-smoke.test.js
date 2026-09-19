@@ -1387,3 +1387,24 @@ test('registry widget with no items renders an empty state', () => {
   expect(html).toContain('ps-empty');
   expect(html).toContain('No registry entries.');
 });
+
+// ── S8 (FELIX-AUDIT F7): one connect-time snapshot + renderer latestByType cache ──
+
+test('handleEvent unpacks the connect-time snapshot and caches the latest event per type (S8)', () => {
+  expect(inlineScript).toMatch(/event\.type === 'snapshot'/);
+  expect(inlineScript).toMatch(/const latestByType = new Map\(\)/);
+  expect(inlineScript).toMatch(/latestByType\.set\(event\.type, event\)/);
+});
+
+test('panels replay the cached state event on mount instead of waiting for a poll (S8)', () => {
+  expect(inlineScript).toMatch(/function replayLatest\(type\)/);
+  expect(inlineScript).toMatch(/replayLatest\('trading_update'\)/);
+  expect(inlineScript).toMatch(/replayLatest\('trading_tickers_update'\)/);
+});
+
+test('onOpen no longer carries the hand-maintained pull list (S8)', () => {
+  const onOpen = inlineScript.slice(inlineScript.indexOf('onOpen: () => {'), inlineScript.indexOf('onClose: () => {'));
+  expect(onOpen).toMatch(/refreshHealth\(\)/);
+  expect(onOpen).not.toMatch(/sendEvent\(\{ type: 'list_/);
+  expect(onOpen).not.toMatch(/sendEvent\(\{ type: 'plugins:/);
+});
