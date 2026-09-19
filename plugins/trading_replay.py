@@ -613,6 +613,11 @@ async def get_cross_stock_replay_status() -> str:
         for s in ranked[:5]
     ]
 
+    # #1250 decision (2026-09-19): rank by beat-buy-and-hold share + median excess, screened for
+    # look-ahead, with BH-adjusted significance across all ranked strategies (#1251 axis 3).
+    from cerebral.trading.cross_stock_stats import CAVEAT, summarize_vs_benchmark
+    vs_benchmark = summarize_vs_benchmark(store.get_pair_returns_by_strategy(interval_by_strategy))
+
     return json.dumps({
         "running": running,
         "pairs_done": pairs_done,
@@ -620,6 +625,10 @@ async def get_cross_stock_replay_status() -> str:
         "last_run_processed": settings.get("cross_stock_last_run_processed") or 0,
         "last_run_rate_per_hour": settings.get("cross_stock_last_run_rate_per_hour") or 0.0,
         "top_consistent": top_consistent,
+        "top_vs_benchmark": vs_benchmark[:5],
+        "vs_benchmark_ranked": len(vs_benchmark),
+        "vs_benchmark_significant": sum(1 for r in vs_benchmark if r["significant"]),
+        "vs_benchmark_caveat": CAVEAT,
     })
 
 
