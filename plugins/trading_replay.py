@@ -627,6 +627,9 @@ _CAUSALITY_REFERENCE_SYMBOL = "AAPL"   # in BASKET; deep, liquid history
 _CAUSALITY_YEARS = 7
 
 
+_CAUSALITY_WORKERS = 4   # each check is ~60 sandbox spawns; a serial pass over 283 strategies is ~7h
+
+
 async def _ensure_causality_checked(store, specs, *, get_bars=None, check=None) -> None:
     """CAUSALITY C3: run the look-ahead check once per eligible strategy that has
     no verdict yet (untestable verdicts count as checked). A non-causal strategy's
@@ -641,26 +644,29 @@ async def _ensure_causality_checked(store, specs, *, get_bars=None, check=None) 
     start = (today - datetime.timedelta(days=365 * _CAUSALITY_YEARS)).isoformat()
     end = today.isoformat()
     loop = asyncio.get_event_loop()
-    for spec in specs:
-        if _cross_stock_stop_flag:
-            break
-        if not spec.cross_test_eligible or spec.strategy_id in done:
-            continue
-        try:
-            bars = get_bars(_CAUSALITY_REFERENCE_SYMBOL, start, end, spec.interval)
-        except Exception as exc:
-            # Not recorded: retried next night rather than becoming a permanent hole.
-            logger.warning("[causality] %s: bar fetch failed: %s", spec.strategy_id[:60], exc)
-            continue
-        # The sandbox spawns are blocking -- keep them off the event loop.
-        result = await loop.run_in_executor(None, check, spec.code, bars)
-        store.record_causality(spec.strategy_id, result.causal, result.mismatches, result.tested)
-        if result.causal is False:
-            logger.warning(
-                "[causality] %s reads future bars (%d/%d cut points differ) -- excluded from cross-stock consistency",
-                spec.strategy_id[:60], result.mismatches, result.tested,
-            )
-        await asyncio.sleep(0)
+    sem = asyncio.Semaphore(_CAUSALITY_WORKERS)
+
+    async def one(spec) -> None:
+        async with sem:
+            if _cross_stock_stop_flag:
+                return
+            try:
+                bars = get_bars(_CAUSALITY_REFERENCE_SYMBOL, start, end, spec.interval)
+            except Exception as exc:
+                # Not recorded: retried next night rather than becoming a permanent hole.
+                logger.warning("[causality] %s: bar fetch failed: %s", spec.strategy_id[:60], exc)
+                return
+            # The sandbox spawns are blocking -- keep them off the event loop.
+            result = await loop.run_in_executor(None, check, spec.code, bars)
+            store.record_causality(spec.strategy_id, result.causal, result.mismatches, result.tested)
+            if result.causal is False:
+                logger.warning(
+                    "[causality] %s reads future bars (%d/%d cut points differ) -- excluded from cross-stock consistency",
+                    spec.strategy_id[:60], result.mismatches, result.tested,
+                )
+
+    pending = [s for s in specs if s.cross_test_eligible and s.strategy_id not in done]
+    await asyncio.gather(*(one(s) for s in pending))
 
 
 async def _run_cross_stock_replay() -> None:
