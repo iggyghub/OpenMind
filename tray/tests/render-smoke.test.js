@@ -672,9 +672,18 @@ test('inline script fires recipe_run/recipe_delete tool calls + list_recipes (AD
   // S19 originally fired raw run_recipe/delete_recipe WS verbs; ADR-0035 J
   // migrated the Recipes tab onto the registry widget, whose actions are
   // declared recipe_run/recipe_delete tool calls (ADR-0031) instead.
-  expect(inlineScript).toMatch(/['"]recipe_run['"]/);
-  expect(inlineScript).toMatch(/['"]recipe_delete['"]/);
+  // S9 (F8): the row shaping that declares recipe_run/recipe_delete moved out of
+  // the inline script into tray/lib/recipes-panel.js; list_recipes stays inline.
+  const recipesLib = fs.readFileSync(path.join(__dirname, '..', 'lib', 'recipes-panel.js'), 'utf8');
+  expect(recipesLib).toMatch(/['"]recipe_run['"]/);
+  expect(recipesLib).toMatch(/['"]recipe_delete['"]/);
   expect(inlineScript).toMatch(/['"]list_recipes['"]/);
+});
+
+test('recipes-panel.js script tag is present and inline script uses window.RecipesPanel (S9)', () => {
+  const html = fs.readFileSync(HTML_PATH, 'utf8');
+  expect(html).toMatch(/<script src="\.\.\/lib\/recipes-panel\.js"><\/script>/);
+  expect(inlineScript).toMatch(/window\.RecipesPanel\.buildItems/);
 });
 
 // ── S20 — stop / interrupt control ───────────────────────────────────────────
