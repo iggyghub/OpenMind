@@ -637,13 +637,19 @@ _CAUSALITY_YEARS = 7
 
 
 _CAUSALITY_WORKERS = 4   # each check is ~60 sandbox spawns; a serial pass over 283 strategies is ~7h
+_CAUSALITY_EXTRA_SYMBOLS = 2   # plus the stocks where the strategy trades most (measured: an AAPL-only
+_CAUSALITY_EXTRA_CUTS = 30     # check passed a strategy whose leak only fires on high-volatility stocks)
 
 
 async def _ensure_causality_checked(store, specs, *, get_bars=None, check=None) -> None:
     """CAUSALITY C3: run the look-ahead check once per eligible strategy that has
-    no verdict yet (untestable verdicts count as checked). A non-causal strategy's
-    cross-stock consistency is later cleared by rollup_consistency. Informational
-    only -- nothing here touches graduation, retirement or orders."""
+    no verdict yet (untestable verdicts count as checked). The check runs on the reference
+    stock and on the stocks where the strategy traded most in the sweep; ANY non-causal
+    verdict makes the strategy non-causal. A non-causal strategy's cross-stock consistency
+    is later cleared by rollup_consistency. Informational only -- nothing here touches
+    graduation, retirement or orders."""
+    import functools
+    from cerebral.trading.causality import CausalityResult, DEFAULT_CUTS
     if get_bars is None:
         get_bars = bar_cache.get_bars
     if check is None:
@@ -659,14 +665,36 @@ async def _ensure_causality_checked(store, specs, *, get_bars=None, check=None) 
         async with sem:
             if _cross_stock_stop_flag:
                 return
-            try:
-                bars = get_bars(_CAUSALITY_REFERENCE_SYMBOL, start, end, spec.interval)
-            except Exception as exc:
-                # Not recorded: retried next night rather than becoming a permanent hole.
-                logger.warning("[causality] %s: bar fetch failed: %s", spec.strategy_id[:60], exc)
-                return
-            # The sandbox spawns are blocking -- keep them off the event loop.
-            result = await loop.run_in_executor(None, check, spec.code, bars)
+            extras = [
+                s for s in store.get_top_trade_symbols(spec.strategy_id, _CAUSALITY_EXTRA_SYMBOLS)
+                if s != _CAUSALITY_REFERENCE_SYMBOL
+            ]
+            results = []
+            for i, symbol in enumerate([_CAUSALITY_REFERENCE_SYMBOL] + extras):
+                try:
+                    bars = get_bars(symbol, start, end, spec.interval)
+                except Exception as exc:
+                    if i == 0:
+                        # Not recorded: retried next night rather than becoming a permanent hole.
+                        logger.warning("[causality] %s: bar fetch failed: %s", spec.strategy_id[:60], exc)
+                        return
+                    continue
+                cuts = DEFAULT_CUTS if i == 0 else _CAUSALITY_EXTRA_CUTS
+                # The sandbox spawns are blocking -- keep them off the event loop.
+                r = await loop.run_in_executor(
+                    None, functools.partial(check, n_cuts=cuts), spec.code, bars
+                )
+                results.append(r)
+                if r.causal is False:
+                    break  # one leak on one stock is proof enough
+            leaky = [r for r in results if r.causal is False]
+            tested = sum(r.tested for r in results)
+            if leaky:
+                result = CausalityResult(False, sum(r.mismatches for r in leaky), tested)
+            elif tested:
+                result = CausalityResult(True, 0, tested)
+            else:
+                result = CausalityResult(None, 0, 0)
             store.record_causality(spec.strategy_id, result.causal, result.mismatches, result.tested)
             if result.causal is False:
                 logger.warning(

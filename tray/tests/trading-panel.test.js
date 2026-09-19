@@ -1594,3 +1594,38 @@ describe('renderCrossStockPanel (S5/#1238)', () => {
     });
   });
 });
+
+describe('cross-stock panel: benchmark-relative table (#1250)', () => {
+  const base = { running: false, pairs_done: 1, pairs_total: 1, last_run_processed: 0, last_run_rate_per_hour: 0 };
+  const html = (cross_stock) => {
+    let out;
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderCrossStockPanel({ cross_stock }, mount);
+      out = mount.innerHTML;
+    });
+    return out;
+  };
+
+  test('renders beat share, median excess, significance and the caveat', () => {
+    const h = html({
+      ...base,
+      top_consistent: [{ strategy_id: 'legacy', consistency: 1, stocks_tested: 9 }],
+      top_vs_benchmark: [{ strategy_id: 'edge<script>', beat_share: 0.62, median_excess: 0.054, stocks_tested: 92, significant: false }],
+      vs_benchmark_ranked: 232, vs_benchmark_significant: 0, vs_benchmark_caveat: 'Informational only.',
+    });
+    expect(h).toContain('Best vs buy-and-hold');
+    expect(h).toContain('62%');
+    expect(h).toContain('+5.4%');
+    expect(h).toContain('0 of 232 strategies significant');
+    expect(h).toContain('Informational only.');
+    expect(h).not.toContain('<script>');
+    expect(h).not.toContain('legacy');
+  });
+
+  test('older payloads without the new view still render the legacy list', () => {
+    const h = html({ ...base, top_consistent: [{ strategy_id: 'legacy', consistency: 0.8, stocks_tested: 9 }] });
+    expect(h).toContain('Most consistent across stocks');
+    expect(h).toContain('legacy');
+  });
+});

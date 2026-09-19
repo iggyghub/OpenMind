@@ -281,6 +281,18 @@ class CrossStockStore:
             out.setdefault(sid, []).append((row["net_return"], row["benchmark_return"]))
         return out
 
+    def get_top_trade_symbols(self, strategy_id: str, k: int = 2) -> List[str]:
+        """The k symbols where this strategy traded most in the sweep. A look-ahead leak only
+        shows on a stock where the strategy actually produces signals, so the causality check
+        also runs there rather than on one arbitrary reference stock."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT symbol FROM cross_stock_results WHERE strategy_id = ? AND n_trades > 0 "
+            "ORDER BY n_trades DESC LIMIT ?",
+            (strategy_id, k),
+        )
+        return [row["symbol"] for row in cur.fetchall()]
+
     def record_causality(self, strategy_id, causal: Optional[bool], mismatches: int, tested: int) -> None:
         causal_val = None if causal is None else 1 if causal else 0
         checked_at = datetime.now(timezone.utc).isoformat()

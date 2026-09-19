@@ -2192,22 +2192,51 @@ function _renderCrossStockControl(status) {
     etaLine = `<span class="replay-info">~${Math.round(rate)} pairs/hour (last run)</span>`;
   }
 
-  const topRows = (status.top_consistent || []).map((row) => `
-    <tr>
-      <td class="cross-stock-strat" title="${_escapeHtml(row.strategy_id)}">${_escapeHtml(_truncateStrategyId(row.strategy_id, 60))}</td>
-      <td>${Math.round(row.consistency * 100)}%</td>
-      <td>${row.stocks_tested}</td>
-    </tr>
-  `).join('');
-
-  const topTable = (status.top_consistent && status.top_consistent.length)
-    ? `
-      <table class="cross-stock-top-table">
-        <thead><tr><th>Strategy</th><th>Consistent</th><th>Tested</th></tr></thead>
-        <tbody>${topRows}</tbody>
-      </table>
-    `
-    : '<span class="replay-info">No strategies have a rollup yet.</span>';
+  // #1250 (2026-09-19): rank by beat-buy-and-hold share + median excess (look-ahead screened, BH-adjusted
+  // significance across all ranked strategies). Older payloads without it fall back to the legacy list.
+  const vsb = Array.isArray(status.top_vs_benchmark) ? status.top_vs_benchmark : null;
+  let topLabel = 'Most consistent across stocks';
+  let topTable;
+  if (vsb) {
+    topLabel = 'Best vs buy-and-hold';
+    const rows = vsb.map((row) => `
+      <tr>
+        <td class="cross-stock-strat" title="${_escapeHtml(row.strategy_id)}">${_escapeHtml(_truncateStrategyId(row.strategy_id, 60))}</td>
+        <td>${Math.round(row.beat_share * 100)}%</td>
+        <td>${row.median_excess >= 0 ? '+' : ''}${(row.median_excess * 100).toFixed(1)}%</td>
+        <td>${row.stocks_tested}</td>
+        <td>${row.significant ? 'yes' : 'no'}</td>
+      </tr>
+    `).join('');
+    const nSig = status.vs_benchmark_significant ?? 0;
+    const nRanked = status.vs_benchmark_ranked ?? vsb.length;
+    topTable = vsb.length
+      ? `
+        <table class="cross-stock-top-table">
+          <thead><tr><th>Strategy</th><th>Beat B&amp;H</th><th>Median excess</th><th>Tested</th><th>Signif.</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <span class="replay-info">${nSig} of ${nRanked} strategies significant after multiple-comparisons adjustment.</span>
+        <span class="replay-info">${_escapeHtml(status.vs_benchmark_caveat || '')}</span>
+      `
+      : '<span class="replay-info">No strategy has enough tested stocks to rank yet.</span>';
+  } else {
+    const topRows = (status.top_consistent || []).map((row) => `
+      <tr>
+        <td class="cross-stock-strat" title="${_escapeHtml(row.strategy_id)}">${_escapeHtml(_truncateStrategyId(row.strategy_id, 60))}</td>
+        <td>${Math.round(row.consistency * 100)}%</td>
+        <td>${row.stocks_tested}</td>
+      </tr>
+    `).join('');
+    topTable = (status.top_consistent && status.top_consistent.length)
+      ? `
+        <table class="cross-stock-top-table">
+          <thead><tr><th>Strategy</th><th>Consistent</th><th>Tested</th></tr></thead>
+          <tbody>${topRows}</tbody>
+        </table>
+      `
+      : '<span class="replay-info">No strategies have a rollup yet.</span>';
+  }
 
   return `
     <div class="replay-control">
@@ -2221,7 +2250,7 @@ function _renderCrossStockControl(status) {
       </div>
       <div class="replay-control-row">${etaLine}</div>
       <div class="cross-stock-top-section">
-        <div class="cross-stock-top-label">Most consistent across stocks</div>
+        <div class="cross-stock-top-label">${topLabel}</div>
         ${topTable}
       </div>
     </div>
