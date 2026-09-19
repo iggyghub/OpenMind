@@ -6864,7 +6864,11 @@
     // S35 (#911/#912) -- last trading_update payload, so tradingActivateSub
     // can force-redraw the Overview canvas on activation (see its own
     // comment in the trading_update handler for why this is needed).
-    let lastTradingUpdateData = null;
+    // Latest event of each type, so a panel that mounts after its state event
+    // arrived (or whose pull got no answer) can replay it instead of staying
+    // blank. Filled by handleEvent; consumed by replayLatest().
+    const latestByType = new Map();
+    const lastTradingData = () => { const e = latestByType.get('trading_update'); return e ? e.data : null; };
     const intDaemonDotEl   = document.getElementById('int-daemon-dot');
     const intDaemonTextEl  = document.getElementById('int-daemon-text');
     const intDaemonStartBtn   = document.getElementById('int-daemon-start');
@@ -7089,38 +7093,8 @@
         onOpen: () => {
           wsConnected = true;
           refreshHealth();
-          // Pull the current queue snapshot so the header badge is accurate
-          // before the user navigates to the Queue pane. Cerebral also
-          // broadcasts queue_update on every mutation, so this is the only
-          // explicit fetch we need.
-          sendEvent({ type: 'list_queue' });
-          // Same snapshot-on-open for Insights (Issue #196). Cerebral
-          // broadcasts insights_update on every mutation; this just primes
-          // the list before the user navigates to the Insights pane.
-          sendEvent({ type: 'list_insights' });
-          // Same snapshot-on-open for Memory (Issue #198).
-          sendEvent({ type: 'list_memories' });
-          // Same snapshot-on-open for Credentials (Issue #200).
-          sendEvent({ type: 'list_credentials' });
-          // Permissions (Issue #202) — three broadcasts feed the pane, so
-          // pull all three on WS open. The store applies them idempotently.
-          sendEvent({ type: 'list_permissions' });
-          sendEvent({ type: 'list_tools' });
-          sendEvent({ type: 'list_plugins' });
-          sendEvent({ type: 'plugins:list' });  // S3 #471 harness snapshot
-          sendEvent({ type: 'plugins:panels' }); // UI2 A3 #483 workspace panels
-          // Profiles (Issue #204).
-          sendEvent({ type: 'list_profiles' });
-          // System settings (Issue #209 + S7). Pulls current mic_mode and
-          // other persisted settings so header controls are in sync on load.
-          sendEvent({ type: 'list_settings' });
-          // S8 -- voices catalogue for the voice picker.
-          sendEvent({ type: 'list_voices' });
-          // S9 (#292) -- prime the conversation threads list + active id so
-          // the title strip on the Conversation pane is correct on first
-          // paint. The turns snapshot (list_conversation_turns) is sent by
-          // Cerebral as part of the connect-time greeting.
-          sendEvent({ type: 'list_conversation_threads' });
+          // No pull list here: Cerebral sends one `snapshot` message on connect
+          // (main.py _SNAPSHOT_BUILDERS), unpacked by handleEvent below.
         },
         onClose: () => {
           wsConnected = false;
@@ -7138,7 +7112,17 @@
     }
 
     // ── event handling ─────────────────────────────────────────────────────
+    function replayLatest(type) {
+      const e = latestByType.get(type);
+      if (e) handleEvent(e);
+    }
+
     function handleEvent(event) {
+      if (event.type === 'snapshot') {
+        ((event.data && event.data.events) || []).forEach(handleEvent);
+        return;
+      }
+      if (event.type !== 'heartbeat') latestByType.set(event.type, event);
       const next = STATE_MAP[event.type];
       if (next !== undefined) setState(next);
 
@@ -7402,10 +7386,9 @@
           // so a broadcast that arrived while this tab wasn't the active one
           // needs a genuine re-draw once it becomes visible, not just an
           // unhide -- a stale/blank canvas otherwise.
-          lastTradingUpdateData = event.data;
           if (window.TradingPanelMod) window.TradingPanelMod.renderOverviewPanel(event.data, null, sendEvent);
           // Trade Log -- same payload/cache, own mount. No canvas, so no
-          // redraw-on-hidden concern, but still reads lastTradingUpdateData
+          // redraw-on-hidden concern, but still reads the cached trading_update
           // on tab activation the same way Overview does (see below).
           if (window.TradingPanelMod) window.TradingPanelMod.renderTradeLog(event.data, null);
           break;
@@ -7474,8 +7457,8 @@
               try { fills = JSON.parse(event.data.content).fills || []; } catch (_e) {}
             }
             window.TradingPanelMod.receiveArchiveFills(fills);
-            if (lastTradingUpdateData) {
-              window.TradingPanelMod.renderOverviewPanel(lastTradingUpdateData, null, sendEvent);
+            if (lastTradingData()) {
+              window.TradingPanelMod.renderOverviewPanel(lastTradingData(), null, sendEvent);
             }
           }
           // BATCH-REPLAY (#1224-#1227): History tab's Start/Stop button and
@@ -12709,12 +12692,13 @@
       });
       if (target === 'tickers' && window.TradingPanelMod) {
         window.TradingPanelMod.initTickersView();
+        replayLatest('trading_tickers_update');
         sendEvent({ type: 'trading_tickers_poll' });
       }
-      if (target === 'overview' && window.TradingPanelMod && lastTradingUpdateData) {
+      if (target === 'overview') {
         // Redraw, not just unhide -- the canvas was 0x0 while hidden if the
         // last broadcast arrived before this tab became active.
-        window.TradingPanelMod.renderOverviewPanel(lastTradingUpdateData, null, sendEvent);
+        replayLatest('trading_update');
       }
       if (target === 'replay' && window.TradingPanelMod) {
         // BATCH-REPLAY S2/S3 (#1225/#1226): renderReplayPanel was built and
@@ -12815,6 +12799,7 @@
         // the initial fetch on tab open.
         if (window.TradingPanelMod) {
           window.TradingPanelMod.initTradingPanel();
+          replayLatest('trading_update');  // paint the last known state now
           sendEvent({ type: 'trading_poll' });
         }
         // S26 (#879): the pane's own filtered Activity section --
