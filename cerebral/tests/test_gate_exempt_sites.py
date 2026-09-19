@@ -45,4 +45,31 @@ def test_orc_call_tool_never_passed_as_a_bare_reference():
         and n.value.id == "_orc"
         and id(n) not in called
     ]
-    assert not bare, f"_orc.call_tool used as a bare reference at main.py lines {bare}"
+    assert not bare, f"_orc.call_tool used as a bare reference at main.py lines {bare}"
+
+
+# Operator decision 2026-09-18 (FELIX-GATE G1/G2): these autonomous / UI-reply calls are real gates.
+_MUST_BE_GATED = {"self_dev_campaign", "openclaw_messages_send", "rss_check"}
+
+
+def test_autonomous_and_reply_call_sites_stay_gated():
+    tree = ast.parse(MAIN.read_text(encoding="utf-8"))
+    seen = set()
+    for n in ast.walk(tree):
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "call_tool"
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "_orc"
+            and n.args
+            and isinstance(n.args[0], ast.Constant)
+            and n.args[0].value in _MUST_BE_GATED
+        ):
+            seen.add(n.args[0].value)
+            exempt = any(
+                k.arg == "capability" and isinstance(k.value, ast.Name) and k.value.id == "GATE_EXEMPT"
+                for k in n.keywords
+            )
+            assert not exempt, f"{n.args[0].value} call at main.py:{n.lineno} must not be GATE_EXEMPT"
+    assert seen == _MUST_BE_GATED, f"call sites not found: {_MUST_BE_GATED - seen}"
