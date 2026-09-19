@@ -14,14 +14,15 @@ or `auto_promote`, and no slice places an order.
 
 ## Next slice -- start here
 
-- **Active:** C1 -- #1321
+- **Active:** C2 -- #1322
 - **Model:** sonnet
 
 ## Queue
 
-- [ ] C1 -- #1321 -- `check_causality()` (new `cerebral/trading/causality.py` + test)
+- [x] C1 -- #1321 -- `check_causality()` (new `cerebral/trading/causality.py` + test)
 - [ ] C2 -- #1322 -- persist verdicts; rollup excludes non-causal (`cross_stock_store.py`, `cross_stock_replay.py`)
 - [ ] C3 -- #1323 -- sweep runs the check once per strategy (`plugins/trading_replay.py`)
 
 ## Landed PRs
 
+- PR #1324 -- C1 (auto-merged by self_dev_campaign)
