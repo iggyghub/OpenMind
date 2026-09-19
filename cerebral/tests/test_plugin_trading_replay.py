@@ -21,6 +21,19 @@ from plugins.trading_replay import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_causality_pass(monkeypatch):
+    """CAUSALITY C3 runs a real per-strategy look-ahead check (sandbox spawns) at the
+    top of a sweep; these tests are about pair resume / stop handling, so stub it out.
+    It has its own coverage in test_causality_sweep.py."""
+    import plugins.trading_replay as tr
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(tr, "_ensure_causality_checked", _noop)
+
+
 def test_required_capabilities():
     assert isinstance(REQUIRED_CAPABILITIES, frozenset)
     assert len(REQUIRED_CAPABILITIES) > 0

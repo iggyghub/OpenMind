@@ -623,6 +623,46 @@ async def get_cross_stock_replay_status() -> str:
     })
 
 
+_CAUSALITY_REFERENCE_SYMBOL = "AAPL"   # in BASKET; deep, liquid history
+_CAUSALITY_YEARS = 7
+
+
+async def _ensure_causality_checked(store, specs, *, get_bars=None, check=None) -> None:
+    """CAUSALITY C3: run the look-ahead check once per eligible strategy that has
+    no verdict yet (untestable verdicts count as checked). A non-causal strategy's
+    cross-stock consistency is later cleared by rollup_consistency. Informational
+    only -- nothing here touches graduation, retirement or orders."""
+    if get_bars is None:
+        get_bars = bar_cache.get_bars
+    if check is None:
+        from cerebral.trading.causality import check_causality as check
+    done = store.get_causality_checked_ids()
+    today = datetime.date.today()
+    start = (today - datetime.timedelta(days=365 * _CAUSALITY_YEARS)).isoformat()
+    end = today.isoformat()
+    loop = asyncio.get_event_loop()
+    for spec in specs:
+        if _cross_stock_stop_flag:
+            break
+        if not spec.cross_test_eligible or spec.strategy_id in done:
+            continue
+        try:
+            bars = get_bars(_CAUSALITY_REFERENCE_SYMBOL, start, end, spec.interval)
+        except Exception as exc:
+            # Not recorded: retried next night rather than becoming a permanent hole.
+            logger.warning("[causality] %s: bar fetch failed: %s", spec.strategy_id[:60], exc)
+            continue
+        # The sandbox spawns are blocking -- keep them off the event loop.
+        result = await loop.run_in_executor(None, check, spec.code, bars)
+        store.record_causality(spec.strategy_id, result.causal, result.mismatches, result.tested)
+        if result.causal is False:
+            logger.warning(
+                "[causality] %s reads future bars (%d/%d cut points differ) -- excluded from cross-stock consistency",
+                spec.strategy_id[:60], result.mismatches, result.tested,
+            )
+        await asyncio.sleep(0)
+
+
 async def _run_cross_stock_replay() -> None:
     settings = SettingsStore()
     settings.set("cross_stock_running", True)
@@ -635,6 +675,8 @@ async def _run_cross_stock_replay() -> None:
 
     store = CrossStockStore()
     run_id = store.create_run(start, end)
+
+    await _ensure_causality_checked(store, StrategyStore().list_all())
 
     pairs = build_pairs(StrategyStore().list_all(), BASKET)
     # F1 (#1246): resume by skipping pairs already in the results table, not
