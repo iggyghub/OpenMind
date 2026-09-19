@@ -47,3 +47,16 @@ Note: 3 of 3 Felix slices in this campaign dropped one edit block (C1 clean; C2 
   in one bull-market window; 1-3% per-trade costs penalise high-turnover rules; effective sample size is small.
 - Side find: `conversation_turns` last-N queries sorted a whole 36k-row thread (~9s, blocked the event loop on
   every connect); fixed with (thread_id,id)/(profile_id,id) indexes (commit 6543a58).
+
+## Final result (2026-09-19, after PR #1327 and PR #1328)
+
+A second strengthening was needed: an AAPL-only check passed a strategy whose look-ahead
+(`close[ev+j]` future closes) only fires on high-volatility stocks, and that strategy then ranked as the ONE
+"significant" winner. The check now also runs on the 2 stocks where each strategy trades most (any leak wins).
+
+- **283/283 verdicts: 28 non-causal, 255 causal, 0 untestable.**
+- **228 strategies ranked vs buy-and-hold; 0 significant** after Benjamini-Hochberg adjustment (best q = 1.00). Best
+  remaining: 64% beat rate on only 22 stocks (median excess +54%, p=0.14); the rest sit at ~52% with ~0 excess
+  (buy-and-hold clones).
+- Clean set (23,180 pairs): median return -6.5% vs +41.9% buy-and-hold; 28.4% of pairs beat buy-and-hold.
+- **No cross-stock edge survives.** Next-strongest test would be the random-entry permutation baseline (#1251 axis 2).
