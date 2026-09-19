@@ -75,3 +75,32 @@ def summarize_vs_benchmark(
         r["significant"] = q < 0.05
     rows.sort(key=lambda r: (-r["beat_share"], -r["median_excess"]))
     return rows
+
+
+PERM_CAVEAT = (
+    "Random-timing null: same trades, holding periods and exposure, shifted to arbitrary dates; 5 bps "
+    "cost on both sides. Stocks are correlated, so the combined p is still optimistic. Informational only."
+)
+
+
+def summarize_permutation(pvalues_by_strategy: Dict[str, Sequence[float]], min_stocks: int = 3) -> List[dict]:
+    """One row per strategy tested on >= min_stocks stocks. The strategy's p-value is Bonferroni-
+    combined over its own stocks (min p x number of stocks, capped at 1) so trying several stocks
+    is not a free lottery, then Benjamini-Hochberg across every strategy. Sorted by q-value."""
+    rows: List[dict] = []
+    for sid, ps in pvalues_by_strategy.items():
+        k = len(ps)
+        if k < min_stocks:
+            continue
+        rows.append({
+            "strategy_id": sid,
+            "stocks_tested": k,
+            "best_p": min(ps),
+            "p_value": min(1.0, k * min(ps)),
+        })
+    qs = bh_adjust([r["p_value"] for r in rows])
+    for r, q in zip(rows, qs):
+        r["q_value"] = q
+        r["significant"] = q < 0.05
+    rows.sort(key=lambda r: (r["q_value"], r["best_p"]))
+    return rows

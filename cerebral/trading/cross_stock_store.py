@@ -72,6 +72,21 @@ class CrossStockStore:
             );
         """)
 
+        # #1251 axis 2: random-timing (permutation) verdicts, one row per (strategy, symbol).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_permutation (
+                strategy_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                observed REAL NOT NULL,
+                null_median REAL NOT NULL,
+                p_value REAL NOT NULL,
+                n_sims INTEGER NOT NULL,
+                cost REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (strategy_id, symbol)
+            );
+        """)
+
         # F1 (#1246): detect old schema (PK includes run_id) and migrate.
         # As of 2026-09-15 the table holds exactly 22 leftover S2 verification
         # rows (confirmed via direct DB query before this branch was cut) --
@@ -292,6 +307,39 @@ class CrossStockStore:
             (strategy_id, k),
         )
         return [row["symbol"] for row in cur.fetchall()]
+
+    def record_permutation(
+        self, strategy_id: str, symbol: str, observed: float, null_median: float,
+        p_value: float, n_sims: int, cost: float,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO strategy_permutation
+                   (strategy_id, symbol, observed, null_median, p_value, n_sims, cost, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(strategy_id, symbol) DO UPDATE SET
+                   observed=excluded.observed, null_median=excluded.null_median,
+                   p_value=excluded.p_value, n_sims=excluded.n_sims, cost=excluded.cost,
+                   created_at=excluded.created_at""",
+            (strategy_id, symbol, observed, null_median, p_value, n_sims, cost,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        self.conn.commit()
+
+    def get_permutation_done(self) -> set:
+        cur = self.conn.cursor()
+        cur.execute("SELECT strategy_id, symbol FROM strategy_permutation")
+        return {(row["strategy_id"], row["symbol"]) for row in cur.fetchall()}
+
+    def get_permutation_pvalues(self) -> Dict[str, List[float]]:
+        """{strategy_id: [p_value per tested stock]}, causal strategies only."""
+        non_causal = self.get_non_causal_ids()
+        cur = self.conn.cursor()
+        cur.execute("SELECT strategy_id, p_value FROM strategy_permutation")
+        out: Dict[str, List[float]] = {}
+        for row in cur.fetchall():
+            if row["strategy_id"] not in non_causal:
+                out.setdefault(row["strategy_id"], []).append(row["p_value"])
+        return out
 
     def record_causality(self, strategy_id, causal: Optional[bool], mismatches: int, tested: int) -> None:
         causal_val = None if causal is None else 1 if causal else 0

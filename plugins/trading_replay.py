@@ -210,6 +210,18 @@ class TradingReplayPlugin:
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="start_permutation_baseline",
+                description=(
+                    "#1251 axis 2: for every look-ahead-screened strategy, on the stocks where it "
+                    "trades most, compare its return to the SAME position pattern shifted to random "
+                    "dates (same trades, holding periods, exposure, 5 bps cost). Runs in the "
+                    "background and resumes; results appear in get_cross_stock_replay_status. "
+                    "Informational only."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -235,6 +247,8 @@ class TradingReplayPlugin:
             return ToolResult(content=await stop_cross_stock_replay())
         if tool_name == "get_cross_stock_replay_status":
             return ToolResult(content=await get_cross_stock_replay_status())
+        if tool_name == "start_permutation_baseline":
+            return ToolResult(content=await start_permutation_baseline())
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _list_strategies(self, args: dict) -> ToolResult:
@@ -629,7 +643,94 @@ async def get_cross_stock_replay_status() -> str:
         "vs_benchmark_ranked": len(vs_benchmark),
         "vs_benchmark_significant": sum(1 for r in vs_benchmark if r["significant"]),
         "vs_benchmark_caveat": CAVEAT,
+        **_permutation_status_fields(store),
     })
+
+
+# ── #1251 axis 2: random-timing (permutation) baseline ────────────────────────
+_perm_task: Optional[asyncio.Task] = None
+_PERM_STOCKS = 8       # per strategy: the stocks where it trades most (its best shot at an edge)
+_PERM_WORKERS = 4
+
+
+def _permutation_status_fields(store) -> dict:
+    from cerebral.trading.cross_stock_stats import PERM_CAVEAT, summarize_permutation
+    rows = summarize_permutation(store.get_permutation_pvalues())
+    return {
+        "top_permutation": rows[:5],
+        "perm_ranked": len(rows),
+        "perm_significant": sum(1 for r in rows if r["significant"]),
+        "perm_caveat": PERM_CAVEAT,
+    }
+
+
+def _permutation_pair(code, symbol, interval, start_iso, end_iso, *, get_bars=None, run=None):
+    """One (strategy, symbol) random-timing test, or None if it cannot be tested. Blocking
+    (sandbox spawn) -- call from an executor."""
+    from cerebral.trading.replay import _warmup_days
+    from cerebral.trading.permutation_null import circular_shift_null
+    if get_bars is None:
+        get_bars = bar_cache.get_bars
+    if run is None:
+        from cerebral.trading.replay import run_bars_verbose as run
+    start_dt = datetime.datetime.fromisoformat(start_iso)
+    fetch_start = (start_dt - datetime.timedelta(days=int(_warmup_days(interval)))).date().isoformat()
+    bars = get_bars(symbol, fetch_start, end_iso, interval)
+    _equity, position, _metrics, reason = run(code, bars, interval)
+    if reason is not None:
+        return None
+    in_window = (bars.index >= start_dt).astype(bool)
+    returns = bars["Close"].pct_change().fillna(0.0).values[in_window]
+    return circular_shift_null(position.values[in_window], returns)
+
+
+async def start_permutation_baseline() -> str:
+    global _perm_task
+    if _perm_task is not None and not _perm_task.done():
+        return "Permutation baseline already running."
+    _perm_task = asyncio.create_task(_run_permutation_baseline())
+    return "Permutation baseline started."
+
+
+async def _run_permutation_baseline(*, pair_fn=None) -> None:
+    from cerebral.trading.permutation_null import DEFAULT_COST
+    pair_fn = pair_fn or _permutation_pair
+    store = CrossStockStore()
+    non_causal = store.get_non_causal_ids()
+    done = store.get_permutation_done()
+    today = datetime.date.today()
+    start = (today - datetime.timedelta(days=365 * _CROSS_STOCK_WINDOW_YEARS)).isoformat()
+    end = today.isoformat()
+    jobs = [
+        (spec, symbol)
+        for spec in StrategyStore().list_all()
+        if spec.cross_test_eligible and spec.strategy_id not in non_causal
+        for symbol in store.get_top_trade_symbols(spec.strategy_id, _PERM_STOCKS)
+        if (spec.strategy_id, symbol) not in done
+    ]
+    loop = asyncio.get_event_loop()
+    sem = asyncio.Semaphore(_PERM_WORKERS)
+    finished = 0
+
+    async def one(spec, symbol) -> None:
+        nonlocal finished
+        async with sem:
+            try:
+                res = await loop.run_in_executor(
+                    None, pair_fn, spec.code, symbol, spec.interval, start, end
+                )
+            except Exception as exc:
+                logger.warning("[permutation] %s/%s failed: %s", spec.strategy_id[:60], symbol, exc)
+                return
+            if res is None:
+                return
+            store.record_permutation(
+                spec.strategy_id, symbol, res.observed, res.null_median, res.p_value, res.n_sims, DEFAULT_COST
+            )
+            finished += 1
+
+    await asyncio.gather(*(one(spec, symbol) for spec, symbol in jobs))
+    logger.info("[permutation] baseline finished: %d/%d pairs recorded.", finished, len(jobs))
 
 
 _CAUSALITY_REFERENCE_SYMBOL = "AAPL"   # in BASKET; deep, liquid history

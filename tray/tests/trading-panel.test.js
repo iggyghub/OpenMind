@@ -1629,3 +1629,27 @@ describe('cross-stock panel: benchmark-relative table (#1250)', () => {
     expect(h).toContain('legacy');
   });
 });
+
+describe('cross-stock panel: random-timing (permutation) line (#1251 axis 2)', () => {
+  const base = { running: false, pairs_done: 1, pairs_total: 1, last_run_processed: 0, last_run_rate_per_hour: 0 };
+  const html = (cross_stock) => {
+    let out;
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderCrossStockPanel({ cross_stock }, mount);
+      out = mount.innerHTML;
+    });
+    return out;
+  };
+  const vsb = [{ strategy_id: 's', beat_share: 0.5, median_excess: 0, stocks_tested: 30, significant: false }];
+
+  test('shows how many strategies beat random timing', () => {
+    const h = html({ ...base, top_consistent: [], top_vs_benchmark: vsb, perm_ranked: 200, perm_significant: 0, perm_caveat: 'Random-timing null.' });
+    expect(h).toContain('0 of 200 strategies beat random timing');
+    expect(h).toContain('Random-timing null.');
+  });
+
+  test('is absent until the baseline has run', () => {
+    expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb })).not.toContain('Random-timing test');
+  });
+});
