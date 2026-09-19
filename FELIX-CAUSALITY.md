@@ -60,3 +60,14 @@ A second strengthening was needed: an AAPL-only check passed a strategy whose lo
   (buy-and-hold clones).
 - Clean set (23,180 pairs): median return -6.5% vs +41.9% buy-and-hold; 28.4% of pairs beat buy-and-hold.
 - **No cross-stock edge survives.** Next-strongest test would be the random-entry permutation baseline (#1251 axis 2).
+
+## Random-timing (permutation) baseline result (2026-09-19, PR #1330)
+
+1,978 (strategy, stock) pairs across 255 causal strategies (each on the 8 stocks where it trades most), 500
+circular-shift draws per pair, 5 bps notional cost on strategy and controls alike.
+- Nominal p<0.05 on 10.2% of pairs (chance ~5%), p<0.01 on 2.4%; observed beat the null median on 55.8% of pairs
+  (median observed -11.4% vs null -16.7%). A faint aggregate tilt, but pairs share stocks and one regime, so it is a
+  hint, not a finding.
+- **0 of 247 ranked strategies significant** after Bonferroni-over-own-stocks + Benjamini-Hochberg (best q = 0.37).
+- Smoke test: both known look-ahead strategies hit the minimum possible p (0.002), so the null also works as a leak detector.
+- Separate finding: the backtest cost model charges by share price, not traded notional (issue #1329, needs a decision).
