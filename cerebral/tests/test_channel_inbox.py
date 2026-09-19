@@ -218,7 +218,10 @@ async def test_greet_includes_channel_inbox_event(inbox_rig):
     ws = _FakeWebsocket()
     # _greet is the bound method on the module
     await main_mod._greet(ws)
-    sent_events = [json.loads(p) for p in ws.sent_raw]
+    # S8 (#1290): the greeting is one `snapshot` message wrapping the events.
+    (snapshot,) = [json.loads(p) for p in ws.sent_raw]
+    assert snapshot["type"] == "snapshot"
+    sent_events = snapshot["data"]["events"]
     types = [e.get("type") for e in sent_events]
     assert "channel_inbox_update" in types
     # And it carries the current snapshot.

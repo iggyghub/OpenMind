@@ -15,7 +15,7 @@ Scoped 2026-09-17.
 
 ## Next slice -- start here
 
-- **Active:** S8 -- #1290
+- **Active:** S9 -- #1291
 - **Model:** sonnet
 
 ## S0 -- the unlock (DONE, hand-built)
@@ -95,8 +95,7 @@ main.py slice silently sees a third of the file.**
 - [x] S6c -- #1308 -- F10: `capability=None` resolves from the tool's declared capabilities (`cerebral/mcp/orchestrator.py` + tests)
 - [x] S7 -- #1289 -- F5: scheduler jobs table (PR #1312, hand-built, lean form)
   (`cerebral/main.py` `_scheduler_loop`)
-- [ ] S8 -- #1290 -- F7: one snapshot registry replacing `_greet` + `onOpen`
-  (`cerebral/main.py` + `tray/windows/main.html`)
+- [x] S8 -- #1290 -- F7: one snapshot registry replacing `_greet` + `onOpen` (HAND-built; PR pending)
 - [ ] S9 -- #1291 -- F8: extract panels out of `main.html` (first tranche)
 
 ### Ordering and dependencies -- read before reordering
@@ -389,6 +388,18 @@ per-job isolation, bodies moved verbatim. The plugin-level `periodic_jobs()` API
 change the issue asked for were NOT built: nothing but main.py registers jobs (ADR-0028 R2).
 Paper-trade dispatch stays the tick body. Verified live: scheduler_heartbeat advanced on the
 restarted process, no loop errors.
+
+S8 note: `_greet` now sends ONE `{"type":"snapshot","data":{"events":[...]}}` built by
+`_snapshot_events()` from the `_SNAPSHOT_BUILDERS` name tuple (names, resolved at call time so tests can
+rebind them; three builders added -- `_tools_list_event`, `_plugins_list_v2_event`, `_plugins_panels_event` --
+so the renderer's whole `onOpen` pull list (13 `sendEvent`s, each a broadcast to every client) is deleted).
+Renderer: `handleEvent` unpacks `snapshot`, keeps `latestByType`, and `replayLatest(type)` repaints a panel at
+mount (Trading, Tickers, Overview) -- it replaced the one-off `lastTradingUpdateData`. `tray/main.js` unpacks
+`snapshot` too (its menu needs `profiles_list` / `first_run`). NOT done, deliberately: the per-route pulls in
+`activateRoute` and the videos/github/books `setInterval` polls stay -- those fetch data the backend does not push
+(panel specs, documents, job postings), so deleting them would regress live refresh; only the redundant connect-time
+list was removed. Verified: pytest + jest, and the new renderer against a stub WS server replaying real captured
+events as a `snapshot` (panels populated, no pull list sent). Live-tray verification follows the merge + restart.
 
 ## Handoff -- S8 and S9 (fresh session)
 
