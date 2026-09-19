@@ -114,3 +114,39 @@ async def test_ineligible_specs_skipped(tmp_path):
 
     assert store.get_causality_checked_ids() == {"strat_eligible"}
     assert check_mock.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_leak_that_only_shows_on_a_stock_the_strategy_trades_on_is_caught(tmp_path):
+    """Regression (2026-09-19): an AAPL-only check passed a strategy whose look-ahead only fires
+    on high-volatility stocks. The check must also run where the strategy trades most."""
+    store = CrossStockStore(db_path=str(tmp_path / "t.db"))
+    run = store.create_run("2021-01-01", "2026-01-01")
+    store.record_result(run, "s", "QUIET", 0.1, -0.1, 2, None, 0.1)
+    store.record_result(run, "s", "LCID", 5.0, -0.3, 80, None, 0.1)
+    store.record_result(run, "s", "RBLX", 2.0, -0.3, 60, None, 0.1)
+    store.record_result(run, "s", "TINY", 0.1, -0.1, 1, None, 0.1)
+
+    seen = []
+
+    def fake_check(code, bars, n_cuts=60):
+        seen.append((bars, n_cuts))
+        leaky = bars == "LCID"
+        return types.SimpleNamespace(causal=False if leaky else True, mismatches=1 if leaky else 0, tested=5)
+
+    await _ensure_causality_checked(
+        store, [_make_spec("s")], get_bars=lambda sym, a, b, i: sym, check=fake_check
+    )
+    assert [b for b, _ in seen][:2] == [_CAUSALITY_REFERENCE_SYMBOL, "LCID"]
+    assert seen[0][1] == 60 and seen[1][1] == 30  # full cuts on the reference, fewer on the extras
+    assert store.get_non_causal_ids() == {"s"}
+
+
+@pytest.mark.asyncio
+async def test_top_trade_symbols_are_ranked_by_trade_count(tmp_path):
+    store = CrossStockStore(db_path=str(tmp_path / "t2.db"))
+    run = store.create_run("2021-01-01", "2026-01-01")
+    for sym, n in (("A", 5), ("B", 90), ("C", 40), ("D", 0)):
+        store.record_result(run, "s", sym, 0.0, 0.0, n, None, 0.0)
+    assert store.get_top_trade_symbols("s", 2) == ["B", "C"]
+    assert store.get_top_trade_symbols("nope", 2) == []

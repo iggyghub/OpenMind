@@ -255,6 +255,44 @@ class CrossStockStore:
             counts[sid] = counts.get(sid, 0) + 1
         return counts
 
+    def get_pair_returns_by_strategy(
+        self, interval_by_strategy: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, List[tuple]]:
+        """{strategy_id: [(net_return, benchmark_return), ...]} for pairs that ran, have a
+        buy-and-hold benchmark, clear the same dynamic trade floor as
+        get_consistency_by_strategy, and belong to a strategy the causality gate has not marked
+        as reading future bars. A NULL benchmark is excluded, never counted as a loss."""
+        interval_by_strategy = interval_by_strategy or {}
+        non_causal = self.get_non_causal_ids()
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT strategy_id, net_return, benchmark_return, n_trades
+               FROM cross_stock_results
+               WHERE net_return IS NOT NULL AND benchmark_return IS NOT NULL AND n_trades >= ?""",
+            (MIN_TRADES_FLOOR,),
+        )
+        out: Dict[str, List[tuple]] = {}
+        for row in cur.fetchall():
+            sid = row["strategy_id"]
+            if sid in non_causal:
+                continue
+            if row["n_trades"] < _min_trades_floor_for_interval(interval_by_strategy.get(sid)):
+                continue
+            out.setdefault(sid, []).append((row["net_return"], row["benchmark_return"]))
+        return out
+
+    def get_top_trade_symbols(self, strategy_id: str, k: int = 2) -> List[str]:
+        """The k symbols where this strategy traded most in the sweep. A look-ahead leak only
+        shows on a stock where the strategy actually produces signals, so the causality check
+        also runs there rather than on one arbitrary reference stock."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT symbol FROM cross_stock_results WHERE strategy_id = ? AND n_trades > 0 "
+            "ORDER BY n_trades DESC LIMIT ?",
+            (strategy_id, k),
+        )
+        return [row["symbol"] for row in cur.fetchall()]
+
     def record_causality(self, strategy_id, causal: Optional[bool], mismatches: int, tested: int) -> None:
         causal_val = None if causal is None else 1 if causal else 0
         checked_at = datetime.now(timezone.utc).isoformat()
