@@ -9,7 +9,12 @@ class CausalityResult:
     tested: int              # cut points that produced a conclusive comparison
 
 
-def check_causality(code, bars, evaluate=None, n_cuts=11, min_bars=600) -> CausalityResult:
+# Measured 2026-09-19: 11 cut points passed two Force Index strategies that 60 cut points
+# caught leaking (6/60 and 8/60 mismatches on AAPL) -- a subtle leak only shows on a few bars.
+DEFAULT_CUTS = 60
+
+
+def check_causality(code, bars, evaluate=None, n_cuts=DEFAULT_CUTS, min_bars=600) -> CausalityResult:
     if evaluate is None:
         from cerebral.trading.sandboxed_eval import evaluate_signals_verbose
         evaluate = evaluate_signals_verbose
@@ -19,6 +24,9 @@ def check_causality(code, bars, evaluate=None, n_cuts=11, min_bars=600) -> Causa
     except Exception:
         return CausalityResult(None, 0, 0)
 
+    if reason is not None and "lookahead" in reason.lower():
+        # sandboxed_eval's static guard (shift(-N)) already proved a future read.
+        return CausalityResult(False, 1, 1)
     if reason is not None or not any(full):
         return CausalityResult(None, 0, 0)
 
@@ -43,6 +51,7 @@ def check_causality(code, bars, evaluate=None, n_cuts=11, min_bars=600) -> Causa
         tested += 1
         if len(part) != c or part[c - 1] != full[c - 1]:
             mismatches += 1
+            break  # one future-dependent signal is enough; leaky strategies stay cheap
 
     if tested == 0:
         return CausalityResult(None, 0, 0)
