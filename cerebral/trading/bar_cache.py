@@ -95,7 +95,8 @@ def get_bars(symbol: str, start: str, end: str, interval: str = "1d", refresh: b
     from cerebral.trading import news_cache
     news_cache.init_news_db(db_path)
 
-    conn = sqlite3.connect(db_path)
+    # A busy timeout: several replay workers read the same cache at once.
+    conn = sqlite3.connect(db_path, timeout=60)
     try:
         conn.execute(
             """
@@ -114,9 +115,11 @@ def get_bars(symbol: str, start: str, end: str, interval: str = "1d", refresh: b
             """
         )
         # Intraday rows written before the key carried a time of day are one collapsed bar per day: corrupt.
-        conn.execute(
-            "DELETE FROM bars WHERE interval NOT IN ('1d', '1w', '1M') AND length(ts) = 10"
-        )
+        # Checked with a read first: even a no-op DELETE takes the write lock, which serialises concurrent readers.
+        if conn.execute(
+            "SELECT 1 FROM bars WHERE interval NOT IN ('1d', '1w', '1M') AND length(ts) = 10 LIMIT 1"
+        ).fetchone():
+            conn.execute("DELETE FROM bars WHERE interval NOT IN ('1d', '1w', '1M') AND length(ts) = 10")
         # Earliest start ever fetched per (symbol, interval). Gap-fill only reaches FORWARD from the newest cached
         # bar, so without this a stray old fragment hid everything before it (AAPL 5m came back with half its bars).
         conn.execute(
