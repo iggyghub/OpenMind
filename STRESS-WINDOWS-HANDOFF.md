@@ -4,6 +4,8 @@ Start here in a fresh session. Numbered, discrete entries on purpose.
 
 ## Next slice -- start here
 
+**Also done 2026-09-20: true intraday rules + runner (#1336), review category (#1334), bar-cache fixes (#1333/#1335/#1337); 0 of 8 day-trading rules profitable -- see FELIX-CAUSALITY.md.**
+
 **DONE 2026-09-20 (PR #1331 merged, run complete): stress windows found 0 robust / 0 defensive of 165 strategies;
 the permutation baseline re-run at 2 bps is still 0/247.** Results are in FELIX-CAUSALITY.md. Remaining ideas are under
 "Suggested later" (out-of-sample selection, better strategy generation, longer windows, #1329 decision). The

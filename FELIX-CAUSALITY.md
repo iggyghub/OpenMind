@@ -95,3 +95,32 @@ Windows: gfc (2007-10..2010-01), mid (2010s), bear22 (2021-12..2023-01), main (r
 - **Verdict: no book strategy has a robust edge; the "defensive" ones are just under-invested.** Null result.
 - Next: out-of-sample selection (pick on main, judge on gfc/bear22), better strategy generation (many rules are
   vague or leaky), 15-20y windows, operator decision on #1329.
+
+## Strategy review category and a correction to the counts (2026-09-20, PR #1334)
+
+53 strategies were named by pasted web-search text (`<<<EXTERNAL_UNTRUSTED_CONTENT`) and shared only 4 distinct
+code bodies that do not implement the claim they are named after. They are now held in `strategy_review` (category
+`untrusted_text`): kept in the DB, excluded from rankings, sweeps and the consistency rollup, listed in the status
+payload and on the History tab, releasable with `clear_review`. Effect: the 5-year sweep now ranks **176** strategies
+(was 228), the permutation test **195** (was 247), the stress run **167** -- all still **0 significant / 0 robust /
+0 defensive**. The conclusion did not change.
+
+## Day trading: true intraday rules (2026-09-20, PRs #1333-#1337)
+
+The book library held NO real day-trading rules: the interval guess falls back to `1d`, so Aziz's gap scans and
+"13-bar Bollinger for intraday charts" were backtested on daily bars. Building the test exposed three bar-cache bugs,
+all fixed: (1) intraday bars were keyed by date only, collapsing each day to one bar (#1333); (2) gap-fill only reached
+forward, so an old fragment hid everything before it, and the fetch end could touch Alpaca's blocked last-15-minutes
+window (#1335); (3) every read took the write lock, so parallel workers hit `database is locked` (#1337).
+
+Eight hand-authored 5-minute rules (`cerebral/trading/intraday_rules.py`: ORB, VWAP reversion, VWAP trend, gap-and-go,
+gap fade, intraday Bollinger, first-half-hour momentum, EMA9/20+VWAP), regular session, flat by the close, 0 look-ahead
+mismatches. 30 large caps x 2020-2026 (131k regular-session bars each), 2 bps per side, tool `start_intraday_research`.
+- **0 of 8 profitable after costs in every regime.** Across all 936 (rule, stock, window) results: gross > 0 on 45%,
+  net > 0 on 18%; median gross -1.9%, median net -19.2%. There is no raw timing edge for costs to erode, and costs
+  (hundreds to thousands of trades) finish the job. The high-turnover trend rules (VWAP trend, EMA+VWAP) lose 25-59%.
+- Only one window-level hit: first-half-hour momentum in the 2020 covid window (81% of stocks positive, +8.1% net,
+  q=0.01) -- and 0-3% positive in every other window. A one-regime fluke, not an edge.
+- Caveats: 8 fixed, untuned rules (a null on these variants does not rule out other rules); survivorship-biased large
+  caps; correlated stocks so p-values are optimistic; 2 bps per side is generous for 5-minute turnover.
+- **Verdict: no robust day-trading edge among the classic book rules.** Null result.
