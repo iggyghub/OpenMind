@@ -78,7 +78,7 @@ def summarize_vs_benchmark(
 
 
 PERM_CAVEAT = (
-    "Random-timing null: same trades, holding periods and exposure, shifted to arbitrary dates; 5 bps "
+    "Random-timing null: same trades, holding periods and exposure, shifted to arbitrary dates; 2 bps "
     "cost on both sides. Stocks are correlated, so the combined p is still optimistic. Informational only."
 )
 

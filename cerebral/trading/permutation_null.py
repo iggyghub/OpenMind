@@ -27,7 +27,7 @@ from typing import Optional
 
 import numpy as np
 
-DEFAULT_COST = 0.0005   # 5 bps of traded notional per unit of position change (spread + slippage + fees)
+DEFAULT_COST = 0.0002   # 2 bps of traded notional per position change: commission-free, so spread + slippage only (#1329)
 DEFAULT_SIMS = 500
 MIN_BARS = 100
 

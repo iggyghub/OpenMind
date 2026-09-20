@@ -1652,4 +1652,14 @@ describe('cross-stock panel: random-timing (permutation) line (#1251 axis 2)', (
   test('is absent until the baseline has run', () => {
     expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb })).not.toContain('Random-timing test');
   });
+
+  test('shows the regime stress-window line', () => {
+    const h = html({ ...base, top_consistent: [], top_vs_benchmark: vsb, stress: { strategies: 150, robust: 0, defensive: 3, caveat: 'Stress caveat.' } });
+    expect(h).toContain('Stress windows: 0 of 150 strategies beat buy-and-hold in every regime; 3 defensive.');
+    expect(h).toContain('Stress caveat.');
+  });
+
+  test('stress line is absent until the stress run has results', () => {
+    expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb, stress: { strategies: 0 } })).not.toContain('Stress windows');
+  });
 });

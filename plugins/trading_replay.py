@@ -215,9 +215,21 @@ class TradingReplayPlugin:
                 description=(
                     "#1251 axis 2: for every look-ahead-screened strategy, on the stocks where it "
                     "trades most, compare its return to the SAME position pattern shifted to random "
-                    "dates (same trades, holding periods, exposure, 5 bps cost). Runs in the "
+                    "dates (same trades, holding periods, exposure, 2 bps cost). Runs in the "
                     "background and resumes; results appear in get_cross_stock_replay_status. "
                     "Informational only."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="start_stress_windows",
+                description=(
+                    "Regime stress test: every causal daily strategy on ~30 large caps over the 2008 "
+                    "crash, the 2010s, the 2022 bear and the main 5-year window (2 bps cost), scored on "
+                    "return AND drawdown vs buy-and-hold. Long-history bars come from yfinance. Runs in "
+                    "the background and resumes; results appear in get_cross_stock_replay_status "
+                    "under `stress`. Informational only."
                 ),
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
@@ -249,6 +261,8 @@ class TradingReplayPlugin:
             return ToolResult(content=await get_cross_stock_replay_status())
         if tool_name == "start_permutation_baseline":
             return ToolResult(content=await start_permutation_baseline())
+        if tool_name == "start_stress_windows":
+            return ToolResult(content=await start_stress_windows())
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _list_strategies(self, args: dict) -> ToolResult:
@@ -644,6 +658,7 @@ async def get_cross_stock_replay_status() -> str:
         "vs_benchmark_significant": sum(1 for r in vs_benchmark if r["significant"]),
         "vs_benchmark_caveat": CAVEAT,
         **_permutation_status_fields(store),
+        "stress": _stress_status_fields(store),
     })
 
 
@@ -731,6 +746,121 @@ async def _run_permutation_baseline(*, pair_fn=None) -> None:
 
     await asyncio.gather(*(one(spec, symbol) for spec, symbol in jobs))
     logger.info("[permutation] baseline finished: %d/%d pairs recorded.", finished, len(jobs))
+
+
+# ── Regime stress windows (informational; never feeds graduation/retirement/gauntlet) ──
+_stress_task: Optional[asyncio.Task] = None
+_STRESS_STOCKS = 30
+_STRESS_WORKERS = 4
+_STRESS_HISTORY_START = "2006-01-01"   # warm-up before the 2007-10 gfc window
+_STRESS_MIN_EARLY_BARS = 900           # daily bars needed inside 2006-2009 to count as having 2008 history
+_STRESS_CAVEAT = (
+    "Adjusted daily bars from yfinance on today's large caps (survivorship-biased), 2 bps per side cost. "
+    "robust = beats buy-and-hold on half the stocks with positive median excess in every window; "
+    "defensive = in every window gives up at most 10% vs buy-and-hold and cuts max drawdown by 10+ points. "
+    "Stocks are correlated, so p-values are optimistic. Informational only."
+)
+
+
+def _stress_status_fields(store) -> dict:
+    from cerebral.trading.stress_windows import summarize_stress
+    res = summarize_stress(store.get_stress_rows())
+    return {
+        "strategies": len(res["strategies"]),
+        "robust": res["robust"],
+        "defensive": res["defensive"],
+        "windows": res["windows"],
+        "top": [
+            {"strategy_id": r["strategy_id"], "robust": r["robust"], "defensive": r["defensive"],
+             "windows": {w: {k: v for k, v in d.items() if k != "p_value"} for w, d in r["windows"].items()}}
+            for r in res["strategies"][:5]
+        ],
+        "caveat": _STRESS_CAVEAT,
+    }
+
+
+def _stress_stocks(end_iso, *, get_bars=None, limit=_STRESS_STOCKS) -> list:
+    """The first `limit` BASKET symbols that actually have 2006-2009 daily history. Blocking (network)."""
+    from cerebral.trading import historical_bars
+    get_bars = get_bars or historical_bars.get_daily_bars
+    out = []
+    for symbol in BASKET:
+        if len(out) >= limit:
+            break
+        early = get_bars(symbol, _STRESS_HISTORY_START, end_iso)
+        if len(early) and (early.index < "2010-01-01").sum() >= _STRESS_MIN_EARLY_BARS:
+            out.append(symbol)
+    return out
+
+
+def _stress_pair(code, symbol, end_iso, *, get_bars=None, run=None) -> Optional[dict]:
+    """{window: evaluate_window result} for one (strategy, symbol): ONE sandbox run over the whole
+    history, position sliced per window. None if the strategy fails or never holds. Blocking."""
+    from cerebral.trading import historical_bars
+    from cerebral.trading.stress_windows import evaluate_window, windows
+    get_bars = get_bars or historical_bars.get_daily_bars
+    if run is None:
+        from cerebral.trading.replay import run_bars_verbose as run
+    bars = get_bars(symbol, _STRESS_HISTORY_START, end_iso)
+    if len(bars) < 300:
+        return None
+    _equity, position, _metrics, reason = run(code, bars, "1d")
+    if reason is not None or not position.any():
+        return None
+    returns = bars["Close"].pct_change().fillna(0.0)
+    out = {}
+    for name, (w_start, w_end) in windows(datetime.date.fromisoformat(end_iso)).items():
+        mask = ((bars.index >= w_start) & (bars.index < w_end)).astype(bool)
+        res = evaluate_window(position.values[mask], returns.values[mask])
+        if res is not None:
+            out[name] = res
+    return out or None
+
+
+async def start_stress_windows() -> str:
+    global _stress_task
+    if _stress_task is not None and not _stress_task.done():
+        return "Stress windows already running."
+    _stress_task = asyncio.create_task(_run_stress_windows())
+    return "Stress windows started."
+
+
+async def _run_stress_windows(*, pair_fn=None, stocks_fn=None) -> None:
+    from cerebral.trading.stress_windows import RESEARCH_COST
+    pair_fn = pair_fn or _stress_pair
+    stocks_fn = stocks_fn or _stress_stocks
+    store = CrossStockStore()
+    non_causal = store.get_non_causal_ids()
+    done = store.get_stress_done()
+    end = datetime.date.today().isoformat()
+    loop = asyncio.get_event_loop()
+    stocks = await loop.run_in_executor(None, stocks_fn, end)
+    jobs = [
+        (spec, symbol)
+        for spec in StrategyStore().list_all()
+        if spec.cross_test_eligible and spec.interval == "1d" and spec.strategy_id not in non_causal
+        for symbol in stocks
+        if (spec.strategy_id, symbol) not in done
+    ]
+    sem = asyncio.Semaphore(_STRESS_WORKERS)
+    finished = 0
+
+    async def one(spec, symbol) -> None:
+        nonlocal finished
+        async with sem:
+            try:
+                res = await loop.run_in_executor(None, pair_fn, spec.code, symbol, end)
+            except Exception as exc:
+                logger.warning("[stress] %s/%s failed: %s", spec.strategy_id[:60], symbol, exc)
+                return
+            if not res:
+                return
+            for window, row in res.items():
+                store.record_stress(spec.strategy_id, symbol, window, row, RESEARCH_COST)
+            finished += 1
+
+    await asyncio.gather(*(one(spec, symbol) for spec, symbol in jobs))
+    logger.info("[stress] finished: %d/%d pairs recorded over %d stocks.", finished, len(jobs), len(stocks))
 
 
 _CAUSALITY_REFERENCE_SYMBOL = "AAPL"   # in BASKET; deep, liquid history

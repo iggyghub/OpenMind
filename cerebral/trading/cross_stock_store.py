@@ -87,6 +87,24 @@ class CrossStockStore:
             );
         """)
 
+        # Regime stress windows: one row per (strategy, symbol, window).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_stress (
+                strategy_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                window TEXT NOT NULL,
+                net_return REAL NOT NULL,
+                gross_return REAL NOT NULL,
+                benchmark_return REAL NOT NULL,
+                max_drawdown REAL NOT NULL,
+                benchmark_max_drawdown REAL NOT NULL,
+                n_trades INTEGER NOT NULL,
+                cost REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (strategy_id, symbol, window)
+            );
+        """)
+
         # F1 (#1246): detect old schema (PK includes run_id) and migrate.
         # As of 2026-09-15 the table holds exactly 22 leftover S2 verification
         # rows (confirmed via direct DB query before this branch was cut) --
@@ -339,6 +357,35 @@ class CrossStockStore:
         for row in cur.fetchall():
             if row["strategy_id"] not in non_causal:
                 out.setdefault(row["strategy_id"], []).append(row["p_value"])
+        return out
+
+    def record_stress(self, strategy_id: str, symbol: str, window: str, res: dict, cost: float) -> None:
+        self.conn.execute(
+            """INSERT OR REPLACE INTO strategy_stress
+                   (strategy_id, symbol, window, net_return, gross_return, benchmark_return,
+                    max_drawdown, benchmark_max_drawdown, n_trades, cost, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (strategy_id, symbol, window, res["net_return"], res["gross_return"], res["benchmark_return"],
+             res["max_drawdown"], res["benchmark_max_drawdown"], res["n_trades"], cost,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        self.conn.commit()
+
+    def get_stress_done(self) -> set:
+        """(strategy_id, symbol) pairs with at least one recorded window."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT DISTINCT strategy_id, symbol FROM strategy_stress")
+        return {(row["strategy_id"], row["symbol"]) for row in cur.fetchall()}
+
+    def get_stress_rows(self) -> Dict[str, Dict[str, List[dict]]]:
+        """{strategy_id: {window: [row dicts]}}, causal strategies only."""
+        non_causal = self.get_non_causal_ids()
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM strategy_stress")
+        out: Dict[str, Dict[str, List[dict]]] = {}
+        for row in cur.fetchall():
+            if row["strategy_id"] not in non_causal:
+                out.setdefault(row["strategy_id"], {}).setdefault(row["window"], []).append(dict(row))
         return out
 
     def record_causality(self, strategy_id, causal: Optional[bool], mismatches: int, tested: int) -> None:

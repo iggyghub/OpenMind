@@ -2219,6 +2219,7 @@ function _renderCrossStockControl(status) {
         <span class="replay-info">${nSig} of ${nRanked} strategies significant after multiple-comparisons adjustment.</span>
         <span class="replay-info">${_escapeHtml(status.vs_benchmark_caveat || '')}</span>
         ${status.perm_ranked ? `<span class="replay-info">Random-timing test: ${status.perm_significant ?? 0} of ${status.perm_ranked} strategies beat random timing after adjustment. ${_escapeHtml(status.perm_caveat || '')}</span>` : ''}
+        ${status.stress && status.stress.strategies ? `<span class="replay-info">Stress windows: ${status.stress.robust ?? 0} of ${status.stress.strategies} strategies beat buy-and-hold in every regime; ${status.stress.defensive ?? 0} defensive. ${_escapeHtml(status.stress.caveat || '')}</span>` : ''}
       `
       : '<span class="replay-info">No strategy has enough tested stocks to rank yet.</span>';
   } else {
