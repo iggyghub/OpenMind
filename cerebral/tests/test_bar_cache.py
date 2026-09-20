@@ -171,3 +171,18 @@ def test_stray_old_fragment_does_not_hide_an_earlier_start(mock_data_dir, mock_a
     assert mock_alpaca_client.get_bars.call_args.args[1] == "2020-01-01"     # backfilled from the requested start
     get_bars("AAPL", "2020-01-01", "2024-06-03")
     assert mock_alpaca_client.get_bars.call_count == 1                        # and remembered: not asked again
+
+
+def test_concurrent_cache_hits_do_not_contend_for_the_write_lock(mock_data_dir, mock_alpaca_client):
+    from concurrent.futures import ThreadPoolExecutor
+    mock_alpaca_client.get_bars.return_value = _intraday_frame()
+    get_bars("AAPL", "2023-01-03", "2023-01-03", "5m")                 # warm the cache
+    conn = sqlite3.connect(os.path.join(str(mock_data_dir), "bars.db"))
+    conn.execute("BEGIN IMMEDIATE")                                    # someone else holds the write lock...
+    try:
+        with ThreadPoolExecutor(4) as pool:                            # ...pure cache hits must still read fine
+            results = list(pool.map(lambda _: len(get_bars("AAPL", "2023-01-03", "2023-01-03", "5m")), range(8)))
+    finally:
+        conn.rollback()
+        conn.close()
+    assert results == [3] * 8
