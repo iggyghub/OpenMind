@@ -1659,6 +1659,16 @@ describe('cross-stock panel: random-timing (permutation) line (#1251 axis 2)', (
     expect(h).toContain('Stress caveat.');
   });
 
+  test('shows the day-trading rules line', () => {
+    const h = html({ ...base, top_consistent: [], top_vs_benchmark: vsb, intraday: { rules: 8, profitable: 0, caveat: 'Intraday caveat.' } });
+    expect(h).toContain('Day-trading rules: 0 of 8 profitable after costs in every regime.');
+    expect(h).toContain('Intraday caveat.');
+  });
+
+  test('day-trading line is absent until the intraday run has results', () => {
+    expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb, intraday: { rules: 0 } })).not.toContain('Day-trading rules');
+  });
+
   test('lists strategies held for review by category', () => {
     const h = html({ ...base, top_consistent: [], top_vs_benchmark: vsb, needs_review: [{ category: 'untrusted_text' }, { category: 'untrusted_text' }] });
     expect(h).toContain('2 strategies held for review');

@@ -381,17 +381,20 @@ class CrossStockStore:
         )
         self.conn.commit()
 
-    def get_stress_done(self) -> set:
-        """(strategy_id, symbol) pairs with at least one recorded window."""
+    def get_stress_done(self, intraday: bool = False) -> set:
+        """(strategy_id, symbol) pairs with at least one recorded window (daily, or intraday "i:" windows)."""
         cur = self.conn.cursor()
-        cur.execute("SELECT DISTINCT strategy_id, symbol FROM strategy_stress")
+        cur.execute(
+            "SELECT DISTINCT strategy_id, symbol FROM strategy_stress WHERE window "
+            + ("LIKE 'i:%'" if intraday else "NOT LIKE 'i:%'")
+        )
         return {(row["strategy_id"], row["symbol"]) for row in cur.fetchall()}
 
     def get_stress_rows(self) -> Dict[str, Dict[str, List[dict]]]:
         """{strategy_id: {window: [row dicts]}}, causal strategies only."""
         non_causal = self.get_excluded_ids()
         cur = self.conn.cursor()
-        cur.execute("SELECT * FROM strategy_stress")
+        cur.execute("SELECT * FROM strategy_stress WHERE window NOT LIKE 'i:%'")
         out: Dict[str, Dict[str, List[dict]]] = {}
         for row in cur.fetchall():
             if row["strategy_id"] not in non_causal:
@@ -417,6 +420,17 @@ class CrossStockStore:
         cur = self.conn.cursor()
         cur.execute("SELECT strategy_id FROM strategy_causality")
         return {row["strategy_id"] for row in cur.fetchall()}
+
+    def get_intraday_rows(self) -> Dict[str, Dict[str, List[dict]]]:
+        """{strategy_id: {window: [row dicts]}} for the intraday ("i:") windows."""
+        excluded = self.get_excluded_ids()
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM strategy_stress WHERE window LIKE 'i:%'")
+        out: Dict[str, Dict[str, List[dict]]] = {}
+        for row in cur.fetchall():
+            if row["strategy_id"] not in excluded:
+                out.setdefault(row["strategy_id"], {}).setdefault(row["window"], []).append(dict(row))
+        return out
 
     def set_review(self, strategy_id: str, category: str, reason: str) -> None:
         self.conn.execute(
