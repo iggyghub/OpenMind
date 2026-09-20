@@ -45,6 +45,21 @@ def windows(today: Optional[datetime.date] = None) -> Dict[str, tuple]:
     return {**FIXED_WINDOWS, "main": main}
 
 
+# Intraday history (Alpaca) starts 2016 but 5-minute bars are heavy, so research uses 2020 on. The "i:" prefix keeps
+# these rows apart from the daily windows in strategy_stress.
+INTRADAY_FIXED_WINDOWS = {
+    "i:covid": ("2020-02-15", "2020-07-01"),     # crash and the retail-driven rebound
+    "i:bull21": ("2021-01-01", "2022-01-01"),
+    "i:bear22": ("2022-01-01", "2023-01-01"),
+}
+
+
+def intraday_windows(today: Optional[datetime.date] = None) -> Dict[str, tuple]:
+    today = today or datetime.date.today()
+    recent = ((today - datetime.timedelta(days=365 * 2)).isoformat(), today.isoformat())
+    return {**INTRADAY_FIXED_WINDOWS, "i:recent": recent}
+
+
 def _max_drawdown(net: np.ndarray) -> float:
     equity = np.cumprod(1.0 + net)
     peak = np.maximum.accumulate(equity)
@@ -83,6 +98,42 @@ def _summarise_window(rows: Sequence[dict]) -> dict:
         "median_dd_gain": statistics.median(r["max_drawdown"] - r["benchmark_max_drawdown"] for r in rows),
         "p_value": binom_upper_tail(wins, n, 0.5),
     }
+
+
+def summarize_intraday(rows_by_strategy: Dict[str, Dict[str, Sequence[dict]]], min_stocks: int = MIN_STOCKS) -> dict:
+    """Day-trading rules are flat overnight, so buy-and-hold is the wrong yardstick. The test is absolute:
+    does the rule make money AFTER costs, on most stocks, in EVERY regime? Per window: share of stocks with
+    positive net return, median net and gross (the gap is the cost drag), a coin-flip p on positive/negative
+    BH-adjusted across rules, and `profitable` = positive share >= 0.5 with positive median net in every window."""
+    window_names = sorted({w for by_w in rows_by_strategy.values() for w in by_w})
+    per: Dict[str, Dict[str, dict]] = {}
+    for sid, by_w in rows_by_strategy.items():
+        for w, rows in by_w.items():
+            if len(rows) >= min_stocks:
+                n = len(rows)
+                wins = sum(1 for r in rows if r["net_return"] > 0)
+                per.setdefault(sid, {})[w] = {
+                    "stocks": n,
+                    "positive_share": wins / n,
+                    "median_net": statistics.median(r["net_return"] for r in rows),
+                    "median_gross": statistics.median(r["gross_return"] for r in rows),
+                    "median_trades": statistics.median(r["n_trades"] for r in rows),
+                    "p_value": binom_upper_tail(wins, n, 0.5),
+                }
+    win_stats: Dict[str, dict] = {}
+    for w in window_names:
+        sids = [s for s in per if w in per[s]]
+        for s, q in zip(sids, bh_adjust([per[s][w]["p_value"] for s in sids])):
+            per[s][w]["q_value"] = q
+            per[s][w]["significant"] = q < 0.05 and per[s][w]["median_net"] > 0
+        win_stats[w] = {"ranked": len(sids), "significant": sum(1 for s in sids if per[s][w]["significant"])}
+    out: List[dict] = []
+    for sid, by_w in per.items():
+        complete = all(w in by_w for w in window_names)
+        profitable = complete and all(v["positive_share"] >= 0.5 and v["median_net"] > 0 for v in by_w.values())
+        out.append({"strategy_id": sid, "windows": by_w, "profitable": profitable})
+    out.sort(key=lambda r: (-int(r["profitable"]), -statistics.mean(v["median_net"] for v in r["windows"].values())))
+    return {"windows": win_stats, "strategies": out, "profitable": sum(1 for r in out if r["profitable"])}
 
 
 def summarize_stress(rows_by_strategy: Dict[str, Dict[str, Sequence[dict]]], min_stocks: int = MIN_STOCKS) -> dict:

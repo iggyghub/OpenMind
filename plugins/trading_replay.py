@@ -234,6 +234,19 @@ class TradingReplayPlugin:
                 plugin=PLUGIN_NAME,
                 schema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="start_intraday_research",
+                description=(
+                    "Day-trading research: eight hand-authored 5-minute rules (opening-range breakout, VWAP "
+                    "reversion/trend, gap-and-go, gap fade, intraday Bollinger, half-hour momentum, EMA+VWAP) on "
+                    "~30 large caps over 2020-today (regular session, flat by the close, 2 bps cost), scored "
+                    "per regime on absolute net return. Fetches Alpaca 5m bars, runs in the background and "
+                    "resumes; results appear in get_cross_stock_replay_status under `intraday`. "
+                    "Informational only."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -263,6 +276,8 @@ class TradingReplayPlugin:
             return ToolResult(content=await start_permutation_baseline())
         if tool_name == "start_stress_windows":
             return ToolResult(content=await start_stress_windows())
+        if tool_name == "start_intraday_research":
+            return ToolResult(content=await start_intraday_research())
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _list_strategies(self, args: dict) -> ToolResult:
@@ -659,6 +674,7 @@ async def get_cross_stock_replay_status() -> str:
         "vs_benchmark_caveat": CAVEAT,
         **_permutation_status_fields(store),
         "stress": _stress_status_fields(store),
+        "intraday": _intraday_status_fields(store),
         "needs_review": store.get_review_rows(),
     })
 
@@ -862,6 +878,128 @@ async def _run_stress_windows(*, pair_fn=None, stocks_fn=None) -> None:
 
     await asyncio.gather(*(one(spec, symbol) for spec, symbol in jobs))
     logger.info("[stress] finished: %d/%d pairs recorded over %d stocks.", finished, len(jobs), len(stocks))
+
+
+# ── Intraday (day-trading) rules: true 5-minute bars, regular session, flat by the close ──
+_intraday_task: Optional[asyncio.Task] = None
+_INTRADAY_STOCKS = 30
+_INTRADAY_WORKERS = 4
+_INTRADAY_START = "2020-01-02"
+_INTRADAY_MIN_BARS = 90_000            # regular-session 5m bars since 2020 (~98k possible) for a stock to count
+_INTRADAY_CAVEAT = (
+    "Hand-authored 5-minute rules on Alpaca regular-session bars (IEX feed volume), 2 bps per side cost, "
+    "flat by the close. profitable = positive net return on half the stocks with positive median net in every "
+    "window; the gross vs net gap is the cost drag. Survivorship-biased large caps, correlated stocks, so "
+    "p-values are optimistic. Informational only."
+)
+
+
+def _intraday_status_fields(store) -> dict:
+    from cerebral.trading.stress_windows import summarize_intraday
+    res = summarize_intraday(store.get_intraday_rows())
+    return {
+        "rules": len(res["strategies"]),
+        "profitable": res["profitable"],
+        "windows": res["windows"],
+        "top": [
+            {"strategy_id": r["strategy_id"], "profitable": r["profitable"],
+             "windows": {w: {k: v for k, v in d.items() if k != "p_value"} for w, d in r["windows"].items()}}
+            for r in res["strategies"]
+        ],
+        "caveat": _INTRADAY_CAVEAT,
+    }
+
+
+def _regular_session(bars):
+    return bars.between_time("09:30", "15:55")
+
+
+def _intraday_stocks(end_iso, *, get_bars=None, limit=_INTRADAY_STOCKS) -> list:
+    """First `limit` BASKET symbols with a full 5-minute history since 2020. Blocking (Alpaca fetch)."""
+    get_bars = get_bars or bar_cache.get_bars
+    out = []
+    for symbol in BASKET:
+        if len(out) >= limit:
+            break
+        try:
+            bars = _regular_session(get_bars(symbol, _INTRADAY_START, end_iso, "5m"))
+        except Exception as exc:
+            logger.warning("[intraday] %s bars unavailable: %s", symbol, exc)
+            continue
+        if len(bars) >= _INTRADAY_MIN_BARS:
+            out.append(symbol)
+    return out
+
+
+def _intraday_pair(code, symbol, end_iso, *, get_bars=None, run=None) -> Optional[dict]:
+    """{window: evaluate_window result} for one (rule, symbol) over the intraday windows; one sandbox run."""
+    from cerebral.trading.stress_windows import evaluate_window, intraday_windows
+    get_bars = get_bars or bar_cache.get_bars
+    if run is None:
+        from cerebral.trading.replay import run_bars_verbose as run
+    bars = _regular_session(get_bars(symbol, _INTRADAY_START, end_iso, "5m"))
+    if len(bars) < 5_000:
+        return None
+    _equity, position, _metrics, reason = run(code, bars, "5m")
+    if reason is not None or not position.any():
+        return None
+    returns = bars["Close"].pct_change().fillna(0.0)
+    out = {}
+    for name, (w_start, w_end) in intraday_windows(datetime.date.fromisoformat(end_iso)).items():
+        mask = ((bars.index >= w_start) & (bars.index < w_end)).astype(bool)
+        res = evaluate_window(position.values[mask], returns.values[mask])
+        if res is not None:
+            out[name] = res
+    return out or None
+
+
+async def start_intraday_research() -> str:
+    global _intraday_task
+    if _intraday_task is not None and not _intraday_task.done():
+        return "Intraday research already running."
+    _intraday_task = asyncio.create_task(_run_intraday_research())
+    return "Intraday research started."
+
+
+async def _run_intraday_research(*, pair_fn=None, stocks_fn=None) -> None:
+    from cerebral.trading.intraday_rules import RULES, register_intraday_rules
+    from cerebral.trading.stress_windows import RESEARCH_COST
+    pair_fn = pair_fn or _intraday_pair
+    stocks_fn = stocks_fn or _intraday_stocks
+    store = CrossStockStore()
+    strategies = StrategyStore()
+    register_intraday_rules(strategies)
+    excluded = store.get_excluded_ids()
+    done = store.get_stress_done(intraday=True)
+    end = datetime.date.today().isoformat()
+    loop = asyncio.get_event_loop()
+    stocks = await loop.run_in_executor(None, stocks_fn, end)
+    jobs = [
+        (spec, symbol)
+        for spec in strategies.list_all()
+        if spec.strategy_id in RULES and spec.strategy_id not in excluded
+        for symbol in stocks
+        if (spec.strategy_id, symbol) not in done
+    ]
+    sem = asyncio.Semaphore(_INTRADAY_WORKERS)
+    finished = 0
+
+    async def one(spec, symbol) -> None:
+        nonlocal finished
+        async with sem:
+            try:
+                res = await loop.run_in_executor(None, pair_fn, spec.code, symbol, end)
+            except Exception as exc:
+                logger.warning("[intraday] %s/%s failed: %s", spec.strategy_id[:60], symbol, exc)
+                return
+            if not res:
+                return
+            for window, row in res.items():
+                store.record_stress(spec.strategy_id, symbol, window, row, RESEARCH_COST)
+            finished += 1
+
+    await asyncio.gather(*(one(spec, symbol) for spec, symbol in jobs))
+    logger.info("[intraday] finished: %d/%d pairs recorded over %d stocks.", finished, len(jobs), len(stocks))
 
 
 _CAUSALITY_REFERENCE_SYMBOL = "AAPL"   # in BASKET; deep, liquid history
