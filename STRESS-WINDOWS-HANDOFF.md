@@ -4,8 +4,10 @@ Start here in a fresh session. Numbered, discrete entries on purpose.
 
 ## Next slice -- start here
 
-**Finish the stress-window runner on branch `feat/stress-windows`** (steps under "Remaining work"). The pure
-pieces and their tests are already committed there (16 tests green). Nothing is merged to master yet.
+**DONE 2026-09-20 (PR #1331 merged, run complete): stress windows found 0 robust / 0 defensive of 165 strategies;
+the permutation baseline re-run at 2 bps is still 0/247.** Results are in FELIX-CAUSALITY.md. Remaining ideas are under
+"Suggested later" (out-of-sample selection, better strategy generation, longer windows, #1329 decision). The
+"Remaining work" list below is historical.
 
 ## Goal
 

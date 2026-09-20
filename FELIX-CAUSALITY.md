@@ -71,3 +71,27 @@ circular-shift draws per pair, 5 bps notional cost on strategy and controls alik
 - **0 of 247 ranked strategies significant** after Bonferroni-over-own-stocks + Benjamini-Hochberg (best q = 0.37).
 - Smoke test: both known look-ahead strategies hit the minimum possible p (0.002), so the null also works as a leak detector.
 - Separate finding: the backtest cost model charges by share price, not traded notional (issue #1329, needs a decision).
+
+## Random-timing baseline re-run at 2 bps (2026-09-20)
+
+Cost unified to 2 bps per side of traded notional (commission-free platform; #1329 comment). Same 1,978 pairs:
+p<0.05 on 10.2%, p<0.01 on 3.0%, observed beat the null median on 57.2%. **0 of 247 strategies significant**
+after adjustment -- unchanged conclusion.
+
+## Regime stress windows result (2026-09-20, PR #1331)
+
+165 causal daily strategies x 30 large caps with 2008 history (4,939 pairs, one sandbox run per pair over
+2006->today, position sliced per window, 2 bps cost, yfinance adjusted bars, survivorship-biased).
+Windows: gfc (2007-10..2010-01), mid (2010s), bear22 (2021-12..2023-01), main (rolling 5y).
+- **Robust (beats buy-and-hold on >=half the stocks with positive median excess in EVERY window): 0 of 165.**
+- **Defensive (every window: median excess >= -10% and drawdown cut >= 10 points): 0 of 165.**
+- Per-window strategies significant vs buy-and-hold (coin-flip sign test, BH-adjusted): gfc 1, mid 0, main 0,
+  **bear22 126 -- an artifact, not an edge.** Median strategy is nearly flat (bear22 median return -1.7% vs
+  buy-and-hold -26%; 20% of pairs within +-2% of zero; median 24 trades): a rule that mostly sits in cash "beats"
+  a falling market. The same rules lose to buy-and-hold in the 2010s (beat share 3%) and the 5y window (13%).
+  Requiring all windows at once is what removes the artifact -- nobody passes.
+- Median max drawdown: strategy -14% vs buy-and-hold -39% in bear22, but the strategy is barely invested; the
+  protection is exposure, not timing skill (the permutation test is the timing check).
+- **Verdict: no book strategy has a robust edge; the "defensive" ones are just under-invested.** Null result.
+- Next: out-of-sample selection (pick on main, judge on gfc/bear22), better strategy generation (many rules are
+  vague or leaky), 15-20y windows, operator decision on #1329.
