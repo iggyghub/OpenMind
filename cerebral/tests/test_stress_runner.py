@@ -99,3 +99,13 @@ async def test_status_payload_carries_the_stress_block(store, monkeypatch):
 
 def test_the_tool_is_registered():
     assert "start_stress_windows" in {t.name for t in tr.create().list_tools()}
+
+
+async def test_status_payload_lists_strategies_held_for_review(store, monkeypatch):
+    store.set_review("s", "untrusted_text", "why")
+    monkeypatch.setattr(tr, "CrossStockStore", lambda: store)
+    monkeypatch.setattr(tr, "build_pairs", lambda specs, basket: [])
+    monkeypatch.setattr(tr, "StrategyStore", lambda: types.SimpleNamespace(list_all=lambda: []))
+    monkeypatch.setattr(tr, "SettingsStore", lambda: types.SimpleNamespace(get=lambda k: None))
+    data = json.loads(await tr.get_cross_stock_replay_status())
+    assert [r["category"] for r in data["needs_review"]] == ["untrusted_text"]
