@@ -659,6 +659,7 @@ async def get_cross_stock_replay_status() -> str:
         "vs_benchmark_caveat": CAVEAT,
         **_permutation_status_fields(store),
         "stress": _stress_status_fields(store),
+        "needs_review": store.get_review_rows(),
     })
 
 
@@ -711,7 +712,7 @@ async def _run_permutation_baseline(*, pair_fn=None) -> None:
     from cerebral.trading.permutation_null import DEFAULT_COST
     pair_fn = pair_fn or _permutation_pair
     store = CrossStockStore()
-    non_causal = store.get_non_causal_ids()
+    non_causal = store.get_excluded_ids()
     done = store.get_permutation_done()
     today = datetime.date.today()
     start = (today - datetime.timedelta(days=365 * _CROSS_STOCK_WINDOW_YEARS)).isoformat()
@@ -830,7 +831,7 @@ async def _run_stress_windows(*, pair_fn=None, stocks_fn=None) -> None:
     pair_fn = pair_fn or _stress_pair
     stocks_fn = stocks_fn or _stress_stocks
     store = CrossStockStore()
-    non_causal = store.get_non_causal_ids()
+    non_causal = store.get_excluded_ids()
     done = store.get_stress_done()
     end = datetime.date.today().isoformat()
     loop = asyncio.get_event_loop()
@@ -950,6 +951,8 @@ async def _run_cross_stock_replay() -> None:
     store = CrossStockStore()
     run_id = store.create_run(start, end)
 
+    from cerebral.trading.strategy_review import hold_untrusted_text_strategies
+    hold_untrusted_text_strategies(StrategyStore(), store)
     await _ensure_causality_checked(store, StrategyStore().list_all())
 
     pairs = build_pairs(StrategyStore().list_all(), BASKET)

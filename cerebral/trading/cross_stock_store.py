@@ -87,6 +87,16 @@ class CrossStockStore:
             );
         """)
 
+        # Strategies held out of every ranking for a human to review (e.g. untrusted source text).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_review (
+                strategy_id TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+        """)
+
         # Regime stress windows: one row per (strategy, symbol, window).
         cur.execute("""
             CREATE TABLE IF NOT EXISTS strategy_stress (
@@ -296,7 +306,7 @@ class CrossStockStore:
         get_consistency_by_strategy, and belong to a strategy the causality gate has not marked
         as reading future bars. A NULL benchmark is excluded, never counted as a loss."""
         interval_by_strategy = interval_by_strategy or {}
-        non_causal = self.get_non_causal_ids()
+        non_causal = self.get_excluded_ids()
         cur = self.conn.cursor()
         cur.execute(
             """SELECT strategy_id, net_return, benchmark_return, n_trades
@@ -350,7 +360,7 @@ class CrossStockStore:
 
     def get_permutation_pvalues(self) -> Dict[str, List[float]]:
         """{strategy_id: [p_value per tested stock]}, causal strategies only."""
-        non_causal = self.get_non_causal_ids()
+        non_causal = self.get_excluded_ids()
         cur = self.conn.cursor()
         cur.execute("SELECT strategy_id, p_value FROM strategy_permutation")
         out: Dict[str, List[float]] = {}
@@ -379,7 +389,7 @@ class CrossStockStore:
 
     def get_stress_rows(self) -> Dict[str, Dict[str, List[dict]]]:
         """{strategy_id: {window: [row dicts]}}, causal strategies only."""
-        non_causal = self.get_non_causal_ids()
+        non_causal = self.get_excluded_ids()
         cur = self.conn.cursor()
         cur.execute("SELECT * FROM strategy_stress")
         out: Dict[str, Dict[str, List[dict]]] = {}
@@ -407,6 +417,31 @@ class CrossStockStore:
         cur = self.conn.cursor()
         cur.execute("SELECT strategy_id FROM strategy_causality")
         return {row["strategy_id"] for row in cur.fetchall()}
+
+    def set_review(self, strategy_id: str, category: str, reason: str) -> None:
+        self.conn.execute(
+            """INSERT INTO strategy_review (strategy_id, category, reason, created_at) VALUES (?, ?, ?, ?)
+               ON CONFLICT(strategy_id) DO UPDATE SET category=excluded.category, reason=excluded.reason""",
+            (strategy_id, category, reason, datetime.now(timezone.utc).isoformat()),
+        )
+        self.conn.commit()
+
+    def clear_review(self, strategy_id: str) -> None:
+        """Release a reviewed strategy back into the rankings."""
+        self.conn.execute("DELETE FROM strategy_review WHERE strategy_id = ?", (strategy_id,))
+        self.conn.commit()
+
+    def get_review_rows(self, category: Optional[str] = None) -> List[dict]:
+        cur = self.conn.cursor()
+        if category:
+            cur.execute("SELECT * FROM strategy_review WHERE category = ? ORDER BY created_at", (category,))
+        else:
+            cur.execute("SELECT * FROM strategy_review ORDER BY created_at")
+        return [dict(r) for r in cur.fetchall()]
+
+    def get_excluded_ids(self) -> set:
+        """Everything kept out of rankings and sweeps: look-ahead leaks plus strategies held for review."""
+        return self.get_non_causal_ids() | {r["strategy_id"] for r in self.get_review_rows()}
 
     def get_non_causal_ids(self) -> set:
         cur = self.conn.cursor()

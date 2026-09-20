@@ -1659,6 +1659,16 @@ describe('cross-stock panel: random-timing (permutation) line (#1251 axis 2)', (
     expect(h).toContain('Stress caveat.');
   });
 
+  test('lists strategies held for review by category', () => {
+    const h = html({ ...base, top_consistent: [], top_vs_benchmark: vsb, needs_review: [{ category: 'untrusted_text' }, { category: 'untrusted_text' }] });
+    expect(h).toContain('2 strategies held for review');
+    expect(h).toContain('untrusted_text');
+  });
+
+  test('review line is absent when nothing is held', () => {
+    expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb, needs_review: [] })).not.toContain('held for review');
+  });
+
   test('stress line is absent until the stress run has results', () => {
     expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb, stress: { strategies: 0 } })).not.toContain('Stress windows');
   });
