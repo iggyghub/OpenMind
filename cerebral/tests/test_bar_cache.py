@@ -127,7 +127,7 @@ def test_intraday_bars_keep_their_time_of_day(mock_data_dir, mock_alpaca_client)
     assert len(df) == 3                                    # was collapsed to 1 bar per day
     assert [t.strftime("%H:%M") for t in df.index] == ["09:30", "09:35", "15:55"]
     # the bare end date covers the whole day for the read AND the fetch reaches into the next day
-    assert mock_alpaca_client.get_bars.call_args.args[2] == "2023-01-04"
+    assert mock_alpaca_client.get_bars.call_args.args[2] == "2023-01-04T00:00:00"
     assert len(get_bars("AAPL", "2023-01-03", "2023-01-03", "5m")) == 3
     assert mock_alpaca_client.get_bars.call_count == 1     # second read is served from cache
 
@@ -147,3 +147,27 @@ def test_collapsed_intraday_rows_are_purged_but_daily_rows_survive(mock_data_dir
     conn = sqlite3.connect(os.path.join(str(mock_data_dir), "bars.db"))
     assert conn.execute("SELECT count(*) FROM bars WHERE interval='5m'").fetchone()[0] == 0
     conn.close()
+
+
+def test_intraday_fetch_never_reaches_into_the_last_twenty_minutes(mock_data_dir, mock_alpaca_client):
+    from datetime import datetime, timedelta, timezone
+    mock_alpaca_client.get_bars.return_value = pd.DataFrame()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    get_bars("AAPL", today, today, "5m")
+    fetched_to = datetime.fromisoformat(mock_alpaca_client.get_bars.call_args.args[2])
+    assert fetched_to <= datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=19)
+
+
+def test_stray_old_fragment_does_not_hide_an_earlier_start(mock_data_dir, mock_alpaca_client):
+    conn = sqlite3.connect(os.path.join(str(mock_data_dir), "bars.db"))
+    conn.execute(_CREATE_BARS_TABLE)
+    conn.execute("INSERT INTO bars VALUES ('AAPL', '1d', '2024-06-03', 1, 1, 1, 1, 1, 'x')")
+    conn.commit()
+    conn.close()
+    mock_alpaca_client.get_bars.return_value = pd.DataFrame({
+        "Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0], "Volume": [1]},
+        index=pd.to_datetime(["2020-01-02"]))
+    get_bars("AAPL", "2020-01-01", "2024-06-03")
+    assert mock_alpaca_client.get_bars.call_args.args[1] == "2020-01-01"     # backfilled from the requested start
+    get_bars("AAPL", "2020-01-01", "2024-06-03")
+    assert mock_alpaca_client.get_bars.call_count == 1                        # and remembered: not asked again
