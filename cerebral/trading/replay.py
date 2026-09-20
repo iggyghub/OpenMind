@@ -12,7 +12,7 @@ import pandas as pd
 from cerebral.trading import news_cache
 from cerebral.trading.gauntlet import compute_max_holding_days, _bars_per_year
 from cerebral.trading.sandboxed_eval import evaluate_signals, evaluate_signals_verbose
-from cerebral.trading.cost_model import Trade, compute_backtest_result
+from cerebral.trading.cost_model import DEFAULT_INITIAL_CAPITAL, Trade, compute_backtest_result
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ def derive_trades(position: pd.Series, close: pd.Series) -> list[Trade]:
                     index=pos_idx,
                     direction=direction,
                     price=price,
-                    value=abs(delta) * price,
+                    value=abs(delta) * DEFAULT_INITIAL_CAPITAL,   # notional, not share price (#1329)
                 )
             )
         prev = cur
@@ -75,11 +75,9 @@ def run_bars_verbose(
     # returns a BacktestResult dataclass (cerebral/trading/cost_model.py), not
     # a dict -- .net_returns/.gross_returns are the real attributes.
     trades = derive_trades(position, bars["Close"])
-    # ponytail: {} is NOT zero-cost -- apply_costs_to_returns defaults to min=0.01/max=0.03,
-    # so {} produces the same 2% avg spread as the gauntlet's explicit config.  The original
-    # comment ("Zero-cost baseline; reuse gauntlet default convention") was wrong on both
-    # counts.  F4 (#1249) measured and confirmed parity; pass cost_config explicitly to
-    # override for sensitivity analysis.
+    # ponytail: {} is NOT zero-cost -- apply_costs_to_returns falls back to the cost_model defaults
+    # (2 bps per side of traded notional since #1329; it was a price-scaled 1-3% before). Pass cost_config
+    # explicitly to override for sensitivity analysis.
     _cost_config = cost_config if cost_config is not None else {}
     net_result = compute_backtest_result(list(daily_returns), trades, _cost_config)
     metrics = {

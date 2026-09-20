@@ -69,10 +69,10 @@ def test_derive_trades_flat_long_flat():
     assert len(trades) == 2
     assert trades[0].direction == "buy"
     assert trades[0].price == 10.0
-    assert trades[0].value == 10.0
+    assert trades[0].value == 10_000.0    # notional (one unit of capital), NOT the share price (#1329)
     assert trades[1].direction == "sell"
     assert trades[1].price == 10.0
-    assert trades[1].value == 10.0
+    assert trades[1].value == 10_000.0
 
 
 def test_derive_trades_no_changes():
