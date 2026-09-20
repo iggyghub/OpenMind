@@ -29,7 +29,7 @@ ignore the patch, writing test data into the real
 """
 import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -117,12 +117,30 @@ def get_bars(symbol: str, start: str, end: str, interval: str = "1d", refresh: b
         conn.execute(
             "DELETE FROM bars WHERE interval NOT IN ('1d', '1w', '1M') AND length(ts) = 10"
         )
+        # Earliest start ever fetched per (symbol, interval). Gap-fill only reaches FORWARD from the newest cached
+        # bar, so without this a stray old fragment hid everything before it (AAPL 5m came back with half its bars).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS bars_cover (symbol TEXT, interval TEXT, covered_from TEXT, "
+            "PRIMARY KEY (symbol, interval))"
+        )
         conn.commit()
+
+        row = conn.execute(
+            "SELECT covered_from FROM bars_cover WHERE symbol = ? AND interval = ?", (symbol, interval)
+        ).fetchone()
+        if row is not None:
+            covered_from = row[0]
+        else:   # legacy cache: trust what is there, as before
+            oldest = conn.execute(
+                "SELECT MIN(ts) FROM bars WHERE symbol = ? AND interval = ?", (symbol, interval)
+            ).fetchone()[0]
+            covered_from = oldest[:10] if oldest else None
+        needs_backfill = covered_from is not None and start < covered_from
 
         df = _query_range(conn, symbol, interval, start, end)
         max_cached_ts = df.index.max() if not df.empty else None
 
-        needs_refresh = refresh
+        needs_refresh = refresh or needs_backfill
         if not needs_refresh:
             needs_refresh = max_cached_ts is None or pd.isnull(max_cached_ts) or pd.to_datetime(end) > max_cached_ts
 
@@ -133,13 +151,15 @@ def get_bars(symbol: str, start: str, end: str, interval: str = "1d", refresh: b
         # refresh=True request means "re-fetch [start, end] in full",
         # not "fetch from wherever the cache already reaches".
         fetch_start = start
-        if not refresh and max_cached_ts is not None and not pd.isnull(max_cached_ts):
+        if not (refresh or needs_backfill) and max_cached_ts is not None and not pd.isnull(max_cached_ts):
             fetch_start = max_cached_ts.strftime("%Y-%m-%d")
 
         fetch_end = end
         if interval not in _DATE_ONLY and len(end) == 10:
             # Alpaca reads a bare end date as midnight, which would drop the last day's intraday bars.
-            fetch_end = (datetime.fromisoformat(end) + timedelta(days=1)).strftime("%Y-%m-%d")
+            # ...but never past now-20min: Alpaca's free plan rejects queries touching the last 15 minutes of SIP data.
+            latest = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=20)
+            fetch_end = min(datetime.fromisoformat(end) + timedelta(days=1), latest).strftime("%Y-%m-%dT%H:%M:%S")
         new_df = AlpacaMarketDataClient("paper").get_bars(symbol, fetch_start, fetch_end, interval)
         if not new_df.empty:
             fetched_at = datetime.now().isoformat()
@@ -159,6 +179,12 @@ def get_bars(symbol: str, start: str, end: str, interval: str = "1d", refresh: b
             )
             conn.commit()
 
+        # An empty answer still means [start, ...) was asked for, so it is covered: no re-asking every call.
+        conn.execute(
+            "INSERT OR REPLACE INTO bars_cover (symbol, interval, covered_from) VALUES (?, ?, ?)",
+            (symbol, interval, min(start, covered_from) if covered_from else start),
+        )
+        conn.commit()
         return _query_range(conn, symbol, interval, start, end)
     finally:
         conn.close()
