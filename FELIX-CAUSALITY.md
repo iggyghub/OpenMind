@@ -124,3 +124,17 @@ mismatches. 30 large caps x 2020-2026 (131k regular-session bars each), 2 bps pe
 - Caveats: 8 fixed, untuned rules (a null on these variants does not rule out other rules); survivorship-biased large
   caps; correlated stocks so p-values are optimistic; 2 bps per side is generous for 5-minute turnover.
 - **Verdict: no robust day-trading edge among the classic book rules.** Null result.
+
+## Cost model fixed (2026-09-20, PR #1339, closes #1329)
+
+Backtest costs were charged on the share price instead of the traded notional (0.001% on a $5 stock, 0.3% on
+$1,500). `Trade.value` is now |delta| x capital and the default is 2 bps per side of notional (commission-free
+broker). Gauntlet check: the production gauntlet (`run_gauntlet` via `run_bars`) never applied this cost model;
+`oos_test`/`walk_forward` did but have no production caller -- so live promotion is unchanged. Only the replay,
+cross-stock and batch-replay research numbers changed. The permutation, stress and intraday results already used
+their own 2 bps notional cost and are unaffected.
+
+The pre-fix 5-year sweep (28,300 rows) is kept as table `cross_stock_results_legacy_cost` in
+`cross_stock_results.db`; the sweep was cleared and re-started 2026-09-20 under the corrected cost (23,100 pairs,
+~11-30 h). **Result pending** -- compare `top_vs_benchmark` / `vs_benchmark_significant` against the legacy ranking
+(0 of 176 significant) when it finishes. Batch-replay (`replay_runs.db`) numbers were NOT re-run.
