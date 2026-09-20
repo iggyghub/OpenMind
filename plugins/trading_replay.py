@@ -887,7 +887,7 @@ _INTRADAY_WORKERS = 4
 _INTRADAY_START = "2020-01-02"
 _INTRADAY_MIN_BARS = 90_000            # regular-session 5m bars since 2020 (~98k possible) for a stock to count
 _INTRADAY_CAVEAT = (
-    "Hand-authored 5-minute rules on Alpaca regular-session bars (IEX feed volume), 2 bps per side cost, "
+    "Hand-authored 5-minute rules on Alpaca regular-session bars, 2 bps per side cost, "
     "flat by the close. profitable = positive net return on half the stocks with positive median net in every "
     "window; the gross vs net gap is the cost drag. Survivorship-biased large caps, correlated stocks, so "
     "p-values are optimistic. Informational only."
