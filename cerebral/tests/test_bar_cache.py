@@ -111,3 +111,39 @@ def test_refresh_true_fetches_full_range(mock_data_dir, mock_alpaca_client):
     # Should have fetched the full range, not just the gap
     mock_alpaca_client.get_bars.assert_called_once_with("AAPL", "2023-01-01", "2023-01-02", "1d")
     assert len(df) == 2
+
+
+def _intraday_frame():
+    idx = pd.DatetimeIndex(
+        ["2023-01-03 14:30", "2023-01-03 14:35", "2023-01-03 20:55"], tz="UTC"
+    )  # 09:30, 09:35 and 15:55 New York
+    return pd.DataFrame({"Open": [1.0, 2.0, 3.0], "High": [1.0, 2.0, 3.0], "Low": [1.0, 2.0, 3.0],
+                         "Close": [1.0, 2.0, 3.0], "Volume": [10, 20, 30]}, index=idx)
+
+
+def test_intraday_bars_keep_their_time_of_day(mock_data_dir, mock_alpaca_client):
+    mock_alpaca_client.get_bars.return_value = _intraday_frame()
+    df = get_bars("AAPL", "2023-01-03", "2023-01-03", "5m")
+    assert len(df) == 3                                    # was collapsed to 1 bar per day
+    assert [t.strftime("%H:%M") for t in df.index] == ["09:30", "09:35", "15:55"]
+    # the bare end date covers the whole day for the read AND the fetch reaches into the next day
+    assert mock_alpaca_client.get_bars.call_args.args[2] == "2023-01-04"
+    assert len(get_bars("AAPL", "2023-01-03", "2023-01-03", "5m")) == 3
+    assert mock_alpaca_client.get_bars.call_count == 1     # second read is served from cache
+
+
+def test_collapsed_intraday_rows_are_purged_but_daily_rows_survive(mock_data_dir, mock_alpaca_client):
+    conn = sqlite3.connect(os.path.join(str(mock_data_dir), "bars.db"))
+    conn.execute(_CREATE_BARS_TABLE)
+    conn.executemany(
+        "INSERT INTO bars VALUES (?, ?, ?, 1, 1, 1, 1, 1, 'x')",
+        [("AAPL", "5m", "2023-01-03"), ("AAPL", "1d", "2023-01-03")],
+    )
+    conn.commit()
+    conn.close()
+    mock_alpaca_client.get_bars.return_value = pd.DataFrame()
+    assert len(get_bars("AAPL", "2023-01-03", "2023-01-03", "1d")) == 1
+    get_bars("AAPL", "2023-01-03", "2023-01-03", "5m")
+    conn = sqlite3.connect(os.path.join(str(mock_data_dir), "bars.db"))
+    assert conn.execute("SELECT count(*) FROM bars WHERE interval='5m'").fetchone()[0] == 0
+    conn.close()

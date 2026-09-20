@@ -29,13 +29,26 @@ ignore the patch, writing test data into the real
 """
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
 from cerebral.trading.broker import AlpacaMarketDataClient
 
 _COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
+_DATE_ONLY = ("1d", "1w", "1M")   # one bar per calendar date; every other interval is intraday
+_MARKET_TZ = "America/New_York"
+
+
+def _ts_key(ts, interval: str) -> str:
+    """Cache key for a bar. Date-only for date-granular intervals (unchanged, so existing rows stay
+    valid); full market-local wall-clock time for intraday. A date-only key on intraday bars made
+    every bar of a day collide on the primary key so INSERT OR REPLACE kept one bar per day."""
+    if interval in _DATE_ONLY:
+        return ts.strftime("%Y-%m-%d")
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert(_MARKET_TZ).tz_localize(None)
+    return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _query_range(conn: sqlite3.Connection, symbol: str, interval: str, start: str, end: str) -> pd.DataFrame:
@@ -46,6 +59,8 @@ def _query_range(conn: sqlite3.Connection, symbol: str, interval: str, start: st
     prior version of this function then mistakenly tried to read back out
     as a "Date" *column* (KeyError, since "Date" was only ever an index
     name, and the source "ts" column had already been dropped)."""
+    if interval not in _DATE_ONLY and len(end) == 10:
+        end += " 23:59:59"   # a bare end date means the whole day for intraday keys
     df = pd.read_sql_query(
         "SELECT ts, open, high, low, close, volume FROM bars "
         "WHERE symbol = ? AND interval = ? AND ts >= ? AND ts <= ? ORDER BY ts",
@@ -98,6 +113,10 @@ def get_bars(symbol: str, start: str, end: str, interval: str = "1d", refresh: b
             )
             """
         )
+        # Intraday rows written before the key carried a time of day are one collapsed bar per day: corrupt.
+        conn.execute(
+            "DELETE FROM bars WHERE interval NOT IN ('1d', '1w', '1M') AND length(ts) = 10"
+        )
         conn.commit()
 
         df = _query_range(conn, symbol, interval, start, end)
@@ -117,12 +136,16 @@ def get_bars(symbol: str, start: str, end: str, interval: str = "1d", refresh: b
         if not refresh and max_cached_ts is not None and not pd.isnull(max_cached_ts):
             fetch_start = max_cached_ts.strftime("%Y-%m-%d")
 
-        new_df = AlpacaMarketDataClient("paper").get_bars(symbol, fetch_start, end, interval)
+        fetch_end = end
+        if interval not in _DATE_ONLY and len(end) == 10:
+            # Alpaca reads a bare end date as midnight, which would drop the last day's intraday bars.
+            fetch_end = (datetime.fromisoformat(end) + timedelta(days=1)).strftime("%Y-%m-%d")
+        new_df = AlpacaMarketDataClient("paper").get_bars(symbol, fetch_start, fetch_end, interval)
         if not new_df.empty:
             fetched_at = datetime.now().isoformat()
             records = [
                 (
-                    symbol, interval, ts.strftime("%Y-%m-%d"),
+                    symbol, interval, _ts_key(ts, interval),
                     row["Open"], row["High"], row["Low"], row["Close"], row["Volume"],
                     fetched_at,
                 )
