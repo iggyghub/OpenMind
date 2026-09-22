@@ -266,8 +266,6 @@ from plugins.rss_monitor import RSSMonitorPlugin
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
 _trading_strategies_plugin = _TradingStrategiesPlugin(router=_router, scheduler=_scheduler_plugin)
-# TREND3: wire trend-basket dispatcher to scheduler tick (per-tick handler)
-_scheduler_plugin.register_job("trend_basket_dispatch", _trading_strategies_plugin._trend_basket_dispatch)
 _design_system_plugin = _DesignSystemAutofixPlugin(scheduler=_scheduler_plugin)
 _book_library_plugin = _BookLibraryPlugin(router=_router, scheduler=_scheduler_plugin)
 _discovery_plugin = _DiscoveryPlugin(router=_router, scheduler=_scheduler_plugin)
@@ -3702,6 +3700,18 @@ async def _job_ipo_dispatch() -> None:
         logger.exception("[cerebral] IPO dispatch check failed")
 
 
+async def _job_trend_basket_dispatch() -> None:
+    # ADR-0038: cheap per-tick check (one cached daily breadth read) -- same posture as
+    # _job_ipo_dispatch, no separate weekly-refresh job since breadth isn't sourced from an
+    # external calendar, it's computed on demand from already-cached bar data.
+    try:
+        dispatch_result = await _trading_strategies_plugin.call_tool("trend_basket_dispatch", {})
+        if json.loads(dispatch_result.content).get("dispatched"):
+            logger.info(f"[cerebral] Trend basket dispatch: {dispatch_result.content}")
+    except Exception:
+        logger.exception("[cerebral] Trend basket dispatch check failed")
+
+
 async def _job_ipo_calendar(evt: dict) -> bool:
     # IPO6: weekly IPO-calendar refresh, mirroring the discovery
     # due-event block below exactly but simpler -- no enabled/duration
@@ -3872,6 +3882,7 @@ async def _scheduler_loop() -> None:
                 continue
 
             await _job_ipo_dispatch()
+            await _job_trend_basket_dispatch()
 
             # Recurring events (IPO calendar, design-system scan, discovery) --
             # consumed BEFORE the per-strategy dispatch below, which shares the
