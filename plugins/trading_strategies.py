@@ -16,12 +16,22 @@ from cerebral.trading.discovery import build_dynamic_universe, rank_for_day_trad
 from cerebral.trading.gauntlet import run_gauntlet, compute_max_holding_days
 from cerebral.trading.replay import run_bars
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore, mint_expansion_strategy_id
+from cerebral.trading.trend_basket_selection import RisingEdgeGate, compute_breadth, rank_by_momentum
+from cerebral.trading.trend_basket_strategy import TREND_BASKET_STRATEGY_CODE
 
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "trading_strategies"
 
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write"})
+
+# ADR-0038: canonical claim text this strategy's dispatched StrategySpecs are minted from --
+# mint_expansion_strategy_id(_TREND_BASKET_CLAIM, symbol) gives the same "claim @SYMBOL" shape
+# Expansion already uses (ADR-0026 decision 3), so a dispatched symbol's strategy_id doubles as
+# the "already held" lookup key (see _is_trend_basket_held below).
+_TREND_BASKET_CLAIM = "Trend basket: breadth-gated momentum x volatility basket (ADR-0038)"
+_TREND_BASKET_BREADTH_THRESHOLD = 0.60
+_TREND_BASKET_SLOTS = 10
 
 
 class TradingStrategiesPlugin:
@@ -35,6 +45,9 @@ class TradingStrategiesPlugin:
         self._record_activity_fn = record_activity_fn
         self._on_trading_change = None
         self._lifecycle = None  # wired post-construction by main.py
+        # ADR-0038: one persistent gate instance so the rising-edge state survives across ticks
+        # (a fresh RisingEdgeGate every call would never see yesterday's reading to compare against).
+        self._trend_basket_gate = RisingEdgeGate(threshold=_TREND_BASKET_BREADTH_THRESHOLD)
         if settings is not None:
             self._settings = settings
         else:
@@ -167,6 +180,19 @@ class TradingStrategiesPlugin:
                     "required": ["strategy_id"],
                 },
             ),
+            Tool(
+                name="trend_basket_dispatch",
+                description=(
+                    "ADR-0038: checked every scheduler tick. On a market-breadth rising edge "
+                    "(share of the Candidate pool above its own 50-day MA crosses above 60%), "
+                    "dispatches the trend-basket strategy (flat 12% trailing stop, 20-day cap) "
+                    "to the top 10 Candidate-pool symbols by momentum x volatility, via the "
+                    "normal per-symbol Gauntlet -- no bypass, unlike the IPO play. A no-op on "
+                    "any other tick."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -176,6 +202,8 @@ class TradingStrategiesPlugin:
             return await self._edit_strategy(args)
         if tool_name == "get_strategy_code":
             return self._get_strategy_code(args)
+        if tool_name == "trend_basket_dispatch":
+            return await self._trend_basket_dispatch(args)
         if tool_name == "expand_strategy_ticker":
             return await self._expand_strategy_ticker(args)
         if tool_name == "mix_strategies":
@@ -360,6 +388,84 @@ class TradingStrategiesPlugin:
                 "verdicts": {r["ticker"]: r["verdict"] for r in results},
             })
         return ToolResult(content=json.dumps({"original_id": strategy_id, "attempts": results}))
+
+    def _is_trend_basket_held(self, symbol: str, store: "StrategyStore") -> bool:
+        """A symbol is 'already held' if a trend-basket StrategySpec for it already exists --
+        `_run_gauntlet` persists a VALIDATED strategy to `store`, so a prior successful dispatch
+        for this exact symbol leaves a row here. Conservative by design (never double-enters a
+        symbol) rather than tracking exact 20-day hold expiry, which would need extra state this
+        slice doesn't otherwise carry -- see docs/adr/0038-trend-basket-strategy.md."""
+        return store.get(mint_expansion_strategy_id(_TREND_BASKET_CLAIM, symbol)) is not None
+
+    async def _trend_basket_dispatch(
+        self, args: dict, *, strategy_store=None, fetch=None, broker=None,
+    ) -> ToolResult:
+        """ADR-0038: on a breadth rising edge, dispatch the trend-basket strategy to the top 10
+        Candidate-pool symbols by momentum x volatility, each through a normal per-symbol Gauntlet
+        call (no bypass -- every candidate already has enough history to backtest, unlike the IPO
+        play). Checked every scheduler tick, same posture as `_job_ipo_dispatch`."""
+        store = strategy_store if strategy_store is not None else StrategyStore()
+        fetch_fn = fetch
+        if fetch_fn is None:
+            from cerebral.trading_data import fetch_ohlcv as fetch_fn
+        broker_obj = broker
+        if broker_obj is None:
+            from cerebral.trading.broker import AlpacaBrokerClient
+            broker_obj = AlpacaBrokerClient(env="paper")
+
+        def fetch_bars_for_selection(symbol: str, n: int, freq: str) -> pd.DataFrame:
+            # Adapts trading_data.fetch_ohlcv's (symbol, start, end, interval) / capitalised-
+            # column contract to trend_basket_selection's (symbol, n_bars, freq) / lowercase
+            # "close" contract -- same padding convention discovery.rank_for_day_trading uses.
+            end = datetime.now(timezone.utc).date()
+            start = end - timedelta(days=int(n * 2.5) + 5)
+            df = fetch_fn(symbol, start.isoformat(), end.isoformat(), interval="1d")
+            if df is None or df.empty or "Close" not in df.columns:
+                return pd.DataFrame(columns=["close"])
+            return df.tail(n).rename(columns={"Close": "close"})[["close"]]
+
+        try:
+            universe = build_dynamic_universe(broker_obj, fetch_fn)
+        except Exception as e:
+            logger.warning("[trading_strategies] trend_basket_dispatch: candidate pool build failed: %s", e)
+            return ToolResult(content=json.dumps({"dispatched": [], "reason": f"candidate pool build failed: {e}"}))
+
+        breadth_result = compute_breadth(universe, fetch_bars_for_selection)
+        is_edge = self._trend_basket_gate.refresh(breadth_result.breadth, datetime.now(timezone.utc).date())
+        if not is_edge:
+            return ToolResult(content=json.dumps({
+                "dispatched": [], "breadth": breadth_result.breadth, "rising_edge": False,
+            }))
+
+        liquid = rank_for_day_trading(universe, fetch_fn)
+        ranked = rank_by_momentum(liquid, fetch_bars_for_selection)
+        candidates = [s for s in ranked[:_TREND_BASKET_SLOTS] if not self._is_trend_basket_held(s, store)]
+
+        results = []
+        for symbol in candidates:
+            new_id = mint_expansion_strategy_id(_TREND_BASKET_CLAIM, symbol)
+            try:
+                result = await self._run_gauntlet(
+                    {"code": TREND_BASKET_STRATEGY_CODE, "symbol": symbol,
+                     "hypothesis": _TREND_BASKET_CLAIM,
+                     "provenance": "trend_basket_dispatch (ADR-0038)"},
+                    strategy_store=store, fetch=fetch_fn, origin="discovered", strategy_id=new_id,
+                )
+                verdict = json.loads(result.content).get("verdict", "ERROR") if not result.is_error else "ERROR"
+            except Exception:
+                verdict = "ERROR"
+                logger.exception("[trading_strategies] trend_basket_dispatch gauntlet failed for %s", symbol)
+            results.append({"symbol": symbol, "new_id": new_id, "verdict": verdict})
+
+        if self._record_activity_fn is not None and results:
+            await self._record_activity_fn("activity", {
+                "source": "trend_basket_dispatch",
+                "symbols": [r["symbol"] for r in results],
+                "verdicts": {r["symbol"]: r["verdict"] for r in results},
+            })
+        return ToolResult(content=json.dumps({
+            "dispatched": results, "breadth": breadth_result.breadth, "rising_edge": True,
+        }))
 
     async def _run_mix_strategies(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:
         component_ids = args.get("component_ids", [])
