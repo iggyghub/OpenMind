@@ -266,6 +266,8 @@ from plugins.rss_monitor import RSSMonitorPlugin
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
 _trading_strategies_plugin = _TradingStrategiesPlugin(router=_router, scheduler=_scheduler_plugin)
+# TREND3: wire trend-basket dispatcher to scheduler tick (per-tick handler)
+_scheduler_plugin.register_job("trend_basket_dispatch", _trading_strategies_plugin._trend_basket_dispatch)
 _design_system_plugin = _DesignSystemAutofixPlugin(scheduler=_scheduler_plugin)
 _book_library_plugin = _BookLibraryPlugin(router=_router, scheduler=_scheduler_plugin)
 _discovery_plugin = _DiscoveryPlugin(router=_router, scheduler=_scheduler_plugin)
