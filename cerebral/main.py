@@ -3700,12 +3700,27 @@ async def _job_ipo_dispatch() -> None:
         logger.exception("[cerebral] IPO dispatch check failed")
 
 
+def _run_trend_basket_dispatch_sync():
+    """Runs trend_basket_dispatch's real work (build_dynamic_universe, compute_breadth,
+    rank_for_day_trading, rank_by_momentum, and on a rising edge up to 10 real per-symbol
+    Gauntlet backtests) inside asyncio.run() on its OWN fresh event loop -- called only via
+    asyncio.to_thread from _job_trend_basket_dispatch below, never on the main loop's thread.
+    A plain module-level function (not a lambda/closure) so asyncio.to_thread pickles/passes it
+    cleanly and the intent -- "this runs on a worker thread, in its own loop" -- is visible at
+    the call site, not buried in an inline lambda."""
+    return asyncio.run(_trading_strategies_plugin.call_tool("trend_basket_dispatch", {}))
+
+
 async def _job_trend_basket_dispatch() -> None:
-    # ADR-0038: cheap per-tick check (one cached daily breadth read) -- same posture as
-    # _job_ipo_dispatch, no separate weekly-refresh job since breadth isn't sourced from an
-    # external calendar, it's computed on demand from already-cached bar data.
+    # ADR-0038: unlike _job_ipo_dispatch's cheap date-compare, this does real network fetches
+    # (build_dynamic_universe/compute_breadth/rank_for_day_trading/rank_by_momentum) every tick,
+    # and on a rising edge up to 10 real per-symbol Gauntlet backtests -- run entirely off the
+    # main event loop via asyncio.to_thread (same S14/#859 precedent as the per-strategy dispatch
+    # pass below, and the same shape as _market_trend_gate.refresh's own to_thread offload).
+    # 2026-09-22 incident: shipped without this offload first, which froze the WS server's own
+    # handshake loop for the duration of every dispatch tick -- confirmed live, not theoretical.
     try:
-        dispatch_result = await _trading_strategies_plugin.call_tool("trend_basket_dispatch", {})
+        dispatch_result = await asyncio.to_thread(_run_trend_basket_dispatch_sync)
         if json.loads(dispatch_result.content).get("dispatched"):
             logger.info(f"[cerebral] Trend basket dispatch: {dispatch_result.content}")
     except Exception:
