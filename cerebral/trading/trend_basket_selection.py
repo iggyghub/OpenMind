@@ -72,7 +72,7 @@ def rank_by_momentum(
     for sym in candidates:
         try:
             bars = fetch_bars(sym, horizon + 1, "d")
-            if bars.empty or len(bars) < horizon:
+            if bars.empty or len(bars) < horizon + 1:
                 continue
 
             closes = bars["close"].astype(float)
