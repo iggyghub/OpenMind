@@ -296,3 +296,30 @@ still its own separate, not-yet-scoped thread.
   doesn't match the design. **A follow-up slice is needed**, mirroring IPO1-3's `risk_override_pct`
   shape, before this strategy trades at the sizing the backtests were actually validated against.
   Filed as #1349.)
+
+## Gate-variant backtest (2026-09-23) -- keep the live 60% rising-edge gate
+
+Asked "is 60% a good number?" Capital-constrained portfolio sim (10 slots x 10%, 12% trail, 20d
+cap, momentum x vol picks, signal + picks from the PRIOR close) on the same 58-symbol
+`bars_hist.db` universe, split 2005-15 / 2016-26. Stop-outs filled at the close (conservative;
+filling at the stop price roughly doubles every CAGR, so absolute numbers are fill-sensitive).
+The universe is 2026's survivors (NVDA, TSLA, COIN...), so **absolute returns are inflated; only
+compare variants to each other.**
+
+```
+                     2005-15 CAGR/maxDD/Sharpe   2016-26 CAGR/maxDD/Sharpe   invested
+edge>60 (live)         +7.0%  -25%  0.50           +20.4%  -32%  0.98          35%
+edge>55               +10.8%  -27%  0.72           +13.2%  -42%  0.74          40%
+hysteresis 60/50       +2.4%  -24%  0.25           +15.6%  -21%  0.92          25%
+confirm >60 x 3 days   +2.9%  -33%  0.27           +15.8%  -26%  0.91          27%
+refill while >60      +14.0%  -29%  0.76           +30.9%  -46%  1.03          51%
+no gate (always on)   +22.0%  -57%  0.78           +37.3%  -54%  1.02          99%
+```
+
+- Other thresholds (50-70%): no consistent winner; 55% wins one half, loses the other.
+- Hysteresis / multi-day confirmation (filtering the ~3-day median "flicker" runs): worse in both
+  halves. Rejected.
+- "Refill free slots any day the gate is on" gets more CAGR mostly by being invested more, and has a
+  much deeper 2016-26 drawdown. On a survivor-biased universe, more exposure always looks better
+  (no-gate is higher still), so this isn't evidence of a better signal. Not adopted.
+- The gate's real job shows in drawdown: -32%/-25% vs -54%/-57% with no gate.
