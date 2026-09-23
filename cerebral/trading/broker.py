@@ -143,7 +143,8 @@ class AlpacaBrokerClient:
             equity=float(acc.equity),
             status=acc.status.value,
             buying_power=float(acc.buying_power),
-            day_trades_remaining=max(0, 3 - (acc.daytrade_count or 0)),
+            # getattr: FINRA retired PDT 2026-06-04; Alpaca dropped daytrade_count from the API 2026-07-06.
+            day_trades_remaining=max(0, 3 - (getattr(acc, "daytrade_count", None) or 0)),
         )
 
     def list_positions(self, strategy_id: Optional[str] = None) -> List[Position]:
