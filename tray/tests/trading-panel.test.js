@@ -1683,3 +1683,63 @@ describe('cross-stock panel: random-timing (permutation) line (#1251 axis 2)', (
     expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb, stress: { strategies: 0 } })).not.toContain('Stress windows');
   });
 });
+
+describe('trend basket watch badge (ADR-0038, 2026-09-23)', () => {
+  // Real question this was built to answer: "I don't see anything running under the trading
+  // tab, is this working?" -- rendered via the public renderTradingUpdate entry point (the
+  // badge-building helper itself isn't individually exported), same as every other badge here.
+  const html = (data) => {
+    let out;
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate(data, mount);
+      out = mount.innerHTML;
+    });
+    return out;
+  };
+
+  test('renders alongside the empty-state message, not swallowed by it', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.375, threshold: 0.6, is_rising_edge: false, last_checked: '2026-09-23' } });
+    expect(h).toContain('Trend Basket');
+    expect(h).toContain('37.5%');
+    expect(h).toContain('No active strategies'); // both show -- the badge doesn't replace this message
+  });
+
+  test('below-threshold reading shows a waiting status, not an error', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.375, threshold: 0.6, is_rising_edge: false, last_checked: '2026-09-23' } });
+    expect(h).toContain('below threshold');
+    expect(h).toContain('waiting');
+  });
+
+  test('a real rising edge is labeled distinctly from merely being above threshold', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.625, threshold: 0.6, is_rising_edge: true, last_checked: '2026-09-23' } });
+    expect(h).toContain('rising edge today');
+  });
+
+  test('above threshold but not a new edge is labeled distinctly from a fresh rising edge', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.625, threshold: 0.6, is_rising_edge: false, last_checked: '2026-09-23' } });
+    expect(h).toContain('above threshold');
+    expect(h).not.toContain('rising edge today');
+  });
+
+  test('never-checked state (breadth still null) does not crash or show NaN', () => {
+    const h = html({ positions: [], trend_basket: { breadth: null, threshold: 0.6, is_rising_edge: false, last_checked: null } });
+    expect(h).toContain('Trend Basket');
+    expect(h).not.toContain('NaN');
+    expect(h).toContain('not checked yet');
+  });
+
+  test('absent entirely when the broadcast carries no trend_basket key (older payload)', () => {
+    expect(html({ positions: [] })).not.toContain('Trend Basket');
+  });
+
+  test('still renders alongside a populated strategy list, not just the empty state', () => {
+    const h = html({
+      positions: [{ name: 'some strategy', status: 'paper', live_trades: 0, equity_curve: [1], alerts: [] }],
+      alerts: [],
+      trend_basket: { breadth: 0.45, threshold: 0.6, is_rising_edge: false, last_checked: '2026-09-23' },
+    });
+    expect(h).toContain('Trend Basket');
+    expect(h).toContain('45.0%');
+  });
+});

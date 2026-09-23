@@ -111,6 +111,32 @@ class TestRisingEdgeGate(unittest.TestCase):
         except Exception:
             self.fail("RisingEdgeGate.refresh raised unexpectedly on valid inputs")
 
+    def test_last_reading_before_any_refresh(self):
+        gate = RisingEdgeGate(threshold=0.6)
+        reading = gate.last_reading
+        self.assertIsNone(reading["breadth"])
+        self.assertEqual(reading["threshold"], 0.6)
+        self.assertIsNone(reading["last_checked"])
+
+    def test_last_reading_reflects_the_last_refresh(self):
+        gate = RisingEdgeGate(threshold=0.6)
+        gate.refresh(0.625, date(2026, 9, 23))
+        reading = gate.last_reading
+        self.assertEqual(reading["breadth"], 0.625)
+        self.assertEqual(reading["threshold"], 0.6)
+        self.assertTrue(reading["is_rising_edge"])
+        self.assertEqual(reading["last_checked"], "2026-09-23")
+
+    def test_last_reading_does_not_update_on_a_same_day_recheck(self):
+        """A later call the SAME day is a no-op by design (refresh's own once-per-day cache) --
+        last_reading must reflect that frozen state, not silently show a fresher value that was
+        never actually locked in."""
+        gate = RisingEdgeGate(threshold=0.6)
+        gate.refresh(0.65, date(2026, 9, 23))
+        gate.refresh(0.30, date(2026, 9, 23))  # same day, different reading -- ignored
+        reading = gate.last_reading
+        self.assertEqual(reading["breadth"], 0.65)
+
 
 if __name__ == "__main__":
     unittest.main()

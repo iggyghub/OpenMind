@@ -209,6 +209,60 @@ function _renderMarketTrendBadge(marketTrend) {
 }
 
 /**
+ * Trend Basket watch badge (ADR-0038, 2026-09-23) -- purely informational, same
+ * always-renders/no-toggle posture as the Market Trend badge above. Sourced from
+ * cerebral/trading/trend_basket_selection.py's RisingEdgeGate via _trading_broadcast's
+ * "trend_basket" key: {breadth, threshold, is_rising_edge, last_checked}. Exists so there's
+ * SOMETHING to see while the strategy is watching and waiting -- before this, a user with no
+ * trend-basket position yet had no way to tell "quietly working correctly" from "broken" (real
+ * question asked live 2026-09-23: "I don't see anything running, is this working?").
+ * `breadth` only updates once per calendar day by design (RisingEdgeGate.refresh's own
+ * once-per-day cache) -- labeled "today's reading," not implied to be live-every-tick.
+ * @param {Object} [trendBasket] - {breadth, threshold, is_rising_edge, last_checked}
+ */
+function _renderTrendBasketBadge(trendBasket) {
+  if (!trendBasket) {
+    return '';
+  }
+  const breadth = typeof trendBasket.breadth === 'number' ? trendBasket.breadth : null;
+  const threshold = typeof trendBasket.threshold === 'number' ? trendBasket.threshold : 0.6;
+  const thresholdPct = (threshold * 100).toFixed(0) + '%';
+  const isEdge = !!trendBasket.is_rising_edge;
+
+  let breadthPct, cls, statusLabel;
+  if (breadth === null) {
+    breadthPct = '—';
+    cls = 'neutral';
+    statusLabel = 'not checked yet';
+  } else {
+    breadthPct = (breadth * 100).toFixed(1) + '%';
+    const above = breadth > threshold;
+    cls = above ? 'positive' : 'neutral';
+    statusLabel = isEdge
+      ? 'rising edge today — basket dispatched'
+      : above
+        ? 'above threshold (not a new edge today)'
+        : 'below threshold — waiting';
+  }
+  const lastChecked = trendBasket.last_checked
+    ? new Date(trendBasket.last_checked).toLocaleDateString()
+    : 'never';
+
+  return `
+    <div class="paper-control trend-basket-badge">
+      <h3>Trend Basket</h3>
+      <div class="paper-control-row">
+        <span class="trend-label ${cls}">${breadthPct}</span>
+        <span class="trend-detail">market breadth vs. ${thresholdPct} threshold — ${statusLabel}</span>
+      </div>
+      <div class="paper-control-row trend-basket-detail-row">
+        <span class="trend-detail">today's reading (updates once/day): ${lastChecked}</span>
+      </div>
+    </div>
+  `;
+}
+
+/**
  * Wires the paper-trading control's Start/Stop buttons (call_tool, same
  * pattern as _wireDiscoveryControl) and the capital input's Save button
  * (set_setting -- a plain numeric setting, not voice/chat-reachable the
@@ -513,10 +567,11 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const paperControlHtml = _renderPaperControl(data && data.paper_control);
   const sentimentHtml = _renderSentimentBadge(data && data.sentiment);
   const marketTrendHtml = _renderMarketTrendBadge(data && data.market_trend);
+  const trendBasketHtml = _renderTrendBasketBadge(data && data.trend_basket);
   _injectTradingPanelStyles();
 
   if (!data || !data.positions || data.positions.length === 0) {
-    mount.innerHTML = paperControlHtml + marketTrendHtml + sentimentHtml + discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+    mount.innerHTML = paperControlHtml + marketTrendHtml + trendBasketHtml + sentimentHtml + discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
     _wireDiscoveryControl(mount, sendEventFn);
     _wirePaperControl(mount, sendEventFn);
     return;
@@ -532,7 +587,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const state = mount._strategyState;
   const strategy = state.strategies[state.selectedIdx];
 
-  mount.innerHTML = paperControlHtml + marketTrendHtml + sentimentHtml + discoveryHtml + `
+  mount.innerHTML = paperControlHtml + marketTrendHtml + trendBasketHtml + sentimentHtml + discoveryHtml + `
     <div class="trading-panel-layout">
       <div class="strategy-list">
         <h3>Strategies</h3>

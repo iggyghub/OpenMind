@@ -124,3 +124,18 @@ class RisingEdgeGate:
     @property
     def current(self) -> bool:
         return self._current_edge
+
+    @property
+    def last_reading(self) -> dict:
+        """Status snapshot for display (2026-09-23, trend-basket UI visibility) -- today's
+        breadth reading, the threshold it's compared against, whether today counted as a rising
+        edge, and when it was last checked. `breadth` only updates once per calendar day by
+        design (see `refresh` -- later same-day calls return the cached decision without
+        recomputing), so this is "today's reading," not a live-every-tick value; a caller
+        rendering this should say so rather than imply it updates every scheduler tick."""
+        return {
+            "breadth": self._last_breadth,
+            "threshold": self.threshold,
+            "is_rising_edge": self._current_edge,
+            "last_checked": self._last_date.isoformat() if self._last_date else None,
+        }

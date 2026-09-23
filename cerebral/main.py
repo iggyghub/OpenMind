@@ -4158,6 +4158,13 @@ async def _trading_broadcast() -> None:
             "symbol": trend_reading.symbol,
             "updated_at": trend_reading.updated_at.isoformat() if trend_reading.updated_at else None,
         }
+        # ADR-0038 (2026-09-23): purely informational status of the trend-basket breadth gate,
+        # same "always renders, no enabled/disabled toggle" posture as market_trend above --
+        # there's no gate to turn off here, just a reading to show. Read directly off the live
+        # RisingEdgeGate instance already held by the trading_strategies plugin (no extra fetch;
+        # the gate updates itself once per day as _job_trend_basket_dispatch's own tick calls
+        # refresh()) rather than adding a second, separate polling path.
+        trend_basket = _trading_strategies_plugin._trend_basket_gate.last_reading
         await _broadcast({
             "type": "trading_update",
             "data": {
@@ -4166,6 +4173,7 @@ async def _trading_broadcast() -> None:
                 "paper_control": paper_control, "total_pnl": total_pnl,
                 "all_fills": all_fills, "paper_archives": paper_archives,
                 "sentiment": sentiment, "market_trend": market_trend,
+                "trend_basket": trend_basket,
             },
         })
     except Exception as e:
