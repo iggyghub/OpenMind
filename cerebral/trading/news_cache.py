@@ -4,8 +4,13 @@ Uses the same `bars.db` as `bar_cache.py`. Fetches via Alpaca's real News
 API (`alpaca.data.historical.news.NewsClient`) with manual pagination
 (unlike bars, the SDK does not auto-paginate news), dedupes on
 `article_id`, and gap-fills on refetch the same way `bar_cache.get_bars`
-does. No LLM anywhere in this module (REPLAY.md D4) -- news_event_count is
-a per-day article count filtered by a prominence threshold, not sentiment.
+does -- including `bar_cache`'s `covered_from`/backfill tracking (added
+2026-09-23 after a real bug: gap-fill only ever reached FORWARD from the
+newest cached day, so a symbol with only a small recent fragment cached
+from unrelated ad-hoc use silently refused to backfill an older requested
+start date -- same bug class bar_cache.py fixed as issue #1335). No LLM
+anywhere in this module (REPLAY.md D4) -- news_event_count is a per-day
+article count filtered by a prominence threshold, not sentiment.
 """
 from __future__ import annotations
 
@@ -22,6 +27,16 @@ CREATE TABLE IF NOT EXISTS news (
 )
 """
 
+# Tracks the earliest date ever actually requested per symbol, the same way bar_cache.py's
+# `bars_cover` table does -- distinct from MAX(published_day) in `news`, which only tells you
+# the newest cached day, not whether an OLDER start date was ever actually asked for.
+NEWS_COVER_TABLE = """
+CREATE TABLE IF NOT EXISTS news_cover (
+    symbol TEXT PRIMARY KEY,
+    covered_from TEXT
+)
+"""
+
 # ponytail: heuristic prominence filter; revisit if too noisy or too strict
 MAX_SYMBOLS_PROMINENCE = 3
 
@@ -34,13 +49,14 @@ def _resolve_db_path(db_path: "str | None") -> str:
 
 
 def init_news_db(db_path: "str | None" = None) -> str:
-    """Ensures the `news` table exists in the given (or default) database.
+    """Ensures the `news`/`news_cover` tables exist in the given (or default) database.
     Returns the resolved db_path so callers that didn't pass one can reuse it."""
     db_path = _resolve_db_path(db_path)
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(NEWS_TABLE)
+        conn.execute(NEWS_COVER_TABLE)
         conn.commit()
     finally:
         conn.close()
@@ -52,6 +68,20 @@ def _get_cached_max_day(conn: sqlite3.Connection, symbol: str) -> "str | None":
         "SELECT MAX(published_day) FROM news WHERE symbol = ?", (symbol,)
     ).fetchone()
     return row[0] if row and row[0] else None
+
+
+def _get_covered_from(conn: sqlite3.Connection, symbol: str) -> "str | None":
+    row = conn.execute(
+        "SELECT covered_from FROM news_cover WHERE symbol = ?", (symbol,)
+    ).fetchone()
+    if row is not None:
+        return row[0]
+    # Legacy cache (rows already present before news_cover existed): trust the oldest
+    # cached day as a lower bound, same fallback bar_cache.py's get_bars uses.
+    oldest = conn.execute(
+        "SELECT MIN(published_day) FROM news WHERE symbol = ?", (symbol,)
+    ).fetchone()[0]
+    return oldest if oldest else None
 
 
 def fetch_news(
@@ -69,16 +99,29 @@ def fetch_news(
     instances in production, or whatever the injected `client` returns in
     tests) -- callers needing counts should use count_news_events instead
     of the length of this list, since already-cached days aren't refetched.
+
+    Backfill-aware (2026-09-23): a `start` older than what was previously ever requested for
+    this symbol triggers a real fetch even if a newer fragment is already cached -- gap-fill on
+    its own only ever reaches forward from the newest cached day, which would otherwise silently
+    refuse to backfill older history for a symbol that already has ANY recent cached news.
     """
     db_path = init_news_db(db_path)
     conn = sqlite3.connect(db_path)
     try:
+        covered_from = _get_covered_from(conn, symbol)
+        needs_backfill = covered_from is not None and start < covered_from
+
         max_cached_day = _get_cached_max_day(conn, symbol)
-        if max_cached_day is not None and max_cached_day >= end:
+        needs_refresh = needs_backfill or max_cached_day is None or max_cached_day < end
+        if not needs_refresh:
             return []
 
+        # Only narrow the fetch to the gap for a genuine forward gap-fill -- a backfill request
+        # (start predates covered_from) re-fetches [start, end] in full rather than guessing a
+        # narrower backfill-only sub-range; INSERT OR IGNORE on article_id makes the overlap with
+        # already-cached days harmless.
         fetch_start = start
-        if max_cached_day is not None:
+        if not needs_backfill and max_cached_day is not None:
             d = datetime.fromisoformat(max_cached_day).date() + timedelta(days=1)
             fetch_start = d.isoformat()
 
@@ -125,6 +168,16 @@ def fetch_news(
                     "INSERT OR IGNORE INTO news (article_id, symbol, published_day, n_symbols) VALUES (?, ?, ?, ?)",
                     (article_id, sym_tag, pub_day, n_sym),
                 )
+
+        # Record coverage even when new_articles is empty -- [start, ...) was still actually
+        # asked for, so it must not be re-requested from Alpaca on every future call just
+        # because no news happened to exist in that range (same convention bar_cache.get_bars
+        # uses for its own bars_cover table).
+        new_covered_from = min(start, covered_from) if covered_from else start
+        conn.execute(
+            "INSERT OR REPLACE INTO news_cover (symbol, covered_from) VALUES (?, ?)",
+            (symbol, new_covered_from),
+        )
         conn.commit()
         return new_articles
     finally:
