@@ -64,6 +64,7 @@ class TestSettingsStore:
             # S34: paper trading settings
             "trading_paper_enabled",
             "trading_paper_starting_capital",
+            "trading_only_prefix",
             "distinct_days_floor",
             "discovery_enabled",
             "discovery_stop_at",

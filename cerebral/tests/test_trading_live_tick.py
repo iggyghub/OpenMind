@@ -520,6 +520,16 @@ class FakeScheduler:
         return dict(self.tick_result)
 
 
+def test_dispatch_only_prefix_parks_every_other_strategy(tmp_path, monkeypatch):
+    sched = FakeScheduler([{"id": 1, "title": "Trend basket: x @AAPL"}, {"id": 2, "title": "s2"}])
+
+    dispatch_due_events(sched, StubBrokerClient(), make_record(tmp_path, monkeypatch),
+                        lifecycle=StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite"),
+                        only_prefix="Trend basket:")
+
+    assert sched.ran == ["Trend basket: x @AAPL"]
+
+
 def test_dispatch_runs_and_marks_each_due_event(tmp_path, monkeypatch):
     sched = FakeScheduler([{"id": 1, "title": "s1"}, {"id": 2, "title": "s2"}])
 

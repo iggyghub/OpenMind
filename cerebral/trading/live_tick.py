@@ -491,8 +491,13 @@ def dispatch_due_events(
     bear_case_fn: Optional[Callable[[str, str, int], "tuple[bool, str]"]] = None,
     correlation_matrix: Optional[pd.DataFrame] = None,
     dd_cap: Optional[float] = None,
+    only_prefix: str = "",
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
+
+    ``only_prefix`` (2026-09-23): when non-empty, only strategies whose name
+    starts with it are dispatched -- one switch to park every other strategy
+    (e.g. "Trend basket:") without halting ~300 of them one by one.
 
     Lives here rather than inline in cerebral/main.py's ``_scheduler_loop``
     so the whole chain is testable without importing main. ``scheduler`` is
@@ -518,7 +523,7 @@ def dispatch_due_events(
     # being evaluated together right now, see check_symbol_claim's own
     # docstring for why.
     claimed_symbols: set = set()
-    due_events = scheduler.list_due_events()
+    due_events = [e for e in scheduler.list_due_events() if e["title"].startswith(only_prefix)]
     if correlation_matrix is None:
         all_symbols: list[str] = [p.symbol for p in broker.list_positions()]
         for evt in due_events:

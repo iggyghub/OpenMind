@@ -3992,6 +3992,7 @@ async def _scheduler_loop() -> None:
                     # not just an always-PROCEED verdict.
                     bear_case_fn=_bear_case_fn if _settings.get("trading_bear_case_gate_enabled") else None,
                     dd_cap=_settings.get("batch_replay_graduation_dd_cap"),
+                    only_prefix=_settings.get("trading_only_prefix") or "",
                 )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")

@@ -79,6 +79,9 @@ _DEFAULTS: dict[str, Any] = {
     # StubBrokerClient (currently hardcoded to $10,000 in broker.py).
     "trading_paper_enabled":            True,
     "trading_paper_starting_capital":   10000.0,
+    # 2026-09-23: non-empty = only strategies whose name starts with this trade
+    # (e.g. "Trend basket:"); every other strategy is parked. "" = all trade.
+    "trading_only_prefix":              "",
     # 2026-08-31: market-wide sentiment gate on new paper opens, sourced
     # from general market-news RSS feeds (cerebral/trading/sentiment.py).
     # Default True (unlike trading_live_arm) -- this only ever gates paper
@@ -199,6 +202,7 @@ _TYPES: dict[str, type] = {
     "max_concurrent_positions":  int,
     "trading_paper_enabled":            bool,
     "trading_paper_starting_capital":   float,
+    "trading_only_prefix":              str,
     "trading_sentiment_gate_enabled":   bool,
     "trading_bear_case_gate_enabled":   bool,
     "trading_stock_sentiment_gate_enabled": bool,
