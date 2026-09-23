@@ -32,6 +32,11 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write"})
 _TREND_BASKET_CLAIM = "Trend basket: breadth-gated momentum x volatility basket (ADR-0038)"
 _TREND_BASKET_BREADTH_THRESHOLD = 0.60
 _TREND_BASKET_SLOTS = 10
+# Stricter than build_dynamic_universe's own $1/$5M default (tuned for Discovery/Expansion's
+# day-trading use case) -- a liquidity floor, not a volatility cap, see the 2026-09-23 note
+# at the call site in _trend_basket_dispatch.
+_TREND_BASKET_MIN_PRICE = 2.0
+_TREND_BASKET_MIN_DOLLAR_VOLUME = 10_000_000.0
 
 
 class TradingStrategiesPlugin:
@@ -425,11 +430,27 @@ class TradingStrategiesPlugin:
             return df.tail(n).rename(columns={"Close": "close"})[["close"]]
 
         try:
-            universe = build_dynamic_universe(broker_obj, fetch_fn)
+            # 2026-09-23 finding: build_dynamic_universe's own DEFAULT filter (min_price=$1,
+            # min_dollar_volume=$5M -- tuned for day-trading's volatility-seeking use case) let
+            # through a candidate pool dominated by penny/micro-cap noise live (confirmed: 3
+            # back-to-back calls gave 8/9/9 candidates and breadth swinging 37.5%-62.5%). A
+            # stricter, liquidity-focused floor (not a volatility cap -- real high-beta names
+            # like RIOT/SOFI/MARA are liquid, not thin) trims that noise. Passed explicitly here
+            # rather than changed as the function's own default, since Discovery/Expansion share
+            # this same function (ADR-0026 decision 5, one pool) and their own day-trading use
+            # case is what the existing $1/$5M default is actually tuned for.
+            universe = build_dynamic_universe(
+                broker_obj, fetch_fn,
+                min_price=_TREND_BASKET_MIN_PRICE, min_dollar_volume=_TREND_BASKET_MIN_DOLLAR_VOLUME,
+            )
         except Exception as e:
             logger.warning("[trading_strategies] trend_basket_dispatch: candidate pool build failed: %s", e)
             return ToolResult(content=json.dumps({"dispatched": [], "reason": f"candidate pool build failed: {e}"}))
 
+        # `universe` is already filtered (build_dynamic_universe applies the min_price/
+        # min_dollar_volume passed above internally) -- both breadth and selection read the same
+        # pool now, fixing a prior inconsistency where breadth saw the fully unfiltered universe
+        # while selection alone went through a second (redundant, same-default) filter pass.
         breadth_result = compute_breadth(universe, fetch_bars_for_selection)
         is_edge = self._trend_basket_gate.refresh(breadth_result.breadth, datetime.now(timezone.utc).date())
         if not is_edge:
@@ -437,8 +458,7 @@ class TradingStrategiesPlugin:
                 "dispatched": [], "breadth": breadth_result.breadth, "rising_edge": False,
             }))
 
-        liquid = rank_for_day_trading(universe, fetch_fn)
-        ranked = rank_by_momentum(liquid, fetch_bars_for_selection)
+        ranked = rank_by_momentum(universe, fetch_bars_for_selection)
         candidates = [s for s in ranked[:_TREND_BASKET_SLOTS] if not self._is_trend_basket_held(s, store)]
 
         results = []
