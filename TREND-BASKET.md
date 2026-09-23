@@ -190,6 +190,38 @@ before any self_dev slice, standard practice for `tray/` work in this repo.
   guard (`_campaign_running`, ADR-0028 rule 5 -- singular scheduler) -- mirror that shape for
   `trend_basket_dispatch` in a follow-up slice. Not urgent (not currently causing harm), but real.
   Filed as #1350.
+
+- Hand-authored fix, not a self_dev slice (2026-09-23, prompted by "the trading tab looks empty,
+  is this working?"). Investigating why nothing had dispatched found a real, more fundamental gap
+  than "hasn't had a chance to fire yet": live breadth reads swung 37.5%-62.5% across back-to-back
+  calls under the same real market conditions, because `build_dynamic_universe`'s own default
+  filter (min_price=$1, min_dollar_volume=$5M, tuned for Discovery/Expansion's day-trading use
+  case) let a tiny (6-9 symbol), effectively-random pool of penny/micro-cap noise through every
+  call -- confirmed live, none of the draws resembled the backtested universe at all. Fixed by
+  passing a stricter liquidity floor ($2/$10M) explicit to the trend-basket call site (not changed
+  as the shared function's own default, per ADR-0026 decision 5). Verified against real historical
+  data before shipping: all 13 high-volatility names the permutation-null check found the actual
+  edge concentrated in (RIOT, SOFI, MARA, NIO, ITUB, BBD, SNAP, LYFT, PBR, IBM, F, GRAB, PLUG)
+  clear the new filter with real margin -- the tightest case (PLUG, $2.16) still has 14x the
+  dollar-volume floor, confirming this targets liquidity, not volatility. Also fixed a related
+  inconsistency found in the same investigation: breadth was computed against the fully
+  unfiltered universe while selection alone went through a second, redundant filter pass -- both
+  now read the same filtered pool. Full suite re-run locally clean, 6030 passed/7 skipped/0
+  failed. **Requires another Cerebral restart to take effect** (same as every code change today --
+  Python doesn't hot-reload).
+
+  **Known remaining limitation, not fixed, real trade-off discussed and accepted 2026-09-23**: the
+  dynamic Candidate pool's random-sample component draws from ~13,500 tradable US assets, so any
+  *specific* historically-validated name (RIOT, SOFI, MARA, NIO...) has roughly a 0.1% chance per
+  call of being drawn at all -- no liquidity filter fixes that, it only prunes noise from whatever
+  random handful got drawn. Two real fixes were discussed (tune the shared dynamic pool further,
+  e.g. drop the random-sample component; or give trend-basket its own curated, volatility-screened
+  universe, which would deviate from ADR-0026's "one shared pool" decision) -- user's call was not
+  to chase this further right now ("not really worried about fine tuning... there isn't much
+  downside" -- the strategy is paper-only with a 12% stop already capping single-position risk).
+  Revisit if live dispatch activity stays suspiciously rare even once genuine rising-edge
+  conditions occur.
+
 - PR #1345 -- TREND1 (self_dev generated, hand-fixed -- the generated `trend_basket_strategy.py`
   never defined `def strategy(data) -> list:` at all: it was a bare script computing a scalar
   `position` that stayed 0 forever (entry never set `position = 1`), and had no shape
