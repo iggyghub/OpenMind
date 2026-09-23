@@ -148,10 +148,19 @@ to the global 2% setting, see PR #1347's Landed PRs entry) and #1350 (reentrancy
 
 ## Trading panel UI
 
-Flagged in this session as in-scope, not yet started as its own thread -- the user wants the
-existing Trading panel UI cleaned up, separate from this strategy's mechanism. No design work has
-happened on it yet; needs its own scoping pass (probably its own short grill or at least a plan)
-before any self_dev slice, standard practice for `tray/` work in this repo.
+Flagged in this session as in-scope; the full cleanup is still deferred (user's call: "not yet")
+and would need its own scoping pass before any self_dev slice, standard practice for `tray/` work
+in this repo. One small, scoped piece landed hand-authored the same day though, prompted by a
+direct, concrete need rather than the open-ended cleanup:
+
+**Trend Basket watch badge** (2026-09-23, commit c67ca7f) -- a small always-visible status card
+(same posture as the existing Market Trend badge) showing the breadth gate's current reading,
+the 60% threshold, and whether today is a rising edge, so there's something to look at while the
+strategy is correctly watching and waiting rather than an empty panel that looks broken. Reads
+`RisingEdgeGate.last_reading` (new property) via the existing `trading_update` broadcast, no new
+IPC round-trip. Tested both sides (10 Python tests, 7 JS tests via `renderTradingUpdate`), full
+suite clean on both. This is a narrow, additive slice, not the broader panel cleanup -- that's
+still its own separate, not-yet-scoped thread.
 
 ## Landed PRs
 
