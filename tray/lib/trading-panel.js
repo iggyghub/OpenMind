@@ -245,7 +245,8 @@ function _renderTrendBasketBadge(trendBasket) {
         : 'below threshold — waiting';
   }
   const lastChecked = trendBasket.last_checked
-    ? new Date(trendBasket.last_checked).toLocaleDateString()
+    // Date-only ISO strings parse as UTC midnight -- shows yesterday west of UTC. 'T00:00' parses local.
+    ? new Date(trendBasket.last_checked + 'T00:00').toLocaleDateString()
     : 'never';
 
   return `

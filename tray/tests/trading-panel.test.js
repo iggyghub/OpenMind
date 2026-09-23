@@ -1729,6 +1729,11 @@ describe('trend basket watch badge (ADR-0038, 2026-09-23)', () => {
     expect(h).toContain('not checked yet');
   });
 
+  test('last_checked date-only string shows that calendar day, not the day before (UTC parse)', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.5, threshold: 0.6, is_rising_edge: false, last_checked: '2026-09-23' } });
+    expect(h).toContain(new Date(2026, 8, 23).toLocaleDateString());
+  });
+
   test('absent entirely when the broadcast carries no trend_basket key (older payload)', () => {
     expect(html({ positions: [] })).not.toContain('Trend Basket');
   });
