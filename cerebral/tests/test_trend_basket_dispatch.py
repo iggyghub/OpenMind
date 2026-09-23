@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 
 from plugins.trading_strategies import TradingStrategiesPlugin
+from cerebral.mcp.orchestrator import ToolResult
 from cerebral.settings import SettingsStore
 from cerebral.trading.strategy_store import StrategyStore, mint_expansion_strategy_id
 from cerebral.trading.trend_basket_strategy import TREND_BASKET_STRATEGY_CODE
@@ -178,3 +179,52 @@ async def test_candidate_pool_build_failure_is_graceful(tmp_path, monkeypatch):
     data = json.loads(result.content)
     assert data["dispatched"] == []
     assert "reason" in data
+
+
+@pytest.mark.asyncio
+async def test_reentrancy_guard_refuses_overlapping_dispatch(tmp_path):
+    """A dispatch already in flight refuses a second overlapping call rather than letting two
+    (redundant, network-heavy) passes run concurrently -- ADR-0028 rule 5, same reasoning as
+    self_dev_campaign's own _campaign_running guard."""
+    plugin = _plugin(tmp_path)
+    store = _store_never_held()
+
+    async def should_not_run(*args, **kwargs):
+        raise AssertionError("the real dispatch body must not run while one is already in flight")
+    plugin._trend_basket_dispatch_inner = should_not_run
+
+    plugin._trend_basket_dispatch_running = True
+    result = await plugin._trend_basket_dispatch(
+        {}, strategy_store=store, fetch=_fetch_all_uptrend, broker=_raising_broker(),
+    )
+    data = json.loads(result.content)
+    assert data["dispatched"] == []
+    assert "already running" in data["reason"]
+
+
+@pytest.mark.asyncio
+async def test_reentrancy_guard_clears_after_completion_even_on_error(tmp_path, monkeypatch):
+    """The running flag must reset (in a finally) even when the dispatch itself raises, so one
+    failed call doesn't permanently wedge every future tick into refusing to run."""
+    plugin = _plugin(tmp_path)
+    store = _store_never_held()
+
+    def raise_build(*args, **kwargs):
+        raise RuntimeError("simulated failure")
+    monkeypatch.setattr("plugins.trading_strategies.build_dynamic_universe", raise_build)
+
+    await plugin._trend_basket_dispatch(
+        {}, strategy_store=store, fetch=_fetch_all_uptrend, broker=_raising_broker(),
+    )
+    assert plugin._trend_basket_dispatch_running is False
+
+    # A second call right after must actually run (not be refused as "still running").
+    ran = {"called": False}
+    async def mark_ran(*args, **kwargs):
+        ran["called"] = True
+        return ToolResult(content=json.dumps({"dispatched": [], "reason": "ok"}))
+    plugin._trend_basket_dispatch_inner = mark_ran
+    await plugin._trend_basket_dispatch(
+        {}, strategy_store=store, fetch=_fetch_all_uptrend, broker=_raising_broker(),
+    )
+    assert ran["called"] is True

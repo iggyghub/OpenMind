@@ -53,6 +53,12 @@ class TradingStrategiesPlugin:
         # ADR-0038: one persistent gate instance so the rising-edge state survives across ticks
         # (a fresh RisingEdgeGate every call would never see yesterday's reading to compare against).
         self._trend_basket_gate = RisingEdgeGate(threshold=_TREND_BASKET_BREADTH_THRESHOLD)
+        # Reentrancy guard (2026-09-23, ADR-0028 rule 5 -- same "singular scheduler" reasoning as
+        # self_dev_campaign's own _campaign_running): a cold candidate-pool build can take several
+        # minutes even with parallel fetches, and the scheduler tick fires every ~5 minutes
+        # regardless of whether the previous dispatch finished -- refuse a second overlapping
+        # dispatch rather than let them pile up doing redundant work concurrently.
+        self._trend_basket_dispatch_running = False
         if settings is not None:
             self._settings = settings
         else:
@@ -409,6 +415,19 @@ class TradingStrategiesPlugin:
         Candidate-pool symbols by momentum x volatility, each through a normal per-symbol Gauntlet
         call (no bypass -- every candidate already has enough history to backtest, unlike the IPO
         play). Checked every scheduler tick, same posture as `_job_ipo_dispatch`."""
+        if self._trend_basket_dispatch_running:
+            return ToolResult(content=json.dumps({
+                "dispatched": [], "reason": "a trend_basket_dispatch is already running -- skipped",
+            }))
+        self._trend_basket_dispatch_running = True
+        try:
+            return await self._trend_basket_dispatch_inner(args, strategy_store=strategy_store, fetch=fetch, broker=broker)
+        finally:
+            self._trend_basket_dispatch_running = False
+
+    async def _trend_basket_dispatch_inner(
+        self, args: dict, *, strategy_store=None, fetch=None, broker=None,
+    ) -> ToolResult:
         store = strategy_store if strategy_store is not None else StrategyStore()
         fetch_fn = fetch
         if fetch_fn is None:
@@ -439,8 +458,14 @@ class TradingStrategiesPlugin:
             # rather than changed as the function's own default, since Discovery/Expansion share
             # this same function (ADR-0026 decision 5, one pool) and their own day-trading use
             # case is what the existing $1/$5M default is actually tuned for.
+            # movers_top=50/actives_top=100 are Alpaca's own real API ceilings (confirmed live --
+            # "invalid top: should not be larger than 50"/"...100"), not arbitrary choices. At
+            # the $2/$10M filter this yields ~84 candidates (vs. ~8 at the smaller defaults) --
+            # made affordable by rank_for_day_trading's now-parallelized fetch loop (2.7x
+            # speedup measured live), which brings a cold ~185-raw-symbol pass in comfortably
+            # under the 5-minute scheduler tick instead of the ~680s it took sequentially.
             universe = build_dynamic_universe(
-                broker_obj, fetch_fn,
+                broker_obj, fetch_fn, movers_top=50, actives_top=100,
                 min_price=_TREND_BASKET_MIN_PRICE, min_dollar_volume=_TREND_BASKET_MIN_DOLLAR_VOLUME,
             )
         except Exception as e:
