@@ -182,14 +182,9 @@ before any self_dev slice, standard practice for `tray/` work in this repo.
   not manage to capture the exact JSON reply content itself (a benign mismatch between a quick
   ad-hoc test client's patience and a genuinely slow real operation, not a code bug).
 
-  **New follow-up found, not fixed yet**: `trend_basket_dispatch` has no reentrancy guard. The 3
-  manual test calls above likely overlapped each other (fired within the same ~5-minute window,
-  each doing a full redundant network fetch pass with no caching), which is probably why each one
-  took so long. The real automatic scheduler tick could hit the same problem if a cold dispatch
-  pass ever takes longer than the tick interval. `self_dev_campaign` already has exactly this
-  guard (`_campaign_running`, ADR-0028 rule 5 -- singular scheduler) -- mirror that shape for
-  `trend_basket_dispatch` in a follow-up slice. Not urgent (not currently causing harm), but real.
-  Filed as #1350.
+  **Follow-up found here (#1350), fixed same day** -- see the pool-size entry below: the
+  reentrancy guard landed alongside raising the candidate pool size and parallelizing the fetch
+  loop, since all three were the same investigation.
 
 - Hand-authored fix, not a self_dev slice (2026-09-23, prompted by "the trading tab looks empty,
   is this working?"). Investigating why nothing had dispatched found a real, more fundamental gap
@@ -221,6 +216,29 @@ before any self_dev slice, standard practice for `tray/` work in this repo.
   downside" -- the strategy is paper-only with a 12% stop already capping single-position risk).
   Revisit if live dispatch activity stays suspiciously rare even once genuine rising-edge
   conditions occur.
+
+  **Update, same day (2026-09-23), prompted by "the pool is 8 names, that should be much larger
+  -- what's the maximum?"**: investigated the real ceiling rather than guessing. Confirmed
+  Alpaca's actual API limits live (`get_market_movers` top<=50, `get_most_actives` top<=100 --
+  both hard-enforced server-side). Raised `trend_basket_dispatch`'s pool to those values --
+  ~84-90 candidates at the same $2/$10M filter, a real, much better mix including several of the
+  actual backtested high-edge names (AMZN, GOOGL, META, NVDA, TSLA, F, GRAB, SNAP, SOFI, MARA,
+  PLUG, BBD, RIG, VALE) plus major index ETFs, vs. the prior ~8-name draws.
+
+  That size costs real time -- measured 679s (11.3 min) sequential, longer than the 5-minute
+  scheduler tick. Diagnosed the actual bottleneck rather than assuming: `fetch_ohlcv` already
+  caches locally via `bar_cache.py`, so the cost is the sheer count of distinct never-before-seen
+  symbols needing one real fetch each on the first liquidity-filtering pass (measured live: 3.17s
+  per distinct symbol, sequential). Parallelized `discovery.rank_for_day_trading`'s fetch loop
+  (`ThreadPoolExecutor`, `max_workers=10`) -- measured 2.7x speedup (1.18s/symbol). End-to-end at
+  the full ~90-candidate pool: 258s (4.3 min), comfortably under the 5-minute tick. This benefits
+  every caller of `rank_for_day_trading` (Discovery, Expansion), not just trend-basket.
+
+  Also landed the reentrancy guard from #1350 in the same change (`_trend_basket_dispatch_running`,
+  mirroring `self_dev_campaign`'s `_campaign_running`) -- real margin exists now, but this is the
+  safety net for days the pool build runs long anyway. 7 new/updated tests. Full suite re-run
+  locally clean, 6031 passed/7 skipped, modulo the known pre-existing `test_sandboxed_eval.py`
+  flake. Requires another Cerebral restart to take effect.
 
 - PR #1345 -- TREND1 (self_dev generated, hand-fixed -- the generated `trend_basket_strategy.py`
   never defined `def strategy(data) -> list:` at all: it was a bare script computing a scalar
