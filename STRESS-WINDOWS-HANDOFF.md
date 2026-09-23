@@ -16,6 +16,9 @@ the permutation baseline re-run at 2 bps is still 0/247.** Results are in FELIX-
 The only unfinished item. The 5-year cross-stock sweep is re-running under the corrected cost model (PR #1339,
 #1329 closed): 23,100 pairs, slow (~800-2,000 pairs/hour, so roughly 11-30 h). Everything else is merged and closed.
 
+0. DONE 2026-09-21: cost-corrected sweep finished, 0 of 176 significant (same as legacy); see FELIX-CAUSALITY.md. Nothing pending.
+   (history) 2026-09-20 14:37 ET: the sweep had been killed by a Felix restart (50/23,100 pairs; `running` stayed stale-True) and was resumed with `start_cross_stock_replay`.
+   #1250 closed (fully built in #1328). #1251 axis 4 (parameter stability) deferred by operator: no strategy is consistent across tests. #1251 stays open only for this sweep.
 1. Check: call `get_cross_stock_replay_status`; done when `running` is false and `pairs_done == pairs_total`.
    Do not restart Felix meanwhile (the sweep resumes from its cursor, but a restart wastes time). If it was
    interrupted, call `start_cross_stock_replay` again; it skips finished pairs.

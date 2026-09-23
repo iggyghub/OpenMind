@@ -136,5 +136,6 @@ their own 2 bps notional cost and are unaffected.
 
 The pre-fix 5-year sweep (28,300 rows) is kept as table `cross_stock_results_legacy_cost` in
 `cross_stock_results.db`; the sweep was cleared and re-started 2026-09-20 under the corrected cost (23,100 pairs,
-~11-30 h). **Result pending** -- compare `top_vs_benchmark` / `vs_benchmark_significant` against the legacy ranking
-(0 of 176 significant) when it finishes. Batch-replay (`replay_runs.db`) numbers were NOT re-run.
+~11-30 h; interrupted once at 50 pairs by a Felix restart and resumed; finished 2026-09-21, ~24 h wall clock).
+
+**Result (2026-09-21): still null.** 23,100 of 23,100 pairs; 176 strategies ranked, **0 significant** (legacy: 0 of 176). Every BH q-value is 1.0. Across ~18,100 comparable pairs the median net return is -4.9% vs +51.8% buy-and-hold, and 28.3% of pairs beat buy-and-hold (legacy 28.5%), so correcting the cost model barely moved anything; the old share-price cost was not what hid an edge. Only 3 strategies beat buy-and-hold on >= 50% of stocks with a positive median excess, none nominally significant (best: 64% of 33 stocks, p = 0.08; the top-ranked row is 62.5% of 24 stocks, p = 0.15). The 'buy below $70' rule is again the strongest of them under a plain >= 5-trade filter, but it only beats buy-and-hold in the 2022 bear window, where it sits mostly in cash (see stress windows). Batch-replay (`replay_runs.db`) numbers were NOT re-run.
