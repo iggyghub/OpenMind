@@ -52,6 +52,22 @@ class RiskManager:
             )
         return RiskConfig()
 
+    def trim_to_cap(
+        self, account_equity: float, price: float, qty: float,
+        max_per_trade_risk_pct_override: Optional[float] = None,
+    ) -> float:
+        """Trim qty down to the per-trade cap when it's only slightly over (<= 10%).
+        qty is sized to exactly the cap at the PRIOR close, so any uptick since
+        would otherwise block the trade outright (2026-09-23: at a $100 account
+        with zero headroom, most momentum-basket opens). A bigger overshoot is a
+        sizing bug, not price drift -- left alone so check_order still blocks it."""
+        pct = (max_per_trade_risk_pct_override if max_per_trade_risk_pct_override is not None
+               else self._load_config().max_per_trade_risk_pct)
+        cap = account_equity * (pct / 100.0)
+        if price > 0 and cap < qty * price <= cap * 1.10:
+            return cap / price
+        return qty
+
     def check_order(
         self,
         account_equity: float,

@@ -963,6 +963,21 @@ def test_tick_allows_a_within_limit_order_with_risk_gate(tmp_path, monkeypatch):
     assert result["status"] == "opened"
 
 
+def test_tick_trims_a_slightly_over_cap_buy_instead_of_blocking(tmp_path, monkeypatch):
+    """qty is sized to exactly the cap at the prior close; a small uptick since must trim
+    the order to the cap, not block it (2026-09-23, $100 account with zero headroom)."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()  # equity 10000; 2% cap = 200
+    risk = RiskManager(RiskConfig(max_per_trade_risk_pct=2.0))
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=205.0 / 14.0)  # 205 at close 14.0: 2.5% over
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result["status"] == "opened"
+    (order,) = broker._orders.values()
+    assert abs(order.qty * 14.0 - 200.0) < 0.01
+
+
 # ── IPO3 (#1040): spec.risk_override_pct threaded into check_order ────────
 
 def test_tick_uses_spec_risk_override_pct_to_allow_a_trade_the_global_cap_blocks(tmp_path, monkeypatch):

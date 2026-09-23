@@ -373,13 +373,16 @@ def run_strategy_tick(
     # same reason (see the check below).
     if risk is not None and not is_close:
         last_close = float(data["Close"].iloc[-1]) if "Close" in data.columns else 0.0
+        account_equity = broker.get_account().equity
+        if side == "buy":  # shorts excluded: trimming could make an integer short qty fractional
+            qty = risk.trim_to_cap(account_equity, last_close, float(qty), spec.risk_override_pct)
         trade_value = float(qty) * last_close
         # Real accrued loss, not a fabricated 0.0 -- forward_record already
         # has every fill's realized pnl with a real timestamp, so today's
         # loss is one query away rather than an invented number.
         current_daily_loss = max(0.0, -forward_record.get_daily_pnl())
         res = risk.check_order(
-            account_equity=broker.get_account().equity,
+            account_equity=account_equity,
             current_positions_count=len(broker.list_positions()),
             current_daily_loss=current_daily_loss,
             trade_value=trade_value,
