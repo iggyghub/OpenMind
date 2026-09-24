@@ -290,7 +290,10 @@ def run_strategy_tick(
     # strategy's code entirely this tick -- the position is leaving
     # regardless of what it would have said.
     last_close = float(data["Close"].iloc[-1]) if "Close" in data.columns and len(data) else 0.0
-    signal = check_tp_sl_breach(position, float(position.current_price) if position is not None else 0.0)
+    # Trend basket exempt (2026-09-24, user choice): its own 12% trail + 20-day cap is the designed
+    # exit (ADR-0038); the 5% stop would close it first and cut backtested return ~3.5%/yr.
+    exempt = spec.strategy_id.startswith("Trend basket:")
+    signal = None if exempt else check_tp_sl_breach(position, float(position.current_price) if position is not None else 0.0)
     if signal is None:
         # Re-evaluated per tick rather than cached: a sandbox spawn is cheap
         # next to a data fetch, and it means a re-registered spec takes

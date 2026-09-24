@@ -402,6 +402,24 @@ def test_tick_force_closes_a_long_on_a_stop_loss_breach(tmp_path, monkeypatch):
     assert result["side"] == "sell"
 
 
+def test_trend_basket_is_exempt_from_the_stop_loss_backstop(tmp_path, monkeypatch):
+    """2026-09-24, user choice: the trend basket's own 12% trail is its exit -- the same -10%
+    move that force-closes any other strategy (test above) must leave a trend-basket position
+    open while its own signal still says LONG."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0])
+    fetch = fixed_fetch(make_bars())
+    name = "Trend basket: x @AAPL"
+    spec = StrategySpec(name, "AAPL", ALWAYS_LONG, qty=1.0)
+
+    run_strategy_tick(name, spec, broker, record, fetch=fetch)
+    broker._positions[(name, "AAPL")].current_price = 9.0  # -10%, past STOP_LOSS_PCT
+    result = run_strategy_tick(name, spec, broker, record, fetch=fetch)
+
+    assert result["status"] != "closed"
+    assert find_position(broker.list_positions(), "AAPL") is not None
+
+
 def test_tick_does_not_force_close_when_live_price_is_within_band(tmp_path, monkeypatch):
     """The TP/SL backstop must use the position's live `current_price`, not 
     the stale bar close. If the bar close breaches but the live price hasn't, 
