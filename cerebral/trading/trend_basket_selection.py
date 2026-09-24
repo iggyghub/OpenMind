@@ -9,7 +9,7 @@ import pandas as pd
 
 @dataclass
 class BreadthResult:
-    breadth: float
+    breadth: float | None  # None = too few symbols measured to be a real reading
     candidates: list[str]
     above_ma: list[str]
     below_ma: list[str]
@@ -19,11 +19,15 @@ def compute_breadth(
     candidates: list[str],
     fetch_bars: Callable[[str, int, str], pd.DataFrame],
     min_history: int = 50,
+    min_measured: int = 20,
 ) -> BreadthResult:
     """Compute the share of candidates trading above their own 50-day MA.
-    
+
     Symbols with insufficient history are excluded from both numerator and denominator.
     MA is computed using only historical closes (prior day's close), avoiding look-ahead.
+    Fewer than `min_measured` symbols measured (empty pool, failed fetches) gives breadth=None,
+    not a number: 2026-09-24, an empty overnight pool read 0.0%, and RisingEdgeGate's
+    once-per-day cache locked that in as the whole day's reading.
     """
     above: list[str] = []
     below: list[str] = []
@@ -48,7 +52,7 @@ def compute_breadth(
             continue
 
     total = len(above) + len(below)
-    breadth = len(above) / total if total > 0 else 0.0
+    breadth = len(above) / total if total >= max(1, min_measured) else None
 
     return BreadthResult(
         breadth=breadth,

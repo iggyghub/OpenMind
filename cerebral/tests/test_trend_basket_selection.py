@@ -35,7 +35,7 @@ class TestComputeBreadth(unittest.TestCase):
             "D": pd.DataFrame({"close": [10.0] * 50 + [10.0]}),
         }
         fetch = MockFetchBars(data)
-        res = compute_breadth(["A", "B", "C", "D"], fetch)
+        res = compute_breadth(["A", "B", "C", "D"], fetch, min_measured=1)
         
         self.assertEqual(res.above_ma, ["A", "C"])
         self.assertEqual(res.below_ma, ["B", "D"])
@@ -47,17 +47,27 @@ class TestComputeBreadth(unittest.TestCase):
             "LONG":  pd.DataFrame({"close": [10.0] * 50 + [12.0]}),
         }
         fetch = MockFetchBars(data)
-        res = compute_breadth(["SHORT", "LONG"], fetch)
+        res = compute_breadth(["SHORT", "LONG"], fetch, min_measured=1)
         
         # SHORT should be excluded from both numerator and denominator
         self.assertEqual(res.above_ma, ["LONG"])
         self.assertEqual(res.below_ma, [])
         self.assertAlmostEqual(res.breadth, 1.0)
         
-    def test_no_candidates(self):
-        fetch = MockFetchBars({})
-        res = compute_breadth([], fetch)
-        self.assertAlmostEqual(res.breadth, 0.0)
+    def test_no_candidates_is_no_reading_not_zero(self):
+        """An empty pool must not read as 0% breadth -- the gate would lock that in for the day."""
+        res = compute_breadth([], MockFetchBars({}))
+        self.assertIsNone(res.breadth)
+
+    def test_too_few_measured_is_no_reading(self):
+        data = {s: pd.DataFrame({"close": [10.0] * 50 + [11.0]}) for s in "ABC"}
+        self.assertIsNone(compute_breadth(list("ABC"), MockFetchBars(data)).breadth)  # 3 < 20
+
+    def test_gate_keeps_its_state_through_a_missing_reading(self):
+        gate = RisingEdgeGate(threshold=0.55, sustain=0.50)
+        self.assertTrue(gate.refresh(0.56, date(2026, 10, 1)))
+        self.assertTrue(gate.refresh(None, date(2026, 10, 2)))  # no reading: stays active
+        self.assertEqual(gate.last_reading["last_checked"], "2026-10-01")  # not locked in
 
 
 class TestRankByMomentum(unittest.TestCase):
