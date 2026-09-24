@@ -323,3 +323,16 @@ no gate (always on)   +22.0%  -57%  0.78           +37.3%  -54%  1.02          9
   much deeper 2016-26 drawdown. On a survivor-biased universe, more exposure always looks better
   (no-gate is higher still), so this isn't evidence of a better signal. Not adopted.
 - The gate's real job shows in drawdown: -32%/-25% vs -54%/-57% with no gate.
+
+## Pre-run fixes and redesign (2026-09-23/24)
+
+Found before the first paper run. The earlier "live-verified" note above only covered the no-edge
+path:
+- The strategy code could never open a position (entry anchored to bar 0; live acts on the last of
+  ~124 bars). Now entry-dated. The per-symbol Gauntlet passed 2% of picks and is skipped (ADR-0038
+  amendment). Selection now uses momentum x volatility, as designed (c7613dd).
+- A $10 cap with zero headroom blocked any uptick; small overshoots are now trimmed (8b32f63). Gate
+  state persists across restarts (a7129f4). Alpaca's per-strategy position ledger persists too, so
+  a restart no longer orphans open positions (790b6b1).
+- Exempt from live_tick's global 5% stop / 30% take-profit; the 12% trail is its exit (ff79160).
+- Trigger 55% / sustain 50% with slot refill (c4bfe78, ADR-0038 second amendment).

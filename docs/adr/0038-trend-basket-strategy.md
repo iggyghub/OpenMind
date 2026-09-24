@@ -252,3 +252,44 @@ Also corrected in the same change (commit c7613dd):
   Alpaca paper account.
 - ADR-0028 rule 4 is unaffected: the Gauntlet is a strategy-quality filter, not the ADR-0005
   permission gate, and no permission path changes. The 16-class capability vocabulary is unchanged.
+
+## Amendment (2026-09-24, second) -- trigger 55% / sustain 50%: refill slots while the uptrend holds
+
+Extends the first 2026-09-24 amendment above; it does not change that one's Gauntlet decision.
+
+**Context** -- Under the original Decision, a basket buys only on the day breadth crosses above
+60%. Each slot then sits in cash once its position exits (trail or 20-day cap) until the next
+crossing, so the strategy averaged about 35% invested. The user asked whether the number should be
+55% and whether trigger and sustain should be separate. A capital-constrained portfolio backtest
+(same 58-symbol universe, 10 slots x 10%, 12% trail, 20-day cap, close fills, signals and picks from
+the prior close) compared 8 trigger/sustain combinations, split 2005-15 / 2016-26:
+
+```
+                               2005-15 CAGR/Sharpe   2016-26 CAGR/Sharpe   21-yr maxDD   invested
+cross 60%, buy that day only      +7.0%  0.50          +20.4%  0.98           -32%        35%
+cross 55%, buy that day only     +10.8%  0.72          +13.2%  0.74           -42%        40%
+cross 60%, refill while >55%     +16.2%  0.85          +31.4%  1.03           -46%        53%
+cross 55%, refill while >50%     +23.8%  1.09          +29.3%  0.96           -40%        63%
+no gate, always refill           +20.6%  0.75          +34.6%  0.99           -62%        99%
+```
+
+**Decision** -- Chosen by the user 2026-09-24. The regime turns **active** when breadth crosses
+above **55%** and stays active while breadth is above **50%**. On every scheduler tick while
+active, empty slots (up to 10) are refilled with the top momentum x volatility names not already
+held. An occupied slot is one whose position's own strategy code still signals hold on the latest
+bars, or one entered today. Commit c4bfe78.
+
+**Considered and rejected**
+- *55% as a one-day trigger only.* Inconsistent: better in 2005-15, worse in 2016-26.
+- *Hysteresis / multi-day confirmation on the one-day trigger* (tested 2026-09-23, recorded in
+  TREND-BASKET.md). Worse in both halves.
+- *No gate, always refill.* Similar return per unit of risk, but a -62% worst drop versus -40%.
+  The breadth gate's value is drawdown protection.
+
+**Consequences**
+- More time invested means bigger swings than the original design: the worst backtested drop goes
+  from -32% to -40%.
+- The thresholds were picked as the best of 8 on the same data, so they are probably flattering.
+  The refill improvement itself held in every refill variant and in both halves, so that part is
+  the robust finding. The universe is 2026's survivors, so absolute returns are inflated.
+- The 16-class capability vocabulary and the ADR-0005 permission gate are unchanged.
