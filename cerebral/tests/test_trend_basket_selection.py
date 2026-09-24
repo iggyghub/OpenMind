@@ -61,23 +61,23 @@ class TestComputeBreadth(unittest.TestCase):
 
 
 class TestRankByMomentum(unittest.TestCase):
-    def test_ranking_order(self):
+    def test_ranking_order_is_momentum_times_volatility(self):
+        """ADR-0038's locked score. CHOPPY has less momentum than SMOOTH (+10% vs +20%) but far
+        more volatility, so it ranks first; pure momentum would put SMOOTH first."""
         data = {
-            "X": pd.DataFrame({"close": [100.0, 110.0]}),
-            "Y": pd.DataFrame({"close": [100.0, 120.0]}),
-            "Z": pd.DataFrame({"close": [100.0, 105.0]}),
+            "SMOOTH": pd.DataFrame({"close": [100.0, 110.0, 120.0]}),
+            "CHOPPY": pd.DataFrame({"close": [100.0, 150.0, 110.0]}),
+            "FLAT":   pd.DataFrame({"close": [100.0, 101.0, 100.0]}),
         }
-        fetch = MockFetchBars(data)
-        ranked = rank_by_momentum(["X", "Y", "Z"], fetch, horizon=1)
-        self.assertEqual(ranked, ["Y", "X", "Z"])
+        ranked = rank_by_momentum(["SMOOTH", "CHOPPY", "FLAT"], MockFetchBars(data), horizon=2)
+        self.assertEqual(ranked, ["CHOPPY", "SMOOTH", "FLAT"])
 
     def test_excludes_short_history(self):
         data = {
-            "SHORT": pd.DataFrame({"close": [100.0]}),
-            "LONG":  pd.DataFrame({"close": [100.0, 110.0]}),
+            "SHORT": pd.DataFrame({"close": [100.0, 110.0]}),
+            "LONG":  pd.DataFrame({"close": [100.0, 110.0, 115.0]}),
         }
-        fetch = MockFetchBars(data)
-        ranked = rank_by_momentum(["SHORT", "LONG"], fetch, horizon=1)
+        ranked = rank_by_momentum(["SHORT", "LONG"], MockFetchBars(data), horizon=2)
         self.assertEqual(ranked, ["LONG"])
 
 

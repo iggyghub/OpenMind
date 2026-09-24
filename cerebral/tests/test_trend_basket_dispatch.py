@@ -20,7 +20,7 @@ from plugins.trading_strategies import TradingStrategiesPlugin
 from cerebral.mcp.orchestrator import ToolResult
 from cerebral.settings import SettingsStore
 from cerebral.trading.strategy_store import StrategyStore, mint_expansion_strategy_id
-from cerebral.trading.trend_basket_strategy import TREND_BASKET_STRATEGY_CODE
+from cerebral.trading.trend_basket_strategy import entry_date_of, trend_basket_code
 
 
 def _plugin(tmp_path):
@@ -87,63 +87,88 @@ async def test_not_a_rising_edge_no_dispatch(tmp_path):
     assert data["rising_edge"] is False
 
 
-@pytest.mark.asyncio
-async def test_rising_edge_dispatches_top_candidates_via_real_gauntlet(tmp_path):
-    """Uptrending data for every candidate puts breadth well above 60% on the first-ever
-    reading (off -> on is a rising edge), which dispatches up to 10 candidates, each through
-    _run_gauntlet with TREND1's real strategy code."""
-    plugin = _plugin(tmp_path)
-    store = _store_never_held()
+_CLAIM = "Trend basket: breadth-gated momentum x volatility basket (ADR-0038)"
 
-    dispatched = []
-    async def capture_gauntlet(args, **kwargs):
-        dispatched.append((args["code"], args["symbol"], kwargs.get("strategy_id")))
-        return MagicMock(content=json.dumps({"verdict": "VALIDATED"}), is_error=False)
-    plugin._run_gauntlet = capture_gauntlet
+
+class _FakeScheduler:
+    """Just enough of SchedulerPlugin for event registration: _con + _create_event."""
+    def __init__(self):
+        import sqlite3
+        self._con = sqlite3.connect(":memory:")
+        self._con.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, title TEXT)")
+        self.created = []
+
+    def _create_event(self, args):
+        self._con.execute("INSERT INTO events (title) VALUES (?)", (args["title"],))
+        self.created.append(args["title"])
+
+
+@pytest.mark.asyncio
+async def test_rising_edge_registers_top_candidates_directly_without_gauntlet(tmp_path):
+    """ADR-0038 amendment 2026-09-24: on a rising edge, up to 10 candidates are registered
+    directly -- entry-dated strategy code, a recurring event each -- with no per-symbol Gauntlet."""
+    plugin = _plugin(tmp_path)
+    plugin._scheduler = _FakeScheduler()
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    async def should_not_be_called(*args, **kwargs):
+        raise AssertionError("the per-symbol gauntlet must not run for the trend basket")
+    plugin._run_gauntlet = should_not_be_called
 
     result = await plugin._trend_basket_dispatch(
         {}, strategy_store=store, fetch=_fetch_all_uptrend, broker=_raising_broker(),
     )
     data = json.loads(result.content)
     assert data["rising_edge"] is True
-    assert 1 <= len(dispatched) <= 10
-    assert all(code == TREND_BASKET_STRATEGY_CODE for code, _, _ in dispatched)
-    for _, symbol, strategy_id in dispatched:
-        assert strategy_id == mint_expansion_strategy_id(
-            "Trend basket: breadth-gated momentum x volatility basket (ADR-0038)", symbol,
-        )
+    assert 1 <= len(data["dispatched"]) <= 10
+    today = datetime.now(timezone.utc).date().isoformat()
+    for r in data["dispatched"]:
+        assert r["verdict"] == "REGISTERED"
+        assert r["new_id"] == mint_expansion_strategy_id(_CLAIM, r["symbol"])
+        spec = store.get(r["new_id"])
+        assert entry_date_of(spec.code) == today
+        assert spec.qty > 0
+    assert sorted(plugin._scheduler.created) == sorted(r["new_id"] for r in data["dispatched"])
+
+
+def _held_store(symbol, entry):
+    held_id = mint_expansion_strategy_id(_CLAIM, symbol)
+    store = MagicMock(spec=StrategyStore)
+    store.get.side_effect = lambda sid: MagicMock(code=trend_basket_code(entry)) if sid == held_id else None
+    return store
 
 
 @pytest.mark.asyncio
-async def test_already_held_candidate_is_skipped(tmp_path):
+async def test_recently_entered_candidate_is_skipped(tmp_path):
     plugin = _plugin(tmp_path)
-    held_symbol = "AAPL"
-    held_id = mint_expansion_strategy_id(
-        "Trend basket: breadth-gated momentum x volatility basket (ADR-0038)", held_symbol,
-    )
-    store = MagicMock(spec=StrategyStore)
-    store.get.side_effect = lambda sid: object() if sid == held_id else None
-
-    dispatched = []
-    async def capture_gauntlet(args, **kwargs):
-        dispatched.append(args["symbol"])
-        return MagicMock(content=json.dumps({"verdict": "VALIDATED"}), is_error=False)
-    plugin._run_gauntlet = capture_gauntlet
-
-    await plugin._trend_basket_dispatch(
+    store = _held_store("AAPL", datetime.now(timezone.utc).date().isoformat())
+    result = await plugin._trend_basket_dispatch(
         {}, strategy_store=store, fetch=_fetch_all_uptrend, broker=_raising_broker(),
     )
-    assert held_symbol not in dispatched
+    assert "AAPL" not in [r["symbol"] for r in json.loads(result.content)["dispatched"]]
+
+
+def test_an_old_entry_is_no_longer_held(tmp_path):
+    """Past the 20-trading-day hold, a later rising edge may re-enter the same symbol."""
+    plugin = _plugin(tmp_path)
+    old = (datetime.now(timezone.utc).date() - timedelta(days=40)).isoformat()
+    assert plugin._is_trend_basket_held("AAPL", _held_store("AAPL", old)) is False
+    assert plugin._is_trend_basket_held("AAPL", _held_store("AAPL", datetime.now(timezone.utc).date().isoformat())) is True
+
+
+def test_re_entry_does_not_duplicate_the_recurring_event(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._scheduler = _FakeScheduler()
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    plugin._register_trend_basket_position("AAPL", store, 100.0)
+    plugin._register_trend_basket_position("AAPL", store, 100.0)
+    assert len(plugin._scheduler.created) == 1
 
 
 @pytest.mark.asyncio
 async def test_activity_log_records_dispatched_symbols_and_verdicts(tmp_path):
     plugin = _plugin(tmp_path)
-    store = _store_never_held()
-
-    async def always_validated(args, **kwargs):
-        return MagicMock(content=json.dumps({"verdict": "VALIDATED"}), is_error=False)
-    plugin._run_gauntlet = always_validated
+    store = StrategyStore(db_path=tmp_path / "specs.db")
 
     logged = []
     async def record_activity(kind, payload):

@@ -4,7 +4,7 @@ Extracted from plugins/scheduler.py per SCHEDULER-SPLIT.md S5 (#1213).
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -17,7 +17,7 @@ from cerebral.trading.gauntlet import run_gauntlet, compute_max_holding_days
 from cerebral.trading.replay import run_bars
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore, mint_expansion_strategy_id
 from cerebral.trading.trend_basket_selection import RisingEdgeGate, compute_breadth, rank_by_momentum
-from cerebral.trading.trend_basket_strategy import TREND_BASKET_STRATEGY_CODE
+from cerebral.trading.trend_basket_strategy import entry_date_of, trend_basket_code
 
 logger = logging.getLogger(__name__)
 
@@ -402,20 +402,46 @@ class TradingStrategiesPlugin:
         return ToolResult(content=json.dumps({"original_id": strategy_id, "attempts": results}))
 
     def _is_trend_basket_held(self, symbol: str, store: "StrategyStore") -> bool:
-        """A symbol is 'already held' if a trend-basket StrategySpec for it already exists --
-        `_run_gauntlet` persists a VALIDATED strategy to `store`, so a prior successful dispatch
-        for this exact symbol leaves a row here. Conservative by design (never double-enters a
-        symbol) rather than tracking exact 20-day hold expiry, which would need extra state this
-        slice doesn't otherwise carry -- see docs/adr/0038-trend-basket-strategy.md."""
-        return store.get(mint_expansion_strategy_id(_TREND_BASKET_CLAIM, symbol)) is not None
+        """'Already held' = this symbol's trend-basket spec was entered within the last 30
+        calendar days (covers the 20-trading-day cap). Older entries have run their course, so a
+        later rising edge may re-enter the same symbol."""
+        spec = store.get(mint_expansion_strategy_id(_TREND_BASKET_CLAIM, symbol))
+        entry = entry_date_of(spec.code) if spec is not None else None
+        if spec is not None and entry is None:
+            return True  # pre-2026-09-24 spec without an entry date: never re-enter blindly
+        return entry is not None and (
+            datetime.now(timezone.utc).date() - date.fromisoformat(entry)).days <= 30
+
+    def _register_trend_basket_position(self, symbol: str, store: "StrategyStore", last_price: float) -> str:
+        """Register one basket position directly -- no per-symbol Gauntlet (ADR-0038 amendment
+        2026-09-24: its one-symbol, one-year backtest rejected 98% of real picks and can't see
+        this strategy's breadth-timing edge). Sized like _run_gauntlet: starting capital x the
+        per-trade risk pct. The recurring event is created once per symbol; a re-entry just
+        re-saves the spec (new version, new entry date) under the same id."""
+        new_id = mint_expansion_strategy_id(_TREND_BASKET_CLAIM, symbol)
+        risk_pct = self._settings.get("max_per_trade_risk_pct") or 2.0
+        capital = self._settings.get("trading_paper_starting_capital") or 10000.0
+        qty = capital * (risk_pct / 100.0) / last_price
+        store.save(
+            StrategySpec(strategy_id=new_id, symbol=symbol, qty=qty, interval="1d",
+                         code=trend_basket_code(datetime.now(timezone.utc).date().isoformat())),
+            origin="discovered", hypothesis=_TREND_BASKET_CLAIM,
+            provenance_json={"source": "trend_basket_dispatch (ADR-0038)"},
+        )
+        sched = self._scheduler
+        if sched is not None and sched._con.execute(
+                "SELECT id FROM events WHERE title = ?", (new_id,)).fetchone() is None:
+            sched._create_event({"title": new_id, "recurrence": "5m",
+                                 "start_iso": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")})
+        return new_id
 
     async def _trend_basket_dispatch(
         self, args: dict, *, strategy_store=None, fetch=None, broker=None,
     ) -> ToolResult:
-        """ADR-0038: on a breadth rising edge, dispatch the trend-basket strategy to the top 10
-        Candidate-pool symbols by momentum x volatility, each through a normal per-symbol Gauntlet
-        call (no bypass -- every candidate already has enough history to backtest, unlike the IPO
-        play). Checked every scheduler tick, same posture as `_job_ipo_dispatch`."""
+        """ADR-0038: on a breadth rising edge, register the trend-basket strategy on the top 10
+        Candidate-pool symbols by momentum x volatility, directly (no per-symbol Gauntlet -- see
+        _register_trend_basket_position). Checked every scheduler tick, same posture as
+        `_job_ipo_dispatch`."""
         if self._trend_basket_dispatch_running:
             return ToolResult(content=json.dumps({
                 "dispatched": [], "reason": "a trend_basket_dispatch is already running -- skipped",
@@ -491,16 +517,15 @@ class TradingStrategiesPlugin:
         for symbol in candidates:
             new_id = mint_expansion_strategy_id(_TREND_BASKET_CLAIM, symbol)
             try:
-                result = await self._run_gauntlet(
-                    {"code": TREND_BASKET_STRATEGY_CODE, "symbol": symbol,
-                     "hypothesis": _TREND_BASKET_CLAIM,
-                     "provenance": "trend_basket_dispatch (ADR-0038)"},
-                    strategy_store=store, fetch=fetch_fn, origin="discovered", strategy_id=new_id,
-                )
-                verdict = json.loads(result.content).get("verdict", "ERROR") if not result.is_error else "ERROR"
+                bars = fetch_bars_for_selection(symbol, 1, "d")
+                last_price = float(bars["close"].iloc[-1]) if len(bars) else 0.0
+                if last_price <= 0:
+                    raise ValueError("no last price")
+                self._register_trend_basket_position(symbol, store, last_price)
+                verdict = "REGISTERED"
             except Exception:
                 verdict = "ERROR"
-                logger.exception("[trading_strategies] trend_basket_dispatch gauntlet failed for %s", symbol)
+                logger.exception("[trading_strategies] trend_basket_dispatch registration failed for %s", symbol)
             results.append({"symbol": symbol, "new_id": new_id, "verdict": verdict})
 
         if self._record_activity_fn is not None and results:

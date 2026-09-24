@@ -63,8 +63,9 @@ def rank_by_momentum(
     fetch_bars: Callable[[str, int, str], pd.DataFrame],
     horizon: int = 20,
 ) -> list[str]:
-    """Rank candidates by `horizon`-day return, descending.
-    
+    """Rank candidates by `horizon`-day return x `horizon`-day daily-return stdev, descending --
+    ADR-0038's locked momentum x volatility score (pure momentum until 2026-09-24).
+
     Expects `candidates` to already be filtered by liquidity/price screens 
     (e.g., via `discovery.rank_for_day_trading`).
     """
@@ -80,7 +81,10 @@ def rank_by_momentum(
                 continue
 
             ret = (closes.iloc[-1] / closes.iloc[0]) - 1.0
-            scores[sym] = ret
+            vol = float(closes.pct_change().std())
+            if vol != vol:  # NaN: too few bars to measure volatility
+                continue
+            scores[sym] = ret * vol
         except Exception:
             continue
 
