@@ -202,3 +202,53 @@ selection change.
   sizing. Filed as #1349.
 - **No reentrancy guard on `trend_basket_dispatch`** — found during live verification, 2026-09-22
   (see TREND-BASKET.md's PR #1348 entry). Filed as #1350.
+
+## Amendment (2026-09-24) -- register picks without the per-symbol Gauntlet; anchor entry to a date
+
+**Context** -- Before the first paper run, the real `run_gauntlet` (the same call
+`_run_gauntlet` makes) was backtested on the basket's actual top-10 picks at 25 historical
+rising-edge dates (58-symbol `bars_hist.db` universe, 2008-2025). It passed **5 of 248 picks
+(2%)**, and 23 of the 25 dates passed 0 of 10. Most failures were `monte_carlo_permutation` (232),
+then `vs_benchmark` (158) and `vs_random` (134). The rejected picks were not bad trades (median
+20-day trade +1.6%, 52% winners). The Gauntlet backtests one symbol over the past year, and for
+this code that meant one 20-day hold starting a year ago, then 11 months flat: mostly zero returns
+that can't reach significance. The same session found that the strategy code could never open a
+live position. It treated the data's first bar as the entry and went flat after bar 20, while
+`live_tick` passes a 180-day window and acts on the last signal, so the signal was always 0
+(confirmed on real AAPL/NVDA/SOFI bars). The original "Why no Gauntlet bypass" reasoning was only
+about data availability ("every candidate has enough history"), not about whether the Gauntlet's
+test fits this strategy. It doesn't.
+
+**Decision** -- Chosen by the user 2026-09-24 (option A). Trend-basket picks are registered
+directly, the way the IPO play is: a `StrategySpec` plus one recurring scheduler event per
+symbol, with no per-symbol Gauntlet run. The strategy's validation is the portfolio-level research
+in this ADR (breadth timing plus cross-sectional selection), which a one-symbol backtest can't see.
+Also corrected in the same change (commit c7613dd):
+- Strategy code is generated per position with a real `ENTRY` date (`trend_basket_code`). It
+  holds from that date with the same 12% trail and 20-bar cap, so the live last-bar signal is
+  correct.
+- `rank_by_momentum` now scores 20-day return x 20-day daily-return stdev, the locked selection in
+  "Full-universe correction" above. The shipped code had ranked by pure momentum.
+- "Already held" expires 30 calendar days after entry (covering the 20-trading-day cap), so a later
+  rising edge can re-enter a symbol. A re-entry re-saves the spec under the same id (new version,
+  fresh forward record) and does not create a second event.
+
+**Considered and rejected**
+- *Keep the Gauntlet as-is.* At a 2% pass rate the basket would almost never trade, and the filter
+  rejected ordinary picks for a structural reason, not a quality one.
+- *A trend-basket-specific Gauntlet backtest* (replaying the rule at this symbol's past signal
+  dates). Keeps a per-stock filter, but it's real work with no evidence it would filter anything
+  meaningful. The 5 historical passers (+10.5% median) are too few to show that a per-stock
+  filter adds edge. Revisit only if live results suggest bad single names are the problem.
+
+**Consequences**
+- Order-time risk checks are now the only per-trade guard: the per-trade cap (with the 2026-09-23
+  trim-to-cap for small overshoots), concurrent-position and correlation limits, the sentiment
+  gates, the daily-loss halt, and live_tick's global 5% stop-loss / 30% take-profit backstop. The
+  backstop is tighter than this ADR's 12% trail and exits first on a 5% drawdown from entry. That
+  is an existing user policy, deliberately left unchanged here and flagged for the user.
+- The sizing gap in Consequences above (#1349) is closed without override plumbing: live
+  `max_per_trade_risk_pct` is 10 and `trading_paper_starting_capital` is 100, matching the $100
+  Alpaca paper account.
+- ADR-0028 rule 4 is unaffected: the Gauntlet is a strategy-quality filter, not the ADR-0005
+  permission gate, and no permission path changes. The 16-class capability vocabulary is unchanged.
