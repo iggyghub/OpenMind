@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 import keyring
 from typing import Protocol, List, Optional, Literal, Dict, Any, runtime_checkable, Tuple
 from dataclasses import dataclass
 
+logger = logging.getLogger(__name__)
+
 # Public types
-Side = Literal["buy", "sell"]
+Side =Literal["buy", "sell"]
 OrderType = Literal["market", "limit", "stop", "stop_limit"]
 
 @dataclass
@@ -63,18 +67,43 @@ def _get_alpaca_credentials(env: str) -> tuple[str, str]:
 
 
 class AlpacaBrokerClient:
-    def __init__(self, env: str = "paper") -> None:
+    def __init__(self, env: str = "paper", ledger_path=None) -> None:
         if env not in ("paper", "live"):
             raise ValueError("env must be 'paper' or 'live'")
         self.env = env
         self._client = None
         self._connected = False
         self._screener = None
-        # In-memory ledger for per-(strategy_id, symbol) position isolation.
-        # Alpaca itself has no per-strategy position concept, so this lives
-        # here, mirroring StubBrokerClient's own ledger. Resets on restart --
-        # same accepted limitation the stub already has.
-        self._positions: Dict[Tuple[str, str], Position] = {}
+        # Per-(strategy_id, symbol) position ledger -- Alpaca itself has no
+        # per-strategy position concept. `ledger_path` persists it (2026-09-24):
+        # in memory only, a restart made every open multi-day position look
+        # unowned, so its strategy re-bought it and never sold the original.
+        # None (default) = in-memory only, for callers that never place orders.
+        self._ledger_path = ledger_path
+        self._positions: Dict[Tuple[str, str], Position] = self._load_ledger()
+
+    def _load_ledger(self) -> Dict[Tuple[str, str], Position]:
+        if self._ledger_path is None:
+            return {}
+        import json
+        from pathlib import Path
+        try:
+            rows = json.loads(Path(self._ledger_path).read_text(encoding="utf-8"))
+            return {(r.pop("strategy_id"), r["symbol"]): Position(**r) for r in rows}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.warning("[broker] could not read position ledger %s: %s", self._ledger_path, e)
+            return {}
+
+    def _save_ledger(self) -> None:
+        if self._ledger_path is None:
+            return
+        import json
+        from dataclasses import asdict
+        from pathlib import Path
+        rows = [{"strategy_id": sid, **asdict(p)} for (sid, _), p in self._positions.items()]
+        Path(self._ledger_path).write_text(json.dumps(rows, indent=1), encoding="utf-8")
 
     def _connect(self) -> None:
         if self._connected:
@@ -88,6 +117,20 @@ class AlpacaBrokerClient:
         except ImportError:
             raise RuntimeError("alpaca-py is not installed. Install with: pip install alpaca-py")
         self._connected = True
+        # Drop persisted rows the real account no longer holds (e.g. after an
+        # account reset) -- otherwise their strategies would try to sell
+        # shares that aren't there, every tick.
+        if self._positions:
+            try:
+                held = {p.symbol for p in self._client.get_all_positions()}
+                stale = [k for k in self._positions if k[1] not in held]
+                for k in stale:
+                    self._positions.pop(k)
+                if stale:
+                    logger.warning("[broker] dropped %d ledger rows not held on Alpaca: %s", len(stale), stale)
+                    self._save_ledger()
+            except Exception as e:
+                logger.warning("[broker] ledger reconcile skipped: %s", e)
 
     def _connect_screener(self) -> None:
         if self._screener is not None:
@@ -232,6 +275,7 @@ class AlpacaBrokerClient:
                 unrealized_pl=(float(order.price) - avg_entry) * net_qty,
                 current_price=float(order.price),
             )
+        self._save_ledger()
         return order
 
     _TERMINAL_ORDER_STATUSES = {

@@ -104,6 +104,40 @@ def test_alpaca_place_order_polls_until_filled(monkeypatch):
     assert broker._client.get_order_by_id_calls == 3
 
 
+def test_alpaca_position_ledger_survives_a_restart(tmp_path, monkeypatch):
+    """2026-09-24: the per-strategy ledger was in memory only, so after a Felix restart an open
+    multi-day position looked unowned -- its strategy would re-buy and never sell the original."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    path = tmp_path / "ledger.json"
+    broker = _connected_alpaca_client(["filled"])
+    broker._ledger_path = path
+    broker.place_order("AAPL", 10, "buy", "market", strategy_id="Trend basket: x @AAPL")
+
+    restarted = AlpacaBrokerClient(env="paper", ledger_path=path)
+    restarted._connected = True
+    (pos,) = restarted._positions.values()
+    assert list(restarted._positions) == [("Trend basket: x @AAPL", "AAPL")]
+    assert pos.qty == 10.0 and pos.avg_entry_price == 101.5
+
+
+def test_alpaca_ledger_drops_rows_the_account_no_longer_holds(tmp_path, monkeypatch):
+    """E.g. after an Alpaca paper account reset: a stale row would make its strategy try to sell
+    shares that aren't there, every tick."""
+    path = tmp_path / "ledger.json"
+    path.write_text(
+        '[{"strategy_id": "s1", "symbol": "AAPL", "qty": 1.0, "avg_entry_price": 1.0, "side": "buy",'
+        ' "market_value": 1.0, "unrealized_pl": 0.0, "current_price": 1.0},'
+        ' {"strategy_id": "s2", "symbol": "MSFT", "qty": 1.0, "avg_entry_price": 1.0, "side": "buy",'
+        ' "market_value": 1.0, "unrealized_pl": 0.0, "current_price": 1.0}]', encoding="utf-8")
+    broker = AlpacaBrokerClient(env="paper", ledger_path=path)
+    fake_client = type("C", (), {"get_all_positions": lambda self: [type("P", (), {"symbol": "MSFT"})()]})
+    monkeypatch.setattr("cerebral.trading.broker._get_alpaca_credentials", lambda env: ("k", "s"))
+    monkeypatch.setattr("alpaca.trading.client.TradingClient", lambda *a, **k: fake_client())
+    broker._connect()
+    assert list(broker._positions) == [("s2", "MSFT")]
+    assert "AAPL" not in path.read_text(encoding="utf-8")
+
+
 class _FakeAlpacaAccount:
     """alpaca-py's TradeAccount -- day-trade info is daytrade_count (a used
     count), there is no day_trades_remaining attribute. cash/equity/

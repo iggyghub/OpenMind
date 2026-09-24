@@ -285,7 +285,9 @@ _trading_control_plugin = _TradingControlPlugin(scheduler_plugin=_scheduler_plug
 # `_settings = _SettingsStore()`) -- built with the library default here
 # and re-pointed at the real starting-capital setting right after
 # _settings exists, below.
-_trading_broker = AlpacaBrokerClient(env="paper")
+# ledger_path: persists which strategy owns which open position across restarts.
+from cerebral.paths import data_dir as _ledger_data_dir
+_trading_broker = AlpacaBrokerClient(env="paper", ledger_path=_ledger_data_dir() / "alpaca_paper_ledger.json")
 _trading_broker_fallback = StubBrokerClient()
 _trading_forward_record = ForwardRecord()
 _alert_dispatcher = AlertDispatcher()
