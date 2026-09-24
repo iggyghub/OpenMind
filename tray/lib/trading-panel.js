@@ -228,6 +228,9 @@ function _renderTrendBasketBadge(trendBasket) {
   const threshold = typeof trendBasket.threshold === 'number' ? trendBasket.threshold : 0.6;
   const thresholdPct = (threshold * 100).toFixed(0) + '%';
   const isEdge = !!trendBasket.is_rising_edge;
+  // Trigger/sustain (2026-09-24): active = crossed above threshold and still above sustain.
+  const isActive = !!trendBasket.active;
+  const sustainPct = typeof trendBasket.sustain === 'number' ? (trendBasket.sustain * 100).toFixed(0) + '%' : null;
 
   let breadthPct, cls, statusLabel;
   if (breadth === null) {
@@ -237,12 +240,14 @@ function _renderTrendBasketBadge(trendBasket) {
   } else {
     breadthPct = (breadth * 100).toFixed(1) + '%';
     const above = breadth > threshold;
-    cls = above ? 'positive' : 'neutral';
+    cls = above || isActive ? 'positive' : 'neutral';
     statusLabel = isEdge
       ? 'rising edge today — basket dispatched'
-      : above
-        ? 'above threshold (not a new edge today)'
-        : 'below threshold — waiting';
+      : isActive && sustainPct
+        ? `active — refilling open slots while above ${sustainPct}`
+        : above
+          ? 'above threshold (not a new edge today)'
+          : 'below threshold — waiting';
   }
   const lastChecked = trendBasket.last_checked
     // Date-only ISO strings parse as UTC midnight -- shows yesterday west of UTC. 'T00:00' parses local.

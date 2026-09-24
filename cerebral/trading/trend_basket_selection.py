@@ -93,17 +93,24 @@ def rank_by_momentum(
 
 class RisingEdgeGate:
     """Caches one breadth reading per calendar day and fires on a rising edge above threshold.
-    
+
+    With `sustain` set (2026-09-24, trigger/sustain), `refresh` instead returns whether the regime
+    is ACTIVE: it turns on when breadth crosses above `threshold` and stays on while breadth stays
+    above `sustain`, so empty basket slots get refilled for as long as the uptrend holds -- not
+    only on the crossing day. `sustain=None` keeps the original edge-only behavior.
+
     Mirrors `MarketTrendGate` shape with fail-open-on-fetch-error behavior.
     """
 
     _STATE_KEY = "trend_basket_gate_state"
 
-    def __init__(self, threshold: float = 0.6, store=None) -> None:
+    def __init__(self, threshold: float = 0.6, store=None, sustain: float | None = None) -> None:
         self.threshold = threshold
+        self.sustain = sustain
         self._last_date: date | None = None
         self._last_breadth: float | None = None
         self._current_edge: bool = True  # Fail-open by default
+        self._active: bool = False
         # Persisted (2026-09-23) so a restart remembers yesterday's reading -- otherwise the first
         # reading after boot has no "was above" and a day already above threshold fires a false edge.
         self._store = store
@@ -112,32 +119,33 @@ class RisingEdgeGate:
             self._last_date = date.fromisoformat(state["date"])
             self._last_breadth = state.get("breadth")
             self._current_edge = bool(state.get("edge"))
+            self._active = bool(state.get("active"))
 
     def refresh(self, breadth: float | None, current_date: date) -> bool:
-        """Update state with a new breadth reading. Returns True if today is a rising edge."""
+        """Update state with a new breadth reading. Returns True if today is a rising edge (or,
+        with `sustain` set, if the regime is active today)."""
         if breadth is None:
-            return self._current_edge
+            return self._current_edge if self.sustain is None else self._active
 
         try:
             if current_date != self._last_date:
                 is_above = breadth > self.threshold
                 was_above = self._last_breadth is not None and self._last_breadth > self.threshold
-
-                if is_above and not was_above:
-                    self._current_edge = True
-                else:
-                    self._current_edge = False
+                self._current_edge = is_above and not was_above
+                if self.sustain is not None:
+                    self._active = self._current_edge or (self._active and breadth > self.sustain)
 
                 self._last_date = current_date
                 self._last_breadth = breadth
                 if self._store is not None:
                     self._store.set(self._STATE_KEY, {
-                        "date": current_date.isoformat(), "breadth": breadth, "edge": self._current_edge,
+                        "date": current_date.isoformat(), "breadth": breadth,
+                        "edge": self._current_edge, "active": self._active,
                     })
         except Exception:
             pass  # Fail-open: retain current edge state on error
 
-        return self._current_edge
+        return self._current_edge if self.sustain is None else self._active
 
     @property
     def current(self) -> bool:
@@ -146,14 +154,16 @@ class RisingEdgeGate:
     @property
     def last_reading(self) -> dict:
         """Status snapshot for display (2026-09-23, trend-basket UI visibility) -- today's
-        breadth reading, the threshold it's compared against, whether today counted as a rising
-        edge, and when it was last checked. `breadth` only updates once per calendar day by
-        design (see `refresh` -- later same-day calls return the cached decision without
-        recomputing), so this is "today's reading," not a live-every-tick value; a caller
+        breadth reading, the thresholds it's compared against, whether today counted as a rising
+        edge / an active refill day, and when it was last checked. `breadth` only updates once per
+        calendar day by design (see `refresh` -- later same-day calls return the cached decision
+        without recomputing), so this is "today's reading," not a live-every-tick value; a caller
         rendering this should say so rather than imply it updates every scheduler tick."""
         return {
             "breadth": self._last_breadth,
             "threshold": self.threshold,
+            "sustain": self.sustain,
             "is_rising_edge": self._current_edge,
+            "active": self._active,
             "last_checked": self._last_date.isoformat() if self._last_date else None,
         }

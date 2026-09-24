@@ -115,6 +115,22 @@ class TestRisingEdgeGate(unittest.TestCase):
         except Exception:
             self.fail("RisingEdgeGate.refresh raised unexpectedly on valid inputs")
 
+    def test_sustain_keeps_the_regime_active_until_breadth_drops_below_it(self):
+        """Trigger 55% / sustain 50%: active from the cross, through a dip to 52%, off at 49%,
+        and a later reading above 50% (but not a fresh cross above 55%) stays off."""
+        gate = RisingEdgeGate(threshold=0.55, sustain=0.50)
+        steps = [(0.54, False), (0.56, True), (0.60, True), (0.52, True), (0.49, False), (0.53, False),
+                 (0.56, True)]
+        for day, (breadth, expected) in enumerate(steps, start=1):
+            self.assertEqual(gate.refresh(breadth, date(2026, 10, day)), expected, (day, breadth))
+
+    def test_active_state_survives_a_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = SettingsStore(Path(d) / "s.json")
+            RisingEdgeGate(threshold=0.55, sustain=0.50, store=store).refresh(0.56, date(2026, 10, 1))
+            restarted = RisingEdgeGate(threshold=0.55, sustain=0.50, store=store)
+            self.assertTrue(restarted.refresh(0.52, date(2026, 10, 2)))  # still above sustain
+
     def test_state_survives_a_restart(self):
         """A restart must remember yesterday's reading: breadth already above threshold yesterday
         and today is NOT a new edge, even for a freshly constructed gate."""

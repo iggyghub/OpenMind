@@ -131,29 +131,69 @@ async def test_rising_edge_registers_top_candidates_directly_without_gauntlet(tm
     assert sorted(plugin._scheduler.created) == sorted(r["new_id"] for r in data["dispatched"])
 
 
-def _held_store(symbol, entry):
-    held_id = mint_expansion_strategy_id(_CLAIM, symbol)
-    store = MagicMock(spec=StrategyStore)
-    store.get.side_effect = lambda sid: MagicMock(code=trend_basket_code(entry)) if sid == held_id else None
-    return store
+def _save_position(store, symbol, entry):
+    from cerebral.trading.strategy_store import StrategySpec
+    store.save(StrategySpec(mint_expansion_strategy_id(_CLAIM, symbol), symbol, trend_basket_code(entry), qty=1.0),
+               origin="discovered")
+
+
+def _today():
+    return datetime.now(timezone.utc).date()
 
 
 @pytest.mark.asyncio
-async def test_recently_entered_candidate_is_skipped(tmp_path):
+async def test_a_position_entered_today_is_not_bought_again(tmp_path):
     plugin = _plugin(tmp_path)
-    store = _held_store("AAPL", datetime.now(timezone.utc).date().isoformat())
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    _save_position(store, "AAPL", _today().isoformat())
     result = await plugin._trend_basket_dispatch(
         {}, strategy_store=store, fetch=_fetch_all_uptrend, broker=_raising_broker(),
     )
     assert "AAPL" not in [r["symbol"] for r in json.loads(result.content)["dispatched"]]
 
 
-def test_an_old_entry_is_no_longer_held(tmp_path):
-    """Past the 20-trading-day hold, a later rising edge may re-enter the same symbol."""
+def test_open_symbols_follow_each_position_s_own_exit_logic(tmp_path):
+    """Occupied slot = the position's own strategy still says hold on the latest bars. A steady
+    uptrend never trips the 12% trail, so a 5-day-old entry is still open; a flat-then-crash
+    series trips it, so that slot is free; a 60-day-old entry is past the 20-day cap."""
     plugin = _plugin(tmp_path)
-    old = (datetime.now(timezone.utc).date() - timedelta(days=40)).isoformat()
-    assert plugin._is_trend_basket_held("AAPL", _held_store("AAPL", old)) is False
-    assert plugin._is_trend_basket_held("AAPL", _held_store("AAPL", datetime.now(timezone.utc).date().isoformat())) is True
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    five_days_ago = (_today() - timedelta(days=5)).isoformat()
+    _save_position(store, "UP", five_days_ago)
+    _save_position(store, "CRASH", five_days_ago)
+    _save_position(store, "OLD", (_today() - timedelta(days=60)).isoformat())
+
+    def fetch(symbol, start, end, interval="1d"):
+        if symbol == "CRASH":
+            df = _flat_bars()
+            df.iloc[-2:, df.columns.get_loc("Low")] = 50.0  # -50%: past the 12% trail
+            return df
+        return _uptrend_bars()
+
+    assert plugin._trend_basket_open_symbols(store, fetch) == {"UP"}
+
+
+@pytest.mark.asyncio
+async def test_active_regime_refills_only_the_empty_slots(tmp_path):
+    """Refill (ADR-0038 amendment 2026-09-24): on a later day with the regime still active and 3
+    positions still open, only the 7 empty slots are filled, never the held symbols."""
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    held = ["AAPL", "MSFT", "NVDA"]
+    for sym in held:
+        _save_position(store, sym, _today().isoformat())
+    plugin._trend_basket_gate._active = True
+    plugin._trend_basket_gate._last_breadth = 0.9
+    plugin._trend_basket_gate._last_date = _today() - timedelta(days=1)
+
+    result = await plugin._trend_basket_dispatch(
+        {}, strategy_store=store, fetch=_fetch_all_uptrend, broker=_raising_broker(),
+    )
+    data = json.loads(result.content)
+    assert data["active"] is True and data["rising_edge"] is False  # sustained, not a new cross
+    symbols = [r["symbol"] for r in data["dispatched"]]
+    assert not set(symbols) & set(held)
+    assert 1 <= len(symbols) <= 7
 
 
 def test_re_entry_does_not_duplicate_the_recurring_event(tmp_path):

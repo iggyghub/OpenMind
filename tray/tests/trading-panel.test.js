@@ -1734,6 +1734,12 @@ describe('trend basket watch badge (ADR-0038, 2026-09-23)', () => {
     expect(h).toContain(new Date(2026, 8, 23).toLocaleDateString());
   });
 
+  test('an active (sustained) regime says it is refilling, not waiting', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.52, threshold: 0.55, sustain: 0.5, is_rising_edge: false, active: true, last_checked: '2026-09-25' } });
+    expect(h).toContain('active — refilling open slots while above 50%');
+    expect(h).not.toContain('waiting');
+  });
+
   test('absent entirely when the broadcast carries no trend_basket key (older payload)', () => {
     expect(html({ positions: [] })).not.toContain('Trend Basket');
   });
