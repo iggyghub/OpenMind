@@ -502,6 +502,26 @@ class TradingStrategiesPlugin:
                 return pd.DataFrame(columns=["close"])
             return df.tail(n).rename(columns={"Close": "close"})[["close"]]
 
+        # The gate takes one reading per day, and building the pool + breadth costs ~10 minutes of
+        # fetches (seen live 2026-09-24), which blocks the scheduler loop. So once today's reading
+        # is in, only rebuild when the regime is active AND a slot is actually empty.
+        gate = self._trend_basket_gate
+        reading = gate.last_reading
+        have_today = reading["last_checked"] == datetime.now(timezone.utc).date().isoformat()
+        if have_today and not reading["active"]:
+            return ToolResult(content=json.dumps({
+                "dispatched": [], "breadth": reading["breadth"], "rising_edge": False, "active": False,
+                "reason": "today's reading already taken",
+            }))
+        open_symbols = None
+        if have_today:
+            open_symbols = self._trend_basket_open_symbols(store, fetch_fn)
+            if len(open_symbols) >= _TREND_BASKET_SLOTS:
+                return ToolResult(content=json.dumps({
+                    "dispatched": [], "breadth": reading["breadth"], "rising_edge": reading["is_rising_edge"],
+                    "active": True, "reason": "all slots full",
+                }))
+
         try:
             # 2026-09-23 finding: build_dynamic_universe's own DEFAULT filter (min_price=$1,
             # min_dollar_volume=$5M -- tuned for day-trading's volatility-seeking use case) let
@@ -530,21 +550,24 @@ class TradingStrategiesPlugin:
         # min_dollar_volume passed above internally) -- both breadth and selection read the same
         # pool now, fixing a prior inconsistency where breadth saw the fully unfiltered universe
         # while selection alone went through a second (redundant, same-default) filter pass.
-        breadth_result = compute_breadth(universe, fetch_bars_for_selection)
-        active = self._trend_basket_gate.refresh(breadth_result.breadth, datetime.now(timezone.utc).date())
-        is_edge = self._trend_basket_gate.current
-        if not active:
-            return ToolResult(content=json.dumps({
-                "dispatched": [], "breadth": breadth_result.breadth, "rising_edge": is_edge, "active": False,
-            }))
+        if not have_today:
+            breadth_result = compute_breadth(universe, fetch_bars_for_selection)
+            active = gate.refresh(breadth_result.breadth, datetime.now(timezone.utc).date())
+            if not active:
+                return ToolResult(content=json.dumps({
+                    "dispatched": [], "breadth": breadth_result.breadth, "rising_edge": gate.current, "active": False,
+                }))
+        is_edge = gate.current
+        breadth = gate.last_reading["breadth"]
 
         # Refill (ADR-0038 amendment 2026-09-24): fill whatever slots are empty, every tick while
         # the regime is active -- not only on the crossing day.
-        open_symbols = self._trend_basket_open_symbols(store, fetch_fn)
+        if open_symbols is None:
+            open_symbols = self._trend_basket_open_symbols(store, fetch_fn)
         free = _TREND_BASKET_SLOTS - len(open_symbols)
         if free <= 0:
             return ToolResult(content=json.dumps({
-                "dispatched": [], "breadth": breadth_result.breadth, "rising_edge": is_edge,
+                "dispatched": [], "breadth": breadth, "rising_edge": is_edge,
                 "active": True, "reason": "all slots full",
             }))
         ranked = rank_by_momentum(universe, fetch_bars_for_selection)
@@ -572,7 +595,7 @@ class TradingStrategiesPlugin:
                 "verdicts": {r["symbol"]: r["verdict"] for r in results},
             })
         return ToolResult(content=json.dumps({
-            "dispatched": results, "breadth": breadth_result.breadth, "rising_edge": is_edge, "active": True,
+            "dispatched": results, "breadth": breadth, "rising_edge": is_edge, "active": True,
         }))
 
     async def _run_mix_strategies(self, args: dict, *, strategy_store=None, fetch=None) -> ToolResult:

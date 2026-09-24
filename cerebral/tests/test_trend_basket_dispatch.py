@@ -196,6 +196,63 @@ async def test_active_regime_refills_only_the_empty_slots(tmp_path):
     assert 1 <= len(symbols) <= 7
 
 
+@pytest.mark.asyncio
+async def test_after_today_s_reading_an_inactive_tick_does_no_rebuild(tmp_path, monkeypatch):
+    """Building the pool + breadth costs ~10 minutes of fetches (seen live 2026-09-24). Once
+    today's reading is in and the regime is off, a tick must return without rebuilding."""
+    plugin = _plugin(tmp_path)
+    plugin._trend_basket_gate.refresh(0.45, _today())
+
+    def must_not_build(*args, **kwargs):
+        raise AssertionError("the candidate pool must not be rebuilt after today's reading")
+    monkeypatch.setattr("plugins.trading_strategies.build_dynamic_universe", must_not_build)
+
+    result = await plugin._trend_basket_dispatch(
+        {}, strategy_store=StrategyStore(db_path=tmp_path / "specs.db"), fetch=_fetch_all_uptrend,
+        broker=_raising_broker(),
+    )
+    data = json.loads(result.content)
+    assert data["active"] is False and data["dispatched"] == []
+
+
+@pytest.mark.asyncio
+async def test_active_and_full_skips_the_rebuild(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    for i in range(10):
+        _save_position(store, f"S{i}", _today().isoformat())
+    plugin._trend_basket_gate._last_breadth = 0.4
+    plugin._trend_basket_gate.refresh(0.56, _today())  # crossed today: active
+
+    def must_not_build(*args, **kwargs):
+        raise AssertionError("no empty slot, so no pool rebuild")
+    monkeypatch.setattr("plugins.trading_strategies.build_dynamic_universe", must_not_build)
+
+    result = await plugin._trend_basket_dispatch(
+        {}, strategy_store=store, fetch=_fetch_all_uptrend, broker=_raising_broker(),
+    )
+    assert json.loads(result.content)["reason"] == "all slots full"
+
+
+@pytest.mark.asyncio
+async def test_active_today_with_empty_slots_refills_without_re_measuring_breadth(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    plugin._trend_basket_gate._last_breadth = 0.4
+    plugin._trend_basket_gate.refresh(0.56, _today())
+
+    def must_not_measure(*args, **kwargs):
+        raise AssertionError("today's breadth is already known")
+    monkeypatch.setattr("plugins.trading_strategies.compute_breadth", must_not_measure)
+
+    result = await plugin._trend_basket_dispatch(
+        {}, strategy_store=StrategyStore(db_path=tmp_path / "specs.db"), fetch=_fetch_all_uptrend,
+        broker=_raising_broker(),
+    )
+    data = json.loads(result.content)
+    assert data["active"] is True and data["breadth"] == 0.56
+    assert 1 <= len(data["dispatched"]) <= 10
+
+
 def test_re_entry_does_not_duplicate_the_recurring_event(tmp_path):
     plugin = _plugin(tmp_path)
     plugin._scheduler = _FakeScheduler()
