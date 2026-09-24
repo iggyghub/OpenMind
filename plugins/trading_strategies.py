@@ -50,9 +50,6 @@ class TradingStrategiesPlugin:
         self._record_activity_fn = record_activity_fn
         self._on_trading_change = None
         self._lifecycle = None  # wired post-construction by main.py
-        # ADR-0038: one persistent gate instance so the rising-edge state survives across ticks
-        # (a fresh RisingEdgeGate every call would never see yesterday's reading to compare against).
-        self._trend_basket_gate = RisingEdgeGate(threshold=_TREND_BASKET_BREADTH_THRESHOLD)
         # Reentrancy guard (2026-09-23, ADR-0028 rule 5 -- same "singular scheduler" reasoning as
         # self_dev_campaign's own _campaign_running): a cold candidate-pool build can take several
         # minutes even with parallel fetches, and the scheduler tick fires every ~5 minutes
@@ -63,6 +60,10 @@ class TradingStrategiesPlugin:
             self._settings = settings
         else:
             self._settings = SettingsStore(path=data_dir() / "felix-settings.json")
+        # ADR-0038: one persistent gate instance so the rising-edge state survives across ticks
+        # (a fresh RisingEdgeGate every call would never see yesterday's reading to compare against),
+        # and persisted via settings so it also survives a Felix restart.
+        self._trend_basket_gate = RisingEdgeGate(threshold=_TREND_BASKET_BREADTH_THRESHOLD, store=self._settings)
 
     def _create_event(self, args: dict):
         """Delegate to SchedulerPlugin so gauntlet.py auto-promote can

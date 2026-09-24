@@ -93,11 +93,21 @@ class RisingEdgeGate:
     Mirrors `MarketTrendGate` shape with fail-open-on-fetch-error behavior.
     """
 
-    def __init__(self, threshold: float = 0.6) -> None:
+    _STATE_KEY = "trend_basket_gate_state"
+
+    def __init__(self, threshold: float = 0.6, store=None) -> None:
         self.threshold = threshold
         self._last_date: date | None = None
         self._last_breadth: float | None = None
         self._current_edge: bool = True  # Fail-open by default
+        # Persisted (2026-09-23) so a restart remembers yesterday's reading -- otherwise the first
+        # reading after boot has no "was above" and a day already above threshold fires a false edge.
+        self._store = store
+        state = (store.get(self._STATE_KEY) if store is not None else None) or {}
+        if state.get("date"):
+            self._last_date = date.fromisoformat(state["date"])
+            self._last_breadth = state.get("breadth")
+            self._current_edge = bool(state.get("edge"))
 
     def refresh(self, breadth: float | None, current_date: date) -> bool:
         """Update state with a new breadth reading. Returns True if today is a rising edge."""
@@ -116,6 +126,10 @@ class RisingEdgeGate:
 
                 self._last_date = current_date
                 self._last_breadth = breadth
+                if self._store is not None:
+                    self._store.set(self._STATE_KEY, {
+                        "date": current_date.isoformat(), "breadth": breadth, "edge": self._current_edge,
+                    })
         except Exception:
             pass  # Fail-open: retain current edge state on error
 

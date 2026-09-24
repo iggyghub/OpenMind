@@ -82,6 +82,8 @@ _DEFAULTS: dict[str, Any] = {
     # 2026-09-23: non-empty = only strategies whose name starts with this trade
     # (e.g. "Trend basket:"); every other strategy is parked. "" = all trade.
     "trading_only_prefix":              "",
+    # 2026-09-23: RisingEdgeGate's last reading {date, breadth, edge}, so a restart remembers yesterday.
+    "trend_basket_gate_state":          {},
     # 2026-08-31: market-wide sentiment gate on new paper opens, sourced
     # from general market-news RSS feeds (cerebral/trading/sentiment.py).
     # Default True (unlike trading_live_arm) -- this only ever gates paper
@@ -203,6 +205,7 @@ _TYPES: dict[str, type] = {
     "trading_paper_enabled":            bool,
     "trading_paper_starting_capital":   float,
     "trading_only_prefix":              str,
+    "trend_basket_gate_state":          dict,
     "trading_sentiment_gate_enabled":   bool,
     "trading_bear_case_gate_enabled":   bool,
     "trading_stock_sentiment_gate_enabled": bool,

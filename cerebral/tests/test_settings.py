@@ -65,6 +65,7 @@ class TestSettingsStore:
             "trading_paper_enabled",
             "trading_paper_starting_capital",
             "trading_only_prefix",
+            "trend_basket_gate_state",
             "distinct_days_floor",
             "discovery_enabled",
             "discovery_stop_at",

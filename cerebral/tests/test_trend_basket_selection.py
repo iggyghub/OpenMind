@@ -1,6 +1,10 @@
+import tempfile
 import unittest
 from datetime import date
+from pathlib import Path
 import pandas as pd
+
+from cerebral.settings import SettingsStore
 
 from cerebral.trading.trend_basket_selection import (
     compute_breadth,
@@ -110,6 +114,16 @@ class TestRisingEdgeGate(unittest.TestCase):
             gate.refresh(0.5, date(2023, 1, 2))
         except Exception:
             self.fail("RisingEdgeGate.refresh raised unexpectedly on valid inputs")
+
+    def test_state_survives_a_restart(self):
+        """A restart must remember yesterday's reading: breadth already above threshold yesterday
+        and today is NOT a new edge, even for a freshly constructed gate."""
+        with tempfile.TemporaryDirectory() as d:
+            store = SettingsStore(Path(d) / "s.json")
+            RisingEdgeGate(threshold=0.6, store=store).refresh(0.65, date(2026, 9, 23))
+            restarted = RisingEdgeGate(threshold=0.6, store=store)
+            self.assertFalse(restarted.refresh(0.70, date(2026, 9, 24)))
+            self.assertEqual(restarted.last_reading["breadth"], 0.70)
 
     def test_last_reading_before_any_refresh(self):
         gate = RisingEdgeGate(threshold=0.6)
