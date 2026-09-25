@@ -2,7 +2,7 @@
 
 Fakes stand in for alpaca-py's real NewsClient/NewsRequest/NewsSet/News --
 those are attribute-based Pydantic models (article.id, article.symbols,
-article.created_at; news_set.data["news"], news_set.next_page_token), not
+article.created_at; news_set.data["news"]), not
 dicts, so the fakes here mirror that shape rather than a generic dict.
 """
 import sqlite3
@@ -33,44 +33,66 @@ def db_path(tmp_path):
     return news_cache.init_news_db(str(tmp_path / "bars.db"))
 
 
-def test_fetch_news_pagination_and_dedup(db_path):
-    """Confirm pagination follows next_page_token until exhausted and dedupes on article id."""
-    call_count = 0
+def _raw_article(aid, sym, day):
+    ts = f"{day}T12:00:00Z"
+    return {"id": aid, "headline": "h", "source": "s", "url": None, "summary": "",
+            "created_at": ts, "updated_at": ts, "symbols": [sym], "author": "a", "content": ""}
 
-    class FakeClient:
-        def get_news(self, req):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return FakeNewsSet(
-                    data={"news": [
-                        FakeArticle("a1", ["AAPL"], datetime(2024, 1, 1, 12)),
-                        FakeArticle("a2", ["TSLA"], datetime(2024, 1, 2, 12)),
-                    ]},
-                    next_page_token="token2",
-                )
-            if call_count == 2:
-                return FakeNewsSet(
-                    data={"news": [
-                        FakeArticle("a3", ["MSFT"], datetime(2024, 1, 3, 12)),
-                        FakeArticle("a2", ["TSLA"], datetime(2024, 1, 2, 12)),  # duplicate
-                    ]},
-                    next_page_token=None,
-                )
-            return FakeNewsSet(data={"news": []}, next_page_token=None)
 
-    result = news_cache.fetch_news("AAPL", "2024-01-01", "2024-01-03", client=FakeClient(), db_path=db_path)
+def test_fetch_news_fetches_every_page_through_real_sdk(db_path):
+    """Regression (2026-09-25): limit=50 capped alpaca-py's internal paging at 50 articles TOTAL.
+    Drive the real NewsClient over a fake 3-page HTTP layer and assert pages 2+ are fetched."""
+    from alpaca.data.historical.news import NewsClient
 
-    assert call_count == 2
-    assert len(result) == 3  # a1, a2, a3
-    assert {a.id for a in result} == {"a1", "a2", "a3"}
+    pages = {
+        None: {"news": [_raw_article(i, "AAPL", "2024-01-01") for i in range(50)], "next_page_token": "p2"},
+        "p2": {"news": [_raw_article(i, "AAPL", "2024-01-02") for i in range(50, 100)], "next_page_token": "p3"},
+        "p3": {"news": [_raw_article(99, "AAPL", "2024-01-02"),  # duplicate across pages
+                        _raw_article(100, "AAPL", "2024-01-03")], "next_page_token": None},
+    }
+    requested = []
 
+    def fake_get(path, data=None, **kw):
+        requested.append(data.get("page_token"))
+        return pages[data.get("page_token")]
+
+    client = NewsClient("k", "s")
+    client.get = fake_get
+    result = news_cache.fetch_news("AAPL", "2024-01-01", "2024-01-03", client=client, db_path=db_path)
+
+    assert requested == [None, "p2", "p3"]
+    assert len(result) == 101  # 102 raw, one duplicate id
     conn = sqlite3.connect(db_path)
-    rows = conn.execute("SELECT article_id, symbol, published_day, n_symbols FROM news").fetchall()
+    n = conn.execute("SELECT COUNT(*) FROM news WHERE symbol = 'AAPL'").fetchone()[0]
     conn.close()
-    assert len(rows) == 3  # one row per article (each tagged to exactly 1 symbol here)
-    assert set(r[0] for r in rows) == {"a1", "a2", "a3"}
-    assert {r[3] for r in rows} == {1}  # all n_symbols=1
+    assert n == 101
+    assert news_cache.count_news_events("AAPL", "2024-01-02", db_path=db_path) == 50
+
+
+def test_init_news_db_wipes_pre_fix_truncated_cache_once(tmp_path):
+    """A bars.db cached before the pagination fix is invalidated exactly once, so every symbol
+    re-backfills; rows written after that survive later init calls."""
+    path = str(tmp_path / "bars.db")
+    conn = sqlite3.connect(path)
+    conn.execute(news_cache.NEWS_TABLE)
+    conn.execute(news_cache.NEWS_COVER_TABLE)
+    conn.execute("INSERT INTO news VALUES ('old', 'SPY', '2020-01-01', 1)")
+    conn.execute("INSERT INTO news_cover VALUES ('SPY', '2016-01-01')")
+    conn.commit()
+    conn.close()
+
+    news_cache.init_news_db(path)
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT COUNT(*) FROM news").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM news_cover").fetchone()[0] == 0
+    conn.execute("INSERT INTO news VALUES ('new', 'SPY', '2020-01-01', 1)")
+    conn.commit()
+    conn.close()
+
+    news_cache.init_news_db(path)
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT COUNT(*) FROM news").fetchone()[0] == 1
+    conn.close()
 
 
 def test_fetch_news_gap_fill(db_path):
