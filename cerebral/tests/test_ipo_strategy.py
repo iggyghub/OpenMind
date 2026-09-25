@@ -1,13 +1,17 @@
 import pandas as pd
 import pytest
 
-from cerebral.trading.ipo_strategy import IPO_POP_FADE_STRATEGY_CODE
+from cerebral.trading.ipo_strategy import ipo_play_code
+
+IPO_DATE = "2026-09-01"
 
 
-def _run_strategy(df: pd.DataFrame) -> list:
-    """Execute the stored strategy string and return signals for the given DataFrame."""
+def _run_strategy(df: pd.DataFrame, ipo_date: str = IPO_DATE) -> list:
+    """Execute the generated strategy string; a bare frame gets 5m bars starting on IPO day."""
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df = df.set_index(pd.date_range(f"{IPO_DATE} 09:30", periods=len(df), freq="5min"))
     ns = {}
-    exec(IPO_POP_FADE_STRATEGY_CODE, ns)
+    exec(ipo_play_code(ipo_date), ns)
     return ns["strategy"](df)
 
 
@@ -68,3 +72,20 @@ def test_a_single_volatile_bar_cannot_trip_its_own_stop():
     # inflated to 31.56 by that same bar's own high -- it holds.
     assert sigs[0] == 1
     assert sigs == [1, 1, 1, 1, 1]
+
+
+def _bars(start: str, n: int, freq: str = "1D") -> pd.DataFrame:
+    return pd.DataFrame({"Open": [100.0] * n, "High": [100.0] * n, "Low": [100.0] * n,
+                         "Close": [100.0] * n},
+                        index=pd.date_range(start, periods=n, freq=freq))
+
+
+def test_window_slid_past_ipo_day_is_flat():
+    """#1351: live_tick's 30-day window no longer holds IPO day -> the play is over, not a
+    fresh entry at whatever bar the window now starts on."""
+    assert _run_strategy(_bars("2026-10-15", 5)) == [0] * 5
+
+
+def test_bars_before_ipo_day_are_ignored():
+    """#1351: the entry is the first bar ON/AFTER the IPO date, not data's first bar."""
+    assert _run_strategy(_bars("2026-08-29", 6)) == [0, 0, 0, 1, 1, 1]

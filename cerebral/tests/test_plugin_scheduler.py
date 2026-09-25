@@ -2383,6 +2383,10 @@ async def test_dispatch_due_ipos_registers_a_strategy_for_a_today_or_past_due_ti
     assert spec.symbol == "ABCD"
     assert spec.interval == "5m"
     assert spec.risk_override_pct == 25.0
+    assert 'ENTRY = "' + date.today().isoformat() + '"' in spec.code
+    # #1351: live_tick only runs strategies with a due event titled by their id.
+    titles = [r[0] for r in plugin._scheduler._con.execute("SELECT title FROM events")]
+    assert titles.count("IPO play: ABCD (Abcd Inc.)") == 1
     assert len(logged) == 1
 
 
