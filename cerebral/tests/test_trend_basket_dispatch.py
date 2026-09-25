@@ -27,6 +27,12 @@ def _plugin(tmp_path):
     return TradingStrategiesPlugin(settings=SettingsStore(path=tmp_path / "felix-settings.json"))
 
 
+@pytest.fixture(autouse=True)
+def _reading_window_open(monkeypatch):
+    """Pin the 06:00-16:00 ET reading window open so these tests don't depend on the hour."""
+    monkeypatch.setattr("plugins.trading_strategies._in_reading_window", lambda: True)
+
+
 def _raising_broker():
     """A broker whose calls all fail, so build_dynamic_universe falls open to its own
     deterministic _KNOWN_TICKERS fallback rather than needing a full mock data shape."""
@@ -138,7 +144,8 @@ def _save_position(store, symbol, entry):
 
 
 def _today():
-    return datetime.now(timezone.utc).date()
+    from plugins.trading_strategies import _market_today
+    return _market_today()
 
 
 @pytest.mark.asyncio
@@ -251,6 +258,44 @@ async def test_active_today_with_empty_slots_refills_without_re_measuring_breadt
     data = json.loads(result.content)
     assert data["active"] is True and data["breadth"] == 0.56
     assert 1 <= len(data["dispatched"]) <= 10
+
+
+@pytest.mark.asyncio
+async def test_no_reading_is_taken_outside_the_window(tmp_path, monkeypatch):
+    """2026-09-24/25: the overnight reading (first tick after 8 PM ET) came back 0.0% twice. The
+    day's reading is only taken 06:00-16:00 ET; outside that, nothing is built or recorded."""
+    plugin = _plugin(tmp_path)
+    monkeypatch.setattr("plugins.trading_strategies._in_reading_window", lambda: False)
+
+    def must_not_build(*args, **kwargs):
+        raise AssertionError("no pool build outside the reading window")
+    monkeypatch.setattr("plugins.trading_strategies.build_dynamic_universe", must_not_build)
+
+    result = await plugin._trend_basket_dispatch(
+        {}, strategy_store=StrategyStore(db_path=tmp_path / "specs.db"), fetch=_fetch_all_uptrend,
+        broker=_raising_broker(),
+    )
+    assert "reading window" in json.loads(result.content)["reason"]
+    assert plugin._trend_basket_gate.last_reading["last_checked"] is None
+
+
+@pytest.mark.asyncio
+async def test_breadth_uses_the_prior_close_not_today_s_unfinished_bar(tmp_path):
+    """Intraday, the daily feed includes today's partial bar. The reading must match the
+    backtest's prior-close basis: an uptrend through yesterday with a crash 'today' still reads
+    as above the 50-day average."""
+    plugin = _plugin(tmp_path)
+
+    def fetch(symbol, start, end, interval="1d"):
+        df = _uptrend_bars(n=80)
+        df.index = pd.date_range(end=_today(), periods=80, freq="D")
+        df.iloc[-1, df.columns.get_loc("Close")] = 1.0  # today's unfinished bar: a crash
+        return df
+
+    result = await plugin._trend_basket_dispatch(
+        {}, strategy_store=StrategyStore(db_path=tmp_path / "specs.db"), fetch=fetch, broker=_raising_broker(),
+    )
+    assert json.loads(result.content)["breadth"] == 1.0
 
 
 def test_re_entry_does_not_duplicate_the_recurring_event(tmp_path):

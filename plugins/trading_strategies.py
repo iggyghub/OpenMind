@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -37,6 +38,17 @@ _TREND_BASKET_CLAIM = "Trend basket: breadth-gated momentum x volatility basket 
 _TREND_BASKET_BREADTH_THRESHOLD = 0.55
 _TREND_BASKET_SUSTAIN = 0.50
 _TREND_BASKET_SLOTS = 10
+_NY_TZ = ZoneInfo("America/New_York")
+
+
+def _market_today() -> date:
+    """The trading calendar's date (New York), not UTC -- UTC rolls over at 8 PM ET."""
+    return datetime.now(_NY_TZ).date()
+
+
+def _in_reading_window() -> bool:
+    """06:00-16:00 New York: when the trend basket may take its daily breadth reading."""
+    return 6 <= datetime.now(_NY_TZ).hour < 16
 # Stricter than build_dynamic_universe's own $1/$5M default (tuned for Discovery/Expansion's
 # day-trading use case) -- a liquidity floor, not a volatility cap, see the 2026-09-23 note
 # at the call site in _trend_basket_dispatch.
@@ -414,7 +426,7 @@ class TradingStrategiesPlugin:
         today's daily bar may not exist yet, and re-registering a live position would bump its
         spec version and orphan it."""
         from cerebral.trading.sandboxed_eval import evaluate_signals_verbose
-        today = datetime.now(timezone.utc).date()
+        today = _market_today()
         open_symbols = set()
         for spec in store.list_all():
             if not spec.strategy_id.startswith(_TREND_BASKET_CLAIM):
@@ -451,7 +463,7 @@ class TradingStrategiesPlugin:
         qty = capital * (risk_pct / 100.0) / last_price
         store.save(
             StrategySpec(strategy_id=new_id, symbol=symbol, qty=qty, interval="1d",
-                         code=trend_basket_code(datetime.now(timezone.utc).date().isoformat())),
+                         code=trend_basket_code(_market_today().isoformat())),
             origin="discovered", hypothesis=_TREND_BASKET_CLAIM,
             provenance_json={"source": "trend_basket_dispatch (ADR-0038)"},
         )
@@ -491,15 +503,20 @@ class TradingStrategiesPlugin:
             from cerebral.trading.broker import AlpacaBrokerClient
             broker_obj = AlpacaBrokerClient(env="paper")
 
+        market_today = _market_today()
+
         def fetch_bars_for_selection(symbol: str, n: int, freq: str) -> pd.DataFrame:
             # Adapts trading_data.fetch_ohlcv's (symbol, start, end, interval) / capitalised-
             # column contract to trend_basket_selection's (symbol, n_bars, freq) / lowercase
             # "close" contract -- same padding convention discovery.rank_for_day_trading uses.
-            end = datetime.now(timezone.utc).date()
+            # Today's unfinished bar is dropped, so breadth and ranking always use the PRIOR close
+            # (what the backtest used) whatever time of day this runs.
+            end = market_today + timedelta(days=1)
             start = end - timedelta(days=int(n * 2.5) + 5)
             df = fetch_fn(symbol, start.isoformat(), end.isoformat(), interval="1d")
             if df is None or df.empty or "Close" not in df.columns:
                 return pd.DataFrame(columns=["close"])
+            df = df[[pd.Timestamp(ix).date() < market_today for ix in df.index]]
             return df.tail(n).rename(columns={"Close": "close"})[["close"]]
 
         # The gate takes one reading per day, and building the pool + breadth costs ~10 minutes of
@@ -507,7 +524,15 @@ class TradingStrategiesPlugin:
         # is in, only rebuild when the regime is active AND a slot is actually empty.
         gate = self._trend_basket_gate
         reading = gate.last_reading
-        have_today = reading["last_checked"] == datetime.now(timezone.utc).date().isoformat()
+        have_today = reading["last_checked"] == market_today.isoformat()
+        # Take the day's reading only between 06:00 and 16:00 New York time. Two nights running
+        # (2026-09-24 and -25) the first reading after 8 PM ET (UTC midnight) came back 0.0% with
+        # 20+ stocks measured, while the morning reading was a sensible 45%.
+        if not have_today and not _in_reading_window():
+            return ToolResult(content=json.dumps({
+                "dispatched": [], "breadth": reading["breadth"], "rising_edge": False,
+                "active": reading["active"], "reason": "outside the daily reading window (06:00-16:00 ET)",
+            }))
         if have_today and not reading["active"]:
             return ToolResult(content=json.dumps({
                 "dispatched": [], "breadth": reading["breadth"], "rising_edge": False, "active": False,
@@ -552,7 +577,10 @@ class TradingStrategiesPlugin:
         # while selection alone went through a second (redundant, same-default) filter pass.
         if not have_today:
             breadth_result = compute_breadth(universe, fetch_bars_for_selection)
-            active = gate.refresh(breadth_result.breadth, datetime.now(timezone.utc).date())
+            logger.info("[trading_strategies] trend basket breadth reading: %s (pool %d, above %d, below %d)",
+                        breadth_result.breadth, len(universe), len(breadth_result.above_ma),
+                        len(breadth_result.below_ma))
+            active = gate.refresh(breadth_result.breadth, market_today)
             if not active:
                 return ToolResult(content=json.dumps({
                     "dispatched": [], "breadth": breadth_result.breadth, "rising_edge": gate.current, "active": False,
