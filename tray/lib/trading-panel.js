@@ -220,7 +220,68 @@ function _renderMarketTrendBadge(marketTrend) {
  * once-per-day cache) -- labeled "today's reading," not implied to be live-every-tick.
  * @param {Object} [trendBasket] - {breadth, threshold, is_rising_edge, last_checked}
  */
-function _renderTrendBasketBadge(trendBasket) {
+// Per-bet reference from research/trend-basket/sp500_backtest.py (live rule, S&P 500 as it was,
+// 2005-2026, 2,526 closed bets). Update if that backtest is re-run with different rules.
+const _BASKET_REF = { avg: 0.0071, positive: 0.49, lo: -0.129, hi: 0.139, luck10: [-0.0415, 0.0628], luck30: [-0.0219, 0.0404] };
+
+/**
+ * Turns the raw fill list into trend-basket bets (2026-09-27; user reviews these daily). A bet is
+ * one basket position: buys add to it, sells take from it, closed when the quantity is back to 0.
+ * Keyed by strategy_id -- each basket slot has its own "Trend basket: ... @SYMBOL" id.
+ * @param {Array} fills - broadcast all_fills rows, oldest first
+ * @returns {{open: Array, closed: Array}}
+ */
+function trendBasketBets(fills) {
+  const live = {};
+  const closed = [];
+  for (const f of fills || []) {
+    if (!f || typeof f.strategy_id !== 'string' || !f.strategy_id.startsWith('Trend basket:')) continue;
+    const qty = Number(f.qty) || 0;
+    const price = Number(f.price) || 0;
+    const b = live[f.strategy_id] || (live[f.strategy_id] = { symbol: f.symbol, opened: f.timestamp, qty: 0, cost: 0, proceeds: 0 });
+    if (String(f.side).toLowerCase().startsWith('b')) {
+      b.qty += qty;
+      b.cost += qty * price + (Number(f.fees) || 0);
+    } else {
+      b.qty -= qty;
+      b.proceeds += qty * price - (Number(f.fees) || 0);
+    }
+    if (b.qty <= 1e-9 && b.cost > 0) {
+      closed.push({ symbol: b.symbol, opened: b.opened, closed: f.timestamp, ret: b.proceeds / b.cost - 1 });
+      delete live[f.strategy_id];
+    }
+  }
+  const open = Object.values(live).filter(b => b.qty > 1e-9).map(b => ({ symbol: b.symbol, opened: b.opened, entry: b.cost / b.qty }));
+  return { open, closed };
+}
+
+function _renderBasketBets(fills) {
+  const { open, closed } = trendBasketBets(fills);
+  const pct = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%';
+  const day = ts => (ts ? new Date(ts).toLocaleDateString() : '');
+  const daysSince = ts => Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 86400000));
+  const ref = `history: avg ${pct(_BASKET_REF.avg)} per bet, ${(_BASKET_REF.positive * 100).toFixed(0)}% winners, most bets between ${pct(_BASKET_REF.lo)} and ${pct(_BASKET_REF.hi)}`;
+  let tally = `No closed bets yet. ${ref}.`;
+  if (closed.length) {
+    const avg = closed.reduce((s, b) => s + b.ret, 0) / closed.length;
+    const wins = closed.filter(b => b.ret > 0).length;
+    const band = closed.length >= 30 ? _BASKET_REF.luck30 : closed.length >= 10 ? _BASKET_REF.luck10 : null;
+    const verdict = !band
+      ? 'too few bets to judge yet (10+ needed)'
+      : avg < band[0] ? 'BELOW the normal range -- worth a look'
+        : avg > band[1] ? 'above the normal range' : 'within the normal range';
+    tally = `${closed.length} closed: avg ${pct(avg)} per bet, ${wins}/${closed.length} winners -- ${verdict}. ${ref}.`;
+  }
+  // ponytail: open bets show entry price + days held, not a live mark; add current price if wanted
+  const openRows = open.map(b => `<div class="trend-detail">OPEN ${b.symbol} since ${day(b.opened)} (${daysSince(b.opened)}d of 20) @ $${b.entry.toFixed(2)}</div>`).join('');
+  const closedRows = closed.slice(-10).reverse().map(b =>
+    `<div class="trend-detail">${b.ret >= 0 ? '▲' : '▼'} ${b.symbol} ${pct(b.ret)} (${day(b.opened)} → ${day(b.closed)})</div>`).join('');
+  return `
+      <div class="paper-control-row trend-basket-bets"><span class="trend-detail"><b>Bets:</b> ${open.length} open of 10 slots. ${tally}</span></div>
+      ${openRows}${closedRows}`;
+}
+
+function _renderTrendBasketBadge(trendBasket, fills) {
   if (!trendBasket) {
     return '';
   }
@@ -264,6 +325,7 @@ function _renderTrendBasketBadge(trendBasket) {
       <div class="paper-control-row trend-basket-detail-row">
         <span class="trend-detail">today's reading (updates once/day): ${lastChecked}</span>
       </div>
+      ${_renderBasketBets(fills)}
     </div>
   `;
 }
@@ -573,7 +635,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const paperControlHtml = _renderPaperControl(data && data.paper_control);
   const sentimentHtml = _renderSentimentBadge(data && data.sentiment);
   const marketTrendHtml = _renderMarketTrendBadge(data && data.market_trend);
-  const trendBasketHtml = _renderTrendBasketBadge(data && data.trend_basket);
+  const trendBasketHtml = _renderTrendBasketBadge(data && data.trend_basket, data && data.all_fills);
   _injectTradingPanelStyles();
 
   if (!data || !data.positions || data.positions.length === 0) {
@@ -2420,6 +2482,7 @@ return {
   buildResumeStrategyEvent: buildResumeStrategyEvent,
   renderReplayPanel: renderReplayPanel,
   renderCrossStockPanel: renderCrossStockPanel,
+  trendBasketBets: trendBasketBets,
 };
 
 }));

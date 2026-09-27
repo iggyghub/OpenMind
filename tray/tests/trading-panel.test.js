@@ -1753,4 +1753,38 @@ describe('trend basket watch badge (ADR-0038, 2026-09-23)', () => {
     expect(h).toContain('Trend Basket');
     expect(h).toContain('45.0%');
   });
+
+  describe('bets (2026-09-27)', () => {
+    const TB = 'Trend basket: breadth-gated momentum x volatility basket (ADR-0038)';
+    const fill = (sym, side, qty, price, ts, sid = `${TB} @${sym}`) =>
+      ({ strategy_id: sid, symbol: sym, side, qty, price, fees: 0, timestamp: ts });
+    const fills = [
+      fill('AAA', 'buy', 2, 5, '2026-09-25T15:00:00Z'),
+      fill('AAA', 'sell', 2, 5.5, '2026-10-10T15:00:00Z'),
+      fill('BBB', 'buy', 1, 10, '2026-09-26T15:00:00Z'),
+      fill('BBB', 'sell', 1, 9, '2026-10-01T15:00:00Z'),
+      fill('CCC', 'buy', 0.5, 20, '2026-09-27T15:00:00Z'),
+      fill('ZZZ', 'buy', 1, 1, '2026-09-27T15:00:00Z', 'some other strategy @ZZZ'),
+    ];
+
+    test('pairs buys and sells per slot; ignores other strategies', () => {
+      const { open, closed } = TradingPanel.trendBasketBets(fills);
+      expect(closed.map(b => [b.symbol, +b.ret.toFixed(4)])).toEqual([['AAA', 0.1], ['BBB', -0.1]]);
+      expect(open.map(b => [b.symbol, b.entry])).toEqual([['CCC', 20]]);
+    });
+
+    test('card shows the tally, open slot, and the historical reference', () => {
+      const h = html({ positions: [], all_fills: fills, trend_basket: { breadth: 0.6, threshold: 0.55, last_checked: '2026-09-27' } });
+      expect(h).toContain('1 open of 10 slots');
+      expect(h).toContain('2 closed: avg +0.00% per bet, 1/2 winners');
+      expect(h).toContain('too few bets to judge');
+      expect(h).toContain('OPEN CCC');
+      expect(h).toContain('history: avg +0.71% per bet');
+    });
+
+    test('no fills yet says so instead of crashing', () => {
+      const h = html({ positions: [], trend_basket: { breadth: 0.45, threshold: 0.55, last_checked: '2026-09-27' } });
+      expect(h).toContain('0 open of 10 slots. No closed bets yet.');
+    });
+  });
 });
