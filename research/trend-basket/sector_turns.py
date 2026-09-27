@@ -166,3 +166,19 @@ wins = all(st(bench.loc[pd.Period(a, "M"):pd.Period(b, "M")]["news rule"])[0] >
            max(st(bench.loc[pd.Period(a, "M"):pd.Period(b, "M")][k])[0] for k in ("EW hold", "SPY"))
            for a, b in (("2017-01", "2020-12"), ("2021-01", "2026-08")))
 print("PASS" if wins else "no edge (fails the pre-registered bar)")
+
+# ---- POST-HOC (added after seeing results, not pre-registered) ----
+# Test b's two passes were abnormal VOLUME before 20%-rule troughs. Is volume simply high all
+# through a bear phase (a crash makes news), rather than specifically ahead of the bottom?
+print("\n=== POST-HOC: abnormal volume by 20%-rule phase (not pre-registered) ===")
+av = abn["volume"]
+for sec, tk in ETF.items():
+    tt = sorted((d, k) for k, d in turns_20(fund[tk]))
+    st_m = pd.Series(index=av.index, dtype=object)
+    for m in av.index:
+        prior = [k for d, k in tt if d.to_period("M") < m]
+        st_m[m] = "bear" if prior and prior[-1] == "bull->bear" else "bull"
+    av.loc[:, sec + "_state"] = st_m
+states = pd.concat([pd.DataFrame({"v": av[s], "state": av[s + "_state"]}) for s in ETF]).dropna()
+for s, grp in states.groupby("state"):
+    print(f"{s}: {len(grp)} sector-months, mean abnormal volume {grp.v.mean():+.3f} log points")
