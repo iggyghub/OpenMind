@@ -7,7 +7,7 @@ import pandas as pd
 
 COST, TRAIL, MAX_HOLD, N_SLOTS = 0.0002, 0.12, 20, 10
 
-closes = pickle.load(open("sp500_close.pkl", "rb"))
+closes = pickle.load(open("C:/OpenMind/cerebral/data/research_sp500_close.pkl", "rb"))
 px = pd.DataFrame(closes).sort_index()
 px.index = pd.to_datetime(px.index).tz_localize(None).normalize()
 px = px[~px.index.duplicated()]
@@ -16,7 +16,7 @@ spy.index = pd.to_datetime(spy.index).tz_localize(None).normalize()
 px = px.reindex(spy.index)
 
 # point-in-time membership
-hist = pd.read_csv("sp500_hist.csv", parse_dates=["date"]).sort_values("date")
+hist = pd.read_csv("C:/OpenMind/cerebral/data/research_sp500_hist.csv", parse_dates=["date"]).sort_values("date")
 rows = {d: set(t.split(",")) for d, t in zip(hist["date"], hist["tickers"])}
 change_days = sorted(rows)
 members = pd.DataFrame(False, index=px.index, columns=px.columns)
@@ -50,7 +50,11 @@ def signal(trigger, sustain):
     return pd.Series(out, index=breadth.index)
 
 
+TRADES = []  # (return, days held, exit reason) of every closed bet in the last simulate() call
+
+
 def simulate(sig, start, end):
+    TRADES.clear()
     sig = sig.shift(1, fill_value=False)
     sc = score.shift(1)
     cash, pos, eq, inv = 1.0, {}, [], []
@@ -65,11 +69,13 @@ def simulate(sig, start, end):
                 p["gap"] += 1
                 if p["gap"] > 5:  # prices stopped (delisted/acquired): out at the last price
                     cash += p["units"] * p["last"] * (1 - COST)
+                    TRADES.append((p["units"] * p["last"] * (1 - COST) / p["cost"] - 1, i - p["i"], "delisted"))
                     pos.pop(sym)
                 continue
             p["gap"], p["last"] = 0, c
             if c <= p["peak"] * (1 - TRAIL) or i - p["i"] >= MAX_HOLD:
                 cash += p["units"] * c * (1 - COST)
+                TRADES.append((p["units"] * c * (1 - COST) / p["cost"] - 1, i - p["i"], "stop" if i - p["i"] < MAX_HOLD else "20-day"))
                 pos.pop(sym)
             else:
                 p["peak"] = max(p["peak"], c)
@@ -84,7 +90,7 @@ def simulate(sig, start, end):
                 if alloc <= 1e-9:
                     break
                 cash -= alloc
-                pos[sym] = {"i": i, "peak": row[sym], "last": row[sym], "gap": 0, "units": alloc * (1 - COST) / row[sym]}
+                pos[sym] = {"i": i, "peak": row[sym], "last": row[sym], "gap": 0, "cost": alloc, "units": alloc * (1 - COST) / row[sym]}
         equity = cash + sum(p["units"] * p["last"] for p in pos.values())
         eq.append((d, equity))
         inv.append(1 - cash / equity)
@@ -108,3 +114,14 @@ for start, end in [("2005-06-01", "2016-01-01"), ("2016-01-01", "2026-09-01"), (
     for name, sig in VARIANTS.items():
         c, d, sh, inv = simulate(sig, start, end)
         print(f"{name:38s} CAGR {c:+6.1%}  maxDD {d:5.0%}  Sharpe {sh:4.2f}  invested {inv:4.0%}")
+
+# ---- per-bet reference for the live Trend Basket card (LIVE variant, full period) ----
+simulate(VARIANTS["cross 55%, refill while >50% (LIVE)"], "2005-06-01", "2026-09-01")
+t = pd.DataFrame(TRADES, columns=["ret", "days", "exit"])
+print(f"\n=== per bet, LIVE variant 2005-2026: {len(t)} closed bets ===")
+print(f"average {t.ret.mean():+.2%}  median {t.ret.median():+.2%}  positive {np.mean(t.ret > 0):.0%}  "
+      f"middle 80% {t.ret.quantile(.1):+.1%}..{t.ret.quantile(.9):+.1%}  avg days held {t.days.mean():.1f}")
+print("exits: " + ", ".join(f"{k} {v:.0%}" for k, v in t.exit.value_counts(normalize=True).items()))
+for n in (10, 30):  # how much the average of the first n live bets can wander by luck alone
+    m = [t.ret.sample(n, replace=True, random_state=k).mean() for k in range(2000)]
+    print(f"average of {n} random bets: 80% of the time between {np.quantile(m, .1):+.2%} and {np.quantile(m, .9):+.2%}")
