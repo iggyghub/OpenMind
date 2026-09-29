@@ -6,7 +6,7 @@ import numpy as np
 
 # ponytail: reuse short_basket.py's data + functions by running its definitions only
 src = pathlib.Path(__file__).with_name("short_basket.py").read_text(encoding="utf-8")
-exec(src.split('if __name__ != "__main__":')[0])
+exec(src.split("# ---- run ----")[0])
 
 TRAIN, TEST = ("2005-06-01", "2016-01-01"), ("2016-01-01", "2026-09-01")
 rows = []

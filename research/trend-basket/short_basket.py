@@ -62,8 +62,7 @@ def simulate_short(sig, start, end, trail=TRAIL, max_hold=MAX_HOLD):
     return e.iloc[-1] ** (1 / yrs) - 1, (e / e.cummax() - 1).min(), pd.DataFrame(trades, columns=["ret", "date"])
 
 
-if __name__ != "__main__":
-    raise SystemExit  # imported for its functions only
+# ---- run ----
 sig = short_signal()
 print(f"short regime on {sig['2005-06-01':].mean():.0%} of days")
 ok = True
