@@ -20,7 +20,7 @@ def short_signal(trigger=0.45, sustain=0.50):
     return pd.Series(out, index=breadth.index)
 
 
-def simulate_short(sig, start, end):
+def simulate_short(sig, start, end, trail=TRAIL, max_hold=MAX_HOLD):
     sig, sc = sig.shift(1, fill_value=False), score.shift(1)
     cash, pos, eq, trades = 1.0, {}, [], []
     for i, d in enumerate(px.index):
@@ -37,7 +37,7 @@ def simulate_short(sig, start, end):
             else:
                 p["gap"], p["last"] = 0, c
                 p["low"] = min(p["low"], c)
-                if not (c >= p["low"] * (1 + TRAIL) or i - p["i"] >= MAX_HOLD):
+                if not (c >= p["low"] * (1 + trail) or i - p["i"] >= max_hold):
                     continue
             held = i - p["i"]
             pnl = p["size"] * (p["entry"] / c - 1) - p["size"] * (COST * 2 + BORROW * held)
@@ -62,6 +62,8 @@ def simulate_short(sig, start, end):
     return e.iloc[-1] ** (1 / yrs) - 1, (e / e.cummax() - 1).min(), pd.DataFrame(trades, columns=["ret", "date"])
 
 
+if __name__ != "__main__":
+    raise SystemExit  # imported for its functions only
 sig = short_signal()
 print(f"short regime on {sig['2005-06-01':].mean():.0%} of days")
 ok = True
