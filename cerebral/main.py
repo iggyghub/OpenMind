@@ -7780,6 +7780,9 @@ async def _process_command(
     except Exception as exc:
         logger.error("[cerebral] Unexpected error during LLM call: %s", exc)
         response = "Something went wrong. Please try again."
+    if not response:
+        # Never speak ""/None -- any backend can come back empty.
+        response = "I didn't get an answer from the model. Please try again."
 
     await _record_turn(KIND_FELIX_SPEECH, {"text": response, "spoken": bool(speak)})
     if speak:

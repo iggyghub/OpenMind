@@ -740,6 +740,48 @@ async def test_scope_upgrade_warning_logged_once(caplog):
     assert len(actionable) == 1, msgs
 
 
+class _FlakySession(FakeSession):
+    """events_wait raises while ``fail`` is truthy, then behaves normally."""
+    fail = True
+
+    async def call_tool(self, name, arguments):  # type: ignore[override]
+        if name == "events_wait" and self.fail:
+            self.events_wait_calls += 1
+            raise RuntimeError("Connection closed")
+        return await super().call_tool(name, arguments)
+
+
+async def test_error_backoff_is_exponential_capped_and_resets(monkeypatch, caplog):
+    session = _FlakySession()
+    plugin = _make_plugin(session=session, inbound_callback=_unused_callback)
+    plugin._error_backoff_seconds = 5.0
+    delays: list[float] = []
+
+    async def fake_sleep(seconds):
+        delays.append(seconds)
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(plugin, "_sleep_or_stop", fake_sleep)
+    with caplog.at_level(logging.WARNING):
+        await plugin.start_subscriber()
+        try:
+            await _drain_until(lambda: len(delays) >= 9)
+            assert delays[:9] == [5, 10, 20, 40, 80, 160, 300, 300, 300]
+            # One success resets the counter; the next failure starts over.
+            session.fail = False
+            await _drain_until(lambda: plugin._consecutive_failures == 0)
+            assert plugin._consecutive_failures == 0
+            session.fail = True
+            n = len(delays)
+            await _drain_until(lambda: len(delays) > n)
+            assert delays[n] == 5
+        finally:
+            await plugin.stop_subscriber()
+    raised = [r for r in caplog.records
+              if r.levelno >= logging.WARNING and "events_wait raised" in r.getMessage()]
+    assert len(raised) == 1  # repeats are DEBUG
+
+
 # ===========================================================================
 # Issue #172 -- closed-WS scope-upgrade rejection path
 #

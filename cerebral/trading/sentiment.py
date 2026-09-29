@@ -110,10 +110,20 @@ class MarketSentimentGate:
             logger.warning("[sentiment] LLM scoring failed, keeping last reading", exc_info=True)
             return self._reading
 
+        if _is_empty_model_output(raw):
+            logger.warning("[sentiment] model returned no usable output, not caching (will retry)")
+            return self._reading
+
         label, reason = _parse_verdict(raw)
         self._reading = SentimentReading(label=label, reason=reason, updated_at=datetime.now(timezone.utc))
         logger.info("[sentiment] refreshed: %s (%s)", label, reason)
         return self._reading
+
+
+def _is_empty_model_output(raw) -> bool:
+    # Empty reply, or the router's truncation message (no real verdict).
+    from cerebral.llm.router import _CLAW_LENGTH_MSG
+    return not (raw or "").strip() or raw.strip() == _CLAW_LENGTH_MSG
 
 
 WebSearchFn = Callable[[str], "Awaitable[list[dict]]"]
@@ -182,6 +192,10 @@ class StockSentimentGate:
             raw = await complete_fn(prompt)
         except Exception:
             logger.warning("[stock_sentiment] LLM scoring failed for %s, keeping last reading", symbol, exc_info=True)
+            return existing or SentimentReading()
+
+        if _is_empty_model_output(raw):
+            logger.warning("[stock_sentiment] model returned no usable output for %s, not caching (will retry)", symbol)
             return existing or SentimentReading()
 
         label, reason = _parse_verdict(raw)

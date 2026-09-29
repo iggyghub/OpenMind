@@ -1211,6 +1211,27 @@ def _normalize_openai_base(url: str) -> str:
     return trimmed
 
 
+# OpenAI-compat gateways default max_tokens to as little as 512 when it is
+# omitted (measured on bonsai 2026-09-28). A reasoning model (hermes-agent)
+# spends that on reasoning_content and returns finish_reason "length" with null
+# content and no tool call -- Felix then spoke "". 16k fits a multi-file
+# create_file turn; the retry doubles it once.
+_CLAW_MAX_TOKENS = 16384
+_CLAW_LENGTH_MSG = (
+    "I ran out of room to answer -- the model hit its output limit before "
+    "replying. Try asking for less at once."
+)
+
+
+def _claw_truncated_empty(choice: dict) -> bool:
+    msg = choice.get("message") or {}
+    return (
+        choice.get("finish_reason") == "length"
+        and not msg.get("content")
+        and not msg.get("tool_calls")
+    )
+
+
 class ClawBackend:
     """Routes cloud LLM calls through OpenClaw's inference layer.
 
@@ -1238,12 +1259,8 @@ class ClawBackend:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
-    async def complete(self, prompt: str, task_type: str = "chat") -> str:
+    async def _post(self, payload: dict) -> dict:
         import httpx
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-        }
         async with httpx.AsyncClient(timeout=_claw_timeout_s()) as client:
             try:
                 resp = await client.post(
@@ -1265,7 +1282,31 @@ class ClawBackend:
         data = resp.json()
         usage = data.get("usage", {}) or {}
         self._last_usage = {"prompt_tokens": int(usage.get("prompt_tokens", 0)), "completion_tokens": int(usage.get("completion_tokens", 0))}
-        return data["choices"][0]["message"]["content"]
+        return data
+
+    async def _chat(self, payload: dict) -> dict:
+        """POST a chat completion and return choices[0]; set max_tokens and
+        retry once with double the budget when the reply was cut off empty."""
+        payload["max_tokens"] = _CLAW_MAX_TOKENS
+        choice = (await self._post(payload))["choices"][0]
+        if _claw_truncated_empty(choice):
+            logger.warning(
+                "[router] %s hit max_tokens=%d with no reply -- retrying at %d",
+                self.model, _CLAW_MAX_TOKENS, _CLAW_MAX_TOKENS * 2,
+            )
+            payload["max_tokens"] = _CLAW_MAX_TOKENS * 2
+            choice = (await self._post(payload))["choices"][0]
+        return choice
+
+    async def complete(self, prompt: str, task_type: str = "chat") -> str:
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        choice = await self._chat(payload)
+        if _claw_truncated_empty(choice):
+            return _CLAW_LENGTH_MSG
+        return choice["message"].get("content") or ""
 
     async def complete_with_tools(
         self, prompt: str, tools: list[dict]
@@ -1275,7 +1316,6 @@ class ClawBackend:
         Fail-soft: if the response has no tool_calls (some OpenClaw builds drop
         them), return the plain text content rather than raising.
         """
-        import httpx
         import json as _json
 
         oai_tools = [
@@ -1294,26 +1334,10 @@ class ClawBackend:
             "messages": [{"role": "user", "content": prompt}],
             "tools": oai_tools,
         }
-        async with httpx.AsyncClient(timeout=_claw_timeout_s()) as client:
-            try:
-                resp = await client.post(
-                    f"{self.url}/v1/chat/completions",
-                    json=payload,
-                    headers=self._headers(),
-                )
-                resp.raise_for_status()
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                raise ConnectionError(_claw_conn_error_detail(exc)) from exc
-            except httpx.HTTPStatusError as exc:
-                # Include the server's response body — a bare status hides the
-                # real reason (e.g. LiteLLM "key not allowed to access model X").
-                body = (getattr(exc.response, "text", "") or "").strip()
-                detail = f": {body[:200]}" if body else ""
-                raise ConnectionError(
-                    f"HTTP {exc.response.status_code} from {exc.request.url}{detail}"
-                ) from exc
-
-        message = resp.json()["choices"][0]["message"]
+        choice = await self._chat(payload)
+        if _claw_truncated_empty(choice):
+            return _CLAW_LENGTH_MSG
+        message = choice["message"]
         tool_calls = message.get("tool_calls") or []
         if tool_calls:
             fn = tool_calls[0]["function"]
@@ -1337,7 +1361,6 @@ class ClawBackend:
         Gate via supports_vision so the router doesn't send images to a
         text-only endpoint."""
         import base64
-        import httpx
         content = [{"type": "text", "text": prompt}]
         for img in images:
             b64 = base64.b64encode(img).decode("ascii")
@@ -1349,25 +1372,10 @@ class ClawBackend:
             "model": self.model,
             "messages": [{"role": "user", "content": content}],
         }
-        async with httpx.AsyncClient(timeout=_claw_timeout_s()) as client:
-            try:
-                resp = await client.post(
-                    f"{self.url}/v1/chat/completions",
-                    json=payload,
-                    headers=self._headers(),
-                )
-                resp.raise_for_status()
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                raise ConnectionError(_claw_conn_error_detail(exc)) from exc
-            except httpx.HTTPStatusError as exc:
-                # Include the server's response body — a bare status hides the
-                # real reason (e.g. LiteLLM "key not allowed to access model X").
-                body = (getattr(exc.response, "text", "") or "").strip()
-                detail = f": {body[:200]}" if body else ""
-                raise ConnectionError(
-                    f"HTTP {exc.response.status_code} from {exc.request.url}{detail}"
-                ) from exc
-        return resp.json()["choices"][0]["message"]["content"]
+        choice = await self._chat(payload)
+        if _claw_truncated_empty(choice):
+            return _CLAW_LENGTH_MSG
+        return choice["message"].get("content") or ""
 
 
 class AnthropicBackend:

@@ -465,6 +465,7 @@ class OpenClawChannelsPlugin:
         self._loop_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
         self._scope_warned = False  # rate-limit the scope-upgrade WARN
+        self._consecutive_failures = 0  # drives exponential backoff
         self._seen_tokens: set[str] = set()
 
     # ------------------------------------------------------------------
@@ -827,7 +828,7 @@ class OpenClawChannelsPlugin:
                         "[openclaw_channels] session unavailable in loop: %s "
                         "-- backing off", err,
                     )
-                    await self._sleep_or_stop(self._error_backoff_seconds)
+                    await self._backoff()
                     continue
 
                 try:
@@ -867,7 +868,7 @@ class OpenClawChannelsPlugin:
                         )
                         self._scope_warned = True
                     else:
-                        logger.warning(
+                        logger.debug(
                             "[openclaw_channels] events_wait raised: %s "
                             "-- backing off",
                             scrubbed or "<no exception text>",
@@ -881,7 +882,7 @@ class OpenClawChannelsPlugin:
                     # restart. Reset and let the next iteration spawn a
                     # fresh ``openclaw mcp serve`` child.
                     await self._invalidate_session()
-                    await self._sleep_or_stop(self._error_backoff_seconds)
+                    await self._backoff()
                     continue
 
                 if _is_error(result):
@@ -900,9 +901,10 @@ class OpenClawChannelsPlugin:
                             "[openclaw_channels] events_wait error: %s",
                             self._scrub(text),
                         )
-                    await self._sleep_or_stop(self._error_backoff_seconds)
+                    await self._backoff()
                     continue
 
+                self._consecutive_failures = 0
                 payload = _parse_payload(result)
                 events = self._normalize_events(payload)
                 if not events:
@@ -926,6 +928,12 @@ class OpenClawChannelsPlugin:
             raise
         finally:
             logger.info("[openclaw_channels] subscriber loop stopped")
+
+    async def _backoff(self) -> None:
+        """Sleep base * 2**failures (cap 300s), then count this failure."""
+        delay = min(self._error_backoff_seconds * 2 ** self._consecutive_failures, 300.0)
+        self._consecutive_failures += 1
+        await self._sleep_or_stop(delay)
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         """Sleep, but wake immediately if stop_subscriber() is called."""
