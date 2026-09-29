@@ -1126,6 +1126,71 @@ async def test_claw_backend_tool_call_sends_bearer(monkeypatch):
     assert captured["headers"].get("Authorization") == "Bearer sk-dummy"
 
 
+# --- max_tokens + empty-at-length retry (reasoning models, 2026-09-28) -----
+
+_LENGTH_EMPTY = {"choices": [{"finish_reason": "length", "message": {"content": None}}]}
+_TOOL_REPLY = {"choices": [{"finish_reason": "tool_calls", "message": {
+    "content": None,
+    "tool_calls": [{"function": {"name": "create_file", "arguments": '{"path": "a"}'}}],
+}}]}
+
+
+def _install_fake_post_seq(monkeypatch, bodies, sent):
+    """Each post returns the next body; the sent payloads land in `sent`."""
+    import copy
+    import httpx
+
+    async def fake_post(self, url, json=None, headers=None):
+        sent.append(copy.deepcopy(json))
+        return _FakeHttpxResponse(200, bodies[len(sent) - 1])
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+
+async def test_claw_sends_max_tokens_and_no_retry_on_stop(monkeypatch):
+    from cerebral.llm.router import ClawBackend
+
+    sent = []
+    _install_fake_post_seq(monkeypatch, [
+        {"choices": [{"finish_reason": "stop", "message": {"content": "hi"}}]},
+    ], sent)
+    assert await ClawBackend(url="http://srv").complete("hello") == "hi"
+    assert [p["max_tokens"] for p in sent] == [16384]
+
+
+async def test_claw_tools_retries_once_with_double_budget(monkeypatch):
+    from cerebral.llm.router import ClawBackend, ToolCall
+
+    sent = []
+    _install_fake_post_seq(monkeypatch, [_LENGTH_EMPTY, _TOOL_REPLY], sent)
+    result = await ClawBackend(url="http://srv").complete_with_tools("hi", [])
+    assert isinstance(result, ToolCall) and result.name == "create_file"
+    assert [p["max_tokens"] for p in sent] == [16384, 32768]
+
+
+async def test_claw_tools_still_empty_after_retry_speaks_error(monkeypatch):
+    from cerebral.llm.router import _CLAW_LENGTH_MSG, ClawBackend
+
+    sent = []
+    _install_fake_post_seq(monkeypatch, [_LENGTH_EMPTY, _LENGTH_EMPTY], sent)
+    assert await ClawBackend(url="http://srv").complete_with_tools("hi", []) == _CLAW_LENGTH_MSG
+    assert len(sent) == 2
+
+
+async def test_claw_complete_never_returns_none(monkeypatch):
+    from cerebral.llm.router import _CLAW_LENGTH_MSG, ClawBackend
+
+    sent = []
+    _install_fake_post_seq(monkeypatch, [_LENGTH_EMPTY, _LENGTH_EMPTY], sent)
+    assert await ClawBackend(url="http://srv").complete("hi") == _CLAW_LENGTH_MSG
+
+    sent.clear()
+    _install_fake_post_seq(monkeypatch, [
+        {"choices": [{"finish_reason": "stop", "message": {"content": None}}]},
+    ], sent)
+    assert await ClawBackend(url="http://srv").complete("hi") == ""
+
+
 def test_claw_backend_strips_trailing_v1():
     from cerebral.llm.router import ClawBackend
 
