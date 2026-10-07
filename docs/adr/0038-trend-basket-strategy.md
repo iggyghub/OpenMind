@@ -293,3 +293,37 @@ bars, or one entered today. Commit c4bfe78.
   The refill improvement itself held in every refill variant and in both halves, so that part is
   the robust finding. The universe is 2026's survivors, so absolute returns are inflated.
 - The 16-class capability vocabulary and the ADR-0005 permission gate are unchanged.
+
+## Amendment (2026-10-06) -- measure breadth and pick from the S&P 500, not Alpaca's movers list
+
+Extends the two 2026-09-24 amendments above; it changes only *which stocks* the rule looks at.
+
+**Context** -- The per-bet reference on the Trend Basket card (+0.71%/bet, 49% winners) and the
+trigger/sustain thresholds' latest check come from `research/trend-basket/sp500_backtest.py`, which
+measures breadth and ranks picks over the S&P 500 as it was each day. Live never did that: it built
+its Candidate pool from Alpaca's daily top movers + most-actives (~90 names after a $2 / $10M
+liquidity floor), a population that changes every day and over-weights that day's biggest losers.
+Measured 2026-09-24..10-06, live breadth read 33-47% while the real S&P 500 read 21-29% on the same
+days. Because the population reshuffles daily, a "crossed above 55%" on that pool can be noise (it
+swung 37.5%-62.5% on back-to-back calls on 2026-09-23), so live could open a basket while the S&P
+sits at 30%, and would pick from a population the backtest never ranked.
+
+**Decision** -- Breadth and the momentum x volatility ranking both use the S&P 500 member list
+committed at `cerebral/trading/sp500_members.txt` (503 names, as of 2026-08-18). No extra liquidity
+floor (every member clears it). Prices come from ONE batched Alpaca daily-bars request for all
+members (measured 6.2s), falling back to the per-symbol path only if the batch fails; the per-symbol
+path took 701s cold for the same 503 names, which is why the batch is part of the decision, not an
+optimization. Built via self_dev, FELIX-FIXES.md X7/X8.
+
+**Considered and rejected**
+- *Keep the movers pool, recalibrate the thresholds to it.* No history exists for a daily-reshuffled
+  population, so there is nothing to calibrate against.
+- *Fetch the live S&P list from the web each day.* A network dependency on the daily reading for a
+  list that changes ~20 times a year. The committed file goes stale slowly and visibly (its header
+  carries its date).
+
+**Consequences**
+- Live now matches the backtest the card compares against, so the daily check means something.
+- Members added to the index after the file's date are invisible until it is refreshed; removed
+  members stay eligible. Small effect at ~20 changes/yr; refresh it a few times a year.
+- The 16-class capability vocabulary and the ADR-0005 permission gate are unchanged.

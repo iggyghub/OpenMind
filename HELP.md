@@ -23,6 +23,11 @@ generated, and the part that needs a human/AI author (the concepts) is a single 
 
 ## Read before running this campaign
 
+**Update 2026-10-06:** the sandbox gate now ALSO runs the tray's jest suite on any diff touching
+`tray/` (SUP-0, `cerebral/self_dev_io.py`), so a green verdict does cover `render-smoke` and
+`renderer-script-globals`. Still read the diff and click the tab: jest can't see a layout that
+renders blank. The original warning follows for history.
+
 **This is `tray/` work, and `tray/` is in self_dev's `GUARDRAIL_PATHS`.** That no longer
 blocks auto-merge (2026-08-21 amendment), but the sandbox test gate runs **pytest only and
 cannot validate JavaScript at all**. A green sandbox verdict on these slices means nothing.
@@ -77,10 +82,18 @@ Strict chain: each slice adds the thing the next one calls. Do not skip ahead.
 - [x] HELP1 -- #1045 -- `help` route + nav button + empty pane shell with its own tab prefix
 - [ ] HELP2 -- #1046 -- `tray/lib/help-panel.js` pure render/search functions + jest tests
 - [ ] HELP3 -- #1047 -- `tray/lib/help-content.js` -- encyclopedia topics 1-9 + the authoring header
-- [ ] HELP4 -- #1048 -- wire the Guide sub-tab into main.html; federated-search provider
+- [ ] HELP4a -- #1367 -- Guide sub-tab: load the two libs, two-column layout, CSS
+- [ ] HELP4b -- #1368 -- Guide sub-tab: renderHelp(), clicks, render on route activation
+- [ ] HELP4c -- #1369 -- Help topics in the header's federated search
 - [ ] HELP5 -- #1049 -- encyclopedia topics 10-19 (capabilities, safety, maintaining this guide)
-- [ ] HELP6 -- #1050 -- Capabilities sub-tab, rendered live from the plugins:list snapshot
-- [ ] HELP7 -- #1051 -- `docs/agents/help-tab.md` update instructions + CLAUDE.md + CONTEXT.md
+- [ ] HELP6a -- #1370 -- `renderCapabilities()` in help-panel.js + jest tests
+- [ ] HELP6b -- #1371 -- Capabilities sub-tab wired into main.html
+- [ ] HELP7 -- #1051 -- `docs/agents/help-tab.md` update instructions + CLAUDE.md "keep it current" build rule + CONTEXT.md
+
+HELP4 (#1048) and HELP6 (#1050) were split 2026-10-06 into the a/b/c slices above (closed as
+superseded): each had 4-6 `main.html` edits, the shape the edit step dropped blocks on in HELP1.
+Every `main.html` SEARCH anchor in the new slices was dry-run against master that day. Runs after
+FELIX-FIXES.md is done.
 
 ## Landed PRs
 
