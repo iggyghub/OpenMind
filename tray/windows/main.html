@@ -13578,6 +13578,13 @@
       return hits;
     });
 
+    // Help provider (HELP4c). Hits carry the topic id as `anchor`; the jump-link
+    // handler renders that topic instead of scrolling to an element id.
+    _registerProvider('help', function (query) {
+      if (!window.HelpPanel || !window.HelpContent) return [];
+      return window.HelpPanel.searchTopics(window.HelpContent, query);
+    });
+
     // ── Recipes provider (S19 / #302).
     _registerProvider('recipes', function (query) {
       const recipes = (recipesData && recipesData.recipes) || [];
