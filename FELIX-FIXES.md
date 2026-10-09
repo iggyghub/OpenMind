@@ -26,6 +26,7 @@ Order matters only where noted. X0 goes first: it removes the two tests that fai
 unrelated to the code (a live network search, and a UTC-vs-New-York date check that fails every
 evening after 8 PM ET), either of which would mark a correct slice `tests_failed` and block the run.
 
+- [ ] XA -- #1372 -- self_dev applier: uniform-reindent fallback + log the reply when nothing applies. Built by Claude (Sonnet), not self_dev: it is the step that failed X0 (2026-10-09, Budd's edit was right but indented +4)
 - [ ] X0 -- #1357 -- live web-search test opt-in (`OPENMIND_LIVE_TESTS=1`); after-8PM-ET date test uses the market date
 - [ ] X1 -- #1358 -- `cerebral/tests/test_plugin_google_workspace.py` so the gate stops refusing `google_workspace`
 - [ ] X2 -- #1359 -- `sentiment.py`: one-line warnings instead of 25-line tracebacks for handled failures
