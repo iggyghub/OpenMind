@@ -51,10 +51,10 @@ BEAR = regime(0.45, stay_below=0.50)
 STINTS = []  # asset return per bear stint, from the last simulate() call
 
 
-def simulate(asset, start, end):
+def simulate(asset, start, end, sleeve=None):
     STINTS.clear()
     buy = BULL.shift(1, fill_value=False)
-    bear = BEAR.shift(1, fill_value=False)
+    bear = (BEAR if sleeve is None else sleeve).shift(1, fill_value=False)
     sc = score.shift(1)
     a_px = etf[asset] if asset else None
     cash, units_a, pos, eq, stint_start = 1.0, 0.0, {}, [], None
@@ -139,3 +139,27 @@ for asset in ASSETS:
     dd = res[(asset, full)][1] >= res[(None, full)][1] - 0.01
     bets = len(st) > 0 and st.mean() > 0
     print(f"{asset}: beats cash 2006-15 {c1}, 2016-26 {c2}; drawdown ok {dd}; stints avg>0 {bets}  -> {'PASS' if c1 and c2 and dd and bets else 'FAIL'}")
+
+
+# ---- POST-HOC (not in BEAR-HOLD-PLAN.md, added 2026-10-09 after the GLD pass) ----
+# Is it the breadth TIMING or just gold going up? Two controls on the full period:
+# (a) gold in idle cash whenever the basket isn't buying; (b) the same bear-regime days shifted
+# to random times (circular shift, same number and length of stints), 100 draws.
+if __name__ == "__main__":
+    full = PERIODS[2]
+    g = etf["GLD"][(etf.index >= full[0]) & (etf.index < full[1])]
+    yrs = (g.index[-1] - g.index[0]).days / 365.25
+    print(f"\nPOST-HOC: GLD buy&hold {full[0][:4]}..{full[1][:4]} CAGR {(g.iloc[-1] / g.iloc[0]) ** (1 / yrs) - 1:+.1%}")
+    c_real = simulate("GLD", *full)[0]
+    c_idle = simulate("GLD", *full, sleeve=~BULL)[0]
+    print(f"basket + GLD only in weak breadth (tested rule): CAGR {c_real:+.1%}")
+    print(f"basket + GLD whenever basket not buying:         CAGR {c_idle:+.1%}")
+    rng = np.random.default_rng(0)
+    n = len(BEAR); draws = []
+    for _ in range(100):
+        k = int(rng.integers(250, n - 250))
+        draws.append(simulate("GLD", *full, sleeve=pd.Series(np.roll(BEAR.values, k), index=BEAR.index))[0])
+    draws = np.array(draws)
+    print(f"same gold days at random times (100 draws): median {np.median(draws):+.1%}, "
+          f"10-90% {np.quantile(draws,.1):+.1%}..{np.quantile(draws,.9):+.1%}; "
+          f"share of draws >= tested rule: {np.mean(draws >= c_real):.0%}")
