@@ -78,8 +78,8 @@ class MarketSentimentGate:
                 raise RuntimeError(result.content)
             import json
             data = json.loads(result.content)
-        except Exception:
-            logger.warning("[sentiment] rss_check failed, keeping last reading", exc_info=True)
+        except Exception as e:
+            logger.warning("[sentiment] rss_check failed, keeping last reading: %s", e)
             return self._reading
 
         headlines: list[str] = []
@@ -106,8 +106,8 @@ class MarketSentimentGate:
         )
         try:
             raw = await complete_fn(prompt)
-        except Exception:
-            logger.warning("[sentiment] LLM scoring failed, keeping last reading", exc_info=True)
+        except Exception as e:
+            logger.warning("[sentiment] LLM scoring failed, keeping last reading: %s", e)
             return self._reading
 
         if _is_empty_model_output(raw):
@@ -165,8 +165,8 @@ class StockSentimentGate:
 
         try:
             hits = await web_search_fn(f"{symbol} stock news")
-        except Exception:
-            logger.warning("[stock_sentiment] web_search failed for %s, keeping last reading", symbol, exc_info=True)
+        except Exception as e:
+            logger.warning("[stock_sentiment] web_search failed for %s, keeping last reading: %s", symbol, e)
             return existing or SentimentReading()
 
         headlines: list[str] = []
@@ -190,8 +190,8 @@ class StockSentimentGate:
         )
         try:
             raw = await complete_fn(prompt)
-        except Exception:
-            logger.warning("[stock_sentiment] LLM scoring failed for %s, keeping last reading", symbol, exc_info=True)
+        except Exception as e:
+            logger.warning("[stock_sentiment] LLM scoring failed for %s, keeping last reading: %s", symbol, e)
             return existing or SentimentReading()
 
         if _is_empty_model_output(raw):
