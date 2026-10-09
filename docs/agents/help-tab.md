@@ -15,12 +15,14 @@ Topic shape:
   section: 'Section Name',
   title: 'Topic Title',
   summary: 'One-line summary.',
-  body: 'Body text here.',
+  body: ['A paragraph.', '- a bullet', '- another bullet'],
   see_also: ['another-topic-id'] // optional
 }
 ```
 
 ## Body mini-format
+Strings are single-quoted JavaScript: escape apostrophes as `'` (an unescaped `Felix's` breaks the whole file, and the Help tab with it).
+
 A body string starting with `- ` is a bullet. Consecutive bullets collapse into one list. Anything else is a paragraph. No markdown beyond that.
 
 ## What must never go in the Guide
@@ -36,7 +38,7 @@ A body string starting with `- ` is a bullet. Consecutive bullets collapse into 
 ## How to check the work
 Run `cd tray; npm test`. This executes:
 - `help-content.test.js` (checks unique ids, every `see_also` resolves, every topic renders).
-- `help-panel.test.js`.
+- `help-panel.test.js` and `help-capabilities.test.js`.
 
 ## When to update
 - After an ADR lands or is amended.
@@ -48,4 +50,4 @@ The Guide is not auto-generated and will silently rot if nobody updates it. Ever
 - `tray/lib/help-content.js` (content)
 - `tray/lib/help-panel.js` (rendering)
 - `tray/windows/main.html` (pane + wiring)
-- `tray/tests/help-panel.test.js` and `tray/tests/help-content.test.js` (checks)
+- `tray/tests/help-panel.test.js`, `help-capabilities.test.js` and `help-content.test.js` (checks)
