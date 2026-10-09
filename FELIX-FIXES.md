@@ -13,11 +13,11 @@ ten X-slices applied together.
 After this driver is `done`, continue with `HELP.md` (the Help sidebar: HELP2, HELP3, HELP4a-c,
 HELP5, HELP6a-b, HELP7).
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** X2 -- #1359
+- **Active:** X9 -- #1366
 - **Model:** self_dev-default
 
 ## Queue
@@ -27,23 +27,39 @@ unrelated to the code (a live network search, and a UTC-vs-New-York date check t
 evening after 8 PM ET), either of which would mark a correct slice `tests_failed` and block the run.
 
 - [x] XA -- #1372 -- self_dev applier: uniform-reindent fallback + log the reply when nothing applies. Built by Claude (Sonnet), not self_dev: it is the step that failed X0 (2026-10-09, Budd's edit was right but indented +4)
+- [x] XB -- #1377 -- self_dev test gate: await the dangling heartbeat task + trust a clean pytest summary over a flipped exit code (Claude/Sonnet)
+- [x] XC -- PR #1380 -- `test_sandboxed_eval` workdir-cleanup test pinned to its own uuid (was racing live Felix + concurrent suites on a machine-global folder) (Claude/Sonnet)
 - [x] X0 -- #1357 -- live web-search test opt-in (`OPENMIND_LIVE_TESTS=1`); after-8PM-ET date test uses the market date
 - [x] X1 -- #1358 -- `cerebral/tests/test_plugin_google_workspace.py` so the gate stops refusing `google_workspace`
-- [ ] X2 -- #1359 -- `sentiment.py`: one-line warnings instead of 25-line tracebacks for handled failures
-- [ ] X3 -- #1360 -- `live_tick.py`: trend basket exempt from the sentiment gates (backtested with no news filter)
-- [ ] X4 -- #1361 -- `main.py`: per-stock sentiment skips parked strategies and the trend basket (`main.py` only)
-- [ ] X5 -- #1362 -- `main.py`: timestamps on every log line; heartbeat to DEBUG (`main.py` only)
-- [ ] X6 -- #1363 -- `tray/main.js`: "Cerebral log" menu opens `cerebral.err.log`; keep git fetch stderr
-- [ ] X7 -- #1364 -- `broker.py`: `get_daily_bars_multi` (one Alpaca request for many symbols)
-- [ ] X8 -- #1365 -- `trend_basket_selection.py`: `sp500_members()` loader (needs the committed `cerebral/trading/sp500_members.txt`)
-- [ ] X9 -- #1366 -- trend basket breadth + picks from the S&P 500, batched fetch (needs X7 + X8 merged)
+- [x] X2 -- #1359 -- `sentiment.py`: one-line warnings instead of 25-line tracebacks for handled failures
+- [x] X3 -- #1360 -- `live_tick.py`: trend basket exempt from the sentiment gates (backtested with no news filter)
+- [x] X4 -- #1361 -- `main.py`: per-stock sentiment skips parked strategies and the trend basket (`main.py` only)
+- [x] X5 -- #1362 -- `main.py`: timestamps on every log line; heartbeat to DEBUG (`main.py` only)
+- [x] X6 -- #1363 -- `tray/main.js`: "Cerebral log" menu opens `cerebral.err.log`; keep git fetch stderr
+- [x] X7 -- #1364 -- `broker.py`: `get_daily_bars_multi` (one Alpaca request for many symbols)
+- [x] X7b -- #1386 -- cap `get_daily_bars_multi`'s end at now-16min (Alpaca free plan refuses the last 15 min of SIP data; found live in market hours)
+- [x] X8 -- #1365 -- `trend_basket_selection.py`: `sp500_members()` loader (needs the committed `cerebral/trading/sp500_members.txt`)
+- [x] X9 -- #1366 -- trend basket breadth + picks from the S&P 500, batched fetch (needs X7 + X8 merged)
 
 ## Landed PRs
+
+Live-verified 2026-10-09: trend basket reading through the new path = pool 503, breadth 33.2%, 23.6s (was ~10 min on the movers pool), in market hours.
 
 - PR #1373 -- XA (built by a Claude Sonnet agent, diff hand-reviewed, full suite 6,071 pass)
 
 - PR #1374 -- X0 (auto-merged by self_dev_campaign)
 - PR #1375 -- X1 (auto-merged by self_dev_campaign)
+- PR #1376 -- X2 (Felix-built; gate false-negative from the #1107 exit-code flake, merged by hand)
+- PR #1379 -- XB (Claude/Sonnet; closes #1107/#1110)
+- PR #1378 -- X3 (Felix-built; gate hit the sandboxed_eval shared-folder race, merged by hand)
+- PR #1380 -- XC (Claude/Sonnet)
+- PR #1381 -- X4 (auto-merged by self_dev_campaign)
+- PR #1382 -- X5 (auto-merged by self_dev_campaign)
+- PR #1383 -- X6 (auto-merged by self_dev_campaign)
+- PR #1385 -- X7 (auto-merged by self_dev_campaign)
+- PR #1387 -- X7b (auto-merged by self_dev_campaign)
+- PR #1388 -- X8 (auto-merged by self_dev_campaign)
+- PR #1389 -- X9 (auto-merged by self_dev_campaign)
 ## Evidence and design (hand-review context, not part of any single issue)
 
 **What the review found, by impact.**
