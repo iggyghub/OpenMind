@@ -108,7 +108,7 @@ from cerebral.settings import SettingsStore as _SettingsStore
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -8750,7 +8750,7 @@ async def _heartbeat_loop(audio_active: bool) -> None:
                 "bridge": _openclaw_subscriber_running(),
             },
         })
-        logger.info(
+        logger.debug(  # every few seconds -- at INFO it was ~95% of cerebral.err.log
             "[cerebral] Heartbeat sent (profile=%s, tts=%s, model=%s)",
             profile_name, _tts.ready, _router.active_model,
         )
