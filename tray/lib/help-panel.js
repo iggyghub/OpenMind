@@ -75,8 +75,7 @@
     for (const line of lines) {
       const escaped = escHtml(line);
       if (escaped.startsWith('- ')) {
-        flushList();
-        listItems.push(escaped.substring(2));
+        listItems.push(escaped.substring(2));  // consecutive bullets share one <ul>
       } else {
         flushList();
         html += '<p>' + escaped + '</p>';
