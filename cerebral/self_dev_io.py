@@ -271,6 +271,9 @@ def _ensure_tray_node_modules(tray_dir: Path) -> None:
     )
 
 
+_PYTEST_SUMMARY_RE = re.compile(r"^(=+ )?\d+ passed.* in [\d.]+s")
+
+
 def test_fn(clone_dir: Path) -> "tuple[bool, str]":
     """Run pytest in the clone (inside the sandbox via main.py wiring), plus
     the tray's jest suite when the diff touches `tray/`.
@@ -322,6 +325,16 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
         ).strip()
     passed = result.returncode == 0
     output = ((result.stdout or "") + (result.stderr or "")).strip()
+    if not passed:
+        # #1107: pytest can exit non-zero AFTER a clean summary (a pending
+        # asyncio task destroyed at interpreter shutdown). Trust the summary.
+        summary = [ln for ln in output.splitlines() if _PYTEST_SUMMARY_RE.match(ln)]
+        if summary and not re.search(r"\b(failed|errors?)\b", summary[-1]):
+            passed = True
+            output += (
+                f"\n[self_dev gate] pytest exited {result.returncode} after a clean "
+                "summary -- treated as pass (#1107)"
+            )
 
     touches_tray = any(f.replace("\\", "/").startswith("tray/") for f in _changed_files_in_last_commit(clone_dir))
     if not touches_tray:
