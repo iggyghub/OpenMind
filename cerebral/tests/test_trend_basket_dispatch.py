@@ -127,7 +127,7 @@ async def test_rising_edge_registers_top_candidates_directly_without_gauntlet(tm
     data = json.loads(result.content)
     assert data["rising_edge"] is True
     assert 1 <= len(data["dispatched"]) <= 10
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = _today().isoformat()  # the market (New York) date the code uses; UTC differs after 8 PM ET
     for r in data["dispatched"]:
         assert r["verdict"] == "REGISTERED"
         assert r["new_id"] == mint_expansion_strategy_id(_CLAIM, r["symbol"])
