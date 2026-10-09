@@ -612,13 +612,16 @@ class AlpacaMarketDataClient:
         self._connect()
         from alpaca.data.timeframe import TimeFrame
         from alpaca.data.enums import Adjustment
-        from datetime import datetime
+        from datetime import datetime, timedelta, timezone
 
+        # Alpaca's free plan refuses SIP data from the last 15 minutes ("subscription does not
+        # permit querying recent SIP data", seen live 2026-10-09 in market hours) -- cap the end.
+        latest = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=16)
         req = self._request_cls(
             symbol_or_symbols=list(symbols),
             timeframe=TimeFrame.Day,
             start=datetime.fromisoformat(start),
-            end=datetime.fromisoformat(end),
+            end=min(datetime.fromisoformat(end), latest),
             adjustment=Adjustment.ALL,
         )
         df = self._client.get_stock_bars(req).df

@@ -127,3 +127,17 @@ def test_get_daily_bars_multi_sends_one_request_and_splits_per_symbol():
     assert list(aapl.columns) == ["Open", "High", "Low", "Close", "Volume"]
     assert aapl.index.name == "Date" and aapl.index.nlevels == 1
     assert list(aapl["Close"]) == [1.0, 2.0]  # ascending by date
+
+
+def test_get_daily_bars_multi_caps_end_before_the_last_15_minutes():
+    """Alpaca's free plan refuses SIP data from the last 15 minutes; a future end must be capped."""
+    from datetime import datetime, timedelta, timezone
+    client = AlpacaMarketDataClient(env="paper")
+    client._client = _FakeMultiClient()
+    client._request_cls = _SpyRequest
+    client._connected = True
+
+    client.get_daily_bars_multi(["AAPL"], "2026-01-01", "2099-01-01")
+
+    end = client._client.last_request.kwargs["end"]
+    assert end <= datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=15)
