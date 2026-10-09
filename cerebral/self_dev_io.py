@@ -13,10 +13,14 @@ its `_default_*_fn` seams and the existing tests (which monkeypatch the global
 from __future__ import annotations
 
 import json
+import logging
+import os.path
 import re
 import shutil
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Search/replace edit block: <<<FILE: path>>> <<<SEARCH>>> .. <<<REPLACE>>> .. <<<END>>>
 # Small, escaping-free output a local model can emit reliably (whole-file JSON
@@ -36,11 +40,47 @@ _NEWFILE_BLOCK = re.compile(
 )
 
 
+def _reindent_match(body: str, search: str, replace: str) -> "str | None":
+    """Fallback for a SEARCH block whose whole indentation is shifted vs the
+    file. Matches ignoring one uniform offset (relative indentation and
+    non-blank content must match exactly; blank lines match blank lines),
+    only when exactly one region matches, and re-indents REPLACE by the same
+    offset. Returns the new body, or None (zero or several matches).
+    # ponytail: uniform offset only, not intra-block whitespace drift."""
+    s_lines = search.split("\n")
+    pre = os.path.commonprefix([l for l in s_lines if l.strip()])
+    pre = pre[:len(pre) - len(pre.lstrip())]
+    want = [l[len(pre):] if l.strip() else "" for l in s_lines]
+    lines, n, hits = body.split("\n"), len(want), []
+    for i in range(len(lines) - n + 1):
+        indent = None
+        for f, w in zip(lines[i:i + n], want):
+            if not w:
+                if f.strip():
+                    break
+                continue
+            if indent is None:
+                indent = f[:len(f) - len(w)] if f.endswith(w) else None
+                if indent is None or indent.strip():
+                    break
+            elif f != indent + w:
+                break
+        else:
+            if indent is not None:
+                hits.append((i, indent))
+    if len(hits) != 1:
+        return None
+    i, indent = hits[0]
+    new = [indent + (l[len(pre):] if l.startswith(pre) else l.lstrip()) if l.strip() else ""
+           for l in replace.split("\n")]
+    return "\n".join(lines[:i] + new + lines[i + n:])
+
+
 def apply_search_replace(
     clone_dir: Path, text: str, allowed: "set[str] | None" = None
 ) -> "list[str]":
     """Apply search/replace blocks from a model reply to files under clone_dir.
-    Exact match only; a miss is skipped (fail-safe -> no commit -> gate escalates).
+    Exact match, else a uniform-indent-offset match; a miss is skipped (fail-safe -> no commit -> gate escalates).
     Returns the list of repo-relative paths actually changed.
 
     `allowed`, when given, restricts writes to that exact set of repo-relative
@@ -52,9 +92,7 @@ def apply_search_replace(
     handling) would otherwise still get written and committed as long as its
     paths existed and its SEARCH anchors happened to match. This guard makes
     that class of reply inert instead of merely relying on the test gate to
-    catch it downstream.
-    # ponytail: exact match only; add whitespace-lenient matching if local
-    # models miss the anchor too often."""
+    catch it downstream."""
     clone_dir = Path(clone_dir)
     root = str(clone_dir.resolve())
     applied: list[str] = []
@@ -76,6 +114,11 @@ def apply_search_replace(
         if search in body:
             fp.write_text(body.replace(search, replace, 1), encoding="utf-8")
             applied.append(rel)
+        elif (new := _reindent_match(body, search, replace)) is not None:
+            fp.write_text(new, encoding="utf-8")
+            applied.append(rel)
+        else:
+            logger.info("[self_dev] SEARCH not found in %s (exact or reindented) -- block skipped", rel)
     # New-file blocks: create-only. Same path-escape guard; refuse to clobber
     # an existing file (that path is search/replace's job) so a stray NEWFILE
     # can't blank a real source file.
