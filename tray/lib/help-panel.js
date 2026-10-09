@@ -109,9 +109,50 @@
     }));
   }
 
+  function renderCapabilities(snapshot, query) {
+    if (!snapshot) return '<div class="help-cap-empty">No capabilities available.</div>';
+    const plugins = snapshot.plugins || snapshot || [];
+    const q = query && query.trim().length > 0 ? query.toLowerCase() : null;
+    const sorted = [...plugins].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    let html = '';
+    let pCount = 0, tCount = 0;
+    for (const plugin of sorted) {
+      const isDisabled = plugin.status !== 'active' || plugin.enabled === false;
+      let tools = (plugin.tools || []).filter(t => {
+        if (!q) return true;
+        return (t.name || '').toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q);
+      });
+      if (tools.length === 0 && q && (plugin.name || '').toLowerCase().includes(q)) {
+        tools = plugin.tools || [];
+      }
+      if (tools.length === 0) continue;
+      pCount++;
+      tCount += tools.length;
+      let cls = 'help-cap-plugin';
+      if (isDisabled) cls += ' is-disabled';
+      html += '<section class="' + cls + '">';
+      html += '<h3>' + escHtml(plugin.name) + (isDisabled ? ' <span class="help-cap-status">(disabled)</span>' : '') + '</h3>';
+      if (plugin.capabilities && plugin.capabilities.length) {
+        html += '<div class="help-cap-list">';
+        for (const c of plugin.capabilities) html += '<span class="help-cap-tag">' + escHtml(c) + '</span>';
+        html += '</div>';
+      }
+      for (const t of tools) {
+        html += '<div class="help-cap-tool">';
+        html += '<div class="help-cap-name">' + escHtml(t.name) + '</div>';
+        html += '<div class="help-cap-desc">' + escHtml(t.description) + '</div>';
+        if (t.supersedes) html += '<div class="help-cap-supersedes">Supersedes: ' + escHtml(t.supersedes) + '</div>';
+        html += '</div>';
+      }
+      html += '</section>';
+    }
+    if (pCount === 0) return '<div class="help-cap-empty">No capabilities available.</div>';
+    return '<div class="help-cap-index"><h2>Capabilities Index</h2><p class="help-cap-summary">' + pCount + ' plugin(s), ' + tCount + ' tool(s) shown.</p>' + html + '</div>';
+  }
+
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { escHtml, sections, renderNav, renderTopic, searchTopics };
+    module.exports = { escHtml, sections, renderNav, renderTopic, searchTopics, renderCapabilities };
   } else if (typeof window !== 'undefined') {
-    window.HelpPanel = { escHtml, sections, renderNav, renderTopic, searchTopics };
+    window.HelpPanel = { escHtml, sections, renderNav, renderTopic, searchTopics, renderCapabilities };
   }
 })();
