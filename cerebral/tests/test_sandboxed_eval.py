@@ -131,14 +131,21 @@ def test_a_full_years_daily_bars_still_produce_real_signals_not_flat():
     )
 
 
-def test_workdir_is_cleaned_up_after_a_run():
-    from cerebral.trading.sandboxed_eval import _WORKDIR_ROOT
+def test_workdir_is_cleaned_up_after_a_run(monkeypatch):
+    # _WORKDIR_ROOT is machine-global (live Felix / concurrent suites create
+    # dirs there), so diffing it is racy. Pin our own workdir name instead.
+    import types
+    import uuid
 
-    before = set(_WORKDIR_ROOT.glob("*")) if _WORKDIR_ROOT.exists() else set()
-    evaluate_signals(MA_CROSS_CODE, _bars())
-    after = set(_WORKDIR_ROOT.glob("*")) if _WORKDIR_ROOT.exists() else set()
+    from cerebral.trading import sandboxed_eval
 
-    assert after == before
+    marker = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    monkeypatch.setattr(sandboxed_eval, "uuid", types.SimpleNamespace(uuid4=lambda: marker))
+
+    signals = evaluate_signals(MA_CROSS_CODE, _bars())
+
+    assert len(signals) > 0
+    assert not (sandboxed_eval._WORKDIR_ROOT / str(marker)).exists()
 
 
 def test_numpy_int64_signal_roundtrips():
