@@ -63,6 +63,17 @@ Using canonical defaults: `needs-triage`, `needs-info`, `ready-for-agent`, `read
 
 Single-context repo — one `CONTEXT.md` + `docs/adr/` at the root. See `docs/agents/domain.md`.
 
+### Help tab
+
+Felix's in-app encyclopedia. Content lives in `tray/lib/help-content.js`, not in docs.
+See `docs/agents/help-tab.md`.
+
+**Keep it current -- this is a build rule, not a nice-to-have.** Any change that ships a new
+subsystem, amends an ADR, or changes what a Help topic says Felix does updates the matching
+topic in `tray/lib/help-content.js` in the SAME PR (add a topic if none fits). This applies
+to self_dev slices and campaign issues too: when writing a slice spec for such a change,
+include the help-content edit in it. The Guide is hand-written and silently rots otherwise.
+
 ## Operator scripts (PowerShell)
 
 Setup / verify / diagnostic scripts under `scripts/*.ps1` are run by the end user on Windows, often by double-clicking from Explorer. Two non-obvious gotchas (both hit during the #162 verification — see `.learnings/LEARNINGS.md`):
