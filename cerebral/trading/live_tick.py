@@ -429,7 +429,9 @@ def run_strategy_tick(
     # checks; this just skips the call entirely when there's no risk
     # manager to route it through, or neither label is set.
     stock_sentiment_label = (stock_sentiment_labels or {}).get(spec.symbol)
-    if risk is not None and not is_close and (sentiment_label is not None or stock_sentiment_label is not None):
+    # Trend basket exempt (2026-10-06, same reasoning as the backstop exemption above): it was
+    # backtested with no news filter, and it buys as breadth recovers -- when headlines are bearish.
+    if risk is not None and not is_close and not exempt and (sentiment_label is not None or stock_sentiment_label is not None):
         sent_res = risk.check_sentiment(spec.symbol, sentiment_label, stock_sentiment_label)
         if not sent_res.allowed:
             return {"status": "blocked", "blocked_by": sent_res.blocked_by}

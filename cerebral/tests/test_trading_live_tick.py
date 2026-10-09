@@ -1304,6 +1304,23 @@ def test_tick_blocks_new_open_on_bearish_sentiment(tmp_path, monkeypatch):
     assert broker._orders == {}
 
 
+def test_trend_basket_is_exempt_from_the_sentiment_gates(tmp_path, monkeypatch):
+    """2026-10-06: the same BEARISH readings that block any other open (test above) must not
+    block a trend-basket open -- it was backtested with no news filter."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager()
+    name = "Trend basket: x @AAPL"
+    spec = StrategySpec(name, "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick(name, spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, sentiment_label="BEARISH",
+                                stock_sentiment_labels={"AAPL": "BEARISH"})
+
+    assert result.get("blocked_by") not in ("market_sentiment", "stock_sentiment")
+    assert broker._orders != {}
+
+
 def test_tick_does_not_block_closing_trade_on_bearish_sentiment(tmp_path, monkeypatch):
     """Only opens are gated -- a close must never be trapped by sentiment."""
     record = make_record(tmp_path, monkeypatch)
