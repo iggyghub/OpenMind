@@ -161,6 +161,143 @@
           'Each decision on a proposal that would run a real tool counts as a signal. When the same kind of decision repeats enough times, Felix records an insight about how you like things done. Insights are shown in Library > Insights.'
         ],
         see_also: ['memory', 'skills']
+      },
+      {
+        id: 'tools-and-plugins',
+        section: 'What Felix can do',
+        title: 'Tools and plugins',
+        summary: 'Every capability is an MCP tool from a plugin; how plugins register, trust, and handle conflicts.',
+        body: [
+          'Every capability Felix has is a tool supplied by a plugin, running over the Model Context Protocol (MCP). Tools come from plain Python files in the plugins/ folder, and a plugin must declare which capability classes it needs.',
+          '- To register, a plugin must pass a static safety scan. Plugins in plugins/_trusted/ skip the scan but show a permanent red trusted unverified badge and still pass every permission check.',
+          '- Every plugin needs a matching test file or it is refused at startup.',
+          '- If two plugins offer the same tool name, the later one takes over and the takeover is logged.',
+          '- Felix can build new plugins itself as part of the growth loop; a new plugin loads on the next plugin scan without a restart.',
+          '- The live list of tools is rendered from the running system in Help > Capabilities.'
+        ],
+        see_also: ['how-a-request-becomes-an-action', 'permissions-and-consent', 'skills']
+      },
+      {
+        id: 'computer-use',
+        section: 'What Felix can do',
+        title: 'Driving the computer',
+        summary: 'Felix can see the screen and operate applications; background actuation versus cursor takeover, and the stop control.',
+        body: [
+          'Windows only. It requires screen capture and device control capabilities.',
+          '- Felix reads the screen accessibility tree first, identifying named buttons and fields. It falls back to reading pixels and clicking coordinates only when an application has no usable tree, such as games or canvases.',
+          '- It drives a normal browser window like any other application, rather than using a remote-controlled automation browser.',
+          '- Where possible, it acts in the background through accessibility actions instead of taking over your mouse.'
+        ],
+        see_also: ['permissions-and-consent', 'how-a-request-becomes-an-action']
+      },
+      {
+        id: 'browsing-and-search',
+        section: 'What Felix can do',
+        title: 'The web',
+        summary: 'Web search and page navigation run through the OpenClaw harness; saved logins let Felix reach sites that need an account.',
+        body: [
+          '- Web search and page fetching go through the OpenClaw harness command-line tools. Search currently uses DuckDuckGo.',
+          '- OpenClaw is also the gateway for messaging channels, which are other applications that can relay messages to Felix.',
+          '- Some sites require a signed-in browser session. Felix keeps saved logins for those and will ask you to step in when a site shows a human verification check.'
+        ],
+        see_also: ['how-a-request-becomes-an-action', 'memory']
+      },
+      {
+        id: 'documents',
+        section: 'What Felix can do',
+        title: 'Documents',
+        summary: 'LibreOffice is the editor, conversion engine and ground truth; the Document library holds written files with versions.',
+        body: [
+          '- A documents editable file is the source of truth. PDFs and plain text are derived from it.',
+          '- LibreOffice handles everything: you edit in LibreOffice Writer, Felix edits the same file headlessly through Libres script engine, and LibreOffice converts the file to PDF and other formats.',
+          '- Saved documents appear in Library > Documents, where Felix tracks versions.'
+        ],
+        see_also: ['memory', 'skills']
+      },
+      {
+        id: 'trading',
+        section: 'What Felix can do',
+        title: 'Trading',
+        summary: 'Autonomous paper-trading strategies, the validation gauntlet, and the trading panel views. Clearly state it is paper trading.',
+        body: [
+          '- This is paper trading only, using simulated orders, not real money.',
+          '- A strategy is a ticker symbol plus a small piece of code that turns price bars into buy or flat signals. Ideas come from web discovery, books and other sources, and they pass through one validation pipeline called the Gauntlet: judge the idea, generate the code, and backtest it in a sandbox.',
+          '- Strategies start as paper trading and can graduate to live status after passing validation. Hand-written exceptions skip the per-symbol backtest, such as the IPO play and the trend basket.',
+          '- As of October 2026, the trend basket is the only active strategy. It buys up to 10 strong S&P 500 stocks when market breadth exceeds 55 percent, and exits on a 12 percent trailing stop or after 20 trading days.',
+          '- Every fill is recorded. The Trading panel Overview, Strategies, Tickers, Trades and Replay tabs show all strategies, trades and backtests.'
+        ],
+        see_also: ['how-a-request-becomes-an-action', 'permissions-and-consent']
+      },
+      {
+        id: 'jobs',
+        section: 'What Felix can do',
+        title: 'Job applications',
+        summary: 'Finding postings, mapping them onto an application form, and where a human decision is still required.',
+        body: [
+          '- Felix finds job postings, scores them, and fills application forms using your applicant dossier and an answer bank.',
+          '- Submitting an application is irreversible, so Felix always asks you to confirm in a pop-up. The first several applications per profile always require this confirmation.',
+          '- Auto-submit is opt-in per profile and only triggers when every field is filled from known answers with nothing guessed and no new eligibility question appears. Otherwise, Felix falls back to asking you.',
+          '- Job searches and applications are shown in Library > Job search.'
+        ],
+        see_also: ['permissions-and-consent', 'memory']
+      },
+      {
+        id: 'video-and-books',
+        section: 'What Felix can do',
+        title: 'Watching and reading',
+        summary: 'Watching videos to extract and cluster ideas, and the book knowledge corpus Felix draws on.',
+        body: [
+          '- Give Felix a video URL and it transcribes the audio, reads on-screen text when needed, and stores a summary.',
+          '- Books are split by chapter and processed the same way, keeping page or paragraph references.',
+          '- Ideas extracted from videos, books and GitHub repositories are grouped into clusters you can browse in Library > Videos, Books and GitHub.'
+        ],
+        see_also: ['memory', 'skills']
+      },
+      {
+        id: 'permissions-and-consent',
+        section: 'Safety and self-modification',
+        title: 'What Felix is allowed to do',
+        summary: 'Precise breakdown of capability classes, permission levels, confirmations, strictness for background requests, sandbox limits, and settings location.',
+        body: [
+          '- Every tool declares which of 16 fixed capability classes it needs, including reading files, writing files, deleting files, the shell, cloud network access, screen capture, device control, and secrets. Tools cannot invent new classes.',
+          '- Each class is set to one of three levels: run silently, ask first, or deny. By default, reading files, the clipboard, network access, reading outside data and device control run silently. Writing or deleting files, reading secrets, installing code, screen capture and writing outside data ask first. The shell is denied until you turn it on in settings, at which point it asks.',
+          '- When asked, you can allow once, for the session, or permanently.',
+          '- Actions that cannot be undone, such as sending, submitting, or deleting, always show a confirmation pop-up, even if you granted the class permanently.',
+          '- Requests that come from things Felix overheard, rather than from you waking it, are one step stricter: silent becomes ask, ask becomes deny.',
+          '- Shell commands always run inside a Windows sandbox. They can only touch one sandbox folder, have no network access, run in a clean environment with no API keys, and are capped at 1 GB of memory and 120 seconds.',
+          '- Change these settings in Settings > Permissions.'
+        ],
+        see_also: ['how-a-request-becomes-an-action', 'tools-and-plugins', 'self-dev']
+      },
+      {
+        id: 'self-dev',
+        section: 'Safety and self-modification',
+        title: 'Felix changing its own code',
+        summary: 'Clones repo, makes bounded change, runs tests, opens PR, restarts. Blast-radius check and boot self-check rollback.',
+        body: [
+          '- Felix can change its own code. A self-dev run clones the repository into the sandbox folder, never touching the running copy, makes one bounded change, and runs the full test suites there.',
+          '- The result is a pull request. It is merged only if the tests pass, after which Felix pulls the change and restarts.',
+          '- After a self-dev restart the launcher runs a boot self-check. If Felix fails to come up healthy, it rolls back to the previous version automatically and keeps a copy of any uncommitted work.',
+          '- The model that writes the change is whichever you pick for self-dev in Settings > AI models. The safety checks do not depend on which model wrote it.',
+          '- Adding a plugin is a different, lighter path, which needs no restart.'
+        ],
+        see_also: ['tools-and-plugins', 'permissions-and-consent', 'updating-this-guide']
+      },
+      {
+        id: 'updating-this-guide',
+        section: 'Maintaining this guide',
+        title: 'Keeping this guide current',
+        summary: 'Written for an AI agent, covers structure, formatting, source of truth, and testing.',
+        body: [
+          '- This guide content lives entirely in tray/lib/help-content.js. A topic is one object appended to topics, and array order is the order in the UI. Sections appear in the order of their first use.',
+          '- Topic fields are id, section, title, summary, body (an array of strings), and an optional see_also array of topic ids.',
+          '- Body format: a string starting with - is a bullet. Consecutive bullets form one list. Anything else is a paragraph. No other markdown syntax.',
+          '- A see_also id that matches no topic silently renders nothing, so always verify them. Never hand-list tool names here; Help > Capabilities is generated from the running system.',
+          '- The factual source of truth is CONTEXT.md plus docs/adr. If those disagree with a topic, the topic is the stale one.',
+          '- Any change that adds or alters a feature should update its topic in the same pull request.',
+          '- Check your work with cd tray && npm test.'
+        ],
+        see_also: ['tools-and-plugins']
       }
     ]
   };
