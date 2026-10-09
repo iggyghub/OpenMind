@@ -109,6 +109,11 @@ If no tool exists, the growth loop begins.
 
 **Insights view** — the UI panel showing Felix's learned model of a user. Displays detected preferences, patterns, and behavioural adjustments per profile. Every entry is editable, deletable, or pinnable. Full transparency into what Felix has inferred.
 
+**Help tab** -- Felix's in-app encyclopedia. A hand-written Guide (concepts, in
+`tray/lib/help-content.js`) plus a live Capabilities index generated from the running
+plugin/tool registry. Written to be read by a human user or by an AI agent working out what
+Felix can do.
+
 **Activity Log** — a top-level, Felix-wide nav tab showing every recorded action Felix has taken, chat-initiated and autonomous alike (background loops — the scheduler dispatch tick, self_dev campaign runs, and any future autonomous discovery — included), queried from the persisted `conversation_turns` table rather than a live-only stream. Distinct from the **Thinking panel**, which shows only chat-session tool activity live, with no history browse. Routine, high-volume autonomous activity (e.g. "screened 500 tickers, nothing new") is batched into one summary entry rather than logged per-item, so the log stays readable — a real decision (validated a strategy, entered a trade, sourced an idea) is always its own entry. Introduced 2026-08-24 (see TRADING.md decision #46) as the trust prerequisite for letting Felix act autonomously without a human reviewing each action first — the general principle (durable, comprehensive visibility into autonomous action) is Felix-wide, not specific to trading, even though trading was the campaign that surfaced the need. _Avoid_: treating the Thinking panel as sufficient audit visibility — it is live-only and shows nothing that happened while the app wasn't open.
 
 **Visualiser** — the floating on-screen representation of Felix. A 200x200 transparent, click-through, always-on-top window that mirrors Felix's voice/system state (idle / listening / thinking / speaking / switching model). Architecturally a separate window from the **Main window** so it survives the Main window being closed and so a future **body** can move around the screen (which a window-embedded visualiser could not). Runs independently of the Main window's own in-header state pill (which signals the same state to a user already inside the chat).
