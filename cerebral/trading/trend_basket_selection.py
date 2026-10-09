@@ -2,9 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Callable
 
 import pandas as pd
+
+
+_SP500_MEMBERS_PATH = Path(__file__).with_name("sp500_members.txt")
+
+
+def sp500_members(path: Path = _SP500_MEMBERS_PATH) -> list[str]:
+    """The S&P 500 member list the trend basket's backtest used (ADR-0038 amendment 2026-10-06).
+    One ticker per line; blank lines and '#' comment lines are skipped."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [s.strip() for s in lines if s.strip() and not s.lstrip().startswith("#")]
 
 
 @dataclass

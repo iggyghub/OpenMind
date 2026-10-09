@@ -178,5 +178,21 @@ class TestRisingEdgeGate(unittest.TestCase):
         self.assertEqual(reading["breadth"], 0.65)
 
 
+def test_sp500_members_reads_the_committed_list():
+    from cerebral.trading.trend_basket_selection import sp500_members
+    members = sp500_members()
+    assert len(members) >= 490
+    assert "AAPL" in members and "BRK.B" in members
+    assert not any(m.startswith("#") or not m for m in members)
+    assert len(set(members)) == len(members)
+
+
+def test_sp500_members_skips_comments_and_blanks(tmp_path):
+    from cerebral.trading.trend_basket_selection import sp500_members
+    p = tmp_path / "m.txt"
+    p.write_text("# header\n\nAAA\n  BBB  \n# note\n", encoding="utf-8")
+    assert sp500_members(p) == ["AAA", "BBB"]
+
+
 if __name__ == "__main__":
     unittest.main()
