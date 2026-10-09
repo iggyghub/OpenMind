@@ -347,6 +347,74 @@ def test_test_fn_passes_timeout_to_subprocess(monkeypatch, tmp_path):
     assert captured["timeout"] == io._TEST_TIMEOUT_S
 
 
+# ── test_fn: #1107 -- non-zero exit after a clean pytest summary ─────────────
+
+def _run_with_pytest_output(monkeypatch, tmp_path, rc, text):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True, exist_ok=True)
+
+    def fake_run(cmd, **kw):
+        class R:
+            returncode, stdout, stderr = rc, text, ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return io.test_fn(tmp_path)
+
+
+def test_test_fn_nonzero_exit_after_clean_summary_passes(monkeypatch, tmp_path):
+    passed, out = _run_with_pytest_output(
+        monkeypatch, tmp_path, 1, "6107 passed, 8 skipped in 1009.22s (0:16:49)\nTask was destroyed")
+    assert passed is True
+    assert "pytest exited 1 after a clean summary -- treated as pass (#1107)" in out
+
+
+def test_test_fn_nonzero_exit_with_failure_stays_failed(monkeypatch, tmp_path):
+    passed, out = _run_with_pytest_output(monkeypatch, tmp_path, 1, "1 failed, 5 passed in 2.00s")
+    assert passed is False and "treated as pass" not in out
+
+
+def test_test_fn_nonzero_exit_with_error_stays_failed(monkeypatch, tmp_path):
+    passed, _ = _run_with_pytest_output(monkeypatch, tmp_path, 1, "5 passed, 1 error in 2.00s")
+    assert passed is False
+
+
+def test_test_fn_nonzero_exit_without_summary_stays_failed(monkeypatch, tmp_path):
+    passed, _ = _run_with_pytest_output(monkeypatch, tmp_path, 1, "Traceback: crash")
+    assert passed is False
+
+
+def test_test_fn_zero_exit_passes_without_note(monkeypatch, tmp_path):
+    passed, out = _run_with_pytest_output(monkeypatch, tmp_path, 0, "5 passed in 1.00s")
+    assert passed is True and "treated as pass" not in out
+
+
+# ── conftest fixture: cancels a heartbeat task a test left pending ───────────
+
+async def test_conftest_fixture_cancels_pending_heartbeat_task():
+    import asyncio
+    import sys
+    import types
+
+    from cerebral.tests import conftest
+
+    fake_main = types.SimpleNamespace(_worker_heartbeat_task=asyncio.get_running_loop().create_task(asyncio.sleep(3600)))
+    task = fake_main._worker_heartbeat_task
+    sys.modules["cerebral.main"], saved = fake_main, sys.modules.get("cerebral.main")
+    try:
+        gen = conftest._cancel_worker_heartbeat_task.__wrapped__() if hasattr(
+            conftest._cancel_worker_heartbeat_task, "__wrapped__") else None
+        assert gen is not None
+        await gen.__anext__()
+        with __import__("pytest").raises(StopAsyncIteration):
+            await gen.__anext__()
+    finally:
+        if saved is not None:
+            sys.modules["cerebral.main"] = saved
+        else:
+            del sys.modules["cerebral.main"]
+    assert task.cancelled() and fake_main._worker_heartbeat_task is None
+
+
 # ── test_fn: SUP-0 (ADR-0033) -- a tray/ diff also runs the tray's jest ──────
 # suite, since GUARDRAIL_PATHS lists tray/ precisely because this gate used
 # to be pytest-only and could not validate JS.
