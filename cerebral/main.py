@@ -3955,9 +3955,20 @@ async def _scheduler_loop() -> None:
                 stock_sentiment_labels = None
                 if _settings.get("trading_stock_sentiment_gate_enabled"):
                     due_symbols = set()
+                    only_prefix = _settings.get("trading_only_prefix") or ""
                     for evt in _scheduler_plugin.list_due_events():
                         if evt["title"] == _discovery_plugin.DISCOVERY_EVENT_TITLE:
                             continue
+                        # Only score symbols whose label will actually be read: parked strategies
+                        # never run (dispatch_due_events skips them), and the trend basket is
+                        # exempt from the sentiment gates (live_tick.py, 2026-10-06).
+                        if only_prefix and not evt["title"].startswith(only_prefix):
+                            continue
+                        if evt["title"].startswith("Trend basket:"):
+                            continue
+                        spec = _trading_strategy_store.get(evt["title"])
+                        if spec is not None:
+                            due_symbols.add(spec.symbol)
                         spec = _trading_strategy_store.get(evt["title"])
                         if spec is not None:
                             due_symbols.add(spec.symbol)
