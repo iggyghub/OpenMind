@@ -27,6 +27,17 @@ def _plugin(tmp_path):
     return TradingStrategiesPlugin(settings=SettingsStore(path=tmp_path / "felix-settings.json"))
 
 
+_SMALL_UNIVERSE = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "V", "XOM",
+                   "UNH", "HD", "PG", "MA", "COST", "ABBV", "MRK", "PEP", "KO", "AVGO",
+                   "LLY", "WMT", "BAC", "CVX", "ORCL", "CRM", "ADBE", "NFLX", "AMD", "INTC"]
+
+
+@pytest.fixture(autouse=True)
+def _small_universe(monkeypatch):
+    """The real list is 503 S&P names; 30 keeps these tests fast and exercises the same code."""
+    monkeypatch.setattr("plugins.trading_strategies._trend_basket_universe", lambda: list(_SMALL_UNIVERSE))
+
+
 @pytest.fixture(autouse=True)
 def _reading_window_open(monkeypatch):
     """Pin the 06:00-16:00 ET reading window open so these tests don't depend on the hour."""
@@ -212,7 +223,7 @@ async def test_after_today_s_reading_an_inactive_tick_does_no_rebuild(tmp_path, 
 
     def must_not_build(*args, **kwargs):
         raise AssertionError("the candidate pool must not be rebuilt after today's reading")
-    monkeypatch.setattr("plugins.trading_strategies.build_dynamic_universe", must_not_build)
+    monkeypatch.setattr("plugins.trading_strategies._trend_basket_universe", must_not_build)
 
     result = await plugin._trend_basket_dispatch(
         {}, strategy_store=StrategyStore(db_path=tmp_path / "specs.db"), fetch=_fetch_all_uptrend,
@@ -233,7 +244,7 @@ async def test_active_and_full_skips_the_rebuild(tmp_path, monkeypatch):
 
     def must_not_build(*args, **kwargs):
         raise AssertionError("no empty slot, so no pool rebuild")
-    monkeypatch.setattr("plugins.trading_strategies.build_dynamic_universe", must_not_build)
+    monkeypatch.setattr("plugins.trading_strategies._trend_basket_universe", must_not_build)
 
     result = await plugin._trend_basket_dispatch(
         {}, strategy_store=store, fetch=_fetch_all_uptrend, broker=_raising_broker(),
@@ -269,7 +280,7 @@ async def test_no_reading_is_taken_outside_the_window(tmp_path, monkeypatch):
 
     def must_not_build(*args, **kwargs):
         raise AssertionError("no pool build outside the reading window")
-    monkeypatch.setattr("plugins.trading_strategies.build_dynamic_universe", must_not_build)
+    monkeypatch.setattr("plugins.trading_strategies._trend_basket_universe", must_not_build)
 
     result = await plugin._trend_basket_dispatch(
         {}, strategy_store=StrategyStore(db_path=tmp_path / "specs.db"), fetch=_fetch_all_uptrend,
@@ -334,7 +345,7 @@ async def test_candidate_pool_build_failure_is_graceful(tmp_path, monkeypatch):
 
     def raise_build(*args, **kwargs):
         raise RuntimeError("simulated total pool-build failure")
-    monkeypatch.setattr("plugins.trading_strategies.build_dynamic_universe", raise_build)
+    monkeypatch.setattr("plugins.trading_strategies._trend_basket_universe", raise_build)
 
     async def should_not_be_called(*args, **kwargs):
         raise AssertionError("gauntlet must not run when the candidate pool never built")
@@ -378,7 +389,7 @@ async def test_reentrancy_guard_clears_after_completion_even_on_error(tmp_path, 
 
     def raise_build(*args, **kwargs):
         raise RuntimeError("simulated failure")
-    monkeypatch.setattr("plugins.trading_strategies.build_dynamic_universe", raise_build)
+    monkeypatch.setattr("plugins.trading_strategies._trend_basket_universe", raise_build)
 
     await plugin._trend_basket_dispatch(
         {}, strategy_store=store, fetch=_fetch_all_uptrend, broker=_raising_broker(),
