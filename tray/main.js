@@ -18,7 +18,7 @@ const VIS_POS_PATH    = path.join(__dirname, '..', 'cerebral', 'data', 'visualis
 // hardcoded 1200x800 default on every restart, unlike the Visualiser orb.
 const MAIN_WIN_POS_PATH = path.join(__dirname, '..', 'cerebral', 'data', 'main-window-pos.json');
 const LAUNCHER_LOG    = path.join(__dirname, '..', 'launcher.log');
-const CEREBRAL_LOG    = path.join(__dirname, '..', 'cerebral.log');
+const CEREBRAL_LOG    = path.join(__dirname, '..', 'cerebral.err.log');  // logging goes to stderr; cerebral.log is always empty
 const RECONNECT_DELAY_MS = 3000;
 // SD-3 (#556) -- boot self-check state
 const DATA_DIR = path.join(__dirname, '..', 'cerebral', 'data');
@@ -1182,7 +1182,7 @@ function _checkForMasterUpdate() {
 
   const { checkForUpdate } = require('./lib/boot-check');
   const decision = checkForUpdate({
-    gitFetchFn:      () => _gitOut(['fetch', '--quiet'], { stdio: 'ignore' }),
+    gitFetchFn:      () => _gitOut(['fetch', '--quiet'], { stdio: ['ignore', 'ignore', 'pipe'] }),  // keep stderr: execFileSync puts it in the error message
     gitRevParseFn:   (ref) => _gitOut(['rev-parse', ref]),
     gitMergeFfOnlyFn: (sha) => _gitOut(['merge', '--ff-only', sha], { stdio: 'ignore' }),
     gitMergeBaseFn:  (a, b) => {
