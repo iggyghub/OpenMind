@@ -358,9 +358,12 @@ class TestDefaultRunCli:
         actually be able to run `openclaw infer web search` on this host
         (Windows: openclaw is an npm .cmd shim -- create_subprocess_exec
         can't resolve it directly, confirmed empirically, hence cmd /c)."""
+        import os
         import shutil
         if shutil.which("openclaw") is None:
             pytest.skip("openclaw CLI not installed on this host")
+        if os.environ.get("OPENMIND_LIVE_TESTS") != "1":
+            pytest.skip("live network test -- set OPENMIND_LIVE_TESTS=1 to run it")
         from plugins.browser import _default_run_cli
         data = await _default_run_cli(["infer", "web", "search", "--query", "python", "--limit", "1", "--json"])
         assert data.get("ok") is True
