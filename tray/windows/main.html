@@ -12806,6 +12806,28 @@
       if (btn) helpActivateSub(btn.dataset.helpTab);
     });
 
+    // HELP4b -- Guide rendering. Content is static (tray/lib/help-content.js), so this is
+    // cheap and synchronous: no polling, no websocket traffic.
+    let helpActiveTopic = null;
+    function renderHelp(topicId) {
+      if (!window.HelpPanel || !window.HelpContent) return;
+      const topics = window.HelpContent.topics || [];
+      const id = topicId || helpActiveTopic || (topics[0] && topics[0].id);
+      if (!id) return;
+      helpActiveTopic = id;
+      const nav = document.getElementById('help-nav');
+      const topic = document.getElementById('help-topic');
+      if (nav) nav.innerHTML = window.HelpPanel.renderNav(window.HelpContent, id);
+      if (topic) {
+        topic.innerHTML = window.HelpPanel.renderTopic(window.HelpContent, id);
+        topic.scrollTop = 0;
+      }
+    }
+    document.addEventListener('click', function (e) {
+      const link = e.target.closest('.help-nav-item, .help-link');
+      if (link && link.dataset.topicId) renderHelp(link.dataset.topicId);
+    });
+
     // Settings sub-tab activation (General / AI models). Mirrors libActivateSub.
     function settingsActivateSub(sub) {
       const KNOWN_SUBS = new Set(['general', 'models', 'signin', 'permissions']);
@@ -12887,6 +12909,9 @@
         if (trdTickersTabEl && trdTickersTabEl.classList.contains('is-active')) {
           tradingActivateSub('tickers');
         }
+      } else if (route === 'help') {
+        helpActivateSub(sub === 'capabilities' ? 'capabilities' : 'guide');
+        renderHelp();
       } else if (route === 'log') {
         // S26 (#879), decision #46 -- the Felix-wide Activity Log. No poll
         // loop -- activity_turn_emitted is pushed live by the backend as
