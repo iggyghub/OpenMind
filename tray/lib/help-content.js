@@ -169,7 +169,7 @@
         summary: 'Every capability is an MCP tool from a plugin; how plugins register, trust, and handle conflicts.',
         body: [
           'Every capability Felix has is a tool supplied by a plugin, running over the Model Context Protocol (MCP). Tools come from plain Python files in the plugins/ folder, and a plugin must declare which capability classes it needs.',
-          '- To register, a plugin must pass a static safety scan. Plugins in plugins/_trusted/ skip the scan but show a permanent red trusted unverified badge and still pass every permission check.',
+          '- To register, a plugin must pass a static safety scan. Plugins in plugins/_trusted/ skip the scan but show a permanent red "trusted, unverified" badge and still pass every permission check.',
           '- Every plugin needs a matching test file or it is refused at startup.',
           '- If two plugins offer the same tool name, the later one takes over and the takeover is logged.',
           '- Felix can build new plugins itself as part of the growth loop; a new plugin loads on the next plugin scan without a restart.',
@@ -181,7 +181,7 @@
         id: 'computer-use',
         section: 'What Felix can do',
         title: 'Driving the computer',
-        summary: 'Felix can see the screen and operate applications; background actuation versus cursor takeover, and the stop control.',
+        summary: 'Felix can read the screen and operate Windows applications, preferring background actions over taking your mouse.',
         body: [
           'Windows only. It requires screen capture and device control capabilities.',
           '- Felix reads the screen accessibility tree first, identifying named buttons and fields. It falls back to reading pixels and clicking coordinates only when an application has no usable tree, such as games or canvases.',
@@ -206,11 +206,11 @@
         id: 'documents',
         section: 'What Felix can do',
         title: 'Documents',
-        summary: 'LibreOffice is the editor, conversion engine and ground truth; the Document library holds written files with versions.',
+        summary: 'Your .docx file is the source of truth; LibreOffice is the editor, Felix\'s editing engine and the converter.',
         body: [
-          '- A documents editable file is the source of truth. PDFs and plain text are derived from it.',
-          '- LibreOffice handles everything: you edit in LibreOffice Writer, Felix edits the same file headlessly through Libres script engine, and LibreOffice converts the file to PDF and other formats.',
-          '- Saved documents appear in Library > Documents, where Felix tracks versions.'
+          '- A document\'s editable .docx file is the source of truth. PDFs and plain text are derived from it.',
+          '- LibreOffice handles everything: you edit in LibreOffice Writer, Felix edits the same file headlessly through LibreOffice\'s scripting, and LibreOffice converts the file to PDF and other formats.',
+          '- Saved documents appear in Library > Documents.'
         ],
         see_also: ['memory', 'skills']
       },
@@ -218,7 +218,7 @@
         id: 'trading',
         section: 'What Felix can do',
         title: 'Trading',
-        summary: 'Autonomous paper-trading strategies, the validation gauntlet, and the trading panel views. Clearly state it is paper trading.',
+        summary: 'Simulated (paper) trading only: strategies, how ideas are validated, and the trend basket.',
         body: [
           '- This is paper trading only, using simulated orders, not real money.',
           '- A strategy is a ticker symbol plus a small piece of code that turns price bars into buy or flat signals. Ideas come from web discovery, books and other sources, and they pass through one validation pipeline called the Gauntlet: judge the idea, generate the code, and backtest it in a sandbox.',
@@ -235,7 +235,7 @@
         summary: 'Finding postings, mapping them onto an application form, and where a human decision is still required.',
         body: [
           '- Felix finds job postings, scores them, and fills application forms using your applicant dossier and an answer bank.',
-          '- Submitting an application is irreversible, so Felix always asks you to confirm in a pop-up. The first several applications per profile always require this confirmation.',
+          '- Submitting an application is irreversible, so Felix asks you to confirm in a pop-up. The first several applications per profile always require this confirmation.',
           '- Auto-submit is opt-in per profile and only triggers when every field is filled from known answers with nothing guessed and no new eligibility question appears. Otherwise, Felix falls back to asking you.',
           '- Job searches and applications are shown in Library > Job search.'
         ],
@@ -257,7 +257,7 @@
         id: 'permissions-and-consent',
         section: 'Safety and self-modification',
         title: 'What Felix is allowed to do',
-        summary: 'Precise breakdown of capability classes, permission levels, confirmations, strictness for background requests, sandbox limits, and settings location.',
+        summary: 'Every tool needs a permission class; each class runs silently, asks first, or is denied. Irreversible actions always confirm.',
         body: [
           '- Every tool declares which of 16 fixed capability classes it needs, including reading files, writing files, deleting files, the shell, cloud network access, screen capture, device control, and secrets. Tools cannot invent new classes.',
           '- Each class is set to one of three levels: run silently, ask first, or deny. By default, reading files, the clipboard, network access, reading outside data and device control run silently. Writing or deleting files, reading secrets, installing code, screen capture and writing outside data ask first. The shell is denied until you turn it on in settings, at which point it asks.',
@@ -273,7 +273,7 @@
         id: 'self-dev',
         section: 'Safety and self-modification',
         title: 'Felix changing its own code',
-        summary: 'Clones repo, makes bounded change, runs tests, opens PR, restarts. Blast-radius check and boot self-check rollback.',
+        summary: 'Felix can change its own code in a sandboxed copy; changes merge only if tests pass, and a failed boot rolls back.',
         body: [
           '- Felix can change its own code. A self-dev run clones the repository into the sandbox folder, never touching the running copy, makes one bounded change, and runs the full test suites there.',
           '- The result is a pull request. It is merged only if the tests pass, after which Felix pulls the change and restarts.',
@@ -287,15 +287,15 @@
         id: 'updating-this-guide',
         section: 'Maintaining this guide',
         title: 'Keeping this guide current',
-        summary: 'Written for an AI agent, covers structure, formatting, source of truth, and testing.',
+        summary: 'For an AI (or person) asked to update this guide: where it lives, its format, and how to check it.',
         body: [
           '- This guide content lives entirely in tray/lib/help-content.js. A topic is one object appended to topics, and array order is the order in the UI. Sections appear in the order of their first use.',
           '- Topic fields are id, section, title, summary, body (an array of strings), and an optional see_also array of topic ids.',
-          '- Body format: a string starting with - is a bullet. Consecutive bullets form one list. Anything else is a paragraph. No other markdown syntax.',
+          '- Body format: a string starting with "- " is a bullet. Consecutive bullets form one list. Anything else is a paragraph. No other markdown syntax.',
           '- A see_also id that matches no topic silently renders nothing, so always verify them. Never hand-list tool names here; Help > Capabilities is generated from the running system.',
           '- The factual source of truth is CONTEXT.md plus docs/adr. If those disagree with a topic, the topic is the stale one.',
           '- Any change that adds or alters a feature should update its topic in the same pull request.',
-          '- Check your work with cd tray && npm test.'
+          '- Check your work with `cd tray && npm test`.'
         ],
         see_also: ['tools-and-plugins']
       }
