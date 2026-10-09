@@ -58,11 +58,11 @@ footer (`module.exports` for jest, `window.X` for the renderer) -- see the long 
 the top of `tray/lib/sidebar-router.js` for why a bare top-level `const` there is a
 page-killing SyntaxError that the Node test suite cannot catch.
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** HELP2 -- #1046
+- **Active:** HELP7 -- #1051
 - **Model:** sonnet
 
 HELP1 landed 2026-09-03 (PR #1058, on top of the partial #1053). self_dev's edit step twice
@@ -80,15 +80,15 @@ will need the same splitting treatment before it's fired.
 Strict chain: each slice adds the thing the next one calls. Do not skip ahead.
 
 - [x] HELP1 -- #1045 -- `help` route + nav button + empty pane shell with its own tab prefix
-- [ ] HELP2 -- #1046 -- `tray/lib/help-panel.js` pure render/search functions + jest tests
-- [ ] HELP3 -- #1047 -- `tray/lib/help-content.js` -- encyclopedia topics 1-9 + the authoring header
-- [ ] HELP4a -- #1367 -- Guide sub-tab: load the two libs, two-column layout, CSS
-- [ ] HELP4b -- #1368 -- Guide sub-tab: renderHelp(), clicks, render on route activation
-- [ ] HELP4c -- #1369 -- Help topics in the header's federated search
-- [ ] HELP5 -- #1049 -- encyclopedia topics 10-19 (capabilities, safety, maintaining this guide)
-- [ ] HELP6a -- #1370 -- `renderCapabilities()` in help-panel.js + jest tests
-- [ ] HELP6b -- #1371 -- Capabilities sub-tab wired into main.html
-- [ ] HELP7 -- #1051 -- `docs/agents/help-tab.md` update instructions + CLAUDE.md "keep it current" build rule + CONTEXT.md
+- [x] HELP2 -- #1046 -- `tray/lib/help-panel.js` pure render/search functions + jest tests
+- [x] HELP3 -- #1047 -- `tray/lib/help-content.js` -- encyclopedia topics 1-9 + the authoring header
+- [x] HELP4a -- #1367 -- Guide sub-tab: load the two libs, two-column layout, CSS
+- [x] HELP4b -- #1368 -- Guide sub-tab: renderHelp(), clicks, render on route activation
+- [x] HELP4c -- #1369 -- Help topics in the header's federated search
+- [x] HELP5 -- #1049 -- encyclopedia topics 10-19 (capabilities, safety, maintaining this guide)
+- [x] HELP6a -- #1370 -- `renderCapabilities()` in help-panel.js + jest tests
+- [x] HELP6b -- #1371 -- Capabilities sub-tab wired into main.html
+- [x] HELP7 -- #1051 -- `docs/agents/help-tab.md` update instructions + CLAUDE.md "keep it current" build rule + CONTEXT.md
 
 HELP4 (#1048) and HELP6 (#1050) were split 2026-10-06 into the a/b/c slices above (closed as
 superseded): each had 4-6 `main.html` edits, the shape the edit step dropped blocks on in HELP1.
@@ -97,11 +97,27 @@ FELIX-FIXES.md is done.
 
 ## Landed PRs
 
+- PR #1391 -- HELP3 (Felix-built; content rewritten from CONTEXT.md/ADRs -- self_dev can't read sources)
+- PR #1392 -- HELP4a, #1393 -- HELP4b (Felix; spacing CSS fixed after a real-window check)
+- PR #1394 -- HELP4c (Felix; dropped the provider block -- box-drawing anchor; added by hand)
+- PR #1395 -- HELP5 (Felix, from a per-topic fact sheet; summaries/apostrophes cleaned)
+- PR #1396 -- HELP6a (Felix; tests/sort/class repaired), #1397 -- HELP6b (Felix; CSS aligned)
+- PR #1398 -- HELP7 (Felix; doc example fixed)
+Live-checked 2026-10-09 in the real main.html: Guide nav/topics/see-also, header search -> topic, Capabilities with Felix's live snapshot (75 plugins, 323 tools).
+- PR #1390 -- HELP2 (Felix-built; jest gate caught a bullet-grouping bug, one-line repair on the PR branch)
+
 - PR #1053 -- HELP1 partial (CSS + router entry only; auto-merged by self_dev_campaign
   despite being incomplete -- pytest-only sandbox gate couldn't see the missing JS/HTML)
 - PR #1058 -- HELP1 completed (nav button, pane, click handler; self_dev's edit malformed
   the nav markup, hand-fixed before merge)
 
+- PR #1391 -- HELP3 (auto-merged by self_dev_campaign)
+- PR #1392 -- HELP4a (auto-merged by self_dev_campaign)
+- PR #1393 -- HELP4b (auto-merged by self_dev_campaign)
+- PR #1394 -- HELP4c (auto-merged by self_dev_campaign)
+- PR #1395 -- HELP5 (auto-merged by self_dev_campaign)
+- PR #1397 -- HELP6b (auto-merged by self_dev_campaign)
+- PR #1398 -- HELP7 (auto-merged by self_dev_campaign)
 ## Design summary (hand-review context, not part of any single issue)
 
 **Content format, deliberately not markdown.** A topic body is a plain array of strings.
