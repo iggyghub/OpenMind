@@ -3969,9 +3969,6 @@ async def _scheduler_loop() -> None:
                         spec = _trading_strategy_store.get(evt["title"])
                         if spec is not None:
                             due_symbols.add(spec.symbol)
-                        spec = _trading_strategy_store.get(evt["title"])
-                        if spec is not None:
-                            due_symbols.add(spec.symbol)
                     if due_symbols:
                         from plugins.browser import BrowserPlugin
                         browser = BrowserPlugin()
