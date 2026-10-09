@@ -200,6 +200,68 @@ def test_apply_mixed_edit_and_newfile(tmp_path):
     assert "Y = 3" in fp.read_text(encoding="utf-8")
 
 
+# ── apply_search_replace: uniform-indent-offset fallback (#1372) ─────────────
+
+def _sr(rel, search, replace):
+    return f"<<<FILE: {rel}>>>\n<<<SEARCH>>>\n{search}\n<<<REPLACE>>>\n{replace}\n<<<END>>>"
+
+
+def test_apply_exact_match_unchanged_by_fallback(tmp_path):
+    fp = _write(tmp_path, "a.py", "def f():\n    x = 1\n")
+    assert io.apply_search_replace(tmp_path, _sr("a.py", "    x = 1", "    x = 2")) == ["a.py"]
+    assert fp.read_text(encoding="utf-8") == "def f():\n    x = 2\n"
+
+
+def test_apply_over_indented_search_reindents_replace(tmp_path):
+    """The real X0 shape: file at 8 spaces, model emitted 12."""
+    fp = _write(tmp_path, "a.py", "class C:\n    def f(self):\n        a = 1\n        return a\n")
+    reply = _sr("a.py", "            a = 1\n            return a",
+                "            a = 1\n            b = 2\n            return a + b")
+    assert io.apply_search_replace(tmp_path, reply) == ["a.py"]
+    assert fp.read_text(encoding="utf-8") == (
+        "class C:\n    def f(self):\n        a = 1\n        b = 2\n        return a + b\n")
+
+
+def test_apply_under_indented_search(tmp_path):
+    fp = _write(tmp_path, "a.py", "def f():\n    if x:\n        y = 1\n")
+    reply = _sr("a.py", "if x:\n    y = 1", "if x:\n    y = 2")
+    assert io.apply_search_replace(tmp_path, reply) == ["a.py"]
+    assert fp.read_text(encoding="utf-8") == "def f():\n    if x:\n        y = 2\n"
+
+
+def test_apply_reindent_preserves_nested_and_blank_lines(tmp_path):
+    fp = _write(tmp_path, "a.py", "    if a:\n        b()\n\n    c()\n")
+    reply = _sr("a.py", "        if a:\n            b()\n\n        c()",
+                "        if a:\n            b()\n\n            z()\n        c()")
+    assert io.apply_search_replace(tmp_path, reply) == ["a.py"]
+    assert fp.read_text(encoding="utf-8") == "    if a:\n        b()\n\n        z()\n    c()\n"
+
+
+def test_apply_reindent_ambiguous_region_applies_nothing(tmp_path):
+    body = "def f():\n    x = 1\ndef g():\n    x = 1\n"
+    fp = _write(tmp_path, "a.py", body)
+    assert io.apply_search_replace(tmp_path, _sr("a.py", "        x = 1", "        x = 2")) == []
+    assert fp.read_text(encoding="utf-8") == body
+
+
+def test_apply_reindent_different_content_applies_nothing(tmp_path):
+    body = "def f():\n    x = 1\n    y = 2\n"
+    fp = _write(tmp_path, "a.py", body)
+    # second line's relative indent is wrong, then plain wrong content
+    assert io.apply_search_replace(tmp_path, _sr("a.py", "        x = 1\n          y = 2", "q")) == []
+    assert io.apply_search_replace(tmp_path, _sr("a.py", "        x = 9", "q")) == []
+    assert fp.read_text(encoding="utf-8") == body
+
+
+def test_apply_reindent_respects_allowed_and_path_guard(tmp_path):
+    body = "def f():\n    x = 1\n"
+    fp = _write(tmp_path, "a.py", body)
+    reply = _sr("a.py", "        x = 1", "        x = 2")
+    assert io.apply_search_replace(tmp_path, reply, allowed={"b.py"}) == []
+    assert fp.read_text(encoding="utf-8") == body
+    assert io.apply_search_replace(tmp_path, _sr("../evil.py", "    x = 1", "y")) == []
+
+
 if __name__ == "__main__":
     import sys
     import pytest

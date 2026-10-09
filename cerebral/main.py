@@ -3240,6 +3240,9 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
 
     # 4. Apply the edits (confined to the clone) and commit on a new branch.
     written = _sdio.apply_search_replace(clone_dir, edit_raw, allowed=set(wanted))
+    if not written:  # otherwise "no commit" is undiagnosable without replaying the prompt
+        logger.warning("[self_dev] edit reply applied nothing (planned %s); reply head: %s",
+                       wanted, (edit_raw or "<empty>")[:2000])
 
     branch = f"selfdev/{uuid.uuid4().hex[:8]}"
     committed = bool(written) and _sdio.create_branch_and_commit(
