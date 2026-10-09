@@ -17,7 +17,7 @@ HELP5, HELP6a-b, HELP7).
 
 ## Next slice -- start here
 
-- **Active:** X0 -- #1357
+- **Active:** X1 -- #1358
 - **Model:** self_dev-default
 
 ## Queue
@@ -27,7 +27,7 @@ unrelated to the code (a live network search, and a UTC-vs-New-York date check t
 evening after 8 PM ET), either of which would mark a correct slice `tests_failed` and block the run.
 
 - [x] XA -- #1372 -- self_dev applier: uniform-reindent fallback + log the reply when nothing applies. Built by Claude (Sonnet), not self_dev: it is the step that failed X0 (2026-10-09, Budd's edit was right but indented +4)
-- [ ] X0 -- #1357 -- live web-search test opt-in (`OPENMIND_LIVE_TESTS=1`); after-8PM-ET date test uses the market date
+- [x] X0 -- #1357 -- live web-search test opt-in (`OPENMIND_LIVE_TESTS=1`); after-8PM-ET date test uses the market date
 - [ ] X1 -- #1358 -- `cerebral/tests/test_plugin_google_workspace.py` so the gate stops refusing `google_workspace`
 - [ ] X2 -- #1359 -- `sentiment.py`: one-line warnings instead of 25-line tracebacks for handled failures
 - [ ] X3 -- #1360 -- `live_tick.py`: trend basket exempt from the sentiment gates (backtested with no news filter)
@@ -42,6 +42,7 @@ evening after 8 PM ET), either of which would mark a correct slice `tests_failed
 
 - PR #1373 -- XA (built by a Claude Sonnet agent, diff hand-reviewed, full suite 6,071 pass)
 
+- PR #1374 -- X0 (auto-merged by self_dev_campaign)
 ## Evidence and design (hand-review context, not part of any single issue)
 
 **What the review found, by impact.**
