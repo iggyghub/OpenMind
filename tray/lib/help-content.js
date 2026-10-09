@@ -34,26 +34,30 @@
         id: 'what-is-felix',
         section: 'Orientation',
         title: 'What Felix is',
-        summary: 'A local-first personal AI agent that runs on the user\'s own machine.',
+        summary: 'A personal AI agent that runs on your own computer: you talk to it, it plans, and it acts through tools.',
         body: [
-          'Felix is a local-first personal AI agent that runs on your own machine.',
-          '- The wake name is Felix, but the backend process that does the heavy lifting is called Cerebral.',
-          'Local-first means your data stays on your device, avoiding per-request costs for local work and keeping your private context offline.',
-          '- Some capabilities, like complex reasoning or web retrieval, still route to cloud models for better performance.'
+          'Felix is the name you speak to. Saying "Felix" wakes the assistant; the name can be changed per profile.',
+          'The thinking happens in a background program called Cerebral, which runs on your desktop. The Felix window, the tray icon and any other device you connect all talk to Cerebral; it is the one place where memory, planning and actions live.',
+          'Local-first means your profiles, memories, documents and history are stored on this machine. What leaves it:',
+          '- requests sent to a model server that is not on this computer (today usually Budd, a remote server; Claude if you have chosen it);',
+          '- the outside services a tool talks to on your behalf, such as Gmail, a web search or a broker.',
+          'Everything Felix does goes through tools, and every tool call passes the same permission check. See "From a sentence to an action".'
         ],
-        see_also: ['talking-to-felix', 'models-and-routing']
+        see_also: ['how-a-request-becomes-an-action', 'models-and-routing']
       },
       {
         id: 'how-a-request-becomes-an-action',
         section: 'Orientation',
         title: 'From a sentence to an action',
-        summary: 'The pipeline that turns your words into tool calls, permissions, and spoken replies.',
+        summary: 'Your words become a plan, the plan becomes tool calls, and each call is permission-checked before it runs.',
         body: [
-          'Your speech or typed message enters the input pipeline and is transcribed or parsed.',
-          '- An LLM planner breaks the intent down into discrete steps.',
-          'Each step becomes an MCP tool call, which passes through a permission gate.',
-          '- Approved actions execute, and their results feed back into the loop.',
-          'The final response is synthesized by the local TTS engine and spoken aloud.'
+          'Every request follows the same path:',
+          '- Speech is transcribed (faster-whisper) or typed text is taken as-is.',
+          '- A language model reads the request with your recent conversation and relevant memories, and decides which tools to use.',
+          '- Each tool call is checked against your permission settings: it runs silently, asks you first, or is refused.',
+          '- Results go back to the model, which may call more tools, until it has an answer.',
+          '- The reply is shown in the window and, when voice is on, spoken by the local voice (Kokoro).',
+          'Tools are provided by plugins, using a standard called MCP. Felix cannot do anything that no tool does; when a capability is missing it can build a new plugin or say so.'
         ],
         see_also: ['memory', 'conversation-and-compaction']
       },
@@ -61,98 +65,100 @@
         id: 'talking-to-felix',
         section: 'Orientation',
         title: 'Ways to reach Felix',
-        summary: 'Always-on wake-word listening, the Main window chat, the tray, and remote channels.',
+        summary: 'Say its name, type in the Main window, use the tray, or message it from another app.',
         body: [
-          'You can interact with Felix through the always-on wake-word listening mode.',
-          '- The Main window provides a persistent chat interface for longer conversations.',
-          'The system tray offers quick commands and status monitoring.',
-          '- Remote messaging is supported via the OpenClaw harness, letting you message Felix from external applications.'
+          '- Voice: a lightweight listener (Vosk) waits for the wake word, then the full transcriber takes the request. Voice needs the speech model installed; without it, typing still works.',
+          '- The Main window: a chat with your conversation history, plus every other panel in the sidebar.',
+          '- The tray icon: restart Felix, open the logs, quit.',
+          '- Other apps: messaging channels connected through OpenClaw can relay messages to Felix.',
+          'However you reach it, the request goes through the same pipeline and the same permission checks.'
         ],
-        see_also: ['the-main-window']
+        see_also: ['the-main-window', 'how-a-request-becomes-an-action']
       },
       {
         id: 'the-main-window',
         section: 'Orientation',
         title: 'A tour of the window',
-        summary: 'One short paragraph per sidebar section: Conversation, Harness, Library, Trading, Log, Help, Settings.',
+        summary: 'What each section in the sidebar is for.',
         body: [
-          'Conversation holds your active chat threads and interaction history.',
-          '- Harness displays the current OpenClaw session state and connected external services.',
-          'Library stores your saved notes, references, and manually curated knowledge.',
-          '- Trading shows real-time market data, portfolio metrics, and execution logs.',
-          'Log provides a detailed audit trail of all background processes and tool invocations.',
-          '- Help opens this encyclopedia and provides quick-start guides.',
-          'Settings controls model selection, permissions, audio options, and system preferences.'
+          'Conversation: talk to Felix and see each turn, including the tools it called.',
+          'Harness: the plugins that give Felix its tools (with their status and switches) and the installed Skills.',
+          'Library: what Felix keeps for you. Sub-tabs cover Memory, Insights, Recipes, Documents, Job search, Videos, Books and GitHub, plus Thinking, which shows what Felix has been doing behind the scenes.',
+          'Trading: paper trading only. Overview, Strategies, Tickers, Trades and Replay show the strategies, their trades and their backtests.',
+          'Log: a running activity record of what Felix did and when.',
+          'Help: this guide, and a live list of every tool Felix currently has.',
+          'Settings: General preferences, AI models (which models answer and in what order), Sign-in (connected accounts) and Permissions.'
         ],
-        see_also: ['talking-to-felix']
+        see_also: ['talking-to-felix', 'models-and-routing']
       },
       {
         id: 'models-and-routing',
         section: 'How Felix thinks',
         title: 'Which brain answers',
-        summary: 'Local Ollama models, cloud Claude, and custom servers, prioritized by the user.',
+        summary: 'You choose the models and their order; if one is unavailable Felix moves to the next.',
         body: [
-          'Cerebral supports multiple model providers to balance speed, cost, and capability.',
-          '- Local models run through Ollama, keeping sensitive data on-device and eliminating cloud latency.',
-          'Complex reasoning tasks are routed to Claude via the OpenClaw integration for superior accuracy.',
-          '- Custom OpenAI-compatible servers can be added for private enterprise instances.',
-          'The priority order is set by the user, and coding work automatically routes to the specialized code model route.'
+          'Felix can use three kinds of model:',
+          '- local models on this computer, run by Ollama (free per request, limited by the graphics card);',
+          '- remote model servers you add by address, such as Budd (any OpenAI-compatible server);',
+          '- cloud models from Anthropic (Claude), which cost per request.',
+          'In Settings > AI models you set a priority order. A request goes to the first model in the order; if it fails or is unreachable, Felix falls back to the next one.',
+          'Coding work can use a separate model: mark a model "Use for coding" and code tasks go there instead.',
+          'Only one model request runs at a time, and your live conversation takes priority over background work.'
         ],
-        see_also: ['what-is-felix', 'memory']
+        see_also: ['what-is-felix', 'conversation-and-compaction']
       },
       {
         id: 'memory',
         section: 'How Felix thinks',
         title: 'What Felix remembers',
-        summary: 'Three layers of memory: short-term buffer, vector store, and structured facts.',
+        summary: 'A few seconds of audio, the current surroundings, long-term memories you approved, and structured data.',
         body: [
-          'Short-term memory holds the immediate conversation context for the current session.',
-          '- A vector store indexes past interactions by meaning, enabling semantic recall across sessions.',
-          'A structured database maintains verified facts and user preferences.',
-          '- The system writes to short-term and vector memory automatically to keep context fresh.',
-          'Important facts and structured entries wait for explicit user approval before permanent storage.'
+          'Felix keeps four kinds of memory:',
+          '- Short-term: about the last 60 seconds of audio, held in RAM only and never saved.',
+          '- Environmental: the current session\'s context, such as location, also in RAM only.',
+          '- Long-term: memories stored by meaning (a vector database), so Felix can recall them later by topic. One set per profile.',
+          '- Structured: profiles, preferences, the proposal queue and learned patterns, in a local database.',
+          'Felix does not save memories silently. When you state something durable, it raises a memory proposal; the memory is written only when you approve it. Saved memories are in Library > Memory.'
         ],
-        see_also: ['conversation-and-compaction', 'recipes-and-insights']
+        see_also: ['recipes-and-insights', 'conversation-and-compaction']
       },
       {
         id: 'conversation-and-compaction',
         section: 'How Felix thinks',
         title: 'Long conversations',
-        summary: 'The session log is the source of truth; long threads are compacted rather than truncated.',
+        summary: 'Every turn is logged; when a conversation gets too long for the model, older turns are summarised.',
         body: [
-          'Every interaction is recorded in the session log, which serves as the single source of truth.',
-          '- When a conversation grows too large for the model\'s context window, compaction triggers automatically.',
-          'The system summarizes older turns and merges them into concise historical summaries.',
-          '- This preserves continuity without losing key details or hitting token limits.',
-          'Truncation is never used; the conversation history always remains intact in the compacted format.'
+          'Every turn (what you said, what Felix said, each tool call and its result) is written to the conversation log. That log is the record: anything the model sees can be rebuilt from it.',
+          'A model can only read so much at once. When the conversation passes about 70% of the active model\'s limit, Felix summarises the oldest turns into one summary turn and continues with that plus the recent turns.',
+          'The summary is itself saved as a turn in the log, so nothing disappears from the record; only what the model is shown gets shorter.'
         ],
-        see_also: ['memory']
+        see_also: ['memory', 'models-and-routing']
       },
       {
         id: 'skills',
         section: 'How Felix thinks',
         title: 'Skills: procedures Felix can install',
-        summary: 'Reusable step-by-step procedures that load when a task matches.',
+        summary: 'Installed instructions that change how Felix approaches a kind of task. They add know-how, never new powers.',
         body: [
-          'Skills are reusable, step-by-step procedures that extend Felix\'s capabilities on demand.',
-          '- They are installed from local files or community repositories.',
-          'When a task matches a skill\'s trigger conditions, Cerebral loads the procedure into the planner.',
-          '- Skills guide the agent through multi-step workflows without needing manual instruction each time.',
-          'They keep complex operations consistent and reproducible across different sessions.'
+          'A skill is a named set of instructions, such as how to run a design interview or how to break a plan into issues. When a request matches, Felix loads it into the planner.',
+          'Skills are written locally or fetched from an online source, and can always be read and edited. Manage them in Harness > Skills.',
+          'A skill adds know-how, never capability. It cannot add a tool, and every tool it leads Felix to use still goes through the normal permission check.',
+          'Not to be confused with:',
+          '- a plugin, which adds a tool;',
+          '- a recipe, which replays a fixed sequence of tool calls.'
         ],
-        see_also: ['recipes-and-insights']
+        see_also: ['recipes-and-insights', 'how-a-request-becomes-an-action']
       },
       {
         id: 'recipes-and-insights',
         section: 'How Felix thinks',
         title: 'Recipes and insights',
-        summary: 'Repeatable procedures and passive observations surfaced as user proposals.',
+        summary: 'Felix proposes saving sequences you repeat, and learns from what you approve and dismiss. Nothing is applied silently.',
         body: [
-          'Recipes are repeatable procedures that Felix learns from your actual workflows.',
-          '- Insights are passive observations about patterns in your usage or environment.',
-          'Both are surfaced to you as actionable proposals rather than applied silently.',
-          '- You review, accept, or reject each proposal before it becomes part of your system.',
-          'This keeps automation transparent and ensures you maintain full control over what gets executed.'
+          'A recipe is a saved, named sequence of tool calls that you can run again on command.',
+          'When the same sequence runs several times, Felix proposes saving it as a recipe. It is saved only if you approve, and running it later re-checks every step\'s permissions: a recipe saves the plan, never a permission.',
+          'Proposals (actions, memories, recipes) arrive in one queue that you approve or dismiss.',
+          'Each decision on a proposal that would run a real tool counts as a signal. When the same kind of decision repeats enough times, Felix records an insight about how you like things done. Insights are shown in Library > Insights.'
         ],
         see_also: ['memory', 'skills']
       }
