@@ -1,6 +1,7 @@
 """Strategy/gauntlet admin plugin -- MCP tools for strategy management.
 Extracted from plugins/scheduler.py per SCHEDULER-SPLIT.md S5 (#1213).
 """
+import asyncio
 import json
 import logging
 import uuid
@@ -17,7 +18,7 @@ from cerebral.trading.discovery import build_dynamic_universe, rank_for_day_trad
 from cerebral.trading.gauntlet import run_gauntlet, compute_max_holding_days
 from cerebral.trading.replay import run_bars
 from cerebral.trading.strategy_store import StrategySpec, StrategyStore, mint_expansion_strategy_id
-from cerebral.trading.trend_basket_selection import RisingEdgeGate, compute_breadth, rank_by_momentum
+from cerebral.trading.trend_basket_selection import RisingEdgeGate, compute_breadth, rank_by_momentum, sp500_members
 from cerebral.trading.trend_basket_strategy import entry_date_of, trend_basket_code
 
 logger = logging.getLogger(__name__)
@@ -49,11 +50,18 @@ def _market_today() -> date:
 def _in_reading_window() -> bool:
     """06:00-16:00 New York: when the trend basket may take its daily breadth reading."""
     return 6 <= datetime.now(_NY_TZ).hour < 16
-# Stricter than build_dynamic_universe's own $1/$5M default (tuned for Discovery/Expansion's
-# day-trading use case) -- a liquidity floor, not a volatility cap, see the 2026-09-23 note
-# at the call site in _trend_basket_dispatch.
-_TREND_BASKET_MIN_PRICE = 2.0
-_TREND_BASKET_MIN_DOLLAR_VOLUME = 10_000_000.0
+
+
+def _trend_basket_universe() -> list:
+    """ADR-0038 amendment 2026-10-06: breadth and picks use the S&P 500 list the backtest used,
+    not Alpaca's daily movers/most-actives pool (a different, daily-reshuffled population)."""
+    return sp500_members()
+
+
+def _bulk_daily_bars(symbols, start: str, end: str) -> dict:
+    """Every member's daily bars in one Alpaca request: {symbol: DataFrame}."""
+    from cerebral.trading.broker import AlpacaMarketDataClient
+    return AlpacaMarketDataClient("paper").get_daily_bars_multi(symbols, start, end)
 
 
 class TradingStrategiesPlugin:
@@ -498,12 +506,8 @@ class TradingStrategiesPlugin:
         fetch_fn = fetch
         if fetch_fn is None:
             from cerebral.trading_data import fetch_ohlcv as fetch_fn
-        broker_obj = broker
-        if broker_obj is None:
-            from cerebral.trading.broker import AlpacaBrokerClient
-            broker_obj = AlpacaBrokerClient(env="paper")
-
         market_today = _market_today()
+        prefetched: dict = {}  # filled by one batched request below (production only)
 
         def fetch_bars_for_selection(symbol: str, n: int, freq: str) -> pd.DataFrame:
             # Adapts trading_data.fetch_ohlcv's (symbol, start, end, interval) / capitalised-
@@ -513,7 +517,9 @@ class TradingStrategiesPlugin:
             # (what the backtest used) whatever time of day this runs.
             end = market_today + timedelta(days=1)
             start = end - timedelta(days=int(n * 2.5) + 5)
-            df = fetch_fn(symbol, start.isoformat(), end.isoformat(), interval="1d")
+            df = prefetched.get(symbol)
+            if df is None:
+                df = fetch_fn(symbol, start.isoformat(), end.isoformat(), interval="1d")
             if df is None or df.empty or "Close" not in df.columns:
                 return pd.DataFrame(columns=["close"])
             df = df[[pd.Timestamp(ix).date() < market_today for ix in df.index]]
@@ -548,35 +554,26 @@ class TradingStrategiesPlugin:
                 }))
 
         try:
-            # 2026-09-23 finding: build_dynamic_universe's own DEFAULT filter (min_price=$1,
-            # min_dollar_volume=$5M -- tuned for day-trading's volatility-seeking use case) let
-            # through a candidate pool dominated by penny/micro-cap noise live (confirmed: 3
-            # back-to-back calls gave 8/9/9 candidates and breadth swinging 37.5%-62.5%). A
-            # stricter, liquidity-focused floor (not a volatility cap -- real high-beta names
-            # like RIOT/SOFI/MARA are liquid, not thin) trims that noise. Passed explicitly here
-            # rather than changed as the function's own default, since Discovery/Expansion share
-            # this same function (ADR-0026 decision 5, one pool) and their own day-trading use
-            # case is what the existing $1/$5M default is actually tuned for.
-            # movers_top=50/actives_top=100 are Alpaca's own real API ceilings (confirmed live --
-            # "invalid top: should not be larger than 50"/"...100"), not arbitrary choices. At
-            # the $2/$10M filter this yields ~84 candidates (vs. ~8 at the smaller defaults) --
-            # made affordable by rank_for_day_trading's now-parallelized fetch loop (2.7x
-            # speedup measured live), which brings a cold ~185-raw-symbol pass in comfortably
-            # under the 5-minute scheduler tick instead of the ~680s it took sequentially.
-            universe = build_dynamic_universe(
-                broker_obj, fetch_fn, movers_top=50, actives_top=100,
-                min_price=_TREND_BASKET_MIN_PRICE, min_dollar_volume=_TREND_BASKET_MIN_DOLLAR_VOLUME,
-            )
+            universe = _trend_basket_universe()
         except Exception as e:
             logger.warning("[trading_strategies] trend_basket_dispatch: candidate pool build failed: %s", e)
             return ToolResult(content=json.dumps({"dispatched": [], "reason": f"candidate pool build failed: {e}"}))
 
-        # `universe` is already filtered (build_dynamic_universe applies the min_price/
-        # min_dollar_volume passed above internally) -- both breadth and selection read the same
-        # pool now, fixing a prior inconsistency where breadth saw the fully unfiltered universe
-        # while selection alone went through a second (redundant, same-default) filter pass.
+        # One batched request for every member (6.2s vs 701s one at a time, ADR-0038 amendment
+        # 2026-10-06). Production only: an injected `fetch` (tests) is used per symbol as before.
+        # If the batch fails, fetch_bars_for_selection falls back to per-symbol fetches.
+        if fetch is None:
+            end = market_today + timedelta(days=1)
+            try:
+                prefetched.update(await asyncio.to_thread(
+                    _bulk_daily_bars, universe, (end - timedelta(days=140)).isoformat(), end.isoformat()))
+            except Exception as e:
+                logger.warning("[trading_strategies] trend_basket_dispatch: batched bars failed, "
+                               "falling back to per-symbol fetches: %s", e)
+
+        # Both run in a worker thread so a slow per-symbol fallback can't stall the event loop.
         if not have_today:
-            breadth_result = compute_breadth(universe, fetch_bars_for_selection)
+            breadth_result = await asyncio.to_thread(compute_breadth, universe, fetch_bars_for_selection)
             logger.info("[trading_strategies] trend basket breadth reading: %s (pool %d, above %d, below %d)",
                         breadth_result.breadth, len(universe), len(breadth_result.above_ma),
                         len(breadth_result.below_ma))
@@ -598,7 +595,7 @@ class TradingStrategiesPlugin:
                 "dispatched": [], "breadth": breadth, "rising_edge": is_edge,
                 "active": True, "reason": "all slots full",
             }))
-        ranked = rank_by_momentum(universe, fetch_bars_for_selection)
+        ranked = await asyncio.to_thread(rank_by_momentum, universe, fetch_bars_for_selection)
         candidates = [s for s in ranked if s not in open_symbols][:free]
 
         results = []
