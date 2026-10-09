@@ -603,3 +603,32 @@ class AlpacaMarketDataClient:
         df.index.name = "Date"
         df = df.dropna(how="all")
         return df
+
+    def get_daily_bars_multi(self, symbols, start: str, end: str) -> dict:
+        """Daily bars for many symbols in ONE request (ADR-0038 amendment 2026-10-06: 503 S&P
+        members took 6.2s batched vs 701s one at a time). Returns {symbol: DataFrame} in
+        get_bars' shape (capitalised OHLCV, ascending index named "Date", split/dividend
+        adjusted). Symbols Alpaca returned no bars for are simply absent."""
+        self._connect()
+        from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import Adjustment
+        from datetime import datetime
+
+        req = self._request_cls(
+            symbol_or_symbols=list(symbols),
+            timeframe=TimeFrame.Day,
+            start=datetime.fromisoformat(start),
+            end=datetime.fromisoformat(end),
+            adjustment=Adjustment.ALL,
+        )
+        df = self._client.get_stock_bars(req).df
+        out = {}
+        if df is None or df.empty:
+            return out
+        df = df[["open", "high", "low", "close", "volume"]]
+        for sym, g in df.groupby(level="symbol"):
+            g = g.droplevel("symbol").sort_index()
+            g.columns = ["Open", "High", "Low", "Close", "Volume"]
+            g.index.name = "Date"
+            out[sym] = g.dropna(how="all")
+        return out
