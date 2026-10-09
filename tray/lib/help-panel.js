@@ -122,10 +122,11 @@
         if (!q) return true;
         return (t.name || '').toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q);
       });
-      if (tools.length === 0 && q && (plugin.name || '').toLowerCase().includes(q)) {
-        tools = plugin.tools || [];
+      if (q && (plugin.name || '').toLowerCase().includes(q)) {
+        tools = plugin.tools || [];  // a plugin-name match keeps all its tools
       }
       if (tools.length === 0) continue;
+      tools = [...tools].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       pCount++;
       tCount += tools.length;
       let cls = 'help-cap-plugin';
@@ -133,7 +134,7 @@
       html += '<section class="' + cls + '">';
       html += '<h3>' + escHtml(plugin.name) + (isDisabled ? ' <span class="help-cap-status">(disabled)</span>' : '') + '</h3>';
       if (plugin.capabilities && plugin.capabilities.length) {
-        html += '<div class="help-cap-list">';
+        html += '<div class="help-cap-tags">';
         for (const c of plugin.capabilities) html += '<span class="help-cap-tag">' + escHtml(c) + '</span>';
         html += '</div>';
       }

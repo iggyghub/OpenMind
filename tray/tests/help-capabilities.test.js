@@ -35,17 +35,6 @@ const fakeSnapshot = {
   ]
 };
 
-function test(name, fn) {
-  try {
-    fn();
-    console.log('PASS: ' + name);
-  } catch (e) {
-    console.error('FAIL: ' + name);
-    console.error(e.message || e);
-    process.exit(1);
-  }
-}
-
 test('empty snapshot returns empty state', () => {
   const html = HelpPanel.renderCapabilities(null, '');
   assert(html.includes('help-cap-empty'), 'Missing empty state class');
@@ -81,10 +70,10 @@ test('plugin-name match keeps all its tools', () => {
 test('disabled plugins marked', () => {
   const html = HelpPanel.renderCapabilities(fakeSnapshot, '');
   const betaIdx = html.indexOf('BetaPlugin');
-  const betaSection = html.substring(betaIdx, html.indexOf('</section>', betaIdx));
+  const betaSection = html.substring(html.lastIndexOf('<section', betaIdx), html.indexOf('</section>', betaIdx));
   assert(betaSection.includes('is-disabled'), 'Beta should be marked disabled');
   const alphaIdx = html.indexOf('AlphaPlugin');
-  const alphaSection = html.substring(alphaIdx, html.indexOf('</section>', alphaIdx));
+  const alphaSection = html.substring(html.lastIndexOf('<section', alphaIdx), html.indexOf('</section>', alphaIdx));
   assert(!alphaSection.includes('is-disabled'), 'Alpha should not be disabled');
 });
 
@@ -101,4 +90,15 @@ test('HTML metacharacters in description escaped', () => {
   assert(!html.includes('<script'), 'Should not contain raw script tag');
 });
 
-console.log('All tests passed.');
+
+test('plugin-name match keeps ALL its tools even when one tool also matches by text', () => {
+  const snap = { plugins: [{ name: 'mail', status: 'active', enabled: true, capabilities: [],
+    tools: [{ name: 'mail_send', description: 'x' }, { name: 'other', description: 'y' }] }] };
+  const html = HelpPanel.renderCapabilities(snap, 'mail');
+  assert(html.includes('mail_send') && html.includes('other'), 'all tools of a name-matched plugin');
+});
+
+test('capability tags use their own class, not the results container class', () => {
+  const html = HelpPanel.renderCapabilities(fakeSnapshot, '');
+  assert(html.includes('help-cap-tags') && !html.includes('class="help-cap-list"'), 'tag container class');
+});
