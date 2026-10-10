@@ -4,8 +4,8 @@ Like the IPO play, this code is registered directly, without a per-symbol Gauntl
 (ADR-0038 amendment 2026-09-24): the Gauntlet's one-symbol, one-year backtest can't see this
 strategy's edge (breadth timing + cross-sectional selection) and rejected 98% of real picks.
 
-Exit is a flat, non-tightening 12% trailing stop from the peak since entry, hard-capped at bar 20
-(entry is bar 0). Deliberately NOT the IPO play's tighten-to-1%-after-+20% ratchet -- that shape
+Exit is a flat, non-tightening 12% trailing stop on CLOSES from the highest close since entry,
+flat from bar 20 (entry is bar 0) -- exactly sp500_backtest.py's rule (2026-10-10). Deliberately NOT the IPO play's tighten-to-1%-after-+20% ratchet -- that shape
 was tested against ordinary multi-day swing holds and found to destroy this strategy's edge, at
 both daily and 5-minute granularity (see the ADR's "Why the exit isn't the IPO play's exit").
 
@@ -31,22 +31,20 @@ def strategy(data) -> list:
     if start is None:
         return [0] * len(data)
     signals = [0] * start
-    peak = data["Open"].iloc[start]
+    peak = data["Close"].iloc[start]
     stopped_out = False
     for i in range(start, len(data)):
-        if stopped_out or i - start > 20:
+        if stopped_out or i - start >= 20:
             signals.append(0)
             continue
-        low_i = data["Low"].iloc[i]
-        high_i = data["High"].iloc[i]
-        stop_price = peak * 0.88
-        if low_i <= stop_price:
+        close_i = data["Close"].iloc[i]
+        if close_i <= peak * 0.88:
             stopped_out = True
             signals.append(0)
         else:
             signals.append(1)
-        if high_i > peak:
-            peak = high_i
+            if close_i > peak:
+                peak = close_i
     return signals
 '''
 

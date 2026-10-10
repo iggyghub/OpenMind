@@ -10,11 +10,10 @@ def _run_strategy(df: pd.DataFrame, entry: str = "2026-01-01") -> list:
     return ns["strategy"](df)
 
 
-def _bars(low, open_=None, high=None, start="2026-01-01"):
-    n = len(low)
-    open_ = open_ or [100.0] * n
-    high = high or [100.0] * n
-    return pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": [100.0] * n},
+def _bars(close, open_=None, high=None, start="2026-01-01"):
+    """Bars whose CLOSE follows `close` (the strategy reads closes only since 2026-10-10)."""
+    n = len(close)
+    return pd.DataFrame({"Open": open_ or close, "High": high or close, "Low": close, "Close": close},
                         index=pd.date_range(start, periods=n, freq="D"))
 
 
@@ -33,8 +32,8 @@ def test_hold_under_12pct_pullback():
 def test_hard_exit_after_bar_20():
     """Flat price that never triggers the stop still force-exits after bar index 20."""
     sigs = _run_strategy(_bars([100.0] * 23))
-    assert sigs[:21] == [1] * 21
-    assert sigs[21:] == [0, 0]
+    assert sigs[:20] == [1] * 20  # bars 0..19 held
+    assert sigs[20:] == [0, 0, 0]  # flat ON bar 20, like the backtest's `day - entry >= 20`
 
 
 def test_a_single_volatile_bar_cannot_trip_its_own_stop():
@@ -45,6 +44,16 @@ def test_a_single_volatile_bar_cannot_trip_its_own_stop():
     90 > 100*0.88=88, so it holds. A buggy peak-before-check ordering would compute
     stop = 150*0.88 = 132 and incorrectly trip on Low 90."""
     df = _bars([90.0, 150.0, 150.0], open_=[100.0, 150.0, 150.0], high=[150.0, 150.0, 150.0])
+    assert _run_strategy(df) == [1, 1, 1]
+
+
+def test_trail_follows_the_highest_close():
+    """Peak = highest CLOSE since entry: 150 -> stop at 132. 131 trips it, 133 holds.
+    An intraday low below the stop with a close above it does NOT stop out."""
+    assert _run_strategy(_bars([100.0, 150.0, 131.0])) == [1, 1, 0]
+    assert _run_strategy(_bars([100.0, 150.0, 133.0])) == [1, 1, 1]
+    df = _bars([100.0, 150.0, 140.0])
+    df.loc[df.index[2], "Low"] = 120.0  # intraday dip below 132, close back above
     assert _run_strategy(df) == [1, 1, 1]
 
 
