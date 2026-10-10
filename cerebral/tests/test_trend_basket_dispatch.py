@@ -184,7 +184,7 @@ def test_open_symbols_follow_each_position_s_own_exit_logic(tmp_path):
     def fetch(symbol, start, end, interval="1d"):
         if symbol == "CRASH":
             df = _flat_bars()
-            df.iloc[-2:, df.columns.get_loc("Low")] = 50.0  # -50%: past the 12% trail
+            df.iloc[-2:, df.columns.get_loc("Close")] = 50.0  # -50% close: past the 12% trail (closes since 2026-10-10)
             return df
         return _uptrend_bars()
 
