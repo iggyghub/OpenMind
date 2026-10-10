@@ -309,6 +309,16 @@ async def test_breadth_uses_the_prior_close_not_today_s_unfinished_bar(tmp_path)
     assert json.loads(result.content)["breadth"] == 1.0
 
 
+def test_slot_is_sized_from_current_equity_when_given(tmp_path):
+    """2026-10-10: equity x risk% / price, like the backtest; starting capital only as fallback."""
+    plugin = _plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    new_id = plugin._register_trend_basket_position("MSFT", store, 100.0, equity=250.0)
+    assert abs(store.get(new_id).qty - 250.0 * 0.02 / 100.0) < 1e-9  # risk pct defaults to 2%
+    fallback_id = plugin._register_trend_basket_position("NVDA", store, 100.0)
+    assert abs(store.get(fallback_id).qty - 10000.0 * 0.02 / 100.0) < 1e-9
+
+
 def test_re_entry_does_not_duplicate_the_recurring_event(tmp_path):
     plugin = _plugin(tmp_path)
     plugin._scheduler = _FakeScheduler()
