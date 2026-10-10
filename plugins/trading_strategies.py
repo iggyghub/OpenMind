@@ -459,7 +459,8 @@ class TradingStrategiesPlugin:
                 open_symbols.add(spec.symbol)  # unknown -> treat as occupied, never over-fill
         return open_symbols
 
-    def _register_trend_basket_position(self, symbol: str, store: "StrategyStore", last_price: float) -> str:
+    def _register_trend_basket_position(self, symbol: str, store: "StrategyStore", last_price: float,
+                                        equity: "float | None" = None) -> str:
         """Register one basket position directly -- no per-symbol Gauntlet (ADR-0038 amendment
         2026-09-24: its one-symbol, one-year backtest rejected 98% of real picks and can't see
         this strategy's breadth-timing edge). Sized like _run_gauntlet: starting capital x the
@@ -467,7 +468,10 @@ class TradingStrategiesPlugin:
         re-saves the spec (new version, new entry date) under the same id."""
         new_id = mint_expansion_strategy_id(_TREND_BASKET_CLAIM, symbol)
         risk_pct = self._settings.get("max_per_trade_risk_pct") or 2.0
-        capital = self._settings.get("trading_paper_starting_capital") or 10000.0
+        # Current equity when known (2026-10-10: the backtest sizes each slot at equity x 10%);
+        # the starting-capital setting is only the fallback when the broker can't be read.
+        capital = equity if equity and equity > 0 else (
+            self._settings.get("trading_paper_starting_capital") or 10000.0)
         qty = capital * (risk_pct / 100.0) / last_price
         store.save(
             StrategySpec(strategy_id=new_id, symbol=symbol, qty=qty, interval="1d",
@@ -597,6 +601,14 @@ class TradingStrategiesPlugin:
             }))
         ranked = await asyncio.to_thread(rank_by_momentum, universe, fetch_bars_for_selection)
         candidates = [s for s in ranked if s not in open_symbols][:free]
+        equity = None
+        if candidates:
+            try:
+                from cerebral.trading.broker import AlpacaBrokerClient
+                equity = float((broker or AlpacaBrokerClient(env="paper")).get_account().equity)
+            except Exception as e:
+                logger.warning("[trading_strategies] trend_basket_dispatch: account equity unavailable, "
+                               "sizing from starting capital: %s", e)
 
         results = []
         for symbol in candidates:
@@ -606,7 +618,7 @@ class TradingStrategiesPlugin:
                 last_price = float(bars["close"].iloc[-1]) if len(bars) else 0.0
                 if last_price <= 0:
                     raise ValueError("no last price")
-                self._register_trend_basket_position(symbol, store, last_price)
+                self._register_trend_basket_position(symbol, store, last_price, equity)
                 verdict = "REGISTERED"
             except Exception:
                 verdict = "ERROR"
