@@ -13,11 +13,11 @@ ten X-slices applied together.
 After this driver is `done`, continue with `HELP.md` (the Help sidebar: HELP2, HELP3, HELP4a-c,
 HELP5, HELP6a-b, HELP7).
 
-## Status: ready
+## Status: done
 
 ## Next slice -- start here
 
-- **Active:** Y1 -- #1399
+- **Active:** Y2 -- #1400
 - **Model:** self_dev-default
 
 ## Queue
@@ -40,8 +40,8 @@ evening after 8 PM ET), either of which would mark a correct slice `tests_failed
 - [x] X7b -- #1386 -- cap `get_daily_bars_multi`'s end at now-16min (Alpaca free plan refuses the last 15 min of SIP data; found live in market hours)
 - [x] X8 -- #1365 -- `trend_basket_selection.py`: `sp500_members()` loader (needs the committed `cerebral/trading/sp500_members.txt`)
 - [x] X9 -- #1366 -- trend basket breadth + picks from the S&P 500, batched fetch (needs X7 + X8 merged)
-- [ ] Y1 -- #1399 -- basket exit rule on closes, flat on day 20 (match sp500_backtest.py) [follow-up 2026-10-10]
-- [ ] Y2 -- #1400 -- basket slot = 10% of current equity, not starting capital [follow-up 2026-10-10]
+- [x] Y1 -- #1399 -- basket exit rule on closes, flat on day 20 (match sp500_backtest.py) [follow-up 2026-10-10]
+- [x] Y2 -- #1400 -- basket slot = 10% of current equity, not starting capital [follow-up 2026-10-10]
 
 ## Landed PRs
 
@@ -62,6 +62,8 @@ Live-verified 2026-10-09: trend basket reading through the new path = pool 503, 
 - PR #1387 -- X7b (auto-merged by self_dev_campaign)
 - PR #1388 -- X8 (auto-merged by self_dev_campaign)
 - PR #1389 -- X9 (auto-merged by self_dev_campaign)
+- PR #1401 -- Y1 (auto-merged by self_dev_campaign)
+- PR #1402 -- Y2 (auto-merged by self_dev_campaign)
 ## Evidence and design (hand-review context, not part of any single issue)
 
 **What the review found, by impact.**
