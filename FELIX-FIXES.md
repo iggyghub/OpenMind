@@ -17,7 +17,7 @@ HELP5, HELP6a-b, HELP7).
 
 ## Next slice -- start here
 
-- **Active:** Y1 -- #
+- **Active:** Y1 -- #1399
 - **Model:** self_dev-default
 
 ## Queue
@@ -40,8 +40,8 @@ evening after 8 PM ET), either of which would mark a correct slice `tests_failed
 - [x] X7b -- #1386 -- cap `get_daily_bars_multi`'s end at now-16min (Alpaca free plan refuses the last 15 min of SIP data; found live in market hours)
 - [x] X8 -- #1365 -- `trend_basket_selection.py`: `sp500_members()` loader (needs the committed `cerebral/trading/sp500_members.txt`)
 - [x] X9 -- #1366 -- trend basket breadth + picks from the S&P 500, batched fetch (needs X7 + X8 merged)
-- [ ] Y1 -- # -- basket exit rule on closes, flat on day 20 (match sp500_backtest.py) [follow-up 2026-10-10]
-- [ ] Y2 -- # -- basket slot = 10% of current equity, not starting capital [follow-up 2026-10-10]
+- [ ] Y1 -- #1399 -- basket exit rule on closes, flat on day 20 (match sp500_backtest.py) [follow-up 2026-10-10]
+- [ ] Y2 -- #1400 -- basket slot = 10% of current equity, not starting capital [follow-up 2026-10-10]
 
 ## Landed PRs
 
