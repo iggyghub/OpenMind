@@ -602,3 +602,24 @@ def test_test_fn_survives_none_jest_stderr(monkeypatch, tmp_path):
 
     assert passed is True
     assert "jest output" in output
+
+
+def test_issue_fn_decodes_gh_output_as_utf8(monkeypatch):
+    """WATCH W3 (2026-10-11): without encoding="utf-8", subprocess decoded gh's
+    UTF-8 with the Windows codepage, an em-dash in a SEARCH block became 'â€”',
+    the block silently failed to match and was skipped."""
+    import json as _json
+    import subprocess as _sp
+    from cerebral import self_dev_io as io_mod
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        out = _json.dumps({"title": "T", "body": "planner   — Planner"})
+        return _sp.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(io_mod.subprocess, "run", fake_run)
+    text = io_mod.issue_fn(1)
+    assert seen.get("encoding") == "utf-8"
+    assert "—" in text and "â€" not in text

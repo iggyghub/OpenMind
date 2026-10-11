@@ -164,7 +164,7 @@ def git_config_get(repo_root: Path, key: str) -> str:
     """Read a git config value from a repo, or '' if unset/unavailable."""
     result = subprocess.run(
         ["git", "-C", str(repo_root), "config", key],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return result.stdout.strip() if result.returncode == 0 else ""
 
@@ -183,7 +183,7 @@ def clone_fn(repo_url: str, dest: Path) -> None:
     """
     result = subprocess.run(
         ["git", "clone", repo_url, str(dest)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"git clone failed:\n{result.stderr.strip()}")
@@ -194,18 +194,18 @@ def clone_fn(repo_url: str, dest: Path) -> None:
     for key, val in (("user.name", name), ("user.email", email)):
         subprocess.run(
             ["git", "-C", str(dest), "config", key, val],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
         )
 
     origin = subprocess.run(
         ["git", "-C", str(source_root), "remote", "get-url", "origin"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     url = origin.stdout.strip()
     if origin.returncode == 0 and url and not url.startswith(str(source_root)):
         subprocess.run(
             ["git", "-C", str(dest), "remote", "set-url", "origin", url],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
         )
 
 
@@ -214,15 +214,15 @@ def create_branch_and_commit(clone_dir: Path, branch: str, message: str) -> bool
     was actually made (False when the working tree had no changes)."""
     subprocess.run(
         ["git", "-C", str(clone_dir), "checkout", "-b", branch],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     )
     subprocess.run(
         ["git", "-C", str(clone_dir), "add", "-A"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     )
     result = subprocess.run(
         ["git", "-C", str(clone_dir), "commit", "-m", message],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return result.returncode == 0
 
@@ -240,7 +240,7 @@ def _changed_files_in_last_commit(clone_dir: Path) -> "list[str]":
     result = subprocess.run(
         ["git", "-C", str(clone_dir), "diff-tree", "--no-commit-id",
          "--name-only", "-r", "HEAD"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         return []
@@ -267,7 +267,7 @@ def _ensure_tray_node_modules(tray_dir: Path) -> None:
         return
     subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(dest), str(src)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
 
@@ -397,7 +397,7 @@ def pr_fn(
     result = subprocess.run(
         ["gh", "pr", "create", "--head", branch,
          "--title", title, "--body", body],
-        capture_output=True, text=True, cwd=str(clone_dir),
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(clone_dir),
     )
     if result.returncode != 0:
         raise RuntimeError(f"gh pr create failed:\n{result.stderr.strip()}")
@@ -408,7 +408,7 @@ def diff_fn(pr_url: str) -> "list[str]":
     """List changed files in a PR via gh CLI."""
     result = subprocess.run(
         ["gh", "pr", "view", pr_url, "--json", "files", "--jq", ".files[].path"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"gh pr view files failed:\n{result.stderr.strip()}")
@@ -419,7 +419,7 @@ def merge_fn(pr_url: str) -> None:
     """Squash-merge a PR and delete its branch via gh CLI."""
     result = subprocess.run(
         ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"gh pr merge failed:\n{result.stderr.strip()}")
@@ -433,7 +433,7 @@ def pr_state_fn(pr_url: str) -> str:
     """
     result = subprocess.run(
         ["gh", "pr", "view", pr_url, "--json", "state", "--jq", ".state"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"gh pr view state failed:\n{result.stderr.strip()}")
@@ -444,7 +444,7 @@ def pull_fn(repo_root: Path) -> "tuple[bool, str]":
     """git pull --ff-only master in the live repo root."""
     result = subprocess.run(
         ["git", "pull", "origin", "master", "--ff-only"],
-        capture_output=True, text=True, cwd=str(repo_root),
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(repo_root),
     )
     output = (result.stdout + result.stderr).strip()
     if result.returncode != 0:
@@ -461,7 +461,7 @@ def issue_fn(issue_number: int) -> str:
     """
     result = subprocess.run(
         ["gh", "issue", "view", str(issue_number), "--json", "title,body"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(
