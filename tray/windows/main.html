@@ -3810,6 +3810,15 @@
       background: var(--surface); border: 1px solid var(--border);
       border-radius: var(--radius-md); margin-bottom: 12px; padding: 12px 14px;
     }
+    .docs-folder { margin-bottom: 12px; }
+    .docs-folder-summary {
+      cursor: pointer; padding: 8px 10px; font-size: 13px; font-weight: 600;
+      color: var(--accent); border: 1px solid var(--border); border-radius: var(--radius-md);
+      background: var(--surface);
+    }
+    .docs-folder[open] > .docs-folder-summary { margin-bottom: 10px; }
+    .docs-folder > .docs-card { margin-left: 14px; }
+    .docs-folder-count { color: var(--text-muted); font-weight: 400; }
     .docs-card-header { margin-bottom: 8px; }
     .docs-card-name { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
     .docs-card-meta { font-size: 12px; color: var(--text-muted); }
@@ -9078,7 +9087,10 @@
         if (docsSortBar) docsSortBar.style.display = 'none';
         return;
       }
-      docsListEl.innerHTML = _docsPanel.renderList(sortedDocuments());
+      // Keep folders the user opened open across live re-renders.
+      const openFolders = {};
+      docsListEl.querySelectorAll('details.docs-folder[open]').forEach(function (d) { openFolders[d.dataset.folder] = true; });
+      docsListEl.innerHTML = _docsPanel.renderList(sortedDocuments(), openFolders);
       if (docsSortBar) docsSortBar.style.display = 'flex';
     }
 

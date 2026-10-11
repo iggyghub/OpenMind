@@ -67,8 +67,35 @@ async def ingest_items(store, items: list[dict], *, source_type: str, channel: s
         except Exception as exc:  # noqa: BLE001
             logger.error("[%s] extraction failed for %s: %s", source_type, it["url"], exc)
             final = "transcribed"
+        await _save_doc(store, vid, it, source_type=source_type, channel=channel, category=category)
         results.append({"title": it["title"], "stage": final})
     return {"items": len(items), "extracted": len(results), "skipped": skipped, "results": results}
+
+
+_FOLDER_ROOT = {"reddit": "Reddit", "webpage": "Webpages"}
+
+
+def source_doc_text(it: dict, *, idea: "dict | None", category: str) -> str:
+    """The information Felix read, as a readable Markdown document (source cited)."""
+    lines = [f"# {it['title'] or it['url']}", "", f"Source: {it['url']}", f"Collection: {category}"]
+    if idea and idea.get("idea_text"):
+        lines += ["", "## What Felix took from it", "", idea["idea_text"]]
+        if idea.get("cluster_label"):
+            lines.append(f"(cluster: {idea['cluster_label']})")
+    lines += ["", "## What Felix read", "", it["text"]]
+    return "\n".join(lines) + "\n"
+
+
+async def _save_doc(store, vid: int, it: dict, *, source_type: str, channel: str, category: str) -> None:
+    """Mirror the read into the Documents tab, foldered by source (Reddit/r/x, Webpages/host)."""
+    import plugins.documents as _docs  # noqa: PLC0415 -- keep plugin import order free
+
+    try:
+        folder = f"{_FOLDER_ROOT.get(source_type, source_type.title())}/{channel}"
+        text = source_doc_text(it, idea=store.get_idea_for_video(vid), category=category)
+        await _docs.save_source_doc(folder, (it["title"] or it["url"])[:120], text)
+    except Exception as exc:  # noqa: BLE001 -- the knowledge is already stored; a doc failure must not lose it
+        logger.warning("[%s] could not save document for %s: %s", source_type, it["url"], exc)
 
 
 def source_panel(title: str, source_type: str, ingest_widget: dict) -> dict:
