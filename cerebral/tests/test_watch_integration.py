@@ -1,7 +1,11 @@
 """ADR-0005 amendment 2026-10-11: the runtime watch wired through the real
 orchestrator gate, consent surface and chain engine (no network, no tray)."""
+from unittest.mock import AsyncMock
+
 import pytest
 
+from cerebral.llm.chain_engine import ChainEngine
+from cerebral.llm.router import ToolCall
 from cerebral.mcp.orchestrator import MCPOrchestrator, Tool, ToolResult
 from cerebral.security import Decision
 from cerebral.security.watch import Watch
@@ -66,3 +70,36 @@ async def test_first_time_tool_in_a_chain_asks_with_reason():
         d = await orc.check_capabilities("local_read", frozenset({"fs_read"}), None)
     assert d is Decision.DENY
     assert consent.asked[0][0] == "local_read" and "First time" in consent.asked[0][1]
+
+
+async def test_chain_engine_taints_wraps_and_escalates_risky_follow_up():
+    consent = _Consent(Decision.DENY)
+    w = _known_watch()
+    orc = _orc(w, consent)
+    # write_file normally ASKs (fs_write); make it silent so only the watch can stop it.
+    orc._gate._policy[__import__("cerebral.security.gate", fromlist=["Capability"]).Capability.FS_WRITE] = Decision.SILENT
+    planner = AsyncMock()
+    planner.plan.side_effect = [ToolCall(name="read_web", args={}), ToolCall(name="write_file", args={}), "done"]
+    seen = {}
+
+    async def gate(name, args):
+        return await orc.check_capabilities(name, frozenset(), None, args)
+
+    async def execute(name, args):
+        return await orc.call_tool(name, args, capability=__import__("cerebral.mcp.orchestrator", fromlist=["GATE_EXEMPT"]).GATE_EXEMPT)
+
+    async def record(kind, content):
+        if content.get("name") == "read_web" and "result" in content:
+            seen["planner_view"] = content["result"]
+
+    engine = ChainEngine(planner, gate, execute, record, watch=w)
+    out = await engine.run("read the page then save it", orc.tools_for_llm)
+    assert seen["planner_view"].startswith("<<<UNTRUSTED_EXTERNAL_CONTENT source=read_web>>>")
+    assert consent.asked and consent.asked[0][0] == "write_file"
+    assert "outside content" in consent.asked[0][1]
+    assert "permission denied" in out
+    # Next turn starts clean: no taint, so write_file goes through silently.
+    planner.plan.side_effect = [ToolCall(name="write_file", args={}), "ok"]
+    consent.asked.clear()
+    assert await engine.run("save", orc.tools_for_llm) == "ok"
+    assert consent.asked == []
