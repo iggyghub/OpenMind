@@ -152,9 +152,16 @@ test('library pane contains memory, insights, recipes, documents, job-search, vi
   const pane = root.querySelector('.pane[data-route="library"]');
   expect(pane).not.toBeNull();
   // Trading moved out to its own top-level route, #864 follow-up.
-  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github']) {
+  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github', 'reddit', 'webpage']) {
     const el = pane.querySelector(`.lib-sub[data-lib="${sub}"]`);
     expect(el).not.toBeNull();
+  }
+  // Insights/Recipes keep hidden DOM but have no tab button; Reddit/Webpage do.
+  for (const sub of ['insights', 'recipes']) {
+    expect(pane.querySelector(`.lib-tab[data-lib="${sub}"]`)).toBeNull();
+  }
+  for (const sub of ['reddit', 'webpage']) {
+    expect(pane.querySelector(`.lib-tab[data-lib="${sub}"]`)).not.toBeNull();
   }
 });
 
@@ -998,9 +1005,12 @@ test('inline script renders the skills panel via PanelSpec.renderPanel (S5 skill
 
 test('inline script registers built-in library sections as workspace panels', () => {
   expect(inlineScript).toMatch(/_WS_BUILTINS/);
-  for (const id of ['builtin:memory', 'builtin:insights', 'builtin:recipes', 'builtin:job-search']) {
+  for (const id of ['builtin:memory', 'builtin:job-search']) {
     expect(inlineScript).toContain(`'${id}'`);
   }
+  // Insights/Recipes were dropped from the Library (2026-10-11).
+  expect(inlineScript).not.toContain("'builtin:insights'");
+  expect(inlineScript).not.toContain("'builtin:recipes'");
 });
 
 test('borrowed sections are returned home before the slot body is cleared', () => {

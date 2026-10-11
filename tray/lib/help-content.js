@@ -83,7 +83,7 @@
         body: [
           'Conversation: talk to Felix and see each turn, including the tools it called.',
           'Harness: the plugins that give Felix its tools (with their status and switches) and the installed Skills.',
-          'Library: what Felix keeps for you. Sub-tabs cover Memory, Insights, Recipes, Documents, Job search, Videos, Books and GitHub, plus Thinking, which shows what Felix has been doing behind the scenes.',
+          'Library: what Felix keeps for you. Sub-tabs cover Memory, Documents, Job search, Videos, Books, GitHub, Reddit and Webpage, plus Thinking, which shows what Felix has been doing behind the scenes.',
           'Trading: paper trading only. Overview, Strategies, Tickers, Trades and Replay show the strategies, their trades and their backtests.',
           'Log: a running activity record of what Felix did and when.',
           'Help: this guide, and a live list of every tool Felix currently has.',
@@ -158,7 +158,7 @@
           'A recipe is a saved, named sequence of tool calls that you can run again on command.',
           'When the same sequence runs several times, Felix proposes saving it as a recipe. It is saved only if you approve, and running it later re-checks every step\'s permissions: a recipe saves the plan, never a permission.',
           'Proposals (actions, memories, recipes) arrive in one queue that you approve or dismiss.',
-          'Each decision on a proposal that would run a real tool counts as a signal. When the same kind of decision repeats enough times, Felix records an insight about how you like things done. Insights are shown in Library > Insights.'
+          'Each decision on a proposal that would run a real tool counts as a signal. When the same kind of decision repeats enough times, Felix records an insight about how you like things done. Insights and recipes no longer have Library tabs; Felix still uses them.'
         ],
         see_also: ['memory', 'skills']
       },
@@ -249,7 +249,9 @@
         body: [
           '- Give Felix a video URL and it transcribes the audio, reads on-screen text when needed, and stores a summary.',
           '- Books are split by chapter and processed the same way, keeping page or paragraph references.',
-          '- Ideas extracted from videos, books and GitHub repositories are grouped into clusters you can browse in Library > Videos, Books and GitHub.'
+          '- Library > Reddit reads a thread (the post plus its comments) or a subreddit\'s recent posts. Reddit allows about one link per minute without an account.',
+          '- Library > Webpage reads any public page (an article, docs, a blog post) with the menus and ads stripped.',
+          '- Ideas extracted from videos, books, GitHub repositories, Reddit and webpages are grouped into clusters you can browse in the matching Library tab.'
         ],
         see_also: ['memory', 'skills']
       },
