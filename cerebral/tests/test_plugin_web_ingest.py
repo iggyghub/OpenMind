@@ -68,6 +68,27 @@ async def test_webpage_ingest_extracts_clean_text(_wire):
     assert spec["title"] == "Webpage" and any(w.get("label") == "Trading" for w in spec["widgets"])
 
 
+async def test_reddit_link_is_handed_to_reddit_reader():
+    import plugins.reddit_ingest as ri
+
+    async def _no_sleep(_s):
+        return None
+    ri._sleep = _no_sleep
+    ri._CRAWL.update(running=False)
+    urls = []
+    ws.set_fetch_fn(lambda u: urls.append(u) or (
+        '<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>t3_q</id><title>Q</title>'
+        '<link href="https://www.reddit.com/r/AI_Agents/comments/q/x/"/><content type="html"></content></entry></feed>'))
+    try:
+        r = await WebIngestPlugin().call_tool("webpage_ingest", {"url": "https://www.reddit.com/r/AI_Agents/"})
+        page = json.loads(r.content)["pages"][0]
+        assert page["handed_to"] == "reddit_ingest" and page["status"] == "started"
+        assert urls[0] == "https://www.reddit.com/r/AI_Agents/.rss?limit=10"
+        await ri._crawl_task
+    finally:
+        ri._sleep = __import__("asyncio").sleep
+
+
 async def test_webpage_ingest_rejects_empty_shell():
     ws.set_fetch_fn(lambda url: "<html><body><div id=root></div></body></html>")
     r = await WebIngestPlugin().call_tool("webpage_ingest", {"url": "https://spa.example/"})

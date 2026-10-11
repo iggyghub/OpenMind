@@ -8353,7 +8353,7 @@ def _route_extraction_local(local: bool) -> None:
         else:
             logger.warning("[cerebral] drain requested but no local model installed")
     else:
-        _router.seed_extraction_default()  # back to Budd-first
+        _router.seed_extraction_default()  # back to the active model
 
 
 def _wire_plugin_seams() -> None:

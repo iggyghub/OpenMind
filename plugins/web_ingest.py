@@ -195,6 +195,14 @@ class WebIngestPlugin:
         store = _video._get_store()
         out = []
         for url in urls:
+            if _ws.parse_reddit_url(url):
+                # reddit.com blocks plain page GETs and the page is a JS shell --
+                # hand it to the Reddit reader (threads + discussions).
+                from plugins.reddit_ingest import RedditIngestPlugin  # noqa: PLC0415 -- avoids import cycle
+                r = await RedditIngestPlugin().call_tool("reddit_ingest", {"url": url, "category": category})
+                out.append({"url": url, "handed_to": "reddit_ingest", "error": r.content} if r.is_error
+                           else {"url": url, "handed_to": "reddit_ingest", **json.loads(r.content)})
+                continue
             if not url.lower().startswith(("http://", "https://")):
                 out.append({"url": url, "error": "Not an http(s) URL"})
                 continue
