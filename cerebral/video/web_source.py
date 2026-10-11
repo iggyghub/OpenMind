@@ -1,4 +1,4 @@
-"""Acquisition seams for the Webpage and Reddit Library sources.
+﻿"""Acquisition seams for the Webpage and Reddit Library sources.
 
 Same no-API posture as github_source / yt-dlp: plain public GETs, no keys.
 The fetch is injectable (set_fetch_fn) so tests need no network.
@@ -7,14 +7,16 @@ The fetch is injectable (set_fetch_fn) so tests need no network.
   prefer <article>/<main>, return {title, text}.
 - Reddit: a post + its comment thread, not a page. Read through the public
   Atom feeds (``/.rss``) -- unauthenticated ``.json`` returns 403 "Blocked" and
-  old.reddit redirects to the JS app (verified 2026-10-11). A thread URL is ONE
-  request (post + up to ~50 comments, flat, no scores); a subreddit URL is ONE
-  request for its newest posts (bodies only, no comments). Unauthenticated
-  Reddit allows ~1 request/minute, hence never fanning out per-thread.
+  old.reddit redirects to the JS app (verified 2026-10-11). A thread is ONE
+  request (post + up to 100 comments, flat, no scores). A subreddit or a
+  keyword search is one listing request, then one request per thread.
+  Unauthenticated Reddit allows ~1 request/minute, so the caller paces
+  (plugins/reddit_ingest.py crawls in the background).
 """
 from __future__ import annotations
 
 import re
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Callable
@@ -22,8 +24,7 @@ from typing import Callable
 _UA = "windows:openmind.felix:v1.0 (personal reader)"
 
 MAX_THREAD_CHARS = 20000
-THREAD_COMMENTS = 50
-SUBREDDIT_POSTS = 15
+THREAD_COMMENTS = 100  # RSS max
 
 
 def _prod_fetch(url: str) -> str:
@@ -40,7 +41,7 @@ def set_fetch_fn(fn: "Callable[[str], str] | None") -> None:
     _fetch_fn = fn or _prod_fetch
 
 
-# ── Webpage ──────────────────────────────────────────────────────────────────
+# â”€â”€ Webpage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _BLOCKS = ["p", "div", "li", "br", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote"]
 
@@ -73,7 +74,7 @@ def fetch_webpage(url: str) -> dict:
     return page_to_text(_fetch_fn(url))
 
 
-# ── Reddit ───────────────────────────────────────────────────────────────────
+# â”€â”€ Reddit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _REDDIT = re.compile(r"^https?://(?:[a-z0-9-]+\.)?reddit\.com/r/(?P<sub>[^/?#]+)(?P<rest>/[^?#]*)?", re.I)
 _NS = {"a": "http://www.w3.org/2005/Atom"}
@@ -123,19 +124,44 @@ def thread_from_feed(xml: str, sub: str) -> dict:
     return {"url": post["link"], "title": post["title"], "text": "\n\n".join(parts)[:MAX_THREAD_CHARS]}
 
 
-def fetch_reddit(url: str) -> list[dict]:
-    """A thread -> [item]; a subreddit -> one item per recent post. Raises ValueError for non-Reddit."""
-    parsed = parse_reddit_url(url)
-    if parsed is None:
-        raise ValueError("Not a Reddit URL (expected reddit.com/r/<sub> or a /comments/ thread link)")
-    if parsed["kind"] == "thread":
-        return [thread_from_feed(_fetch_fn(parsed["url"] + "/.rss?limit=" + str(THREAD_COMMENTS)), parsed["sub"])]
-    items = []
-    for e in _entries(_fetch_fn(parsed["url"] + "/.rss?limit=" + str(SUBREDDIT_POSTS))):
-        if e["id"].startswith("t3_") and e["link"]:
-            items.append({
-                "url": e["link"],
-                "title": e["title"],
-                "text": (f"r/{parsed['sub']} -- {e['title']}\n\n{e['text']}")[:MAX_THREAD_CHARS],
-            })
-    return items
+def reddit_target(text: str) -> "dict | None":
+    """What the Reddit field holds: a thread link, a subreddit link, or a search.
+
+    Search = plain keywords, optionally prefixed with ``r/<sub>`` to stay in one
+    subreddit (``r/algotrading breadth thrust``). Returns None for a non-Reddit URL.
+    """
+    text = (text or "").strip()
+    if re.match(r"^https?://", text, re.I):
+        return parse_reddit_url(text)
+    m = re.match(r"^/?r/([A-Za-z0-9_]+)\s*(.*)$", text)
+    sub, query = (m.group(1), m.group(2).strip()) if m else (None, text)
+    if sub and not query:
+        return {"kind": "subreddit", "sub": sub, "url": f"https://www.reddit.com/r/{sub}"}
+    if not query:
+        return None
+    return {"kind": "search", "sub": sub, "query": query}
+
+
+def listing_url(target: dict, limit: int) -> str:
+    """The ONE feed request that lists a subreddit's or a search's threads."""
+    if target["kind"] == "subreddit":
+        return f"{target['url']}/.rss?limit={limit}"
+    q = urllib.parse.quote_plus(target["query"])
+    if target["sub"]:
+        return (f"https://www.reddit.com/r/{target['sub']}/search.rss"
+                f"?q={q}&restrict_sr=1&sort=relevance&t=all&limit={limit}")
+    return f"https://www.reddit.com/search.rss?q={q}&sort=relevance&t=all&limit={limit}"
+
+
+def threads_in_listing(xml: str) -> list[dict]:
+    """[{url, title, sub}] for every post (t3_) in a subreddit/search feed."""
+    out = []
+    for e in _entries(xml):
+        parsed = parse_reddit_url(e["link"]) if e["id"].startswith("t3_") else None
+        if parsed and parsed["kind"] == "thread":
+            out.append({"url": parsed["url"], "title": e["title"], "sub": parsed["sub"]})
+    return out
+
+
+def thread_feed_url(thread_url: str) -> str:
+    return thread_url.rstrip("/") + "/.rss?limit=" + str(THREAD_COMMENTS)
