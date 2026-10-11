@@ -1646,6 +1646,32 @@ _consent_surface = ConsentSurface(
 _orc.set_consent_surface(_consent_surface)
 
 
+# Runtime watch (ADR-0005 amendment 2026-10-11, cerebral/security/watch.py):
+# inside a planner chain, a normally-silent call asks first when it follows
+# outside content (taint) or is unusual (first-ever use / >10x daily volume).
+# Baseline = the last 30 days of tool_call turns in the Activity Log.
+from cerebral.security.watch import Watch as _Watch  # noqa: E402
+
+_watch = _Watch()
+_orc.set_watch(_watch)
+
+
+def _seed_watch_baseline(profile_id: int) -> None:
+    from datetime import datetime, timedelta, timezone  # ts column is UTC CURRENT_TIMESTAMP
+    since =(datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        turns = _conversation.list_activity(profile_id, kinds=[KIND_TOOL_CALL], since=since, limit=100000)
+        _watch.load_baseline([((t.content or {}).get("name", ""), t.ts) for t in turns])
+        logger.info("[watch] baseline: %d tool calls over 30 days", len(turns))
+    except Exception:  # noqa: BLE001 -- an empty baseline only means more first-time asks
+        logger.warning("[watch] baseline load failed; starting empty", exc_info=True)
+
+
+if _active_profile is not None:
+    # ponytail: seeded once at boot for the boot profile; re-seed on profile switch if multi-profile use grows
+    _seed_watch_baseline(_active_profile.id)
+
+
 # ── Irreversible-flag modal surface (Issue #49) ──────────────────────────────
 #
 # When a call sets `flags.irreversible=True` AND the gate/ACL didn't
@@ -7767,6 +7793,7 @@ async def _process_command(
         gate_fn=_gate_tool,
         execute_fn=_execute,
         record_fn=_record_turn,
+        watch=_watch,
     )
 
     try:
