@@ -145,7 +145,9 @@ def reddit_target(text: str) -> "dict | None":
 def listing_url(target: dict, limit: int) -> str:
     """The ONE feed request that lists a subreddit's or a search's threads."""
     if target["kind"] == "subreddit":
-        return f"{target['url']}/.rss?limit={limit}"
+        # Top of all time: the community's most-upvoted (most durable) knowledge,
+        # not whatever happens to be on the front page today.
+        return f"{target['url']}/top/.rss?t=all&limit={limit}"
     q = urllib.parse.quote_plus(target["query"])
     if target["sub"]:
         return (f"https://www.reddit.com/r/{target['sub']}/search.rss"

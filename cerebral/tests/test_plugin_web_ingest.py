@@ -83,7 +83,7 @@ async def test_reddit_link_is_handed_to_reddit_reader():
         r = await WebIngestPlugin().call_tool("webpage_ingest", {"url": "https://www.reddit.com/r/AI_Agents/"})
         page = json.loads(r.content)["pages"][0]
         assert page["handed_to"] == "reddit_ingest" and page["status"] == "started"
-        assert urls[0] == "https://www.reddit.com/r/AI_Agents/.rss?limit=10"
+        assert urls[0] == "https://www.reddit.com/r/AI_Agents/top/.rss?t=all&limit=10"
         await ri._crawl_task
     finally:
         ri._sleep = __import__("asyncio").sleep

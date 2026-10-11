@@ -249,7 +249,7 @@
         body: [
           '- Give Felix a video URL and it transcribes the audio, reads on-screen text when needed, and stores a summary.',
           '- Books are split by chapter and processed the same way, keeping page or paragraph references.',
-          '- Library > Reddit reads discussions: paste a thread link, a subreddit (r/name), or search words (optionally r/name first). For a subreddit or search, Felix opens each thread and reads its comments too, in the background at about one thread per minute (Reddit\'s limit without an account); progress and a Stop button show in the tab.',
+          '- Library > Reddit reads discussions: paste a thread link, a subreddit (r/name), or search words (optionally r/name first). A subreddit reads its top threads of all time; a search reads the best matches. Either way Felix opens each thread and reads its comments too, in the background at about one thread per minute (Reddit\'s limit without an account); progress and a Stop button show in the tab.',
           '- Library > Webpage reads any public page (an article, docs, a blog post) with the menus and ads stripped.',
           '- Ideas extracted from videos, books, GitHub repositories, Reddit and webpages are grouped into clusters you can browse in the matching Library tab.'
         ],
