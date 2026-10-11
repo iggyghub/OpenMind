@@ -116,7 +116,7 @@ async def test_search_crawls_every_thread_discussion(_wire):
     assert body["status"] == "started" and body["threads"] == 2
     assert "search.rss?q=breadth+thrust&restrict_sr=1" in urls[0]
     assert ri.RedditIngestPlugin().panel_spec()["widgets"][1]["items"][0]["title"].startswith("Reading search")
-    await ri._crawl_task
+    await ri._shared["reddit.crawl_task"]
     assert any("Comment on A." in t for t in _seen) and any("Comment on B." in t for t in _seen)
     assert ri._CRAWL["done"] == 2 and not ri._CRAWL["running"]
     # second crawl: both threads already read -> nothing new, no thread requests
@@ -150,7 +150,7 @@ async def test_stop_cancels_crawl():
     await asyncio.sleep(0)
     await RedditIngestPlugin().call_tool("reddit_stop", {})
     with pytest.raises(asyncio.CancelledError):
-        await ri._crawl_task
+        await ri._shared["reddit.crawl_task"]
     assert not ri._CRAWL["running"]
 
 

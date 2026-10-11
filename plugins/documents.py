@@ -27,6 +27,7 @@ from pathlib import Path
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.paths import data_dir
+from cerebral.plugin_shared import state as _shared
 
 logger = logging.getLogger(__name__)
 
@@ -283,23 +284,30 @@ _broadcast_fn = None
 def set_store(store: DocumentStore) -> None:
     global _store
     _store = store
+    _shared["documents.store"] = store
 
 
 def set_active_profile_id(pid: "int | None") -> None:
     global _active_profile_id
     _active_profile_id = pid
+    _shared["documents.profile_id"] = pid
 
 
 async def save_source_doc(folder: str, name: str, text: str) -> "dict | None":
     """Save a source read (Reddit thread, webpage) into the Documents library.
 
-    No-op (None) until main.py wires the store + active profile (tests, bare process).
+    Callers reach this via ``import plugins.documents`` -- a different module
+    copy than the one main.py wires (#153) -- so it reads the seams from
+    cerebral.plugin_shared. No-op (None) until wired (tests, bare process).
     """
-    if _store is None or _active_profile_id is None:
+    store = _shared.get("documents.store")
+    pid = _shared.get("documents.profile_id")
+    if store is None or pid is None:
         return None
-    doc = _store.save_text(_active_profile_id, folder, name, text)
-    if _broadcast_fn:
-        await _broadcast_fn()
+    doc = store.save_text(pid, folder, name, text)
+    broadcast = _shared.get("documents.broadcast_fn")
+    if broadcast:
+        await broadcast()
     return doc
 
 
@@ -311,6 +319,7 @@ def set_converter_fn(fn) -> None:
 def set_broadcast_fn(fn) -> None:
     global _broadcast_fn
     _broadcast_fn = fn
+    _shared["documents.broadcast_fn"] = fn
 
 
 # ── S5: Felix editing via headless UNO ───────────────────────────────────────
