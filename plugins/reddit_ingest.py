@@ -26,7 +26,7 @@ import urllib.error
 import plugins.video as _video
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.video import web_source as _ws
-from plugins.web_ingest import ingest_items, source_panel
+from plugins.web_ingest import ingest_items, source_panel, url_and_category
 
 logger = logging.getLogger(__name__)
 
@@ -140,9 +140,9 @@ class RedditIngestPlugin:
             "tool": "reddit_ingest",
             "tool_args": {},
             "input_arg": "url",
-            "input_placeholder": "thread link, r/<sub>, or keywords (r/<sub> keywords)",
+            "input_placeholder": "Link, r/<sub>, or search words",
             "input_arg2": "category",
-            "input_placeholder2": "collection (blank = Uncategorised)",
+            "input_placeholder2": "Collection name (optional)",
         })
         if _CRAWL["running"]:
             spec["widgets"].insert(1, {"type": "list", "items": [{
@@ -158,8 +158,7 @@ class RedditIngestPlugin:
 
     async def _reddit_ingest(self, args: dict) -> ToolResult:
         global _crawl_task
-        raw = (args.get("url") or "").strip()
-        category = (args.get("category") or "").strip() or "Uncategorised"
+        raw, category = url_and_category(args)
         limit = max(1, min(MAX_THREADS, int(args.get("limit") or DEFAULT_THREADS)))
         target = _ws.reddit_target(raw)
         if target is None:
