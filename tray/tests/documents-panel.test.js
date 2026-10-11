@@ -217,3 +217,29 @@ test('FORMAT_OPTIONS contains pdf, docx, txt, rtf', () => {
   expect(DocumentsPanel.FORMAT_OPTIONS).toContain('txt');
   expect(DocumentsPanel.FORMAT_OPTIONS).toContain('rtf');
 });
+
+// ── folders (2026-10-11: source reads saved into Reddit/..., Webpages/...) ──
+
+describe('renderList folders', () => {
+  const docs = [
+    makeDoc({ id: 1, name: 'Loose doc' }),
+    makeDoc({ id: 2, name: 'Thread B', folder: 'Reddit/r/AI_Agents' }),
+    makeDoc({ id: 3, name: 'Wiki page', folder: 'Webpages/en.wikipedia.org' }),
+    makeDoc({ id: 4, name: 'Thread A', folder: 'Reddit/r/AI_Agents' }),
+  ];
+
+  test('top-level docs first, then folders A-Z, caller order kept inside', () => {
+    const html = DocumentsPanel.renderList(docs);
+    const order = ['Loose doc', 'Reddit › r/AI_Agents', 'Thread B', 'Thread A', 'Webpages › en.wikipedia.org']
+      .map((s) => html.indexOf(s));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(html).toContain('(2)');
+  });
+
+  test('folders are collapsed unless listed open', () => {
+    expect(DocumentsPanel.renderList(docs)).not.toContain(' open>');
+    expect(DocumentsPanel.renderList(docs, { 'Reddit/r/AI_Agents': true }))
+      .toContain('data-folder="Reddit/r/AI_Agents" open>');
+  });
+});

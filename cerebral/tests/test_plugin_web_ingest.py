@@ -89,6 +89,29 @@ async def test_reddit_link_is_handed_to_reddit_reader():
         ri._sleep = __import__("asyncio").sleep
 
 
+async def test_read_page_is_saved_as_foldered_document(tmp_path):
+    import plugins.documents as docs
+
+    store = docs.DocumentStore(db_path=tmp_path / "d.db", store_root=tmp_path / "lib")
+    docs.set_store(store)
+    docs.set_active_profile_id(7)
+    try:
+        ws.set_fetch_fn(lambda url: PAGE)
+        await WebIngestPlugin().call_tool("webpage_ingest", {"url": "https://example.com/a", "category": "trading"})
+        [d] = store.list_docs(7)
+        assert d["folder"] == "Webpages/example.com" and d["name"] == "Momentum" and d["kind"] == "md"
+        body = Path(d["path"]).read_text(encoding="utf-8")
+        assert "Source: https://example.com/a" in body
+        assert "## What Felix took from it" in body and "trend idea" in body
+        assert "## What Felix read" in body and "Para 3 about trend following" in body
+        # same folder + name overwrites instead of duplicating
+        store.save_text(7, "Webpages/example.com", "Momentum", "v2")
+        assert len(store.list_docs(7)) == 1 and Path(d["path"]).read_text(encoding="utf-8") == "v2"
+    finally:
+        docs.set_store(None)
+        docs.set_active_profile_id(None)
+
+
 async def test_webpage_ingest_rejects_empty_shell():
     ws.set_fetch_fn(lambda url: "<html><body><div id=root></div></body></html>")
     r = await WebIngestPlugin().call_tool("webpage_ingest", {"url": "https://spa.example/"})
