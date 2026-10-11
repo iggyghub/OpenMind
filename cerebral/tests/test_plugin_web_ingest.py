@@ -84,7 +84,7 @@ async def test_reddit_link_is_handed_to_reddit_reader():
         page = json.loads(r.content)["pages"][0]
         assert page["handed_to"] == "reddit_ingest" and page["status"] == "started"
         assert urls[0] == "https://www.reddit.com/r/AI_Agents/top/.rss?t=all&limit=10"
-        await ri._crawl_task
+        await ri._shared["reddit.crawl_task"]
     finally:
         ri._sleep = __import__("asyncio").sleep
 
@@ -110,6 +110,42 @@ async def test_read_page_is_saved_as_foldered_document(tmp_path):
     finally:
         docs.set_store(None)
         docs.set_active_profile_id(None)
+
+
+def _orchestrator_copy(stem):
+    """Load plugins/<stem>.py the way MCPOrchestrator does -- a SECOND module (#153)."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / "plugins" / f"{stem}.py"
+    spec = importlib.util.spec_from_file_location(f"openmind_plugin_{stem}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+async def test_seams_wired_on_orchestrator_copy_reach_canonical_import(tmp_path):
+    """Live bug 2026-10-11: main.py wires openmind_plugin_documents, web_ingest
+    calls plugins.documents -- saves silently no-op'd. Same for the Reddit crawl
+    started via the Webpage tab vs. the Reddit tab's panel."""
+    import plugins.documents as canonical_docs
+    import plugins.reddit_ingest as canonical_ri
+
+    orc_docs = _orchestrator_copy("documents")
+    assert orc_docs is not canonical_docs
+    store = canonical_docs.DocumentStore(db_path=tmp_path / "d.db", store_root=tmp_path / "lib")
+    orc_docs.set_store(store)
+    orc_docs.set_active_profile_id(3)
+    try:
+        assert (await canonical_docs.save_source_doc("Reddit/r/x", "T", "body"))["folder"] == "Reddit/r/x"
+    finally:
+        orc_docs.set_store(None)
+        orc_docs.set_active_profile_id(None)
+
+    orc_ri = _orchestrator_copy("reddit_ingest")
+    canonical_ri._CRAWL.update(running=True, label="r/x", done=1, total=5, current="t")
+    try:
+        assert orc_ri.RedditIngestPlugin().panel_spec()["widgets"][1]["items"][0]["title"].startswith("Reading r/x: 1 / 5")
+    finally:
+        canonical_ri._CRAWL.update(running=False)
 
 
 def test_link_typed_into_collection_box_is_used_as_link():

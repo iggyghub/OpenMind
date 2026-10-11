@@ -25,6 +25,7 @@ import urllib.error
 
 import plugins.video as _video
 from cerebral.mcp.orchestrator import Tool, ToolResult
+from cerebral.plugin_shared import state as _shared
 from cerebral.video import web_source as _ws
 from plugins.web_ingest import ingest_items, source_panel, url_and_category
 
@@ -40,8 +41,11 @@ DEFAULT_THREADS = 10
 MAX_THREADS = 25
 
 _sleep = asyncio.sleep    # tests swap in a no-op
-_crawl_task: "asyncio.Task | None" = None
-_CRAWL: dict = {"running": False, "label": "", "done": 0, "total": 0, "current": "", "errors": 0}
+# Crawl state + task live in cerebral.plugin_shared: the Webpage tab hands Reddit
+# links over via `import plugins.reddit_ingest`, a different module copy than the
+# orchestrator's (#153); both must see the same running crawl.
+_CRAWL: dict = _shared.setdefault(
+    "reddit.crawl", {"running": False, "label": "", "done": 0, "total": 0, "current": "", "errors": 0})
 
 
 async def _fetch(url: str) -> str:
@@ -127,8 +131,9 @@ class RedditIngestPlugin:
         if tool_name == "reddit_ingest":
             return await self._reddit_ingest(args)
         if tool_name == "reddit_stop":
-            if _crawl_task is not None and not _crawl_task.done():
-                _crawl_task.cancel()
+            task = _shared.get("reddit.crawl_task")
+            if task is not None and not task.done():
+                task.cancel()
             return ToolResult(content=json.dumps({"status": "stopped", **_CRAWL}))
         return ToolResult(content=f"Unknown tool: {tool_name}", is_error=True)
 
@@ -157,7 +162,6 @@ class RedditIngestPlugin:
         return spec
 
     async def _reddit_ingest(self, args: dict) -> ToolResult:
-        global _crawl_task
         raw, category = url_and_category(args)
         limit = max(1, min(MAX_THREADS, int(args.get("limit") or DEFAULT_THREADS)))
         target = _ws.reddit_target(raw)
@@ -194,7 +198,7 @@ class RedditIngestPlugin:
             return ToolResult(content=json.dumps({
                 "status": "nothing_new", "label": label, "found": len(listing)}))
         _CRAWL.update(running=True, label=label, done=0, total=len(fresh), current="", errors=0)
-        _crawl_task = asyncio.create_task(_crawl(fresh, category))
+        _shared["reddit.crawl_task"] = asyncio.create_task(_crawl(fresh, category))
         return ToolResult(content=json.dumps({
             "status": "started", "label": label, "threads": len(fresh),
             "already_read": len(listing[:limit]) - len(fresh), "collection": category,
