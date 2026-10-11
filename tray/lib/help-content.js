@@ -267,6 +267,8 @@
           '- When asked, you can allow once, for the session, or permanently.',
           '- Actions that cannot be undone, such as sending, submitting, or deleting, always show a confirmation pop-up, even if you granted the class permanently.',
           '- Requests that come from things Felix overheard, rather than from you waking it, are one step stricter: silent becomes ask, ask becomes deny.',
+          '- Felix also watches what it does while working on your request. After it reads outside content in a turn (a webpage, Reddit, an email, search results), anything that could change or send something asks you first, even if it is normally silent. The same goes for unusual behaviour: the first time Felix ever uses a tool, or using one more than 10 times its normal daily amount (learned from the last 30 days). The card says why it is asking. Background jobs are never paused this way.',
+          '- Text from outside is labelled as untrusted when Felix reads it, so Felix treats it as information, not as instructions.',
           '- Shell commands always run inside a Windows sandbox. They can only touch one sandbox folder, have no network access, run in a clean environment with no API keys, and are capped at 1 GB of memory and 120 seconds.',
           '- Change these settings in Settings > Permissions.'
         ],
