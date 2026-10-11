@@ -796,11 +796,12 @@ class VideoStore:
             for row in rows
         ]
 
-    def list_recent_videos(self, limit: int = 8) -> list[dict]:
+    def list_recent_videos(self, limit: int = 8, source_type: "str | None" = None) -> list[dict]:
         """Return the most-recently-processed videos (newest first), with idea text.
 
         S11 #659: excludes the enumerated/failed clutter so the Videos tab shows a
         compact 'recently watched' list instead of per-cluster video walls.
+        ``source_type`` scopes it to one source (e.g. 'reddit', 'webpage').
         """
         with self._conn() as con:
             rows = con.execute(
@@ -809,10 +810,11 @@ class VideoStore:
                 FROM videos v
                 LEFT JOIN video_ideas vi ON vi.video_id = v.id
                 WHERE v.stage NOT IN ('enumerated', 'failed')
+                  AND (? IS NULL OR v.source_type = ?)
                 ORDER BY v.id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (source_type, source_type, limit),
             ).fetchall()
         return [
             {

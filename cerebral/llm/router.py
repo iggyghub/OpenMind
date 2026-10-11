@@ -175,9 +175,8 @@ QUALITY_PREFERRED = ("ollama/qwen3:8b", "claude/sonnet")
 VIDEO_TASK = "video"
 VIDEO_PREFERRED = ("ollama/qwen3:8b", "ollama/qwen2.5:7b")
 
-# Idea extraction + validity verdict route to Budd first, then local LLMs.
+# Idea extraction + validity verdict follow the active model (seed_extraction_default).
 EXTRACTION_TASK = "extraction"
-EXTRACTION_PREFERRED = ("custom/budd", "ollama/qwen3:8b", "ollama/qwen2.5:7b")
 
 # Cloud entries are constants; local entries are discovered at runtime.
 CLOUD_MODELS = {
@@ -550,9 +549,16 @@ class ModelRouter:
         """
         return self._seed_task_default(VIDEO_TASK, VIDEO_PREFERRED)
 
-    def seed_extraction_default(self) -> str | None:
-        """Seed the "extraction" task to Budd first, then local fallbacks."""
-        return self._seed_task_default(EXTRACTION_TASK, EXTRACTION_PREFERRED)
+    def seed_extraction_default(self) -> None:
+        """Unpin "extraction" so it follows the active (main) model.
+
+        2026-10-11: the old Budd-first list named "custom/budd", which no longer
+        exists, so every extraction silently pinned to local qwen and burned a
+        ~3 min timeout per call while the desktop owned the GPU. A user pin saved
+        in Settings is restored after this and still wins.
+        """
+        self.set_task_model(EXTRACTION_TASK, None)
+        return None
 
     def set_local_only(self, enabled: bool) -> None:
         """Cloud kill-switch (privacy). When on, cloud backends are hidden from

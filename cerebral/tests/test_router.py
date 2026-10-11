@@ -364,23 +364,15 @@ def test_seed_video_default_is_local_only_no_cloud():
     assert router.get_task_model("video") == "custom/budd"  # active fallback
 
 
-def test_seed_extraction_default_prefers_budd():
+def test_seed_extraction_default_follows_active_model():
     router = ModelRouter(backends={
-        "ollama/qwen2.5:7b": AsyncMock(),
-        "ollama/qwen3:8b": AsyncMock(),
-        "custom/budd": AsyncMock(),
-    })
-    assert router.seed_extraction_default() == "custom/budd"
-    assert router.get_task_model("extraction") == "custom/budd"
-
-
-def test_seed_extraction_default_falls_back_to_local_ollama():
-    router = ModelRouter(backends={
-        "ollama/qwen2.5:7b": AsyncMock(),
+        "custom/budd-quick": AsyncMock(),
         "ollama/qwen3:8b": AsyncMock(),
     })
-    assert router.seed_extraction_default() == "ollama/qwen3:8b"
-    assert router.get_task_model("extraction") == "ollama/qwen3:8b"
+    router.set_task_model("extraction", "ollama/qwen3:8b")  # e.g. a drain pin
+    assert router.seed_extraction_default() is None
+    assert "extraction" not in router.task_models()
+    assert router.get_task_model("extraction") == router.active_model
 
 
 # ---------------------------------------------------------------------------

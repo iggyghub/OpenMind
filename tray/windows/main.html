@@ -6357,13 +6357,13 @@
     <section class="pane" data-route="library" hidden>
       <div class="lib-tabs tab-strip" id="lib-tabs" data-tab-selector=".lib-tab">
         <button class="lib-tab is-active" data-lib="memory" type="button">Memory</button>
-        <button class="lib-tab" data-lib="insights" type="button">Insights</button>
-        <button class="lib-tab" data-lib="recipes" type="button">Recipes</button>
         <button class="lib-tab" data-lib="documents" type="button">Documents</button>
         <button class="lib-tab" data-lib="job-search" type="button">Job Search</button>
         <button class="lib-tab" data-lib="videos" type="button">Videos</button>
         <button class="lib-tab" data-lib="books" type="button">Books</button>
         <button class="lib-tab" data-lib="github" type="button">GitHub</button>
+        <button class="lib-tab" data-lib="reddit" type="button">Reddit</button>
+        <button class="lib-tab" data-lib="webpage" type="button">Webpage</button>
       </div>
 
       <div class="lib-sub is-active" data-lib="memory">
@@ -6384,6 +6384,10 @@
         </div>
       </div>
 
+      <!-- ponytail: Insights + Recipes tab buttons removed 2026-10-11 (user asked);
+           their lib-subs stay as hidden DOM because the inline script still
+           wires list/sort handlers to these ids. Delete both together if the
+           features are ever retired from the backend. -->
       <div class="lib-sub" data-lib="insights">
         <div class="lib-sort-bar" id="insights-sort-bar">
           <label>Sort
@@ -6582,6 +6586,19 @@
       <div class="lib-sub" data-lib="github">
         <div class="vid-body" id="github-panel-body">
           <div class="ps-empty">Loading GitHub panel...</div>
+        </div>
+      </div>
+
+      <!-- Reddit + Webpage sources (plugins/reddit_ingest.py, plugins/web_ingest.py) --
+           same declarative panel_spec pipeline as GitHub, via renderSourcePanel. -->
+      <div class="lib-sub" data-lib="reddit">
+        <div class="vid-body" id="reddit-panel-body">
+          <div class="ps-empty">Loading Reddit panel...</div>
+        </div>
+      </div>
+      <div class="lib-sub" data-lib="webpage">
+        <div class="vid-body" id="webpage-panel-body">
+          <div class="ps-empty">Loading Webpage panel...</div>
         </div>
       </div>
 
@@ -7678,6 +7695,9 @@
           }
           if (event.data && event.data.plugin_name === 'book_ingest') {
             renderBooksPanel(event.data.spec);
+          }
+          if (event.data && _SOURCE_TABS_BY_PLUGIN[event.data.plugin_name]) {
+            renderSourcePanel(_SOURCE_TABS_BY_PLUGIN[event.data.plugin_name], event.data.spec);
           }
           break;
         case 'recipe_run_result':
@@ -11241,6 +11261,49 @@
       if (_githubPollTimer) { clearInterval(_githubPollTimer); _githubPollTimer = null; }
     }
 
+    // ── Reddit / Webpage sub-tabs ───────────────────────────────────────────
+    // One generic renderer + poll for both (same pipeline as GitHub above).
+    const _SOURCE_TABS = {
+      reddit:  { plugin: 'reddit_ingest', bodyId: 'reddit-panel-body',  lastJson: null },
+      webpage: { plugin: 'web_ingest',    bodyId: 'webpage-panel-body', lastJson: null },
+    };
+    const _SOURCE_TABS_BY_PLUGIN = {};
+    Object.keys(_SOURCE_TABS).forEach(function (k) { _SOURCE_TABS_BY_PLUGIN[_SOURCE_TABS[k].plugin] = _SOURCE_TABS[k]; });
+    function renderSourcePanel(tab, spec) {
+      const el = document.getElementById(tab.bodyId);
+      if (!el || typeof window.PanelSpec === 'undefined') return;
+      const json = JSON.stringify(spec);
+      if (json === tab.lastJson) return;
+      tab.lastJson = json;
+      const key = function (d) {
+        const s = d.querySelector('.ps-group-summary');
+        return ((s && s.firstChild && s.firstChild.textContent) || '').trim();
+      };
+      const openState = {};
+      el.querySelectorAll('.ps-group').forEach(function (d) { const k = key(d); if (k) openState[k] = d.open; });
+      el.innerHTML = window.PanelSpec.renderPanel(spec);
+      el.querySelectorAll('.ps-group').forEach(function (d) { const k = key(d); if (k && (k in openState)) d.open = openState[k]; });
+      if (window.ActionWidget) {
+        window.ActionWidget.initActionWidgets(el, sendEvent);
+        window.ActionWidget.initMoveWidgets(el, sendEvent);
+      }
+    }
+    let _sourcePollTimer = null;
+    function startSourcePoll(tab) {
+      stopSourcePoll();
+      const el = document.getElementById(tab.bodyId);
+      const ask = function () { sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: tab.plugin } }); };
+      ask();
+      _sourcePollTimer = setInterval(function () {
+        const a = document.activeElement;
+        if (a && el && el.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return;
+        ask();
+      }, 4000);
+    }
+    function stopSourcePoll() {
+      if (_sourcePollTimer) { clearInterval(_sourcePollTimer); _sourcePollTimer = null; }
+    }
+
     // ── Books sub-tab ────────────────────────────────────────────────────────
     // Same declarative panel_spec pipeline as Videos/GitHub; the book_ingest
     // plugin's panel_spec shares the cluster/group/move widgets and the shared
@@ -12776,6 +12839,7 @@
       } else {
         stopBooksPoll();
       }
+      if (_SOURCE_TABS[target]) { startSourcePoll(_SOURCE_TABS[target]); } else { stopSourcePoll(); }
     }
 
     // S29 (#892), decision #51 -- Trading pane sub-tab activation
@@ -13163,8 +13227,6 @@
     // plugin specs only).
     const _WS_BUILTINS = [
       { id: 'builtin:memory',     lib: 'memory',     title: 'Memory',     refresh: 'list_memories' },
-      { id: 'builtin:insights',   lib: 'insights',   title: 'Insights',   refresh: 'list_insights' },
-      { id: 'builtin:recipes',    lib: 'recipes',    title: 'Recipes',    refresh: 'list_recipes' },
       { id: 'builtin:job-search', lib: 'job-search', title: 'Job Search', refresh: 'list_job_postings' },
       // #816/#824 -- live-WS-fed (conversation_turn_emitted), no fetch needed.
       { id: 'builtin:thinking',   lib: 'thinking',   title: 'Thinking',   refresh: null },
