@@ -8,7 +8,7 @@ The fetch is injectable (set_fetch_fn) so tests need no network.
 - Reddit: a post + its comment thread, not a page. Read through the public
   Atom feeds (``/.rss``) -- unauthenticated ``.json`` returns 403 "Blocked" and
   old.reddit redirects to the JS app (verified 2026-10-11). A thread is ONE
-  request (post + up to 100 comments, flat, no scores). A subreddit or a
+  request (post + its top 25 comments, flat, no scores). A subreddit or a
   keyword search is one listing request, then one request per thread.
   Unauthenticated Reddit allows ~1 request/minute, so the caller paces
   (plugins/reddit_ingest.py crawls in the background).
@@ -23,8 +23,10 @@ from typing import Callable
 
 _UA = "windows:openmind.felix:v1.0 (personal reader)"
 
-MAX_THREAD_CHARS = 20000
-THREAD_COMMENTS = 100  # RSS max
+MAX_THREAD_CHARS = 60000  # safety cap; post + top comments is ~15k, Budd has ~64k tokens
+# Top-voted comments only -- deeper threads are mostly jokes and side-chatter
+# (user call 2026-10-11 after the first r/AI_Agents read).
+THREAD_COMMENTS = 25
 
 
 def _prod_fetch(url: str) -> str:
@@ -166,4 +168,4 @@ def threads_in_listing(xml: str) -> list[dict]:
 
 
 def thread_feed_url(thread_url: str) -> str:
-    return thread_url.rstrip("/") + "/.rss?limit=" + str(THREAD_COMMENTS)
+    return thread_url.rstrip("/") + f"/.rss?limit={THREAD_COMMENTS}&sort=top"

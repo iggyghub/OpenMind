@@ -101,7 +101,7 @@ async def test_thread_link_reads_discussion_now(_wire):
     r = await RedditIngestPlugin().call_tool(
         "reddit_ingest", {"url": "https://www.reddit.com/r/algotrading/comments/aaa/x/"})
     assert not r.is_error, r.content
-    assert urls == ["https://www.reddit.com/r/algotrading/comments/aaa/x/.rss?limit=100"]
+    assert urls == ["https://www.reddit.com/r/algotrading/comments/aaa/x/.rss?limit=25&sort=top"]
     assert "Post body." in _seen[0] and "/u/a: Comment on A." in _seen[0]
     row = _wire.get_by_url("https://www.reddit.com/r/algotrading/comments/aaa/x")
     assert row.source_type == "reddit" and row.channel == "r/algotrading"
