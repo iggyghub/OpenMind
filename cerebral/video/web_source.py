@@ -1,4 +1,4 @@
-﻿"""Acquisition seams for the Webpage and Reddit Library sources.
+"""Acquisition seams for the Webpage and Reddit Library sources.
 
 Same no-API posture as github_source / yt-dlp: plain public GETs, no keys.
 The fetch is injectable (set_fetch_fn) so tests need no network.
@@ -41,7 +41,7 @@ def set_fetch_fn(fn: "Callable[[str], str] | None") -> None:
     _fetch_fn = fn or _prod_fetch
 
 
-# â”€â”€ Webpage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Webpage ──────────────────────────────────────────────────────────────────
 
 _BLOCKS = ["p", "div", "li", "br", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote"]
 
@@ -74,7 +74,7 @@ def fetch_webpage(url: str) -> dict:
     return page_to_text(_fetch_fn(url))
 
 
-# â”€â”€ Reddit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Reddit ───────────────────────────────────────────────────────────────────
 
 _REDDIT = re.compile(r"^https?://(?:[a-z0-9-]+\.)?reddit\.com/r/(?P<sub>[^/?#]+)(?P<rest>/[^?#]*)?", re.I)
 _NS = {"a": "http://www.w3.org/2005/Atom"}

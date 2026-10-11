@@ -1,4 +1,4 @@
-﻿"""Reddit ingest MCP plugin -- the Library's "Reddit" tab.
+"""Reddit ingest MCP plugin -- the Library's "Reddit" tab.
 
 reddit_ingest(url, category): Reddit is posts + comment discussions, not
 pages, so it gets its own reader (cerebral.video.web_source, public Atom feeds,
@@ -148,7 +148,7 @@ class RedditIngestPlugin:
             spec["widgets"].insert(1, {"type": "list", "items": [{
                 "title": f"Reading {_CRAWL['label']}: {_CRAWL['done']} / {_CRAWL['total']} threads",
                 "subtitle": (f"Now: {_CRAWL['current']}" if _CRAWL["current"] else "")
-                + " Â· about 1 thread per minute (Reddit's limit)",
+                + " · about 1 thread per minute (Reddit's limit)",
             }]})
             spec["widgets"].insert(2, {
                 "type": "action", "id": "reddit-stop", "label": "Stop reading",

@@ -1,4 +1,4 @@
-﻿"""reddit_ingest (Library "Reddit" tab): stubbed Atom feeds + no-op pacing.
+"""reddit_ingest (Library "Reddit" tab): stubbed Atom feeds + no-op pacing.
 A thread link reads post + discussion now; a subreddit or keyword search lists
 threads, then a background crawl opens EACH thread and reads its comments."""
 from __future__ import annotations
