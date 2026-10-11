@@ -222,6 +222,7 @@ class MCPOrchestrator:
         # Persistent grant would otherwise cover the class. When None,
         # irreversible fails closed to DENY regardless of any grant.
         self._modal: ModalSurface | None = modal
+        self._watch = None  # runtime watch -- set_watch (ADR-0005 amendment 2026-10-11)
         # Module-level REQUIRED_CAPABILITIES per registered plugin (Issue #44).
         # Used by the tray UI and (later) by #47 to decide per-tool gates.
         self._plugin_capabilities: dict[str, frozenset[str]] = {}
@@ -282,6 +283,13 @@ class MCPOrchestrator:
         self._consent = consent
         if consent is not None:
             consent.set_acl(self._acl)
+
+    def set_watch(self, watch: "object | None") -> None:
+        """Runtime watch (cerebral/security/watch.py, ADR-0005 amendment
+        2026-10-11). It can only make a call stricter: a normally-SILENT call
+        it flags (untrusted-content taint, anomaly) routes to the consent
+        surface with a reason. None = no watch (tests, bare process)."""
+        self._watch = watch
 
     def set_modal_surface(self, modal: ModalSurface | None) -> None:
         """Wire (or unwire) the tray irreversible-modal surface (Issue #49).
@@ -578,9 +586,19 @@ class MCPOrchestrator:
         # routes to the modal regardless of grant (unless already DENY);
         # otherwise ASK routes to the consent surface.
         assert worst_cap is not None  # unreachable: capabilities non-empty
+        reason = self._watch_reason(tool_name, capabilities, worst, flags)
         if flags is not None and flags.irreversible and worst is not Decision.DENY:
             if self._modal is not None:
                 worst = await self._modal.request(worst_cap, tool_name, args or {}, flags)
+            else:
+                worst = Decision.DENY
+        elif reason is not None:
+            # Watch escalation: a normally-silent call must ask (fails closed
+            # with no consent surface, like any ASK).
+            if self._consent is not None:
+                worst = await self._consent.request(
+                    worst_cap, tool_name, args or {}, flags, reason=reason,
+                )
             else:
                 worst = Decision.DENY
         elif worst is Decision.ASK:
@@ -739,7 +757,32 @@ class MCPOrchestrator:
         except Exception as exc:
             logger.error("[mcp] Tool '%s' raised: %s", name, exc)
             return ToolResult(content=f"Tool '{name}' error: {exc}", is_error=True)
+        if self._watch is not None:
+            self._watch.after_call(name, self._effective_caps(name))
         return result
+
+    def _effective_caps(self, tool_name: str) -> "frozenset[str]":
+        """A tool's declared capabilities (per-tool override, else its plugin's)."""
+        tool = self._tool_lookup.get(tool_name)
+        if tool is not None and tool.required_capabilities is not None:
+            return frozenset(tool.required_capabilities)
+        plugin = self._tool_index.get(tool_name)
+        return frozenset(self._plugin_capabilities.get(plugin) or ())
+
+    def _watch_reason(
+        self, tool_name: str, capabilities: "frozenset[str]", worst: Decision,
+        flags: CallFlags | None,
+    ) -> "str | None":
+        """Why the runtime watch wants a normally-SILENT call to ask, or None.
+        Only SILENT is escalated: ASK/DENY/irreversible already stop the call."""
+        if self._watch is None or worst is not Decision.SILENT:
+            return None
+        if flags is not None and flags.irreversible:
+            return None
+        reason = self._watch.escalation_reason(tool_name, frozenset(capabilities))
+        if reason:
+            logger.info("[watch] escalating '%s' to ask: %s", tool_name, reason)
+        return reason
 
     @property
     def tools_for_llm(self) -> list[dict]:

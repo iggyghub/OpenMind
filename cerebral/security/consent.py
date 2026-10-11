@@ -241,8 +241,14 @@ class ConsentSurface:
         tool_name: str,
         args: Mapping[str, object] | None,
         flags: CallFlags | None = None,
+        reason: str | None = None,
     ) -> Decision:
         """Ask the user. Returns SILENT on allow, DENY on refuse/timeout/no-surface.
+
+        ``reason`` (ADR-0005 amendment 2026-10-11, cerebral/security/watch.py):
+        the runtime watch escalated a normally-silent call. The ACL's SILENT
+        short-circuit is skipped so the user IS asked, and the reason is shown
+        on the card as a "why" line. A DENY from the ACL still wins.
 
         Irreversible-flagged calls never reach this method: the
         orchestrator's ``call_tool`` ladder routes them to ``ModalSurface``
@@ -277,7 +283,7 @@ class ConsentSurface:
             # tray if it still says ASK.
             if self._acl is not None:
                 resolved = self._acl.resolve(capability, tool_name, flags)
-                if resolved is Decision.SILENT:
+                if resolved is Decision.SILENT and reason is None:
                     return Decision.SILENT
                 if resolved is Decision.DENY:
                     return Decision.DENY
@@ -288,7 +294,10 @@ class ConsentSurface:
                 tool_name=tool_name,
                 capability=capability,
                 flags=flags,
-                args_preview=build_args_preview(args),
+                args_preview=(
+                    {"why": reason, **build_args_preview(args)} if reason
+                    else build_args_preview(args)
+                ),
             )
 
             choice = await self._collect_choice(req, tray_available, voice_fn)
