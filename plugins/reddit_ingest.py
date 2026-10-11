@@ -4,7 +4,7 @@ reddit_ingest(url, category): Reddit is posts + comment discussions, not
 pages, so it gets its own reader (cerebral.video.web_source, public Atom feeds,
 no key). The field takes:
 
-- a thread link   -> that post + its discussion (up to 100 comments), now;
+- a thread link   -> that post + its discussion (its top 25 comments), now;
 - a subreddit link or ``r/<sub>`` -> its current threads;
 - keywords (``breadth thrust``, or ``r/algotrading breadth thrust`` to stay in
   one subreddit) -> Reddit search's best-matching threads.
@@ -91,7 +91,7 @@ class RedditIngestPlugin:
                 name="reddit_ingest",
                 description=(
                     "Read Reddit discussions and extract ideas into a collection (category). "
-                    "'url' takes a thread link (reads the post + up to 100 comments now), a "
+                    "'url' takes a thread link (reads the post + its top 25 comments now), a "
                     "subreddit link or 'r/<sub>' (reads its current threads), or search "
                     "keywords, optionally 'r/<sub> keywords' (reads the best-matching "
                     "threads). For a subreddit/search Felix opens every thread and reads "
