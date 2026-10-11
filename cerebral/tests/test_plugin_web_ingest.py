@@ -46,7 +46,7 @@ def test_required_capabilities():
 
 async def test_webpage_ingest_requires_url():
     r = await WebIngestPlugin().call_tool("webpage_ingest", {})
-    assert r.is_error and "url" in r.content
+    assert r.is_error and "link" in r.content
 
 
 async def test_webpage_ingest_extracts_clean_text(_wire):
@@ -110,6 +110,15 @@ async def test_read_page_is_saved_as_foldered_document(tmp_path):
     finally:
         docs.set_store(None)
         docs.set_active_profile_id(None)
+
+
+def test_link_typed_into_collection_box_is_used_as_link():
+    from plugins.web_ingest import url_and_category
+    assert url_and_category({"url": "", "category": "https://www.reddit.com/r/AI_Agents/"}) == (
+        "https://www.reddit.com/r/AI_Agents/", "Uncategorised")
+    assert url_and_category({"url": "", "category": "r/AI_Agents"}) == ("r/AI_Agents", "Uncategorised")
+    assert url_and_category({"url": "https://a.b/", "category": "AI"}) == ("https://a.b/", "AI")
+    assert url_and_category({"url": "", "category": "AI"}) == ("", "AI")
 
 
 async def test_webpage_ingest_rejects_empty_shell():

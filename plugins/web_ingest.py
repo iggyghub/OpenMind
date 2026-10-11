@@ -35,6 +35,16 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"external_data_read"})
 MIN_WORDS = 50  # below this a "page" is a login wall / JS shell, not content
 
 
+def url_and_category(args: dict) -> "tuple[str, str]":
+    """(url, category) from a tool call, forgiving a link typed into the
+    collection box (seen live 2026-10-11: url='' category='https://...')."""
+    url = (args.get("url") or "").strip()
+    category = (args.get("category") or "").strip()
+    if not url and re.match(r"^(https?://|r/)", category, re.I):
+        url, category = category, ""
+    return url, category or "Uncategorised"
+
+
 def split_urls(raw: str) -> list[str]:
     """One or many URLs from a field -- split on whitespace/commas/newlines."""
     return [u for u in re.split(r"[\s,]+", (raw or "").strip()) if u]
@@ -209,16 +219,16 @@ class WebIngestPlugin:
             "tool": "webpage_ingest",
             "tool_args": {},
             "input_arg": "url",
-            "input_placeholder": "https://... (one or more page URLs)",
+            "input_placeholder": "Link: https://... (one or more pages)",
             "input_arg2": "category",
-            "input_placeholder2": "collection (blank = Uncategorised)",
+            "input_placeholder2": "Collection name (optional)",
         })
 
     async def _webpage_ingest(self, args: dict) -> ToolResult:
-        urls = split_urls(args.get("url") or "")
-        category = (args.get("category") or "").strip() or "Uncategorised"
+        raw, category = url_and_category(args)
+        urls = split_urls(raw)
         if not urls:
-            return ToolResult(content="url is required", is_error=True)
+            return ToolResult(content="Paste a page link in the first box (the second box is the collection name).", is_error=True)
         store = _video._get_store()
         out = []
         for url in urls:
