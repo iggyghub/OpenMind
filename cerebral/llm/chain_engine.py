@@ -36,6 +36,7 @@ class ChainEngine:
         execute_fn: Callable[[str, dict], Awaitable[object]],
         record_fn: Callable[[str, dict], Awaitable[None]],
         spill_store: "SpillStore | None" = None,
+        watch: "object | None" = None,
     ) -> None:
         """
         planner   — Planner instance (S1 engine).
@@ -48,14 +49,25 @@ class ChainEngine:
                     successful tool result is stored and replaced in the chain by
                     a short locator+hint so it never floods the context window.
                     None => results flow back raw, identical to before.
+        watch     — optional cerebral.security.watch.Watch (ADR-0005 amendment
+                    2026-10-11). Each run is one watch.chain() turn, and outside
+                    content reaches the planner wrapped as untrusted.
         """
         self._planner = planner
         self._gate_fn = gate_fn
         self._execute_fn = execute_fn
         self._record_fn = record_fn
         self._spill_store = spill_store
+        self._watch = watch
 
-    async def run(
+    async def run(self, *args, **kwargs) -> str:
+        """See _run. With a watch, the run is one watched turn (taint scope)."""
+        if self._watch is None:
+            return await self._run(*args, **kwargs)
+        with self._watch.chain():
+            return await self._run(*args, **kwargs)
+
+    async def _run(
         self,
         transcript: str,
         tools: list[dict],
@@ -168,6 +180,8 @@ class ChainEngine:
             ):
                 locator = self._spill_store.spill(result_content)
                 result_content = self._spill_store.hint(locator, len(tool_result.content))
+            if self._watch is not None:
+                result_content = self._watch.wrap_if_outside(result.name, result_content)
 
             # Persist the (possibly spilled) result content too, not just the
             # is_error flag -- otherwise a replayed turn on a later chain run
