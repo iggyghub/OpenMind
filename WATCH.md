@@ -22,20 +22,21 @@ each, and W1..W4 together reproduce the reference byte-for-byte.
 
 ## Next slice -- start here
 
-- **Active:** W1 -- #1409
+- **Active:** W2 -- #1410
 - **Model:** self_dev-default
 
 ## Queue
 
 Strictly in order: each slice builds on the previous one being merged.
 
-- [ ] W1 -- #1409 -- `cerebral/security/watch.py` + `test_security_watch.py` (new files, nothing wired)
+- [x] W1 -- #1409 -- `cerebral/security/watch.py` + `test_security_watch.py` (new files, nothing wired)
 - [ ] W2 -- #1410 -- `consent.py` reason arg + orchestrator `set_watch` / escalation / `after_call` + `test_watch_integration.py`
 - [ ] W3 -- #1411 -- `chain_engine.py`: `watch.chain()` per run + untrusted wrapper in the planner view (+1 test)
 - [ ] W4 -- #1412 -- `main.py` wiring + 30-day baseline + Help topic
 
 ## Landed PRs
 
+- PR #1413 -- W1 (auto-merged by self_dev_campaign)
 ## Live verification (after W4, by hand)
 
 - Restart Felix; `cerebral.err.log` shows `[watch] baseline: N tool calls over 30 days`.
