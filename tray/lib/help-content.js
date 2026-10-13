@@ -178,6 +178,22 @@
         see_also: ['how-a-request-becomes-an-action', 'permissions-and-consent', 'skills']
       },
       {
+        id: 'reverse-engineering',
+        section: 'What Felix can do',
+        title: 'Reverse engineering with REA',
+        summary: 'Felix drives the REA command-line tool to analyse a local app and show the evidence; the results page is the REA panel.',
+        body: [
+          'REA is an open-source reverse-engineering tool (morluto/rea) that Felix runs from the command line. It reads a target you point it at and reports what it found, with the limits of each finding. Felix installs and runs it; it is a plugin, not part of Felix itself.',
+          '- Open the REA panel from the + Panel menu. The top rows show whether Node and REA are installed and ready, and what to fix if not.',
+          '- Paste the full path of an app folder or an .asar file into the Analyse box. Felix runs a static analysis: the app is read as text and never executed.',
+          '- The result is a short summary with file counts, findings and limitations. The full result can be tens of megabytes, so it is saved under cerebral/data/rea_runs and only the summary is shown or sent to a model.',
+          '- Recent runs are listed in the panel, newest first.',
+          '- REA needs a recent Node (22.19, 24.11 or 26 and later). Felix uses the version of REA it was tested against and tells you if a different one is installed.',
+          '- Native binaries, websites and .NET programs are not covered yet.'
+        ],
+        see_also: ['tools-and-plugins', 'permissions-and-consent']
+      },
+      {
         id: 'computer-use',
         section: 'What Felix can do',
         title: 'Driving the computer',
