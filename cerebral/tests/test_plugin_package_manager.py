@@ -320,3 +320,85 @@ class TestSuccessShape:
         data = json.loads(result.content)
         assert data["stdout"] == "installed!"
         assert data["exit_code"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Cycle 8 — global flag and name validation (Issue #1425)
+# ---------------------------------------------------------------------------
+
+class TestGlobalAndValidation:
+    @pytest.mark.asyncio
+    async def test_npm_global_flag_in_argv(self):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        plugin = PackageManagerPlugin(run_fn=run_fn)
+        await plugin.call_tool(
+            "pkg_install", {"manager": "npm", "name": "rea-agents", "global": True}
+        )
+        argv = captured["argv"]
+        assert "install" in argv
+        assert "--global" in argv
+        assert "rea-agents" in argv
+
+    @pytest.mark.asyncio
+    async def test_npm_global_flag_in_update(self):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        plugin = PackageManagerPlugin(run_fn=run_fn)
+        await plugin.call_tool(
+            "pkg_update", {"manager": "npm", "name": "react", "global": True}
+        )
+        argv = captured["argv"]
+        assert "update" in argv
+        assert "--global" in argv
+        assert "react" in argv
+
+    @pytest.mark.asyncio
+    async def test_version_pin_accepted(self):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        plugin = PackageManagerPlugin(run_fn=run_fn)
+        await plugin.call_tool(
+            "pkg_install", {"manager": "npm", "name": "rea-agents@6.4.0"}
+        )
+        argv = captured["argv"]
+        assert "rea-agents@6.4.0" in argv
+
+    @pytest.mark.asyncio
+    async def test_rejected_name_injection(self):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        plugin = PackageManagerPlugin(run_fn=run_fn)
+        result = await plugin.call_tool(
+            "pkg_install", {"manager": "npm", "name": "--foo"}
+        )
+        assert result.is_error
+        assert captured["calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_global_flag_rejected_for_pip(self):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        plugin = PackageManagerPlugin(run_fn=run_fn)
+        result = await plugin.call_tool(
+            "pkg_install", {"manager": "pip", "name": "requests", "global": True}
+        )
+        assert result.is_error
+        assert captured["calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_global_flag_rejected_for_winget(self):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        plugin = PackageManagerPlugin(run_fn=run_fn)
+        result = await plugin.call_tool(
+            "pkg_install", {"manager": "winget", "name": "Git.Git", "global": True}
+        )
+        assert result.is_error
+        assert captured["calls"] == 0
