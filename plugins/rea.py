@@ -12,13 +12,15 @@ lines to stderr. A full result is tens of MB (a 36-file directory was ~30 MB),
 so the full JSON is saved to cerebral/data/rea_runs/<run_id>.json and only a
 compact summary (+ the saved path) goes back to the model and the panel.
 
-Tools: rea_status, rea_analyze_javascript.
+Tools: rea_status, rea_analyze_javascript. Also exposes panel_spec() (ADR-0012),
+so the workspace "+ Panel" opener lists it as the "REA" panel.
 """
 import json
 import os
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +49,11 @@ _BAD_PATH_CHARS = re.compile(r'[&|<>^%"!\r\n]')
 
 _ANALYSIS_TIMEOUT_S = 900
 
+# panel_spec() runs every time the panel list is requested; the status probe
+# shells out twice, so cache it briefly.
+_STATUS_TTL_S = 60
+_PANEL_RUN_LIMIT = 20
+
 
 def _node_ok(version: str) -> bool:
     m = _NODE_RE.match(version.strip())
@@ -64,6 +71,7 @@ class ReaPlugin:
     def __init__(self, run_fn: Callable | None = None, run_dir: Path | None = None) -> None:
         self._run_fn = run_fn or subprocess.run
         self._run_dir = Path(run_dir) if run_dir else _DEFAULT_RUN_DIR
+        self._status_cache: tuple[float, dict] | None = None
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -148,6 +156,88 @@ class ReaPlugin:
             "problems": problems,
         }
         return ToolResult(content=json.dumps(payload))
+
+    def _cached_status(self) -> dict:
+        now = time.monotonic()
+        if self._status_cache and now - self._status_cache[0] < _STATUS_TTL_S:
+            return self._status_cache[1]
+        payload = json.loads(self._status().content)
+        self._status_cache = (now, payload)
+        return payload
+
+    def _recent_runs(self) -> list[dict]:
+        if not self._run_dir.is_dir():
+            return []
+        files = sorted(
+            self._run_dir.glob("*.summary.json"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )
+        runs: list[dict] = []
+        for f in files[:_PANEL_RUN_LIMIT]:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict):
+                runs.append(data)
+        return runs
+
+    def panel_spec(self, profile_id: "int | None" = None) -> dict:  # noqa: ARG002
+        """Declarative REA panel (ADR-0012): readiness, an analyse form, history."""
+        status = self._cached_status()
+        widgets: list[dict] = [
+            {
+                "type": "detail",
+                "id": "rea-status",
+                "fields": [
+                    {
+                        "label": "Node",
+                        "value": status.get("node") or "missing",
+                        "hint": "REA needs Node ^22.19, ^24.11 or >=26",
+                    },
+                    {
+                        "label": "REA",
+                        "value": f"{status.get('rea') or 'missing'} (verified: {REA_PINNED_VERSION})",
+                    },
+                    {"label": "Ready", "value": "yes" if status.get("ready") else "no"},
+                ],
+            }
+        ]
+        problems = status.get("problems") or []
+        if problems:
+            widgets.append({"type": "list", "items": [{"title": p} for p in problems]})
+        widgets.append({
+            "type": "action",
+            "id": "rea-analyze",
+            "label": "Analyse JS/Electron app",
+            "tool": "rea_analyze_javascript",
+            "tool_args": {},
+            "input_arg": "path",
+            "input_placeholder": "absolute path to an app folder or .asar",
+        })
+        runs = self._recent_runs()
+        if runs:
+            items = []
+            for run in runs:
+                stats = run.get("statistics") or {}
+                parts = [str(run.get("ts") or "")[:19], str(run.get("confidence") or "")]
+                if stats.get("relevant_files") is not None:
+                    parts.append(f"{stats['relevant_files']} files")
+                if stats.get("findings") is not None:
+                    parts.append(f"{stats['findings']} findings")
+                items.append({
+                    "title": str(run.get("target") or run.get("run_id") or ""),
+                    "subtitle": " \u00b7 ".join(p for p in parts if p),
+                })
+            widgets.append({
+                "type": "group",
+                "label": "Recent runs",
+                "count": str(len(runs)),
+                "open": True,
+                "widgets": [{"type": "list", "items": items}],
+            })
+        return {"title": "REA", "widgets": widgets}
 
     def _analyze_javascript(self, path) -> ToolResult:
         if not isinstance(path, str) or not path.strip():
