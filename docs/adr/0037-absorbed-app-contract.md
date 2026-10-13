@@ -65,3 +65,72 @@ For anything in scope, four properties, generalized from ADR-0011:
 - A future absorption candidate that doesn't cleanly fit either bucket
   (creative GUI app vs. headless API integration) is the signal to revisit
   this ADR, not a reason to stretch the contract to cover it.
+
+## Amendment (2026-10-13) -- a second path: the reconstructed plugin (supersedes decision 4's "ever")
+
+**Context** -- Decision 4 ("No Felix-built reskin, ever") was written when
+the only way to absorb a GUI program was to launch it and drive it from
+outside. REA (`morluto/rea`, MCP + CLI reverse-engineering toolkit) changes
+what is reachable: Felix can inspect an external app -- binary, Electron
+bundle, website, .NET assembly -- explain how a feature works with evidence,
+and *rebuild it*. The user's goal for the REA work is exactly that: have the
+GUI as a page of Felix's own, then change it around. Decision 4 as written
+forbids the headline use case, so it is wrong for that path.
+
+**Decision** -- Decision 4 is **scoped, not deleted**. Two paths now exist:
+
+1. **Launched app (unchanged).** LibreOffice and any program Felix opens as
+   its own window. Decisions 1-4 stand verbatim: the external window is never
+   re-skinned, Felix and the user take turns, output lands in the Document
+   library.
+2. **Reconstructed plugin (new).** Felix uses REA (or equivalent evidence-bearing
+   analysis) to understand an external app's feature, then builds a
+   **Felix-native sidebar page** that reimplements it. This is not a reskin of
+   the external program -- it is Felix-owned code, in Felix's own pixels, and
+   it replaces the need to launch the original for that feature.
+
+Properties of the reconstructed path:
+
+- **It is a plugin-contributed panel** (ADR-0012) plus a plugin for any
+  behaviour, built through `self_dev` (ADR-0015). It is Felix source, so the
+  user can change it afterwards with `self_dev` or the ui-editor -- that
+  editability is the point.
+- **ADR-0031 applies in full.** It is Felix's own pixels: shared visual
+  tokens, and every button is a declared tool call through the ADR-0005 gate.
+- **Provenance is recorded.** The page's plugin keeps the REA version, target,
+  and the evidence/limitations the reconstruction was built from, so the
+  claim "this reimplements X" is inspectable.
+- **Analysis is gated like any other tool.** Static analysis rides the
+  existing capability classes; runtime capture of a target runs it with the
+  user's permissions and must be declared and consented per ADR-0005.
+- **Reconstruction is behavioural, not byte-for-byte.** Felix reimplements
+  the observed behaviour; it does not copy or redistribute the target's
+  assets or code.
+
+**Terminology.** Both paths are **GUI plugins**: a plugin whose surface is
+a GUI, either an external program Felix launches (path 1) or a Felix-built
+page (path 2). How they are surfaced to the user (the hub, pinning, sidebar
+ordering) is ADR-0039.
+
+**Considered and rejected**
+
+- *Delete decision 4 outright.* Would silently license re-skinning launched
+  apps like LibreOffice (ADR-0011), which still cannot be re-skinned and
+  still depend on the turn-taking rule.
+- *Leave ADR-0037 as is and treat REA pages as an exception.* The exception
+  is the intended main path; an ADR that only describes the exception rots.
+- *Patch or modify the external app's binary in place.* REA is analysis,
+  not instrumentation-for-modification; in-place patching adds update-breakage risk with no benefit over owning the reimplementation.
+- *Absorbed-app contract for headless tools only.* Rejected earlier in this
+  ADR as the "plugin, not absorption" bucket; REA itself stays a plugin
+  (headless CLI/MCP). What is "absorbed" here is the *target's feature*.
+
+**Consequences**
+
+- REA is a **plugin** (`plugins/rea.py` + its panel); the things it
+  analyses may become **reconstructed plugins**. A new CONTEXT.md term records
+  this.
+- ADR-0031 decision 6 ("an absorbed app is made consistent behaviourally,
+  never visually") remains true for *launched* apps only; a reconstructed plugin is Felix's own surface and follows the full guidelines.
+- The 16-class capability vocabulary (ADR-0005) is **unchanged**; no new
+  class is introduced.

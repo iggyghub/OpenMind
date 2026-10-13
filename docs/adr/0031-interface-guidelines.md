@@ -99,3 +99,15 @@ rewrite with no user-visible payoff. Rejected.
 Nothing. Both cross-cutting forks were resolved into decision 5 (2026-09-05);
 the deferral of theme is a decision with a stated trigger -- a second user -- not
 an unanswered question.
+
+## Amendment (2026-10-13) -- decision 6 scoped to launched apps
+
+**Context** -- ADR-0037's 2026-10-13 amendment adds the reconstructed plugin: a
+Felix-built page that reimplements an external app's feature.
+**Decision** -- Decision 6 ("an absorbed app is made consistent behaviourally,
+never visually") is unchanged for *launched* external programs. A
+reconstructed plugin is Felix's own pixels and follows this ADR in full.
+**Considered and rejected** -- Treating reconstructed plugins as absorbed:
+they are Felix source and would escape the tokens and the button invariant.
+**Consequences** -- Both kinds are surfaced through the Hub (ADR-0039). The
+16-class capability vocabulary is unchanged.
