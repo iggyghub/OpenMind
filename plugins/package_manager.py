@@ -13,6 +13,8 @@ Each manager has small idiomatic differences:
   winget install / upgrade / search
 """
 import json
+import re
+import shutil
 import subprocess
 from typing import Callable
 
@@ -31,6 +33,12 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({
 })
 
 _ALLOWED_MANAGERS = {"npm", "pip", "winget"}
+
+# Names/queries are interpolated into an argv, and on Windows npm/winget
+# resolve to .cmd shims that run through cmd.exe -- so reject anything that is
+# not plainly a package spec (no leading '-', no shell metacharacters).
+_NAME_RE = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9@._/+-]*$")
+_QUERY_RE = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9@._/+ -]*$")
 
 
 class PackageManagerPlugin:
@@ -54,7 +62,14 @@ class PackageManagerPlugin:
                     "type": "object",
                     "properties": {
                         "manager": manager_prop,
-                        "name": {"type": "string", "description": "Package name"},
+                        "name": {
+                            "type": "string",
+                            "description": "Package name; npm accepts a pin like pkg@1.2.3",
+                        },
+                        "global": {
+                            "type": "boolean",
+                            "description": "npm only: install globally (--global), e.g. for a CLI",
+                        },
                     },
                     "required": ["manager", "name"],
                 },
@@ -72,6 +87,10 @@ class PackageManagerPlugin:
                         "name": {
                             "type": "string",
                             "description": "Package to update (optional; omit to update all)",
+                        },
+                        "global": {
+                            "type": "boolean",
+                            "description": "npm only: update globally (--global)",
                         },
                     },
                     "required": ["manager"],
@@ -108,37 +127,49 @@ class PackageManagerPlugin:
                 is_error=True,
             )
 
+        is_global = bool(args.get("global", False))
+        if is_global and manager != "npm":
+            return ToolResult(content="'global' is only supported for npm", is_error=True)
+
         if tool_name == "pkg_install":
             name = args.get("name")
             if not name:
                 return ToolResult(content="'name' is required for pkg_install", is_error=True)
-            return self._run(self._build_install_argv(manager, name))
+            if not _NAME_RE.match(name):
+                return ToolResult(content=f"invalid package name: {name!r}", is_error=True)
+            return self._run(self._build_install_argv(manager, name, is_global))
 
         if tool_name == "pkg_update":
             name = args.get("name")
-            return self._run(self._build_update_argv(manager, name))
+            if name and not _NAME_RE.match(name):
+                return ToolResult(content=f"invalid package name: {name!r}", is_error=True)
+            return self._run(self._build_update_argv(manager, name, is_global))
 
         if tool_name == "pkg_search":
             query = args.get("query")
             if not query:
                 return ToolResult(content="'query' is required for pkg_search", is_error=True)
+            if not _QUERY_RE.match(query):
+                return ToolResult(content=f"invalid search query: {query!r}", is_error=True)
             return self._run(self._build_search_argv(manager, query))
 
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     @staticmethod
-    def _build_install_argv(manager: str, name: str) -> list[str]:
+    def _build_install_argv(manager: str, name: str, is_global: bool = False) -> list[str]:
         if manager == "npm":
-            return ["npm", "install", name]
+            return ["npm", "install", *(["--global"] if is_global else []), name]
         if manager == "pip":
             return ["pip", "install", name]
         # winget
         return ["winget", "install", "--silent", name]
 
     @staticmethod
-    def _build_update_argv(manager: str, name: str | None) -> list[str]:
+    def _build_update_argv(
+        manager: str, name: str | None, is_global: bool = False
+    ) -> list[str]:
         if manager == "npm":
-            argv = ["npm", "update"]
+            argv = ["npm", "update", *(["--global"] if is_global else [])]
             if name:
                 argv.append(name)
             return argv
@@ -167,6 +198,10 @@ class PackageManagerPlugin:
         return ["winget", "search", query]
 
     def _run(self, argv: list[str]) -> ToolResult:
+        if self._run_fn is subprocess.run:
+            # On Windows a bare 'npm' is npm.cmd and CreateProcess will not
+            # find it (WinError 2); resolve via PATH first.
+            argv = [shutil.which(argv[0]) or argv[0], *argv[1:]]
         try:
             proc = self._run_fn(
                 argv,
