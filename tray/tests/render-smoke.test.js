@@ -37,7 +37,7 @@ const PANE_ROUTES = [
   // HELP campaign (#1045) -- Felix's in-app encyclopedia
   'help',
 ];
-const NAV_ROUTES = ['conversation', 'harness', 'library', 'trading', 'log', 'help', 'settings'];
+const NAV_ROUTES = ['conversation', 'harness', 'library', 'trading', 'log', 'help', 'hub', 'settings'];
 
 // Legacy alias kept for tests that loop over "routes that need panes".
 const SMOKE_ROUTES = PANE_ROUTES;
@@ -71,12 +71,12 @@ test('every expected pane element exists', () => {
 // ── Nav items (S5: 4 sections; Trading added as a 5th, #864 follow-up;
 //    Log added as a 6th, S26/#879) ────────────────────────────────────────
 
-test('nav has exactly 8 top-level sections (S5 + Trading + Log + Help + UI Editor)', () => {
+test('nav has exactly 9 top-level sections (S5 + Trading + Log + Help + Hub + UI Editor)', () => {
   // UI Editor (#nav-ui-editor) has no data-route -- it pops tools/ui-editor's
   // own window instead of switching an in-app pane -- so it's counted here
   // but deliberately absent from NAV_ROUTES/PANE_ROUTES below.
   const navItems = root.querySelectorAll('.nav-item');
-  expect(navItems.length).toBe(8);
+  expect(navItems.length).toBe(9);
 });
 
 test('every expected nav item exists (S5: 4 sections + Trading + Log + Help)', () => {
