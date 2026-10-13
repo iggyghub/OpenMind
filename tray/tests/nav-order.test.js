@@ -31,7 +31,7 @@ function makeNav(ids) {
       setAttribute(k, v) { this.attrs[k] = v; },
       focus() { this.focused = true; },
       closest() { return this; },
-      getBoundingClientRect: () => ({ top: 0, height: 10 }),
+      getBoundingClientRect: () => ({ top: 0, height: 10, bottom: 10 }),
     };
   });
   let order = els.slice();
@@ -128,3 +128,40 @@ describe('init', () => {
     expect(nav.ids()).toEqual(['a', 'b']);
   });
 });
+
+describe('drop on empty space beyond the list', () => {
+  const emptySpace = { closest: () => null };
+
+  test('dropping below the last button moves the item to the end', () => {
+    const nav = makeNav(['a', 'b', 'c']);
+    const s = mockStorage();
+    NavOrder.init(nav, s);
+    nav.fire('dragstart', { target: nav.els[0], dataTransfer: { setData() {} } });
+    let prevented = false;
+    nav.fire('dragover', { target: emptySpace, clientY: 500, preventDefault() { prevented = true; } });
+    expect(prevented).toBe(true); // empty space is a valid drop target
+    nav.fire('drop', { target: emptySpace, clientY: 500, preventDefault() {} });
+    expect(nav.ids()).toEqual(['b', 'c', 'a']);
+    expect(JSON.parse(s._store[NavOrder.STORAGE_KEY])).toEqual(['b', 'c', 'a']);
+  });
+
+  test('dropping above the first button moves the item to the start', () => {
+    const nav = makeNav(['a', 'b', 'c']);
+    NavOrder.init(nav, mockStorage());
+    nav.fire('dragstart', { target: nav.els[2], dataTransfer: { setData() {} } });
+    nav.fire('drop', { target: emptySpace, clientY: -5, preventDefault() {} });
+    expect(nav.ids()).toEqual(['c', 'a', 'b']);
+  });
+
+  test('dragging the last item and dropping below it is a no-op', () => {
+    const nav = makeNav(['a', 'b', 'c']);
+    NavOrder.init(nav, mockStorage());
+    nav.fire('dragstart', { target: nav.els[2], dataTransfer: { setData() {} } });
+    let prevented = false;
+    nav.fire('dragover', { target: emptySpace, clientY: 500, preventDefault() { prevented = true; } });
+    expect(prevented).toBe(false);
+    nav.fire('drop', { target: emptySpace, clientY: 500, preventDefault() {} });
+    expect(nav.ids()).toEqual(['a', 'b', 'c']);
+  });
+});
+

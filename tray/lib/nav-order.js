@@ -117,26 +117,50 @@
         try { e.dataTransfer.setData('text/plain', dragId); } catch (err) {}
       }
     });
-    navEl.addEventListener('dragover', function (e) {
+    // Where a drop at this event would land: {el, after}, or null. Over a
+    // button: before/after it by the cursor's half. Over empty space beyond
+    // either end of the list (the sidebar is taller than the buttons): snap
+    // to the last button (after) / first button (before).
+    function resolveDrop(e) {
+      if (!dragId) return null;
       var el = itemAt(e.target);
-      if (!dragId || !el || keyOf(el) === dragId || !keyOf(el)) return;
+      if (el && keyOf(el)) {
+        if (keyOf(el) === dragId) return null;
+        var r = el.getBoundingClientRect();
+        return { el: el, after: e.clientY > r.top + r.height / 2 };
+      }
+      var list = items();
+      if (!list.length || typeof e.clientY !== 'number') return null;
+      var first = list[0];
+      var last = list[list.length - 1];
+      if (e.clientY >= last.getBoundingClientRect().bottom && keyOf(last) !== dragId) {
+        return { el: last, after: true };
+      }
+      if (e.clientY <= first.getBoundingClientRect().top && keyOf(first) !== dragId) {
+        return { el: first, after: false };
+      }
+      return null;
+    }
+
+    // Listen on the whole sidebar (when there is one) so the empty space
+    // below the buttons is a valid drop target.
+    var zone = (navEl.closest && navEl.closest('.sidebar')) || navEl;
+    zone.addEventListener('dragover', function (e) {
+      var t = resolveDrop(e);
+      if (!t) return;
       e.preventDefault();
-      var r = el.getBoundingClientRect();
-      var after = e.clientY > r.top + r.height / 2;
       items().forEach(function (x) { x.classList.remove('nav-drop-before', 'nav-drop-after'); });
-      el.classList.add(after ? 'nav-drop-after' : 'nav-drop-before');
+      t.el.classList.add(t.after ? 'nav-drop-after' : 'nav-drop-before');
     });
-    navEl.addEventListener('drop', function (e) {
-      var el = itemAt(e.target);
-      if (!dragId || !el || !keyOf(el)) { clearMarks(); dragId = null; return; }
+    zone.addEventListener('drop', function (e) {
+      var t = resolveDrop(e);
+      if (!t) { clearMarks(); dragId = null; return; }
       e.preventDefault();
-      var r = el.getBoundingClientRect();
-      var after = e.clientY > r.top + r.height / 2;
-      commit(move(currentOrder(), dragId, keyOf(el), after));
+      commit(move(currentOrder(), dragId, keyOf(t.el), t.after));
       clearMarks();
       dragId = null;
     });
-    navEl.addEventListener('dragend', function () { clearMarks(); dragId = null; });
+    zone.addEventListener('dragend', function () { clearMarks(); dragId = null; });
 
     navEl.addEventListener('keydown', function (e) {
       if (!e.altKey || e.ctrlKey || e.metaKey) return;
