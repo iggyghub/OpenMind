@@ -24,7 +24,7 @@
   // (kept valid so #profiles / first_run flow keeps working without a
   // nav button).
   const VALID_ROUTES = new Set([
-    'conversation', 'harness', 'help', 'library', 'log', 'profiles', 'settings', 'trading',
+    'conversation', 'harness', 'help', 'hub', 'library', 'log', 'profiles', 'settings', 'trading',
   ]);
 
   const DEFAULT_ROUTE = 'conversation';
