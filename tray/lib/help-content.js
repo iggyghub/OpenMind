@@ -83,6 +83,7 @@
         body: [
           'Conversation: talk to Felix and see each turn, including the tools it called.',
           'Harness: the plugins that give Felix its tools (with their status and switches) and the installed Skills.',
+          'Hub: one tile for every plugin that has its own panel (REA today). Click a tile to open that panel beside the conversation.',
           'Library: what Felix keeps for you. Sub-tabs cover Memory, Documents, Job search, Videos, Books, GitHub, Reddit and Webpage, plus Thinking, which shows what Felix has been doing behind the scenes.',
           'Trading: paper trading only. Overview, Strategies, Tickers, Trades and Replay show the strategies, their trades and their backtests.',
           'Log: a running activity record of what Felix did and when.',
