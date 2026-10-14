@@ -72,7 +72,7 @@
   // Applies the saved order to navEl's .nav-item children and wires drag and
   // Alt+Up/Down. `storage` defaults to window.localStorage.
   function init(navEl, storage) {
-    if (!navEl) return;
+    if (!navEl) return null;
     var store = storage;
     if (!store) {
       try { store = window.localStorage; } catch (e) { store = null; }
@@ -83,17 +83,20 @@
         .filter(function (el) { return keyOf(el); });
     }
     function currentOrder() { return items().map(keyOf); }
-    function commit(order) {
+    // persist=false applies the order to the DOM only (startup / refresh);
+    // only a user action writes it back, so a saved position for a button
+    // that is not present yet (a pinned tile) is never lost.
+    function commit(order, persist) {
       var byId = {};
       items().forEach(function (el) { byId[keyOf(el)] = el; });
       order.forEach(function (id) { if (byId[id]) navEl.appendChild(byId[id]); });
-      if (store) save(store, order);
+      if (store && persist !== false) save(store, order);
     }
 
     if (store) {
       var ids = currentOrder();
       var applied = applyOrder(ids, load(store));
-      if (applied.join('|') !== ids.join('|')) commit(applied);
+      if (applied.join('|') !== ids.join('|')) commit(applied, false);
     }
     items().forEach(function (el) { el.setAttribute('draggable', 'true'); });
 
@@ -171,6 +174,23 @@
       commit(step(currentOrder(), keyOf(el), e.key === 'ArrowUp' ? -1 : 1));
       if (el.focus) el.focus();
     });
+
+    // refresh(): re-apply the saved order and drag handles after buttons
+    // were added (pinned Hub tiles). draggingId(): key being dragged or
+    // null. endDrag(): forget a drag whose source element was removed
+    // (dragend never reaches the sidebar then).
+    return {
+      refresh: function () {
+        items().forEach(function (el) { el.setAttribute('draggable', 'true'); });
+        if (store) {
+          var ids = currentOrder();
+          var applied = applyOrder(ids, load(store));
+          if (applied.join('|') !== ids.join('|')) commit(applied, false);
+        }
+      },
+      draggingId: function () { return dragId; },
+      endDrag: function () { clearMarks(); dragId = null; },
+    };
   }
 
   var _exports = {
