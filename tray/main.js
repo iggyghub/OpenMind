@@ -41,6 +41,12 @@ let _restartInProgress = false;
 let _bootSha = null;
 let _pendingUpdateRestart = false;
 const AUTO_UPDATE_POLL_MS = 5 * 60 * 1000;
+// #1424 -- pause toggle: while true, _checkForMasterUpdate still fetches and
+// fast-forwards but never restarts; the tray menu shows "update waiting".
+// Persisted as {paused:boolean} so a manual restart keeps the choice.
+const AUTO_UPDATE_PAUSE_PATH = path.join(__dirname, '..', 'cerebral', 'data', 'auto-update-pause.json');
+let _autoUpdatePaused = false;
+let _updateWaiting = false;
 let reconnectTimer = null;
 // SUP-3 -- respawn a dead Cerebral once, bounded.
 let _consecutiveFailures = 0;
@@ -75,6 +81,8 @@ const modalWindows = new Map();
 const visState   = new VisualiserState();
 const posStore   = new PositionStore(VIS_POS_PATH);
 const mainPosStore = new PositionStore(MAIN_WIN_POS_PATH); // #820
+const autoUpdatePauseStore = new PositionStore(AUTO_UPDATE_PAUSE_PATH); // #1424
+_autoUpdatePaused = !!((autoUpdatePauseStore.load() || {}).paused);
 
 // In-memory cache of the settings_updated snapshot from Cerebral.
 // Starts from defaults; overwritten on first broadcast (sent on every connect).
@@ -285,7 +293,7 @@ function handleCerebralEvent(event) {
       routeToVisualiser(event);
       // #817 -- an auto-update was waiting for Felix to go idle before
       // restarting so it didn't cut off an in-progress response.
-      if (_pendingUpdateRestart) {
+      if (_pendingUpdateRestart && !_autoUpdatePaused) {
         _pendingUpdateRestart = false;
         restartFelixSelfDev();
       }
@@ -951,6 +959,16 @@ function buildMenu() {
     ],
   });
   template.push({ label: 'Restart Felix', click: restartFelix });  // #439
+  // #1424 -- hold the automatic restart that follows a merge to master.
+  template.push({
+    label: 'Pause auto-restart on updates',
+    type: 'checkbox',
+    checked: _autoUpdatePaused,
+    click: toggleAutoUpdatePause,
+  });
+  if (_updateWaiting) {
+    template.push({ label: 'Update waiting -- use Restart Felix to apply', enabled: false });
+  }
   // #813 -- manual companion to the automatic SD-3 boot-check rollback.
   // Confirm first: git reset --hard discards anything since last_known_good.
   template.push({
@@ -1200,6 +1218,18 @@ function _gitOut(args, opts) {
   return out ? out.trim() : '';
 }
 
+function toggleAutoUpdatePause() {
+  _autoUpdatePaused = !_autoUpdatePaused;
+  autoUpdatePauseStore.save({ paused: _autoUpdatePaused });
+  trayLog(`auto-update: auto-restart ${_autoUpdatePaused ? 'paused' : 'resumed'}`);
+  _pendingUpdateRestart = false; // re-detected by the next poll
+  if (!_autoUpdatePaused) {
+    _updateWaiting = false;
+    _checkForMasterUpdate(); // apply anything that arrived while paused
+  }
+  refreshMenu();
+}
+
 function _checkForMasterUpdate() {
   if (_restartInProgress || _pendingUpdateRestart) return;
 
@@ -1214,6 +1244,7 @@ function _checkForMasterUpdate() {
     },
     bootSha: _bootSha,
     isIdle:  felixState === 'idle' && !selfDevCampaignRunning,
+    paused:  _autoUpdatePaused,
   });
 
   if (decision.action === 'skip') {
@@ -1221,6 +1252,15 @@ function _checkForMasterUpdate() {
     return;
   }
   if (decision.action === 'none') return;
+
+  if (decision.action === 'paused') {
+    if (!_updateWaiting) {
+      _updateWaiting = true;
+      trayLog('auto-update: new commits since boot, restart held (auto-restart is paused)');
+      refreshMenu();
+    }
+    return;
+  }
 
   if (decision.action === 'restart') {
     trayLog('auto-update: new commits since boot, Felix idle -- restarting now');
