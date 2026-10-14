@@ -73,3 +73,42 @@ IPC calls made from inline scripts in HTML were missed.
 - v1 cannot say "this behaves the same"; it can say "these N of M observed
   facts are implemented and tested". That is the honest ceiling until runtime
   observation is wired.
+
+## Amendment (2026-10-14) -- first closed loop, and what it changed
+
+**Context** -- The first real run of the loop (`felix-dialogs`, a 5-fact scope of
+Felix's own `tray/`: the `felixDialogs` bridge and its two IPC channels and
+handlers) was built by Budd through self_dev from the spec alone, with no
+code supplied, and scored with `rebuild_score`.
+
+**Result** -- Round 1: 0 of 5 met (tests failed at import: it invented
+`cerebral.tools`). Round 2, given the failure and the plugin conventions:
+5 of 5 met, but the PR failed the repo's AST completeness check. Round 3:
+a one-line hand fix (declare `fs_write`, as `plugins/rea.py` does) and merge.
+Final live score: 5 of 5 met (100%).
+
+**Decisions**
+1. **Manifest location.** A build's manifest lives in the repo at
+   `plugins/rebuild_manifests/<name>.json` so it travels with the build PR;
+   the spec and scorecard stay under `cerebral/data/rebuilds/<name>/`
+   (gitignored). This was implied by decision 5 and is now explicit.
+2. **A build issue must state the plugin conventions and the capability
+   rule**, because the builder model does not know them: the
+   `cerebral.mcp.orchestrator` import, the `Tool`/`ToolResult` shape,
+   module-level `PLUGIN_NAME`/`REQUIRED_CAPABILITIES`/`create()`, and that any
+   plugin that launches a process through `run_fn` must declare `fs_write` or
+   `shell_exec` (`test_call_site_capabilities`). Failures were convention
+   failures, not design failures.
+3. **Specs may be scoped** (`rebuild_new ... scope=[...]`) with fact ids stable
+   across scopes, so a manifest survives a re-scoped spec.
+4. **The scorer's "met" requires a passing test, not only a mapping**, which is
+   what made round 1 score 0 rather than a misleading 100%.
+
+**Considered and rejected** -- Letting the scorer count a manifest entry as met
+without running its test: it would have reported full coverage for round 1,
+whose code could not even be imported.
+
+**Consequences** -- The 16-class capability vocabulary is unchanged. Remaining:
+RB3 (panel view) and RB4 (campaign generation from unmet facts); until RB4
+exists the round-to-round feedback is written by hand.
+
