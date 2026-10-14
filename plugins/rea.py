@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -48,6 +49,21 @@ _NODE_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 _BAD_PATH_CHARS = re.compile(r'[&|<>^%"!\r\n]')
 
 _ANALYSIS_TIMEOUT_S = 900
+
+# Native "Browse..." picker (tkinter ships with Python). It runs in its own
+# short-lived process so a GUI dialog never blocks or crashes Cerebral.
+_PICK_TIMEOUT_S = 300
+_PICK_CODE = (
+    "import sys, tkinter as tk\n"
+    "from tkinter import filedialog\n"
+    "r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True)\n"
+    "if sys.argv[1] == 'folder':\n"
+    "    p = filedialog.askdirectory(title='Choose an app folder to analyse')\n"
+    "else:\n"
+    "    p = filedialog.askopenfilename(title='Choose an .asar file to analyse',\n"
+    "        filetypes=[('Electron app archive', '*.asar'), ('All files', '*.*')])\n"
+    "print(p or '')\n"
+)
 
 # panel_spec() runs every time the panel list is requested; the status probe
 # shells out twice, so cache it briefly.
@@ -104,6 +120,25 @@ class ReaPlugin:
                     "required": ["path"],
                 },
             ),
+            Tool(
+                name="rea_browse_analyze",
+                description=(
+                    "Open a native file/folder picker on this computer, then analyse the "
+                    "chosen JavaScript/Electron app with REA (same as rea_analyze_javascript)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["folder", "file"],
+                            "description": "folder = an extracted app directory; file = an .asar archive.",
+                        },
+                    },
+                    "required": ["kind"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -112,6 +147,8 @@ class ReaPlugin:
             return self._status()
         if tool_name == "rea_analyze_javascript":
             return self._analyze_javascript(args.get("path"))
+        if tool_name == "rea_browse_analyze":
+            return self._browse_analyze(args.get("kind"))
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     # -- helpers ---------------------------------------------------------
@@ -215,6 +252,20 @@ class ReaPlugin:
             "tool_args": {},
             "input_arg": "path",
             "input_placeholder": "absolute path to an app folder or .asar",
+        })
+        widgets.append({
+            "type": "action",
+            "id": "rea-browse-folder",
+            "label": "Browse for an app folder...",
+            "tool": "rea_browse_analyze",
+            "tool_args": {"kind": "folder"},
+        })
+        widgets.append({
+            "type": "action",
+            "id": "rea-browse-file",
+            "label": "Browse for an .asar file...",
+            "tool": "rea_browse_analyze",
+            "tool_args": {"kind": "file"},
         })
         runs = self._recent_runs()
         if runs:

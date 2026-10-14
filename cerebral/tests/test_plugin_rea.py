@@ -32,7 +32,9 @@ def _call(plugin, tool, args=None):
 def test_required_capabilities_and_name():
     assert isinstance(REQUIRED_CAPABILITIES, frozenset) and REQUIRED_CAPABILITIES
     assert create().name == "rea"
-    assert {t.name for t in create().list_tools()} == {"rea_status", "rea_analyze_javascript"}
+    assert {t.name for t in create().list_tools()} == {
+        "rea_status", "rea_analyze_javascript", "rea_browse_analyze",
+    }
 
 
 @pytest.mark.parametrize(
@@ -144,7 +146,7 @@ def test_panel_spec_ready_and_form(tmp_path):
     spec = ReaPlugin(run_fn=run, run_dir=tmp_path).panel_spec()
     assert spec["title"] == "REA"
     types = [w["type"] for w in spec["widgets"]]
-    assert types == ["detail", "action"]  # no problems list, no runs group
+    assert types == ["detail", "action", "action", "action"]  # no problems list, no runs group
     detail = spec["widgets"][0]
     assert {"label": "Ready", "value": "yes"} in detail["fields"]
     action = spec["widgets"][1]
@@ -165,9 +167,9 @@ def test_panel_spec_lists_problems_and_recent_runs(tmp_path):
 
     spec = ReaPlugin(run_fn=run, run_dir=tmp_path).panel_spec()
     types = [w["type"] for w in spec["widgets"]]
-    assert types == ["detail", "list", "action", "group"]
+    assert types == ["detail", "list", "action", "action", "action", "group"]
     assert any("too old" in i["title"] for i in spec["widgets"][1]["items"])
-    runs = spec["widgets"][3]["widgets"][0]["items"]
+    runs = spec["widgets"][5]["widgets"][0]["items"]
     assert len(runs) == 1 and runs[0]["title"] == "C:/app"
     assert "36 files" in runs[0]["subtitle"] and "54 findings" in runs[0]["subtitle"]
 
@@ -179,3 +181,43 @@ def test_panel_spec_status_probe_is_cached(tmp_path):
     n = len(calls)
     plugin.panel_spec()
     assert len(calls) == n  # second render did not shell out again
+
+
+def test_panel_has_browse_buttons(tmp_path):
+    run, _ = _fake_cli()
+    spec = ReaPlugin(run_fn=run, run_dir=tmp_path).panel_spec()
+    kinds = [w["tool_args"].get("kind") for w in spec["widgets"] if w.get("tool") == "rea_browse_analyze"]
+    assert kinds == ["folder", "file"]
+
+
+def _browse_runner(picked, target_doc):
+    def run(argv, **kw):
+        if "-c" in argv:  # the tkinter picker subprocess
+            return MagicMock(stdout=picked + "\n", stderr="", returncode=0)
+        if argv[1:2] == ["--version"]:
+            return MagicMock(stdout=REA_PINNED_VERSION, stderr="", returncode=0)
+        return MagicMock(stdout=json.dumps(target_doc), stderr="", returncode=0)
+    return run
+
+
+def test_browse_analyze_picks_then_analyses(tmp_path):
+    target = tmp_path / "app"
+    target.mkdir()
+    doc = {"operation": "x", "subject": {"name": str(target)},
+           "normalized_result": {"summary": {"a": 1}, "statistics": {}}, "limitations": []}
+    plugin = ReaPlugin(run_fn=_browse_runner(str(target), doc), run_dir=tmp_path / "runs")
+    res = _call(plugin, "rea_browse_analyze", {"kind": "folder"})
+    assert not res.is_error
+    assert json.loads(res.content)["summary"] == {"a": 1}
+
+
+def test_browse_analyze_cancelled_is_not_an_error(tmp_path):
+    plugin = ReaPlugin(run_fn=_browse_runner("", {}), run_dir=tmp_path)
+    res = _call(plugin, "rea_browse_analyze", {"kind": "file"})
+    assert not res.is_error and "No path chosen" in res.content
+
+
+def test_browse_analyze_rejects_bad_kind(tmp_path):
+    run, calls = _fake_cli()
+    res = _call(ReaPlugin(run_fn=run, run_dir=tmp_path), "rea_browse_analyze", {"kind": "../x"})
+    assert res.is_error and calls == []
