@@ -51,7 +51,7 @@ def _call(plugin, args):
 def test_name_and_capabilities():
     assert create().name == "rebuild"
     assert isinstance(REQUIRED_CAPABILITIES, frozenset) and REQUIRED_CAPABILITIES
-    assert [t.name for t in create().list_tools()] == ["rebuild_new"]
+    assert [t.name for t in create().list_tools()] == ["rebuild_new", "rebuild_score"]
 
 
 def test_facts_cover_each_kind_with_stable_ids_and_skip_modules():
@@ -131,3 +131,109 @@ def test_missing_run_and_run_without_graph(tmp_path):
     (runs / "aaaaaaaaaaaa.json").write_text(json.dumps({"normalized_result": {}}), encoding="utf-8")
     res = _call(plugin, {"name": "demo", "run_id": "aaaaaaaaaaaa"})
     assert res.is_error and "no application graph" in res.content
+
+
+# ---------------------------------------------------------------------------
+# RB2 -- rebuild_score
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock
+
+
+def _spec_dir(tmp_path, facts):
+    d = tmp_path / "rb" / "demo"
+    d.mkdir(parents=True)
+    (d / "spec.json").write_text(json.dumps({"facts": facts}), encoding="utf-8")
+    return tmp_path / "rb"
+
+
+def _fact(fid, kind="ipc-channel", confidence="exact", label="x"):
+    return {"id": fid, "kind": kind, "label": label, "confidence": confidence}
+
+
+def _repo(tmp_path, manifest=None, test_files=("cerebral/tests/test_demo.py",)):
+    root = tmp_path / "repo"
+    for rel in test_files:
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("def test_a():\n    pass\n", encoding="utf-8")
+    if manifest is not None:
+        m = root / "plugins" / "rebuild_manifests"
+        m.mkdir(parents=True, exist_ok=True)
+        (m / "demo.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return root
+
+
+def _score(plugin):
+    return asyncio.run(plugin.call_tool("rebuild_score", {"name": "demo"}))
+
+
+def _runner(returncode=0):
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return MagicMock(returncode=returncode, stdout="", stderr="")
+
+    return run, calls
+
+
+def test_score_met_unmet_unknown_waived(tmp_path):
+    rb = _spec_dir(tmp_path, [
+        _fact("F-a"), _fact("F-b"), _fact("F-c", confidence="derived"), _fact("F-d"),
+    ])
+    repo = _repo(tmp_path, {
+        "implements": {"F-a": {"symbol": "plugins/x.py::tool",
+                               "test": "cerebral/tests/test_demo.py::test_a"}},
+        "waived": {"F-d": "not applicable to a panel"},
+    })
+    run, calls = _runner(0)
+    res = _score(RebuildPlugin(rebuild_dir=rb, repo_root=repo, run_fn=run))
+    out = json.loads(res.content)
+    assert out["counts"] == {"met": 1, "unmet": 1, "unknown": 1, "waived": 1}
+    assert out["percent_met"] == 50.0
+    assert [u["id"] for u in out["unmet"]] == ["F-b"]
+    assert len(calls) == 1 and calls[0][-1] == "cerebral/tests/test_demo.py::test_a"
+    card = json.loads((rb / "demo" / "scorecard.json").read_text(encoding="utf-8"))
+    assert card["total"] == 4 and "behaves the same" in card["note"]
+
+
+def test_failing_test_is_unmet(tmp_path):
+    rb = _spec_dir(tmp_path, [_fact("F-a")])
+    repo = _repo(tmp_path, {"implements": {"F-a": {
+        "symbol": "s", "test": "cerebral/tests/test_demo.py::test_a"}}})
+    run, _ = _runner(1)
+    out = json.loads(_score(RebuildPlugin(rebuild_dir=rb, repo_root=repo, run_fn=run)).content)
+    assert out["counts"]["unmet"] == 1 and out["counts"]["met"] == 0
+
+
+@pytest.mark.parametrize("entry", [
+    {"symbol": "s"},                                                    # no test
+    {"test": "cerebral/tests/test_demo.py::test_a"},                   # no symbol
+    {"symbol": "s", "test": "cerebral/tests/../../etc/passwd.py::x"},  # traversal
+    {"symbol": "s", "test": "-k evil"},                                # flag injection
+    {"symbol": "s", "test": "other/dir/test_x.py::test_a"},            # outside tests dir
+    {"symbol": "s", "test": "cerebral/tests/test_missing.py::test_a"}, # file missing
+])
+def test_bad_manifest_entries_are_unmet_and_never_run(tmp_path, entry):
+    rb = _spec_dir(tmp_path, [_fact("F-a")])
+    repo = _repo(tmp_path, {"implements": {"F-a": entry}})
+    run, calls = _runner(0)
+    out = json.loads(_score(RebuildPlugin(rebuild_dir=rb, repo_root=repo, run_fn=run)).content)
+    assert out["counts"]["unmet"] == 1 and calls == []
+
+
+def test_missing_manifest_and_missing_spec(tmp_path):
+    rb = _spec_dir(tmp_path, [_fact("F-a")])
+    run, calls = _runner(0)
+    plugin = RebuildPlugin(rebuild_dir=rb, repo_root=_repo(tmp_path), run_fn=run)
+    out = json.loads(_score(plugin).content)
+    assert out["counts"]["unmet"] == 1 and calls == []
+    res = asyncio.run(RebuildPlugin(rebuild_dir=tmp_path / "none", run_fn=run)
+                      .call_tool("rebuild_score", {"name": "demo"}))
+    assert res.is_error and "no spec" in res.content
+
+
+def test_score_rejects_bad_name(tmp_path):
+    res = asyncio.run(RebuildPlugin(rebuild_dir=tmp_path).call_tool("rebuild_score", {"name": "../x"}))
+    assert res.is_error
