@@ -15,6 +15,8 @@ Tool: rebuild_new.
 """
 import json
 import re
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +31,16 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write"})
 _DATA = Path(__file__).resolve().parent.parent / "cerebral" / "data"
 _DEFAULT_RUN_DIR = _DATA / "rea_runs"
 _DEFAULT_REBUILD_DIR = _DATA / "rebuilds"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# A build declares which spec facts it implements in a manifest committed with
+# the built code: plugins/rebuild_manifests/<name>.json
+#   {"implements": {"F-ipc-channel-1": {"symbol": "plugins/x.py::tool", "test":
+#    "cerebral/tests/test_x.py::test_case"}}, "waived": {"F-storage-2": "reason"}}
+_MANIFEST_DIR = "plugins/rebuild_manifests"
+_TEST_ID_RE = re.compile(r"^cerebral/tests/[A-Za-z0-9_./-]+\.py::[A-Za-z0-9_\[\]-]+$")
+_TEST_TIMEOUT_S = 180
+_MAX_TESTS = 60
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _RUN_RE = re.compile(r"^[0-9a-f]{12}$")
@@ -116,9 +128,17 @@ def facts_from_graph(graph: dict) -> list[dict]:
 class RebuildPlugin:
     name = PLUGIN_NAME
 
-    def __init__(self, run_dir: Path | None = None, rebuild_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        run_dir: Path | None = None,
+        rebuild_dir: Path | None = None,
+        repo_root: Path | None = None,
+        run_fn=None,
+    ) -> None:
         self._run_dir = Path(run_dir) if run_dir else _DEFAULT_RUN_DIR
         self._rebuild_dir = Path(rebuild_dir) if rebuild_dir else _DEFAULT_REBUILD_DIR
+        self._repo_root = Path(repo_root) if repo_root else _REPO_ROOT
+        self._run_fn = run_fn or subprocess.run
 
     def list_tools(self) -> list[Tool]:
         return [
@@ -149,12 +169,31 @@ class RebuildPlugin:
                     "required": ["name", "run_id"],
                 },
             ),
+            Tool(
+                name="rebuild_score",
+                description=(
+                    "Score a rebuild: for each fact in its spec, is it implemented and tested? "
+                    "Reads the build's manifest (plugins/rebuild_manifests/<name>.json), runs the "
+                    "referenced tests, writes scorecard.json and returns the coverage and the "
+                    "unmet facts. Static coverage of the evidence only, not behavioural equivalence."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "The rebuild's name."},
+                    },
+                    "required": ["name"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         args = args or {}
         if tool_name == "rebuild_new":
             return self._new(args.get("name"), args.get("run_id"), args.get("feature"))
+        if tool_name == "rebuild_score":
+            return self._score(args.get("name"))
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _new(self, name, run_id, feature) -> ToolResult:
@@ -205,6 +244,111 @@ class RebuildPlugin:
             "spec_path": str(spec_path),
             "counts": counts,
             "fact_total": len(facts),
+        }))
+
+
+
+    # -- scoring (RB2) ---------------------------------------------------
+
+    def _load_manifest(self, name: str) -> dict:
+        path = self._repo_root / _MANIFEST_DIR / f"{name}.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _check_entry(self, entry: dict, budget: list) -> tuple[str, str]:
+        """('met'|'unmet', why) for one manifest 'implements' entry."""
+        symbol, test = entry.get("symbol"), entry.get("test")
+        if not isinstance(symbol, str) or not symbol.strip():
+            return "unmet", "manifest entry has no symbol"
+        if not isinstance(test, str) or not _TEST_ID_RE.match(test):
+            return "unmet", "manifest entry has no valid test id"
+        test_file = (self._repo_root / test.split("::")[0]).resolve()
+        try:
+            test_file.relative_to(self._repo_root.resolve())
+        except ValueError:
+            return "unmet", "test path is outside the repository"
+        if not test_file.is_file():
+            return "unmet", "referenced test file does not exist"
+        if budget[0] <= 0:
+            return "unmet", "test budget exceeded; score again"
+        budget[0] -= 1
+        try:
+            proc = self._run_fn(
+                [sys.executable, "-m", "pytest", "-q", "-x", test],
+                cwd=str(self._repo_root), capture_output=True, text=True,
+                timeout=_TEST_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return "unmet", "referenced test timed out"
+        except Exception as exc:
+            return "unmet", f"referenced test could not run: {_clip(exc)}"
+        if proc.returncode != 0:
+            return "unmet", "referenced test failed or was not found"
+        return "met", "implemented and its test passes"
+
+    def _score(self, name) -> ToolResult:
+        if not isinstance(name, str) or not _NAME_RE.match(name):
+            return ToolResult(
+                content="'name' must be 1-40 chars of lowercase letters, digits and dashes",
+                is_error=True,
+            )
+        spec_path = self._rebuild_dir / name / "spec.json"
+        try:
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ToolResult(content=f"no spec for rebuild '{name}'", is_error=True)
+        manifest = self._load_manifest(name)
+        implements = manifest.get("implements") if isinstance(manifest.get("implements"), dict) else {}
+        waived = manifest.get("waived") if isinstance(manifest.get("waived"), dict) else {}
+
+        budget = [_MAX_TESTS]
+        results = []
+        for fact in spec.get("facts") or []:
+            fid = fact.get("id")
+            entry = implements.get(fid)
+            reason = waived.get(fid)
+            if isinstance(entry, dict):
+                status, why = self._check_entry(entry, budget)
+            elif isinstance(reason, str) and reason.strip():
+                status, why = "waived", _clip(reason)
+            elif fact.get("confidence") != "exact":
+                status, why = "unknown", "REA was not certain about this fact"
+            else:
+                status, why = "unmet", "not in the manifest"
+            results.append({
+                "id": fid, "kind": fact.get("kind"), "label": _clip(fact.get("label")),
+                "status": status, "why": why,
+            })
+
+        counts = {"met": 0, "unmet": 0, "unknown": 0, "waived": 0}
+        for r in results:
+            counts[r["status"]] += 1
+        scorable = counts["met"] + counts["unmet"]
+        card = {
+            "version": 1,
+            "name": name,
+            "scored_at": datetime.now(timezone.utc).isoformat(),
+            "counts": counts,
+            "total": len(results),
+            "percent_met": round(100.0 * counts["met"] / scorable, 1) if scorable else None,
+            "facts": results,
+            "note": (
+                "Static coverage of REA's observed facts only. 'met' means a manifest entry "
+                "exists and its test passes; it does not show the copy behaves the same."
+            ),
+        }
+        (self._rebuild_dir / name).mkdir(parents=True, exist_ok=True)
+        (self._rebuild_dir / name / "scorecard.json").write_text(json.dumps(card, indent=2), encoding="utf-8")
+        return ToolResult(content=json.dumps({
+            "name": name,
+            "counts": counts,
+            "total": card["total"],
+            "percent_met": card["percent_met"],
+            "unmet": [r for r in results if r["status"] == "unmet"][:20],
+            "scorecard_path": str(self._rebuild_dir / name / "scorecard.json"),
         }))
 
 
