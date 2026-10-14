@@ -13565,7 +13565,9 @@
 
       _wsSecondaryEl.hidden = openIds.length === 0;
       _wsSplitterEl.hidden  = openIds.length === 0;
-      _wsTabsEl.hidden      = openIds.length < 2;
+      // Always show the strip (even for one panel): it carries the detach and
+      // close controls, so a lone panel could not be closed otherwise.
+      _wsTabsEl.hidden      = openIds.length < 1;
 
       _wsTabsEl.innerHTML = '';
       openIds.forEach(function (id) {
