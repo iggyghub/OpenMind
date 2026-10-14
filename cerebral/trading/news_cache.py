@@ -1,8 +1,7 @@
 """News cache for historical replay (RP8).
 
 Uses the same `bars.db` as `bar_cache.py`. Fetches via Alpaca's real News
-API (`alpaca.data.historical.news.NewsClient`) with manual pagination
-(unlike bars, the SDK does not auto-paginate news), dedupes on
+API (`alpaca.data.historical.news.NewsClient`), letting the SDK paginate, dedupes on
 `article_id`, and gap-fills on refetch the same way `bar_cache.get_bars`
 does -- including `bar_cache`'s `covered_from`/backfill tracking (added
 2026-09-23 after a real bug: gap-fill only ever reached FORWARD from the
@@ -55,8 +54,18 @@ def init_news_db(db_path: "str | None" = None) -> str:
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
+        # One-time invalidation: every row cached before the 2026-09-25 pagination fix is
+        # truncated to 50 articles per fetch, yet news_cover marks it complete. Wipe once so
+        # the next fetch_news per symbol re-backfills in full.
+        fresh = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'news_paging_fixed'"
+        ).fetchone() is None
         conn.execute(NEWS_TABLE)
         conn.execute(NEWS_COVER_TABLE)
+        if fresh:
+            conn.execute("DELETE FROM news")
+            conn.execute("DELETE FROM news_cover")
+            conn.execute("CREATE TABLE news_paging_fixed (x)")
         conn.commit()
     finally:
         conn.close()
@@ -90,9 +99,8 @@ def fetch_news(
     client: object = None, db_path: "str | None" = None,
 ) -> list:
     """Fetch historical news for `symbol` over [start, end], caching into
-    the news table. Implements manual pagination via next_page_token --
-    unlike bars, Alpaca's News API does not auto-paginate. Dedupes on
-    article id. Only fetches the gap between the cached max day and `end`
+    the news table. Pagination is the SDK's own (no `limit` -- see the
+    comment at the call). Dedupes on article id. Only fetches the gap between the cached max day and `end`
     (same gap-fill convention as bar_cache.get_bars).
 
     Returns the list of newly-fetched article objects (real News model
@@ -131,32 +139,16 @@ def fetch_news(
             api_key, api_secret = _get_alpaca_credentials("paper")
             client = NewsClient(api_key, api_secret)
 
-        next_token = None
-        new_articles = []
-        seen_ids = set()
-
-        while True:
-            from alpaca.data.requests import NewsRequest
-            req = NewsRequest(
-                symbols=symbol, start=fetch_start, end=end,
-                limit=50, page_token=next_token,
-            )
-            news_set = client.get_news(req)
-            # Real NewsSet.data == {"news": [News, ...]}; tolerate a plain
-            # dict-shaped fake in tests that skips the real Pydantic model.
-            articles = news_set.data.get("news", []) if hasattr(news_set, "data") else []
-            if not articles:
-                break
-
-            for a in articles:
-                aid = a.id
-                if aid not in seen_ids:
-                    seen_ids.add(aid)
-                    new_articles.append(a)
-
-            next_token = getattr(news_set, "next_page_token", None)
-            if not next_token:
-                break
+        # No `limit`: alpaca-py's NewsRequest.limit is a TOTAL cap, not a page size -- the SDK
+        # pages internally (and swallows next_page_token, so NewsSet never exposes it). The old
+        # limit=50 + manual next_page_token loop silently stopped at 50 articles per fetch
+        # (verified 2026-09-25: 50 vs 662 for 2016-03-15). Omitting it pages to exhaustion.
+        from alpaca.data.requests import NewsRequest
+        news_set = client.get_news(NewsRequest(symbols=symbol, start=fetch_start, end=end))
+        # Real NewsSet.data == {"news": [News, ...]}; tolerate a plain
+        # dict-shaped fake in tests that skips the real Pydantic model.
+        articles = news_set.data.get("news", []) if hasattr(news_set, "data") else []
+        new_articles = list({a.id: a for a in articles}.values())  # dedupe on article id
 
         for a in new_articles:
             article_id = str(a.id)
