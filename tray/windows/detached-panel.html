@@ -156,6 +156,14 @@
       },
       onClose: () => { dpStatus.textContent = 'Reconnecting…'; },
       onMessage: (event) => {
+        // A clicked action stays on "Working..." until its tool result; settle
+        // it, and re-request the spec so lists (e.g. recent runs) refresh.
+        if (event.type === 'tool_result') {
+          if (window.ActionWidget.settle((event.data || {}).name) && pluginId) {
+            sendEvent({ type: 'plugins:panel_spec', data: { plugin_name: pluginId } });
+          }
+          return;
+        }
         if (event.type !== 'plugins:panel_spec') return;
         const d = event.data || {};
         if (d.plugin_name !== pluginId) return;

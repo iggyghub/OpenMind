@@ -7599,6 +7599,13 @@
           }
           break;
         case 'tool_result':
+          // Clear any panel action button still on "Working..." for this tool
+          // (cancelled picker, error, no-change result) and refresh the open
+          // workspace panel.
+          if (window.ActionWidget && event.data && window.ActionWidget.settle(event.data.name)
+              && window._wsRefreshActivePanel) {
+            window._wsRefreshActivePanel();
+          }
           // Trading pane create-strategy form: run_gauntlet's real result
           // (verdict/gates JSON, or a validation error) via the generic
           // call_tool -> tool_result round trip every tray-IPC tool call
@@ -13686,6 +13693,10 @@
     // Expose for handleEvent switch below.
     window._wsOnPluginsPanels    = _onPluginsPanels;
     window._wsOnPluginPanelSpec  = _onPluginPanelSpec;
+    window._wsRefreshActivePanel = function () {
+      const id = _wsMod.readState().active;
+      if (id && !_wsBuiltinDef(id) && _wsPanelDef(id)) _requestPanelSpec(id);
+    };
 
     // Reclaims a borrowed built-in section when its library tab is clicked:
     // closes the workspace panel, which returns the node home. Exposed on
