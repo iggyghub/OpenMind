@@ -113,6 +113,41 @@ def test_bad_names_rejected(tmp_path, name):
     res = _call(RebuildPlugin(run_dir=runs, rebuild_dir=tmp_path / "rb"),
                 {"name": name, "run_id": "0123456789ab"})
     assert res.is_error
+
+
+# ---------------------------------------------------------------------------
+# RB1b -- scoped specs
+# ---------------------------------------------------------------------------
+
+def test_scope_keeps_matching_facts_with_stable_ids(tmp_path):
+    runs = _make_run(tmp_path, _graph())
+    plugin = RebuildPlugin(run_dir=runs, rebuild_dir=tmp_path / "rb")
+    full = json.loads(Path(json.loads(_call(plugin, {"name": "full", "run_id": "0123456789ab"}).content)
+                           ["spec_path"]).read_text(encoding="utf-8"))
+    res = _call(plugin, {"name": "part", "run_id": "0123456789ab", "scope": ["APP:SAVE", "api"]})
+    assert not res.is_error
+    spec = json.loads(Path(json.loads(res.content)["spec_path"]).read_text(encoding="utf-8"))
+    assert spec["scope"] == ["app:save", "api"]
+    ids = sorted(f["id"] for f in spec["facts"])
+    assert ids == ["F-bridge-api-1", "F-ipc-channel-1", "F-ipc-handler-1"]
+    full_by_id = {f["id"]: f for f in full["facts"]}
+    assert all(full_by_id[f["id"]]["label"] == f["label"] for f in spec["facts"])
+
+
+@pytest.mark.parametrize("scope", ["app", [""], [1], ["x"] * 11, ["y" * 81]])
+def test_bad_scope_rejected(tmp_path, scope):
+    runs = _make_run(tmp_path, _graph())
+    res = _call(RebuildPlugin(run_dir=runs, rebuild_dir=tmp_path / "rb"),
+                {"name": "demo", "run_id": "0123456789ab", "scope": scope})
+    assert res.is_error and "scope" in res.content
+
+
+def test_no_scope_means_everything(tmp_path):
+    runs = _make_run(tmp_path, _graph())
+    res = _call(RebuildPlugin(run_dir=runs, rebuild_dir=tmp_path / "rb"),
+                {"name": "demo", "run_id": "0123456789ab"})
+    spec = json.loads(Path(json.loads(res.content)["spec_path"]).read_text(encoding="utf-8"))
+    assert len(spec["facts"]) == 6 and spec["scope"] is None
     assert not (tmp_path / "rb").exists()
 
 
