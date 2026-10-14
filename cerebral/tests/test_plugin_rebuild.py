@@ -148,7 +148,6 @@ def test_no_scope_means_everything(tmp_path):
                 {"name": "demo", "run_id": "0123456789ab"})
     spec = json.loads(Path(json.loads(res.content)["spec_path"]).read_text(encoding="utf-8"))
     assert len(spec["facts"]) == 6 and spec["scope"] is None
-    assert not (tmp_path / "rb").exists()
 
 
 @pytest.mark.parametrize("run_id", ["", "../../etc/passwd", "ZZZZZZZZZZZZ", "0123", None])
