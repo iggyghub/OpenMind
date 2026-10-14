@@ -290,6 +290,23 @@ class ReaPlugin:
             })
         return {"title": "REA", "widgets": widgets}
 
+    def _browse_analyze(self, kind) -> ToolResult:
+        if kind not in ("folder", "file"):
+            return ToolResult(content="'kind' must be 'folder' or 'file'", is_error=True)
+        try:
+            proc = self._exec([sys.executable, "-c", _PICK_CODE, kind], timeout=_PICK_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            return ToolResult(content="file picker timed out", is_error=True)
+        except Exception as exc:
+            return ToolResult(content=f"file picker failed to start: {exc}", is_error=True)
+        if proc.returncode != 0:
+            tail = (proc.stderr or "")[-300:]
+            return ToolResult(content=f"file picker failed: {tail}", is_error=True)
+        chosen = (proc.stdout or "").strip()
+        if not chosen:
+            return ToolResult(content="No path chosen; nothing analysed.")
+        return self._analyze_javascript(os.path.normpath(chosen))
+
     def _analyze_javascript(self, path) -> ToolResult:
         if not isinstance(path, str) or not path.strip():
             return ToolResult(content="'path' is required", is_error=True)
