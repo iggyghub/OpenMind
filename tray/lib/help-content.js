@@ -191,6 +191,7 @@
           '- Recent runs are listed in the panel, newest first.',
           '- REA needs a recent Node (22.19, 24.11 or 26 and later). Felix uses the version of REA it was tested against and tells you if a different one is installed.',
           '- You can also just ask Felix, for example "put Signal through REA". Felix looks up installed Electron apps by name, then analyses the one you named.',
+          '- Rebuild: after an analysis you can ask Felix to start a rebuild from it. That writes a numbered checklist of what REA observed (windows, IPC channels, bridge APIs, endpoints, storage) under cerebral/data/rebuilds. It is static evidence only; it does not prove the app behaves a certain way.',
           '- Native binaries, websites and .NET programs are not covered yet.'
         ],
         see_also: ['tools-and-plugins', 'permissions-and-consent']
