@@ -299,6 +299,7 @@
         body: [
           '- Felix can change its own code. A self-dev run clones the repository into the sandbox folder, never touching the running copy, makes one bounded change, and runs the full test suites there.',
           '- The result is a pull request. It is merged only if the tests pass, after which Felix pulls the change and restarts.',
+          '- Felix also restarts itself within about five minutes whenever new code reaches master from anywhere else. To hold that, tick "Pause auto-restart on updates" in the tray menu; an "update waiting" line appears there, and Restart Felix applies it.',
           '- After a self-dev restart the launcher runs a boot self-check. If Felix fails to come up healthy, it rolls back to the previous version automatically and keeps a copy of any uncommitted work.',
           '- The model that writes the change is whichever you pick for self-dev in Settings > AI models. The safety checks do not depend on which model wrote it.',
           '- Adding a plugin is a different, lighter path, which needs no restart.'
