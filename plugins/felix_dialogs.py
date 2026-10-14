@@ -7,7 +7,10 @@ from typing import Any, Optional
 from cerebral.mcp.orchestrator import Tool, ToolResult
 
 PLUGIN_NAME = "felix_dialogs"
-REQUIRED_CAPABILITIES = frozenset({"fs_read"})
+# fs_write is declared because the dialog subprocess is launched through run_fn and a
+# save dialog can name a new file; the AST completeness check requires one of the
+# process/file-write classes for any subprocess call (same as plugins/rea.py).
+REQUIRED_CAPABILITIES = frozenset({"fs_read", "fs_write"})
 
 
 class FelixDialogsPlugin:
