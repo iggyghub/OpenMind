@@ -153,6 +153,15 @@
     .hub-tile { padding: 14px 18px; min-width: 140px; border: 1px solid var(--border);
       border-radius: 8px; background: var(--bg-elev); color: var(--text); cursor: pointer; }
     .hub-tile:hover { border-color: var(--accent); }
+    .hub-head { display: flex; align-items: center; gap: 8px; }
+    .hub-cog { background: none; border: 1px solid transparent; color: var(--text);
+      font-size: 18px; line-height: 1; padding: 4px 8px; border-radius: 6px; cursor: pointer; }
+    .hub-cog:hover, .hub-cog[aria-expanded="true"] { border-color: var(--border); background: var(--bg-elev); }
+    .hub-prefs { margin: 0 0 16px; padding: 12px; max-width: 420px; border: 1px solid var(--border);
+      border-radius: 8px; background: var(--bg-elev); }
+    .hub-prefs-search { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+    .hub-prefs-list { max-height: 240px; overflow-y: auto; }
+    .hub-pref-row { display: flex; align-items: center; gap: 8px; padding: 6px 2px; cursor: pointer; }
     .nav-item.active {
       background: var(--bg-elev);
       color: var(--text);
@@ -6764,8 +6773,15 @@
     <!-- #1421 (ADR-0039): Hub -- one tile per plugin-declared panel. -->
     <section class="pane" data-route="hub" hidden>
       <div class="hub-wrap">
-        <h2 class="hub-title">Hub</h2>
-        <p class="hub-sub">GUI plugins. Click a tile to open it beside the conversation.</p>
+        <div class="hub-head">
+          <h2 class="hub-title">Hub</h2>
+          <button type="button" class="hub-cog" id="hub-cog" title="Window settings: choose which plugins open in their own window" aria-label="Window settings" aria-expanded="false">&#9881;</button>
+        </div>
+        <p class="hub-sub">GUI plugins. Click a tile to open it beside the conversation, or in its own window if you set it to.</p>
+        <div class="hub-prefs" id="hub-prefs" hidden>
+          <input type="search" class="hub-prefs-search" id="hub-prefs-search" placeholder="Search plugins..." autocomplete="off" spellcheck="false" />
+          <div class="hub-prefs-list" id="hub-prefs-list"></div>
+        </div>
         <div class="hub-tiles" id="hub-tiles"></div>
       </div>
     </section>
@@ -6817,6 +6833,10 @@
   <!-- Sidebar nav order (#1422) -- drag / Alt+Arrow reordering of the
        sidebar buttons, persisted in localStorage. Dual-mode: window.NavOrder. -->
   <script src="../lib/nav-order.js"></script>
+
+  <!-- Per-plugin window preference + narrow-window rule (Hub cog).
+       Dual-mode: window.PanelPrefs. -->
+  <script src="../lib/panel-prefs.js"></script>
 
   <!-- Federated search registry (S4 -- #287) -- providers + ranking.
        Dual-mode: feeds Node test suite via require() and this renderer via
@@ -13337,13 +13357,72 @@
         tile.dataset.hubPlugin = p.plugin_name;
         tile.textContent = p.title || p.plugin_name;
         tile.addEventListener('click', function () {
-          _wsMod.open(p.plugin_name);
-          _renderWorkspace();
-          location.hash = '#conversation';
+          if (!_openPanel(p.plugin_name)) location.hash = '#conversation';
         });
         el.appendChild(tile);
       });
     }
+
+    // Opens a panel: in its own window when the user chose that for this
+    // plugin (Hub cog) or the window is narrow, otherwise in the workspace
+    // slot. Returns true when it detached.
+    function _openPanel(id) {
+      const PP = window.PanelPrefs;
+      const detach = PP.shouldDetach({
+        pref: PP.getPref(window.localStorage, id),
+        isBuiltin: !!_wsBuiltinDef(id),
+        width: window.innerWidth,
+      });
+      if (detach) { _detachPanel(id); return true; }
+      _wsMod.open(id);
+      _renderWorkspace();
+      return false;
+    }
+
+    // Hub cog popover: searchable list, one checkbox per plugin panel.
+    function _renderHubPrefs() {
+      const list = document.getElementById('hub-prefs-list');
+      if (!list) return;
+      const PP = window.PanelPrefs;
+      const search = document.getElementById('hub-prefs-search');
+      const rows = PP.filterPanels(_wsPanels, search ? search.value : '');
+      list.innerHTML = '';
+      if (rows.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'ps-empty';
+        empty.textContent = 'No matching plugins.';
+        list.appendChild(empty);
+        return;
+      }
+      rows.forEach(function (p) {
+        const row = document.createElement('label');
+        row.className = 'hub-pref-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = PP.getPref(window.localStorage, p.plugin_name) === 'window';
+        cb.addEventListener('change', function () {
+          PP.setPref(window.localStorage, p.plugin_name, cb.checked ? 'window' : 'inline');
+        });
+        const name = document.createElement('span');
+        name.textContent = (p.title || p.plugin_name) + ' - open in its own window';
+        row.appendChild(cb);
+        row.appendChild(name);
+        list.appendChild(row);
+      });
+    }
+
+    (function () {
+      const cog = document.getElementById('hub-cog');
+      const box = document.getElementById('hub-prefs');
+      const search = document.getElementById('hub-prefs-search');
+      if (!cog || !box) return;
+      cog.addEventListener('click', function () {
+        box.hidden = !box.hidden;
+        cog.setAttribute('aria-expanded', String(!box.hidden));
+        if (!box.hidden) _renderHubPrefs();
+      });
+      if (search) search.addEventListener('input', _renderHubPrefs);
+    })();
 
     function _requestPanelSpec(pluginName) {
       _wsActivePluginRequested = pluginName;
@@ -13502,9 +13581,8 @@
       _wsOpenerSel.addEventListener('change', function () {
         const id = _wsOpenerSel.value;
         if (!id) return;
-        _wsMod.open(id);
         _wsOpenerSel.value = '';
-        _renderWorkspace();
+        _openPanel(id);
       });
     }
 
@@ -13514,6 +13592,7 @@
       _wsPanels = Array.isArray(panels) ? panels : [];
       _updateWsOpener();
       _renderHub();
+      _renderHubPrefs();
       _renderWorkspace();
     }
     function _onPluginPanelSpec(pluginName, spec) {
