@@ -230,14 +230,17 @@ function _doRollback({ dataDir, sha, backupTs, last_backup, copyFileFn, gitReset
  *   gitMergeFfOnlyFn(sha) -- (sha: string) => void, throws if not ff-able
  *   bootSha               -- sha this process booted with
  *   isIdle                -- true when Felix isn't mid-response/mid-chain
+ *   paused                -- (optional, default false) user paused auto-restart
  *
  * Returns one of:
  *   { action: 'none' }                 -- nothing new
  *   { action: 'restart' }              -- new commits, Felix idle -> restart now
  *   { action: 'defer' }                -- new commits, Felix active -> wait for idle
+ *   { action: 'paused' }               -- new commits, but auto-restart is paused:
+ *                                         fast-forward already happened, do not restart
  *   { action: 'skip', reason: string } -- fetch/rev-parse/merge failed; try again later
  */
-function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, gitMergeBaseFn, bootSha, isIdle }) {
+function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, gitMergeBaseFn, bootSha, isIdle, paused = false }) {
   try {
     gitFetchFn();
   } catch (e) {
@@ -278,7 +281,8 @@ function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, gitMergeB
     return { action: 'none' };
   }
 
-  return { action: isIdle ? 'restart' : 'defer' };
+  if (paused) return { action: 'paused' };
+return { action: isIdle ? 'restart' : 'defer' };
 }
 
 function isCodeLoad(reason) {
