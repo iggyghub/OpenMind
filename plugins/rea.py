@@ -40,6 +40,22 @@ REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read", "fs_write"})
 
 _DEFAULT_RUN_DIR = Path(__file__).resolve().parent.parent / "cerebral" / "data" / "rea_runs"
 
+# rea_find_apps: where installed Electron apps usually keep resources/app.asar.
+# Depth is counted in directories below the root: Discord/app-1.0/resources.
+_FIND_DEPTH = 3
+_FIND_SKIP = {"node_modules", "temp", "cache", "code cache", "gpucache", ".git"}
+
+
+def _default_app_roots() -> list[Path]:
+    roots = []
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        roots += [Path(local) / "Programs", Path(local)]
+    for var in ("ProgramFiles", "ProgramFiles(x86)"):
+        if os.environ.get(var):
+            roots.append(Path(os.environ[var]))
+    return roots
+
 # REA's engines.node is "^22.19 || ^24.11 || >=26".
 _NODE_MIN = {22: 19, 24: 11}
 _NODE_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
@@ -84,9 +100,15 @@ def _node_ok(version: str) -> bool:
 class ReaPlugin:
     name = PLUGIN_NAME
 
-    def __init__(self, run_fn: Callable | None = None, run_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        run_fn: Callable | None = None,
+        run_dir: Path | None = None,
+        app_roots: list | None = None,
+    ) -> None:
         self._run_fn = run_fn or subprocess.run
         self._run_dir = Path(run_dir) if run_dir else _DEFAULT_RUN_DIR
+        self._app_roots = [Path(r) for r in app_roots] if app_roots is not None else _default_app_roots()
         self._status_cache: tuple[float, dict] | None = None
 
     def list_tools(self) -> list[Tool]:
@@ -121,6 +143,23 @@ class ReaPlugin:
                 },
             ),
             Tool(
+                name="rea_find_apps",
+                description=(
+                    "List installed Electron apps (their resources/app.asar) so a program "
+                    "can be analysed by name. Optional query filters by name."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Case-insensitive part of the app name, e.g. signal.",
+                        },
+                    },
+                },
+            ),
+            Tool(
                 name="rea_browse_analyze",
                 description=(
                     "Open a native file/folder picker on this computer, then analyse the "
@@ -147,6 +186,8 @@ class ReaPlugin:
             return self._status()
         if tool_name == "rea_analyze_javascript":
             return self._analyze_javascript(args.get("path"))
+        if tool_name == "rea_find_apps":
+            return self._find_apps(args.get("query"))
         if tool_name == "rea_browse_analyze":
             return self._browse_analyze(args.get("kind"))
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
@@ -289,6 +330,45 @@ class ReaPlugin:
                 "widgets": [{"type": "list", "items": items}],
             })
         return {"title": "REA", "widgets": widgets}
+
+    def _find_apps(self, query) -> ToolResult:
+        q = str(query or "").strip().lower()
+        best: dict[str, tuple[float, Path]] = {}  # app name -> (mtime, asar)
+        seen: set = set()  # roots overlap (LOCALAPPDATA contains Programs)
+        for root in self._app_roots:
+            if not root.is_dir():
+                continue
+            base_depth = len(root.parts)
+            for dirpath, dirnames, filenames in os.walk(root):
+                here = Path(dirpath)
+                depth = len(here.parts) - base_depth
+                dirnames[:] = [
+                    d for d in dirnames
+                    if d.lower() not in _FIND_SKIP and depth < _FIND_DEPTH
+                ]
+                if "app.asar" in filenames and here.name.lower() == "resources":
+                    asar = here / "app.asar"
+                    if asar in seen:
+                        continue
+                    seen.add(asar)
+                    rel = asar.relative_to(root).parts
+                    name = rel[0]
+                    try:
+                        mtime = asar.stat().st_mtime
+                    except OSError:
+                        continue
+                    if name not in best or mtime > best[name][0]:
+                        best[name] = (mtime, asar)
+        apps = []
+        for name, (_mtime, asar) in sorted(best.items(), key=lambda kv: kv[0].lower()):
+            if q and q not in name.lower():
+                continue
+            try:
+                size_mb = round(asar.stat().st_size / 1048576, 1)
+            except OSError:
+                size_mb = None
+            apps.append({"name": name, "path": str(asar), "size_mb": size_mb})
+        return ToolResult(content=json.dumps({"apps": apps}))
 
     def _browse_analyze(self, kind) -> ToolResult:
         if kind not in ("folder", "file"):

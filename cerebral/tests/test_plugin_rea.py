@@ -33,7 +33,7 @@ def test_required_capabilities_and_name():
     assert isinstance(REQUIRED_CAPABILITIES, frozenset) and REQUIRED_CAPABILITIES
     assert create().name == "rea"
     assert {t.name for t in create().list_tools()} == {
-        "rea_status", "rea_analyze_javascript", "rea_browse_analyze",
+        "rea_status", "rea_analyze_javascript", "rea_browse_analyze", "rea_find_apps",
     }
 
 
@@ -215,6 +215,51 @@ def test_browse_analyze_cancelled_is_not_an_error(tmp_path):
     plugin = ReaPlugin(run_fn=_browse_runner("", {}), run_dir=tmp_path)
     res = _call(plugin, "rea_browse_analyze", {"kind": "file"})
     assert not res.is_error and "No path chosen" in res.content
+
+
+def _make_app(root, name, version_dir=None, size=10):
+    res = root / name / (version_dir or "") / "resources"
+    res.mkdir(parents=True)
+    asar = res / "app.asar"
+    asar.write_bytes(b"x" * size)
+    return asar
+
+
+def test_find_apps_lists_by_name_and_filters(tmp_path):
+    _make_app(tmp_path, "signal-desktop")
+    _make_app(tmp_path, "Discord", "app-1.0.9262")
+    (tmp_path / "NotElectron").mkdir()
+    plugin = ReaPlugin(app_roots=[tmp_path])
+    res = _call(plugin, "rea_find_apps", {})
+    names = [a["name"] for a in json.loads(res.content)["apps"]]
+    assert names == ["Discord", "signal-desktop"]
+    res = _call(plugin, "rea_find_apps", {"query": "SIGN"})
+    apps = json.loads(res.content)["apps"]
+    assert [a["name"] for a in apps] == ["signal-desktop"]
+    assert apps[0]["path"].endswith("app.asar")
+
+
+def test_find_apps_keeps_only_the_newest_version(tmp_path):
+    import os
+    old = _make_app(tmp_path, "Discord", "app-1.0.9261")
+    new = _make_app(tmp_path, "Discord", "app-1.0.9262")
+    os.utime(old, (1000, 1000))
+    os.utime(new, (2000, 2000))
+    apps = json.loads(_call(ReaPlugin(app_roots=[tmp_path]), "rea_find_apps", {}).content)["apps"]
+    assert len(apps) == 1 and "9262" in apps[0]["path"]
+
+
+def test_find_apps_overlapping_roots_do_not_duplicate(tmp_path):
+    _make_app(tmp_path / "Programs", "signal-desktop")
+    plugin = ReaPlugin(app_roots=[tmp_path / "Programs", tmp_path])
+    apps = json.loads(_call(plugin, "rea_find_apps", {}).content)["apps"]
+    assert [a["name"] for a in apps] == ["signal-desktop"]
+
+
+def test_find_apps_skips_node_modules_and_missing_roots(tmp_path):
+    _make_app(tmp_path / "node_modules", "hidden")
+    plugin = ReaPlugin(app_roots=[tmp_path, tmp_path / "does-not-exist"])
+    assert json.loads(_call(plugin, "rea_find_apps", {}).content) == {"apps": []}
 
 
 def test_browse_analyze_rejects_bad_kind(tmp_path):
