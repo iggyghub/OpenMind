@@ -165,6 +165,15 @@ class RebuildPlugin:
                             "type": "string",
                             "description": "Optional one-line name of the feature being rebuilt.",
                         },
+                        "scope": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional: keep only facts whose label or details contain one of "
+                                "these case-insensitive terms (max 10), e.g. ['ui-editor', 'felixDialogs']. "
+                                "Fact ids stay the same as in the full run."
+                            ),
+                        },
                     },
                     "required": ["name", "run_id"],
                 },
@@ -191,12 +200,12 @@ class RebuildPlugin:
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         args = args or {}
         if tool_name == "rebuild_new":
-            return self._new(args.get("name"), args.get("run_id"), args.get("feature"))
+            return self._new(args.get("name"), args.get("run_id"), args.get("feature"), args.get("scope"))
         if tool_name == "rebuild_score":
             return self._score(args.get("name"))
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
-    def _new(self, name, run_id, feature) -> ToolResult:
+    def _new(self, name, run_id, feature, scope=None) -> ToolResult:
         if not isinstance(name, str) or not _NAME_RE.match(name):
             return ToolResult(
                 content="'name' must be 1-40 chars of lowercase letters, digits and dashes",
@@ -216,6 +225,22 @@ class RebuildPlugin:
             return ToolResult(content="this run has no application graph to build a spec from", is_error=True)
 
         facts = facts_from_graph(graph)
+        terms = []
+        if scope is not None:
+            if not isinstance(scope, list) or len(scope) > 10 or not all(
+                isinstance(t, str) and 0 < len(t.strip()) <= 80 for t in scope
+            ):
+                return ToolResult(
+                    content="'scope' must be a list of at most 10 non-empty strings (max 80 chars each)",
+                    is_error=True,
+                )
+            terms = [t.strip().lower() for t in scope]
+        if terms:
+            # Ids were assigned over the whole run, so they stay stable under any scope.
+            facts = [
+                f for f in facts
+                if any(t in (f["label"] + " " + json.dumps(f["detail"])).lower() for t in terms)
+            ]
         counts: dict[str, int] = {}
         for fact in facts:
             counts[fact["kind"]] = counts.get(fact["kind"], 0) + 1
@@ -224,6 +249,7 @@ class RebuildPlugin:
             "version": 1,
             "name": name,
             "feature": _clip(feature) or None,
+            "scope": terms or None,
             "created": datetime.now(timezone.utc).isoformat(),
             "source": {
                 "run_id": run_id,
