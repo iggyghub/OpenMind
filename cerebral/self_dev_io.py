@@ -13,9 +13,14 @@ its `_default_*_fn` seams and the existing tests (which monkeypatch the global
 from __future__ import annotations
 
 import json
+import logging
+import os.path
 import re
+import shutil
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Search/replace edit block: <<<FILE: path>>> <<<SEARCH>>> .. <<<REPLACE>>> .. <<<END>>>
 # Small, escaping-free output a local model can emit reliably (whole-file JSON
@@ -35,11 +40,47 @@ _NEWFILE_BLOCK = re.compile(
 )
 
 
+def _reindent_match(body: str, search: str, replace: str) -> "str | None":
+    """Fallback for a SEARCH block whose whole indentation is shifted vs the
+    file. Matches ignoring one uniform offset (relative indentation and
+    non-blank content must match exactly; blank lines match blank lines),
+    only when exactly one region matches, and re-indents REPLACE by the same
+    offset. Returns the new body, or None (zero or several matches).
+    # ponytail: uniform offset only, not intra-block whitespace drift."""
+    s_lines = search.split("\n")
+    pre = os.path.commonprefix([l for l in s_lines if l.strip()])
+    pre = pre[:len(pre) - len(pre.lstrip())]
+    want = [l[len(pre):] if l.strip() else "" for l in s_lines]
+    lines, n, hits = body.split("\n"), len(want), []
+    for i in range(len(lines) - n + 1):
+        indent = None
+        for f, w in zip(lines[i:i + n], want):
+            if not w:
+                if f.strip():
+                    break
+                continue
+            if indent is None:
+                indent = f[:len(f) - len(w)] if f.endswith(w) else None
+                if indent is None or indent.strip():
+                    break
+            elif f != indent + w:
+                break
+        else:
+            if indent is not None:
+                hits.append((i, indent))
+    if len(hits) != 1:
+        return None
+    i, indent = hits[0]
+    new = [indent + (l[len(pre):] if l.startswith(pre) else l.lstrip()) if l.strip() else ""
+           for l in replace.split("\n")]
+    return "\n".join(lines[:i] + new + lines[i + n:])
+
+
 def apply_search_replace(
     clone_dir: Path, text: str, allowed: "set[str] | None" = None
 ) -> "list[str]":
     """Apply search/replace blocks from a model reply to files under clone_dir.
-    Exact match only; a miss is skipped (fail-safe -> no commit -> gate escalates).
+    Exact match, else a uniform-indent-offset match; a miss is skipped (fail-safe -> no commit -> gate escalates).
     Returns the list of repo-relative paths actually changed.
 
     `allowed`, when given, restricts writes to that exact set of repo-relative
@@ -51,9 +92,7 @@ def apply_search_replace(
     handling) would otherwise still get written and committed as long as its
     paths existed and its SEARCH anchors happened to match. This guard makes
     that class of reply inert instead of merely relying on the test gate to
-    catch it downstream.
-    # ponytail: exact match only; add whitespace-lenient matching if local
-    # models miss the anchor too often."""
+    catch it downstream."""
     clone_dir = Path(clone_dir)
     root = str(clone_dir.resolve())
     applied: list[str] = []
@@ -75,6 +114,11 @@ def apply_search_replace(
         if search in body:
             fp.write_text(body.replace(search, replace, 1), encoding="utf-8")
             applied.append(rel)
+        elif (new := _reindent_match(body, search, replace)) is not None:
+            fp.write_text(new, encoding="utf-8")
+            applied.append(rel)
+        else:
+            logger.info("[self_dev] SEARCH not found in %s (exact or reindented) -- block skipped", rel)
     # New-file blocks: create-only. Same path-escape guard; refuse to clobber
     # an existing file (that path is search/replace's job) so a stray NEWFILE
     # can't blank a real source file.
@@ -120,7 +164,7 @@ def git_config_get(repo_root: Path, key: str) -> str:
     """Read a git config value from a repo, or '' if unset/unavailable."""
     result = subprocess.run(
         ["git", "-C", str(repo_root), "config", key],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return result.stdout.strip() if result.returncode == 0 else ""
 
@@ -128,38 +172,40 @@ def git_config_get(repo_root: Path, key: str) -> str:
 def clone_fn(repo_url: str, dest: Path) -> None:
     """Full local git clone -- live .git is never shared with the sandbox.
 
-    A fresh clone inherits no committer identity (global config may be unset),
-    so a later commit would die with 'Author identity unknown'. Carry the live
-    repo's identity into the clone (falling back to a self-dev default).
+    `repo_url` is either Felix's own repo (the default) or an external
+    target_dir (self_dev, generalized to point at any local repo, not just
+    Felix's own -- issue #1059/#1060). A fresh clone inherits no committer
+    identity (global config may be unset), so a later commit would die with
+    'Author identity unknown'. Carry the SOURCE repo's identity/origin into
+    the clone (falling back to a self-dev default) -- source_root is
+    whichever repo was actually cloned, so this works the same way for
+    both cases.
     """
     result = subprocess.run(
         ["git", "clone", repo_url, str(dest)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"git clone failed:\n{result.stderr.strip()}")
 
-    name = git_config_get(_REPO_ROOT, "user.name") or "Felix self-dev"
-    email = git_config_get(_REPO_ROOT, "user.email") or "felix-self-dev@localhost"
+    source_root = Path(repo_url) if Path(repo_url).is_dir() else _REPO_ROOT
+    name = git_config_get(source_root, "user.name") or "Felix self-dev"
+    email = git_config_get(source_root, "user.email") or "felix-self-dev@localhost"
     for key, val in (("user.name", name), ("user.email", email)):
         subprocess.run(
             ["git", "-C", str(dest), "config", key, val],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
         )
 
-    # A clone of a local path has origin=<local path>, so `git push` / `gh pr
-    # create` have no GitHub host to target. Repoint origin at the live repo's
-    # GitHub remote so the branch + PR land upstream (the clone already holds
-    # all commits locally -- only push/PR need the network).
     origin = subprocess.run(
-        ["git", "-C", str(_REPO_ROOT), "remote", "get-url", "origin"],
-        capture_output=True, text=True,
+        ["git", "-C", str(source_root), "remote", "get-url", "origin"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     url = origin.stdout.strip()
-    if origin.returncode == 0 and url and not url.startswith(str(_REPO_ROOT)):
+    if origin.returncode == 0 and url and not url.startswith(str(source_root)):
         subprocess.run(
             ["git", "-C", str(dest), "remote", "set-url", "origin", url],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
         )
 
 
@@ -168,15 +214,15 @@ def create_branch_and_commit(clone_dir: Path, branch: str, message: str) -> bool
     was actually made (False when the working tree had no changes)."""
     subprocess.run(
         ["git", "-C", str(clone_dir), "checkout", "-b", branch],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     )
     subprocess.run(
         ["git", "-C", str(clone_dir), "add", "-A"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     )
     result = subprocess.run(
         ["git", "-C", str(clone_dir), "commit", "-m", message],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return result.returncode == 0
 
@@ -184,8 +230,53 @@ def create_branch_and_commit(clone_dir: Path, branch: str, message: str) -> bool
 _TEST_TIMEOUT_S = 1200.0  # ample for a full suite (20m); bounds a hung/runaway test
 
 
+def _changed_files_in_last_commit(clone_dir: Path) -> "list[str]":
+    """Files touched by the single commit `create_branch_and_commit` made.
+
+    Best-effort: an empty list (never an exception) on any git failure, so a
+    diff-detection bug degrades to "run pytest only", the pre-existing
+    behaviour, rather than blocking the gate.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(clone_dir), "diff-tree", "--no-commit-id",
+         "--name-only", "-r", "HEAD"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _ensure_tray_node_modules(tray_dir: Path) -> None:
+    """Link the live repo's tray/node_modules into a self-dev clone's tray/.
+
+    `node_modules` is gitignored, so a fresh `git clone` never carries it --
+    a real `npm install` would work too, but is slow, network-dependent, and
+    installs the exact packages already sitting on disk in the live repo.
+    A directory junction (no admin/Developer-Mode privilege needed on
+    Windows, unlike a true symlink) makes the clone's `tray/node_modules`
+    resolve straight through to the live copy. Best-effort: if `mklink`
+    fails or the live repo itself has no node_modules, `test_fn`'s caller
+    falls back to skipping jest, same as before this existed.
+    """
+    dest = tray_dir / "node_modules"
+    if dest.exists():
+        return
+    src = _REPO_ROOT / "tray" / "node_modules"
+    if not src.is_dir():
+        return
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(dest), str(src)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+
+
+_PYTEST_SUMMARY_RE = re.compile(r"^(=+ )?\d+ passed.* in [\d.]+s")
+
+
 def test_fn(clone_dir: Path) -> "tuple[bool, str]":
-    """Run pytest in the clone (inside the sandbox via main.py wiring).
+    """Run pytest in the clone (inside the sandbox via main.py wiring), plus
+    the tray's jest suite when the diff touches `tray/`.
 
     Runs BOTH test roots: cerebral/tests/ AND the repo-root tests/. The gate
     used to run cerebral/tests/ only, so a self-dev change that added a broken
@@ -200,21 +291,86 @@ def test_fn(clone_dir: Path) -> "tuple[bool, str]":
     handler, an unbounded hang froze the whole Cerebral event loop -- no WS, no
     heartbeats, nothing -- until someone force-killed the process. A timeout
     turns that into a failed slice instead of a dead app.
+
+    SUP-0 (ADR-0033): `tray/` is a GUARDRAIL_PATHS entry precisely because this
+    gate used to run pytest only and could not validate JS -- since the
+    2026-08-21 full-auto-merge amendment, that guardrail hit is informational
+    and no longer blocks merge, so an untested tray/ change would otherwise
+    land straight into the restart/rollback path self_dev itself depends on.
+    A diff touching `tray/` now also runs the tray's own `npm test` (jest);
+    both suites must pass.
+
+    `tray/node_modules` is gitignored, so a fresh clone never has it -- ensured
+    by linking the live repo's already-installed copy in (see
+    `_ensure_tray_node_modules`) rather than reinstalling. This used to just skip
+    jest when missing, which meant jest silently never ran on ANY self-dev
+    tray/ change: PR #1113 (SUP-2b) merged with 4 failing jest tests -- the very
+    tests it added itself -- because "missing -> skip" reported the same
+    `passed` as pytest alone, with nothing to say jest never touched the diff
+    it was meant to guard. Still skipped (not failed) if linking somehow fails
+    or `npm` is unavailable, so a genuinely broken host degrades to the old
+    pytest-only gate rather than blocking every tray/ change outright.
     """
     roots = [d for d in ("cerebral/tests/", "tests/") if (clone_dir / d).is_dir()]
     try:
         result = subprocess.run(
             ["python", "-m", "pytest", *roots, "-q", "--tb=short"],
-            capture_output=True, text=True, cwd=str(clone_dir),
-            timeout=_TEST_TIMEOUT_S,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(clone_dir), timeout=_TEST_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired as exc:
         partial = ((exc.stdout or "") + (exc.stderr or "")).strip()
         return False, (
             f"test run timed out after {_TEST_TIMEOUT_S:.0f}s -- killed\n{partial}"
         ).strip()
-    output = (result.stdout + result.stderr).strip()
-    return result.returncode == 0, output
+    passed = result.returncode == 0
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
+    if not passed:
+        # #1107: pytest can exit non-zero AFTER a clean summary (a pending
+        # asyncio task destroyed at interpreter shutdown). Trust the summary.
+        summary = [ln for ln in output.splitlines() if _PYTEST_SUMMARY_RE.match(ln)]
+        if summary and not re.search(r"\b(failed|errors?)\b", summary[-1]):
+            passed = True
+            output += (
+                f"\n[self_dev gate] pytest exited {result.returncode} after a clean "
+                "summary -- treated as pass (#1107)"
+            )
+
+    touches_tray = any(f.replace("\\", "/").startswith("tray/") for f in _changed_files_in_last_commit(clone_dir))
+    if not touches_tray:
+        return passed, output
+
+    tray_dir = clone_dir / "tray"
+    _ensure_tray_node_modules(tray_dir)
+    if not (tray_dir / "node_modules").is_dir():
+        return passed, output + "\n\n[tray/ changed but node_modules missing -- jest skipped]"
+
+    npm = shutil.which("npm")
+    if not npm:
+        return passed, output + "\n\n[tray/ changed but npm not on PATH -- jest skipped]"
+
+    try:
+        jest = subprocess.run(
+            [npm, "test", "--silent"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(tray_dir), timeout=_TEST_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = ((exc.stdout or "") + (exc.stderr or "")).strip()
+        return False, (
+            f"{output}\n\n[tray/ jest] timed out after {_TEST_TIMEOUT_S:.0f}s -- killed\n{partial}"
+        ).strip()
+
+    # jest's coloured reporter output isn't ASCII (checkmarks, box-drawing);
+    # without an explicit encoding, subprocess.run falls back to the
+    # platform's default codepage (cp1252 on this Windows box), whose
+    # background stderr-reader thread silently dies on an undecodable byte
+    # and leaves .stderr as None -- crashing the very next line with
+    # "can only concatenate str (not 'NoneType') to str" and reporting a
+    # confusing "Test runner error" instead of jest's real (and useful)
+    # failure output. utf-8/errors="replace" never raises.
+    jest_output = ((jest.stdout or "") + (jest.stderr or "")).strip()
+    return (passed and jest.returncode == 0), f"{output}\n\n[tray/ jest]\n{jest_output}".strip()
 
 
 def pr_fn(
@@ -241,7 +397,7 @@ def pr_fn(
     result = subprocess.run(
         ["gh", "pr", "create", "--head", branch,
          "--title", title, "--body", body],
-        capture_output=True, text=True, cwd=str(clone_dir),
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(clone_dir),
     )
     if result.returncode != 0:
         raise RuntimeError(f"gh pr create failed:\n{result.stderr.strip()}")
@@ -252,7 +408,7 @@ def diff_fn(pr_url: str) -> "list[str]":
     """List changed files in a PR via gh CLI."""
     result = subprocess.run(
         ["gh", "pr", "view", pr_url, "--json", "files", "--jq", ".files[].path"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"gh pr view files failed:\n{result.stderr.strip()}")
@@ -263,7 +419,7 @@ def merge_fn(pr_url: str) -> None:
     """Squash-merge a PR and delete its branch via gh CLI."""
     result = subprocess.run(
         ["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"gh pr merge failed:\n{result.stderr.strip()}")
@@ -277,7 +433,7 @@ def pr_state_fn(pr_url: str) -> str:
     """
     result = subprocess.run(
         ["gh", "pr", "view", pr_url, "--json", "state", "--jq", ".state"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"gh pr view state failed:\n{result.stderr.strip()}")
@@ -288,7 +444,7 @@ def pull_fn(repo_root: Path) -> "tuple[bool, str]":
     """git pull --ff-only master in the live repo root."""
     result = subprocess.run(
         ["git", "pull", "origin", "master", "--ff-only"],
-        capture_output=True, text=True, cwd=str(repo_root),
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(repo_root),
     )
     output = (result.stdout + result.stderr).strip()
     if result.returncode != 0:
@@ -305,7 +461,7 @@ def issue_fn(issue_number: int) -> str:
     """
     result = subprocess.run(
         ["gh", "issue", "view", str(issue_number), "--json", "title,body"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(

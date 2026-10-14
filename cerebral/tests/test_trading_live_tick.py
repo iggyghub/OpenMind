@@ -16,6 +16,10 @@ from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
 from cerebral.trading.risk_limits import RiskConfig, RiskManager
 from cerebral.trading.live_tick import (
+    STOP_LOSS_PCT,
+    TAKE_PROFIT_PCT,
+    _build_correlation_matrix,
+    check_tp_sl_breach,
     decide_action,
     dispatch_due_events,
     evaluate_signal,
@@ -32,12 +36,19 @@ ALWAYS_SHORT = "def strategy(data):\n    return [-1] * len(data)"
 
 
 def make_bars(n=5):
+    # Anchored to end AT today (not a hardcoded past date) so the last bar
+    # is always fresh -- AF11/#1005's stale-data guard rejects a fresh open
+    # when the last bar is >3 days old, and a fixed past anchor would drift
+    # out of that window as real time passes (already true by the time this
+    # comment was written: the original 2026-01-01 anchor was ~8 months
+    # stale). Callers testing staleness itself pass their own fetch/today.
+    end = pd.Timestamp.today().normalize()
     return pd.DataFrame(
         {
             "Open": [10.0] * n, "High": [11.0] * n, "Low": [9.0] * n,
             "Close": [10.0 + i for i in range(n)], "Volume": [1000] * n,
         },
-        index=pd.date_range("2026-01-01", periods=n, freq="D"),
+        index=pd.date_range(end=end, periods=n, freq="D"),
     )
 
 
@@ -179,7 +190,11 @@ def test_tick_opens_a_position_on_a_long_signal(tmp_path, monkeypatch):
 
 def test_tick_holds_when_the_broker_already_shows_the_target_position(tmp_path, monkeypatch):
     record = make_record(tmp_path, monkeypatch)
-    broker = StubBrokerClient()
+    # ScriptedPriceBroker, not the default hash-derived StubBrokerClient price:
+    # the TP/SL backstop (2026-09-01) compares the fill price against the
+    # fetched bars' close, so the two need to be in the same ballpark, same
+    # as a real fill would be against real market data.
+    broker = ScriptedPriceBroker([14.0])  # matches make_bars()'s last Close
     spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=2.0)
     fetch = fixed_fetch(make_bars())
 
@@ -227,6 +242,223 @@ def test_tick_closes_a_short_at_a_profit_when_price_falls(tmp_path, monkeypatch)
     assert closed["status"] == "closed" and closed["side"] == "buy"
     # StubBrokerClient is commission-free (Alpaca) -- no fee to subtract.
     assert closed["pnl"] == pytest.approx((20.0 - 15.0) * 2.0)
+
+
+def test_tick_does_not_open_a_short_with_fractional_qty(tmp_path, monkeypatch):
+    """Fractional shares can't be shorted -- a structural broker/regulatory
+    limitation (no locate/borrow mechanism for fractional inventory), not
+    specific to Alpaca or fixable by switching brokers (confirmed
+    2026-09-01). A short OPEN at a fractional qty is treated as a hold
+    instead of repeatedly failing against the real broker every tick."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_SHORT, qty=0.5)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()))
+
+    assert result["status"] == "hold"
+    assert broker._orders == {}
+    assert find_position(broker.list_positions(), "AAPL") is None
+
+
+def test_tick_does_not_open_a_short_becoming_fractional_after_confidence_multiplier(tmp_path, monkeypatch):
+    """The confidence multiplier can turn an integer open_qty into a fractional
+    final qty. The fractional-short guard now runs AFTER the multiplier,
+    catching this case which the old pre-decide_action placement missed."""
+    record = _ScriptedConfidenceRecord(make_record(tmp_path, monkeypatch), confidence=0.3)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_SHORT, qty=1.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()))
+
+    assert result["status"] == "hold"
+    assert broker._orders == {}
+    assert find_position(broker.list_positions(), "AAPL") is None
+
+
+def test_tick_still_closes_a_fractional_long_on_a_short_signal(tmp_path, monkeypatch):
+    """The fractional-short guard only applies to OPENING a fresh short --
+    closing an existing long is a normal sell, never a short, and must
+    reach decide_action unchanged."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0, 12.0])
+    fetch = fixed_fetch(make_bars())
+
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=0.5),
+                       broker, record, fetch=fetch)
+    closed = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_SHORT, qty=0.5),
+                                broker, record, fetch=fetch)
+
+    assert closed["status"] == "closed" and closed["side"] == "sell"
+
+
+def test_tick_not_stale_across_a_single_holiday(tmp_path, monkeypatch):
+    """Regression for the bug that blocked every open on 2026-09-08: a bar from
+    the Friday before a Monday market holiday, evaluated on the following
+    Tuesday, is 4 CALENDAR days old (> the old flat threshold) but only 2
+    BUSINESS days old -- must NOT be treated as stale."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=2.0)
+
+    from datetime import date
+
+    today = date(2026, 9, 8)  # Tuesday after Labor Day (2026-09-07)
+    data = pd.DataFrame(
+        {"Open": [10.0], "High": [11.0], "Low": [9.0], "Close": [10.5], "Volume": [1000]},
+        index=pd.date_range("2026-09-04", periods=1, freq="D"),  # last Friday
+    )
+    fetch = lambda symbol, start, end, interval="1d": data
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fetch, today=today)
+    assert result["status"] == "opened"
+
+
+def test_tick_holds_on_stale_market_data(tmp_path, monkeypatch):
+    """Stale market data (>3 days old) must block new opens but not block closes."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=2.0)
+    
+    from datetime import date
+    
+    # Create bars ending 5 days before today
+    today = date(2026, 7, 5)
+    stale_data = pd.DataFrame(
+        {"Open": [10.0], "High": [11.0], "Low": [9.0], "Close": [10.5], "Volume": [1000]},
+        index=pd.date_range("2026-07-01", periods=1, freq="D"),
+    )
+    fetch_stale = lambda symbol, start, end, interval="1d": stale_data
+
+    # New open should be blocked due to stale data
+    result_open = run_strategy_tick("s1", spec, broker, record, fetch=fetch_stale, today=today)
+    assert result_open["status"] == "hold"
+    assert result_open["reason"] == "stale_market_data"
+    assert broker._orders == {}
+    
+    # Now open a position so we can test closing
+    # We'll use a non-stale fetch to open it, then switch to stale fetch to close
+    fresh_data = make_bars()
+    fetch_fresh = lambda symbol, start, end, interval="1d": fresh_data
+    run_strategy_tick("s1", spec, broker, record, fetch=fetch_fresh, today=today)
+    
+    # Close with stale data should still work (don't trap a loss)
+    flat_spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=2.0)
+    result_close = run_strategy_tick("s1", flat_spec, broker, record, fetch=fetch_stale, today=today)
+    assert result_close["status"] == "closed"
+    assert find_position(broker.list_positions(), "AAPL") is None
+
+
+# ── TP/SL backstop (2026-09-01) ─────────────────────────────────────────────
+
+def test_check_tp_sl_breach_pure():
+    long_pos = Position(symbol="AAPL", qty=1.0, avg_entry_price=10.0, side="buy",
+                         market_value=10.0, unrealized_pl=0.0, current_price=10.0)
+    short_pos = Position(symbol="AAPL", qty=-1.0, avg_entry_price=10.0, side="sell",
+                          market_value=-10.0, unrealized_pl=0.0, current_price=10.0)
+
+    # Inside both bands -> no opinion.
+    assert check_tp_sl_breach(long_pos, 10.5) is None
+    assert check_tp_sl_breach(None, 13.5) is None
+
+    # Long: up TAKE_PROFIT_PCT or more, or down STOP_LOSS_PCT or more.
+    assert check_tp_sl_breach(long_pos, 10.0 * (1 + TAKE_PROFIT_PCT)) == 0
+    assert check_tp_sl_breach(long_pos, 10.0 * (1 - STOP_LOSS_PCT)) == 0
+
+    # Short: gain/loss direction flips.
+    assert check_tp_sl_breach(short_pos, 10.0 * (1 - TAKE_PROFIT_PCT)) == 0
+    assert check_tp_sl_breach(short_pos, 10.0 * (1 + STOP_LOSS_PCT)) == 0
+
+
+def test_tick_force_closes_a_long_on_a_take_profit_breach_overriding_the_signal(tmp_path, monkeypatch):
+    """The strategy's own signal still says LONG -- the backstop must win."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0])  # opens at 10
+    fetch = fixed_fetch(make_bars())
+
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+    # AF1/#995: the backstop now reads the position's live current_price, not
+    # the bar close -- StubBrokerClient only updates current_price on a fill,
+    # so a real price move between ticks (this test's whole point) needs a
+    # direct nudge, the same way other tests here poke broker._positions
+    # directly to set up broker-side state a fill alone can't express.
+    broker._positions[("s1", "AAPL")].current_price = 14.0  # +40%, past TAKE_PROFIT_PCT
+    result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+
+    assert result["status"] == "closed"
+    assert find_position(broker.list_positions(), "AAPL") is None
+
+
+def test_tick_force_closes_a_long_on_a_stop_loss_breach(tmp_path, monkeypatch):
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0])  # opens at 10
+    fetch = fixed_fetch(make_bars())
+
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+    broker._positions[("s1", "AAPL")].current_price = 9.0  # -10%, past STOP_LOSS_PCT
+    result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+
+    assert result["status"] == "closed"
+    assert result["side"] == "sell"
+
+
+def test_trend_basket_is_exempt_from_the_stop_loss_backstop(tmp_path, monkeypatch):
+    """2026-09-24, user choice: the trend basket's own 12% trail is its exit -- the same -10%
+    move that force-closes any other strategy (test above) must leave a trend-basket position
+    open while its own signal still says LONG."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0])
+    fetch = fixed_fetch(make_bars())
+    name = "Trend basket: x @AAPL"
+    spec = StrategySpec(name, "AAPL", ALWAYS_LONG, qty=1.0)
+
+    run_strategy_tick(name, spec, broker, record, fetch=fetch)
+    broker._positions[(name, "AAPL")].current_price = 9.0  # -10%, past STOP_LOSS_PCT
+    result = run_strategy_tick(name, spec, broker, record, fetch=fetch)
+
+    assert result["status"] != "closed"
+    assert find_position(broker.list_positions(), "AAPL") is not None
+
+
+def test_tick_does_not_force_close_when_live_price_is_within_band(tmp_path, monkeypatch):
+    """The TP/SL backstop must use the position's live `current_price`, not 
+    the stale bar close. If the bar close breaches but the live price hasn't, 
+    the position should NOT be force-closed."""
+    record = make_record(tmp_path, monkeypatch)
+    # Open at 10.0. `current_price` on position will be 10.0.
+    broker = ScriptedPriceBroker([10.0])
+    fetch_bars = make_bars()  # closes: 10, 11, 12, 13, 14
+    # Second tick returns a bar with close=14.0 (+40%, past TAKE_PROFIT_PCT),
+    # but position.current_price remains 10.0 (within band).
+    stale_bars = pd.DataFrame(
+        {"Open": [10.0], "High": [15.0], "Low": [9.0], "Close": [14.0], "Volume": [1000]},
+        index=pd.date_range("2026-01-02", periods=1, freq="D"),
+    )
+
+    fetch_count = [0]
+    def spy_fetch(symbol, start, end, interval="1d"):
+        fetch_count[0] += 1
+        return stale_bars if fetch_count[0] == 2 else fetch_bars
+
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=spy_fetch)
+    # Second tick: bar close is 14.0 (+40%, past TAKE_PROFIT_PCT), but current_price is 10.0.
+    result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=spy_fetch)
+    
+    assert result["status"] == "hold"  # Not closed because live price (10.0) is within band
+    assert find_position(broker.list_positions(), "AAPL") is not None
+
+
+def test_tick_does_not_force_close_within_the_backstop_band(tmp_path, monkeypatch):
+    """A strategy with its own tighter exit never reaches the backstop --
+    same code path, just never crosses the threshold."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = ScriptedPriceBroker([10.0])
+    fetch = fixed_fetch(make_bars(2))  # last Close = 11.0, +10% -- inside both bands
+
+    run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+    result = run_strategy_tick("s1", StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=1.0), broker, record, fetch=fetch)
+
+    assert result["status"] == "hold"  # strategy still wants long, already long
 
 
 def test_tick_on_a_flat_signal_while_flat_places_no_order(tmp_path, monkeypatch):
@@ -278,8 +510,10 @@ class FakeScheduler:
         self.dispatch_ids = []  # S17: the `dispatch_id` dispatch_due_events actually passed, per call
         self.size_pcts = []  # S20: the `size_pct` dispatch_due_events actually passed, per call
         self.sentiment_labels = []  # 2026-08-31: the `sentiment_label` dispatch_due_events actually passed, per call
+        self.stock_sentiment_labels_seen = []  # 2026-09-01: the `stock_sentiment_labels` dict passed, per call
         self.claimed_symbols_seen = []  # 2026-08-31: the `claimed_symbols` object passed, per call
         self.bear_case_fns = []  # 2026-08-31: the `bear_case_fn` passed, per call
+        self.correlation_matrices_seen = []  # 2026-09-02: the `correlation_matrix` passed, per call
 
     def list_due_events(self):
         return self.events
@@ -289,16 +523,29 @@ class FakeScheduler:
 
     def _run_paper_strategy(self, name, broker, record, config, store=None, fetch=None, phase="paper",
                              dispatch_id=None, risk=None, size_pct=1.0, sentiment_label=None,
-                             claimed_symbols=None, bear_case_fn=None):
+                             stock_sentiment_labels=None, claimed_symbols=None, bear_case_fn=None,
+                             correlation_matrix=None):
         self.ran.append(name)
         self.brokers.append(broker)
         self.phases.append(phase)
         self.dispatch_ids.append(dispatch_id)
         self.size_pcts.append(size_pct)
         self.sentiment_labels.append(sentiment_label)
+        self.stock_sentiment_labels_seen.append(stock_sentiment_labels)
         self.claimed_symbols_seen.append(claimed_symbols)
         self.bear_case_fns.append(bear_case_fn)
+        self.correlation_matrices_seen.append(correlation_matrix)
         return dict(self.tick_result)
+
+
+def test_dispatch_only_prefix_parks_every_other_strategy(tmp_path, monkeypatch):
+    sched = FakeScheduler([{"id": 1, "title": "Trend basket: x @AAPL"}, {"id": 2, "title": "s2"}])
+
+    dispatch_due_events(sched, StubBrokerClient(), make_record(tmp_path, monkeypatch),
+                        lifecycle=StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite"),
+                        only_prefix="Trend basket:")
+
+    assert sched.ran == ["Trend basket: x @AAPL"]
 
 
 def test_dispatch_runs_and_marks_each_due_event(tmp_path, monkeypatch):
@@ -313,6 +560,48 @@ def test_dispatch_runs_and_marks_each_due_event(tmp_path, monkeypatch):
     assert [r["strategy"] for r in results] == ["s1", "s2"]
 
 
+def test_dispatch_builds_the_correlation_matrix_at_most_once_per_pass(tmp_path, monkeypatch):
+    """AF6/#1000: the correlation matrix used to be rebuilt from scratch
+    inside run_strategy_tick for every strategy that reached an open --
+    redundant refetching within one dispatch pass. Now built once (if at
+    all) in dispatch_due_events and threaded through, regardless of how
+    many due events share the same pass."""
+    class _FakeSpec:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+    class _FakeStore:
+        def get(self, name):
+            return _FakeSpec({"s1": "AAPL", "s2": "MSFT"}.get(name))
+
+        def get_current_version(self, name):
+            return None
+
+    sched = FakeScheduler([{"id": 1, "title": "s1"}, {"id": 2, "title": "s2"}])
+    broker = StubBrokerClient()
+    broker._positions[(None, "AAPL")] = _pos(symbol="AAPL")
+
+    fetch_calls = []
+
+    def counting_fetch(symbol, start, end, interval="1d"):
+        fetch_calls.append(symbol)
+        return make_bars()
+
+    dispatch_due_events(sched, broker, make_record(tmp_path, monkeypatch),
+                        lifecycle=StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite"),
+                        store=_FakeStore(), fetch=counting_fetch)
+
+    # Both due events saw the SAME matrix object -- built once for the whole
+    # pass, not once per strategy (the pre-fix behavior would have called
+    # _build_correlation_matrix, and therefore fetch, again for s2).
+    assert sched.correlation_matrices_seen[0] is sched.correlation_matrices_seen[1]
+    assert sched.correlation_matrices_seen[0] is not None
+    # One fetch per distinct symbol for the whole pass -- AAPL appears both
+    # as an existing position and as s1's own symbol, deduplicated before
+    # the fetch loop runs.
+    assert sorted(fetch_calls) == ["AAPL", "MSFT"]
+
+
 def test_dispatch_threads_sentiment_label_through_to_each_strategy(tmp_path, monkeypatch):
     sched = FakeScheduler([{"id": 1, "title": "s1"}, {"id": 2, "title": "s2"}])
 
@@ -321,6 +610,17 @@ def test_dispatch_threads_sentiment_label_through_to_each_strategy(tmp_path, mon
                          sentiment_label="BEARISH")
 
     assert sched.sentiment_labels == ["BEARISH", "BEARISH"]
+
+
+def test_dispatch_threads_stock_sentiment_labels_through_to_each_strategy(tmp_path, monkeypatch):
+    sched = FakeScheduler([{"id": 1, "title": "s1"}, {"id": 2, "title": "s2"}])
+    labels = {"AAPL": "BEARISH", "MSFT": "BULLISH"}
+
+    dispatch_due_events(sched, StubBrokerClient(), make_record(tmp_path, monkeypatch),
+                         lifecycle=StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite"),
+                         stock_sentiment_labels=labels)
+
+    assert sched.stock_sentiment_labels_seen == [labels, labels]
 
 
 def test_dispatch_skips_a_halted_strategy_but_still_marks_it(tmp_path, monkeypatch):
@@ -386,6 +686,103 @@ def test_dispatch_refuses_graduation_on_a_red_flagged_filing(tmp_path, monkeypat
 
     assert results[0].get("graduated") is not True
     assert lifecycle.get_state("s1").status == "paper"
+
+
+def test_dispatch_refuses_graduation_on_bad_accumulated_replay_drawdown(tmp_path, monkeypatch):
+    """BATCH-REPLAY S4 (#1227), exercised through the full dispatch chain:
+    dispatch_due_events threads store=/dd_cap= all the way through
+    _apply_lifecycle into check_graduation's new refusal gate.
+
+    Fills are seeded under "s1@v1", not "s1": store.save() below creates a
+    real strategy_versions row, so dispatch_due_events computes
+    dispatch_id = "s1@v1" (S17's versioned identity) -- that's the id the
+    live paper CI and lifecycle state actually key off of, not the bare
+    strategy_id. This IS the bug BATCH-REPLAY S4 found and fixed in
+    _apply_lifecycle itself: StrategyStore stays keyed by the bare id."""
+    from cerebral.trading.strategy_store import StrategyStore, StrategySpec
+    record = make_record(tmp_path, monkeypatch)
+    for i in range(30):
+        _add_fill_on_day(record, f"2026-0{1 + i // 28}-{1 + i % 28:02d}", "AAPL", "sell", 1.0,
+                          12.0, pnl=2.0, strategy_id="s1@v1")
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]"))
+    store.update_worst_drawdown("s1", -0.50)
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    results = dispatch_due_events(sched, StubBrokerClient(), record, lifecycle=lifecycle,
+                                  store=store, dd_cap=0.30)
+
+    assert results[0].get("graduated") is not True
+    assert lifecycle.get_state("s1@v1").status == "paper"
+
+
+def test_dispatch_graduates_normally_when_accumulated_drawdown_is_within_cap(tmp_path, monkeypatch):
+    from cerebral.trading.strategy_store import StrategyStore, StrategySpec
+    record = make_record(tmp_path, monkeypatch)
+    for i in range(30):
+        _add_fill_on_day(record, f"2026-0{1 + i // 28}-{1 + i % 28:02d}", "AAPL", "sell", 1.0,
+                          12.0, pnl=2.0, strategy_id="s1@v1")
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]"))
+    store.update_worst_drawdown("s1", -0.05)
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    results = dispatch_due_events(sched, StubBrokerClient(), record, lifecycle=lifecycle,
+                                  store=store, dd_cap=0.30)
+
+    assert results[0].get("graduated") is True
+    assert lifecycle.get_state("s1@v1").status == "live"
+
+
+def test_dispatch_retires_on_dollar_converted_replay_drawdown_breach(tmp_path, monkeypatch):
+    """BATCH-REPLAY S4 follow-up: check_retirement's dollar-based
+    current_live_dd is compared against replay's worst_drawdown fraction
+    converted to dollars (qty x last live fill price) in _apply_lifecycle,
+    not the raw fraction -- units wouldn't match check_retirement's
+    existing dollar-based comparison otherwise."""
+    from cerebral.trading.strategy_store import StrategyStore, StrategySpec
+    record = make_record(tmp_path, monkeypatch)
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    state = lifecycle.get_state("s1@v1")  # S17 versioned id, see graduation test above
+    state.status = "live"
+    state.peak_live_equity = 100.0
+    state.live_equity_curve = [100.0, 80.0]  # current_live_dd = 20.0
+    lifecycle.record_live_price("s1@v1", 40.0)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]", qty=2.0))
+    store.update_worst_drawdown("s1", -0.05)  # dollar_worst_dd = 0.05*2*40 = 4.0; 2x = 8.0 < 20.0
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    results = dispatch_due_events(sched, StubBrokerClient(), record, lifecycle=lifecycle, store=store)
+
+    assert results[0].get("retired") is True
+    assert lifecycle.get_state("s1@v1").status == "halted"
+
+
+def test_dispatch_does_not_retire_on_replay_drawdown_before_any_live_fill(tmp_path, monkeypatch):
+    """Conservative-refuse: a real worst_drawdown alone isn't enough to
+    convert to dollars -- without a real last_live_price (no live fill has
+    happened yet), the retirement check must stay inert rather than guess
+    a price, even against a catastrophic live equity-curve drawdown."""
+    from cerebral.trading.strategy_store import StrategyStore, StrategySpec
+    record = make_record(tmp_path, monkeypatch)
+    lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
+    state = lifecycle.get_state("s1@v1")
+    state.status = "live"
+    state.peak_live_equity = 100.0
+    state.live_equity_curve = [100.0, 0.0]  # current_live_dd = 100.0
+    # last_live_price left at its 0.0 default -- never live-filled yet
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]", qty=2.0))
+    store.update_worst_drawdown("s1", -0.50)
+    sched = FakeScheduler([{"id": 1, "title": "s1"}])
+
+    results = dispatch_due_events(sched, StubBrokerClient(), record, lifecycle=lifecycle, store=store)
+
+    assert results[0].get("retired") is not True
+    assert lifecycle.get_state("s1@v1").status == "live"
 
 
 def test_dispatch_does_not_graduate_on_all_zero_pnl(tmp_path, monkeypatch):
@@ -582,7 +979,52 @@ def test_tick_allows_a_within_limit_order_with_risk_gate(tmp_path, monkeypatch):
     result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
 
     assert result["status"] == "opened"
-    assert len(broker._orders) == 1
+
+
+def test_tick_trims_a_slightly_over_cap_buy_instead_of_blocking(tmp_path, monkeypatch):
+    """qty is sized to exactly the cap at the prior close; a small uptick since must trim
+    the order to the cap, not block it (2026-09-23, $100 account with zero headroom)."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()  # equity 10000; 2% cap = 200
+    risk = RiskManager(RiskConfig(max_per_trade_risk_pct=2.0))
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=205.0 / 14.0)  # 205 at close 14.0: 2.5% over
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result["status"] == "opened"
+    (order,) = broker._orders.values()
+    assert abs(order.qty * 14.0 - 200.0) < 0.01
+
+
+# ── IPO3 (#1040): spec.risk_override_pct threaded into check_order ────────
+
+def test_tick_uses_spec_risk_override_pct_to_allow_a_trade_the_global_cap_blocks(tmp_path, monkeypatch):
+    """A strategy's own risk_override_pct must reach RiskManager.check_order
+    as max_per_trade_risk_pct_override -- a trade the tight global 2% cap
+    alone would block must be allowed once the spec's 25% override applies."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()  # equity 10000
+    risk = RiskManager(RiskConfig(max_per_trade_risk_pct=2.0))  # 2% cap = 200
+    # qty=150 * last close 14.0 = 2100 -- over the 2% cap (200), under 25% (2500)
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=150.0, risk_override_pct=25.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result["status"] == "opened"
+
+
+def test_tick_without_risk_override_pct_still_uses_the_global_cap(tmp_path, monkeypatch):
+    """The default risk_override_pct=None must not change today's behavior --
+    the same trade as above, without an override, still hits the global cap."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager(RiskConfig(max_per_trade_risk_pct=2.0))
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=150.0)  # risk_override_pct defaults to None
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
+
+    assert result == {"status": "blocked", "blocked_by": "per_trade_risk"}
+    assert broker._orders == {}
 
 
 def test_tick_daily_loss_halt_reads_real_accrued_pnl_not_a_fabricated_zero(tmp_path, monkeypatch):
@@ -721,19 +1163,80 @@ def test_risk_manager_reads_live_settings_store_values(tmp_path):
     assert res.allowed  # would be blocked at the 2.0% default
 
 
+def test_build_correlation_matrix_uses_returns_not_levels():
+    """Correlation should be computed on percent-change returns, not raw closes.
+    Two assets that drift together over time (high level-correlation) but have 
+    independent day-to-day moves should score low on return-correlation."""
+    from cerebral.trading.live_tick import _build_correlation_matrix
+    
+    dates = pd.date_range("2026-05-01", periods=65, freq="D")
+    
+    # s1: steady uptrend
+    s1_vals = [100.0 + i for i in range(65)]
+    # s2: same steady uptrend, but alternating daily moves (high level corr, low return corr)
+    s2_vals = [100.0 + i + (5.0 if i % 2 == 0 else -5.0) for i in range(65)]
+    
+    df1 = pd.DataFrame({"Close": s1_vals}, index=dates)
+    df2 = pd.DataFrame({"Close": s2_vals}, index=dates)
+    
+    def fixture_fetch(symbol, start, end, interval="1d"):
+        if symbol == "S1":
+            return df1
+        return df2
+
+    corr = _build_correlation_matrix(["S1", "S2"], fixture_fetch)
+    return_corr = corr.loc["S1", "S2"]
+    
+    # Level-based would be ~0.99. Return-based should be near 0.
+    assert abs(return_corr) < 0.3, f"Return correlation should be low, got {return_corr}"
+
+
 # ── S21b (#874): correlation gate ──────────────────────────────────────────
 
-def _make_correlated_bars(corr=0.8):
-    """Create two symbols with high correlation for fixture data."""
-    base = pd.DataFrame(
-        {"Close": [100.0 + i for i in range(65)]},
-        index=pd.date_range("2026-05-01", periods=65, freq="D"),
-    )
-    # CORX moves 0.8 * AAPL + noise
-    noise = np.random.RandomState(42).randn(len(base)) * 2
-    corx = base.copy()
-    corx["Close"] = (base["Close"] * 0.8 + noise * 2).values
+def _make_correlated_bars(corr=0.95):
+    """Create two symbols whose DAILY RETURNS are correlated (not just their
+    price levels) -- the correlation gate compares returns (#999), so a
+    fixture built from two series sharing a common LEVEL trend (e.g. both
+    trending +1/day) can look highly correlated on price alone while their
+    day-to-day returns are only weakly related, no longer exercising "these
+    are really correlated, block the trade" once the gate reads returns.
+    Constructs each symbol's returns as corr * shared_returns +
+    sqrt(1-corr^2) * idiosyncratic_noise, the standard way to build two
+    series with a target Pearson correlation, tuned (corr=0.95 with small
+    idiosyncratic noise) to reliably land the SAMPLE return correlation
+    above the 0.7 threshold, not just its theoretical expectation."""
+    rng = np.random.RandomState(42)
+    n = 65
+    shared = rng.randn(n) * 0.01
+    idio_a = rng.randn(n) * 0.005
+    idio_b = rng.randn(n) * 0.005
+    returns_a = shared + idio_a
+    returns_b = corr * shared + (1 - corr ** 2) ** 0.5 * idio_b
+    # Anchored to end at today, not a hardcoded past date -- see make_bars'
+    # own comment (AF11/#1005's stale-data guard needs a fresh last bar).
+    idx = pd.date_range(end=pd.Timestamp.today().normalize(), periods=n, freq="D")
+    base = pd.DataFrame({"Close": 100.0 * np.cumprod(1 + returns_a)}, index=idx)
+    corx = pd.DataFrame({"Close": 100.0 * np.cumprod(1 + returns_b)}, index=idx)
     return base, corx
+
+
+def test_correlation_matrix_uses_returns_not_price_levels():
+    """Two symbols that merely trend the same direction (high level
+    correlation) but have unrelated day-to-day returns must NOT score as
+    correlated -- the pre-fix bug (#999): corr = df.corr() on raw Close
+    measured shared drift, not real co-movement."""
+    idx = pd.date_range("2026-05-01", periods=65, freq="D")
+    # Both trend +1/day (near-perfect level correlation) but with
+    # independent random noise dominating the actual day-to-day returns.
+    rng = np.random.RandomState(7)
+    a = pd.DataFrame({"Close": 100.0 + np.arange(65) + rng.randn(65) * 0.01}, index=idx)
+    b = pd.DataFrame({"Close": 200.0 + np.arange(65) + rng.randn(65) * 5.0}, index=idx)
+
+    def fetch(symbol, start, end, interval="1d"):
+        return a if symbol == "TRENDA" else b
+
+    matrix = _build_correlation_matrix(["TRENDA", "TRENDB"], fetch)
+    assert matrix.loc["TRENDA", "TRENDB"] < 0.7
 
 
 def test_tick_blocks_high_correlation_open(tmp_path, monkeypatch):
@@ -801,6 +1304,23 @@ def test_tick_blocks_new_open_on_bearish_sentiment(tmp_path, monkeypatch):
     assert broker._orders == {}
 
 
+def test_trend_basket_is_exempt_from_the_sentiment_gates(tmp_path, monkeypatch):
+    """2026-10-06: the same BEARISH readings that block any other open (test above) must not
+    block a trend-basket open -- it was backtested with no news filter."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager()
+    name = "Trend basket: x @AAPL"
+    spec = StrategySpec(name, "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick(name, spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, sentiment_label="BEARISH",
+                                stock_sentiment_labels={"AAPL": "BEARISH"})
+
+    assert result.get("blocked_by") not in ("market_sentiment", "stock_sentiment")
+    assert broker._orders != {}
+
+
 def test_tick_does_not_block_closing_trade_on_bearish_sentiment(tmp_path, monkeypatch):
     """Only opens are gated -- a close must never be trapped by sentiment."""
     record = make_record(tmp_path, monkeypatch)
@@ -826,6 +1346,49 @@ def test_tick_not_blocked_when_sentiment_label_is_none(tmp_path, monkeypatch):
     result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()), risk=risk)
 
     assert result["status"] == "opened"
+
+
+def test_tick_blocks_new_open_on_bearish_stock_sentiment(tmp_path, monkeypatch):
+    """A symbol's OWN sentiment blocks independently of the market-wide
+    reading -- looked up from stock_sentiment_labels by spec.symbol."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, stock_sentiment_labels={"AAPL": "BEARISH"})
+
+    assert result == {"status": "blocked", "blocked_by": "stock_sentiment"}
+    assert broker._orders == {}
+
+
+def test_tick_uses_the_right_symbols_own_label_not_a_different_symbols(tmp_path, monkeypatch):
+    """stock_sentiment_labels is a dict of every due symbol's reading --
+    only THIS strategy's own spec.symbol should be looked up."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    risk = RiskManager()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_LONG, qty=5.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, stock_sentiment_labels={"MSFT": "BEARISH"})
+
+    assert result["status"] == "opened"  # AAPL's own reading is absent, MSFT's doesn't apply
+
+
+def test_tick_does_not_block_closing_trade_on_bearish_stock_sentiment(tmp_path, monkeypatch):
+    """Only opens are gated -- a close must never be trapped by sentiment."""
+    record = make_record(tmp_path, monkeypatch)
+    broker = StubBrokerClient()
+    broker._positions[("s1", "AAPL")] = Position(symbol="AAPL", qty=10.0, avg_entry_price=100.0, side="buy", market_value=1000.0, unrealized_pl=0.0, current_price=100.0)
+    risk = RiskManager()
+    spec = StrategySpec("s1", "AAPL", ALWAYS_FLAT, qty=10.0)
+
+    result = run_strategy_tick("s1", spec, broker, record, fetch=fixed_fetch(make_bars()),
+                                risk=risk, stock_sentiment_labels={"AAPL": "BEARISH"})
+
+    assert result["status"] == "closed"
 
 
 # ── 2026-08-31: confidence-scaled sizing ────────────────────────────────────

@@ -34,8 +34,10 @@ const PANE_ROUTES = [
   'trading',
   // S26 (#879) -- the Activity Log
   'log',
+  // HELP campaign (#1045) -- Felix's in-app encyclopedia
+  'help',
 ];
-const NAV_ROUTES = ['conversation', 'harness', 'library', 'trading', 'log', 'settings'];
+const NAV_ROUTES = ['conversation', 'harness', 'library', 'trading', 'log', 'help', 'hub', 'settings'];
 
 // Legacy alias kept for tests that loop over "routes that need panes".
 const SMOKE_ROUTES = PANE_ROUTES;
@@ -69,12 +71,15 @@ test('every expected pane element exists', () => {
 // ── Nav items (S5: 4 sections; Trading added as a 5th, #864 follow-up;
 //    Log added as a 6th, S26/#879) ────────────────────────────────────────
 
-test('nav has exactly 6 top-level sections (S5 + Trading + Log)', () => {
+test('nav has exactly 9 top-level sections (S5 + Trading + Log + Help + Hub + UI Editor)', () => {
+  // UI Editor (#nav-ui-editor) has no data-route -- it pops tools/ui-editor's
+  // own window instead of switching an in-app pane -- so it's counted here
+  // but deliberately absent from NAV_ROUTES/PANE_ROUTES below.
   const navItems = root.querySelectorAll('.nav-item');
-  expect(navItems.length).toBe(6);
+  expect(navItems.length).toBe(9);
 });
 
-test('every expected nav item exists (S5: 4 sections + Trading + Log)', () => {
+test('every expected nav item exists (S5: 4 sections + Trading + Log + Help)', () => {
   for (const route of NAV_ROUTES) {
     const nav = root.querySelector(`.nav-item[data-route="${route}"]`);
     expect(nav).not.toBeNull();
@@ -115,13 +120,13 @@ test('library pane exists with sub-tab bar (S5)', () => {
   expect(pane).not.toBeNull();
   const tabs = pane.querySelector('#lib-tabs');
   expect(tabs).not.toBeNull();
-  // Seven sub-tabs (memory / insights / recipes / documents / job-search /
-  // videos / github). Trading moved out to its own top-level route (#864
-  // follow-up) -- see the standalone Trading pane tests below. Thinking
+  // Eight sub-tabs (memory / insights / recipes / documents / job-search /
+  // videos / books / github). Trading moved out to its own top-level route
+  // (#864 follow-up) -- see the standalone Trading pane tests below. Thinking
   // (#816/#825) deliberately has NO tab button -- pill-only, see the test
   // below.
   const tabBtns = pane.querySelectorAll('.lib-tab');
-  expect(tabBtns.length).toBe(7);
+  expect(tabBtns.length).toBe(8);
 });
 
 test('trading is its own top-level pane, not a Library sub-tab (#864 follow-up)', () => {
@@ -147,9 +152,16 @@ test('library pane contains memory, insights, recipes, documents, job-search, vi
   const pane = root.querySelector('.pane[data-route="library"]');
   expect(pane).not.toBeNull();
   // Trading moved out to its own top-level route, #864 follow-up.
-  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github']) {
+  for (const sub of ['memory', 'insights', 'recipes', 'documents', 'job-search', 'videos', 'github', 'reddit', 'webpage']) {
     const el = pane.querySelector(`.lib-sub[data-lib="${sub}"]`);
     expect(el).not.toBeNull();
+  }
+  // Insights/Recipes keep hidden DOM but have no tab button; Reddit/Webpage do.
+  for (const sub of ['insights', 'recipes']) {
+    expect(pane.querySelector(`.lib-tab[data-lib="${sub}"]`)).toBeNull();
+  }
+  for (const sub of ['reddit', 'webpage']) {
+    expect(pane.querySelector(`.lib-tab[data-lib="${sub}"]`)).not.toBeNull();
   }
 });
 
@@ -663,10 +675,22 @@ test('inline script handles recipes_update and recipe_run_result events (S19)', 
   expect(inlineScript).toMatch(/['"]recipe_run_result['"]/);
 });
 
-test('inline script fires run_recipe and delete_recipe IPC verbs (S19)', () => {
-  expect(inlineScript).toMatch(/['"]run_recipe['"]/);
-  expect(inlineScript).toMatch(/['"]delete_recipe['"]/);
+test('inline script fires recipe_run/recipe_delete tool calls + list_recipes (ADR-0035 J)', () => {
+  // S19 originally fired raw run_recipe/delete_recipe WS verbs; ADR-0035 J
+  // migrated the Recipes tab onto the registry widget, whose actions are
+  // declared recipe_run/recipe_delete tool calls (ADR-0031) instead.
+  // S9 (F8): the row shaping that declares recipe_run/recipe_delete moved out of
+  // the inline script into tray/lib/recipes-panel.js; list_recipes stays inline.
+  const recipesLib = fs.readFileSync(path.join(__dirname, '..', 'lib', 'recipes-panel.js'), 'utf8');
+  expect(recipesLib).toMatch(/['"]recipe_run['"]/);
+  expect(recipesLib).toMatch(/['"]recipe_delete['"]/);
   expect(inlineScript).toMatch(/['"]list_recipes['"]/);
+});
+
+test('recipes-panel.js script tag is present and inline script uses window.RecipesPanel (S9)', () => {
+  const html = fs.readFileSync(HTML_PATH, 'utf8');
+  expect(html).toMatch(/<script src="\.\.\/lib\/recipes-panel\.js"><\/script>/);
+  expect(inlineScript).toMatch(/window\.RecipesPanel\.buildItems/);
 });
 
 // ── S20 — stop / interrupt control ───────────────────────────────────────────
@@ -981,9 +1005,12 @@ test('inline script renders the skills panel via PanelSpec.renderPanel (S5 skill
 
 test('inline script registers built-in library sections as workspace panels', () => {
   expect(inlineScript).toMatch(/_WS_BUILTINS/);
-  for (const id of ['builtin:memory', 'builtin:insights', 'builtin:recipes', 'builtin:job-search']) {
+  for (const id of ['builtin:memory', 'builtin:job-search']) {
     expect(inlineScript).toContain(`'${id}'`);
   }
+  // Insights/Recipes were dropped from the Library (2026-10-11).
+  expect(inlineScript).not.toContain("'builtin:insights'");
+  expect(inlineScript).not.toContain("'builtin:recipes'");
 });
 
 test('borrowed sections are returned home before the slot body is cleared', () => {
@@ -1304,4 +1331,90 @@ test('writes serialised-DOM artifact', () => {
   }
 
   expect(fs.existsSync(path.join(ARTIFACT_DIR, 'last-run.json'))).toBe(true);
+});
+
+// ── S29 — registry widget (#1123, ADR-0035) ────────────────────────────────
+
+test('registry widget renders correctly', () => {
+  const PanelSpec = require('../lib/panel-spec.js');
+  const spec = {
+    title: 'Test Registry',
+    widgets: [
+      {
+        type: 'registry',
+        items: [
+          {
+            name: 'my-plugin',
+            status: 'enabled',
+            verify: { passed: true, score: 98, evidence: 'All checks green' },
+            actions: [{ id: '1', tool: 'toggle_plugin', label: 'Toggle' }]
+          },
+          {
+            name: 'legacy-tool',
+            status: 'disabled',
+            verify: { passed: false, score: 42, evidence: 'Missing dependency' }
+          }
+        ]
+      }
+    ]
+  };
+  const html = PanelSpec.renderPanel(spec);
+  expect(html).toContain('<div class="ps-registry">');
+  expect(html).toContain('<div class="ps-registry-row">');
+  expect(html).toContain('my-plugin');
+  expect(html).toContain('enabled');
+  expect(html).toContain('ps-verify-passed');
+  expect(html).toContain('98');
+  expect(html).toContain('ps-verify-failed');
+  expect(html).toContain('legacy-tool');
+  expect(html).toContain('<button class="ps-action-btn" type="button">Toggle</button>');
+  expect(html).not.toContain('<button onclick=');
+});
+
+test('registry widget row carries an optional hint as a title tooltip', () => {
+  const PanelSpec = require('../lib/panel-spec.js');
+  const spec = {
+    widgets: [{
+      type: 'registry',
+      items: [{ name: 'my-skill', status: 'enabled', hint: 'A skill.\nSource: seed' }],
+    }],
+  };
+  const html = PanelSpec.renderPanel(spec);
+  expect(html).toContain('title="A skill.\nSource: seed"');
+});
+
+test('registry widget row with no hint omits the title attribute', () => {
+  const PanelSpec = require('../lib/panel-spec.js');
+  const html = PanelSpec.renderPanel({
+    widgets: [{ type: 'registry', items: [{ name: 'x', status: 'enabled' }] }],
+  });
+  expect(html).not.toContain('title=');
+});
+
+test('registry widget with no items renders an empty state', () => {
+  const PanelSpec = require('../lib/panel-spec.js');
+  const html = PanelSpec.renderPanel({ title: 'Empty', widgets: [{ type: 'registry', items: [] }] });
+  expect(html).toContain('ps-empty');
+  expect(html).toContain('No registry entries.');
+});
+
+// ── S8 (FELIX-AUDIT F7): one connect-time snapshot + renderer latestByType cache ──
+
+test('handleEvent unpacks the connect-time snapshot and caches the latest event per type (S8)', () => {
+  expect(inlineScript).toMatch(/event\.type === 'snapshot'/);
+  expect(inlineScript).toMatch(/const latestByType = new Map\(\)/);
+  expect(inlineScript).toMatch(/latestByType\.set\(event\.type, event\)/);
+});
+
+test('panels replay the cached state event on mount instead of waiting for a poll (S8)', () => {
+  expect(inlineScript).toMatch(/function replayLatest\(type\)/);
+  expect(inlineScript).toMatch(/replayLatest\('trading_update'\)/);
+  expect(inlineScript).toMatch(/replayLatest\('trading_tickers_update'\)/);
+});
+
+test('onOpen no longer carries the hand-maintained pull list (S8)', () => {
+  const onOpen = inlineScript.slice(inlineScript.indexOf('onOpen: () => {'), inlineScript.indexOf('onClose: () => {'));
+  expect(onOpen).toMatch(/refreshHealth\(\)/);
+  expect(onOpen).not.toMatch(/sendEvent\(\{ type: 'list_/);
+  expect(onOpen).not.toMatch(/sendEvent\(\{ type: 'plugins:/);
 });

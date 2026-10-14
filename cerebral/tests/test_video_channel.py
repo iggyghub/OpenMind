@@ -378,6 +378,44 @@ def test_batch_stop_sets_flag(db):
     assert not channel._state.is_running()
 
 
+def test_batch_stop_prevents_remaining_items(db):
+    """#1143: a stop requested during item 1 must not let item 2/3 start --
+    the pre-existing _state.stop_flag check in _run_batch's `while not
+    _state.stop_flag` loop already does this; this proves it deterministically
+    instead of relying on timing."""
+    processed = []
+
+    def download(url, out_dir):
+        processed.append(url)
+        if url.endswith("v0"):
+            channel.batch_stop()  # stop requested while item 1 is in flight
+        audio = Path(out_dir) / "audio.mp3"
+        audio.write_bytes(b"fake")
+        return {"audio_path": audio, "title": "T", "duration": 5.0}
+
+    channel.set_enumerate_fn(
+        lambda url: [
+            {"url": f"http://example.com/v{i}", "title": f"V{i}"} for i in range(3)
+        ]
+    )
+    pipeline.set_download_fn(download)
+    pipeline.set_transcribe_fn(lambda p: " ".join(["word"] * 30))
+
+    async def run():
+        await channel.batch_start(
+            "http://channel.example.com", db, channel="ch", sleep_secs=0
+        )
+        if channel._state.task:
+            await channel._state.task
+
+    asyncio.run(run())
+
+    assert processed == ["http://example.com/v0"], (
+        f"expected the batch to stop after item 1 (not drain the whole list), "
+        f"got: {processed}"
+    )
+
+
 # ── batch_status ──────────────────────────────────────────────────────────────
 
 def test_batch_status_returns_stage_counts(db):

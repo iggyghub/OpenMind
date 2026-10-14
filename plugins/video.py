@@ -750,7 +750,9 @@ class VideoPlugin:
         """Declarative Videos panel (ADR-0017 decision 9, ADR-0012)."""
         store = _get_store()
         status = _channel.batch_status(store)
-        clusters = store.list_clusters()
+        # Video-only: book/github ingest share this same clusters table and
+        # have their own source-scoped panels (book_ingest, github_ingest).
+        clusters = store.list_clusters(source_type="video")
 
         widgets: list[dict] = []
 
@@ -801,11 +803,17 @@ class VideoPlugin:
         )
         pending_total = store.total_pending()
 
+        # Progress feedback (#1143): a bare spinner can't distinguish "still
+        # working" from "stuck" -- show enumerated vs. processed explicitly.
+        total_ingested = processed_total + pending_total
         status_fields: list[dict] = [
             {"label": "Status", "value": "Running" if running else "Idle"},
         ]
-        if processed_total:
-            status_fields.append({"label": "Processed", "value": str(processed_total)})
+        if total_ingested:
+            status_fields.append({
+                "label": "Progress",
+                "value": f"{processed_total} / {total_ingested} processed",
+            })
         # The active channel is only informative while a batch is in flight; when
         # idle it's a stale single-video URL, so drop it (S11 #659).
         if running and status.get("channel"):

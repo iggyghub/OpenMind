@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 import keyring
-from typing import Protocol, List, Optional, Literal, Dict, Any, runtime_checkable
+from typing import Protocol, List, Optional, Literal, Dict, Any, runtime_checkable, Tuple
 from dataclasses import dataclass
 
+logger = logging.getLogger(__name__)
+
 # Public types
-Side = Literal["buy", "sell"]
+Side =Literal["buy", "sell"]
 OrderType = Literal["market", "limit", "stop", "stop_limit"]
 
 @dataclass
@@ -63,12 +67,43 @@ def _get_alpaca_credentials(env: str) -> tuple[str, str]:
 
 
 class AlpacaBrokerClient:
-    def __init__(self, env: str = "paper") -> None:
+    def __init__(self, env: str = "paper", ledger_path=None) -> None:
         if env not in ("paper", "live"):
             raise ValueError("env must be 'paper' or 'live'")
         self.env = env
         self._client = None
         self._connected = False
+        self._screener = None
+        # Per-(strategy_id, symbol) position ledger -- Alpaca itself has no
+        # per-strategy position concept. `ledger_path` persists it (2026-09-24):
+        # in memory only, a restart made every open multi-day position look
+        # unowned, so its strategy re-bought it and never sold the original.
+        # None (default) = in-memory only, for callers that never place orders.
+        self._ledger_path = ledger_path
+        self._positions: Dict[Tuple[str, str], Position] = self._load_ledger()
+
+    def _load_ledger(self) -> Dict[Tuple[str, str], Position]:
+        if self._ledger_path is None:
+            return {}
+        import json
+        from pathlib import Path
+        try:
+            rows = json.loads(Path(self._ledger_path).read_text(encoding="utf-8"))
+            return {(r.pop("strategy_id"), r["symbol"]): Position(**r) for r in rows}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.warning("[broker] could not read position ledger %s: %s", self._ledger_path, e)
+            return {}
+
+    def _save_ledger(self) -> None:
+        if self._ledger_path is None:
+            return
+        import json
+        from dataclasses import asdict
+        from pathlib import Path
+        rows = [{"strategy_id": sid, **asdict(p)} for (sid, _), p in self._positions.items()]
+        Path(self._ledger_path).write_text(json.dumps(rows, indent=1), encoding="utf-8")
 
     def _connect(self) -> None:
         if self._connected:
@@ -82,6 +117,30 @@ class AlpacaBrokerClient:
         except ImportError:
             raise RuntimeError("alpaca-py is not installed. Install with: pip install alpaca-py")
         self._connected = True
+        # Drop persisted rows the real account no longer holds (e.g. after an
+        # account reset) -- otherwise their strategies would try to sell
+        # shares that aren't there, every tick.
+        if self._positions:
+            try:
+                held = {p.symbol for p in self._client.get_all_positions()}
+                stale = [k for k in self._positions if k[1] not in held]
+                for k in stale:
+                    self._positions.pop(k)
+                if stale:
+                    logger.warning("[broker] dropped %d ledger rows not held on Alpaca: %s", len(stale), stale)
+                    self._save_ledger()
+            except Exception as e:
+                logger.warning("[broker] ledger reconcile skipped: %s", e)
+
+    def _connect_screener(self) -> None:
+        if self._screener is not None:
+            return
+        api_key, api_secret = _get_alpaca_credentials(self.env)
+        try:
+            import alpaca.data.historical.screener
+            self._screener = alpaca.data.historical.screener.ScreenerClient(api_key, api_secret)
+        except ImportError:
+            raise RuntimeError("alpaca-py is not installed. Install with: pip install alpaca-py")
 
     def preflight(self) -> tuple[bool, str]:
         """Checks the live path can actually work before ever routing an
@@ -127,11 +186,17 @@ class AlpacaBrokerClient:
             equity=float(acc.equity),
             status=acc.status.value,
             buying_power=float(acc.buying_power),
-            day_trades_remaining=max(0, 3 - (acc.daytrade_count or 0)),
+            # getattr: FINRA retired PDT 2026-06-04; Alpaca dropped daytrade_count from the API 2026-07-06.
+            day_trades_remaining=max(0, 3 - (getattr(acc, "daytrade_count", None) or 0)),
         )
 
     def list_positions(self, strategy_id: Optional[str] = None) -> List[Position]:
         self._connect()
+        if strategy_id is not None:
+            # Local ledger is in-memory only and resets on process restart.
+            # That's the same accepted limitation StubBrokerClient has.
+            return [p for (sid, sym), p in self._positions.items() if sid == strategy_id]
+        
         # Pre-existing bug: TradingClient has no list_positions method --
         # this always raised AttributeError. Real name: get_all_positions.
         positions = self._client.get_all_positions()
@@ -186,7 +251,32 @@ class AlpacaBrokerClient:
         # this the paper-trade dispatcher would treat every real order as
         # unfilled and never record it. Regular-hours market orders on Alpaca
         # paper fill in well under a second in practice.
-        return self._poll_until_terminal(submitted.id)
+        order = self._poll_until_terminal(submitted.id)
+        
+        # Mirror StubBrokerClient's per-(strategy_id, symbol) ledger.
+        key = (strategy_id, symbol)
+        prev = self._positions.get(key)
+        prev_qty = float(prev.qty) if prev else 0.0
+        filled = float(order.filled_qty) or float(order.qty)
+        net_qty = prev_qty + (filled if side == "buy" else -filled)
+        if abs(net_qty) < 1e-9:
+            self._positions.pop(key, None)
+        else:
+            if prev is None or prev_qty == 0.0 or (prev_qty > 0) != (net_qty > 0):
+                avg_entry = float(order.price)
+            elif abs(net_qty) > abs(prev_qty):
+                avg_entry = (abs(prev_qty) * prev.avg_entry_price + filled * float(order.price)) / abs(net_qty)
+            else:
+                avg_entry = prev.avg_entry_price
+            self._positions[key] = Position(
+                symbol=symbol, qty=net_qty, avg_entry_price=avg_entry,
+                side="buy" if net_qty > 0 else "sell",
+                market_value=net_qty * float(order.price),
+                unrealized_pl=(float(order.price) - avg_entry) * net_qty,
+                current_price=float(order.price),
+            )
+        self._save_ledger()
+        return order
 
     _TERMINAL_ORDER_STATUSES = {
         "FILLED", "PARTIALLY_FILLED", "CANCELED", "REJECTED", "EXPIRED", "DONE_FOR_DAY",
@@ -234,6 +324,28 @@ class AlpacaBrokerClient:
             price=fill_price,
             fees=0.0,
         )
+
+    def get_all_assets(self) -> list[str]:
+        self._connect()
+        from alpaca.trading.requests import GetAssetsRequest
+        from alpaca.trading.enums import AssetStatus, AssetClass
+        assets = self._client.get_all_assets(GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY))
+        return [a.symbol for a in assets if a.tradable]
+
+    def get_market_movers(self, top: int = 10) -> dict:
+        self._connect_screener()
+        from alpaca.data.requests import MarketMoversRequest
+        data = self._screener.get_market_movers(MarketMoversRequest(market_type="stocks", top=top))
+        return {
+            "gainers": [{"symbol": g.symbol, "percent_change": float(g.percent_change)} for g in data.gainers],
+            "losers": [{"symbol": l.symbol, "percent_change": float(l.percent_change)} for l in data.losers],
+        }
+
+    def get_most_actives(self, top: int = 10) -> list[dict]:
+        self._connect_screener()
+        from alpaca.data.requests import MostActivesRequest
+        data = self._screener.get_most_actives(MostActivesRequest(top=top))
+        return [{"symbol": a.symbol, "volume": int(a.volume)} for a in data.most_actives]
 
 
 class StubBrokerClient:
@@ -433,6 +545,7 @@ class AlpacaMarketDataClient:
     def get_bars(self, symbol: str, start: str, end: str, interval: str) -> pd.DataFrame:
         self._connect()
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        from alpaca.data.enums import Adjustment
         from datetime import datetime
 
         # Map yfinance-compatible interval strings to a real Alpaca TimeFrame.
@@ -458,11 +571,15 @@ class AlpacaMarketDataClient:
         start_dt = datetime.fromisoformat(start) if isinstance(start, str) else start
         end_dt = datetime.fromisoformat(end) if isinstance(end, str) else end
 
+        # Adjustment.ALL == split-and-dividend adjusted, matching trading_data's
+        # yfinance fallback contract; unadjusted defaults turn a 4:1 AAPL split
+        # into a fake 74% one-day crash (see REPLAY.md RP0).
         req = self._request_cls(
             symbol_or_symbols=symbol,
             timeframe=timeframe,
             start=start_dt,
             end=end_dt,
+            adjustment=Adjustment.ALL,
         )
         bars = self._client.get_stock_bars(req)
         df = bars.df
@@ -486,3 +603,35 @@ class AlpacaMarketDataClient:
         df.index.name = "Date"
         df = df.dropna(how="all")
         return df
+
+    def get_daily_bars_multi(self, symbols, start: str, end: str) -> dict:
+        """Daily bars for many symbols in ONE request (ADR-0038 amendment 2026-10-06: 503 S&P
+        members took 6.2s batched vs 701s one at a time). Returns {symbol: DataFrame} in
+        get_bars' shape (capitalised OHLCV, ascending index named "Date", split/dividend
+        adjusted). Symbols Alpaca returned no bars for are simply absent."""
+        self._connect()
+        from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import Adjustment
+        from datetime import datetime, timedelta, timezone
+
+        # Alpaca's free plan refuses SIP data from the last 15 minutes ("subscription does not
+        # permit querying recent SIP data", seen live 2026-10-09 in market hours) -- cap the end.
+        latest = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=16)
+        req = self._request_cls(
+            symbol_or_symbols=list(symbols),
+            timeframe=TimeFrame.Day,
+            start=datetime.fromisoformat(start),
+            end=min(datetime.fromisoformat(end), latest),
+            adjustment=Adjustment.ALL,
+        )
+        df = self._client.get_stock_bars(req).df
+        out = {}
+        if df is None or df.empty:
+            return out
+        df = df[["open", "high", "low", "close", "volume"]]
+        for sym, g in df.groupby(level="symbol"):
+            g = g.droplevel("symbol").sort_index()
+            g.columns = ["Open", "High", "Low", "Close", "Volume"]
+            g.index.name = "Date"
+            out[sym] = g.dropna(how="all")
+        return out

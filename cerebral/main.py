@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import websockets
@@ -45,7 +46,7 @@ from cerebral.llm.chain_engine import ChainEngine
 from cerebral.llm.context_summarizer import should_summarize, summarize_oldest
 from cerebral.llm.context_budget import estimate_tokens
 from cerebral.llm.subagent import run_subagent
-from cerebral.mcp.orchestrator import MCPOrchestrator, ToolResult
+from cerebral.mcp.orchestrator import GATE_EXEMPT, MCPOrchestrator, ToolResult
 from cerebral.memory.manager import MemoryManager
 from cerebral.passive.extractor import FiveW1HExtractor
 from cerebral.action_queue.manager import KIND_MEMORY_PROPOSAL, KIND_RECIPE_PROPOSAL, QueueManager
@@ -69,6 +70,7 @@ from cerebral.security import (
     is_valid_modal_choice,
 )
 from cerebral.commands import Command, CommandRegistry
+from cerebral import design_system as _design_system
 from cerebral.db.conversation import (
     KIND_ACTIVITY,
     KIND_FELIX_SPEECH,
@@ -106,7 +108,7 @@ from cerebral.settings import SettingsStore as _SettingsStore
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -242,6 +244,12 @@ _quality_default = _router.seed_quality_default()
 # happened to run, would call _scheduler_loop before its def is reached
 # later in this file -- both real bugs a fresh self-dev edit hit).
 from plugins.scheduler import SchedulerPlugin as _SchedulerPlugin
+from plugins.trading_strategies import TradingStrategiesPlugin as _TradingStrategiesPlugin
+from plugins.design_system_autofix import DesignSystemAutofixPlugin as _DesignSystemAutofixPlugin
+from plugins.book_library import BookLibraryPlugin as _BookLibraryPlugin
+from plugins.discovery import DiscoveryPlugin as _DiscoveryPlugin
+from plugins.ipo_calendar import IpoCalendarPlugin as _IpoCalendarPlugin
+from plugins.trading_control import TradingControlPlugin as _TradingControlPlugin
 from cerebral.trading.broker import StubBrokerClient, AlpacaBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
 from cerebral.trading.lifecycle import StrategyLifecycle
@@ -252,10 +260,17 @@ from cerebral.trading.strategy_store import StrategyStore
 from cerebral.trading.discovery import VettedTickers
 from cerebral.trading.market_hours import is_market_hours
 from cerebral.trading.books import list_validated_strategies
-from cerebral.trading.sentiment import MarketSentimentGate
+from cerebral.trading.sentiment import MarketSentimentGate, StockSentimentGate
+from cerebral.trading.market_trend import MarketTrendGate
 from plugins.rss_monitor import RSSMonitorPlugin
 
 _scheduler_plugin = _SchedulerPlugin(router=_router)
+_trading_strategies_plugin = _TradingStrategiesPlugin(router=_router, scheduler=_scheduler_plugin)
+_design_system_plugin = _DesignSystemAutofixPlugin(scheduler=_scheduler_plugin)
+_book_library_plugin = _BookLibraryPlugin(router=_router, scheduler=_scheduler_plugin)
+_discovery_plugin = _DiscoveryPlugin(router=_router, scheduler=_scheduler_plugin)
+_ipo_calendar_plugin = _IpoCalendarPlugin(scheduler=_scheduler_plugin)
+_trading_control_plugin = _TradingControlPlugin(scheduler_plugin=_scheduler_plugin)
 # Paper only, deliberately: env="paper" is Alpaca's own paper-trading
 # account (real fills against real market data, fake money), so no code
 # path from this loop can fire a LIVE order. Live execution waits on an
@@ -270,12 +285,16 @@ _scheduler_plugin = _SchedulerPlugin(router=_router)
 # `_settings = _SettingsStore()`) -- built with the library default here
 # and re-pointed at the real starting-capital setting right after
 # _settings exists, below.
-_trading_broker = AlpacaBrokerClient(env="paper")
+# ledger_path: persists which strategy owns which open position across restarts.
+from cerebral.paths import data_dir as _ledger_data_dir
+_trading_broker = AlpacaBrokerClient(env="paper", ledger_path=_ledger_data_dir() / "alpaca_paper_ledger.json")
 _trading_broker_fallback = StubBrokerClient()
 _trading_forward_record = ForwardRecord()
 _alert_dispatcher = AlertDispatcher()
 _trading_lifecycle = StrategyLifecycle(alert_dispatcher=_alert_dispatcher)
-_scheduler_plugin._lifecycle = _trading_lifecycle
+_trading_strategies_plugin._lifecycle = _trading_lifecycle
+_book_library_plugin._gauntlet = _trading_strategies_plugin
+_discovery_plugin._gauntlet = _trading_strategies_plugin
 _trading_strategy_store = StrategyStore()
 _vetted_tickers = VettedTickers()  # S28 (#881)
 # Market-wide sentiment gate on new paper opens (2026-08-31), sourced from
@@ -292,6 +311,8 @@ _vetted_tickers = VettedTickers()  # S28 (#881)
 # ever turns it on -- whichever caller reaches rss_check first consumes
 # the new items. Not engineered around since it's inactive by default.
 _sentiment_gate = MarketSentimentGate()
+_stock_sentiment_gate = StockSentimentGate()
+_market_trend_gate = MarketTrendGate()
 _rss_monitor = RSSMonitorPlugin()
 
 
@@ -392,11 +413,15 @@ if _active_profile:
             logger.warning("[cerebral] saved task pin '%s'->%s unavailable; skipped", _task, _mid)
 if _quality_default:
     logger.info("[cerebral] Quality tasks default to %s", _quality_default)
-_orc = MCPOrchestrator()
+_orc = MCPOrchestrator(verify_test_files=True)  # ADR-0034
 _queue = QueueManager()
 _extractor = FiveW1HExtractor(_router)
 _env = EnvironmentContext()
 _settings = _SettingsStore()
+# ADR-0036 M: restore the persisted admission cap. No domain semaphores
+# exist yet this early in boot (no LLM call has happened), so a direct
+# attribute assignment is enough -- _get_sem reads it lazily per domain.
+_router._admission_cap = _settings.get("admission_cap")
 # S34 (#901): now that _settings exists, re-point _trading_broker_fallback
 # at the real configured starting capital instead of StubBrokerClient's
 # own library default. _trading_broker (Alpaca) has no equivalent knob --
@@ -408,6 +433,9 @@ _trading_broker_fallback = StubBrokerClient({"starting_cash": _settings.get("tra
 # one would silently never be visible through the other until a restart.
 # Same pattern as _scheduler_plugin._record_activity_fn below.
 _scheduler_plugin._settings = _settings
+_trading_strategies_plugin._settings = _settings
+_discovery_plugin._settings = _settings
+_ipo_calendar_plugin._settings = _settings
 # Constructed here, not with the other trading globals above: RiskManager
 # reads live settings via settings_store, which must exist first.
 _risk_mgr = RiskManager(settings_store=_settings, alert_dispatcher=_alert_dispatcher)
@@ -422,7 +450,7 @@ _command_registry = CommandRegistry()
 
 async def _handle_restart_felix() -> None:
     """Direct command handler for restart_felix -- mirrors _self_dev_restart broadcast."""
-    await _broadcast({"type": "restart_felix"})
+    await _broadcast({"type": "restart_felix", "data": {"reason": "user"}})
 
 
 _command_registry.register(Command(
@@ -1192,7 +1220,8 @@ async def _ensure_panel_browser_session() -> bool:
     """
     if _get_open_browser_session() is not None:
         return True
-    res = await _orc.call_tool("browser_open_session", {})
+    # gate-exempt: jobs pipeline internal step (user-initiated Apply flow)
+    res = await _orc.call_tool("browser_open_session", {}, capability=GATE_EXEMPT)
     if res.is_error:
         await _notify_user(
             "Felix could not open the browser session",
@@ -1214,7 +1243,8 @@ async def _run_panel_apply(url: str) -> None:
         try:
             if not await _ensure_panel_browser_session():
                 return
-            res = await _orc.call_tool("jobs_apply_start", {"url": url})
+            # gate-exempt: jobs pipeline internal step (user-initiated Apply flow)
+            res = await _orc.call_tool("jobs_apply_start", {"url": url}, capability=GATE_EXEMPT)
             await _notify_apply_outcome(res)
         except Exception as exc:
             logger.warning("[cerebral] jobs_apply_start failed: %s", exc)
@@ -1297,7 +1327,8 @@ async def _run_panel_apply_all(limit: int = 100) -> None:
                 if not await _ensure_panel_browser_session():
                     stopped = True
                     break
-                res = await _orc.call_tool("jobs_apply_start", {"url": url})
+                # gate-exempt: jobs pipeline internal step (user-initiated Apply flow)
+                res = await _orc.call_tool("jobs_apply_start", {"url": url}, capability=GATE_EXEMPT)
                 await _broadcast(_jobs_update_event())
                 if res.is_error:
                     # failed / awaiting-input / skipped row already logged by the plugin.
@@ -1308,7 +1339,8 @@ async def _run_panel_apply_all(limit: int = 100) -> None:
                     else:
                         failed += 1
                     continue
-                sub = await _orc.call_tool("jobs_apply_submit", {})
+                # gate-exempt: jobs pipeline internal step (user-initiated Apply flow)
+                sub = await _orc.call_tool("jobs_apply_submit", {}, capability=GATE_EXEMPT)
                 await _broadcast(_jobs_update_event())
                 if sub.is_error:
                     # Modal declined or timed out — the user wants to look.
@@ -1333,7 +1365,8 @@ async def _run_panel_submit() -> None:
     websocket receive loop while the ADR-0005 modal waited for a confirm that
     arrives on that same loop — the modal could only ever time out."""
     try:
-        res = await _orc.call_tool("jobs_apply_submit", {})
+        # gate-exempt: jobs pipeline internal step (user-initiated Apply flow)
+        res = await _orc.call_tool("jobs_apply_submit", {}, capability=GATE_EXEMPT)
         if res.is_error:
             logger.warning("[cerebral] jobs_apply_submit error: %s", res.content)
     except Exception as exc:
@@ -1362,12 +1395,14 @@ async def _run_jobs_fetch() -> None:
         return
     async with _jobs_scan_lock:
         try:
-            await _orc.call_tool("jobs_fetch_postings", {})
+            # gate-exempt: jobs pipeline internal step (user-initiated fetch)
+            await _orc.call_tool("jobs_fetch_postings", {}, capability=GATE_EXEMPT)
         except Exception as exc:
             logger.warning("[cerebral] jobs_fetch_postings failed: %s", exc)
         if _active_profile and _job_search_store.get_dossier(_active_profile.id):
             try:
-                await _orc.call_tool("jobs_score_shortlist", {})
+                # gate-exempt: jobs pipeline internal step (user-initiated scoring)
+                await _orc.call_tool("jobs_score_shortlist", {}, capability=GATE_EXEMPT)
             except Exception as exc:
                 logger.warning("[cerebral] auto-score after fetch failed: %s", exc)
         await _broadcast(_jobs_update_event())
@@ -1380,7 +1415,8 @@ async def _run_jobs_score() -> None:
         return
     async with _jobs_scan_lock:
         try:
-            await _orc.call_tool("jobs_score_shortlist", {})
+            # gate-exempt: jobs pipeline internal step (user-initiated scoring)
+            await _orc.call_tool("jobs_score_shortlist", {}, capability=GATE_EXEMPT)
         except Exception as exc:
             logger.warning("[cerebral] jobs_score_shortlist failed: %s", exc)
         await _broadcast(_jobs_update_event())
@@ -1610,6 +1646,32 @@ _consent_surface = ConsentSurface(
 _orc.set_consent_surface(_consent_surface)
 
 
+# Runtime watch (ADR-0005 amendment 2026-10-11, cerebral/security/watch.py):
+# inside a planner chain, a normally-silent call asks first when it follows
+# outside content (taint) or is unusual (first-ever use / >10x daily volume).
+# Baseline = the last 30 days of tool_call turns in the Activity Log.
+from cerebral.security.watch import Watch as _Watch  # noqa: E402
+
+_watch = _Watch()
+_orc.set_watch(_watch)
+
+
+def _seed_watch_baseline(profile_id: int) -> None:
+    from datetime import datetime, timedelta, timezone  # ts column is UTC CURRENT_TIMESTAMP
+    since =(datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        turns = _conversation.list_activity(profile_id, kinds=[KIND_TOOL_CALL], since=since, limit=100000)
+        _watch.load_baseline([((t.content or {}).get("name", ""), t.ts) for t in turns])
+        logger.info("[watch] baseline: %d tool calls over 30 days", len(turns))
+    except Exception:  # noqa: BLE001 -- an empty baseline only means more first-time asks
+        logger.warning("[watch] baseline load failed; starting empty", exc_info=True)
+
+
+if _active_profile is not None:
+    # ponytail: seeded once at boot for the boot profile; re-seed on profile switch if multi-profile use grows
+    _seed_watch_baseline(_active_profile.id)
+
+
 # ── Irreversible-flag modal surface (Issue #49) ──────────────────────────────
 #
 # When a call sets `flags.irreversible=True` AND the gate/ACL didn't
@@ -1708,6 +1770,13 @@ def _modal_auto_gate(tool_name: str, args: object) -> bool:
 
 # Module-level (not a turn-handler closure) so sub-agents (ADR-0020) reuse the
 # same ADR-0005 capability gate rather than duplicating it.
+async def _execute_after_gate(tool_name: str, tool_args: dict) -> ToolResult:
+    """execute_fn for sub-agents / delegate: their gate_fn (_gate_tool) already
+    ran, so dispatch without re-running the gate inside call_tool."""
+    # gate-exempt: gated above via _gate_tool (sub-agent / delegate chain)
+    return await _orc.call_tool(tool_name, tool_args, capability=GATE_EXEMPT)
+
+
 async def _gate_tool(tool_name: str, tool_args: dict) -> Decision:
     # Recipe synthetic tools don't have a plugin; treat them as SILENT at
     # the gate level -- per-step gates fire inside _replay_recipe.
@@ -1832,10 +1901,19 @@ def _recipes_update_event() -> dict:
     recipes = _recipe_store.list_for_profile(_active_profile.id)
     stale = _recipe_store.stale_ids(_active_profile.id)
     dups = _recipe_store.duplicate_ids(_active_profile.id)
+    # ADR-0035 J: dry-run replay VerifyResult (ADR-0034) for the registry
+    # widget's badge -- catches a step whose tool drifted since the save.
+    tools = _orc.tools_for_llm
+    recipe_dicts = []
+    for r in recipes:
+        d = r.to_dict()
+        v = r.verify(tools)
+        d["verify"] = {"passed": v.passed, "evidence": v.evidence}
+        recipe_dicts.append(d)
     return {
         "type": "recipes_update",
         "data": {
-            "recipes": [r.to_dict() for r in recipes],
+            "recipes": recipe_dicts,
             "stale_ids": list(stale),
             "duplicate_ids": list(dups),
         },
@@ -2986,6 +3064,45 @@ async def _broadcast(event: dict) -> None:
 # to a patch format if edits ever span files too large to round-trip.
 _SELF_DEV_MAX_FILES = 8
 
+_SELF_DEV_EXCLUDE_DIR_NAMES = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
+    "dist", "build", "target", ".next", ".nuxt", "vendor",
+    ".idea", ".vscode", "coverage", ".pytest_cache", ".mypy_cache",
+}
+# Path PREFIXES (not bare dir names) to skip -- narrower than excluding all of
+# ".claude", which would also hide ".claude/skills/*.md" that the planner is
+# deliberately supposed to see. ".claude/tmp" alone holds ~400+ loop log/status
+# files that would otherwise flood the candidate list.
+_SELF_DEV_EXCLUDE_PREFIXES = (".claude/tmp/", ".campaign-scratch/")
+_SELF_DEV_SOURCE_EXTS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".md",
+    ".ps1", ".sh", ".json", ".yaml", ".yml", ".html", ".css",
+    ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".php",
+}
+_SELF_DEV_MAX_CANDIDATES = 500
+
+
+def _self_dev_candidates(clone_dir) -> list[str]:
+    """Repo-relative source file paths under clone_dir, whatever the layout.
+
+    Walks the whole tree instead of a fixed set of OpenMind-specific roots so
+    self_dev works the same way against an external target_dir as it does
+    against Felix's own repo. Sorted and capped -- an unbounded list blows the
+    plan_prompt's token budget on a large repo.
+    """
+    out: list[str] = []
+    for p in clone_dir.rglob("*"):
+        if not p.is_file() or p.suffix not in _SELF_DEV_SOURCE_EXTS:
+            continue
+        rel = p.relative_to(clone_dir).as_posix()
+        if set(p.relative_to(clone_dir).parts[:-1]) & _SELF_DEV_EXCLUDE_DIR_NAMES:
+            continue
+        if any(rel.startswith(pre) for pre in _SELF_DEV_EXCLUDE_PREFIXES):
+            continue
+        out.append(rel)
+    out.sort()
+    return out[:_SELF_DEV_MAX_CANDIDATES]
+
 # ── Edit-prompt budget (issue #758) ─────────────────────────────────────────
 # The edit prompt used to inline every wanted file whole, with no size cap --
 # reliable on small files, structurally incapable on large ones (a 51KB file
@@ -2996,9 +3113,10 @@ _SELF_DEV_MAX_FILES = 8
 # ponytail: fixed fraction, not measured per-edit-size -- revisit if self_dev
 # edits start needing bigger replies than 30% of window can hold.
 _SELF_DEV_RESPONSE_RESERVE = 0.3
-# One file cannot eat more than this fraction of the prompt budget, so a
-# single huge file can't crowd out the other files the plan step picked.
-_SELF_DEV_PER_FILE_FRACTION = 0.4
+# (retired) _SELF_DEV_PER_FILE_FRACTION = 0.4 -- a fixed per-file share of the
+# prompt budget. Replaced by an even split across the files a slice actually
+# touches: the fraction only ever needed to stop one file crowding out others,
+# but it applied just as hard to 1-file slices, which are most of them.
 # Floor below which a truncated excerpt stops being worth showing at all --
 # used only to size the fail-fast check (item 3), not to block assembly.
 _SELF_DEV_MIN_EXCERPT_TOKENS = 100
@@ -3038,46 +3156,10 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
 
     clone_dir = _P(clone_dir)
 
-    # 1. Candidate source files (paths only -- cheap planner context).
-    candidates: list[str] = []
-    for base in ("cerebral", "plugins"):
-        root = clone_dir / base
-        if root.is_dir():
-            candidates += [p.relative_to(clone_dir).as_posix() for p in root.rglob("*.py")]
-    # Tray UI sources (JS) so self_dev can reach the Electron front-end. Skip
-    # node_modules (thousands of vendored files would blow the planner prompt)
-    # and the ~11k-line windows/main.html monolith (too large to round-trip in
-    # one edit prompt -- the modular tray/lib/*.js is the editable surface). Any
-    # tray/ edit ESCALATES to human review (GUARDRAIL_PATHS): the sandbox test
-    # gate runs pytest only, so it cannot validate JS -- a human must.
-    tray_lib = clone_dir / "tray" / "lib"
-    if tray_lib.is_dir():
-        candidates += [p.relative_to(clone_dir).as_posix() for p in tray_lib.rglob("*.js")]
-    # Prose surfaces: dev-skills and ADRs/docs. Without these the planner never
-    # SEES a skill or doc file, so a slice like "write .claude/skills/<x>/SKILL.md"
-    # could only be driven by naming the exact path in the change description and
-    # forcing a NEWFILE block (how SK-4 #363 had to be built). Markdown only --
-    # the sandbox gate runs pytest, which cannot validate prose, so these are
-    # low-risk to write and a human reads the PR anyway.
-    # ponytail: markdown only, and only these three roots. Widen further only if
-    # a slice actually needs another surface -- the whole point of a candidate
-    # list is to keep the planner prompt small.
-    for base, pattern in (
-        (".claude/skills", "*.md"),
-        ("docs", "*.md"),
-        ("scripts", "*.ps1"),
-    ):
-        root = clone_dir / base
-        if root.is_dir():
-            candidates += [
-                p.relative_to(clone_dir).as_posix()
-                for p in root.rglob(pattern)
-                if "node_modules" not in p.parts
-            ]
-    candidates.sort()
+    candidates = _self_dev_candidates(clone_dir)
 
     plan_prompt = (
-        "You are editing the OpenMind repository to accomplish a task.\n"
+        "You are editing a codebase to accomplish a task.\n"
         f"TASK: {description}\n\n"
         "Below is the list of source files. Reply with ONLY a JSON array of the "
         f"repo-relative paths you will EDIT or CREATE (at most {_SELF_DEV_MAX_FILES}). "
@@ -3097,7 +3179,7 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
     prompt_budget = int(context_window * (1 - _SELF_DEV_RESPONSE_RESERVE))
 
     edit_instructions = (
-        "You are editing the OpenMind repository. Make this change:\n"
+        "You are editing a codebase. Make this change:\n"
         f"TASK: {description}\n\n"
         "To EDIT an existing file, output a block EXACTLY in this format:\n"
         "<<<FILE: relative/path.py>>>\n<<<SEARCH>>>\n"
@@ -3146,13 +3228,31 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
             "touch fewer/smaller files."
         )
 
+    # Share the budget across however many files this slice actually touches,
+    # rather than capping every file at a fixed fraction. The fraction existed
+    # to stop one big file crowding out the others -- which only bites when
+    # there ARE others. A 1-file slice was still being truncated to 40% of the
+    # budget for no reason: on a 131k window that cut cerebral/main.py to 38%
+    # (line 3,452 of 8,530), putting _handle_message, _scheduler_loop and
+    # _greet permanently out of self_dev's reach. Dividing by the file count
+    # gives a single file the whole budget (main.py -> 96%) and still splits
+    # evenly when a slice legitimately spans several.
+    # ponytail: even split, not size-weighted -- a slice mixing one huge file
+    # with small ones wastes the small ones' share. Weight by actual size if
+    # that shows up; even-split is right for the 1-2 file slices self_dev does.
+    # estimate_tokens is floor(len/4), so the assembled prompt can come out a
+    # token or two over the sum of its parts' estimates (floor(a/4)+floor(b/4)
+    # <= floor((a+b)/4)), plus 2 chars per "\n\n" join. The old fixed 0.4 cap
+    # left enough slack that this never showed; filling the budget exactly does.
+    assembly_slack = 2 + 2 * len(raw_contents)
+    effective_budget = max(prompt_budget - assembly_slack, 0)
     per_file_cap = max(
-        int(prompt_budget * _SELF_DEV_PER_FILE_FRACTION), _SELF_DEV_MIN_EXCERPT_TOKENS
+        effective_budget // max(1, len(raw_contents)), _SELF_DEV_MIN_EXCERPT_TOKENS
     )
     blocks: list[str] = []
     running = overhead_tokens
     for rel, content in raw_contents:
-        cap = min(per_file_cap, max(prompt_budget - running, 0))
+        cap = min(per_file_cap, max(effective_budget - running, 0))
         block = _self_dev_bounded_block(rel, content, cap)
         blocks.append(block)
         running += estimate_tokens(block)
@@ -3166,6 +3266,9 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
 
     # 4. Apply the edits (confined to the clone) and commit on a new branch.
     written = _sdio.apply_search_replace(clone_dir, edit_raw, allowed=set(wanted))
+    if not written:  # otherwise "no commit" is undiagnosable without replaying the prompt
+        logger.warning("[self_dev] edit reply applied nothing (planned %s); reply head: %s",
+                       wanted, (edit_raw or "<empty>")[:2000])
 
     branch = f"selfdev/{uuid.uuid4().hex[:8]}"
     committed = bool(written) and _sdio.create_branch_and_commit(
@@ -3176,7 +3279,7 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
 
 async def _self_dev_restart() -> None:
     """self_dev restart_fn -- tell the tray to relaunch (SD-2 / #555)."""
-    await _broadcast({"type": "restart_felix"})
+    await _broadcast({"type": "restart_felix", "data": {"reason": "self_dev_load"}})
 
 
 async def _self_dev_rollback() -> None:
@@ -3185,6 +3288,12 @@ async def _self_dev_rollback() -> None:
     reset + relaunch (tray/lib/boot-check.js manualRollback); Cerebral only
     fires the broadcast, same posture as restart_fn above."""
     await _broadcast({"type": "self_dev_manual_rollback"})
+
+
+async def _self_dev_campaign_status(status: dict) -> None:
+    """self_dev campaign_status_fn -- tells the tray a campaign started/finished,
+    so its auto-update idle check doesn't restart Cerebral mid-slice (2026-09-08)."""
+    await _broadcast({"type": "self_dev_campaign_status", "data": status})
 
 
 async def _send(websocket, event: dict) -> None:
@@ -3268,7 +3377,7 @@ def _memory_update_event() -> dict:
     mgr = _get_memory()
     memories = mgr.list_all() if mgr else []
     return {"type": "memory_update", "data": {"memories": [
-        {"id": m.id, "fact": m.fact, "created_at": m.created_at, "category": m.category}
+        {"id": m.id, "fact": m.fact, "created_at": m.created_at, "category": m.category, "order": m.order}
         for m in memories
     ]}}
 
@@ -3392,6 +3501,15 @@ async def _record_activity(kind: str, content: dict) -> None:
 # attribute assignment, matching how self_dev's seams are wired later via
 # their own setters once every closure they capture actually exists.
 _scheduler_plugin._record_activity_fn = _record_activity
+_trading_strategies_plugin._record_activity_fn = _record_activity
+_book_library_plugin._record_activity_fn = _record_activity
+_discovery_plugin._record_activity_fn = _record_activity
+_ipo_calendar_plugin._record_activity_fn = _record_activity
+
+# Register recurring events at boot
+_discovery_plugin.ensure_discovery_event()
+_ipo_calendar_plugin.ensure_ipo_calendar_event()
+_design_system_plugin.ensure_design_system_event()
 
 async def _reset_paper_trading() -> dict:
     """Archives current paper-trading fills as a historical block (does
@@ -3413,8 +3531,8 @@ async def _reset_paper_trading() -> dict:
     return result
 
 
-_scheduler_plugin._reset_paper_fn = _reset_paper_trading
-_scheduler_plugin._get_paper_archive_fills_fn = _trading_forward_record.get_paper_archive_fills
+_trading_control_plugin._reset_paper_fn = _reset_paper_trading
+_trading_control_plugin._get_paper_archive_fills_fn = _trading_forward_record.get_paper_archive_fills
 
 
 def _conversation_turns_event(limit: int = 50) -> dict:
@@ -3589,6 +3707,191 @@ def _parse_context_window(raw, kind: str = "") -> int | None:
     return n if n > 0 else None
 
 
+# ── Scheduler jobs (FELIX-AUDIT S7, F5) ─────────────────────────────────────
+# One table of title -> handler for the recurring events `_scheduler_loop`
+# consumes, replacing three separate `list_due_events()` scans with title
+# string-matches. A handler returns True to mark the event run (the default;
+# also what a handler that swallows its own failure returns, so a persistently
+# failing job retries at its normal interval, not every tick) or False to leave
+# it due (discovery disabled / auto-stopped). An exception that escapes a
+# handler is logged and leaves the event un-marked; it never stops the other jobs.
+# ponytail: main.py-local table -- a plugin-level periodic_jobs() registration
+# API (the audit's wider ask) is deferred until a second registrant exists (R2).
+
+
+async def _job_ipo_dispatch() -> None:
+    # IPO6: cheap per-tick check (a date compare over a short list) --
+    # not gated by the weekly calendar-refresh event, since it needs to
+    # catch the actual listing day promptly, not wait up to a week.
+    try:
+        dispatch_result = await _ipo_calendar_plugin.call_tool("dispatch_due_ipos", {})
+        if json.loads(dispatch_result.content).get("dispatched"):
+            logger.info(f"[cerebral] IPO dispatch: {dispatch_result.content}")
+    except Exception:
+        logger.exception("[cerebral] IPO dispatch check failed")
+
+
+def _run_trend_basket_dispatch_sync():
+    """Runs trend_basket_dispatch's real work (build_dynamic_universe, compute_breadth,
+    rank_for_day_trading, rank_by_momentum, and on a rising edge up to 10 real per-symbol
+    Gauntlet backtests) inside asyncio.run() on its OWN fresh event loop -- called only via
+    asyncio.to_thread from _job_trend_basket_dispatch below, never on the main loop's thread.
+    A plain module-level function (not a lambda/closure) so asyncio.to_thread pickles/passes it
+    cleanly and the intent -- "this runs on a worker thread, in its own loop" -- is visible at
+    the call site, not buried in an inline lambda."""
+    return asyncio.run(_trading_strategies_plugin.call_tool("trend_basket_dispatch", {}))
+
+
+async def _job_trend_basket_dispatch() -> None:
+    # ADR-0038: unlike _job_ipo_dispatch's cheap date-compare, this does real network fetches
+    # (build_dynamic_universe/compute_breadth/rank_for_day_trading/rank_by_momentum) every tick,
+    # and on a rising edge up to 10 real per-symbol Gauntlet backtests -- run entirely off the
+    # main event loop via asyncio.to_thread (same S14/#859 precedent as the per-strategy dispatch
+    # pass below, and the same shape as _market_trend_gate.refresh's own to_thread offload).
+    # 2026-09-22 incident: shipped without this offload first, which froze the WS server's own
+    # handshake loop for the duration of every dispatch tick -- confirmed live, not theoretical.
+    try:
+        dispatch_result = await asyncio.to_thread(_run_trend_basket_dispatch_sync)
+        if json.loads(dispatch_result.content).get("dispatched"):
+            logger.info(f"[cerebral] Trend basket dispatch: {dispatch_result.content}")
+    except Exception:
+        logger.exception("[cerebral] Trend basket dispatch check failed")
+
+
+async def _job_ipo_calendar(evt: dict) -> bool:
+    # IPO6: weekly IPO-calendar refresh, mirroring the discovery
+    # due-event block below exactly but simpler -- no enabled/duration
+    # settings to check, it always runs on its own recurrence.
+    try:
+        result = await _ipo_calendar_plugin.call_tool("check_ipo_calendar", {})
+        logger.info(f"[cerebral] IPO calendar check: {result.content}")
+    except Exception:
+        logger.exception("[cerebral] IPO calendar check failed")
+    return True
+
+
+async def _job_design_system_scan(evt: dict) -> bool:
+    # 2026-09-08: base design system scan (BASE-DESIGN-SYSTEM.md) --
+    # mirrors the IPO-calendar block exactly: always runs on its own
+    # recurrence, no enabled/duration settings gating the scan
+    # itself. Only the side-effecting part (filing a GitHub issue +
+    # driving self_dev_campaign for each new gap) is gated behind
+    # design_system_autofix_enabled (default OFF, discovery_enabled's
+    # own precedent) -- a rule already queued (any state) is never
+    # re-filed; a regression needs a human to reopen it.
+    try:
+        repo_root = Path(__file__).resolve().parent.parent
+        violations = _design_system.scan(repo_root / "tray")
+        logger.info(f"[cerebral] base design system scan: {len(violations)} violation(s)")
+        if violations and _settings.get("design_system_autofix_enabled"):
+            driver_path = repo_root / "BASE-DESIGN-SYSTEM.md"
+            driver_text = driver_path.read_text(encoding="utf-8")
+            by_rule: dict = {}
+            for v in violations:
+                by_rule.setdefault(v.rule_id, []).append(v)
+            already_queued = _design_system.queued_rule_ids(driver_text)
+            issue_numbers: dict = {}
+            for rule_id, rule_violations in by_rule.items():
+                if rule_id in already_queued:
+                    continue
+                title = f"Base design system: {rule_id} ({len(rule_violations)} gap(s))"
+                body = "\n".join(
+                    f"- `{v.file}:{v.line}` -- {v.description}"
+                    for v in rule_violations
+                ) + "\n\nFiled automatically by the base design system scan -- see BASE-DESIGN-SYSTEM.md."
+                issue_no = _design_system.create_issue(repo_root, title, body)
+                if issue_no is not None:
+                    issue_numbers[rule_id] = issue_no
+                else:
+                    logger.warning(f"[cerebral] design system: failed to file issue for rule {rule_id!r}")
+            if issue_numbers:
+                new_text, filed = _design_system.sync_driver_queue(
+                    driver_text, violations, lambda r, v: issue_numbers.get(r),
+                )
+                if filed:
+                    driver_path.write_text(new_text, encoding="utf-8")
+                    logger.info(f"[cerebral] design system: queued {filed}")
+                    # gated: resolves the tool's declared capabilities (FELIX-AUDIT F10)
+                    res = await _orc.call_tool(
+                        "self_dev_campaign", {"driver_file": str(driver_path)},
+                        capability=None,
+                    )
+                    if res.is_error:
+                        logger.warning("[cerebral] design system: self_dev_campaign not run: %s", res.content)
+    except Exception:
+        logger.exception("[cerebral] base design system scan failed")
+    return True
+
+
+async def _job_discovery(evt: dict) -> bool:
+    # S27 (#880): the autonomous discovery loop's own recurring
+    # event, checked and consumed BEFORE dispatch_due_events gets
+    # its own list_due_events() call -- mark_event_run here means
+    # the per-strategy dispatcher below never mistakes this event
+    # for a strategy to run (list_due_events/_run_paper_strategy
+    # share the same `events` table; this is the one title that
+    # means "run discovery", not "dispatch a strategy").
+    # S31 (#896): manually stopped -- skip without mark_event_run,
+    # so re-enabling makes it immediately due again instead of
+    # waiting out the rest of its last real interval.
+    if not _settings.get("discovery_enabled"):
+        return False
+    # Auto-stop: an expired duration timer disables discovery on
+    # its own next due tick, logged so it's visible rather than
+    # silently going quiet. Also skipped without mark_event_run.
+    stop_at = _settings.get("discovery_stop_at")
+    if stop_at:
+        from datetime import datetime, timezone
+        try:
+            stop_dt = datetime.fromisoformat(stop_at)
+        except ValueError:
+            stop_dt = None
+        if stop_dt is not None and stop_dt.tzinfo is not None:
+            stop_dt = stop_dt.astimezone(timezone.utc).replace(tzinfo=None)
+        if stop_dt is not None and stop_dt <= datetime.now(timezone.utc).replace(tzinfo=None):
+            await _discovery_plugin.call_tool("stop_discovery", {})
+            await _record_activity("activity", {
+                "source": "trading",
+                "summary": "Discovery auto-stopped: its duration timer expired",
+            })
+            return False
+    try:
+        discovery_args = {
+            "queries": _settings.get("discovery_queries") or None,
+            "interval": _settings.get("discovery_interval"),
+        }
+        discovery_result = await _discovery_plugin.call_tool("run_discovery", discovery_args)
+        logger.info(f"[cerebral] Discovery pass: {discovery_result.content}")
+    except Exception:
+        logger.exception("[cerebral] Discovery pass failed")
+    return True
+
+
+def _due_event_jobs() -> dict:
+    """title -> handler for every recurring event the scheduler tick consumes."""
+    return {
+        _ipo_calendar_plugin.IPO_CALENDAR_EVENT_TITLE: _job_ipo_calendar,
+        _design_system_plugin.DESIGN_SYSTEM_EVENT_TITLE: _job_design_system_scan,
+        _discovery_plugin.DISCOVERY_EVENT_TITLE: _job_discovery,
+    }
+
+
+async def _run_due_event_jobs() -> None:
+    """One pass over the due events, dispatching each to its registered job."""
+    jobs = _due_event_jobs()
+    for evt in _scheduler_plugin.list_due_events():
+        job = jobs.get(evt["title"])
+        if job is None:
+            continue  # not a scheduler job (e.g. a paper-trade strategy) -- dispatched below
+        try:
+            mark = await job(evt)
+        except Exception:
+            logger.exception("[cerebral] scheduler job %r failed", evt["title"])
+            continue
+        if mark:
+            _scheduler_plugin.mark_event_run(evt["id"])
+
+
 async def _scheduler_loop() -> None:
     """Background loop that polls for due scheduler events and triggers paper
     trades (S7-S9). Runs every 5 minutes. Idempotent via
@@ -3624,50 +3927,13 @@ async def _scheduler_loop() -> None:
                 await asyncio.sleep(300)
                 continue
 
-            # S27 (#880): the autonomous discovery loop's own recurring
-            # event, checked and consumed BEFORE dispatch_due_events gets
-            # its own list_due_events() call -- mark_event_run here means
-            # the per-strategy dispatcher below never mistakes this event
-            # for a strategy to run (list_due_events/_run_paper_strategy
-            # share the same `events` table; this is the one title that
-            # means "run discovery", not "dispatch a strategy").
-            for evt in _scheduler_plugin.list_due_events():
-                if evt["title"] != _scheduler_plugin.DISCOVERY_EVENT_TITLE:
-                    continue
-                # S31 (#896): manually stopped -- skip without mark_event_run,
-                # so re-enabling makes it immediately due again instead of
-                # waiting out the rest of its last real interval.
-                if not _settings.get("discovery_enabled"):
-                    continue
-                # Auto-stop: an expired duration timer disables discovery on
-                # its own next due tick, logged so it's visible rather than
-                # silently going quiet. Also skipped without mark_event_run.
-                stop_at = _settings.get("discovery_stop_at")
-                if stop_at:
-                    from datetime import datetime, timezone
-                    try:
-                        stop_dt = datetime.fromisoformat(stop_at)
-                    except ValueError:
-                        stop_dt = None
-                    if stop_dt is not None and stop_dt.tzinfo is not None:
-                        stop_dt = stop_dt.astimezone(timezone.utc).replace(tzinfo=None)
-                    if stop_dt is not None and stop_dt <= datetime.now(timezone.utc).replace(tzinfo=None):
-                        await _scheduler_plugin.call_tool("stop_discovery", {})
-                        await _record_activity("activity", {
-                            "source": "trading",
-                            "summary": "Discovery auto-stopped: its duration timer expired",
-                        })
-                        continue
-                try:
-                    discovery_args = {
-                        "queries": _settings.get("discovery_queries") or None,
-                        "interval": _settings.get("discovery_interval"),
-                    }
-                    discovery_result = await _scheduler_plugin.call_tool("run_discovery", discovery_args)
-                    logger.info(f"[cerebral] Discovery pass: {discovery_result.content}")
-                except Exception:
-                    logger.exception("[cerebral] Discovery pass failed")
-                _scheduler_plugin.mark_event_run(evt["id"])
+            await _job_ipo_dispatch()
+            await _job_trend_basket_dispatch()
+
+            # Recurring events (IPO calendar, design-system scan, discovery) --
+            # consumed BEFORE the per-strategy dispatch below, which shares the
+            # same `events` table and must not mistake them for strategies.
+            await _run_due_event_jobs()
 
             # The whole pass -- due-event lookup, per-strategy signal
             # evaluation, position diff, order, realized P&L, then
@@ -3704,9 +3970,52 @@ async def _scheduler_loop() -> None:
                         _rss_monitor, lambda p: _router.complete(p, task_type="coding")
                     )
                     sentiment_label = reading.label
+                # Per-symbol sentiment (2026-09-01): unlike the market-wide
+                # gate above, there's no free "nothing new" RSS check for a
+                # symbol-scoped web search, so this only refreshes symbols
+                # that actually have a due dispatch this tick (StockSentiment
+                # Gate's own TTL then keeps repeat refreshes cheap within an
+                # hour). Precomputed here, in the async loop, because the
+                # actual dispatch below runs in a thread and can't itself
+                # await a web_search + LLM call per symbol.
+                stock_sentiment_labels = None
+                if _settings.get("trading_stock_sentiment_gate_enabled"):
+                    due_symbols = set()
+                    only_prefix = _settings.get("trading_only_prefix") or ""
+                    for evt in _scheduler_plugin.list_due_events():
+                        if evt["title"] == _discovery_plugin.DISCOVERY_EVENT_TITLE:
+                            continue
+                        # Only score symbols whose label will actually be read: parked strategies
+                        # never run (dispatch_due_events skips them), and the trend basket is
+                        # exempt from the sentiment gates (live_tick.py, 2026-10-06).
+                        if only_prefix and not evt["title"].startswith(only_prefix):
+                            continue
+                        if evt["title"].startswith("Trend basket:"):
+                            continue
+                        spec = _trading_strategy_store.get(evt["title"])
+                        if spec is not None:
+                            due_symbols.add(spec.symbol)
+                    if due_symbols:
+                        from plugins.browser import BrowserPlugin
+                        browser = BrowserPlugin()
+
+                        async def _stock_web_search(query: str) -> list:
+                            result = await browser.call_tool("web_search", {"query": query, "max_results": 3})
+                            if result.is_error:
+                                return []
+                            data = json.loads(result.content)
+                            hits = data.get("results", data) if isinstance(data, dict) else data
+                            return hits if isinstance(hits, list) else []
+
+                        stock_sentiment_labels = {}
+                        for sym in due_symbols:
+                            reading = await _stock_sentiment_gate.refresh(
+                                sym, _stock_web_search, lambda p: _router.complete(p, task_type="coding")
+                            )
+                            stock_sentiment_labels[sym] = reading.label
                 results = await asyncio.to_thread(
                     _dispatch_due_events,
-                    _scheduler_plugin, paper_broker, _trading_forward_record,
+                    _trading_control_plugin, paper_broker, _trading_forward_record,
                     lifecycle=_trading_lifecycle, store=_trading_strategy_store,
                     arm=_settings.get("trading_live_arm"),
                     risk=_risk_mgr,
@@ -3715,11 +4024,14 @@ async def _scheduler_loop() -> None:
                     fundamentals_scan_fn=_fundamentals_red_flag_scan,
                     vetted_tickers=_vetted_tickers,
                     sentiment_label=sentiment_label,
+                    stock_sentiment_labels=stock_sentiment_labels,
                     # Off by default (real per-trade LLM latency, unlike
                     # the cached market-wide sentiment gate) -- passing
                     # None makes bear_case_fn a true no-op in live_tick.py,
                     # not just an always-PROCEED verdict.
                     bear_case_fn=_bear_case_fn if _settings.get("trading_bear_case_gate_enabled") else None,
+                    dd_cap=_settings.get("batch_replay_graduation_dd_cap"),
+                    only_prefix=_settings.get("trading_only_prefix") or "",
                 )
             for result in results:
                 logger.info(f"[cerebral] Dispatch result for {result.get('strategy')}: {result}")
@@ -3742,6 +4054,17 @@ async def _scheduler_loop() -> None:
                     ),
                     "results": results,
                 })
+
+            # CROSS-STOCK-VALIDATION S3 (#1236): nightly cross-stock sweep,
+            # midnight-8am ET, soft-capped at 8 real-clock hours. Logic
+            # lives in plugins.trading_replay (injectable `now`, directly
+            # unit-testable) -- this is just the call site on the existing
+            # 5-minute tick, not a new SchedulerPlugin recurring event
+            # (list_due_events()'s "daily" recurrence is elapsed-time-
+            # since-last-run, not anchored to a clock hour, and would
+            # drift across restarts).
+            from plugins.trading_replay import check_cross_stock_night_window
+            await check_cross_stock_night_window(_settings)
         except Exception as e:
             logger.warning(f"[cerebral] Scheduler loop iteration failed (backing off): {e}", exc_info=True)
         await asyncio.sleep(300)
@@ -3793,14 +4116,14 @@ async def _trading_broadcast() -> None:
             # live update the whole time, even though books kept
             # processing normally server-side.
             alerts = [dataclasses.asdict(a) for a in _trading_lifecycle.get_alert_history()]
-        # S31 (#896): read _scheduler_plugin's own settings-backed state
-        # directly rather than round-tripping through get_discovery_status's
-        # ToolResult/json -- same values, no serialization needed here.
+        # S31 (#896): read module-level _settings singleton directly (same
+        # values, no ToolResult round-trip needed -- _discovery_plugin._settings
+        # is rebound to this singleton at boot).
         discovery = {
-            "enabled": _scheduler_plugin._settings.get("discovery_enabled"),
-            "stop_at": _scheduler_plugin._settings.get("discovery_stop_at"),
-            "queries": _scheduler_plugin._settings.get("discovery_queries"),
-            "interval": _scheduler_plugin._settings.get("discovery_interval"),
+            "enabled": _settings.get("discovery_enabled"),
+            "stop_at": _settings.get("discovery_stop_at"),
+            "queries": _settings.get("discovery_queries"),
+            "interval": _settings.get("discovery_interval"),
         }
         # S34 (#901): current paper-trading control state, for the (hand-
         # built, tray/lib/trading-panel.js) Start/Stop + capital control.
@@ -3836,10 +4159,13 @@ async def _trading_broadcast() -> None:
             {
                 "id": b.id, "title": b.title, "filename": b.filename, "status": b.status,
                 "total_chunks": b.total_chunks, "processed_chunks": b.processed_chunks,
-                "strategies_found": b.strategies_found, "error_message": b.error_message,
+                "strategies_found": b.strategies_found,
+                "strategies_repaired": b.strategies_repaired,
+                "error_message": b.error_message,
+                "category": b.category,
                 "valid_strategies": list_validated_strategies(b.title, _trading_strategy_store),
             }
-            for b in _scheduler_plugin._book_store.list_all()
+            for b in _book_library_plugin._book_store.list_all()
         ]
         # Which model claim-extraction is actually reading chunks with right
         # now -- setting the 'books' task in Settings -> Models had no
@@ -3859,6 +4185,26 @@ async def _trading_broadcast() -> None:
             "updated_at": sentiment_reading.updated_at.isoformat() if sentiment_reading.updated_at else None,
             "enabled": _settings.get("trading_sentiment_gate_enabled"),
         }
+        # Purely informational, no gate/setting to check -- unlike sentiment
+        # above this always renders. refresh() is a same-day no-op after
+        # its first call, but that first call is a real (offloaded) network
+        # fetch, so it goes through asyncio.to_thread like the other
+        # blocking-network work in this loop (see dispatch_due_events above).
+        from cerebral.trading_data import fetch_ohlcv
+        trend_reading = await asyncio.to_thread(_market_trend_gate.refresh, fetch_ohlcv)
+        market_trend = {
+            "label": trend_reading.label,
+            "pct_change": trend_reading.pct_change,
+            "symbol": trend_reading.symbol,
+            "updated_at": trend_reading.updated_at.isoformat() if trend_reading.updated_at else None,
+        }
+        # ADR-0038 (2026-09-23): purely informational status of the trend-basket breadth gate,
+        # same "always renders, no enabled/disabled toggle" posture as market_trend above --
+        # there's no gate to turn off here, just a reading to show. Read directly off the live
+        # RisingEdgeGate instance already held by the trading_strategies plugin (no extra fetch;
+        # the gate updates itself once per day as _job_trend_basket_dispatch's own tick calls
+        # refresh()) rather than adding a second, separate polling path.
+        trend_basket = _trading_strategies_plugin._trend_basket_gate.last_reading
         await _broadcast({
             "type": "trading_update",
             "data": {
@@ -3866,7 +4212,8 @@ async def _trading_broadcast() -> None:
                 "books": books, "books_model": books_model_label,
                 "paper_control": paper_control, "total_pnl": total_pnl,
                 "all_fills": all_fills, "paper_archives": paper_archives,
-                "sentiment": sentiment,
+                "sentiment": sentiment, "market_trend": market_trend,
+                "trend_basket": trend_basket,
             },
         })
     except Exception as e:
@@ -3875,7 +4222,9 @@ async def _trading_broadcast() -> None:
 # 2026-08-26: lets the plugin schedule a live broadcast as book ingestion
 # progresses (chunk-by-chunk, in its own background task) without the
 # panel having to poll -- same wiring pattern as _record_activity_fn.
-_scheduler_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
+_trading_control_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
+_trading_strategies_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
+_book_library_plugin._on_trading_change = lambda: asyncio.create_task(_trading_broadcast())
 
 async def _handle_trading_poll(_data: dict) -> None:
     """IPC handler for tray polling of live trading state."""
@@ -3889,12 +4238,12 @@ async def _trading_tickers_data() -> dict:
     from cerebral.trading.ticker_view import build_ticker_view
     from cerebral.trading_data import fetch_ohlcv
     return build_ticker_view(
-        watchlist_symbols=_scheduler_plugin._discovery_watchlist.symbols(),
+        watchlist_symbols=_discovery_plugin._discovery_watchlist.symbols(),
         states=_trading_lifecycle._states,
         get_spec=_trading_strategy_store.get,
         get_fills=lambda dispatch_id: _trading_forward_record.get_fills(strategy_id=dispatch_id),
         fetch_ohlcv=fetch_ohlcv,
-        get_latest_attempt=_scheduler_plugin._discovery_attempts.get_latest,
+        get_latest_attempt=_discovery_plugin._discovery_attempts.get_latest,
     )
 
 
@@ -4393,7 +4742,8 @@ async def _dispatch_tray_call_tool(
     else:
         decision = Decision.SILENT
     if decision is Decision.SILENT:
-        result = await _orc.call_tool(tool_name, tool_args)
+        # gate-exempt: gated above via check_capabilities (with computer-use effective caps)
+        result = await _orc.call_tool(tool_name, tool_args, capability=GATE_EXEMPT)
     else:
         logger.info(
             "[cerebral] Tray-IPC call_tool denied: %s (decision=%s)",
@@ -4447,22 +4797,16 @@ async def _handle_plugins_test_call(msg: dict) -> None:
 
 # ── Plugin enable/disable (S2 #470) ──────────────────────────────────────────
 
-async def _handle_plugins_set_enabled(msg: dict) -> None:
-    """Handle ``plugins:set_enabled`` (spec section 5.2).
+async def _set_plugin_enabled(plugin_name: str, enabled: bool) -> tuple[bool, str]:
+    """Core enable/disable logic shared by the ``plugins:set_enabled`` IPC
+    handler and the ``plugin_set_enabled`` MCP tool.
 
     Adds/removes the plugin name from the ``disabled_plugins`` setting, then
     either unregisters (disable) or re-scans and re-registers (enable) the
-    plugin. Broadcasts ``plugins:changed`` and replies with ``plugins:list``.
+    plugin. Broadcasts ``plugins:changed`` and ``plugins:list`` on success.
+    Returns ``(ok, message)`` -- ``message`` is an error description when
+    ``ok`` is False, else a human-readable success summary.
     """
-    d = msg.get("data") or {}
-    plugin_name = (d.get("plugin_name") or "").strip()
-    enabled = d.get("enabled")
-
-    if not plugin_name or enabled is None:
-        logger.warning("[cerebral] plugins:set_enabled missing plugin_name or enabled")
-        return
-
-    enabled = bool(enabled)
     disabled: list[str] = list(_settings.get("disabled_plugins") or [])
 
     if not enabled:
@@ -4496,19 +4840,11 @@ async def _handle_plugins_set_enabled(msg: dict) -> None:
             logger.info("[cerebral] Disabled plugin '%s'", plugin_name)
         elif plugin_name not in _orc._disabled_plugins_meta:
             # Unknown plugin name entirely.
-            await _broadcast({
-                "type": "error",
-                "data": {"message": f"Unknown plugin: {plugin_name!r}"},
-            })
-            return
+            return False, f"Unknown plugin: {plugin_name!r}"
     else:
         # Enable: remove from disabled list, re-run single-plugin load path.
         if plugin_name not in _orc._plugins and plugin_name not in _orc._disabled_plugins_meta:
-            await _broadcast({
-                "type": "error",
-                "data": {"message": f"Unknown plugin: {plugin_name!r}"},
-            })
-            return
+            return False, f"Unknown plugin: {plugin_name!r}"
         # Determine the path and inspectability from disabled metadata.
         meta = _orc._disabled_plugins_meta.get(plugin_name)
         if meta is None:
@@ -4549,2189 +4885,2609 @@ async def _handle_plugins_set_enabled(msg: dict) -> None:
     snapshot = _plugins_snapshot_data()
     await _broadcast({"type": "plugins:changed", "data": snapshot})
     await _broadcast({"type": "plugins:list", "data": snapshot})
+    return True, f"Plugin {plugin_name!r} {'enabled' if enabled else 'disabled'}"
+
+
+async def _handle_plugins_set_enabled(msg: dict) -> None:
+    """Handle ``plugins:set_enabled`` (spec section 5.2): unpack the IPC
+    message, delegate to ``_set_plugin_enabled``, broadcast an error event
+    on failure."""
+    d = msg.get("data") or {}
+    plugin_name = (d.get("plugin_name") or "").strip()
+    enabled = d.get("enabled")
+
+    if not plugin_name or enabled is None:
+        logger.warning("[cerebral] plugins:set_enabled missing plugin_name or enabled")
+        return
+
+    ok, message = await _set_plugin_enabled(plugin_name, bool(enabled))
+    if not ok:
+        await _broadcast({"type": "error", "data": {"message": message}})
 
 
 # ── Message dispatcher ────────────────────────────────────────────────────────
 
-async def _handle_message(msg: dict) -> None:
+# FELIX-AUDIT S5 (F1): branches migrate out of the if/elif chain below into
+# module-level handlers registered here, a block at a time (S5a-S5e).
+_MESSAGE_HANDLERS: dict[str, Callable[[dict], Awaitable[None]]] = {}
+
+
+def _message_handler(msg_type: str):
+    def deco(fn):
+        _MESSAGE_HANDLERS[msg_type] = fn
+        return fn
+    return deco
+
+
+@_message_handler("shutdown")
+async def _msg_shutdown(msg: dict) -> None:
+    logger.info("[cerebral] Shutdown requested by tray")
+    _shutdown.set()
+
+
+@_message_handler("health_check")
+async def _msg_health_check(msg: dict) -> None:
+    # SD-3 (#556) -- boot self-check: confirms imports OK + ADR-0005 gate
+    # present. Cerebral running at all proves imports succeeded; we confirm
+    # the gate explicitly. The tray rolls back on False or timeout.
+    gate_present = bool(CAPABILITY_VOCABULARY)
+    await _broadcast({"type": "health_ok", "data": {"gate_present": gate_present}})
+
+
+@_message_handler("probe_models")
+async def _msg_probe_models(msg: dict) -> None:
+    # Model status dots: probe each enabled model's reachability (bounded
+    # per-model timeout in the router) and broadcast the up/down map. Fired
+    # when the tray opens the model settings pane and on Recheck.
+    health = await _router.probe_enabled()
+    await _broadcast({"type": "models_health", "data": {"health": health}})
+
+
+@_message_handler("create_profile")
+async def _msg_create_profile(msg: dict) -> None:
     global _active_profile
-    t = msg.get("type")
-
-    if t == "shutdown":
-        logger.info("[cerebral] Shutdown requested by tray")
-        _shutdown.set()
-
-    elif t == "health_check":
-        # SD-3 (#556) -- boot self-check: confirms imports OK + ADR-0005 gate
-        # present. Cerebral running at all proves imports succeeded; we confirm
-        # the gate explicitly. The tray rolls back on False or timeout.
-        gate_present = bool(CAPABILITY_VOCABULARY)
-        await _broadcast({"type": "health_ok", "data": {"gate_present": gate_present}})
-
-    elif t == "probe_models":
-        # Model status dots: probe each enabled model's reachability (bounded
-        # per-model timeout in the router) and broadcast the up/down map. Fired
-        # when the tray opens the model settings pane and on Recheck.
-        health = await _router.probe_enabled()
-        await _broadcast({"type": "models_health", "data": {"health": health}})
-
-    elif t == "create_profile":
-        d = msg.get("data", {})
-        name = d.get("name", "User")
-        wake_name = d.get("wake_name", "felix")
-        # Issue #387 -- defence in depth against the tray re-firing
-        # create_profile for a profile that already exists (e.g. the
-        # onboarding wizard reopened while profiles are loaded). A
-        # first-run create always passes here trivially since list_all()
-        # is empty then, so that path is untouched. `force` is the
-        # explicit escape hatch for a genuinely-intended second profile
-        # with the same name+wake_name (e.g. two "Iggy"s).
-        if not d.get("force"):
-            dup = next(
-                (existing for existing in _pm.list_all()
-                 if existing.name == name and existing.wake_name == wake_name),
-                None,
-            )
-            if dup is not None:
-                logger.warning(
-                    "[cerebral] create_profile refused: %r/%r already exists (id=%d)",
-                    name, wake_name, dup.id,
-                )
-                await _broadcast({
-                    "type": "create_profile_error",
-                    "data": {
-                        "error": f"A profile named {name!r} with wake word {wake_name!r} already exists.",
-                        "existing_profile_id": dup.id,
-                    },
-                })
-                return
-        p = _pm.create(
-            name=name,
-            wake_name=wake_name,
-            pronunciation_guide=d.get("pronunciation_guide", ""),
-            voice_id=d.get("voice_id", "af_heart"),
-            voice_sample=d.get("voice_sample", ""),
-            wake_sample=d.get("wake_sample", ""),
+    d = msg.get("data", {})
+    name = d.get("name", "User")
+    wake_name = d.get("wake_name", "felix")
+    # Issue #387 -- defence in depth against the tray re-firing
+    # create_profile for a profile that already exists (e.g. the
+    # onboarding wizard reopened while profiles are loaded). A
+    # first-run create always passes here trivially since list_all()
+    # is empty then, so that path is untouched. `force` is the
+    # explicit escape hatch for a genuinely-intended second profile
+    # with the same name+wake_name (e.g. two "Iggy"s).
+    if not d.get("force"):
+        dup = next(
+            (existing for existing in _pm.list_all()
+             if existing.name == name and existing.wake_name == wake_name),
+            None,
         )
-        _pm.set_active(p.id)
-        _active_profile = p
-        _js_seam("set_active_profile_id", p.id)    # S2 #335
-        _docs_seam("set_active_profile_id", p.id)  # S3 #454
-        _orc.set_acl(_build_acl(p))
-        logger.info("[cerebral] Profile created: %s (id=%d)", p.name, p.id)
-        await _broadcast(_profile_event(p))
-        await _broadcast(_profiles_list_event())
-        await _broadcast(_permissions_state_event())
-
-    elif t == "switch_profile":
-        pid = msg.get("data", {}).get("id")
-        if pid is not None:
-            p = _pm.get(int(pid))
-            if p:
-                _pm.set_active(p.id)
-                _active_profile = p
-                _js_seam("set_active_profile_id", p.id)    # S2 #335
-                _docs_seam("set_active_profile_id", p.id)  # S3 #454
-                # Rebuild the ACL on profile switch — Issue #45 / ADR-0005
-                # mandates that once + session grants clear on switch.
-                _orc.set_acl(_build_acl(p))
-                # ADR-0016 sec 4: full autonomy is per-identity + never leaks
-                # across a switch. Reset off and clear the indicator.
-                global _computer_use_full_autonomy
-                _computer_use_full_autonomy = False
-                await _broadcast(_computer_use_full_autonomy_event())
-                logger.info("[cerebral] Switched to profile: %s", p.name)
-                await _broadcast(_profile_event(p))
-                # Issue #53 — re-read ACL state for the switched profile.
-                # The session-grant store is RAM-only and the just-built
-                # ACL has none, so the tray's session-grants sub-panel
-                # will correctly empty out.
-                await _broadcast(_permissions_state_event())
-                # Issue #185 / #214 — Record the switch as a system event in
-                # the new profile's transcript, then re-snapshot.
-                await _record_turn(KIND_SYSTEM_EVENT, {"event": "profile_switch", "profile_id": p.id, "profile_name": p.name})
-                # S9 / #292 -- send the new profile's thread list before the
-                # turns snapshot so the renderer's title strip + active id
-                # are up-to-date when it processes the transcript.
-                # S11 / #294 -- ship the project list alongside so the
-                # Conversations pane re-groups for the new profile.
-                await _broadcast(_projects_list_event())
-                await _broadcast(_threads_list_event())
-                await _broadcast(_conversation_turns_event())
-
-    elif t == "delete_profile":
-        pid = msg.get("data", {}).get("id")
-        if pid is not None:
-            _pm.delete(int(pid))
-            logger.info("[cerebral] Profile %d deleted", pid)
-            _active_profile = _pm.get_active()
-            if _active_profile:
-                _orc.set_acl(_build_acl(_active_profile))
-                await _broadcast(_profile_event(_active_profile))
-            else:
-                _orc.set_acl(None)
-                await _broadcast({"type": "first_run"})
-            await _broadcast(_profiles_list_event())
-            await _broadcast(_permissions_state_event())
-
-    elif t == "list_profiles":
-        await _broadcast(_profiles_list_event())
-
-    elif t == "list_voices":
-        await _broadcast(_voices_list_event())
-
-    elif t == "set_voice":
-        # Update the active profile's voice_id; next speak() call picks it up.
-        # Reject unknown ids up-front so a buggy/third-party client can't
-        # silently persist a voice that breaks TTS at the next speak() —
-        # mirrors switch_model's known-id guard.
-        voice_id = msg.get("data", {}).get("voice_id")
-        if voice_id and _active_profile:
-            known_ids = {v["id"] for v in _tts.list_voices()}
-            if voice_id not in known_ids:
-                logger.warning(
-                    "[cerebral] set_voice refused: unknown voice %r", voice_id,
-                )
-                return
-            _pm.update_voice(_active_profile.id, voice_id)
-            _active_profile = _pm.get(_active_profile.id)
-            logger.info("[cerebral] Voice updated to %s for profile %s", voice_id, _active_profile.name)
-            await _broadcast(_profile_event(_active_profile))
-
-    elif t == "switch_model":
-        model_id = msg.get("data", {}).get("model_id")
-        if model_id:
-            try:
-                _router.switch_model(model_id)
-                logger.info("[cerebral] Model router switched to %s", model_id)
-                # Persist the choice so it survives restart (issue #37 + P1 #531).
-                if _active_profile:
-                    _pm.update_active_model(_active_profile.id, model_id)
-                    _active_profile = _pm.get(_active_profile.id)
-                _persist_priority()
-                await _broadcast({
-                    "type": "model_switched",
-                    "data": {"model_id": model_id, "is_cloud": _router.active_is_cloud},
-                })
-                await _broadcast({"type": "model_switching", "data": {"model_id": model_id}})
-                await _broadcast(_models_list_event())
-                await _record_turn(KIND_SYSTEM_EVENT, {"event": "model_switch", "model_id": model_id})
-                asyncio.create_task(_pulse_back_to_passive())
-            except ValueError as exc:
-                logger.warning("[cerebral] switch_model failed: %s", exc)
-
-    elif t == "list_models":
-        await _broadcast(_models_list_event())
-
-    elif t == "refresh_models":
-        # Re-query Ollama and rebuild the local-backend slice of the router.
-        # Cloud entries stay untouched. Issue #37.
-        new_ids = _router.refresh_local_backends()
-        logger.info("[cerebral] Refreshed installed Ollama models: %s", new_ids)
-        _persist_priority()
-        await _broadcast(_models_list_event())
-
-    elif t == "set_model_priority":
-        order = msg.get("data", {}).get("order")
-        if isinstance(order, list):
-            try:
-                _router.set_priority([str(m) for m in order])
-                _persist_priority()
-                logger.info("[cerebral] Model priority updated: %s", _router.priority())
-                await _broadcast(_models_list_event())
-            except ValueError as exc:
-                logger.warning("[cerebral] set_model_priority failed: %s", exc)
-
-    elif t == "set_model_enabled":
-        d = msg.get("data", {})
-        mid = d.get("model_id")
-        enabled = bool(d.get("enabled"))
-        if mid:
-            try:
-                _router.set_model_enabled(mid, enabled)
-                _persist_priority()
-                logger.info(
-                    "[cerebral] Model %s %s", mid, "enabled" if enabled else "disabled",
-                )
-                await _broadcast(_models_list_event())
-            except ValueError as exc:
-                logger.warning("[cerebral] set_model_enabled failed: %s", exc)
-
-    elif t == "set_model_fallback":
-        enabled = bool(msg.get("data", {}).get("enabled"))
-        _router.set_fallback(enabled)
-        if _active_profile:
-            _pm.update_fallback_enabled(_active_profile.id, enabled)
-            _active_profile = _pm.get(_active_profile.id)
-        logger.info(
-            "[cerebral] Master model fallback %s", "enabled" if enabled else "disabled",
-        )
-        await _broadcast(_models_list_event())
-
-    elif t == "set_task_model":
-        d = msg.get("data", {})
-        task_type = d.get("task_type", "")
-        model_id = d.get("model_id")
-        if not task_type:
-            return
-        try:
-            _router.set_task_model(task_type, model_id)
-            _persist_task_models()
-            logger.info("[cerebral] Task '%s' mapped to %s", task_type, model_id)
-            await _broadcast(_models_list_event())
-        except ValueError as exc:
-            logger.warning("[cerebral] set_task_model failed: %s", exc)
-
-    elif t == "video_batch_toggle":  # S13 #664 -- global hotkey pause/resume
-        result = await _dispatch_tray_call_tool("video_batch_toggle", {})
-        try:
-            data = json.loads(result.content) if not result.is_error else {}
-        except Exception:
-            data = {}
-        await _broadcast({"type": "video_batch_toggle", "data": data})
-
-    elif t == "set_local_only":
-        enabled = bool(msg.get("data", {}).get("enabled"))
-        _router.set_local_only(enabled)
-        if _active_profile:
-            _pm.update_local_only(_active_profile.id, enabled)
-            _active_profile = _pm.get(_active_profile.id)
-        logger.info("[cerebral] Local-only %s", "enabled" if enabled else "disabled")
-        await _broadcast(_models_list_event())
-
-    elif t == "set_computer_use_full_autonomy":
-        # ADR-0016 sec 4: the badged full-autonomy master switch. Default off,
-        # RAM-only (resets on restart + profile switch), the ONE documented
-        # exception to ADR-0005's non-bypassable-irreversible rule -- scoped to
-        # computer_use only (see _computer_use_full_auto_gate).
-        # (global declared once in this handler at the switch_profile branch.)
-        _computer_use_full_autonomy = bool(msg.get("data", {}).get("enabled"))
-        logger.warning(
-            "[cerebral] Computer-use FULL AUTONOMY %s -- irreversible modal is "
-            "%s for computer_use actions",
-            "ENABLED" if _computer_use_full_autonomy else "disabled",
-            "BYPASSED" if _computer_use_full_autonomy else "enforced",
-        )
-        await _broadcast(_computer_use_full_autonomy_event())
-
-    elif t == "add_custom_model":
-        d = msg.get("data", {})
-        kind = (d.get("kind") or "").strip()
-        url = (d.get("url") or "").strip()
-        model = (d.get("model") or "").strip()
-        label_in = (d.get("label") or "").strip()
-        api_key = (d.get("api_key") or "").strip()
-        supports_vision = bool(d.get("supports_vision"))
-        context_window = _parse_context_window(d.get("context_window"), kind)
-        # Server-first (S3 #525): blank model + a kind that can list models
-        # -> dynamic. The model is auto-resolved from the server on first use.
-        dynamic = (not model) and (kind in DYNAMIC_CUSTOM_KINDS)
-        # Label fallback: user text -> pinned model -> URL host -> "model".
-        from urllib.parse import urlparse
-        label = (
-            label_in or model
-            or (urlparse(url).hostname if url else "") or "model"
-        )
-
-        async def _err(reason: str) -> None:
-            await _broadcast({"type": "custom_model_error", "data": {"error": reason}})
-
-        if kind not in CUSTOM_KINDS:
-            await _err(f"unknown kind '{kind}'")
-        elif kind == "anthropic" and not model:
-            await _err("model name is required for Anthropic")
-        elif kind != "anthropic" and not re.match(r"^https?://", url):
-            await _err("URL must start with http:// or https://")
-        elif not _active_profile:
-            await _err("no active profile")
-        else:
-            try:
-                if dynamic:
-                    backend = DynamicModelBackend(
-                        kind, url, cached_model="", api_key=api_key or None,
-                        supports_vision=supports_vision,
-                    )
-                    is_cloud = dynamic_is_cloud(kind)
-                else:
-                    backend, is_cloud = build_custom_backend(
-                        kind, url, model, api_key or None,
-                        supports_vision=supports_vision,
-                    )
-            except ValueError as exc:
-                await _err(str(exc))
-                return
-            # Validate reachability BEFORE persisting so a broken config never
-            # lands in the registry (never a silent cloud fallback either).
-            # For dynamic, ping also resolves the first cached model.
-            ping_err = await _ping_custom_model(backend)
-            if ping_err:
-                await _err(f"endpoint unreachable: {ping_err}")
-                return
-            # Unique custom/<slug> id.
-            base = "custom/" + _slugify(label)
-            mid = base
-            n = 2
-            existing = {m["id"] for m in _router.list_models()}
-            while mid in existing:
-                mid = f"{base}-{n}"
-                n += 1
-            secret_ref = ""
-            if api_key:
-                secret_ref = f"custom_model/{mid.split('/', 1)[1]}"
-                try:
-                    _get_credential_store().set_secret(
-                        _active_profile.id, secret_ref, "api_token", api_key
-                    )
-                except (RuntimeError, ValueError) as exc:
-                    await _err(f"could not store API key: {exc}")
-                    return
-            _router.add_backend(mid, backend, label, is_cloud, context_window=context_window)
-            stored_model = backend.model if dynamic else model
-            row_for_cb = {
-                "id": mid, "kind": kind, "url": url, "label": label,
-                "secret_ref": secret_ref, "context_window": context_window or 0,
-            }
-            if dynamic:
-                # Wire persistence for future re-resolves (server swaps its model).
-                backend.on_resolved = _make_dynamic_persist_cb(
-                    _active_profile.id, row_for_cb
-                )
-            _custom_models.add(
-                _active_profile.id, id=mid, kind=kind, url=url, model=stored_model,
-                label=label, is_cloud=is_cloud, secret_ref=secret_ref,
-                dynamic=dynamic, supports_vision=supports_vision,
-                context_window=context_window or 0,
-            )
-            logger.info(
-                "[cerebral] Custom model added: %s (%s%s)",
-                mid, kind, ", dynamic" if dynamic else "",
-            )
-            _persist_priority()
-            # One-step coding designation (turnkey): pin both coding-chat and
-            # self-dev to this connection so "just add the server" is enough.
-            if d.get("for_coding"):
-                for _t in ("coding", "self_dev"):
-                    _router.set_task_model(_t, mid)
-                _persist_task_models()
-                logger.info("[cerebral] %s set as coding model (coding + self_dev)", mid)
-            await _broadcast(_models_list_event())
-
-    elif t == "edit_custom_model":
-        # Update an existing custom/<slug> in place. The id is preserved, so the
-        # connection keeps its priority position, enabled flag, and any per-task
-        # pins (coding/self_dev/...) that point at it -- add_backend on an
-        # existing id replaces the backend + metadata without re-appending.
-        d = msg.get("data", {})
-        mid = (d.get("id") or "").strip()
-        kind = (d.get("kind") or "").strip()
-        url = (d.get("url") or "").strip()
-        model = (d.get("model") or "").strip()
-        label_in = (d.get("label") or "").strip()
-        api_key = (d.get("api_key") or "").strip()  # blank -> keep existing key
-        supports_vision = bool(d.get("supports_vision"))
-        context_window = _parse_context_window(d.get("context_window"), kind)
-        dynamic = (not model) and (kind in DYNAMIC_CUSTOM_KINDS)
-        from urllib.parse import urlparse
-        label = (
-            label_in or model or (urlparse(url).hostname if url else "") or "model"
-        )
-
-        async def _err(reason: str) -> None:
-            await _broadcast({"type": "custom_model_error", "data": {"error": reason}})
-
-        existing = {m["id"] for m in _router.list_models()}
-        if not (mid.startswith("custom/") and _active_profile):
-            await _err("edit requires an existing custom connection")
-        elif mid not in existing:
-            await _err(f"unknown connection '{mid}'")
-        elif kind not in CUSTOM_KINDS:
-            await _err(f"unknown kind '{kind}'")
-        elif kind == "anthropic" and not model:
-            await _err("model name is required for Anthropic")
-        elif kind != "anthropic" and not re.match(r"^https?://", url):
-            await _err("URL must start with http:// or https://")
-        else:
-            secret_ref = f"custom_model/{mid.split('/', 1)[1]}"
-            cred = _get_credential_store()
-            # Blank key on edit means "unchanged" -- reuse the stored one so a
-            # url/model tweak doesn't wipe the credential.
-            effective_key = api_key or (
-                cred.get_secret(_active_profile.id, secret_ref, "api_token") or None
-            )
-            try:
-                if dynamic:
-                    backend = DynamicModelBackend(
-                        kind, url, cached_model="", api_key=effective_key,
-                        supports_vision=supports_vision,
-                    )
-                    is_cloud = dynamic_is_cloud(kind)
-                else:
-                    backend, is_cloud = build_custom_backend(
-                        kind, url, model, effective_key,
-                        supports_vision=supports_vision,
-                    )
-            except ValueError as exc:
-                await _err(str(exc))
-                return
-            ping_err = await _ping_custom_model(backend)
-            if ping_err:
-                await _err(f"endpoint unreachable: {ping_err}")
-                return
-            if api_key:  # only touch the keyring when a new key was supplied
-                try:
-                    cred.set_secret(_active_profile.id, secret_ref, "api_token", api_key)
-                except (RuntimeError, ValueError) as exc:
-                    await _err(f"could not store API key: {exc}")
-                    return
-            stored_ref = secret_ref if effective_key else ""
-            _router.add_backend(
-                mid, backend, label, is_cloud, context_window=context_window
-            )  # in-place replace
-            stored_model = backend.model if dynamic else model
-            if dynamic:
-                backend.on_resolved = _make_dynamic_persist_cb(
-                    _active_profile.id,
-                    {"id": mid, "kind": kind, "url": url, "label": label,
-                     "secret_ref": stored_ref, "context_window": context_window or 0},
-                )
-            _custom_models.add(
-                _active_profile.id, id=mid, kind=kind, url=url, model=stored_model,
-                label=label, is_cloud=is_cloud, secret_ref=stored_ref,
-                dynamic=dynamic, supports_vision=supports_vision,
-                context_window=context_window or 0,
-            )
-            logger.info("[cerebral] Custom model edited: %s (%s)", mid, kind)
-            _persist_priority()
-            await _broadcast(_models_list_event())
-
-    elif t == "remove_custom_model":
-        mid = msg.get("data", {}).get("id")
-        if mid and mid.startswith("custom/") and _active_profile:
-            _router.remove_backend(mid)
-            secret_ref = f"custom_model/{mid.split('/', 1)[1]}"
-            # delete_credential sweeps every keyring field for the ref (no-op on
-            # the empty connected-account metadata row); keeps the store's
-            # delete-completeness invariant.
-            _get_credential_store().delete_credential(_active_profile.id, secret_ref)
-            _custom_models.remove(_active_profile.id, mid)
-            logger.info("[cerebral] Custom model removed: %s", mid)
-            _persist_priority()
-            await _broadcast(_models_list_event())
-
-    elif t == "discover_models":
-        d = msg.get("data", {})
-        kind = (d.get("kind") or "").strip()
-        url = (d.get("url") or "").strip()
-        api_key = (d.get("api_key") or "").strip() or None
-        if kind == "anthropic":
-            models: list[str] = []
-        elif kind == "ollama":
-            models = await asyncio.to_thread(
-                lambda: OllamaBackend.list_installed_models(url=url)
-            )
-        elif kind == "openai":
-            models = await asyncio.to_thread(
-                lambda: list_openai_models(url, api_key)
-            )
-        else:
-            models = []
-        await _broadcast({"type": "models_discovered", "data": {"kind": kind, "models": models}})
-
-    elif t == "list_tools":
-        await _broadcast({"type": "tools_list", "data": {"tools": _orc.tools_for_llm}})
-
-    elif t == "list_plugins":
-        await _broadcast(_plugins_list_event())
-
-    elif t == "plugins:list":
-        # Harness UI rework, S1 #469 -- spec section 5.1.
-        await _broadcast(_plugins_list_v2_event())
-
-    elif t == "plugins:set_enabled":
-        # Harness UI rework, S2 #470 -- spec section 5.2.
-        await _handle_plugins_set_enabled(msg)
-
-    elif t == "plugins:test_call":
-        # Harness UI rework, S4 #472 -- spec section 5.3.
-        await _handle_plugins_test_call(msg)
-
-    elif t == "plugins:panels":
-        # UI2 A3 #483 -- list plugin-declared panels for the workspace opener.
-        await _broadcast(_plugins_panels_event())
-
-    elif t == "plugins:panel_spec":
-        # UI2 A3 #483 -- fetch one plugin's declarative panel spec.
-        d = msg.get("data") or {}
-        plugin_name = (d.get("plugin_name") or "").strip()
-        if plugin_name:
-            await _broadcast(_plugins_panel_spec_event(plugin_name))
-
-    elif t == "get_plugin_settings":
-        # Issue #187 — Plugins pane requests per-plugin settings.
-        # Currently only discord_user carries editable state (allowlist).
-        d = msg.get("data") or {}
-        plugin_name = (d.get("plugin_name") or "").strip()
-        if not plugin_name:
-            logger.warning("[cerebral] get_plugin_settings missing plugin_name")
-            return
-        await _broadcast(_plugin_settings_event(plugin_name))
-
-    elif t == "discord_allowlist_add":
-        # Issue #187 — add a sender to the Discord auto-reply allowlist.
-        d = msg.get("data") or {}
-        sender_id = (d.get("sender_id") or "").strip()
-        note = (d.get("note") or "").strip()
-        if not sender_id:
-            logger.warning("[cerebral] discord_allowlist_add missing sender_id")
-            return
-        if _active_profile is None:
-            logger.warning("[cerebral] discord_allowlist_add with no active profile")
-            return
-        _pm.add_discord_allowlist(_active_profile.id, sender_id, note)
-        await _broadcast(_plugin_settings_event("discord_user"))
-
-    elif t == "discord_allowlist_remove":
-        # Issue #187 — remove a sender from the Discord auto-reply allowlist.
-        d = msg.get("data") or {}
-        sender_id = (d.get("sender_id") or "").strip()
-        if not sender_id:
-            logger.warning("[cerebral] discord_allowlist_remove missing sender_id")
-            return
-        if _active_profile is None:
-            logger.warning("[cerebral] discord_allowlist_remove with no active profile")
-            return
-        _pm.remove_discord_allowlist(_active_profile.id, sender_id)
-        await _broadcast(_plugin_settings_event("discord_user"))
-
-    elif t == "list_permissions":
-        # Issue #53 — Permissions UI requesting a fresh state snapshot.
-        # The same payload is broadcast on connect alongside other state
-        # events, but a re-open of the Permissions window asks for a fresh
-        # read in case the user changed profiles in between.
-        await _broadcast(_permissions_state_event())
-
-    elif t == "set_class_policy":
-        # Issue #53 — Capabilities tab toggle. {capability, decision}.
-        d = msg.get("data") or {}
-        cap_value = (d.get("capability") or "").strip()
-        decision = (d.get("decision") or "").strip()
-        if not cap_value or not decision:
-            logger.warning("[cerebral] set_class_policy missing capability/decision")
-            return
-        if _orc.acl is None or _active_profile is None:
-            logger.warning("[cerebral] set_class_policy with no active profile")
-            return
-        try:
-            cap = Capability(cap_value)
-            dec = Decision(decision)
-        except ValueError as exc:
-            logger.warning("[cerebral] set_class_policy invalid value: %s", exc)
-            return
-        # shell_exec is locked until the user explicitly opts in (#53 AC#2).
-        if cap is Capability.SHELL_EXEC and not _active_profile.shell_exec_unlocked:
+        if dup is not None:
             logger.warning(
-                "[cerebral] set_class_policy refused: shell_exec is locked for profile %d",
-                _active_profile.id,
+                "[cerebral] create_profile refused: %r/%r already exists (id=%d)",
+                name, wake_name, dup.id,
             )
-            return
-        # SBX-4: shell_exec opt-in is only honored when a sandbox backend is present.
-        # Without a sandbox, the class stays denied regardless of the setting (fail-closed).
-        if cap is Capability.SHELL_EXEC and not _sandbox_available():
-            logger.warning(
-                "[cerebral] set_class_policy refused: shell_exec requires sandbox backend (not available on this host)",
-            )
-            return
-        # Default-matching writes still create a row — the user's
-        # explicit click is meaningful even when it equals the snapshot
-        # default. Revoking back to the snapshot is a separate IPC
-        # (revoke_class_policy) so the toggle's three-state UI maps
-        # cleanly to one verb per user action.
-        _orc.acl.set_persistent_class(cap, dec)
-        logger.info(
-            "[cerebral] set_class_policy %s=%s for profile %d",
-            cap.value, dec.value, _active_profile.id,
-        )
-        await _broadcast(_permissions_state_event())
-
-    elif t == "revoke_class_policy":
-        # Issue #53 — clears a persistent class grant so the snapshot
-        # default applies again. Used when the user resets a Capabilities
-        # row to its inherited default.
-        d = msg.get("data") or {}
-        cap_value = (d.get("capability") or "").strip()
-        if not cap_value or _orc.acl is None:
-            return
-        try:
-            cap = Capability(cap_value)
-        except ValueError:
-            return
-        _orc.acl.revoke_persistent_class(cap)
-        logger.info("[cerebral] revoke_class_policy %s", cap.value)
-        await _broadcast(_permissions_state_event())
-
-    elif t == "set_tool_override":
-        # Issue #53 — Tools tab dropdown. {tool, decision}. decision of
-        # "inherit" clears the override (revoke_tool_override).
-        d = msg.get("data") or {}
-        tool_name = (d.get("tool") or "").strip()
-        decision = (d.get("decision") or "").strip()
-        if not tool_name or not decision or _orc.acl is None:
-            logger.warning("[cerebral] set_tool_override missing field")
-            return
-        if decision == "inherit":
-            _orc.acl.revoke_tool_override(tool_name)
-            logger.info("[cerebral] set_tool_override %s=inherit (revoked)", tool_name)
-        else:
-            try:
-                dec = Decision(decision)
-            except ValueError as exc:
-                logger.warning("[cerebral] set_tool_override invalid decision: %s", exc)
-                return
-            _orc.acl.set_tool_override(tool_name, dec)
-            logger.info("[cerebral] set_tool_override %s=%s", tool_name, dec.value)
-        await _broadcast(_permissions_state_event())
-
-    elif t == "revoke_session_grant":
-        # Issue #53 — Capabilities tab session-grant Revoke button.
-        d = msg.get("data") or {}
-        cap_value = (d.get("capability") or "").strip()
-        if not cap_value or _orc.acl is None:
-            return
-        try:
-            cap = Capability(cap_value)
-        except ValueError:
-            return
-        revoked = _orc.acl.revoke_session(cap)
-        logger.info(
-            "[cerebral] revoke_session_grant %s (existed=%s)", cap.value, revoked,
-        )
-        await _broadcast(_permissions_state_event())
-
-    elif t == "unlock_shell_exec":
-        # Issue #53 — one-way flip. The Permissions UI shows a confirmation
-        # modal first; this handler trusts the click as the confirmation.
-        if _active_profile is None:
-            logger.warning("[cerebral] unlock_shell_exec with no active profile")
-            return
-        _pm.unlock_shell_exec(_active_profile.id)
-        _active_profile = _pm.get(_active_profile.id)
-        logger.info(
-            "[cerebral] shell_exec unlocked for profile %s", _active_profile.name,
-        )
-        await _broadcast(_permissions_state_event())
-
-    elif t == "clear_new_plugin_flag":
-        # Issue #51 — the Permissions UI's "I've reviewed this plugin"
-        # affordance flips new_plugin to 0 and re-broadcasts plugins_list
-        # so the tray's badge drops on every connected client. The flag is
-        # the only thing standing between this plugin's tools and the
-        # ACL's normal session/persistent bypasses (#53 owns the UI).
-        d = msg.get("data") or {}
-        plugin_name = (d.get("name") or "").strip()
-        if not plugin_name:
-            logger.warning("[cerebral] clear_new_plugin_flag missing 'name'")
-            return
-        _pm.set_plugin_new_flag(plugin_name, False)
-        logger.info("[cerebral] Cleared new_plugin flag for %r", plugin_name)
-        await _broadcast(_plugins_list_event())
-
-    elif t == "list_credentials":
-        # Issue #114 — Credentials window asking for a fresh status read.
-        await _broadcast(_credentials_state_event())
-
-    elif t == "set_credential_client":
-        # Issue #114 — user entered the Google OAuth client_id/secret. The
-        # secret goes to the keyring via #112; client_id is non-secret
-        # metadata. A new client invalidates any prior connected email/
-        # scopes (re-consent required), so we write an explicit full row —
-        # set_credential overwrites every column it is given and omitted
-        # args default to ""/[], so status MUST be passed explicitly or it
-        # silently blanks (the #112 upsert-blanking trap, #113 §5).
-        if _active_profile is None:
-            logger.warning("[cerebral] set_credential_client with no active profile")
-            return
-        d = msg.get("data") or {}
-        client_id = (d.get("client_id") or "").strip()
-        client_secret = (d.get("client_secret") or "").strip()
-        if not client_id or not client_secret:
-            logger.warning("[cerebral] set_credential_client missing client_id/secret")
-            return
-        store = _get_credential_store()
-        store.set_secret(_active_profile.id, "google", "client_secret", client_secret)
-        store.set_credential(
-            _active_profile.id, "google",
-            client_id=client_id, email="", scopes=[], status="client set",
-        )
-        # client_secret is never logged or echoed back to the renderer.
-        logger.info(
-            "[cerebral] Google client credentials set for profile %d",
-            _active_profile.id,
-        )
-        await _broadcast(_credentials_state_event())
-
-    elif t == "connect_google":
-        # Issue #114 — trigger #113's installed-app consent. start_consent
-        # blocks (loopback listener, up to consent_timeout=300s), so it runs
-        # off the event loop in a thread inside a background task: broadcast
-        # an interim "connecting", then the terminal connected/error status.
-        # The loop (heartbeat/audio/IPC) stays responsive throughout.
-        if _active_profile is None:
-            logger.warning("[cerebral] connect_google with no active profile")
-            return
-        profile_id = _active_profile.id
-        flow = _get_oauth_flow(_get_credential_store())
-        await _broadcast(_credentials_state_event(transient="connecting"))
-
-        async def _run_consent(pid: int = profile_id) -> None:
-            try:
-                await asyncio.to_thread(
-                    flow.start_consent, pid, scopes=_GOOGLE_SCOPES
-                )
-            except GoogleOAuthError as exc:
-                logger.warning("[cerebral] Google consent failed: %s", exc)
-                await _broadcast(_credentials_state_event(error=str(exc)))
-                return
-            except Exception as exc:  # never leak transport internals
-                logger.warning("[cerebral] Google consent error: %s", exc)
-                await _broadcast(_credentials_state_event(error="connection failed"))
-                return
-            logger.info("[cerebral] Google connected for profile %d", pid)
-            await _broadcast(_credentials_state_event())
-
-        asyncio.create_task(_run_consent())
-
-    elif t == "disconnect_credential":
-        # Issue #114 — drop the metadata row + every keyring secret for the
-        # active profile's Google account (#112 delete is idempotent).
-        if _active_profile is None:
-            logger.warning("[cerebral] disconnect_credential with no active profile")
-            return
-        _get_credential_store().delete_credential(_active_profile.id, "google")
-        logger.info(
-            "[cerebral] Google credentials disconnected for profile %d",
-            _active_profile.id,
-        )
-        await _broadcast(_credentials_state_event())
-
-    elif t == "set_static_token":
-        # Issue #148 — user entered a static API token for one of the five
-        # static-token plugins via the tray Credentials window's API-keys
-        # section. The value goes to the keyring under field "api_token"
-        # via #112; a degenerate metadata row marks status="connected".
-        # The value is NEVER logged or echoed back to the renderer.
-        if _active_profile is None:
-            logger.warning("[cerebral] set_static_token with no active profile")
-            return
-        d = msg.get("data") or {}
-        provider = (d.get("provider") or "").strip()
-        value = (d.get("value") or "").strip()
-        if provider not in _STATIC_TOKEN_PROVIDER_NAMES:
-            logger.warning(
-                "[cerebral] set_static_token unknown provider=%r", provider
-            )
-            return
-        if not value:
-            logger.warning(
-                "[cerebral] set_static_token empty value for provider=%s", provider
-            )
-            return
-        store = _get_credential_store()
-        store.set_secret(_active_profile.id, provider, "api_token", value)
-        # Explicit full row — set_credential defaults to ""/[] for omitted
-        # columns and would silently blank a future metadata extension
-        # (the #112 upsert-blanking trap, carried from #113 §5 / #114 §4).
-        store.set_credential(
-            _active_profile.id, provider,
-            client_id="", email="", scopes=[], status="connected",
-        )
-        logger.info(
-            "[cerebral] Static API token set for profile %d provider=%s",
-            _active_profile.id, provider,
-        )
-        await _broadcast(_credentials_state_event())
-
-    elif t == "clear_static_token":
-        # Issue #148 — drop the metadata row + the keyring "api_token"
-        # entry for one of the five static-token providers (#112 delete is
-        # idempotent and iterates SECRET_FIELDS — the extended set now
-        # includes "api_token").
-        if _active_profile is None:
-            logger.warning("[cerebral] clear_static_token with no active profile")
-            return
-        d = msg.get("data") or {}
-        provider = (d.get("provider") or "").strip()
-        if provider not in _STATIC_TOKEN_PROVIDER_NAMES:
-            logger.warning(
-                "[cerebral] clear_static_token unknown provider=%r", provider
-            )
-            return
-        _get_credential_store().delete_credential(_active_profile.id, provider)
-        logger.info(
-            "[cerebral] Static API token cleared for profile %d provider=%s",
-            _active_profile.id, provider,
-        )
-        await _broadcast(_credentials_state_event())
-
-    elif t == "set_alpaca_credentials":
-        # Live Alpaca API key + secret -- deliberately not set_static_token
-        # (that's one value per provider; Alpaca needs two) and deliberately
-        # not CredentialStore (broker.py's _get_alpaca_credentials already
-        # reads a dedicated, profile-agnostic keyring service directly --
-        # see _alpaca_credentials_state's docstring for why). Written to
-        # EXACTLY the (service, username) pairs broker.py reads. Values are
-        # never logged or echoed back to the renderer.
-        import keyring
-        d = msg.get("data") or {}
-        key = (d.get("key") or "").strip()
-        secret = (d.get("secret") or "").strip()
-        if not key or not secret:
-            logger.warning("[cerebral] set_alpaca_credentials missing key or secret")
-            return
-        keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_live_key", key)
-        keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_live_secret", secret)
-        logger.info("[cerebral] Alpaca live credentials set")
-        await _broadcast(_credentials_state_event())
-
-    elif t == "clear_alpaca_credentials":
-        import keyring
-        for field in ("alpaca_live_key", "alpaca_live_secret"):
-            try:
-                keyring.delete_password(_ALPACA_KEYRING_SERVICE, field)
-            except Exception:
-                pass  # keyring.errors.PasswordDeleteError if already absent -- fine
-        logger.info("[cerebral] Alpaca live credentials cleared")
-        await _broadcast(_credentials_state_event())
-
-    elif t == "set_alpaca_paper_credentials":
-        # Same contract as set_alpaca_credentials, env="paper" instead of
-        # "live" -- used by AlpacaMarketDataClient/AlpacaBrokerClient(env="paper").
-        import keyring
-        d = msg.get("data") or {}
-        key = (d.get("key") or "").strip()
-        secret = (d.get("secret") or "").strip()
-        if not key or not secret:
-            logger.warning("[cerebral] set_alpaca_paper_credentials missing key or secret")
-            return
-        keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_paper_key", key)
-        keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_paper_secret", secret)
-        logger.info("[cerebral] Alpaca paper credentials set")
-        await _broadcast(_credentials_state_event())
-
-    elif t == "clear_alpaca_paper_credentials":
-        import keyring
-        for field in ("alpaca_paper_key", "alpaca_paper_secret"):
-            try:
-                keyring.delete_password(_ALPACA_KEYRING_SERVICE, field)
-            except Exception:
-                pass  # keyring.errors.PasswordDeleteError if already absent -- fine
-        logger.info("[cerebral] Alpaca paper credentials cleared")
-        await _broadcast(_credentials_state_event())
-
-    elif t == "set_discord_user_token":
-        # Dedicated setter for the Discord user-account (self-bot) token.
-        # discord_user is deliberately excluded from _STATIC_TOKEN_PROVIDERS
-        # (ADR-0006 friction), so it can't ride set_static_token's provider
-        # whitelist -- it gets its own IPC. Written to discord_user/api_token,
-        # the exact slot _get_discord_user_token_provider reads. The value is
-        # NEVER logged or echoed back to the renderer.
-        if _active_profile is None:
-            logger.warning("[cerebral] set_discord_user_token with no active profile")
-            return
-        value = ((msg.get("data") or {}).get("value") or "").strip()
-        if not value:
-            logger.warning("[cerebral] set_discord_user_token empty value")
-            return
-        store = _get_credential_store()
-        store.set_secret(
-            _active_profile.id, _DISCORD_USER_PROVIDER, "api_token", value,
-        )
-        store.set_credential(
-            _active_profile.id, _DISCORD_USER_PROVIDER,
-            client_id="", email="", scopes=[], status="connected",
-        )
-        logger.info(
-            "[cerebral] Discord user token set for profile %d", _active_profile.id,
-        )
-        await _broadcast(_credentials_state_event())
-
-    elif t == "clear_discord_user_token":
-        if _active_profile is None:
-            logger.warning("[cerebral] clear_discord_user_token with no active profile")
-            return
-        _get_credential_store().delete_credential(
-            _active_profile.id, _DISCORD_USER_PROVIDER,
-        )
-        logger.info(
-            "[cerebral] Discord user token cleared for profile %d",
-            _active_profile.id,
-        )
-        await _broadcast(_credentials_state_event())
-
-    elif t == "set_felix_session_login":
-        # ADR-0016 #601/#604 — user entered the isolated-session Windows
-        # password in the tray "Felix session account" card. Machine-global
-        # (one dedicated Windows user per install), so it does NOT require an
-        # active profile. Do NOT strip the password (edge chars may be
-        # significant); only reject a wholly empty one. Written to the pinned
-        # flat keyring key; NEVER logged or echoed back to the renderer.
-        password = (msg.get("data") or {}).get("password") or ""
-        if not password:
-            logger.warning("[cerebral] set_felix_session_login empty value")
-            return
-        _get_credential_store().set_global_secret(
-            _FELIX_SESSION_SERVICE, _FELIX_SESSION_USER, password,
-        )
-        logger.info(
-            "[cerebral] Felix session login stored (user %s)", _FELIX_SESSION_USER,
-        )
-        await _broadcast(_credentials_state_event())
-
-    elif t == "clear_felix_session_login":
-        _get_credential_store().delete_global_secret(
-            _FELIX_SESSION_SERVICE, _FELIX_SESSION_USER,
-        )
-        logger.info("[cerebral] Felix session login cleared")
-        await _broadcast(_credentials_state_event())
-
-    elif t == "run_felix_account_setup":
-        # ADR-0016 #604 — "Set up Felix's session" button. Launches the
-        # self-elevating provisioning script; the human approves one UAC prompt.
-        # Fire-and-forget (the script owns its own console + progress).
-        _launch_felix_account_setup()
-
-    elif t == "check_felix_provisioning":
-        # Real system state for the card's completion checkmark. Runs a short
-        # PowerShell probe off the event loop; the tray polls this after the
-        # setup button so the ✓ appears once the elevated script finishes.
-        prov = await asyncio.to_thread(_felix_provisioning_state)
-        await _broadcast({"type": "felix_provisioning", "data": prov})
-
-    elif t == "set_browser_login":
-        # ADR-0005 amendment 2026-06-25 — user entered a browser web-login
-        # (email + password) in the tray Credentials window's "Browser
-        # logins" section. The email is non-secret metadata; the password
-        # goes to the keyring under field "password" via #112. The password
-        # is NEVER logged or echoed back to the renderer (write-only).
-        if _active_profile is None:
-            logger.warning("[cerebral] set_browser_login with no active profile")
-            return
-        d = msg.get("data") or {}
-        provider = (d.get("provider") or "").strip()
-        email = (d.get("email") or "").strip()
-        # Do NOT strip the password — leading/trailing characters may be
-        # significant; only reject a wholly empty one below.
-        password = d.get("password") or ""
-        if provider not in _BROWSER_LOGIN_PROVIDER_NAMES:
-            logger.warning(
-                "[cerebral] set_browser_login unknown provider=%r", provider
-            )
-            return
-        if not email or not password:
-            logger.warning(
-                "[cerebral] set_browser_login missing %s for provider=%s",
-                "email" if not email else "password", provider,
-            )
-            return
-        store = _get_credential_store()
-        store.set_secret(_active_profile.id, provider, "password", password)
-        # Explicit full row — set_credential defaults omitted columns to ""/[]
-        # and would silently blank a future metadata extension (#112 trap).
-        store.set_credential(
-            _active_profile.id, provider,
-            client_id="", email=email, scopes=[], status="connected",
-        )
-        logger.info(
-            "[cerebral] Browser login set for profile %d provider=%s",
-            _active_profile.id, provider,
-        )
-        await _broadcast(_credentials_state_event())
-
-    elif t == "clear_browser_login":
-        # ADR-0005 amendment 2026-06-25 — drop the metadata row + the keyring
-        # "password" entry for a browser-login provider (#112 delete is
-        # idempotent and iterates SECRET_FIELDS, which includes "password").
-        if _active_profile is None:
-            logger.warning("[cerebral] clear_browser_login with no active profile")
-            return
-        d = msg.get("data") or {}
-        provider = (d.get("provider") or "").strip()
-        if provider not in _BROWSER_LOGIN_PROVIDER_NAMES:
-            logger.warning(
-                "[cerebral] clear_browser_login unknown provider=%r", provider
-            )
-            return
-        _get_credential_store().delete_credential(_active_profile.id, provider)
-        logger.info(
-            "[cerebral] Browser login cleared for profile %d provider=%s",
-            _active_profile.id, provider,
-        )
-        await _broadcast(_credentials_state_event())
-
-    elif t == "seed_browser_login":
-        # ADR-0005 amendment 2026-06-25 — the user clicked "Log in now" on the
-        # Browser logins card. Cerebral runs in the user's interactive session,
-        # so (unlike the agent's Bash subprocess) it CAN open a visible window.
-        # ensure_logged_in(unattended=False) opens that window and polls up to
-        # manual_login_timeout for the human to finish login + 2FA; that blocks,
-        # so it runs in a background task and the loop stays responsive. A
-        # write-only contract is preserved: only the LoginState outcome (never
-        # the password) is broadcast back.
-        if _active_profile is None:
-            logger.warning("[cerebral] seed_browser_login with no active profile")
-            return
-        d = msg.get("data") or {}
-        provider = (d.get("provider") or "").strip()
-        if provider not in _BROWSER_LOGIN_PROVIDER_NAMES:
-            logger.warning(
-                "[cerebral] seed_browser_login unknown provider=%r", provider
-            )
-            return
-        profile_id = _active_profile.id
-        store = _get_credential_store()
-        meta = store.get_credential(profile_id, provider) or {}
-        email = meta.get("email", "")
-        if not email:
-            # Nothing to seed against — the account email must be saved first.
-            logger.warning(
-                "[cerebral] seed_browser_login no email stored profile=%d "
-                "provider=%s", profile_id, provider,
-            )
-            await _broadcast(_browser_login_seed_event(
-                provider, "failed",
-                reason="save the account email first",
-            ))
-            return
-        key = (profile_id, provider)
-        if key in _browser_seed_inflight:
-            # A window is already open for this account — don't open a second.
-            logger.info(
-                "[cerebral] seed_browser_login already in flight profile=%d "
-                "provider=%s", profile_id, provider,
-            )
-            await _broadcast(_browser_login_seed_event(
-                provider, "busy", email=email,
-                reason="a login window is already open",
-            ))
-            return
-        _browser_seed_inflight.add(key)
-        await _broadcast(_browser_login_seed_event(
-            provider, "seeding", email=email,
-        ))
-
-        async def _run_seed(
-            pid: int = profile_id, prov: str = provider, mail: str = email,
-        ) -> None:
-            # Lazy import: Playwright is a heavy, optional dependency — keep it
-            # out of module import so a Cerebral with no browser harness still
-            # starts.
-            from cerebral.browser import BrowserSession, LoginState
-            from cerebral.browser.session import PlaywrightDriver
-
-            session = BrowserSession(
-                pid, provider=prov,
-                driver=PlaywrightDriver(), store=store,
-            )
-            try:
-                result = await session.ensure_logged_in(unattended=False)
-                logger.info(
-                    "[cerebral] seed_browser_login profile=%d provider=%s -> %s",
-                    pid, prov, result.state.value,
-                )
-                await _broadcast(_browser_login_seed_event(
-                    prov, result.state.value, email=mail, reason=result.reason,
-                ))
-            except Exception as exc:  # never leak transport/browser internals
-                logger.warning(
-                    "[cerebral] seed_browser_login error profile=%d "
-                    "provider=%s: %s", pid, prov, exc,
-                )
-                await _broadcast(_browser_login_seed_event(
-                    prov, "failed", email=mail, reason="login window failed",
-                ))
-            finally:
-                _browser_seed_inflight.discard((pid, prov))
-                try:
-                    await session.close()
-                except Exception:
-                    pass
-                # Refresh the card so a new session flips the pill to connected.
-                await _broadcast(_credentials_state_event())
-
-        asyncio.create_task(_run_seed())
-
-    elif t == "consent_response":
-        d = msg.get("data") or {}
-        request_id = d.get("request_id")
-        choice = d.get("choice")
-        if not request_id:
-            logger.warning("[cerebral] consent_response missing request_id")
-            return
-        fut = _pending_consents.get(request_id)
-        if fut is None:
-            # Late arrival — surface already timed out and cleaned up.
-            logger.info(
-                "[cerebral] consent_response for unknown request_id=%s (ignored)",
-                request_id,
-            )
-            return
-        if not is_valid_choice(choice):
-            logger.warning(
-                "[cerebral] consent_response invalid choice=%r for %s",
-                choice, request_id,
-            )
-            if not fut.done():
-                fut.set_result("deny")
-            await _record_turn(KIND_SYSTEM_EVENT, {"event": "consent_response", "choice": "deny", "request_id": request_id})
-            return
-        if not fut.done():
-            fut.set_result(choice)
-        await _record_turn(KIND_SYSTEM_EVENT, {"event": "consent_response", "choice": choice, "request_id": request_id})
-
-    elif t == "irreversible_modal_response":
-        # Issue #49 — Accept dispatches the call, Cancel refuses. The
-        # ModalSurface treats any non-accept choice as DENY, so a garbled
-        # message is safely refused without us second-guessing here.
-        d = msg.get("data") or {}
-        request_id = d.get("request_id")
-        choice = d.get("choice")
-        if not request_id:
-            logger.warning("[cerebral] irreversible_modal_response missing request_id")
-            return
-        fut = _pending_modals.get(request_id)
-        if fut is None:
-            logger.info(
-                "[cerebral] irreversible_modal_response for unknown request_id=%s (ignored)",
-                request_id,
-            )
-            return
-        if not is_valid_modal_choice(choice):
-            logger.warning(
-                "[cerebral] irreversible_modal_response invalid choice=%r for %s",
-                choice, request_id,
-            )
-            if not fut.done():
-                fut.set_result("cancel")
-            return
-        if not fut.done():
-            fut.set_result(choice)
-
-    elif t == "call_tool":
-        # Issue #238 — direct tool call from the tray. Routes through the
-        # shared ACL/consent gate ladder in ``_dispatch_tray_call_tool`` so
-        # the permissions layer + transcript recording apply identically to
-        # the harness ``plugins:test_call`` path (S4 #472).
-        d = msg.get("data", {})
-        await _dispatch_tray_call_tool(d.get("name", ""), d.get("args", {}))
-
-    elif t == "computer_use_stop":
-        # S2 #576 -- (c) leg of the ADR-0016 three-part kill switch. Fired by
-        # the Visualiser's Stop control when Felix is driving. The plugin
-        # short-circuits its observe-act loop at the next yield point. S6
-        # #579: if a handoff is pending, treat Stop as "decline handoff" so
-        # the plugin isn't left awaiting a done reply the user won't send.
-        # S12 #606: also terminates the in-session worker process if one is
-        # connected (out-of-session kill switch crosses the session boundary).
-        for _fut in list(_computer_use_handoff_pending.values()):
-            if not _fut.done():
-                _fut.set_result(False)
-        _terminate_worker_process()  # S12: no-op when no worker is connected
-        try:
-            module = _orc.get_plugin_module("computer_use")
-        except KeyError:
-            logger.info("[cerebral] computer_use_stop: plugin not loaded (ignored)")
-            return
-        stopper = getattr(module, "abort_current", None)
-        if stopper is None:
-            logger.warning("[cerebral] computer_use_stop: abort_current seam missing")
-            return
-        stopper()
-        await _broadcast({"type": "computer_use:driving", "data": {"driving": False}})
-
-    elif t == "computer_use_take_over":
-        # S15 #609: user clicked "Take over" in the Visualiser. Soft-pause the
-        # worker so the RDP window owns session 2's cursor uncontended, and
-        # broadcast the taken_over flip so the tray can swap Take-over for
-        # Release. Reuses the plugin's abort/pause seam pattern (kill switch
-        # sibling from #606) -- no separate wire.
-        global _computer_use_taken_over
-        try:
-            module = _orc.get_plugin_module("computer_use")
-        except KeyError:
-            logger.info("[cerebral] computer_use_take_over: plugin not loaded (ignored)")
-            return
-        pauser = getattr(module, "pause_current", None)
-        if pauser is not None:
-            pauser()
-        _computer_use_taken_over = True
-        await _broadcast({"type": "computer_use:taken_over",
-                          "data": {"taken_over": True}})
-
-    elif t == "computer_use_release":
-        # S15 #609: "Release" side of Take over -- resumes worker actuation.
-        # (No second `global` needed: the take_over branch above already
-        # declared it in this function's scope.)
-        try:
-            module = _orc.get_plugin_module("computer_use")
-        except KeyError:
-            logger.info("[cerebral] computer_use_release: plugin not loaded (ignored)")
-            return
-        resumer = getattr(module, "resume_current", None)
-        if resumer is not None:
-            resumer()
-        _computer_use_taken_over = False
-        await _broadcast({"type": "computer_use:taken_over",
-                          "data": {"taken_over": False}})
-
-    elif t == "heartbeat_ack":
-        pass  # S12 #606: worker acknowledged our heartbeat ping -- no further action needed.
-
-    elif t == "result" and isinstance(msg.get("id"), str):
-        # S11 #605: result message from the in-session SessionWorker.
-        req_id = msg["id"]
-        fut = _worker_pending.get(req_id)
-        if fut is not None and not fut.done():
-            if msg.get("ok"):
-                fut.set_result(msg.get("data", {}))
-            else:
-                fut.set_exception(RuntimeError(msg.get("error", "worker error")))
-
-    elif t == "set_isolated_session_mode":
-        # S11 #605: toggle isolated-session routing for computer_use primitives.
-        global _isolated_session_mode
-        _isolated_session_mode = bool(msg.get("data", {}).get("enabled"))
-        _update_session_dispatch_seam()
-        logger.info("[cerebral] isolated_session_mode=%s", _isolated_session_mode)
-
-    elif t == "computer_use_handoff_done":
-        # S6 #579 -- reply to a computer_use:handoff_needed broadcast. The
-        # tray sends this when the user clicks the "Done" affordance during
-        # an attended handoff. ``completed`` defaults to True (the button's
-        # normal semantic); a client can pass False to explicitly decline.
-        d = msg.get("data") or {}
-        hid = d.get("handoff_id")
-        completed = bool(d.get("completed", True))
-        fut = _computer_use_handoff_pending.get(hid) if isinstance(hid, str) else None
-        if fut is None:
-            logger.info(
-                "[cerebral] computer_use_handoff_done: no pending handoff for id=%r",
-                hid,
-            )
-            return
-        if not fut.done():
-            fut.set_result(completed)
-
-    elif t == "user_text_command":
-        # Issue #185 / ADR-0007 -- typed input from the Main window. Same
-        # orchestrator path as a voice wake, minus the TTS leg: a typed
-        # interaction stays silent (meetings / late-night use cases).
-        # Records the user turn before kicking off the LLM so the Main
-        # window's transcript reflects the input the instant it lands,
-        # even if the model is slow.
-        _data = msg.get("data") or {}
-        text = _data.get("text", "")
-        # S14 (#297) -- ``attachment_ids`` arrives from the renderer's pending
-        # chip row. The matching files were already uploaded via attach_files;
-        # we just bind them to the new turn and fold their extracted text
-        # into the prompt the LLM sees.
-        _attachment_ids: list[int] = []
-        for raw in _data.get("attachment_ids") or []:
-            try:
-                _attachment_ids.append(int(raw))
-            except (TypeError, ValueError):
-                continue
-        has_text = isinstance(text, str) and text.strip()
-        if has_text or _attachment_ids:
-            # S13 -- resolve the active thread's model override, if any.
-            _thread_model: str | None = None
-            if _active_profile is not None:
-                _tid = _resolve_active_thread_id(_active_profile.id)
-                if _tid is not None:
-                    _t = _conversation.get_thread(_tid)
-                    if _t is not None:
-                        _thread_model = _t.model_override
-            # S14 -- pull the just-uploaded attachments so their extracted
-            # text can ride alongside the user's typed prompt to the LLM.
-            _atts: list = []
-            if _attachment_ids and _active_profile is not None:
-                for _aid in _attachment_ids:
-                    _att = _attachments.get(_aid)
-                    if _att is not None and _att.profile_id == _active_profile.id:
-                        _atts.append(_att)
-            _prompt_text = text if has_text else "(see attached file)"
-            await _broadcast({"type": "wake", "data": {"transcript": _prompt_text}})
-            await _record_turn(
-                KIND_USER_TEXT,
-                {"text": text if has_text else ""},
-                attachment_ids=[a.id for a in _atts],
-            )
-            _enriched = serialise_for_prompt(_atts) + _prompt_text
-            global _active_turn_task
-            _active_turn_task = asyncio.create_task(
-                _process_command(_enriched, speak=False, thread_model_override=_thread_model)
-            )
-
-    elif t == "attach_files":
-        # S14 (#297) -- the Main window finished reading file bytes and
-        # base64-encoded them. Decode, persist each into the profile's
-        # local attachment store, and reply with the chip metadata the
-        # renderer needs to draw the pending chip row.
-        await _handle_attach_files(msg.get("data") or {})
-
-    elif t == "drop_pending_attachments":
-        # S14 -- the user clicked the X on a chip before sending. Remove
-        # the unbound row + delete the file from disk. Bound rows (already
-        # tied to a recorded turn) are left untouched.
-        ids_raw = (msg.get("data") or {}).get("attachment_ids") or []
-        ids: list[int] = []
-        for raw in ids_raw:
-            try:
-                ids.append(int(raw))
-            except (TypeError, ValueError):
-                continue
-        if ids:
-            try:
-                _attachments.drop_unbound(ids)
-            except Exception:
-                logger.exception("[cerebral] drop_unbound failed (ids=%s)", ids)
-
-    elif t == "list_pending_attachments":
-        # S14 -- on reconnect the renderer asks for any uploaded-but-not-sent
-        # chips so the chip row survives a WS bounce without losing context.
-        if _active_profile is not None:
-            try:
-                pending = _attachments.list_pending(_active_profile.id)
-            except Exception:
-                pending = []
             await _broadcast({
-                "type": "pending_attachments_state",
-                "data": {"attachments": attachments_payload(pending)},
+                "type": "create_profile_error",
+                "data": {
+                    "error": f"A profile named {name!r} with wake word {wake_name!r} already exists.",
+                    "existing_profile_id": dup.id,
+                },
             })
+            return
+    p = _pm.create(
+        name=name,
+        wake_name=wake_name,
+        pronunciation_guide=d.get("pronunciation_guide", ""),
+        voice_id=d.get("voice_id", "af_heart"),
+        voice_sample=d.get("voice_sample", ""),
+        wake_sample=d.get("wake_sample", ""),
+    )
+    _pm.set_active(p.id)
+    _active_profile = p
+    _js_seam("set_active_profile_id", p.id)    # S2 #335
+    _docs_seam("set_active_profile_id", p.id)  # S3 #454
+    _orc.set_acl(_build_acl(p))
+    logger.info("[cerebral] Profile created: %s (id=%d)", p.name, p.id)
+    await _broadcast(_profile_event(p))
+    await _broadcast(_profiles_list_event())
+    await _broadcast(_permissions_state_event())
 
-    elif t == "list_conversation_turns":
-        # Issue #185 / ADR-0007 -- Main window requesting its initial
-        # transcript snapshot (last 50 by default). Sent on window open
-        # and on profile switch so the chat reflects the active identity.
-        limit_raw = (msg.get("data") or {}).get("limit", 50)
-        try:
-            limit = int(limit_raw)
-        except (TypeError, ValueError):
-            limit = 50
-        await _broadcast(_conversation_turns_event(limit=limit))
 
-    elif t == "list_conversation_threads":
-        # S9 / #292 -- Main window asking for the active profile's threads
-        # plus the current active thread id (so it can render the title strip).
-        await _broadcast(_threads_list_event())
-
-    elif t == "new_conversation_thread":
-        # S9 / #292 -- "New conversation" button. Create an empty, untitled
-        # thread, mark it active, and snapshot the (empty) turns so the
-        # transcript clears.
-        if _active_profile is not None:
-            thread = _conversation.create_thread(_active_profile.id, title="")
-            _active_thread_by_profile[_active_profile.id] = thread.id
+@_message_handler("switch_profile")
+async def _msg_switch_profile(msg: dict) -> None:
+    global _active_profile
+    pid = msg.get("data", {}).get("id")
+    if pid is not None:
+        p = _pm.get(int(pid))
+        if p:
+            _pm.set_active(p.id)
+            _active_profile = p
+            _js_seam("set_active_profile_id", p.id)    # S2 #335
+            _docs_seam("set_active_profile_id", p.id)  # S3 #454
+            # Rebuild the ACL on profile switch — Issue #45 / ADR-0005
+            # mandates that once + session grants clear on switch.
+            _orc.set_acl(_build_acl(p))
+            # ADR-0016 sec 4: full autonomy is per-identity + never leaks
+            # across a switch. Reset off and clear the indicator.
+            global _computer_use_full_autonomy
+            _computer_use_full_autonomy = False
+            await _broadcast(_computer_use_full_autonomy_event())
+            logger.info("[cerebral] Switched to profile: %s", p.name)
+            await _broadcast(_profile_event(p))
+            # Issue #53 — re-read ACL state for the switched profile.
+            # The session-grant store is RAM-only and the just-built
+            # ACL has none, so the tray's session-grants sub-panel
+            # will correctly empty out.
+            await _broadcast(_permissions_state_event())
+            # Issue #185 / #214 — Record the switch as a system event in
+            # the new profile's transcript, then re-snapshot.
+            await _record_turn(KIND_SYSTEM_EVENT, {"event": "profile_switch", "profile_id": p.id, "profile_name": p.name})
+            # S9 / #292 -- send the new profile's thread list before the
+            # turns snapshot so the renderer's title strip + active id
+            # are up-to-date when it processes the transcript.
+            # S11 / #294 -- ship the project list alongside so the
+            # Conversations pane re-groups for the new profile.
+            await _broadcast(_projects_list_event())
             await _broadcast(_threads_list_event())
             await _broadcast(_conversation_turns_event())
 
-    elif t == "switch_conversation_thread":
-        # S9 / #292 -- Conversations pane / future thread switcher. Activate
-        # the named thread (must belong to the active profile) and snapshot.
-        thread_id_raw = (msg.get("data") or {}).get("thread_id")
-        if _active_profile is not None and thread_id_raw is not None:
-            try:
-                tid = int(thread_id_raw)
-            except (TypeError, ValueError):
-                tid = None
-            if tid is not None:
-                thread = _conversation.get_thread(tid)
-                if thread is not None and thread.profile_id == _active_profile.id:
-                    _active_thread_by_profile[_active_profile.id] = tid
-                    await _broadcast(_threads_list_event())
-                    await _broadcast(_conversation_turns_event())
 
-    elif t == "rename_conversation_thread":
-        # S9 / #292 -- editable auto-title. Empty title is allowed (so a
-        # later felix_speech can re-derive the auto-title).
-        d = msg.get("data") or {}
-        thread_id_raw = d.get("thread_id")
-        title = d.get("title", "")
-        if _active_profile is not None and thread_id_raw is not None and isinstance(title, str):
-            try:
-                tid = int(thread_id_raw)
-            except (TypeError, ValueError):
-                tid = None
-            if tid is not None:
-                thread = _conversation.get_thread(tid)
-                if thread is not None and thread.profile_id == _active_profile.id:
-                    _conversation.rename_thread(tid, title.strip()[:200])
-                    await _broadcast(_threads_list_event())
-
-    elif t == "delete_conversation_thread":
-        # S10 / #293 -- Delete a thread and all its turns. If the deleted
-        # thread was the active one, drop the cache entry so the next
-        # resolve picks the newest remaining thread (or creates a fresh one
-        # on the next new-turn call).
-        thread_id_raw = (msg.get("data") or {}).get("thread_id")
-        if _active_profile is not None and thread_id_raw is not None:
-            try:
-                tid = int(thread_id_raw)
-            except (TypeError, ValueError):
-                tid = None
-            if tid is not None:
-                thread = _conversation.get_thread(tid)
-                if thread is not None and thread.profile_id == _active_profile.id:
-                    _conversation.delete_thread(tid)
-                    if _active_thread_by_profile.get(_active_profile.id) == tid:
-                        _active_thread_by_profile.pop(_active_profile.id, None)
-                    await _broadcast(_threads_list_event())
-                    await _broadcast(_conversation_turns_event())
-
-    elif t == "search_conversations":
-        # S10 / #293 -- Full-text search through thread titles and turn
-        # content. Returns matching threads (with turn_count) so the
-        # Conversations pane can replace its list with search results.
-        query = (msg.get("data") or {}).get("query", "")
-        if _active_profile is not None and isinstance(query, str) and query.strip():
-            results = _conversation.search_threads(_active_profile.id, query.strip())
+@_message_handler("delete_profile")
+async def _msg_delete_profile(msg: dict) -> None:
+    global _active_profile
+    pid = msg.get("data", {}).get("id")
+    if pid is not None:
+        _pm.delete(int(pid))
+        logger.info("[cerebral] Profile %d deleted", pid)
+        _active_profile = _pm.get_active()
+        if _active_profile:
+            _orc.set_acl(_build_acl(_active_profile))
+            await _broadcast(_profile_event(_active_profile))
         else:
-            results = []
+            _orc.set_acl(None)
+            await _broadcast({"type": "first_run"})
+        await _broadcast(_profiles_list_event())
+        await _broadcast(_permissions_state_event())
+
+
+@_message_handler("list_profiles")
+async def _msg_list_profiles(msg: dict) -> None:
+    await _broadcast(_profiles_list_event())
+
+
+@_message_handler("list_voices")
+async def _msg_list_voices(msg: dict) -> None:
+    await _broadcast(_voices_list_event())
+
+
+@_message_handler("set_voice")
+async def _msg_set_voice(msg: dict) -> None:
+    global _active_profile
+    # Update the active profile's voice_id; next speak() call picks it up.
+    # Reject unknown ids up-front so a buggy/third-party client can't
+    # silently persist a voice that breaks TTS at the next speak() —
+    # mirrors switch_model's known-id guard.
+    voice_id = msg.get("data", {}).get("voice_id")
+    if voice_id and _active_profile:
+        known_ids = {v["id"] for v in _tts.list_voices()}
+        if voice_id not in known_ids:
+            logger.warning(
+                "[cerebral] set_voice refused: unknown voice %r", voice_id,
+            )
+            return
+        _pm.update_voice(_active_profile.id, voice_id)
+        _active_profile = _pm.get(_active_profile.id)
+        logger.info("[cerebral] Voice updated to %s for profile %s", voice_id, _active_profile.name)
+        await _broadcast(_profile_event(_active_profile))
+
+
+@_message_handler("switch_model")
+async def _msg_switch_model(msg: dict) -> None:
+    global _active_profile
+    model_id = msg.get("data", {}).get("model_id")
+    if model_id:
+        try:
+            _router.switch_model(model_id)
+            logger.info("[cerebral] Model router switched to %s", model_id)
+            # Persist the choice so it survives restart (issue #37 + P1 #531).
+            if _active_profile:
+                _pm.update_active_model(_active_profile.id, model_id)
+                _active_profile = _pm.get(_active_profile.id)
+            _persist_priority()
+            await _broadcast({
+                "type": "model_switched",
+                "data": {"model_id": model_id, "is_cloud": _router.active_is_cloud},
+            })
+            await _broadcast({"type": "model_switching", "data": {"model_id": model_id}})
+            await _broadcast(_models_list_event())
+            await _record_turn(KIND_SYSTEM_EVENT, {"event": "model_switch", "model_id": model_id})
+            asyncio.create_task(_pulse_back_to_passive())
+        except ValueError as exc:
+            logger.warning("[cerebral] switch_model failed: %s", exc)
+
+
+@_message_handler("list_models")
+async def _msg_list_models(msg: dict) -> None:
+    await _broadcast(_models_list_event())
+
+
+@_message_handler("refresh_models")
+async def _msg_refresh_models(msg: dict) -> None:
+    # Re-query Ollama and rebuild the local-backend slice of the router.
+    # Cloud entries stay untouched. Issue #37.
+    new_ids = _router.refresh_local_backends()
+    logger.info("[cerebral] Refreshed installed Ollama models: %s", new_ids)
+    _persist_priority()
+    await _broadcast(_models_list_event())
+
+
+@_message_handler("set_model_priority")
+async def _msg_set_model_priority(msg: dict) -> None:
+    order = msg.get("data", {}).get("order")
+    if isinstance(order, list):
+        try:
+            _router.set_priority([str(m) for m in order])
+            _persist_priority()
+            logger.info("[cerebral] Model priority updated: %s", _router.priority())
+            await _broadcast(_models_list_event())
+        except ValueError as exc:
+            logger.warning("[cerebral] set_model_priority failed: %s", exc)
+
+
+@_message_handler("set_model_enabled")
+async def _msg_set_model_enabled(msg: dict) -> None:
+    d = msg.get("data", {})
+    mid = d.get("model_id")
+    enabled = bool(d.get("enabled"))
+    if mid:
+        try:
+            _router.set_model_enabled(mid, enabled)
+            _persist_priority()
+            logger.info(
+                "[cerebral] Model %s %s", mid, "enabled" if enabled else "disabled",
+            )
+            await _broadcast(_models_list_event())
+        except ValueError as exc:
+            logger.warning("[cerebral] set_model_enabled failed: %s", exc)
+
+
+@_message_handler("set_model_fallback")
+async def _msg_set_model_fallback(msg: dict) -> None:
+    global _active_profile
+    enabled = bool(msg.get("data", {}).get("enabled"))
+    _router.set_fallback(enabled)
+    if _active_profile:
+        _pm.update_fallback_enabled(_active_profile.id, enabled)
+        _active_profile = _pm.get(_active_profile.id)
+    logger.info(
+        "[cerebral] Master model fallback %s", "enabled" if enabled else "disabled",
+    )
+    await _broadcast(_models_list_event())
+
+
+@_message_handler("set_task_model")
+async def _msg_set_task_model(msg: dict) -> None:
+    d = msg.get("data", {})
+    task_type = d.get("task_type", "")
+    model_id = d.get("model_id")
+    if not task_type:
+        return
+    try:
+        _router.set_task_model(task_type, model_id)
+        _persist_task_models()
+        logger.info("[cerebral] Task '%s' mapped to %s", task_type, model_id)
+        await _broadcast(_models_list_event())
+    except ValueError as exc:
+        logger.warning("[cerebral] set_task_model failed: %s", exc)
+
+
+@_message_handler("video_batch_toggle")
+async def _msg_video_batch_toggle(msg: dict) -> None:
+    result = await _dispatch_tray_call_tool("video_batch_toggle", {})
+    try:
+        data = json.loads(result.content) if not result.is_error else {}
+    except Exception:
+        data = {}
+    await _broadcast({"type": "video_batch_toggle", "data": data})
+
+
+@_message_handler("set_local_only")
+async def _msg_set_local_only(msg: dict) -> None:
+    global _active_profile
+    enabled = bool(msg.get("data", {}).get("enabled"))
+    _router.set_local_only(enabled)
+    if _active_profile:
+        _pm.update_local_only(_active_profile.id, enabled)
+        _active_profile = _pm.get(_active_profile.id)
+    logger.info("[cerebral] Local-only %s", "enabled" if enabled else "disabled")
+    await _broadcast(_models_list_event())
+
+
+@_message_handler("set_computer_use_full_autonomy")
+async def _msg_set_computer_use_full_autonomy(msg: dict) -> None:
+    global _computer_use_full_autonomy
+    # ADR-0016 sec 4: the badged full-autonomy master switch. Default off,
+    # RAM-only (resets on restart + profile switch), the ONE documented
+    # exception to ADR-0005's non-bypassable-irreversible rule -- scoped to
+    # computer_use only (see _computer_use_full_auto_gate).
+    # (global declared once in this handler at the switch_profile branch.)
+    _computer_use_full_autonomy = bool(msg.get("data", {}).get("enabled"))
+    logger.warning(
+        "[cerebral] Computer-use FULL AUTONOMY %s -- irreversible modal is "
+        "%s for computer_use actions",
+        "ENABLED" if _computer_use_full_autonomy else "disabled",
+        "BYPASSED" if _computer_use_full_autonomy else "enforced",
+    )
+    await _broadcast(_computer_use_full_autonomy_event())
+
+
+@_message_handler("add_custom_model")
+async def _msg_add_custom_model(msg: dict) -> None:
+    d = msg.get("data", {})
+    kind = (d.get("kind") or "").strip()
+    url = (d.get("url") or "").strip()
+    model = (d.get("model") or "").strip()
+    label_in = (d.get("label") or "").strip()
+    api_key = (d.get("api_key") or "").strip()
+    supports_vision = bool(d.get("supports_vision"))
+    context_window = _parse_context_window(d.get("context_window"), kind)
+    # Server-first (S3 #525): blank model + a kind that can list models
+    # -> dynamic. The model is auto-resolved from the server on first use.
+    dynamic = (not model) and (kind in DYNAMIC_CUSTOM_KINDS)
+    # Label fallback: user text -> pinned model -> URL host -> "model".
+    from urllib.parse import urlparse
+    label = (
+        label_in or model
+        or (urlparse(url).hostname if url else "") or "model"
+    )
+
+    async def _err(reason: str) -> None:
+        await _broadcast({"type": "custom_model_error", "data": {"error": reason}})
+
+    if kind not in CUSTOM_KINDS:
+        await _err(f"unknown kind '{kind}'")
+    elif kind == "anthropic" and not model:
+        await _err("model name is required for Anthropic")
+    elif kind != "anthropic" and not re.match(r"^https?://", url):
+        await _err("URL must start with http:// or https://")
+    elif not _active_profile:
+        await _err("no active profile")
+    else:
+        try:
+            if dynamic:
+                backend = DynamicModelBackend(
+                    kind, url, cached_model="", api_key=api_key or None,
+                    supports_vision=supports_vision,
+                )
+                is_cloud = dynamic_is_cloud(kind)
+            else:
+                backend, is_cloud = build_custom_backend(
+                    kind, url, model, api_key or None,
+                    supports_vision=supports_vision,
+                )
+        except ValueError as exc:
+            await _err(str(exc))
+            return
+        # Validate reachability BEFORE persisting so a broken config never
+        # lands in the registry (never a silent cloud fallback either).
+        # For dynamic, ping also resolves the first cached model.
+        ping_err = await _ping_custom_model(backend)
+        if ping_err:
+            await _err(f"endpoint unreachable: {ping_err}")
+            return
+        # Unique custom/<slug> id.
+        base = "custom/" + _slugify(label)
+        mid = base
+        n = 2
+        existing = {m["id"] for m in _router.list_models()}
+        while mid in existing:
+            mid = f"{base}-{n}"
+            n += 1
+        secret_ref = ""
+        if api_key:
+            secret_ref = f"custom_model/{mid.split('/', 1)[1]}"
+            try:
+                _get_credential_store().set_secret(
+                    _active_profile.id, secret_ref, "api_token", api_key
+                )
+            except (RuntimeError, ValueError) as exc:
+                await _err(f"could not store API key: {exc}")
+                return
+        _router.add_backend(mid, backend, label, is_cloud, context_window=context_window)
+        stored_model = backend.model if dynamic else model
+        row_for_cb = {
+            "id": mid, "kind": kind, "url": url, "label": label,
+            "secret_ref": secret_ref, "context_window": context_window or 0,
+        }
+        if dynamic:
+            # Wire persistence for future re-resolves (server swaps its model).
+            backend.on_resolved = _make_dynamic_persist_cb(
+                _active_profile.id, row_for_cb
+            )
+        _custom_models.add(
+            _active_profile.id, id=mid, kind=kind, url=url, model=stored_model,
+            label=label, is_cloud=is_cloud, secret_ref=secret_ref,
+            dynamic=dynamic, supports_vision=supports_vision,
+            context_window=context_window or 0,
+        )
+        logger.info(
+            "[cerebral] Custom model added: %s (%s%s)",
+            mid, kind, ", dynamic" if dynamic else "",
+        )
+        _persist_priority()
+        # One-step coding designation (turnkey): pin both coding-chat and
+        # self-dev to this connection so "just add the server" is enough.
+        if d.get("for_coding"):
+            for _t in ("coding", "self_dev"):
+                _router.set_task_model(_t, mid)
+            _persist_task_models()
+            logger.info("[cerebral] %s set as coding model (coding + self_dev)", mid)
+        await _broadcast(_models_list_event())
+
+
+@_message_handler("edit_custom_model")
+async def _msg_edit_custom_model(msg: dict) -> None:
+    # Update an existing custom/<slug> in place. The id is preserved, so the
+    # connection keeps its priority position, enabled flag, and any per-task
+    # pins (coding/self_dev/...) that point at it -- add_backend on an
+    # existing id replaces the backend + metadata without re-appending.
+    d = msg.get("data", {})
+    mid = (d.get("id") or "").strip()
+    kind = (d.get("kind") or "").strip()
+    url = (d.get("url") or "").strip()
+    model = (d.get("model") or "").strip()
+    label_in = (d.get("label") or "").strip()
+    api_key = (d.get("api_key") or "").strip()  # blank -> keep existing key
+    supports_vision = bool(d.get("supports_vision"))
+    context_window = _parse_context_window(d.get("context_window"), kind)
+    dynamic = (not model) and (kind in DYNAMIC_CUSTOM_KINDS)
+    from urllib.parse import urlparse
+    label = (
+        label_in or model or (urlparse(url).hostname if url else "") or "model"
+    )
+
+    async def _err(reason: str) -> None:
+        await _broadcast({"type": "custom_model_error", "data": {"error": reason}})
+
+    existing = {m["id"] for m in _router.list_models()}
+    if not (mid.startswith("custom/") and _active_profile):
+        await _err("edit requires an existing custom connection")
+    elif mid not in existing:
+        await _err(f"unknown connection '{mid}'")
+    elif kind not in CUSTOM_KINDS:
+        await _err(f"unknown kind '{kind}'")
+    elif kind == "anthropic" and not model:
+        await _err("model name is required for Anthropic")
+    elif kind != "anthropic" and not re.match(r"^https?://", url):
+        await _err("URL must start with http:// or https://")
+    else:
+        secret_ref = f"custom_model/{mid.split('/', 1)[1]}"
+        cred = _get_credential_store()
+        # Blank key on edit means "unchanged" -- reuse the stored one so a
+        # url/model tweak doesn't wipe the credential.
+        effective_key = api_key or (
+            cred.get_secret(_active_profile.id, secret_ref, "api_token") or None
+        )
+        try:
+            if dynamic:
+                backend = DynamicModelBackend(
+                    kind, url, cached_model="", api_key=effective_key,
+                    supports_vision=supports_vision,
+                )
+                is_cloud = dynamic_is_cloud(kind)
+            else:
+                backend, is_cloud = build_custom_backend(
+                    kind, url, model, effective_key,
+                    supports_vision=supports_vision,
+                )
+        except ValueError as exc:
+            await _err(str(exc))
+            return
+        ping_err = await _ping_custom_model(backend)
+        if ping_err:
+            await _err(f"endpoint unreachable: {ping_err}")
+            return
+        if api_key:  # only touch the keyring when a new key was supplied
+            try:
+                cred.set_secret(_active_profile.id, secret_ref, "api_token", api_key)
+            except (RuntimeError, ValueError) as exc:
+                await _err(f"could not store API key: {exc}")
+                return
+        stored_ref = secret_ref if effective_key else ""
+        _router.add_backend(
+            mid, backend, label, is_cloud, context_window=context_window
+        )  # in-place replace
+        stored_model = backend.model if dynamic else model
+        if dynamic:
+            backend.on_resolved = _make_dynamic_persist_cb(
+                _active_profile.id,
+                {"id": mid, "kind": kind, "url": url, "label": label,
+                 "secret_ref": stored_ref, "context_window": context_window or 0},
+            )
+        _custom_models.add(
+            _active_profile.id, id=mid, kind=kind, url=url, model=stored_model,
+            label=label, is_cloud=is_cloud, secret_ref=stored_ref,
+            dynamic=dynamic, supports_vision=supports_vision,
+            context_window=context_window or 0,
+        )
+        logger.info("[cerebral] Custom model edited: %s (%s)", mid, kind)
+        _persist_priority()
+        await _broadcast(_models_list_event())
+
+
+@_message_handler("remove_custom_model")
+async def _msg_remove_custom_model(msg: dict) -> None:
+    mid = msg.get("data", {}).get("id")
+    if mid and mid.startswith("custom/") and _active_profile:
+        _router.remove_backend(mid)
+        secret_ref = f"custom_model/{mid.split('/', 1)[1]}"
+        # delete_credential sweeps every keyring field for the ref (no-op on
+        # the empty connected-account metadata row); keeps the store's
+        # delete-completeness invariant.
+        _get_credential_store().delete_credential(_active_profile.id, secret_ref)
+        _custom_models.remove(_active_profile.id, mid)
+        logger.info("[cerebral] Custom model removed: %s", mid)
+        _persist_priority()
+        await _broadcast(_models_list_event())
+
+
+@_message_handler("discover_models")
+async def _msg_discover_models(msg: dict) -> None:
+    d = msg.get("data", {})
+    kind = (d.get("kind") or "").strip()
+    url = (d.get("url") or "").strip()
+    api_key = (d.get("api_key") or "").strip() or None
+    if kind == "anthropic":
+        models: list[str] = []
+    elif kind == "ollama":
+        models = await asyncio.to_thread(
+            lambda: OllamaBackend.list_installed_models(url=url)
+        )
+    elif kind == "openai":
+        models = await asyncio.to_thread(
+            lambda: list_openai_models(url, api_key)
+        )
+    else:
+        models = []
+    await _broadcast({"type": "models_discovered", "data": {"kind": kind, "models": models}})
+
+
+def _tools_list_event() -> dict:
+    return {"type": "tools_list", "data": {"tools": _orc.tools_for_llm}}
+
+
+@_message_handler("list_tools")
+async def _msg_list_tools(msg: dict) -> None:
+    await _broadcast(_tools_list_event())
+
+
+@_message_handler("list_plugins")
+async def _msg_list_plugins(msg: dict) -> None:
+    await _broadcast(_plugins_list_event())
+
+
+@_message_handler("plugins:list")
+async def _msg_plugins_list(msg: dict) -> None:
+    # Harness UI rework, S1 #469 -- spec section 5.1.
+    await _broadcast(_plugins_list_v2_event())
+
+
+@_message_handler("plugins:set_enabled")
+async def _msg_plugins_set_enabled(msg: dict) -> None:
+    # Harness UI rework, S2 #470 -- spec section 5.2.
+    await _handle_plugins_set_enabled(msg)
+
+
+@_message_handler("plugins:test_call")
+async def _msg_plugins_test_call(msg: dict) -> None:
+    # Harness UI rework, S4 #472 -- spec section 5.3.
+    await _handle_plugins_test_call(msg)
+
+
+@_message_handler("plugins:panels")
+async def _msg_plugins_panels(msg: dict) -> None:
+    # UI2 A3 #483 -- list plugin-declared panels for the workspace opener.
+    await _broadcast(_plugins_panels_event())
+
+
+@_message_handler("plugins:panel_spec")
+async def _msg_plugins_panel_spec(msg: dict) -> None:
+    # UI2 A3 #483 -- fetch one plugin's declarative panel spec.
+    d = msg.get("data") or {}
+    plugin_name = (d.get("plugin_name") or "").strip()
+    if plugin_name:
+        await _broadcast(_plugins_panel_spec_event(plugin_name))
+
+
+@_message_handler("get_plugin_settings")
+async def _msg_get_plugin_settings(msg: dict) -> None:
+    # Issue #187 — Plugins pane requests per-plugin settings.
+    # Currently only discord_user carries editable state (allowlist).
+    d = msg.get("data") or {}
+    plugin_name = (d.get("plugin_name") or "").strip()
+    if not plugin_name:
+        logger.warning("[cerebral] get_plugin_settings missing plugin_name")
+        return
+    await _broadcast(_plugin_settings_event(plugin_name))
+
+
+@_message_handler("discord_allowlist_add")
+async def _msg_discord_allowlist_add(msg: dict) -> None:
+    # Issue #187 — add a sender to the Discord auto-reply allowlist.
+    d = msg.get("data") or {}
+    sender_id = (d.get("sender_id") or "").strip()
+    note = (d.get("note") or "").strip()
+    if not sender_id:
+        logger.warning("[cerebral] discord_allowlist_add missing sender_id")
+        return
+    if _active_profile is None:
+        logger.warning("[cerebral] discord_allowlist_add with no active profile")
+        return
+    _pm.add_discord_allowlist(_active_profile.id, sender_id, note)
+    await _broadcast(_plugin_settings_event("discord_user"))
+
+
+@_message_handler("discord_allowlist_remove")
+async def _msg_discord_allowlist_remove(msg: dict) -> None:
+    # Issue #187 — remove a sender from the Discord auto-reply allowlist.
+    d = msg.get("data") or {}
+    sender_id = (d.get("sender_id") or "").strip()
+    if not sender_id:
+        logger.warning("[cerebral] discord_allowlist_remove missing sender_id")
+        return
+    if _active_profile is None:
+        logger.warning("[cerebral] discord_allowlist_remove with no active profile")
+        return
+    _pm.remove_discord_allowlist(_active_profile.id, sender_id)
+    await _broadcast(_plugin_settings_event("discord_user"))
+
+
+@_message_handler("list_permissions")
+async def _msg_list_permissions(msg: dict) -> None:
+    # Issue #53 — Permissions UI requesting a fresh state snapshot.
+    # The same payload is broadcast on connect alongside other state
+    # events, but a re-open of the Permissions window asks for a fresh
+    # read in case the user changed profiles in between.
+    await _broadcast(_permissions_state_event())
+
+
+@_message_handler("set_class_policy")
+async def _msg_set_class_policy(msg: dict) -> None:
+    # Issue #53 — Capabilities tab toggle. {capability, decision}.
+    d = msg.get("data") or {}
+    cap_value = (d.get("capability") or "").strip()
+    decision = (d.get("decision") or "").strip()
+    if not cap_value or not decision:
+        logger.warning("[cerebral] set_class_policy missing capability/decision")
+        return
+    if _orc.acl is None or _active_profile is None:
+        logger.warning("[cerebral] set_class_policy with no active profile")
+        return
+    try:
+        cap = Capability(cap_value)
+        dec = Decision(decision)
+    except ValueError as exc:
+        logger.warning("[cerebral] set_class_policy invalid value: %s", exc)
+        return
+    # shell_exec is locked until the user explicitly opts in (#53 AC#2).
+    if cap is Capability.SHELL_EXEC and not _active_profile.shell_exec_unlocked:
+        logger.warning(
+            "[cerebral] set_class_policy refused: shell_exec is locked for profile %d",
+            _active_profile.id,
+        )
+        return
+    # SBX-4: shell_exec opt-in is only honored when a sandbox backend is present.
+    # Without a sandbox, the class stays denied regardless of the setting (fail-closed).
+    if cap is Capability.SHELL_EXEC and not _sandbox_available():
+        logger.warning(
+            "[cerebral] set_class_policy refused: shell_exec requires sandbox backend (not available on this host)",
+        )
+        return
+    # Default-matching writes still create a row — the user's
+    # explicit click is meaningful even when it equals the snapshot
+    # default. Revoking back to the snapshot is a separate IPC
+    # (revoke_class_policy) so the toggle's three-state UI maps
+    # cleanly to one verb per user action.
+    _orc.acl.set_persistent_class(cap, dec)
+    logger.info(
+        "[cerebral] set_class_policy %s=%s for profile %d",
+        cap.value, dec.value, _active_profile.id,
+    )
+    await _broadcast(_permissions_state_event())
+
+
+@_message_handler("revoke_class_policy")
+async def _msg_revoke_class_policy(msg: dict) -> None:
+    # Issue #53 — clears a persistent class grant so the snapshot
+    # default applies again. Used when the user resets a Capabilities
+    # row to its inherited default.
+    d = msg.get("data") or {}
+    cap_value = (d.get("capability") or "").strip()
+    if not cap_value or _orc.acl is None:
+        return
+    try:
+        cap = Capability(cap_value)
+    except ValueError:
+        return
+    _orc.acl.revoke_persistent_class(cap)
+    logger.info("[cerebral] revoke_class_policy %s", cap.value)
+    await _broadcast(_permissions_state_event())
+
+
+@_message_handler("set_tool_override")
+async def _msg_set_tool_override(msg: dict) -> None:
+    # Issue #53 — Tools tab dropdown. {tool, decision}. decision of
+    # "inherit" clears the override (revoke_tool_override).
+    d = msg.get("data") or {}
+    tool_name = (d.get("tool") or "").strip()
+    decision = (d.get("decision") or "").strip()
+    if not tool_name or not decision or _orc.acl is None:
+        logger.warning("[cerebral] set_tool_override missing field")
+        return
+    if decision == "inherit":
+        _orc.acl.revoke_tool_override(tool_name)
+        logger.info("[cerebral] set_tool_override %s=inherit (revoked)", tool_name)
+    else:
+        try:
+            dec = Decision(decision)
+        except ValueError as exc:
+            logger.warning("[cerebral] set_tool_override invalid decision: %s", exc)
+            return
+        _orc.acl.set_tool_override(tool_name, dec)
+        logger.info("[cerebral] set_tool_override %s=%s", tool_name, dec.value)
+    await _broadcast(_permissions_state_event())
+
+
+@_message_handler("revoke_session_grant")
+async def _msg_revoke_session_grant(msg: dict) -> None:
+    # Issue #53 — Capabilities tab session-grant Revoke button.
+    d = msg.get("data") or {}
+    cap_value = (d.get("capability") or "").strip()
+    if not cap_value or _orc.acl is None:
+        return
+    try:
+        cap = Capability(cap_value)
+    except ValueError:
+        return
+    revoked = _orc.acl.revoke_session(cap)
+    logger.info(
+        "[cerebral] revoke_session_grant %s (existed=%s)", cap.value, revoked,
+    )
+    await _broadcast(_permissions_state_event())
+
+
+@_message_handler("unlock_shell_exec")
+async def _msg_unlock_shell_exec(msg: dict) -> None:
+    global _active_profile
+    # Issue #53 — one-way flip. The Permissions UI shows a confirmation
+    # modal first; this handler trusts the click as the confirmation.
+    if _active_profile is None:
+        logger.warning("[cerebral] unlock_shell_exec with no active profile")
+        return
+    _pm.unlock_shell_exec(_active_profile.id)
+    _active_profile = _pm.get(_active_profile.id)
+    logger.info(
+        "[cerebral] shell_exec unlocked for profile %s", _active_profile.name,
+    )
+    await _broadcast(_permissions_state_event())
+
+
+@_message_handler("clear_new_plugin_flag")
+async def _msg_clear_new_plugin_flag(msg: dict) -> None:
+    # Issue #51 — the Permissions UI's "I've reviewed this plugin"
+    # affordance flips new_plugin to 0 and re-broadcasts plugins_list
+    # so the tray's badge drops on every connected client. The flag is
+    # the only thing standing between this plugin's tools and the
+    # ACL's normal session/persistent bypasses (#53 owns the UI).
+    d = msg.get("data") or {}
+    plugin_name = (d.get("name") or "").strip()
+    if not plugin_name:
+        logger.warning("[cerebral] clear_new_plugin_flag missing 'name'")
+        return
+    _pm.set_plugin_new_flag(plugin_name, False)
+    logger.info("[cerebral] Cleared new_plugin flag for %r", plugin_name)
+    await _broadcast(_plugins_list_event())
+
+
+@_message_handler("list_credentials")
+async def _msg_list_credentials(msg: dict) -> None:
+    # Issue #114 — Credentials window asking for a fresh status read.
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("set_credential_client")
+async def _msg_set_credential_client(msg: dict) -> None:
+    # Issue #114 — user entered the Google OAuth client_id/secret. The
+    # secret goes to the keyring via #112; client_id is non-secret
+    # metadata. A new client invalidates any prior connected email/
+    # scopes (re-consent required), so we write an explicit full row —
+    # set_credential overwrites every column it is given and omitted
+    # args default to ""/[], so status MUST be passed explicitly or it
+    # silently blanks (the #112 upsert-blanking trap, #113 §5).
+    if _active_profile is None:
+        logger.warning("[cerebral] set_credential_client with no active profile")
+        return
+    d = msg.get("data") or {}
+    client_id = (d.get("client_id") or "").strip()
+    client_secret = (d.get("client_secret") or "").strip()
+    if not client_id or not client_secret:
+        logger.warning("[cerebral] set_credential_client missing client_id/secret")
+        return
+    store = _get_credential_store()
+    store.set_secret(_active_profile.id, "google", "client_secret", client_secret)
+    store.set_credential(
+        _active_profile.id, "google",
+        client_id=client_id, email="", scopes=[], status="client set",
+    )
+    # client_secret is never logged or echoed back to the renderer.
+    logger.info(
+        "[cerebral] Google client credentials set for profile %d",
+        _active_profile.id,
+    )
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("connect_google")
+async def _msg_connect_google(msg: dict) -> None:
+    # Issue #114 — trigger #113's installed-app consent. start_consent
+    # blocks (loopback listener, up to consent_timeout=300s), so it runs
+    # off the event loop in a thread inside a background task: broadcast
+    # an interim "connecting", then the terminal connected/error status.
+    # The loop (heartbeat/audio/IPC) stays responsive throughout.
+    if _active_profile is None:
+        logger.warning("[cerebral] connect_google with no active profile")
+        return
+    profile_id = _active_profile.id
+    flow = _get_oauth_flow(_get_credential_store())
+    await _broadcast(_credentials_state_event(transient="connecting"))
+
+    async def _run_consent(pid: int = profile_id) -> None:
+        try:
+            await asyncio.to_thread(
+                flow.start_consent, pid, scopes=_GOOGLE_SCOPES
+            )
+        except GoogleOAuthError as exc:
+            logger.warning("[cerebral] Google consent failed: %s", exc)
+            await _broadcast(_credentials_state_event(error=str(exc)))
+            return
+        except Exception as exc:  # never leak transport internals
+            logger.warning("[cerebral] Google consent error: %s", exc)
+            await _broadcast(_credentials_state_event(error="connection failed"))
+            return
+        logger.info("[cerebral] Google connected for profile %d", pid)
+        await _broadcast(_credentials_state_event())
+
+    asyncio.create_task(_run_consent())
+
+
+@_message_handler("disconnect_credential")
+async def _msg_disconnect_credential(msg: dict) -> None:
+    # Issue #114 — drop the metadata row + every keyring secret for the
+    # active profile's Google account (#112 delete is idempotent).
+    if _active_profile is None:
+        logger.warning("[cerebral] disconnect_credential with no active profile")
+        return
+    _get_credential_store().delete_credential(_active_profile.id, "google")
+    logger.info(
+        "[cerebral] Google credentials disconnected for profile %d",
+        _active_profile.id,
+    )
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("set_static_token")
+async def _msg_set_static_token(msg: dict) -> None:
+    # Issue #148 — user entered a static API token for one of the five
+    # static-token plugins via the tray Credentials window's API-keys
+    # section. The value goes to the keyring under field "api_token"
+    # via #112; a degenerate metadata row marks status="connected".
+    # The value is NEVER logged or echoed back to the renderer.
+    if _active_profile is None:
+        logger.warning("[cerebral] set_static_token with no active profile")
+        return
+    d = msg.get("data") or {}
+    provider = (d.get("provider") or "").strip()
+    value = (d.get("value") or "").strip()
+    if provider not in _STATIC_TOKEN_PROVIDER_NAMES:
+        logger.warning(
+            "[cerebral] set_static_token unknown provider=%r", provider
+        )
+        return
+    if not value:
+        logger.warning(
+            "[cerebral] set_static_token empty value for provider=%s", provider
+        )
+        return
+    store = _get_credential_store()
+    store.set_secret(_active_profile.id, provider, "api_token", value)
+    # Explicit full row — set_credential defaults to ""/[] for omitted
+    # columns and would silently blank a future metadata extension
+    # (the #112 upsert-blanking trap, carried from #113 §5 / #114 §4).
+    store.set_credential(
+        _active_profile.id, provider,
+        client_id="", email="", scopes=[], status="connected",
+    )
+    logger.info(
+        "[cerebral] Static API token set for profile %d provider=%s",
+        _active_profile.id, provider,
+    )
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("clear_static_token")
+async def _msg_clear_static_token(msg: dict) -> None:
+    # Issue #148 — drop the metadata row + the keyring "api_token"
+    # entry for one of the five static-token providers (#112 delete is
+    # idempotent and iterates SECRET_FIELDS — the extended set now
+    # includes "api_token").
+    if _active_profile is None:
+        logger.warning("[cerebral] clear_static_token with no active profile")
+        return
+    d = msg.get("data") or {}
+    provider = (d.get("provider") or "").strip()
+    if provider not in _STATIC_TOKEN_PROVIDER_NAMES:
+        logger.warning(
+            "[cerebral] clear_static_token unknown provider=%r", provider
+        )
+        return
+    _get_credential_store().delete_credential(_active_profile.id, provider)
+    logger.info(
+        "[cerebral] Static API token cleared for profile %d provider=%s",
+        _active_profile.id, provider,
+    )
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("set_alpaca_credentials")
+async def _msg_set_alpaca_credentials(msg: dict) -> None:
+    # Live Alpaca API key + secret -- deliberately not set_static_token
+    # (that's one value per provider; Alpaca needs two) and deliberately
+    # not CredentialStore (broker.py's _get_alpaca_credentials already
+    # reads a dedicated, profile-agnostic keyring service directly --
+    # see _alpaca_credentials_state's docstring for why). Written to
+    # EXACTLY the (service, username) pairs broker.py reads. Values are
+    # never logged or echoed back to the renderer.
+    import keyring
+    d = msg.get("data") or {}
+    key = (d.get("key") or "").strip()
+    secret = (d.get("secret") or "").strip()
+    if not key or not secret:
+        logger.warning("[cerebral] set_alpaca_credentials missing key or secret")
+        return
+    keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_live_key", key)
+    keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_live_secret", secret)
+    logger.info("[cerebral] Alpaca live credentials set")
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("clear_alpaca_credentials")
+async def _msg_clear_alpaca_credentials(msg: dict) -> None:
+    import keyring
+    for field in ("alpaca_live_key", "alpaca_live_secret"):
+        try:
+            keyring.delete_password(_ALPACA_KEYRING_SERVICE, field)
+        except Exception:
+            pass  # keyring.errors.PasswordDeleteError if already absent -- fine
+    logger.info("[cerebral] Alpaca live credentials cleared")
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("set_alpaca_paper_credentials")
+async def _msg_set_alpaca_paper_credentials(msg: dict) -> None:
+    # Same contract as set_alpaca_credentials, env="paper" instead of
+    # "live" -- used by AlpacaMarketDataClient/AlpacaBrokerClient(env="paper").
+    import keyring
+    d = msg.get("data") or {}
+    key = (d.get("key") or "").strip()
+    secret = (d.get("secret") or "").strip()
+    if not key or not secret:
+        logger.warning("[cerebral] set_alpaca_paper_credentials missing key or secret")
+        return
+    keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_paper_key", key)
+    keyring.set_password(_ALPACA_KEYRING_SERVICE, "alpaca_paper_secret", secret)
+    logger.info("[cerebral] Alpaca paper credentials set")
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("clear_alpaca_paper_credentials")
+async def _msg_clear_alpaca_paper_credentials(msg: dict) -> None:
+    import keyring
+    for field in ("alpaca_paper_key", "alpaca_paper_secret"):
+        try:
+            keyring.delete_password(_ALPACA_KEYRING_SERVICE, field)
+        except Exception:
+            pass  # keyring.errors.PasswordDeleteError if already absent -- fine
+    logger.info("[cerebral] Alpaca paper credentials cleared")
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("set_discord_user_token")
+async def _msg_set_discord_user_token(msg: dict) -> None:
+    # Dedicated setter for the Discord user-account (self-bot) token.
+    # discord_user is deliberately excluded from _STATIC_TOKEN_PROVIDERS
+    # (ADR-0006 friction), so it can't ride set_static_token's provider
+    # whitelist -- it gets its own IPC. Written to discord_user/api_token,
+    # the exact slot _get_discord_user_token_provider reads. The value is
+    # NEVER logged or echoed back to the renderer.
+    if _active_profile is None:
+        logger.warning("[cerebral] set_discord_user_token with no active profile")
+        return
+    value = ((msg.get("data") or {}).get("value") or "").strip()
+    if not value:
+        logger.warning("[cerebral] set_discord_user_token empty value")
+        return
+    store = _get_credential_store()
+    store.set_secret(
+        _active_profile.id, _DISCORD_USER_PROVIDER, "api_token", value,
+    )
+    store.set_credential(
+        _active_profile.id, _DISCORD_USER_PROVIDER,
+        client_id="", email="", scopes=[], status="connected",
+    )
+    logger.info(
+        "[cerebral] Discord user token set for profile %d", _active_profile.id,
+    )
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("clear_discord_user_token")
+async def _msg_clear_discord_user_token(msg: dict) -> None:
+    if _active_profile is None:
+        logger.warning("[cerebral] clear_discord_user_token with no active profile")
+        return
+    _get_credential_store().delete_credential(
+        _active_profile.id, _DISCORD_USER_PROVIDER,
+    )
+    logger.info(
+        "[cerebral] Discord user token cleared for profile %d",
+        _active_profile.id,
+    )
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("set_felix_session_login")
+async def _msg_set_felix_session_login(msg: dict) -> None:
+    # ADR-0016 #601/#604 — user entered the isolated-session Windows
+    # password in the tray "Felix session account" card. Machine-global
+    # (one dedicated Windows user per install), so it does NOT require an
+    # active profile. Do NOT strip the password (edge chars may be
+    # significant); only reject a wholly empty one. Written to the pinned
+    # flat keyring key; NEVER logged or echoed back to the renderer.
+    password = (msg.get("data") or {}).get("password") or ""
+    if not password:
+        logger.warning("[cerebral] set_felix_session_login empty value")
+        return
+    _get_credential_store().set_global_secret(
+        _FELIX_SESSION_SERVICE, _FELIX_SESSION_USER, password,
+    )
+    logger.info(
+        "[cerebral] Felix session login stored (user %s)", _FELIX_SESSION_USER,
+    )
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("clear_felix_session_login")
+async def _msg_clear_felix_session_login(msg: dict) -> None:
+    _get_credential_store().delete_global_secret(
+        _FELIX_SESSION_SERVICE, _FELIX_SESSION_USER,
+    )
+    logger.info("[cerebral] Felix session login cleared")
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("run_felix_account_setup")
+async def _msg_run_felix_account_setup(msg: dict) -> None:
+    # ADR-0016 #604 — "Set up Felix's session" button. Launches the
+    # self-elevating provisioning script; the human approves one UAC prompt.
+    # Fire-and-forget (the script owns its own console + progress).
+    _launch_felix_account_setup()
+
+
+@_message_handler("check_felix_provisioning")
+async def _msg_check_felix_provisioning(msg: dict) -> None:
+    # Real system state for the card's completion checkmark. Runs a short
+    # PowerShell probe off the event loop; the tray polls this after the
+    # setup button so the ✓ appears once the elevated script finishes.
+    prov = await asyncio.to_thread(_felix_provisioning_state)
+    await _broadcast({"type": "felix_provisioning", "data": prov})
+
+
+@_message_handler("set_browser_login")
+async def _msg_set_browser_login(msg: dict) -> None:
+    # ADR-0005 amendment 2026-06-25 — user entered a browser web-login
+    # (email + password) in the tray Credentials window's "Browser
+    # logins" section. The email is non-secret metadata; the password
+    # goes to the keyring under field "password" via #112. The password
+    # is NEVER logged or echoed back to the renderer (write-only).
+    if _active_profile is None:
+        logger.warning("[cerebral] set_browser_login with no active profile")
+        return
+    d = msg.get("data") or {}
+    provider = (d.get("provider") or "").strip()
+    email = (d.get("email") or "").strip()
+    # Do NOT strip the password — leading/trailing characters may be
+    # significant; only reject a wholly empty one below.
+    password = d.get("password") or ""
+    if provider not in _BROWSER_LOGIN_PROVIDER_NAMES:
+        logger.warning(
+            "[cerebral] set_browser_login unknown provider=%r", provider
+        )
+        return
+    if not email or not password:
+        logger.warning(
+            "[cerebral] set_browser_login missing %s for provider=%s",
+            "email" if not email else "password", provider,
+        )
+        return
+    store = _get_credential_store()
+    store.set_secret(_active_profile.id, provider, "password", password)
+    # Explicit full row — set_credential defaults omitted columns to ""/[]
+    # and would silently blank a future metadata extension (#112 trap).
+    store.set_credential(
+        _active_profile.id, provider,
+        client_id="", email=email, scopes=[], status="connected",
+    )
+    logger.info(
+        "[cerebral] Browser login set for profile %d provider=%s",
+        _active_profile.id, provider,
+    )
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("clear_browser_login")
+async def _msg_clear_browser_login(msg: dict) -> None:
+    # ADR-0005 amendment 2026-06-25 — drop the metadata row + the keyring
+    # "password" entry for a browser-login provider (#112 delete is
+    # idempotent and iterates SECRET_FIELDS, which includes "password").
+    if _active_profile is None:
+        logger.warning("[cerebral] clear_browser_login with no active profile")
+        return
+    d = msg.get("data") or {}
+    provider = (d.get("provider") or "").strip()
+    if provider not in _BROWSER_LOGIN_PROVIDER_NAMES:
+        logger.warning(
+            "[cerebral] clear_browser_login unknown provider=%r", provider
+        )
+        return
+    _get_credential_store().delete_credential(_active_profile.id, provider)
+    logger.info(
+        "[cerebral] Browser login cleared for profile %d provider=%s",
+        _active_profile.id, provider,
+    )
+    await _broadcast(_credentials_state_event())
+
+
+@_message_handler("seed_browser_login")
+async def _msg_seed_browser_login(msg: dict) -> None:
+    # ADR-0005 amendment 2026-06-25 — the user clicked "Log in now" on the
+    # Browser logins card. Cerebral runs in the user's interactive session,
+    # so (unlike the agent's Bash subprocess) it CAN open a visible window.
+    # ensure_logged_in(unattended=False) opens that window and polls up to
+    # manual_login_timeout for the human to finish login + 2FA; that blocks,
+    # so it runs in a background task and the loop stays responsive. A
+    # write-only contract is preserved: only the LoginState outcome (never
+    # the password) is broadcast back.
+    if _active_profile is None:
+        logger.warning("[cerebral] seed_browser_login with no active profile")
+        return
+    d = msg.get("data") or {}
+    provider = (d.get("provider") or "").strip()
+    if provider not in _BROWSER_LOGIN_PROVIDER_NAMES:
+        logger.warning(
+            "[cerebral] seed_browser_login unknown provider=%r", provider
+        )
+        return
+    profile_id = _active_profile.id
+    store = _get_credential_store()
+    meta = store.get_credential(profile_id, provider) or {}
+    email = meta.get("email", "")
+    if not email:
+        # Nothing to seed against — the account email must be saved first.
+        logger.warning(
+            "[cerebral] seed_browser_login no email stored profile=%d "
+            "provider=%s", profile_id, provider,
+        )
+        await _broadcast(_browser_login_seed_event(
+            provider, "failed",
+            reason="save the account email first",
+        ))
+        return
+    key = (profile_id, provider)
+    if key in _browser_seed_inflight:
+        # A window is already open for this account — don't open a second.
+        logger.info(
+            "[cerebral] seed_browser_login already in flight profile=%d "
+            "provider=%s", profile_id, provider,
+        )
+        await _broadcast(_browser_login_seed_event(
+            provider, "busy", email=email,
+            reason="a login window is already open",
+        ))
+        return
+    _browser_seed_inflight.add(key)
+    await _broadcast(_browser_login_seed_event(
+        provider, "seeding", email=email,
+    ))
+
+    async def _run_seed(
+        pid: int = profile_id, prov: str = provider, mail: str = email,
+    ) -> None:
+        # Lazy import: Playwright is a heavy, optional dependency — keep it
+        # out of module import so a Cerebral with no browser harness still
+        # starts.
+        from cerebral.browser import BrowserSession, LoginState
+        from cerebral.browser.session import PlaywrightDriver
+
+        session = BrowserSession(
+            pid, provider=prov,
+            driver=PlaywrightDriver(), store=store,
+        )
+        try:
+            result = await session.ensure_logged_in(unattended=False)
+            logger.info(
+                "[cerebral] seed_browser_login profile=%d provider=%s -> %s",
+                pid, prov, result.state.value,
+            )
+            await _broadcast(_browser_login_seed_event(
+                prov, result.state.value, email=mail, reason=result.reason,
+            ))
+        except Exception as exc:  # never leak transport/browser internals
+            logger.warning(
+                "[cerebral] seed_browser_login error profile=%d "
+                "provider=%s: %s", pid, prov, exc,
+            )
+            await _broadcast(_browser_login_seed_event(
+                prov, "failed", email=mail, reason="login window failed",
+            ))
+        finally:
+            _browser_seed_inflight.discard((pid, prov))
+            try:
+                await session.close()
+            except Exception:
+                pass
+            # Refresh the card so a new session flips the pill to connected.
+            await _broadcast(_credentials_state_event())
+
+    asyncio.create_task(_run_seed())
+
+
+@_message_handler("consent_response")
+async def _msg_consent_response(msg: dict) -> None:
+    d = msg.get("data") or {}
+    request_id = d.get("request_id")
+    choice = d.get("choice")
+    if not request_id:
+        logger.warning("[cerebral] consent_response missing request_id")
+        return
+    fut = _pending_consents.get(request_id)
+    if fut is None:
+        # Late arrival — surface already timed out and cleaned up.
+        logger.info(
+            "[cerebral] consent_response for unknown request_id=%s (ignored)",
+            request_id,
+        )
+        return
+    if not is_valid_choice(choice):
+        logger.warning(
+            "[cerebral] consent_response invalid choice=%r for %s",
+            choice, request_id,
+        )
+        if not fut.done():
+            fut.set_result("deny")
+        await _record_turn(KIND_SYSTEM_EVENT, {"event": "consent_response", "choice": "deny", "request_id": request_id})
+        return
+    if not fut.done():
+        fut.set_result(choice)
+    await _record_turn(KIND_SYSTEM_EVENT, {"event": "consent_response", "choice": choice, "request_id": request_id})
+
+
+@_message_handler("irreversible_modal_response")
+async def _msg_irreversible_modal_response(msg: dict) -> None:
+    # Issue #49 — Accept dispatches the call, Cancel refuses. The
+    # ModalSurface treats any non-accept choice as DENY, so a garbled
+    # message is safely refused without us second-guessing here.
+    d = msg.get("data") or {}
+    request_id = d.get("request_id")
+    choice = d.get("choice")
+    if not request_id:
+        logger.warning("[cerebral] irreversible_modal_response missing request_id")
+        return
+    fut = _pending_modals.get(request_id)
+    if fut is None:
+        logger.info(
+            "[cerebral] irreversible_modal_response for unknown request_id=%s (ignored)",
+            request_id,
+        )
+        return
+    if not is_valid_modal_choice(choice):
+        logger.warning(
+            "[cerebral] irreversible_modal_response invalid choice=%r for %s",
+            choice, request_id,
+        )
+        if not fut.done():
+            fut.set_result("cancel")
+        return
+    if not fut.done():
+        fut.set_result(choice)
+
+
+@_message_handler("call_tool")
+async def _msg_call_tool(msg: dict) -> None:
+    # Issue #238 — direct tool call from the tray. Routes through the
+    # shared ACL/consent gate ladder in ``_dispatch_tray_call_tool`` so
+    # the permissions layer + transcript recording apply identically to
+    # the harness ``plugins:test_call`` path (S4 #472).
+    #
+    # ``record`` defaults True (unlike plugins:test_call, which is
+    # always a silent debug hook) but a caller may opt out per-call by
+    # setting "record": false in the message -- same escape hatch
+    # _dispatch_tray_call_tool already offers plugins:test_call,
+    # exposed here for a UI panel's own background status poller (e.g.
+    # trading-panel.js's 2s Batch Replay / Cross-Stock Replay polls),
+    # which is UI chrome refreshing a display, not something Felix
+    # decided to do -- it must not flood the tool-activity feed with a
+    # tool_call/tool_result pair every 2 seconds while that tab is open
+    # (found 2026-09-16: the feed was showing almost nothing else).
+    d = msg.get("data", {})
+    tool_name = d.get("name", "")
+    record = bool(d.get("record", True))
+    result = await _dispatch_tray_call_tool(tool_name, d.get("args", {}), record=record)
+    if not record:
+        # _dispatch_tray_call_tool's record=False also skips the
+        # tool_result broadcast (by design, for plugins:test_call's
+        # silent-debug-hook use case) -- but a record=False caller here
+        # is a UI poller (e.g. trading-panel.js's Batch Replay /
+        # Cross-Stock 2s polls), not a debug hook, and it still needs
+        # its answer. Broadcasting the same tool_result shape here,
+        # outside the transcript path, keeps every existing `case
+        # 'tool_result':` handler in main.html working unchanged.
+        # REGRESSION found 2026-09-16, same day as the record=False fix
+        # that caused it: suppressing the broadcast entirely silently
+        # broke the History tab's own live-updating panels, since that
+        # was their only path back to a response -- this call_tool
+        # handler discarded _dispatch_tray_call_tool's return value and
+        # never replied any other way.
         await _broadcast({
-            "type": "conversation_search_results",
-            "data": {"query": query if isinstance(query, str) else "", "results": results},
+            "type": "tool_result",
+            "data": {"name": tool_name, "content": result.content, "is_error": result.is_error},
         })
 
-    elif t == "list_conversation_projects":
-        # S11 / #294 -- Main window asking for the active profile's project
-        # folders so it can render the Conversations groups.
+
+@_message_handler("computer_use_stop")
+async def _msg_computer_use_stop(msg: dict) -> None:
+    # S2 #576 -- (c) leg of the ADR-0016 three-part kill switch. Fired by
+    # the Visualiser's Stop control when Felix is driving. The plugin
+    # short-circuits its observe-act loop at the next yield point. S6
+    # #579: if a handoff is pending, treat Stop as "decline handoff" so
+    # the plugin isn't left awaiting a done reply the user won't send.
+    # S12 #606: also terminates the in-session worker process if one is
+    # connected (out-of-session kill switch crosses the session boundary).
+    for _fut in list(_computer_use_handoff_pending.values()):
+        if not _fut.done():
+            _fut.set_result(False)
+    _terminate_worker_process()  # S12: no-op when no worker is connected
+    try:
+        module = _orc.get_plugin_module("computer_use")
+    except KeyError:
+        logger.info("[cerebral] computer_use_stop: plugin not loaded (ignored)")
+        return
+    stopper = getattr(module, "abort_current", None)
+    if stopper is None:
+        logger.warning("[cerebral] computer_use_stop: abort_current seam missing")
+        return
+    stopper()
+    await _broadcast({"type": "computer_use:driving", "data": {"driving": False}})
+
+
+@_message_handler("computer_use_take_over")
+async def _msg_computer_use_take_over(msg: dict) -> None:
+    # S15 #609: user clicked "Take over" in the Visualiser. Soft-pause the
+    # worker so the RDP window owns session 2's cursor uncontended, and
+    # broadcast the taken_over flip so the tray can swap Take-over for
+    # Release. Reuses the plugin's abort/pause seam pattern (kill switch
+    # sibling from #606) -- no separate wire.
+    global _computer_use_taken_over
+    try:
+        module = _orc.get_plugin_module("computer_use")
+    except KeyError:
+        logger.info("[cerebral] computer_use_take_over: plugin not loaded (ignored)")
+        return
+    pauser = getattr(module, "pause_current", None)
+    if pauser is not None:
+        pauser()
+    _computer_use_taken_over = True
+    await _broadcast({"type": "computer_use:taken_over",
+                      "data": {"taken_over": True}})
+
+
+@_message_handler("computer_use_release")
+async def _msg_computer_use_release(msg: dict) -> None:
+    global _computer_use_taken_over
+    # S15 #609: "Release" side of Take over -- resumes worker actuation.
+    # (No second `global` needed: the take_over branch above already
+    # declared it in this function's scope.)
+    try:
+        module = _orc.get_plugin_module("computer_use")
+    except KeyError:
+        logger.info("[cerebral] computer_use_release: plugin not loaded (ignored)")
+        return
+    resumer = getattr(module, "resume_current", None)
+    if resumer is not None:
+        resumer()
+    _computer_use_taken_over = False
+    await _broadcast({"type": "computer_use:taken_over",
+                      "data": {"taken_over": False}})
+
+
+@_message_handler("heartbeat_ack")
+async def _msg_heartbeat_ack(msg: dict) -> None:
+    pass  # S12 #606: worker acknowledged our heartbeat ping -- no further action needed.
+
+
+@_message_handler("result")
+async def _msg_result(msg: dict) -> None:
+    if not isinstance(msg.get("id"), str):
+        return
+    # S11 #605: result message from the in-session SessionWorker.
+    req_id = msg["id"]
+    fut = _worker_pending.get(req_id)
+    if fut is not None and not fut.done():
+        if msg.get("ok"):
+            fut.set_result(msg.get("data", {}))
+        else:
+            fut.set_exception(RuntimeError(msg.get("error", "worker error")))
+
+
+@_message_handler("set_isolated_session_mode")
+async def _msg_set_isolated_session_mode(msg: dict) -> None:
+    # S11 #605: toggle isolated-session routing for computer_use primitives.
+    global _isolated_session_mode
+    _isolated_session_mode = bool(msg.get("data", {}).get("enabled"))
+    _update_session_dispatch_seam()
+    logger.info("[cerebral] isolated_session_mode=%s", _isolated_session_mode)
+
+
+@_message_handler("computer_use_handoff_done")
+async def _msg_computer_use_handoff_done(msg: dict) -> None:
+    # S6 #579 -- reply to a computer_use:handoff_needed broadcast. The
+    # tray sends this when the user clicks the "Done" affordance during
+    # an attended handoff. ``completed`` defaults to True (the button's
+    # normal semantic); a client can pass False to explicitly decline.
+    d = msg.get("data") or {}
+    hid = d.get("handoff_id")
+    completed = bool(d.get("completed", True))
+    fut = _computer_use_handoff_pending.get(hid) if isinstance(hid, str) else None
+    if fut is None:
+        logger.info(
+            "[cerebral] computer_use_handoff_done: no pending handoff for id=%r",
+            hid,
+        )
+        return
+    if not fut.done():
+        fut.set_result(completed)
+
+
+@_message_handler("user_text_command")
+async def _msg_user_text_command(msg: dict) -> None:
+    # Issue #185 / ADR-0007 -- typed input from the Main window. Same
+    # orchestrator path as a voice wake, minus the TTS leg: a typed
+    # interaction stays silent (meetings / late-night use cases).
+    # Records the user turn before kicking off the LLM so the Main
+    # window's transcript reflects the input the instant it lands,
+    # even if the model is slow.
+    _data = msg.get("data") or {}
+    text = _data.get("text", "")
+    # S14 (#297) -- ``attachment_ids`` arrives from the renderer's pending
+    # chip row. The matching files were already uploaded via attach_files;
+    # we just bind them to the new turn and fold their extracted text
+    # into the prompt the LLM sees.
+    _attachment_ids: list[int] = []
+    for raw in _data.get("attachment_ids") or []:
+        try:
+            _attachment_ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    has_text = isinstance(text, str) and text.strip()
+    if has_text or _attachment_ids:
+        # S13 -- resolve the active thread's model override, if any.
+        _thread_model: str | None = None
+        if _active_profile is not None:
+            _tid = _resolve_active_thread_id(_active_profile.id)
+            if _tid is not None:
+                _t = _conversation.get_thread(_tid)
+                if _t is not None:
+                    _thread_model = _t.model_override
+        # S14 -- pull the just-uploaded attachments so their extracted
+        # text can ride alongside the user's typed prompt to the LLM.
+        _atts: list = []
+        if _attachment_ids and _active_profile is not None:
+            for _aid in _attachment_ids:
+                _att = _attachments.get(_aid)
+                if _att is not None and _att.profile_id == _active_profile.id:
+                    _atts.append(_att)
+        _prompt_text = text if has_text else "(see attached file)"
+        await _broadcast({"type": "wake", "data": {"transcript": _prompt_text}})
+        await _record_turn(
+            KIND_USER_TEXT,
+            {"text": text if has_text else ""},
+            attachment_ids=[a.id for a in _atts],
+        )
+        _enriched = serialise_for_prompt(_atts) + _prompt_text
+        global _active_turn_task
+        _active_turn_task = asyncio.create_task(
+            _process_command(_enriched, speak=False, thread_model_override=_thread_model)
+        )
+
+
+@_message_handler("attach_files")
+async def _msg_attach_files(msg: dict) -> None:
+    # S14 (#297) -- the Main window finished reading file bytes and
+    # base64-encoded them. Decode, persist each into the profile's
+    # local attachment store, and reply with the chip metadata the
+    # renderer needs to draw the pending chip row.
+    await _handle_attach_files(msg.get("data") or {})
+
+
+@_message_handler("drop_pending_attachments")
+async def _msg_drop_pending_attachments(msg: dict) -> None:
+    # S14 -- the user clicked the X on a chip before sending. Remove
+    # the unbound row + delete the file from disk. Bound rows (already
+    # tied to a recorded turn) are left untouched.
+    ids_raw = (msg.get("data") or {}).get("attachment_ids") or []
+    ids: list[int] = []
+    for raw in ids_raw:
+        try:
+            ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if ids:
+        try:
+            _attachments.drop_unbound(ids)
+        except Exception:
+            logger.exception("[cerebral] drop_unbound failed (ids=%s)", ids)
+
+
+@_message_handler("list_pending_attachments")
+async def _msg_list_pending_attachments(msg: dict) -> None:
+    # S14 -- on reconnect the renderer asks for any uploaded-but-not-sent
+    # chips so the chip row survives a WS bounce without losing context.
+    if _active_profile is not None:
+        try:
+            pending = _attachments.list_pending(_active_profile.id)
+        except Exception:
+            pending = []
+        await _broadcast({
+            "type": "pending_attachments_state",
+            "data": {"attachments": attachments_payload(pending)},
+        })
+
+
+@_message_handler("list_conversation_turns")
+async def _msg_list_conversation_turns(msg: dict) -> None:
+    # Issue #185 / ADR-0007 -- Main window requesting its initial
+    # transcript snapshot (last 50 by default). Sent on window open
+    # and on profile switch so the chat reflects the active identity.
+    limit_raw = (msg.get("data") or {}).get("limit", 50)
+    try:
+        limit = int(limit_raw)
+    except (TypeError, ValueError):
+        limit = 50
+    await _broadcast(_conversation_turns_event(limit=limit))
+
+
+@_message_handler("list_conversation_threads")
+async def _msg_list_conversation_threads(msg: dict) -> None:
+    # S9 / #292 -- Main window asking for the active profile's threads
+    # plus the current active thread id (so it can render the title strip).
+    await _broadcast(_threads_list_event())
+
+
+@_message_handler("new_conversation_thread")
+async def _msg_new_conversation_thread(msg: dict) -> None:
+    # S9 / #292 -- "New conversation" button. Create an empty, untitled
+    # thread, mark it active, and snapshot the (empty) turns so the
+    # transcript clears.
+    if _active_profile is not None:
+        thread = _conversation.create_thread(_active_profile.id, title="")
+        _active_thread_by_profile[_active_profile.id] = thread.id
+        await _broadcast(_threads_list_event())
+        await _broadcast(_conversation_turns_event())
+
+
+@_message_handler("switch_conversation_thread")
+async def _msg_switch_conversation_thread(msg: dict) -> None:
+    # S9 / #292 -- Conversations pane / future thread switcher. Activate
+    # the named thread (must belong to the active profile) and snapshot.
+    thread_id_raw = (msg.get("data") or {}).get("thread_id")
+    if _active_profile is not None and thread_id_raw is not None:
+        try:
+            tid = int(thread_id_raw)
+        except (TypeError, ValueError):
+            tid = None
+        if tid is not None:
+            thread = _conversation.get_thread(tid)
+            if thread is not None and thread.profile_id == _active_profile.id:
+                _active_thread_by_profile[_active_profile.id] = tid
+                await _broadcast(_threads_list_event())
+                await _broadcast(_conversation_turns_event())
+
+
+@_message_handler("rename_conversation_thread")
+async def _msg_rename_conversation_thread(msg: dict) -> None:
+    # S9 / #292 -- editable auto-title. Empty title is allowed (so a
+    # later felix_speech can re-derive the auto-title).
+    d = msg.get("data") or {}
+    thread_id_raw = d.get("thread_id")
+    title = d.get("title", "")
+    if _active_profile is not None and thread_id_raw is not None and isinstance(title, str):
+        try:
+            tid = int(thread_id_raw)
+        except (TypeError, ValueError):
+            tid = None
+        if tid is not None:
+            thread = _conversation.get_thread(tid)
+            if thread is not None and thread.profile_id == _active_profile.id:
+                _conversation.rename_thread(tid, title.strip()[:200])
+                await _broadcast(_threads_list_event())
+
+
+@_message_handler("delete_conversation_thread")
+async def _msg_delete_conversation_thread(msg: dict) -> None:
+    # S10 / #293 -- Delete a thread and all its turns. If the deleted
+    # thread was the active one, drop the cache entry so the next
+    # resolve picks the newest remaining thread (or creates a fresh one
+    # on the next new-turn call).
+    thread_id_raw = (msg.get("data") or {}).get("thread_id")
+    if _active_profile is not None and thread_id_raw is not None:
+        try:
+            tid = int(thread_id_raw)
+        except (TypeError, ValueError):
+            tid = None
+        if tid is not None:
+            thread = _conversation.get_thread(tid)
+            if thread is not None and thread.profile_id == _active_profile.id:
+                _conversation.delete_thread(tid)
+                if _active_thread_by_profile.get(_active_profile.id) == tid:
+                    _active_thread_by_profile.pop(_active_profile.id, None)
+                await _broadcast(_threads_list_event())
+                await _broadcast(_conversation_turns_event())
+
+
+@_message_handler("search_conversations")
+async def _msg_search_conversations(msg: dict) -> None:
+    # S10 / #293 -- Full-text search through thread titles and turn
+    # content. Returns matching threads (with turn_count) so the
+    # Conversations pane can replace its list with search results.
+    query = (msg.get("data") or {}).get("query", "")
+    if _active_profile is not None and isinstance(query, str) and query.strip():
+        results = _conversation.search_threads(_active_profile.id, query.strip())
+    else:
+        results = []
+    await _broadcast({
+        "type": "conversation_search_results",
+        "data": {"query": query if isinstance(query, str) else "", "results": results},
+    })
+
+
+@_message_handler("list_conversation_projects")
+async def _msg_list_conversation_projects(msg: dict) -> None:
+    # S11 / #294 -- Main window asking for the active profile's project
+    # folders so it can render the Conversations groups.
+    await _broadcast(_projects_list_event())
+
+
+@_message_handler("create_conversation_project")
+async def _msg_create_conversation_project(msg: dict) -> None:
+    # S11 / #294 -- create a new project folder. Empty names are
+    # permitted so the UI can render an "Untitled project" row and
+    # let the user rename inline.
+    name = (msg.get("data") or {}).get("name", "")
+    if _active_profile is not None and isinstance(name, str):
+        _conversation.create_project(_active_profile.id, name.strip()[:200])
         await _broadcast(_projects_list_event())
 
-    elif t == "create_conversation_project":
-        # S11 / #294 -- create a new project folder. Empty names are
-        # permitted so the UI can render an "Untitled project" row and
-        # let the user rename inline.
-        name = (msg.get("data") or {}).get("name", "")
-        if _active_profile is not None and isinstance(name, str):
-            _conversation.create_project(_active_profile.id, name.strip()[:200])
-            await _broadcast(_projects_list_event())
 
-    elif t == "rename_conversation_project":
-        # S11 / #294 -- rename, scoped to the active profile so a forged
-        # project_id from another profile can't be touched.
-        d = msg.get("data") or {}
-        project_id_raw = d.get("project_id")
-        name = d.get("name", "")
-        if _active_profile is not None and project_id_raw is not None and isinstance(name, str):
-            try:
-                pid = int(project_id_raw)
-            except (TypeError, ValueError):
-                pid = None
-            if pid is not None:
-                project = _conversation.get_project(pid)
-                if project is not None and project.profile_id == _active_profile.id:
-                    _conversation.rename_project(pid, name.strip()[:200])
-                    await _broadcast(_projects_list_event())
-
-    elif t == "delete_conversation_project":
-        # S11 / #294 -- delete the folder. Threads inside fall back to
-        # Unfiled (project_id = NULL); they are NOT deleted (acceptance
-        # criterion). Re-broadcast threads so the UI re-groups them.
-        project_id_raw = (msg.get("data") or {}).get("project_id")
-        if _active_profile is not None and project_id_raw is not None:
-            try:
-                pid = int(project_id_raw)
-            except (TypeError, ValueError):
-                pid = None
-            if pid is not None:
-                project = _conversation.get_project(pid)
-                if project is not None and project.profile_id == _active_profile.id:
-                    _conversation.delete_project(pid)
-                    await _broadcast(_projects_list_event())
-                    await _broadcast(_threads_list_event())
-
-    elif t == "move_conversation_thread":
-        # S11 / #294 -- move a thread to a project (or to Unfiled when
-        # project_id is None). Both thread and project (if any) must
-        # belong to the active profile.
-        d = msg.get("data") or {}
-        thread_id_raw = d.get("thread_id")
-        project_id_raw = d.get("project_id")  # may be None for Unfiled
-        if _active_profile is not None and thread_id_raw is not None:
-            try:
-                tid = int(thread_id_raw)
-            except (TypeError, ValueError):
-                tid = None
-            pid: int | None
-            if project_id_raw is None:
-                pid = None
-            else:
-                try:
-                    pid = int(project_id_raw)
-                except (TypeError, ValueError):
-                    pid = None
-                    tid = None  # bad payload -> bail
-            if tid is not None:
-                thread = _conversation.get_thread(tid)
-                if thread is not None and thread.profile_id == _active_profile.id:
-                    ok = True
-                    if pid is not None:
-                        project = _conversation.get_project(pid)
-                        if project is None or project.profile_id != _active_profile.id:
-                            ok = False
-                    if ok:
-                        _conversation.move_thread_to_project(tid, pid)
-                        await _broadcast(_threads_list_event())
-
-    elif t == "set_thread_model":
-        # S13 / #296 -- pin or clear a model override on a thread. Passing
-        # model_id="" or null clears the override (falls back to global).
-        d = msg.get("data") or {}
-        thread_id_raw = d.get("thread_id")
-        model_id_raw  = d.get("model_id")  # str or None
-        if _active_profile is not None and thread_id_raw is not None:
-            try:
-                tid = int(thread_id_raw)
-            except (TypeError, ValueError):
-                tid = None
-            if tid is not None:
-                thread = _conversation.get_thread(tid)
-                if thread is not None and thread.profile_id == _active_profile.id:
-                    override = (model_id_raw or "").strip() or None
-                    _conversation.set_thread_model_override(tid, override)
-                    await _broadcast(_threads_list_event())
-
-    elif t == "list_queue":
-        await _broadcast(_queue_update_event())
-
-    elif t == "approve_item":
-        item_id = msg.get("data", {}).get("item_id", "")
-        item = _queue.approve_item(item_id)
-        if item is None:
-            logger.warning("[cerebral] approve_item: unknown id %s", item_id)
-            return
-        logger.info("[cerebral] Queue item approved: %s", item.title)
-        # ADR-0013 decision 4: only tool-bearing proposals feed insight
-        # signals. Notification-class entries (tool_name=None) produced noise
-        # like "Felix often handles 'Discord DM from iggyphi' actions".
-        eng = _get_insights()
-        if eng and item.tool_name:
-            eng.record_signal("approve", item.title, tool_name=item.tool_name)
-            new_insight = eng.maybe_create_insight(item.title, tool_name=item.tool_name)
-            if new_insight:
-                logger.info("[cerebral] New insight: %s", new_insight.description)
-                await _broadcast(_insights_update_event())
-        # Execute the associated tool if one was recorded.
-        #
-        # Issue #52 — queue-originated calls run with ``passive=True`` so the
-        # ACL escalates SILENT → ASK and ASK → DENY, defeating any session or
-        # persistent grant the user holds on the class. The check runs across
-        # ALL of the plugin's declared capabilities (AND semantics) before
-        # dispatching exactly once. ``check_capabilities`` IS the gate for
-        # this call — we dispatch via ``call_tool`` without a capability so
-        # the consent surface isn't prompted a second time.
-        if item.tool_name:
-            plugin_name = _orc.plugin_for_tool(item.tool_name)
-            caps = (
-                _orc.required_capabilities_for(plugin_name)
-                if plugin_name is not None
-                else None
-            )
-            caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
-            if caps:
-                decision = await _orc.check_capabilities(
-                    item.tool_name, caps, CallFlags(passive=True),
-                    getattr(item, "tool_args", None),
-                )
-            else:
-                # No declared capabilities (legacy register() path or
-                # capability-free tool) → no gate constraint; dispatch.
-                decision = Decision.SILENT
-
-            if decision is Decision.SILENT:
-                # ``check_capabilities`` already routed through ACL +
-                # consent. Dispatch without re-invoking the gate inside
-                # ``call_tool`` (capability=None, flags=None).
-                result = await _orc.call_tool(
-                    item.tool_name, item.tool_args or {},
-                )
-            else:
-                # ASK is never returned (check_capabilities collapses it to
-                # SILENT or DENY); treat everything non-SILENT as a refusal.
-                logger.info(
-                    "[cerebral] Queue approval denied: %s (decision=%s)",
-                    item.tool_name, decision.value,
-                )
-                result = ToolResult(
-                    content=(
-                        f"Denied: '{item.tool_name}' was refused by the "
-                        f"capability gate (decision: {decision.value})"
-                    ),
-                    is_error=True,
-                )
-
-            logger.info("[cerebral] Tool result for %s: %s", item.tool_name, result.content[:80])
-            await _broadcast({
-                "type": "queue_item_result",
-                "data": {
-                    "item_id": item_id,
-                    "result": result.content,
-                    "is_error": result.is_error,
-                },
-            })
-        if item.kind == KIND_MEMORY_PROPOSAL:
-            fact = (item.tool_args or {}).get("fact", "")
-            mem = _get_memory()
-            if fact and mem:
-                await mem.remember(fact)
-                await _broadcast(_memory_update_event())
-        if item.kind == KIND_RECIPE_PROPOSAL:
-            steps = (item.tool_args or {}).get("steps", [])
-            name = (item.tool_args or {}).get("name", "Saved Recipe")
-            if steps and _active_profile is not None:
-                try:
-                    _recipe_store.save(_active_profile.id, name, steps)
-                    await _broadcast(_recipes_update_event())
-                except ValueError as exc:
-                    logger.warning("[cerebral] recipe proposal save failed: %s", exc)
-        await _broadcast(_queue_update_event())
-
-    elif t == "remember":
-        fact = msg.get("data", {}).get("fact", "")
-        mem = _get_memory()
-        if fact and mem:
-            memory_id = await mem.remember(fact)
-            await _broadcast({"type": "memory_stored", "data": {"id": memory_id, "fact": fact}})
-
-    elif t == "recall":
-        query = msg.get("data", {}).get("query", "")
-        mem = _get_memory()
-        if query and mem:
-            memories = await mem.recall(query)
-            await _broadcast({
-                "type": "memory_results",
-                "data": {"memories": [
-                    {"id": m.id, "fact": m.fact, "distance": m.distance}
-                    for m in memories
-                ]},
-            })
-
-    elif t == "forget":
-        memory_id = msg.get("data", {}).get("memory_id", "")
-        mem = _get_memory()
-        if memory_id and mem:
-            ok = await mem.forget(memory_id)
-            await _broadcast({"type": "memory_forgotten", "data": {"id": memory_id, "ok": ok}})
-
-    elif t == "dismiss_item":
-        item_id = msg.get("data", {}).get("item_id", "")
-        item = _queue.get_item(item_id)
-        ok = _queue.dismiss_item(item_id)
-        if not ok:
-            logger.warning("[cerebral] dismiss_item: unknown id %s", item_id)
-            return
-        logger.info("[cerebral] Queue item dismissed: %s", item_id)
-        # ADR-0013 decision 4: gate at the shared dismiss site, not per
-        # caller -- the legacy Discord-notification path routes here too.
-        if item and item.tool_name:
-            eng = _get_insights()
-            if eng:
-                eng.record_signal("dismiss", item.title, tool_name=item.tool_name)
-                new_insight = eng.maybe_create_insight(item.title, tool_name=item.tool_name)
-                if new_insight:
-                    logger.info("[cerebral] New insight: %s", new_insight.description)
-                    await _broadcast(_insights_update_event())
-        if item and item.kind == KIND_RECIPE_PROPOSAL:
-            fp = (item.tool_args or {}).get("fingerprint", "")
-            if fp:
-                _proposed_chains.add(fp)
-        await _broadcast(_queue_update_event())
-
-    elif t == "list_insights":
-        await _broadcast(_insights_update_event())
-
-    elif t == "delete_insight":
-        insight_id = msg.get("data", {}).get("insight_id", "")
-        eng = _get_insights()
-        ok = eng.delete_insight(insight_id) if eng else False
-        if ok:
-            await _broadcast(_insights_update_event())
-        await _broadcast({"type": "insight_deleted", "data": {"id": insight_id, "ok": ok}})
-
-    elif t == "pin_insight":
-        insight_id = msg.get("data", {}).get("insight_id", "")
-        eng = _get_insights()
-        ok = eng.pin_insight(insight_id) if eng else False
-        if ok:
-            await _broadcast(_insights_update_event())
-
-    elif t == "edit_insight":
-        d = msg.get("data", {})
-        insight_id = d.get("insight_id", "")
-        description = d.get("description", "")
-        eng = _get_insights()
-        ok = eng.edit_insight(insight_id, description) if eng else False
-        if ok:
-            await _broadcast(_insights_update_event())
-
-    elif t == "list_memories":
-        await _broadcast(_memory_update_event())
-
-    elif t == "edit_memory":
-        d = msg.get("data", {})
-        mgr = _get_memory()
-        ok = await mgr.edit(d.get("memory_id", ""), d.get("fact", "")) if mgr else False
-        if ok:
-            await _broadcast(_memory_update_event())
-
-    elif t == "delete_memory":
-        mgr = _get_memory()
-        ok = await mgr.forget(msg.get("data", {}).get("memory_id", "")) if mgr else False
-        if ok:
-            await _broadcast(_memory_update_event())
-
-    elif t == "list_recipes":
-        await _broadcast(_recipes_update_event())
-
-    elif t == "list_job_postings":  # S1 #334
-        await _broadcast(_jobs_update_event())
-
-    elif t == "jobs_fetch_postings":  # S1 #334 — tray "Check for new jobs" button
-        # #403 — backgrounded; auto-score (S3 #336) happens inside the task.
-        asyncio.create_task(_run_jobs_fetch())
-
-    elif t == "jobs_get_dossier":  # S2 #335 — tray requests current dossier
-        await _broadcast(_jobs_update_event())
-
-    elif t == "jobs_score_shortlist":  # S3 #336 — score unscored postings
-        # #403 — the ~100-LLM-call scoring loop must not block this
-        # connection's IPC read loop; backgrounded like the panel-apply lane.
-        asyncio.create_task(_run_jobs_score())
-
-    elif t == "jobs_set_approval":  # S3 #336 — approve/reject a shortlist entry
-        d = msg.get("data", {})
+@_message_handler("rename_conversation_project")
+async def _msg_rename_conversation_project(msg: dict) -> None:
+    # S11 / #294 -- rename, scoped to the active profile so a forged
+    # project_id from another profile can't be touched.
+    d = msg.get("data") or {}
+    project_id_raw = d.get("project_id")
+    name = d.get("name", "")
+    if _active_profile is not None and project_id_raw is not None and isinstance(name, str):
         try:
-            await _orc.call_tool("jobs_set_approval", {
-                "url": d.get("url", ""),
-                "approved": bool(d.get("approved")),
-            })
-        except Exception as exc:
-            logger.warning("[cerebral] jobs_set_approval failed: %s", exc)
-        await _broadcast(_jobs_update_event())
+            pid = int(project_id_raw)
+        except (TypeError, ValueError):
+            pid = None
+        if pid is not None:
+            project = _conversation.get_project(pid)
+            if project is not None and project.profile_id == _active_profile.id:
+                _conversation.rename_project(pid, name.strip()[:200])
+                await _broadcast(_projects_list_event())
 
-    elif t == "jobs_apply_start":  # S4 #337 / S8 #413 / #417 — fill ATS form
-        d = msg.get("data", {})
-        asyncio.create_task(_run_panel_apply(d.get("url", "")))
 
-    elif t == "jobs_apply_submit":  # S4 #337 / #417 — submit pending application
-        asyncio.create_task(_run_panel_submit())
+@_message_handler("delete_conversation_project")
+async def _msg_delete_conversation_project(msg: dict) -> None:
+    # S11 / #294 -- delete the folder. Threads inside fall back to
+    # Unfiled (project_id = NULL); they are NOT deleted (acceptance
+    # criterion). Re-broadcast threads so the UI re-groups them.
+    project_id_raw = (msg.get("data") or {}).get("project_id")
+    if _active_profile is not None and project_id_raw is not None:
+        try:
+            pid = int(project_id_raw)
+        except (TypeError, ValueError):
+            pid = None
+        if pid is not None:
+            project = _conversation.get_project(pid)
+            if project is not None and project.profile_id == _active_profile.id:
+                _conversation.delete_project(pid)
+                await _broadcast(_projects_list_event())
+                await _broadcast(_threads_list_event())
 
-    elif t == "jobs_approve_all":  # S7 #412 — approve a batch of URLs (visible subset)
-        urls = msg.get("data", {}).get("urls") or []
-        for u in urls:
-            _job_search_store.set_status(u, "shortlisted")
-        await _broadcast(_jobs_update_event())
 
-    elif t == "self_dev_pr_merge":  # #810 -- in-chat "Approve & Merge" card button
-        # Direct WS-IPC dispatcher case, no LLM in the path -- ADR-0015
-        # amendment 3 (2026-08-21): merge authority is a structural human-
-        # click-only gate. This branch, the renderer's click handler, and
-        # SelfDevPlugin._merge/_load are the ONLY places self_dev_pr_merge
-        # may appear; it must never be a Tool(...) or planner-reachable.
-        d = msg.get("data", {})
-        pr_url = str(d.get("pr_url", "")).strip()
-        plugin = _orc._plugins.get("self_dev")
-        if not pr_url or plugin is None:
-            await _broadcast({
-                "type": "self_dev_pr_merge_result",
-                "data": {
-                    "pr_url": pr_url,
-                    "status": "error",
-                    "error": "pr_url required" if not pr_url else "self_dev plugin unavailable",
-                },
-            })
+@_message_handler("move_conversation_thread")
+async def _msg_move_conversation_thread(msg: dict) -> None:
+    # S11 / #294 -- move a thread to a project (or to Unfiled when
+    # project_id is None). Both thread and project (if any) must
+    # belong to the active profile.
+    d = msg.get("data") or {}
+    thread_id_raw = d.get("thread_id")
+    project_id_raw = d.get("project_id")  # may be None for Unfiled
+    if _active_profile is not None and thread_id_raw is not None:
+        try:
+            tid = int(thread_id_raw)
+        except (TypeError, ValueError):
+            tid = None
+        pid: int | None
+        if project_id_raw is None:
+            pid = None
         else:
             try:
-                await asyncio.to_thread(plugin._merge, pr_url)
-            except Exception as exc:
-                logger.warning("[cerebral] self_dev_pr_merge failed: %s", exc)
-                await _broadcast({
-                    "type": "self_dev_pr_merge_result",
-                    "data": {"pr_url": pr_url, "status": "error", "error": str(exc)},
-                })
-            else:
-                # Merge already succeeded at this point -- a load (pull +
-                # restart) failure is a secondary concern reported alongside
-                # "merged", not an overall failure (the card must not offer
-                # to merge an already-merged PR again).
-                load_result = await plugin._load({"pr_url": pr_url})
-                result_data = {"pr_url": pr_url, "status": "merged"}
-                if load_result.is_error:
-                    result_data["load_error"] = load_result.content
-                await _broadcast({"type": "self_dev_pr_merge_result", "data": result_data})
+                pid = int(project_id_raw)
+            except (TypeError, ValueError):
+                pid = None
+                tid = None  # bad payload -> bail
+        if tid is not None:
+            thread = _conversation.get_thread(tid)
+            if thread is not None and thread.profile_id == _active_profile.id:
+                ok = True
+                if pid is not None:
+                    project = _conversation.get_project(pid)
+                    if project is None or project.profile_id != _active_profile.id:
+                        ok = False
+                if ok:
+                    _conversation.move_thread_to_project(tid, pid)
+                    await _broadcast(_threads_list_event())
 
-    elif t == "self_dev_pr_state":  # #810 -- card asks whether its PR is still open
-        d = msg.get("data", {})
-        pr_url = str(d.get("pr_url", "")).strip()
-        plugin = _orc._plugins.get("self_dev")
-        if pr_url and plugin is not None:
-            try:
-                state = await asyncio.to_thread(plugin.pr_state, pr_url)
-            except Exception as exc:
-                # Fail open -- a transient gh/network hiccup must not hide a
-                # still-actionable card. Just skip the broadcast; the button
-                # stays as-is until the next successful check.
-                logger.debug("[cerebral] self_dev_pr_state check failed: %s", exc)
-            else:
-                await _broadcast({
-                    "type": "self_dev_pr_state_result",
-                    "data": {"pr_url": pr_url, "state": state},
-                })
 
-    elif t == "jobs_clear_postings":  # #517 — panel "Clear postings" button
-        n = _job_search_store.clear_postings()
-        logger.info("[cerebral] cleared %d job postings", n)
-        await _broadcast(_jobs_update_event())
-
-    elif t == "open_felix":  # #441 — launcher asks the tray to surface the window
-        await _broadcast({"type": "open_felix", "data": {}})
-
-    elif t == "jobs_answer_fields":  # #431 — save needs-info answers, retry the apply
-        d = msg.get("data", {})
-        url = d.get("url", "")
-        answers = [
-            a for a in d.get("answers", [])
-            if isinstance(a, dict) and str(a.get("value") or "").strip()
-        ]
-        if _active_profile:
-            for a in answers:
-                # Answer bank (#427): also auto-fills future applications that
-                # ask a semantically-similar question.
-                await _jobs_index_answer(
-                    _active_profile.id,
-                    str(a.get("label", "")).strip(),
-                    str(a["value"]).strip(),
-                )
-        if url:
-            asyncio.create_task(_run_panel_apply(url))
-
-    elif t == "jobs_apply_all":  # #419 / #421 — apply to approved postings (batched)
-        d = msg.get("data", {})
+@_message_handler("set_thread_model")
+async def _msg_set_thread_model(msg: dict) -> None:
+    # S13 / #296 -- pin or clear a model override on a thread. Passing
+    # model_id="" or null clears the override (falls back to global).
+    d = msg.get("data") or {}
+    thread_id_raw = d.get("thread_id")
+    model_id_raw  = d.get("model_id")  # str or None
+    if _active_profile is not None and thread_id_raw is not None:
         try:
-            limit = int(d.get("limit", 100))
+            tid = int(thread_id_raw)
         except (TypeError, ValueError):
-            limit = 100
-        asyncio.create_task(_run_panel_apply_all(limit))
+            tid = None
+        if tid is not None:
+            thread = _conversation.get_thread(tid)
+            if thread is not None and thread.profile_id == _active_profile.id:
+                override = (model_id_raw or "").strip() or None
+                _conversation.set_thread_model_override(tid, override)
+                await _broadcast(_threads_list_event())
 
-    elif t == "jobs_set_auto_submit":  # S7 #340 — toggle auto-submit opt-in (ADR-0009)
-        d = msg.get("data", {})
-        try:
-            await _orc.call_tool("jobs_set_auto_submit", {
-                "enabled": bool(d.get("enabled")),
-            })
-        except Exception as exc:
-            logger.warning("[cerebral] jobs_set_auto_submit failed: %s", exc)
-        await _broadcast(_jobs_update_event())
 
-    elif t == "jobs_update_dossier_field":  # S1 #452 — inline-edit one dossier field
-        d = msg.get("data", {})
-        try:
-            await _orc.call_tool("jobs_update_dossier_field", {
-                "field": str(d.get("field", "")),
-                "value": str(d.get("value", "")),
-            })
-        except Exception as exc:
-            logger.warning("[cerebral] jobs_update_dossier_field failed: %s", exc)
-        await _broadcast(_jobs_update_event())
+@_message_handler("list_queue")
+async def _msg_list_queue(msg: dict) -> None:
+    await _broadcast(_queue_update_event())
 
-    elif t == "list_job_boards":  # S1 #396 — tray requests current board list
-        await _broadcast(_jobs_update_event())
 
-    elif t == "add_job_board":  # S1 #396 — add a new board URL
-        d = msg.get("data", {})
-        url = (d.get("url") or "").strip()
-        label = (d.get("label") or "").strip()
-        if url:
-            try:
-                _job_search_store.add_board(url, label)
-            except Exception as exc:
-                logger.warning("[cerebral] add_job_board failed: %s", exc)
-        await _broadcast(_jobs_update_event())
+@_message_handler("approve_item")
+async def _msg_approve_item(msg: dict) -> None:
+    item_id = msg.get("data", {}).get("item_id", "")
+    item = _queue.approve_item(item_id)
+    if item is None:
+        logger.warning("[cerebral] approve_item: unknown id %s", item_id)
+        return
+    logger.info("[cerebral] Queue item approved: %s", item.title)
+    # ADR-0013 decision 4: only tool-bearing proposals feed insight
+    # signals. Notification-class entries (tool_name=None) produced noise
+    # like "Felix often handles 'Discord DM from iggyphi' actions".
+    eng = _get_insights()
+    if eng and item.tool_name:
+        eng.record_signal("approve", item.title, tool_name=item.tool_name)
+        new_insight = eng.maybe_create_insight(item.title, tool_name=item.tool_name)
+        if new_insight:
+            logger.info("[cerebral] New insight: %s", new_insight.description)
+            await _broadcast(_insights_update_event())
+    # Execute the associated tool if one was recorded.
+    #
+    # Issue #52 — queue-originated calls run with ``passive=True`` so the
+    # ACL escalates SILENT → ASK and ASK → DENY, defeating any session or
+    # persistent grant the user holds on the class. The check runs across
+    # ALL of the plugin's declared capabilities (AND semantics) before
+    # dispatching exactly once. ``check_capabilities`` IS the gate for
+    # this call — we dispatch via ``call_tool`` without a capability so
+    # the consent surface isn't prompted a second time.
+    if item.tool_name:
+        plugin_name = _orc.plugin_for_tool(item.tool_name)
+        caps = (
+            _orc.required_capabilities_for(plugin_name)
+            if plugin_name is not None
+            else None
+        )
+        caps = _computer_use_effective_caps(plugin_name, caps)  # S16 #610
+        if caps:
+            decision = await _orc.check_capabilities(
+                item.tool_name, caps, CallFlags(passive=True),
+                getattr(item, "tool_args", None),
+            )
+        else:
+            # No declared capabilities (legacy register() path or
+            # capability-free tool) → no gate constraint; dispatch.
+            decision = Decision.SILENT
 
-    elif t == "remove_job_board":  # S1 #396 — remove a board by URL
-        d = msg.get("data", {})
-        url = (d.get("url") or "").strip()
-        if url:
-            _job_search_store.remove_board(url)
-        await _broadcast(_jobs_update_event())
+        if decision is Decision.SILENT:
+            # ``check_capabilities`` already routed through ACL +
+            # consent. Dispatch without re-invoking the gate inside
+            # ``call_tool`` (capability=None, flags=None).
+            # gate-exempt: gated above via check_capabilities (approve_item queue overlay)
+            result = await _orc.call_tool(
+                item.tool_name, item.tool_args or {},
+                capability=GATE_EXEMPT,
+            )
+        else:
+            # ASK is never returned (check_capabilities collapses it to
+            # SILENT or DENY); treat everything non-SILENT as a refusal.
+            logger.info(
+                "[cerebral] Queue approval denied: %s (decision=%s)",
+                item.tool_name, decision.value,
+            )
+            result = ToolResult(
+                content=(
+                    f"Denied: '{item.tool_name}' was refused by the "
+                    f"capability gate (decision: {decision.value})"
+                ),
+                is_error=True,
+            )
 
-    elif t == "set_job_board_enabled":  # S1 #396 — enable/disable a board
-        d = msg.get("data", {})
-        url = (d.get("url") or "").strip()
-        if url:
-            _job_search_store.set_board_enabled(url, bool(d.get("enabled", True)))
-        await _broadcast(_jobs_update_event())
-
-    elif t == "save_recipe":
-        d = msg.get("data", {})
-        name = d.get("name", "").strip()
-        steps = d.get("steps") or []
-        if _active_profile and name and len(steps) >= 2:
+        logger.info("[cerebral] Tool result for %s: %s", item.tool_name, result.content[:80])
+        await _broadcast({
+            "type": "queue_item_result",
+            "data": {
+                "item_id": item_id,
+                "result": result.content,
+                "is_error": result.is_error,
+            },
+        })
+    if item.kind == KIND_MEMORY_PROPOSAL:
+        fact = (item.tool_args or {}).get("fact", "")
+        mem = _get_memory()
+        if fact and mem:
+            await mem.remember(fact)
+            await _broadcast(_memory_update_event())
+    if item.kind == KIND_RECIPE_PROPOSAL:
+        steps = (item.tool_args or {}).get("steps", [])
+        name = (item.tool_args or {}).get("name", "Saved Recipe")
+        if steps and _active_profile is not None:
             try:
                 _recipe_store.save(_active_profile.id, name, steps)
                 await _broadcast(_recipes_update_event())
             except ValueError as exc:
-                logger.warning("[cerebral] save_recipe rejected: %s", exc)
+                logger.warning("[cerebral] recipe proposal save failed: %s", exc)
+    await _broadcast(_queue_update_event())
 
-    elif t == "rename_recipe":
-        d = msg.get("data", {})
-        recipe_id = d.get("recipe_id")
-        new_name = (d.get("name") or "").strip()
-        if recipe_id and new_name:
-            ok = _recipe_store.rename(recipe_id, new_name)
-            if ok:
-                await _broadcast(_recipes_update_event())
 
-    elif t == "delete_recipe":
-        recipe_id = msg.get("data", {}).get("recipe_id")
-        if recipe_id:
-            ok = _recipe_store.delete(recipe_id)
-            if ok:
-                await _broadcast(_recipes_update_event())
+@_message_handler("remember")
+async def _msg_remember(msg: dict) -> None:
+    fact = msg.get("data", {}).get("fact", "")
+    mem = _get_memory()
+    if fact and mem:
+        memory_id = await mem.remember(fact)
+        await _broadcast({"type": "memory_stored", "data": {"id": memory_id, "fact": fact}})
 
-    elif t == "run_recipe":
-        recipe_id = msg.get("data", {}).get("recipe_id")
-        if recipe_id and _active_profile:
-            recipe = _recipe_store.get(recipe_id)
-            if recipe is not None:
-                result = await _replay_recipe(recipe.synthetic_tool_name, _active_profile.id)
-                await _broadcast({
-                    "type": "recipe_run_result",
-                    "data": {
-                        "recipe_id": recipe_id,
-                        "ok": not result.is_error,
-                        "message": result.content,
-                    },
-                })
 
-    elif t == "list_settings":
-        await _broadcast(_settings_state_event())
+@_message_handler("recall")
+async def _msg_recall(msg: dict) -> None:
+    query = msg.get("data", {}).get("query", "")
+    mem = _get_memory()
+    if query and mem:
+        memories = await mem.recall(query)
+        await _broadcast({
+            "type": "memory_results",
+            "data": {"memories": [
+                {"id": m.id, "fact": m.fact, "distance": m.distance}
+                for m in memories
+            ]},
+        })
 
-    elif t == "set_setting":
-        d = msg.get("data") or {}
-        key   = d.get("key")
-        value = d.get("value")
+
+@_message_handler("forget")
+async def _msg_forget(msg: dict) -> None:
+    memory_id = msg.get("data", {}).get("memory_id", "")
+    mem = _get_memory()
+    if memory_id and mem:
+        ok = await mem.forget(memory_id)
+        await _broadcast({"type": "memory_forgotten", "data": {"id": memory_id, "ok": ok}})
+
+
+@_message_handler("dismiss_item")
+async def _msg_dismiss_item(msg: dict) -> None:
+    item_id = msg.get("data", {}).get("item_id", "")
+    item = _queue.get_item(item_id)
+    ok = _queue.dismiss_item(item_id)
+    if not ok:
+        logger.warning("[cerebral] dismiss_item: unknown id %s", item_id)
+        return
+    logger.info("[cerebral] Queue item dismissed: %s", item_id)
+    # ADR-0013 decision 4: gate at the shared dismiss site, not per
+    # caller -- the legacy Discord-notification path routes here too.
+    if item and item.tool_name:
+        eng = _get_insights()
+        if eng:
+            eng.record_signal("dismiss", item.title, tool_name=item.tool_name)
+            new_insight = eng.maybe_create_insight(item.title, tool_name=item.tool_name)
+            if new_insight:
+                logger.info("[cerebral] New insight: %s", new_insight.description)
+                await _broadcast(_insights_update_event())
+    if item and item.kind == KIND_RECIPE_PROPOSAL:
+        fp = (item.tool_args or {}).get("fingerprint", "")
+        if fp:
+            _proposed_chains.add(fp)
+    await _broadcast(_queue_update_event())
+
+
+@_message_handler("list_insights")
+async def _msg_list_insights(msg: dict) -> None:
+    await _broadcast(_insights_update_event())
+
+
+@_message_handler("delete_insight")
+async def _msg_delete_insight(msg: dict) -> None:
+    insight_id = msg.get("data", {}).get("insight_id", "")
+    eng = _get_insights()
+    ok = eng.delete_insight(insight_id) if eng else False
+    if ok:
+        await _broadcast(_insights_update_event())
+    await _broadcast({"type": "insight_deleted", "data": {"id": insight_id, "ok": ok}})
+
+
+@_message_handler("pin_insight")
+async def _msg_pin_insight(msg: dict) -> None:
+    insight_id = msg.get("data", {}).get("insight_id", "")
+    eng = _get_insights()
+    ok = eng.pin_insight(insight_id) if eng else False
+    if ok:
+        await _broadcast(_insights_update_event())
+
+
+@_message_handler("edit_insight")
+async def _msg_edit_insight(msg: dict) -> None:
+    d = msg.get("data", {})
+    insight_id = d.get("insight_id", "")
+    description = d.get("description", "")
+    eng = _get_insights()
+    ok = eng.edit_insight(insight_id, description) if eng else False
+    if ok:
+        await _broadcast(_insights_update_event())
+
+
+@_message_handler("list_memories")
+async def _msg_list_memories(msg: dict) -> None:
+    await _broadcast(_memory_update_event())
+
+
+@_message_handler("edit_memory")
+async def _msg_edit_memory(msg: dict) -> None:
+    d = msg.get("data", {})
+    mgr = _get_memory()
+    ok = await mgr.edit(d.get("memory_id", ""), d.get("fact", "")) if mgr else False
+    if ok:
+        await _broadcast(_memory_update_event())
+
+
+@_message_handler("delete_memory")
+async def _msg_delete_memory(msg: dict) -> None:
+    mgr = _get_memory()
+    ok = await mgr.forget(msg.get("data", {}).get("memory_id", "")) if mgr else False
+    if ok:
+        await _broadcast(_memory_update_event())
+
+
+@_message_handler("move_memory_category")
+async def _msg_move_memory_category(msg: dict) -> None:
+    d = msg.get("data", {})
+    mgr = _get_memory()
+    ok = await mgr.set_category(d.get("memory_id", ""), d.get("category", "")) if mgr else False
+    if ok:
+        await _broadcast(_memory_update_event())
+
+
+@_message_handler("reorder_memory")
+async def _msg_reorder_memory(msg: dict) -> None:
+    d = msg.get("data", {})
+    mgr = _get_memory()
+    ok = await mgr.set_order(d.get("memory_id", ""), float(d.get("order", 0))) if mgr else False
+    if ok:
+        await _broadcast(_memory_update_event())
+
+
+@_message_handler("duplicate_memory")
+async def _msg_duplicate_memory(msg: dict) -> None:
+    d = msg.get("data", {})
+    mgr = _get_memory()
+    new_id = await mgr.duplicate(d.get("memory_id", ""), d.get("category")) if mgr else None
+    if new_id:
+        await _broadcast(_memory_update_event())
+
+
+@_message_handler("list_recipes")
+async def _msg_list_recipes(msg: dict) -> None:
+    await _broadcast(_recipes_update_event())
+
+
+@_message_handler("list_job_postings")
+async def _msg_list_job_postings(msg: dict) -> None:
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("jobs_fetch_postings")
+async def _msg_jobs_fetch_postings(msg: dict) -> None:
+    # #403 — backgrounded; auto-score (S3 #336) happens inside the task.
+    asyncio.create_task(_run_jobs_fetch())
+
+
+@_message_handler("jobs_get_dossier")
+async def _msg_jobs_get_dossier(msg: dict) -> None:
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("jobs_score_shortlist")
+async def _msg_jobs_score_shortlist(msg: dict) -> None:
+    # #403 — the ~100-LLM-call scoring loop must not block this
+    # connection's IPC read loop; backgrounded like the panel-apply lane.
+    asyncio.create_task(_run_jobs_score())
+
+
+@_message_handler("jobs_set_approval")
+async def _msg_jobs_set_approval(msg: dict) -> None:
+    d = msg.get("data", {})
+    try:
+        # gate-exempt: tray UI action -- the click is the consent
+        await _orc.call_tool("jobs_set_approval", {
+            "url": d.get("url", ""),
+            "approved": bool(d.get("approved")),
+        }, capability=GATE_EXEMPT)
+    except Exception as exc:
+        logger.warning("[cerebral] jobs_set_approval failed: %s", exc)
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("jobs_apply_start")
+async def _msg_jobs_apply_start(msg: dict) -> None:
+    d = msg.get("data", {})
+    asyncio.create_task(_run_panel_apply(d.get("url", "")))
+
+
+@_message_handler("jobs_apply_submit")
+async def _msg_jobs_apply_submit(msg: dict) -> None:
+    asyncio.create_task(_run_panel_submit())
+
+
+@_message_handler("jobs_approve_all")
+async def _msg_jobs_approve_all(msg: dict) -> None:
+    urls = msg.get("data", {}).get("urls") or []
+    for u in urls:
+        _job_search_store.set_status(u, "shortlisted")
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("self_dev_pr_merge")
+async def _msg_self_dev_pr_merge(msg: dict) -> None:
+    # Direct WS-IPC dispatcher case, no LLM in the path -- ADR-0015
+    # amendment 3 (2026-08-21): merge authority is a structural human-
+    # click-only gate. This branch, the renderer's click handler, and
+    # SelfDevPlugin._merge/_load are the ONLY places self_dev_pr_merge
+    # may appear; it must never be a Tool(...) or planner-reachable.
+    d = msg.get("data", {})
+    pr_url = str(d.get("pr_url", "")).strip()
+    plugin = _orc._plugins.get("self_dev")
+    if not pr_url or plugin is None:
+        await _broadcast({
+            "type": "self_dev_pr_merge_result",
+            "data": {
+                "pr_url": pr_url,
+                "status": "error",
+                "error": "pr_url required" if not pr_url else "self_dev plugin unavailable",
+            },
+        })
+    else:
         try:
-            _settings.set(key, value)
-        except ValueError as exc:
-            logger.warning("[cerebral] set_setting rejected: %s", exc)
-            return
-        logger.info("[cerebral] set_setting %s=%r", key, value)
-        if key == "camera_enabled":
-            if value:
-                _env.enable_camera()
-            else:
-                _env.disable_camera()
-            await _broadcast(_env_context_event())
-        elif key == "mic_mode" and _audio_pipeline is not None:
-            # PTT mode turns off the always-on wake word; passive turns it
-            # back on. The tray registers/clears the global hotkey off the
-            # same setting.
-            _audio_pipeline.set_ptt_only(value == "ptt")
-        await _broadcast(_settings_state_event())
+            await asyncio.to_thread(plugin._merge, pr_url)
+        except Exception as exc:
+            logger.warning("[cerebral] self_dev_pr_merge failed: %s", exc)
+            await _broadcast({
+                "type": "self_dev_pr_merge_result",
+                "data": {"pr_url": pr_url, "status": "error", "error": str(exc)},
+            })
+        else:
+            # Merge already succeeded at this point -- a load (pull +
+            # restart) failure is a secondary concern reported alongside
+            # "merged", not an overall failure (the card must not offer
+            # to merge an already-merged PR again).
+            load_result = await plugin._load({"pr_url": pr_url})
+            result_data = {"pr_url": pr_url, "status": "merged"}
+            if load_result.is_error:
+                result_data["load_error"] = load_result.content
+            await _broadcast({"type": "self_dev_pr_merge_result", "data": result_data})
 
-    elif t == "set_camera_enabled":
-        enabled = msg.get("data", {}).get("enabled", False)
-        if enabled:
+
+@_message_handler("self_dev_pr_state")
+async def _msg_self_dev_pr_state(msg: dict) -> None:
+    d = msg.get("data", {})
+    pr_url = str(d.get("pr_url", "")).strip()
+    plugin = _orc._plugins.get("self_dev")
+    if pr_url and plugin is not None:
+        try:
+            state = await asyncio.to_thread(plugin.pr_state, pr_url)
+        except Exception as exc:
+            # Fail open -- a transient gh/network hiccup must not hide a
+            # still-actionable card. Just skip the broadcast; the button
+            # stays as-is until the next successful check.
+            logger.debug("[cerebral] self_dev_pr_state check failed: %s", exc)
+        else:
+            await _broadcast({
+                "type": "self_dev_pr_state_result",
+                "data": {"pr_url": pr_url, "state": state},
+            })
+
+
+@_message_handler("jobs_clear_postings")
+async def _msg_jobs_clear_postings(msg: dict) -> None:
+    n = _job_search_store.clear_postings()
+    logger.info("[cerebral] cleared %d job postings", n)
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("open_felix")
+async def _msg_open_felix(msg: dict) -> None:
+    await _broadcast({"type": "open_felix", "data": {}})
+
+
+@_message_handler("jobs_answer_fields")
+async def _msg_jobs_answer_fields(msg: dict) -> None:
+    d = msg.get("data", {})
+    url = d.get("url", "")
+    answers = [
+        a for a in d.get("answers", [])
+        if isinstance(a, dict) and str(a.get("value") or "").strip()
+    ]
+    if _active_profile:
+        for a in answers:
+            # Answer bank (#427): also auto-fills future applications that
+            # ask a semantically-similar question.
+            await _jobs_index_answer(
+                _active_profile.id,
+                str(a.get("label", "")).strip(),
+                str(a["value"]).strip(),
+            )
+    if url:
+        asyncio.create_task(_run_panel_apply(url))
+
+
+@_message_handler("jobs_apply_all")
+async def _msg_jobs_apply_all(msg: dict) -> None:
+    d = msg.get("data", {})
+    try:
+        limit = int(d.get("limit", 100))
+    except (TypeError, ValueError):
+        limit = 100
+    asyncio.create_task(_run_panel_apply_all(limit))
+
+
+@_message_handler("jobs_set_auto_submit")
+async def _msg_jobs_set_auto_submit(msg: dict) -> None:
+    d = msg.get("data", {})
+    try:
+        # gate-exempt: tray UI action -- the click is the consent
+        await _orc.call_tool("jobs_set_auto_submit", {
+            "enabled": bool(d.get("enabled")),
+        }, capability=GATE_EXEMPT)
+    except Exception as exc:
+        logger.warning("[cerebral] jobs_set_auto_submit failed: %s", exc)
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("jobs_update_dossier_field")
+async def _msg_jobs_update_dossier_field(msg: dict) -> None:
+    d = msg.get("data", {})
+    try:
+        # gate-exempt: tray UI action -- the click is the consent
+        await _orc.call_tool("jobs_update_dossier_field", {
+            "field": str(d.get("field", "")),
+            "value": str(d.get("value", "")),
+        }, capability=GATE_EXEMPT)
+    except Exception as exc:
+        logger.warning("[cerebral] jobs_update_dossier_field failed: %s", exc)
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("list_job_boards")
+async def _msg_list_job_boards(msg: dict) -> None:
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("add_job_board")
+async def _msg_add_job_board(msg: dict) -> None:
+    d = msg.get("data", {})
+    url = (d.get("url") or "").strip()
+    label = (d.get("label") or "").strip()
+    if url:
+        try:
+            _job_search_store.add_board(url, label)
+        except Exception as exc:
+            logger.warning("[cerebral] add_job_board failed: %s", exc)
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("remove_job_board")
+async def _msg_remove_job_board(msg: dict) -> None:
+    d = msg.get("data", {})
+    url = (d.get("url") or "").strip()
+    if url:
+        _job_search_store.remove_board(url)
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("set_job_board_enabled")
+async def _msg_set_job_board_enabled(msg: dict) -> None:
+    d = msg.get("data", {})
+    url = (d.get("url") or "").strip()
+    if url:
+        _job_search_store.set_board_enabled(url, bool(d.get("enabled", True)))
+    await _broadcast(_jobs_update_event())
+
+
+@_message_handler("save_recipe")
+async def _msg_save_recipe(msg: dict) -> None:
+    d = msg.get("data", {})
+    name = d.get("name", "").strip()
+    steps = d.get("steps") or []
+    if _active_profile and name and len(steps) >= 2:
+        try:
+            _recipe_store.save(_active_profile.id, name, steps)
+            await _broadcast(_recipes_update_event())
+        except ValueError as exc:
+            logger.warning("[cerebral] save_recipe rejected: %s", exc)
+
+
+@_message_handler("rename_recipe")
+async def _msg_rename_recipe(msg: dict) -> None:
+    d = msg.get("data", {})
+    recipe_id = d.get("recipe_id")
+    new_name = (d.get("name") or "").strip()
+    if recipe_id and new_name:
+        ok = _recipe_store.rename(recipe_id, new_name)
+        if ok:
+            await _broadcast(_recipes_update_event())
+
+
+@_message_handler("delete_recipe")
+async def _msg_delete_recipe(msg: dict) -> None:
+    recipe_id = msg.get("data", {}).get("recipe_id")
+    if recipe_id:
+        try:
+            await _delete_recipe_by_id(recipe_id)
+        except ValueError as exc:
+            logger.warning("[cerebral] delete_recipe failed: %s", exc)
+
+
+@_message_handler("run_recipe")
+async def _msg_run_recipe(msg: dict) -> None:
+    recipe_id = msg.get("data", {}).get("recipe_id")
+    if recipe_id:
+        try:
+            await _run_recipe_by_id(recipe_id)
+        except ValueError as exc:
+            logger.warning("[cerebral] run_recipe failed: %s", exc)
+
+
+@_message_handler("list_settings")
+async def _msg_list_settings(msg: dict) -> None:
+    await _broadcast(_settings_state_event())
+
+
+@_message_handler("set_setting")
+async def _msg_set_setting(msg: dict) -> None:
+    d = msg.get("data") or {}
+    key   = d.get("key")
+    value = d.get("value")
+    try:
+        _settings.set(key, value)
+    except ValueError as exc:
+        logger.warning("[cerebral] set_setting rejected: %s", exc)
+        return
+    logger.info("[cerebral] set_setting %s=%r", key, value)
+    if key == "camera_enabled":
+        if value:
             _env.enable_camera()
         else:
             _env.disable_camera()
-        logger.info("[cerebral] Camera %s", "enabled" if enabled else "disabled")
         await _broadcast(_env_context_event())
+    elif key == "mic_mode" and _audio_pipeline is not None:
+        # PTT mode turns off the always-on wake word; passive turns it
+        # back on. The tray registers/clears the global hotkey off the
+        # same setting.
+        _audio_pipeline.set_ptt_only(value == "ptt")
+    elif key == "admission_cap":
+        # ADR-0036 M: live-update the router's per-Failure-domain
+        # semaphores -- _settings.set already clamped to >=1.
+        await _router.set_admission_cap(_settings.get("admission_cap"))
+    await _broadcast(_settings_state_event())
 
-    elif t == "get_env_context":
-        await _broadcast(_env_context_event())
 
-    elif t == "request_harness_status":
-        await _broadcast(_harness_status_event())
+@_message_handler("set_camera_enabled")
+async def _msg_set_camera_enabled(msg: dict) -> None:
+    enabled = msg.get("data", {}).get("enabled", False)
+    if enabled:
+        _env.enable_camera()
+    else:
+        _env.disable_camera()
+    logger.info("[cerebral] Camera %s", "enabled" if enabled else "disabled")
+    await _broadcast(_env_context_event())
 
-    elif t == "start_openclaw_daemon":
-        # S16 (#299) -- in-UI daemon control. Idempotent: start_subscriber
-        # ignores a duplicate start. Always rebroadcast so the UI re-syncs
-        # even when the call was a no-op.
-        await _start_openclaw_subscriber()
-        await _broadcast(_harness_status_event())
 
-    elif t == "stop_openclaw_daemon":
-        await _stop_openclaw_subscriber()
-        await _broadcast(_harness_status_event())
+@_message_handler("get_env_context")
+async def _msg_get_env_context(msg: dict) -> None:
+    await _broadcast(_env_context_event())
 
-    elif t == "restart_openclaw_daemon":
-        await _stop_openclaw_subscriber()
-        await _start_openclaw_subscriber()
-        await _broadcast(_harness_status_event())
 
-    elif t == "set_channel_enabled":
-        d = msg.get("data") or {}
-        ch = d.get("channel")
-        enabled = bool(d.get("enabled"))
+@_message_handler("request_harness_status")
+async def _msg_request_harness_status(msg: dict) -> None:
+    await _broadcast(_harness_status_event())
+
+
+@_message_handler("start_openclaw_daemon")
+async def _msg_start_openclaw_daemon(msg: dict) -> None:
+    # S16 (#299) -- in-UI daemon control. Idempotent: start_subscriber
+    # ignores a duplicate start. Always rebroadcast so the UI re-syncs
+    # even when the call was a no-op.
+    await _start_openclaw_subscriber()
+    await _broadcast(_harness_status_event())
+
+
+@_message_handler("stop_openclaw_daemon")
+async def _msg_stop_openclaw_daemon(msg: dict) -> None:
+    await _stop_openclaw_subscriber()
+    await _broadcast(_harness_status_event())
+
+
+@_message_handler("restart_openclaw_daemon")
+async def _msg_restart_openclaw_daemon(msg: dict) -> None:
+    await _stop_openclaw_subscriber()
+    await _start_openclaw_subscriber()
+    await _broadcast(_harness_status_event())
+
+
+@_message_handler("set_channel_enabled")
+async def _msg_set_channel_enabled(msg: dict) -> None:
+    d = msg.get("data") or {}
+    ch = d.get("channel")
+    enabled = bool(d.get("enabled"))
+    try:
+        _harness_channels.set_enabled(ch, enabled)
+    except ValueError as exc:
+        logger.warning("[cerebral] set_channel_enabled rejected: %s", exc)
+        return
+    logger.info("[cerebral] Channel %s enabled=%s", ch, enabled)
+    await _broadcast(_harness_status_event())
+
+
+@_message_handler("set_channel_secret")
+async def _msg_set_channel_secret(msg: dict) -> None:
+    # S16 (#299) -- write-only secret input. The plaintext secret is
+    # written to the OS keyring and IMMEDIATELY discarded; only a
+    # ``secret_set`` boolean is ever broadcast (see _harness_status_event).
+    d = msg.get("data") or {}
+    ch = d.get("channel")
+    secret = d.get("secret")
+    try:
+        _harness_channels.set_secret(ch, secret)
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("[cerebral] set_channel_secret rejected: %s", exc)
+        # No echo of `secret` in any log line -- write-only invariant.
+        return
+    logger.info("[cerebral] Channel %s secret set (value not logged)", ch)
+    await _broadcast(_harness_status_event())
+
+
+@_message_handler("clear_channel_secret")
+async def _msg_clear_channel_secret(msg: dict) -> None:
+    d = msg.get("data") or {}
+    ch = d.get("channel")
+    _harness_channels.clear_secret(ch)
+    logger.info("[cerebral] Channel %s secret cleared", ch)
+    await _broadcast(_harness_status_event())
+
+
+@_message_handler("request_channel_inbox")
+async def _msg_request_channel_inbox(msg: dict) -> None:
+    # S18 (#301) -- the UI just opened the Integrations pane and
+    # wants the latest inbox snapshot. Idempotent re-broadcast.
+    await _broadcast(_channel_inbox_event())
+
+
+@_message_handler("send_channel_reply")
+async def _msg_send_channel_reply(msg: dict) -> None:
+    # S18 (#301) -- manual reply typed in the Integrations Inbox.
+    # Routes through openclaw_messages_send so the capability gate
+    # still fires (external_data_write); on success the outbound
+    # entry is added to the inbox and broadcast.
+    d = msg.get("data") or {}
+    session_key = d.get("session_key")
+    text = d.get("text")
+    ok, detail = await _send_channel_reply(session_key, text)
+    if not ok:
+        logger.warning(
+            "[cerebral] send_channel_reply rejected (%s -> %r): %s",
+            session_key, (text or "")[:40], detail,
+        )
+
+
+@_message_handler("ptt")
+async def _msg_ptt(msg: dict) -> None:
+    # Push-to-talk: the tray's global hotkey fired. Start a capture with
+    # no wake word (fail-soft if the pipeline isn't up).
+    if _audio_pipeline is not None:
+        _audio_pipeline.trigger_ptt()
+
+
+@_message_handler("interrupt_turn")
+async def _msg_interrupt_turn(msg: dict) -> None:
+    # S20 (#303) -- cancel the in-flight planner/chain task and silence TTS.
+    # _process_command catches CancelledError, records the interruption turn,
+    # and broadcasts passive state.
+    if _active_turn_task is not None and not _active_turn_task.done():
+        _active_turn_task.cancel()
+    _tts.stop()
+
+
+@_message_handler("list_documents")
+async def _msg_list_documents(msg: dict) -> None:
+    await _broadcast(_documents_update_event())
+
+
+@_message_handler("list_campaign_drivers")
+async def _msg_list_campaign_drivers(msg: dict) -> None:
+    await _broadcast(_campaign_drivers_update_event())
+
+
+@_message_handler("read_campaign_driver")
+async def _msg_read_campaign_driver(msg: dict) -> None:
+    d = msg.get("data", {})
+    await _broadcast(_campaign_driver_content_event(d.get("path", "")))
+
+
+@_message_handler("doc_save_to_disk")
+async def _msg_doc_save_to_disk(msg: dict) -> None:
+    import shutil as _shutil
+    d = msg.get("data", {})
+    doc_id = d.get("doc_id")
+    dest_path = (d.get("dest_path") or "").strip()
+    if doc_id and dest_path and _active_profile:
         try:
-            _harness_channels.set_enabled(ch, enabled)
-        except ValueError as exc:
-            logger.warning("[cerebral] set_channel_enabled rejected: %s", exc)
-            return
-        logger.info("[cerebral] Channel %s enabled=%s", ch, enabled)
-        await _broadcast(_harness_status_event())
+            doc = _document_store.get_doc(int(doc_id))
+            if doc:
+                _shutil.copy2(doc["path"], dest_path)
+                logger.info("[cerebral] doc_save_to_disk: %s -> %s", doc["path"], dest_path)
+        except Exception as exc:
+            logger.warning("[cerebral] doc_save_to_disk failed: %s", exc)
 
-    elif t == "set_channel_secret":
-        # S16 (#299) -- write-only secret input. The plaintext secret is
-        # written to the OS keyring and IMMEDIATELY discarded; only a
-        # ``secret_set`` boolean is ever broadcast (see _harness_status_event).
-        d = msg.get("data") or {}
-        ch = d.get("channel")
-        secret = d.get("secret")
-        try:
-            _harness_channels.set_secret(ch, secret)
-        except (ValueError, RuntimeError) as exc:
-            logger.warning("[cerebral] set_channel_secret rejected: %s", exc)
-            # No echo of `secret` in any log line -- write-only invariant.
-            return
-        logger.info("[cerebral] Channel %s secret set (value not logged)", ch)
-        await _broadcast(_harness_status_event())
 
-    elif t == "clear_channel_secret":
-        d = msg.get("data") or {}
-        ch = d.get("channel")
-        _harness_channels.clear_secret(ch)
-        logger.info("[cerebral] Channel %s secret cleared", ch)
-        await _broadcast(_harness_status_event())
+@_message_handler("trading_poll")
+async def _msg_trading_poll(msg: dict) -> None:
+    await _handle_trading_poll(msg.get("data", {}))
 
-    elif t == "request_channel_inbox":
-        # S18 (#301) -- the UI just opened the Integrations pane and
-        # wants the latest inbox snapshot. Idempotent re-broadcast.
-        await _broadcast(_channel_inbox_event())
 
-    elif t == "send_channel_reply":
-        # S18 (#301) -- manual reply typed in the Integrations Inbox.
-        # Routes through openclaw_messages_send so the capability gate
-        # still fires (external_data_write); on success the outbound
-        # entry is added to the inbox and broadcast.
-        d = msg.get("data") or {}
-        session_key = d.get("session_key")
-        text = d.get("text")
-        ok, detail = await _send_channel_reply(session_key, text)
-        if not ok:
-            logger.warning(
-                "[cerebral] send_channel_reply rejected (%s -> %r): %s",
-                session_key, (text or "")[:40], detail,
-            )
+@_message_handler("trading_tickers_poll")
+async def _msg_trading_tickers_poll(msg: dict) -> None:
+    await _handle_trading_tickers_poll(msg.get("data", {}))
 
-    elif t == "ptt":
-        # Push-to-talk: the tray's global hotkey fired. Start a capture with
-        # no wake word (fail-soft if the pipeline isn't up).
-        if _audio_pipeline is not None:
-            _audio_pipeline.trigger_ptt()
 
-    elif t == "interrupt_turn":
-        # S20 (#303) -- cancel the in-flight planner/chain task and silence TTS.
-        # _process_command catches CancelledError, records the interruption turn,
-        # and broadcasts passive state.
-        if _active_turn_task is not None and not _active_turn_task.done():
-            _active_turn_task.cancel()
-        _tts.stop()
+@_message_handler("activity_poll")
+async def _msg_activity_poll(msg: dict) -> None:
+    await _handle_activity_poll(msg.get("data", {}))
 
-    elif t == "list_documents":  # S6 #457 -- Documents panel activation re-pull
-        await _broadcast(_documents_update_event())
 
-    elif t == "list_campaign_drivers":  # campaign driver viewer -- Documents sub-view
-        await _broadcast(_campaign_drivers_update_event())
+@_message_handler("strategy_edit")
+async def _msg_strategy_edit(msg: dict) -> None:
+    d = msg.get("data") or {}
+    strategy_id = (d.get("strategy_name") or d.get("strategy_id") or "").strip()
+    code = d.get("code") or ""
+    if strategy_id and code:
+        result = await _trading_strategies_plugin.call_tool(
+            "edit_strategy", {"strategy_id": strategy_id, "code": code}
+        )
+        await _broadcast({
+            "type": "strategy_edit_result",
+            "data": {
+                "strategy_id": strategy_id,
+                "ok": not result.is_error,
+                "message": result.content,
+            },
+        })
+        await _trading_broadcast()  # re-fetch so the panel shows the new version/verdict
 
-    elif t == "read_campaign_driver":  # campaign driver viewer -- content fetch
-        d = msg.get("data", {})
-        await _broadcast(_campaign_driver_content_event(d.get("path", "")))
 
-    elif t == "doc_save_to_disk":  # S6 #457 -- copy library doc to user path
-        import shutil as _shutil
-        d = msg.get("data", {})
-        doc_id = d.get("doc_id")
-        dest_path = (d.get("dest_path") or "").strip()
-        if doc_id and dest_path and _active_profile:
-            try:
-                doc = _document_store.get_doc(int(doc_id))
-                if doc:
-                    _shutil.copy2(doc["path"], dest_path)
-                    logger.info("[cerebral] doc_save_to_disk: %s -> %s", doc["path"], dest_path)
-            except Exception as exc:
-                logger.warning("[cerebral] doc_save_to_disk failed: %s", exc)
+async def _handle_message(msg: dict) -> None:
+    t = msg.get("type")
 
-    elif t == "trading_poll":  # S9 -- Trading Panel initial fetch + refresh
-        await _handle_trading_poll(msg.get("data", {}))
-
-    elif t == "trading_tickers_poll":  # S29 (#892) -- Tickers sub-tab fetch
-        await _handle_trading_tickers_poll(msg.get("data", {}))
-
-    elif t == "activity_poll":  # S26 (#879) -- Log tab + Trading pane's Activity section
-        await _handle_activity_poll(msg.get("data", {}))
-
-    elif t == "strategy_edit":  # S19 (#864) -- Trading Panel edit box -> S17's edit_strategy tool
-        d = msg.get("data") or {}
-        strategy_id = (d.get("strategy_name") or d.get("strategy_id") or "").strip()
-        code = d.get("code") or ""
-        if strategy_id and code:
-            result = await _scheduler_plugin.call_tool(
-                "edit_strategy", {"strategy_id": strategy_id, "code": code}
-            )
-            await _broadcast({
-                "type": "strategy_edit_result",
-                "data": {
-                    "strategy_id": strategy_id,
-                    "ok": not result.is_error,
-                    "message": result.content,
-                },
-            })
-            await _trading_broadcast()  # re-fetch so the panel shows the new version/verdict
+    handler = _MESSAGE_HANDLERS.get(t) if isinstance(t, str) else None
+    if handler is not None:
+        await handler(msg)
 
 
 # ── WebSocket handler ─────────────────────────────────────────────────────────
 
-async def _greet(websocket) -> None:
-    """Send the welcome snapshot. Each event is isolated: if one state
-    builder raises (e.g., a transiently broken keyring backend), the
-    failure is logged and the remaining events still flow — a bad state
-    builder must not poison the handshake or close the connection.
-    Per-event recovery is the dispatcher-isolation invariant (#151)
-    applied to the greeting phase."""
+# S8 (#1290) -- the one list of state builders a client needs to paint every
+# panel. A new panel's state event is added HERE and nowhere else: the renderer
+# no longer keeps a parallel pull list. Names, not function objects, so each
+# builder is resolved at call time (tests and plugins can rebind them).
+_SNAPSHOT_BUILDERS: tuple[str, ...] = (
+    "_profiles_list_event",
+    "_voices_list_event",
+    "_queue_update_event",
+    "_insights_update_event",
+    "_memory_update_event",
+    "_env_context_event",
+    "_models_list_event",
+    "_plugins_list_event",
+    "_tools_list_event",
+    "_plugins_list_v2_event",
+    "_plugins_panels_event",
+    "_plugins_changed_event",
+    "_permissions_state_event",
+    "_credentials_state_event",
+    "_settings_state_event",
+    "_harness_status_event",
+    "_channel_inbox_event",
+    "_conversation_turns_event",
+    "_threads_list_event",
+    "_projects_list_event",
+    "_recipes_update_event",
+)
+
+
+def _snapshot_events() -> list:
+    """Every state event a fresh client needs, in order. Each builder is
+    isolated: if one raises (e.g., a transiently broken keyring backend), the
+    failure is logged and the rest still flow -- a bad state builder must not
+    poison the handshake or close the connection. Per-event recovery is the
+    dispatcher-isolation invariant (#151) applied to the greeting phase."""
     if _active_profile:
-        greetings: list = [lambda: _profile_event(_active_profile)]
+        builders: list = [lambda: _profile_event(_active_profile)]
     else:
-        greetings = [lambda: {"type": "first_run"}]
-    greetings += [
-        _profiles_list_event,
-        _voices_list_event,
-        _queue_update_event,
-        _insights_update_event,
-        _memory_update_event,
-        _env_context_event,
-        _models_list_event,
-        _plugins_list_event,
-        _plugins_changed_event,
-        _permissions_state_event,
-        _credentials_state_event,
-        _settings_state_event,
-        _harness_status_event,
-        _channel_inbox_event,
-        _conversation_turns_event,
-        _threads_list_event,
-        _projects_list_event,
-        _recipes_update_event,
-    ]
-    for build in greetings:
+        builders = [lambda: {"type": "first_run"}]
+    builders += [globals()[name] for name in _SNAPSHOT_BUILDERS]
+    events = []
+    for build in builders:
         try:
-            event = build()
+            events.append(build())
         except Exception:
             logger.exception(
-                "[cerebral] Greeting state builder failed: %s", getattr(build, "__name__", "<lambda>")
+                "[cerebral] Snapshot state builder failed: %s", getattr(build, "__name__", "<lambda>")
             )
-            continue
-        await _send(websocket, event)
+    return events
+
+
+async def _greet(websocket) -> None:
+    """Send the welcome snapshot: one ``snapshot`` message carrying every
+    state event, which clients replay through their normal event handler."""
+    await _send(websocket, {"type": "snapshot", "data": {"events": _snapshot_events()}})
 
 
 async def _ws_handler(websocket) -> None:
@@ -7012,7 +7768,8 @@ async def _process_command(
     async def _execute(tool_name: str, tool_args: dict) -> ToolResult:
         if tool_name.startswith("recipe_") and profile_id is not None:
             return await _replay_recipe(tool_name, profile_id)
-        return await _orc.call_tool(tool_name, tool_args)
+        # gate-exempt: chain path: ChainEngine calls gate_fn before execute_fn
+        return await _orc.call_tool(tool_name, tool_args, capability=GATE_EXEMPT)
 
     async def _on_chain_done(completed_steps: list[dict]) -> None:
         if profile_id is None:
@@ -7036,6 +7793,7 @@ async def _process_command(
         gate_fn=_gate_tool,
         execute_fn=_execute,
         record_fn=_record_turn,
+        watch=_watch,
     )
 
     try:
@@ -7060,6 +7818,9 @@ async def _process_command(
     except Exception as exc:
         logger.error("[cerebral] Unexpected error during LLM call: %s", exc)
         response = "Something went wrong. Please try again."
+    if not response:
+        # Never speak ""/None -- any backend can come back empty.
+        response = "I didn't get an answer from the model. Please try again."
 
     await _record_turn(KIND_FELIX_SPEECH, {"text": response, "spoken": bool(speak)})
     if speak:
@@ -7116,7 +7877,8 @@ async def _replay_recipe(synthetic_name: str, profile_id: int) -> ToolResult:
                 is_error=True,
             )
 
-        tool_result = await _orc.call_tool(tool_name, tool_args)
+        # gate-exempt: gated above via check_capabilities (recipe replay)
+        tool_result = await _orc.call_tool(tool_name, tool_args, capability=GATE_EXEMPT)
         await _record_turn(KIND_TOOL_RESULT, {"name": tool_name, "is_error": tool_result.is_error})
         if tool_result.is_error:
             return ToolResult(
@@ -7128,6 +7890,40 @@ async def _replay_recipe(synthetic_name: str, profile_id: int) -> ToolResult:
     _recipe_store.record_run(recipe.id)
     await _broadcast(_recipes_update_event())
     return ToolResult(content="; ".join(results) or "Recipe completed.", is_error=False)
+
+
+async def _run_recipe_by_id(recipe_id: int) -> str:
+    """Core recipe_run logic shared by the ``run_recipe`` IPC handler and the
+    ``recipe_run`` MCP tool (ADR-0035 J prep). Raises ``ValueError`` on
+    failure, else returns a summary of what ran."""
+    if _active_profile is None:
+        raise ValueError("No active profile.")
+    recipe = _recipe_store.get(recipe_id)
+    if recipe is None:
+        raise ValueError(f"Recipe {recipe_id} not found.")
+    result = await _replay_recipe(recipe.synthetic_tool_name, _active_profile.id)
+    await _broadcast({
+        "type": "recipe_run_result",
+        "data": {
+            "recipe_id": recipe_id,
+            "ok": not result.is_error,
+            "message": result.content,
+        },
+    })
+    if result.is_error:
+        raise ValueError(result.content)
+    return result.content
+
+
+async def _delete_recipe_by_id(recipe_id: int) -> str:
+    """Core recipe_delete logic shared by the ``delete_recipe`` IPC handler
+    and the ``recipe_delete`` MCP tool (ADR-0035 J prep). Raises
+    ``ValueError`` on failure, else returns a confirmation message."""
+    ok = _recipe_store.delete(recipe_id)
+    if not ok:
+        raise ValueError(f"Recipe {recipe_id} not found.")
+    await _broadcast(_recipes_update_event())
+    return f"Recipe {recipe_id} deleted."
 
 
 # ── Heartbeat ─────────────────────────────────────────────────────────────────
@@ -7210,7 +8006,21 @@ async def _apply_settings_control(key: str, value: Any) -> None:
         else:
             _env.disable_camera()
         await _broadcast(_env_context_event())
+    if key == "admission_cap":
+        # ADR-0036 M: live-update the router's per-Failure-domain
+        # semaphores -- _settings.set already clamped to >=1.
+        await _router.set_admission_cap(_settings.get("admission_cap"))
     await _broadcast(_settings_state_event())
+
+
+async def _apply_plugin_set_enabled(plugin_name: str, enabled: bool) -> str:
+    """Apply callback for the ``plugin_set_enabled`` MCP tool (settings_control
+    seam). Raises ``ValueError`` on failure, else returns a success message --
+    matches the ``_apply_fn`` contract used by ``_apply_settings_control``."""
+    ok, message = await _set_plugin_enabled(plugin_name, enabled)
+    if not ok:
+        raise ValueError(message)
+    return message
 
 
 # ── Video seams (ADR-0017 S1 #639 / S2 #640) ────────────────────────────────
@@ -7534,7 +8344,7 @@ async def _video_verify(cluster_label: str, idea_text: str, category: str = "mon
             f"evidence you find, briefly: {idea_text}",
             router=_router,
             gate_fn=_gate_tool,
-            execute_fn=_orc.call_tool,
+            execute_fn=_execute_after_gate,
             all_tools=_orc.tools_for_llm,
             tools=["web_search"],
             max_steps=3,
@@ -7570,7 +8380,7 @@ def _route_extraction_local(local: bool) -> None:
         else:
             logger.warning("[cerebral] drain requested but no local model installed")
     else:
-        _router.seed_extraction_default()  # back to Budd-first
+        _router.seed_extraction_default()  # back to the active model
 
 
 def _wire_plugin_seams() -> None:
@@ -7593,6 +8403,9 @@ def _wire_plugin_seams() -> None:
     seams: list[tuple[str, str, object]] = [
         # plugin name, seam method, factory
         ("settings_control", "set_apply_callback", _apply_settings_control),  # F4 #327
+        ("settings_control", "set_plugin_enable_callback", _apply_plugin_set_enabled),  # ADR-0035 H
+        ("recipes", "set_recipe_run_callback", _run_recipe_by_id),  # ADR-0035 J prep
+        ("recipes", "set_recipe_delete_callback", _delete_recipe_by_id),  # ADR-0035 J prep
         ("skills", "set_settings_store", _settings),  # S2 #538 (ADR-0014)
         ("skills", "set_broadcast_fn", _skills_broadcast),  # S5 #542
         ("memory",   "set_memory_factory",  _get_memory),                   # #79
@@ -7644,6 +8457,7 @@ def _wire_plugin_seams() -> None:
         ("self_dev", "set_rollback_fn", _self_dev_rollback),                         # #813 manual rollback
         ("self_dev", "set_record_turn_fn", _record_turn),                           # #810 pending-review card
         ("self_dev", "set_record_activity_fn", _record_activity),                   # S26 #879 Activity Log
+        ("self_dev", "set_campaign_status_fn", _self_dev_campaign_status),          # 2026-09-08 idle-aware restart
         ("computer_use", "set_driving_fn", _computer_use_driving),                   # S2 #576 (ADR-0016 (c))
         ("computer_use", "set_vision_ground_fn", _computer_use_vision_ground),       # S5 #578 (ADR-0016 sec 5)
         ("computer_use", "set_attended_handoff_fn", _computer_use_attended_handoff), # S6 #579 (ADR-0016 sec 6)
@@ -7669,7 +8483,7 @@ def _wire_plugin_seams() -> None:
         ("video", "set_commit_fn", _video_commit),                                    # S7 #645 (ADR-0017)
         ("github_ingest", "set_route_extraction_local_fn", _route_extraction_local),  # ADR-0019 S3 drain
         ("delegate", "set_subagent_context",
-         lambda: {"router": _router, "gate_fn": _gate_tool, "execute_fn": _orc.call_tool,
+         lambda: {"router": _router, "gate_fn": _gate_tool, "execute_fn": _execute_after_gate,
                   "all_tools": _orc.tools_for_llm}),                                 # S4 #730 (ADR-0020)
     ]
     for name, seam, factory in seams:
@@ -7851,9 +8665,11 @@ async def _send_channel_reply(session_key: str, text: str) -> tuple[bool, str]:
     if not isinstance(text, str) or not text.strip():
         return False, "missing reply text"
     try:
+        # gated: resolves the tool's declared capabilities (FELIX-AUDIT F10)
         result = await _orc.call_tool(
             "openclaw_messages_send",
             {"session_key": session_key, "text": text},
+            capability=None,
         )
     except Exception as exc:  # pragma: no cover -- defensive
         return False, f"openclaw_messages_send raised: {exc}"
@@ -7961,7 +8777,7 @@ async def _heartbeat_loop(audio_active: bool) -> None:
                 "bridge": _openclaw_subscriber_running(),
             },
         })
-        logger.info(
+        logger.debug(  # every few seconds -- at INFO it was ~95% of cerebral.err.log
             "[cerebral] Heartbeat sent (profile=%s, tts=%s, model=%s)",
             profile_name, _tts.ready, _router.active_model,
         )
@@ -8025,7 +8841,8 @@ async def _rss_poll_once() -> None:
     entries).
     """
     try:
-        result = await _orc.call_tool("rss_check", {})
+        # gated: resolves the tool's declared capabilities (FELIX-AUDIT F10)
+        result = await _orc.call_tool("rss_check", {}, capability=None)
     except Exception as exc:
         logger.warning("[cerebral] RSS poll: rss_check raised: %s", exc)
         return
@@ -8139,6 +8956,12 @@ async def main() -> None:
     # acting on. register() supports re-registering under the same name to
     # replace it -- do that with the real, fully-wired instance instead.
     _orc.register(_scheduler_plugin)
+    _orc.register(_trading_strategies_plugin)
+    _orc.register(_design_system_plugin)
+    _orc.register(_book_library_plugin)
+    _orc.register(_discovery_plugin)
+    _orc.register(_ipo_calendar_plugin)
+    _orc.register(_trading_control_plugin)
     _attach_builder_plugin()
     _wire_plugin_seams()
     logger.info("[cerebral] MCP orchestrator ready — %d tool(s) registered", len(_orc.list_tools()))
@@ -8188,7 +9011,19 @@ async def main() -> None:
             )
         # S27 (#880): idempotent get-or-create -- registers the discovery
         # loop's own recurring event once, safe to call on every boot.
-        _scheduler_plugin.ensure_discovery_event()
+        _discovery_plugin.ensure_discovery_event()
+        _design_system_plugin.ensure_design_system_event()
+        _ipo_calendar_plugin.ensure_ipo_calendar_event()
+        # BATCH-REPLAY S1 (#1224) boot-resume. MUST live here, not at module
+        # scope: asyncio.create_task() requires a running event loop, and
+        # module-level code executes at import time, before main()'s own
+        # loop exists. The original module-level version crashed Cerebral's
+        # entire boot with "RuntimeError: no running event loop" the first
+        # time batch_replay_running was ever actually True (found live,
+        # 2026-09-14, the first real sweep start after S1 landed).
+        if _settings.get("batch_replay_running"):
+            from plugins.trading_replay import start_batch_replay
+            asyncio.create_task(start_batch_replay())
         scheduler_task = asyncio.create_task(_scheduler_loop())
         await _shutdown.wait()
         heartbeat.cancel()

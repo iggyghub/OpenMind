@@ -185,6 +185,23 @@ def test_watchlist_prefilter_candidates_widening_slot_advances_as_overflow_gets_
     assert second[2] != newly_adopted
 
 
+def test_watchlist_prefilter_candidates_reserves_multiple_overflow_slots_at_limit_10(tmp_path):
+    """At limit=10, overflow_slots = max(1, 10 // 3) = 3.
+    Asserts that MORE than one never-seen known-liquid symbol appears in the result,
+    scaling the reservation width instead of hardcoding a single slot."""
+    from cerebral.trading.discovery import _KNOWN_TICKERS
+    wl = _watchlist(tmp_path)
+    # Seed watchlist to >= limit(10)
+    for sym in [f"DUMMY{i}" for i in range(10)]:
+        wl.upsert(sym)
+
+    candidates = wl.prefilter_candidates(_pattern_idea(), limit=10)
+
+    overflow_in_result = [c for c in candidates if c in _KNOWN_TICKERS]
+    assert len(overflow_in_result) > 1
+    assert len(overflow_in_result) == 3
+
+
 # ── extract_ticker ────────────────────────────────────────────────────────
 
 def test_extract_ticker_recognizes_a_known_symbol():
@@ -202,6 +219,20 @@ def test_extract_ticker_does_not_guess_an_unknown_all_caps_word():
     acronym) must not be mistaken for a ticker -- screen by default."""
     idea = Idea(claim_text="RSI and MACD both signal a reversal soon.")
     assert extract_ticker(idea) is None
+
+
+def test_extract_ticker_falls_through_on_bare_single_letter_F():
+    """A standalone capital 'F' in prose (e.g. grade, variable, word start)
+    must NOT be mistaken for the Ford ticker. Only the cashtag `$F` counts."""
+    idea = Idea(claim_text="The student received an F on the test.")
+    assert extract_ticker(idea) is None
+
+
+def test_extract_ticker_handles_cashtag_F():
+    """Single-letter tickers should only match when explicitly prefixed
+    with a cashtag ($), matching the stricter signal requirement."""
+    idea = Idea(claim_text="Investors are buying $F ahead of earnings.")
+    assert extract_ticker(idea) == "F"
 
 
 # ── process_idea: ticker-specific path (decision #36) ────────────────────
@@ -584,6 +615,24 @@ def test_attempts_are_independent_per_symbol(tmp_path):
     assert a.get_latest("ABC")["verdict"] == "VALIDATED"
 
 
+def test_get_source_performance_rollups_by_domain(tmp_path):
+    a = _attempts(tmp_path)
+    a.record("TICKER1", "VALIDATED", idea_url="https://fool.com/pick1")
+    a.record("TICKER2", "UNVALIDATED", idea_url="https://fool.com/pick2")
+    a.record("TICKER3", "VALIDATED", idea_url="https://benzinga.com/pick3")
+    a.record("TICKER4", "UNVALIDATED", idea_url="https://benzinga.com/pick4")
+    a.record("TICKER5", "UNVALIDATED", idea_url="https://marketwatch.com/pick5")
+    a.record("TICKER6", "VALIDATED", idea_url="")
+
+    perf = a.get_source_performance()
+
+    assert perf["fool.com"] == {"validated": 1, "unvalidated": 1, "total": 2}
+    assert perf["benzinga.com"] == {"validated": 1, "unvalidated": 1, "total": 2}
+    assert perf["marketwatch.com"] == {"validated": 0, "unvalidated": 1, "total": 1}
+    assert perf[""] == {"validated": 1, "unvalidated": 0, "total": 1}
+    assert len(perf) == 4
+
+
 # ── process_idea: per-attempt logging (S30/#894) ───────────────────────────
 
 async def test_ticker_specific_dispatch_records_the_attempt(tmp_path):
@@ -691,12 +740,30 @@ def test_rank_for_day_trading_drops_illiquid_symbols_outright():
 
 
 def test_rank_for_day_trading_drops_penny_stocks_below_min_price():
+    """#1002: min_price lowered 5.0 -> 1.0 so real, liquid cheap tickers
+    (PARA ~$1.10, PLUG ~$2.16, etc.) aren't silently dropped -- $1.50 used
+    to be below the floor and is now legitimately rankable. The floor
+    itself still needs to drop something below IT (now $1.00, not $5.00)."""
     from cerebral.trading.discovery import rank_for_day_trading
-    bars = {"PENNY": _bars(price=1.5, dollar_range_pct=0.20, volume=10_000_000)}
+    bars = {"PENNY": _bars(price=0.50, dollar_range_pct=0.20, volume=10_000_000)}
 
     ranked = rank_for_day_trading(list(bars), lambda sym, *a, **kw: bars[sym])
 
     assert ranked == []
+
+
+def test_rank_for_day_trading_keeps_liquid_stocks_above_the_new_lower_floor():
+    """A real gap this audit found: the OLD $5.00 floor silently dropped
+    every cheap ticker added to _KNOWN_TICKERS the same day (PARA, PLUG,
+    BBD, GRAB, NIO -- all under $5) despite clearing the real liquidity
+    test (min_dollar_volume) comfortably. $1.50, high volume, must now be
+    ranked, not dropped."""
+    from cerebral.trading.discovery import rank_for_day_trading
+    bars = {"CHEAP": _bars(price=1.5, dollar_range_pct=0.20, volume=10_000_000)}
+
+    ranked = rank_for_day_trading(list(bars), lambda sym, *a, **kw: bars[sym])
+
+    assert ranked == ["CHEAP"]
 
 
 def test_rank_for_day_trading_skips_symbols_whose_fetch_fails():
@@ -738,3 +805,83 @@ def test_prefilter_candidates_falls_back_to_universe_if_rank_fn_returns_nothing(
 
     assert candidates[0] == "AAPL"
     assert len(candidates) == 2
+
+def test_rank_for_day_trading_allows_sub_five_prices_with_default_min_price():
+    """A sub-$5 liquid ticker should pass the default price floor once
+    it's lowered to $1.0 instead of $5.0."""
+    from cerebral.trading.discovery import rank_for_day_trading
+    bars = {"CHEAP": _bars(price=2.50, dollar_range_pct=0.10, volume=10_000_000)}
+
+    ranked = rank_for_day_trading(list(bars), lambda sym, *a, **kw: bars[sym])
+
+    assert ranked == ["CHEAP"]
+
+
+def _fake_broker(movers_data, actives_data, all_assets_data, raise_on_call=False):
+    class Broker:
+        def get_market_movers(self, top=15):
+            if raise_on_call:
+                raise ConnectionError("network down")
+            return movers_data
+        def get_most_actives(self, top=10):
+            if raise_on_call:
+                raise ConnectionError("network down")
+            return actives_data
+        def get_all_assets(self):
+            if raise_on_call:
+                raise ConnectionError("network down")
+            return all_assets_data
+    return Broker()
+
+
+def test_build_dynamic_universe_includes_movers_actives_ranked():
+    """Gainers, losers, actives, and random sample should all appear in the
+    ranked output when they pass the liquidity/volatility filters."""
+    from cerebral.trading.discovery import build_dynamic_universe
+    from cerebral.trading.discovery import _KNOWN_TICKERS
+    
+    def fetch_ohlcv(sym, *a, **kw):
+        return _bars(price=50.0, dollar_range_pct=0.03, volume=10_000_000)
+        
+    broker = _fake_broker(
+        movers_data={"gainers": [{"symbol": "G1"}, {"symbol": "G2"}], "losers": [{"symbol": "L1"}]},
+        actives_data=[{"symbol": "A1"}, {"symbol": "A2"}],
+        all_assets_data=["R1", "R2", "R3"],
+    )
+    
+    ranked = build_dynamic_universe(broker, fetch_ohlcv, random_sample_size=2)
+    
+    # Movers/actives must pass the filter and appear in the ranked list
+    assert all(sym in ranked for sym in ["G1", "G2", "L1", "A1", "A2"])
+    # rank_for_day_trading returns them sorted by volatility; all have same here, so alphabetical
+    assert ranked == sorted(ranked)
+    # The random sample adds at least one from remaining
+    assert len(ranked) >= 5
+
+
+def test_build_dynamic_universe_falls_back_on_broker_exception():
+    """If the broker calls raise, it must return exactly sorted(_KNOWN_TICKERS)."""
+    from cerebral.trading.discovery import build_dynamic_universe
+    from cerebral.trading.discovery import _KNOWN_TICKERS
+    
+    broker = _fake_broker({}, [], [], raise_on_call=True)
+    ranked = build_dynamic_universe(broker, lambda *a, **kw: None)
+    
+    assert ranked == sorted(_KNOWN_TICKERS)
+
+
+def test_build_dynamic_universe_falls_back_on_empty_ranked_result():
+    """If all candidates fail the liquidity/ATR filter, rank_for_day_trading
+    returns [], so build_dynamic_universe must fall back to sorted(_KNOWN_TICKERS)."""
+    from cerebral.trading.discovery import build_dynamic_universe
+    from cerebral.trading.discovery import _KNOWN_TICKERS
+    
+    broker = _fake_broker(
+        movers_data={"gainers": [], "losers": []},
+        actives_data=[],
+        all_assets_data=["T1", "T2"],
+    )
+    # Fetch function that returns empty/None data so rank_for_day_trading skips them
+    ranked = build_dynamic_universe(broker, lambda *a, **kw: None)
+    
+    assert ranked == sorted(_KNOWN_TICKERS)

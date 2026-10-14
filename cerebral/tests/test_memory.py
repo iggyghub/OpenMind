@@ -304,3 +304,75 @@ async def test_recall_carries_category(mgr):
     await mgr.remember("Unclaimed asset recovery pays per claim", category="money-making idea")
     results = await mgr.recall("unclaimed asset")
     assert results and results[0].category == "money-making idea"
+
+
+# ── Memory folder system: drag between categories, manual reorder, copy/paste ──
+
+async def test_remember_assigns_order_from_creation_time(mgr):
+    memory_id = await mgr.remember("ordered by creation")
+    mem = mgr.list_all()[0]
+    assert mem.id == memory_id
+    assert mem.order > 0
+
+
+async def test_list_all_sorts_by_order_descending(mgr):
+    id1 = await mgr.remember("first")
+    id2 = await mgr.remember("second")
+    # untouched order defaults to creation time, so newest (id2) still leads
+    assert [m.id for m in mgr.list_all()] == [id2, id1]
+
+
+async def test_set_category_moves_memory_to_new_folder(mgr):
+    memory_id = await mgr.remember("uncategorised fact")
+    ok = await mgr.set_category(memory_id, "New Folder")
+    assert ok is True
+    assert mgr.list_all()[0].category == "New Folder"
+
+
+async def test_set_category_preserves_fact_and_created_at(mgr):
+    memory_id = await mgr.remember("do not touch my text")
+    before = mgr.list_all()[0]
+    await mgr.set_category(memory_id, "moved")
+    after = mgr.list_all()[0]
+    assert after.fact == before.fact
+    assert after.created_at == before.created_at
+
+
+async def test_set_category_unknown_id_returns_false(mgr):
+    assert await mgr.set_category("no-such-id", "whatever") is False
+
+
+async def test_set_order_changes_manual_position(mgr):
+    id1 = await mgr.remember("older")
+    id2 = await mgr.remember("newer")
+    # id2 normally sorts first (newer); drag id1 above it with a higher order.
+    ok = await mgr.set_order(id1, 9_999_999_999)
+    assert ok is True
+    assert [m.id for m in mgr.list_all()] == [id1, id2]
+
+
+async def test_set_order_unknown_id_returns_false(mgr):
+    assert await mgr.set_order("no-such-id", 1.0) is False
+
+
+async def test_duplicate_creates_independent_copy_with_same_fact(mgr):
+    memory_id = await mgr.remember("copy me", category="folder-a")
+    new_id = await mgr.duplicate(memory_id)
+    assert new_id is not None
+    assert new_id != memory_id
+    mems = {m.id: m for m in mgr.list_all()}
+    assert len(mems) == 2
+    assert mems[new_id].fact == "copy me"
+    assert mems[new_id].category == "folder-a"
+
+
+async def test_duplicate_can_override_destination_category(mgr):
+    memory_id = await mgr.remember("copy me elsewhere", category="folder-a")
+    new_id = await mgr.duplicate(memory_id, category="folder-b")
+    mems = {m.id: m for m in mgr.list_all()}
+    assert mems[new_id].category == "folder-b"
+    assert mems[memory_id].category == "folder-a"  # original untouched
+
+
+async def test_duplicate_unknown_id_returns_none(mgr):
+    assert await mgr.duplicate("no-such-id") is None

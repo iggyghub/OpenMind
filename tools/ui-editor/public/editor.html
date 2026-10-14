@@ -1,0 +1,335 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>UI Editor</title>
+<style>
+  html,body{margin:0;height:100%;background:#111;color:#eee;font:13px/1.4 -apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column;}
+  #menubar{display:flex;gap:2px;background:#151518;padding:3px 6px;font-size:12px;flex-shrink:0;border-bottom:1px solid #2a2a2e;}
+  .menu{position:relative;}
+  .menu>button{background:none;border:none;color:#ccc;padding:5px 10px;cursor:pointer;border-radius:4px;font:inherit;}
+  .menu>button:hover, .menu.open>button{background:#2a2a32;color:#fff;}
+  .menu-list{display:none;position:absolute;top:100%;left:0;background:#1e1e24;border:1px solid #333;border-radius:6px;padding:4px;min-width:190px;box-shadow:0 4px 16px rgba(0,0,0,.5);z-index:20;}
+  .menu.open .menu-list{display:block;}
+  .menu-item{display:flex;justify-content:space-between;gap:20px;padding:6px 10px;border-radius:4px;cursor:pointer;color:#eee;white-space:nowrap;}
+  .menu-item:hover{background:#2a2a32;}
+  .menu-item[disabled]{opacity:.35;cursor:default;pointer-events:none;}
+  .menu-item .kbd{opacity:.5;font-size:11px;}
+  .menu-sep{height:1px;background:#333;margin:4px 2px;}
+  #bar{padding:8px;background:#1a1a1e;flex-shrink:0;}
+  #bar-row1{display:flex;gap:8px;align-items:center;}
+  #bar-row2{display:flex;gap:4px;align-items:center;margin-top:6px;}
+  #bar select, #bar input[type=text], #bar input[type=password], #bar input[type=number]{
+    padding:6px 8px;border-radius:6px;border:1px solid #333;background:#0e0e11;color:#eee;
+  }
+  #bar input[type=checkbox]{margin-right:4px;}
+  #bar button{padding:6px 12px;border-radius:6px;border:1px solid #333;background:#26262c;color:#eee;cursor:pointer;}
+  #bar button.bp-active{background:#4da3ff;border-color:#4da3ff;color:#fff;}
+  #conntype{min-width:110px;}
+  .fields{display:none;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;}
+  .fields.active{display:flex;}
+  .fields input[type=text], .fields input[type=password]{flex:1;min-width:140px;}
+  .fields .narrow{flex:none;width:70px;}
+  .fields label.inline{display:flex;align-items:center;gap:4px;white-space:nowrap;}
+  #frame-wrap{flex:1;overflow:hidden;background:#222;display:flex;justify-content:center;}
+  iframe{width:100%;height:100%;border:2px solid #444;background:#fff;}
+  #hint{padding:4px 8px;opacity:.6;font-size:11px;flex-shrink:0;}
+  #err{padding:4px 8px;color:#ff6b6b;font-size:11px;display:none;flex-shrink:0;}
+</style>
+</head>
+<body>
+<div id="menubar">
+  <div class="menu" data-menu="file">
+    <button type="button">File</button>
+    <div class="menu-list">
+      <div class="menu-item" data-action="file-new">New page</div>
+      <div class="menu-item" data-action="file-open">Open selected target</div>
+      <div class="menu-sep"></div>
+      <div class="menu-item" data-action="file-save"><span>Commit to file</span><span class="kbd">Ctrl+S</span></div>
+      <div class="menu-item" data-action="file-export">Export / view HTML&hellip;</div>
+      <div class="menu-sep"></div>
+      <div class="menu-item" data-action="file-reset">Reset page (discard edits)</div>
+    </div>
+  </div>
+  <div class="menu" data-menu="edit">
+    <button type="button">Edit</button>
+    <div class="menu-list">
+      <div class="menu-item" data-action="edit-undo"><span>Undo</span><span class="kbd">Ctrl+Z</span></div>
+      <div class="menu-item" data-action="edit-redo"><span>Redo</span><span class="kbd">Ctrl+Y</span></div>
+      <div class="menu-sep"></div>
+      <div class="menu-item" data-action="edit-toggle"><span id="edit-toggle-label">Enable edit mode</span></div>
+    </div>
+  </div>
+  <div class="menu" data-menu="view">
+    <button type="button">View</button>
+    <div class="menu-list">
+      <div class="menu-item" data-action="view-mobile">Mobile 375</div>
+      <div class="menu-item" data-action="view-tablet">Tablet 768</div>
+      <div class="menu-item" data-action="view-desktop">Desktop</div>
+      <div class="menu-sep"></div>
+      <div class="menu-item" data-action="view-code">Code view&hellip;</div>
+    </div>
+  </div>
+</div>
+<div id="bar">
+  <div id="bar-row1">
+    <select id="conntype">
+      <option value="local">Local file</option>
+      <option value="new">New page</option>
+      <option value="url">URL</option>
+      <option value="git">Git repo</option>
+      <option value="ftp">FTP</option>
+    </select>
+    <select id="quick">
+      <option value="">Felix pages...</option>
+      <option value="tray/windows/main.html">main.html</option>
+      <option value="tray/windows/visualiser.html">visualiser.html</option>
+      <option value="tray/windows/detached-panel.html">detached-panel.html</option>
+      <option value="tray/windows/irreversible-modal.html">irreversible-modal.html</option>
+    </select>
+    <button id="go">Open</button>
+  </div>
+
+  <div id="bar-row2">
+    <span style="opacity:.6;font-size:11px;margin-right:2px;">Preview:</span>
+    <button id="bp-mobile">Mobile 375</button>
+    <button id="bp-tablet">Tablet 768</button>
+    <button id="bp-desktop" class="bp-active">Desktop</button>
+  </div>
+
+  <div class="fields active" data-conn="local">
+    <input id="local-path" type="text" placeholder="relative path, e.g. tray/windows/main.html">
+    <button id="local-browse" type="button" hidden>Browse&hellip;</button>
+  </div>
+
+  <div class="fields" data-conn="new">
+    <input id="new-path" type="text" placeholder="path for the new file, e.g. tray/windows/scratch.html">
+    <button id="new-browse" type="button" hidden>Browse&hellip;</button>
+  </div>
+
+  <div class="fields" data-conn="url">
+    <input id="url-url" type="text" placeholder="https://example.com">
+    <label class="inline"><input type="checkbox" id="url-auth-toggle"> Basic auth</label>
+    <input id="url-user" type="text" placeholder="username" style="display:none;">
+    <input id="url-pass" type="password" placeholder="password" style="display:none;">
+  </div>
+
+  <div class="fields" data-conn="git">
+    <input id="git-repo" type="text" placeholder="repo URL, e.g. https://github.com/you/site.git">
+    <input id="git-branch" type="text" placeholder="branch (default)" style="flex:none;width:120px;">
+    <input id="git-path" type="text" placeholder="file path in repo, e.g. index.html">
+  </div>
+
+  <div class="fields" data-conn="ftp">
+    <input id="ftp-host" type="text" placeholder="host">
+    <input id="ftp-port" type="number" class="narrow" placeholder="21" value="21">
+    <input id="ftp-user" type="text" placeholder="username" style="flex:none;width:120px;">
+    <input id="ftp-pass" type="password" placeholder="password" style="flex:none;width:120px;">
+    <input id="ftp-path" type="text" placeholder="remote file path, e.g. /public_html/index.html">
+  </div>
+</div>
+<div id="hint">Edit mode toggle + tools live inside the loaded page (top-right). Toggle it, click an element, drag to move/resize, use the color/text controls. Edits autosave.</div>
+<div id="err"></div>
+<div id="frame-wrap">
+  <iframe id="frame" src="about:blank"></iframe>
+</div>
+<script>
+  var connType = document.getElementById('conntype');
+  var quick = document.getElementById('quick');
+  var frame = document.getElementById('frame');
+  var errEl = document.getElementById('err');
+
+  function showFields(type) {
+    document.querySelectorAll('.fields').forEach(function (el) {
+      el.classList.toggle('active', el.dataset.conn === type);
+    });
+  }
+  connType.addEventListener('change', function () { showFields(connType.value); });
+
+  document.getElementById('url-auth-toggle').addEventListener('change', function (e) {
+    document.getElementById('url-user').style.display = e.target.checked ? '' : 'none';
+    document.getElementById('url-pass').style.display = e.target.checked ? '' : 'none';
+  });
+
+  // Native Save/Open dialogs (tray/preload/ui-editor-preload.js) -- only
+  // present when this window is opened inside Felix's own Electron shell
+  // (see main.js's UI_EDITOR_ORIGIN override). Standalone browser usage
+  // (this tool's own README) has no window.felixDialogs and keeps the
+  // plain text-input path field, unchanged.
+  if (window.felixDialogs) {
+    var localBrowseBtn = document.getElementById('local-browse');
+    var newBrowseBtn = document.getElementById('new-browse');
+    localBrowseBtn.hidden = false;
+    newBrowseBtn.hidden = false;
+
+    localBrowseBtn.addEventListener('click', function () {
+      window.felixDialogs.openLocalFilePath().then(function (result) {
+        if (result.canceled) return;
+        if (result.error) { errEl.textContent = result.error; errEl.style.display = 'block'; return; }
+        document.getElementById('local-path').value = result.path;
+        open_();
+      });
+    });
+
+    newBrowseBtn.addEventListener('click', function () {
+      window.felixDialogs.saveNewPagePath().then(function (result) {
+        if (result.canceled) return;
+        if (result.error) { errEl.textContent = result.error; errEl.style.display = 'block'; return; }
+        document.getElementById('new-path').value = result.path;
+      });
+    });
+  }
+
+  quick.addEventListener('change', function () {
+    if (!quick.value) return;
+    connType.value = 'local';
+    showFields('local');
+    document.getElementById('local-path').value = quick.value;
+    open_();
+  });
+
+  function val(id) { return document.getElementById(id).value.trim(); }
+
+  function open_() {
+    errEl.style.display = 'none';
+    var type = connType.value;
+    var src;
+    if (type === 'local') {
+      var p = val('local-path');
+      if (!p) return;
+      src = '/local/' + p.replace(/^\/+/, '');
+    } else if (type === 'new') {
+      var np = val('new-path');
+      if (!np) return;
+      fetch('/api/new', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: np })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (!data.ok) throw new Error(data.error || 'failed');
+        frame.src = '/local/' + data.path;
+      }).catch(function (e) {
+        errEl.textContent = 'Could not create the page: ' + e.message;
+        errEl.style.display = 'block';
+      });
+      return;
+    } else if (type === 'url') {
+      var u = val('url-url');
+      if (!u) return;
+      src = '/remote?url=' + encodeURIComponent(u);
+      if (document.getElementById('url-auth-toggle').checked) {
+        src += '&user=' + encodeURIComponent(val('url-user')) + '&pass=' + encodeURIComponent(val('url-pass'));
+      }
+    } else if (type === 'git') {
+      var repo = val('git-repo'), gpath = val('git-path');
+      if (!repo || !gpath) { errEl.textContent = 'Git needs both a repo URL and a file path.'; errEl.style.display = 'block'; return; }
+      src = '/git?repo=' + encodeURIComponent(repo) + '&branch=' + encodeURIComponent(val('git-branch')) + '&path=' + encodeURIComponent(gpath);
+    } else if (type === 'ftp') {
+      var host = val('ftp-host'), fpath = val('ftp-path');
+      if (!host || !fpath) { errEl.textContent = 'FTP needs both a host and a remote file path.'; errEl.style.display = 'block'; return; }
+      src = '/ftp?host=' + encodeURIComponent(host) +
+        '&port=' + encodeURIComponent(val('ftp-port') || '21') +
+        '&user=' + encodeURIComponent(val('ftp-user')) +
+        '&pass=' + encodeURIComponent(val('ftp-pass')) +
+        '&path=' + encodeURIComponent(fpath);
+    }
+    frame.src = src;
+  }
+
+  document.getElementById('go').addEventListener('click', open_);
+  document.getElementById('bar').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') open_();
+  });
+
+  // breakpoint preset buttons: resize the iframe width, centered against the dark chrome
+  function setBreakpoint(name) {
+    var widths = { mobile: '375px', tablet: '768px', desktop: '100%' };
+    frame.style.width = widths[name];
+    ['mobile', 'tablet', 'desktop'].forEach(function (n) {
+      document.getElementById('bp-' + n).classList.toggle('bp-active', n === name);
+    });
+  }
+  document.getElementById('bp-mobile').addEventListener('click', function () { setBreakpoint('mobile'); });
+  document.getElementById('bp-tablet').addEventListener('click', function () { setBreakpoint('tablet'); });
+  document.getElementById('bp-desktop').addEventListener('click', function () { setBreakpoint('desktop'); });
+
+  // ---- File/Edit/View menu bar -- reads/drives the editing overlay that inject.js
+  // mounts inside the iframe via the window.__uiEditor bridge it exposes there.
+  // Same pattern as Figma/Google Docs/most desktop apps: a thin top menu strip whose
+  // items just call the same functions already reachable from inside the canvas.
+  (function () {
+    var menubar = document.getElementById('menubar');
+    var menus = Array.prototype.slice.call(menubar.querySelectorAll('.menu'));
+
+    function bridge() {
+      try { return frame.contentWindow && frame.contentWindow.__uiEditor; } catch (e) { return null; }
+    }
+
+    function closeAllMenus() { menus.forEach(function (m) { m.classList.remove('open'); }); }
+
+    function setItemDisabled(action, disabled) {
+      var el = menubar.querySelector('[data-action="' + action + '"]');
+      if (el) el.toggleAttribute('disabled', !!disabled);
+    }
+
+    function refreshMenuState() {
+      var b = bridge();
+      setItemDisabled('edit-undo', !b || !b.canUndo());
+      setItemDisabled('edit-redo', !b || !b.canRedo());
+      setItemDisabled('file-save', !b || !b.canBake);
+      setItemDisabled('file-export', !b);
+      setItemDisabled('file-reset', !b);
+      setItemDisabled('edit-toggle', !b);
+      setItemDisabled('view-code', !b);
+      document.getElementById('edit-toggle-label').textContent =
+        (b && b.isEditMode()) ? 'Disable edit mode' : 'Enable edit mode';
+    }
+
+    menus.forEach(function (m) {
+      m.querySelector('button').addEventListener('click', function (e) {
+        e.stopPropagation();
+        var wasOpen = m.classList.contains('open');
+        closeAllMenus();
+        if (!wasOpen) { refreshMenuState(); m.classList.add('open'); }
+      });
+    });
+    document.addEventListener('click', closeAllMenus);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAllMenus(); });
+
+    menubar.addEventListener('click', function (e) {
+      var item = e.target.closest('.menu-item');
+      if (!item || item.hasAttribute('disabled')) return;
+      var b = bridge();
+      switch (item.dataset.action) {
+        case 'file-new': connType.value = 'new'; showFields('new'); document.getElementById('new-path').focus(); break;
+        case 'file-open': open_(); break;
+        case 'file-save': if (b) b.bake(); break;
+        case 'file-export': if (b) b.showCode(); break;
+        case 'file-reset': if (b) b.resetPage(); break;
+        case 'edit-undo': if (b) b.undo(); break;
+        case 'edit-redo': if (b) b.redo(); break;
+        case 'edit-toggle': if (b) b.setEditMode(!b.isEditMode()); break;
+        case 'view-mobile': setBreakpoint('mobile'); break;
+        case 'view-tablet': setBreakpoint('tablet'); break;
+        case 'view-desktop': setBreakpoint('desktop'); break;
+        case 'view-code': if (b) b.showCode(); break;
+      }
+      closeAllMenus();
+    });
+
+    // Shortcuts at the pop-out window level too, so they work even when focus never
+    // made it into the iframe (e.g. right after opening a page from this chrome).
+    document.addEventListener('keydown', function (e) {
+      var tag = document.activeElement && document.activeElement.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      var b = bridge();
+      if (!b) return;
+      var key = e.key.toLowerCase();
+      if (e.ctrlKey && key === 's') { e.preventDefault(); if (b.canBake) b.bake(); }
+      else if (e.ctrlKey && key === 'z' && !e.shiftKey) { e.preventDefault(); b.undo(); }
+      else if (e.ctrlKey && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); b.redo(); }
+    });
+  }());
+</script>
+</body>
+</html>

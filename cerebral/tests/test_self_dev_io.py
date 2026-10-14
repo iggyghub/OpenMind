@@ -1,6 +1,7 @@
 """Tests for cerebral/self_dev_io.py -- the git/gh/pytest shell-out helpers
 that live outside plugins/ (so plugins/self_dev.py stays scan-clean) plus the
 JSON extractor that parses untrusted model output in the edit step."""
+import shutil
 import subprocess
 
 from cerebral import self_dev_io as io
@@ -199,10 +200,111 @@ def test_apply_mixed_edit_and_newfile(tmp_path):
     assert "Y = 3" in fp.read_text(encoding="utf-8")
 
 
+# ── apply_search_replace: uniform-indent-offset fallback (#1372) ─────────────
+
+def _sr(rel, search, replace):
+    return f"<<<FILE: {rel}>>>\n<<<SEARCH>>>\n{search}\n<<<REPLACE>>>\n{replace}\n<<<END>>>"
+
+
+def test_apply_exact_match_unchanged_by_fallback(tmp_path):
+    fp = _write(tmp_path, "a.py", "def f():\n    x = 1\n")
+    assert io.apply_search_replace(tmp_path, _sr("a.py", "    x = 1", "    x = 2")) == ["a.py"]
+    assert fp.read_text(encoding="utf-8") == "def f():\n    x = 2\n"
+
+
+def test_apply_over_indented_search_reindents_replace(tmp_path):
+    """The real X0 shape: file at 8 spaces, model emitted 12."""
+    fp = _write(tmp_path, "a.py", "class C:\n    def f(self):\n        a = 1\n        return a\n")
+    reply = _sr("a.py", "            a = 1\n            return a",
+                "            a = 1\n            b = 2\n            return a + b")
+    assert io.apply_search_replace(tmp_path, reply) == ["a.py"]
+    assert fp.read_text(encoding="utf-8") == (
+        "class C:\n    def f(self):\n        a = 1\n        b = 2\n        return a + b\n")
+
+
+def test_apply_under_indented_search(tmp_path):
+    fp = _write(tmp_path, "a.py", "def f():\n    if x:\n        y = 1\n")
+    reply = _sr("a.py", "if x:\n    y = 1", "if x:\n    y = 2")
+    assert io.apply_search_replace(tmp_path, reply) == ["a.py"]
+    assert fp.read_text(encoding="utf-8") == "def f():\n    if x:\n        y = 2\n"
+
+
+def test_apply_reindent_preserves_nested_and_blank_lines(tmp_path):
+    fp = _write(tmp_path, "a.py", "    if a:\n        b()\n\n    c()\n")
+    reply = _sr("a.py", "        if a:\n            b()\n\n        c()",
+                "        if a:\n            b()\n\n            z()\n        c()")
+    assert io.apply_search_replace(tmp_path, reply) == ["a.py"]
+    assert fp.read_text(encoding="utf-8") == "    if a:\n        b()\n\n        z()\n    c()\n"
+
+
+def test_apply_reindent_ambiguous_region_applies_nothing(tmp_path):
+    body = "def f():\n    x = 1\ndef g():\n    x = 1\n"
+    fp = _write(tmp_path, "a.py", body)
+    assert io.apply_search_replace(tmp_path, _sr("a.py", "        x = 1", "        x = 2")) == []
+    assert fp.read_text(encoding="utf-8") == body
+
+
+def test_apply_reindent_different_content_applies_nothing(tmp_path):
+    body = "def f():\n    x = 1\n    y = 2\n"
+    fp = _write(tmp_path, "a.py", body)
+    # second line's relative indent is wrong, then plain wrong content
+    assert io.apply_search_replace(tmp_path, _sr("a.py", "        x = 1\n          y = 2", "q")) == []
+    assert io.apply_search_replace(tmp_path, _sr("a.py", "        x = 9", "q")) == []
+    assert fp.read_text(encoding="utf-8") == body
+
+
+def test_apply_reindent_respects_allowed_and_path_guard(tmp_path):
+    body = "def f():\n    x = 1\n"
+    fp = _write(tmp_path, "a.py", body)
+    reply = _sr("a.py", "        x = 1", "        x = 2")
+    assert io.apply_search_replace(tmp_path, reply, allowed={"b.py"}) == []
+    assert fp.read_text(encoding="utf-8") == body
+    assert io.apply_search_replace(tmp_path, _sr("../evil.py", "    x = 1", "y")) == []
+
+
 if __name__ == "__main__":
     import sys
     import pytest
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_clone_fn_uses_source_repo_identity_and_origin(tmp_path, monkeypatch):
+    """#1059/#1060: clone_fn must read identity/origin from the cloned repo,
+    not always from _REPO_ROOT. Proves target_dir works safely."""
+    (tmp_path / "repo_a").mkdir()
+    (tmp_path / "repo_b").mkdir()
+    for p in (tmp_path / "repo_a", tmp_path / "repo_b"):
+        subprocess.run(["git", "-C", str(p), "init"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(p), "remote", "add", "origin",
+                        f"https://github.com/example/repo-{p.name[-1]}.git"],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(p), "config", "user.name",
+                        f"Repo {p.name[-1]} Bot"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(p), "config", "user.email",
+                        f"repo-{p.name[-1]}@example.com"], check=True, capture_output=True)
+        # commit must come AFTER user.name/email are set, or a machine with no
+        # global git identity fails it with "Author identity unknown" (128) --
+        # this is exactly the failure clone_fn's own docstring warns about.
+        (p / "dummy.txt").write_text("x")
+        subprocess.run(["git", "-C", str(p), "add", "dummy.txt"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(p), "commit", "-m", "init"], check=True, capture_output=True)
+
+    dest = tmp_path / "dest"
+    io.clone_fn(str(tmp_path / "repo_b"), dest)
+
+    # Check origin URL
+    out = subprocess.run(["git", "-C", str(dest), "remote", "get-url", "origin"],
+                         capture_output=True, text=True)
+    assert out.returncode == 0
+    assert out.stdout.strip() == "https://github.com/example/repo-b.git"
+
+    # Check user config comes from source, not _REPO_ROOT
+    out_name = subprocess.run(["git", "-C", str(dest), "config", "user.name"],
+                              capture_output=True, text=True)
+    out_email = subprocess.run(["git", "-C", str(dest), "config", "user.email"],
+                               capture_output=True, text=True)
+    assert out_name.stdout.strip() == "Repo b Bot"
+    assert out_email.stdout.strip() == "repo-b@example.com"
 
 
 # ── test_fn: bounded by a timeout so a hung suite can't freeze Cerebral ──────
@@ -243,3 +345,281 @@ def test_test_fn_passes_timeout_to_subprocess(monkeypatch, tmp_path):
 
     assert passed is True
     assert captured["timeout"] == io._TEST_TIMEOUT_S
+
+
+# ── test_fn: #1107 -- non-zero exit after a clean pytest summary ─────────────
+
+def _run_with_pytest_output(monkeypatch, tmp_path, rc, text):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True, exist_ok=True)
+
+    def fake_run(cmd, **kw):
+        class R:
+            returncode, stdout, stderr = rc, text, ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return io.test_fn(tmp_path)
+
+
+def test_test_fn_nonzero_exit_after_clean_summary_passes(monkeypatch, tmp_path):
+    passed, out = _run_with_pytest_output(
+        monkeypatch, tmp_path, 1, "6107 passed, 8 skipped in 1009.22s (0:16:49)\nTask was destroyed")
+    assert passed is True
+    assert "pytest exited 1 after a clean summary -- treated as pass (#1107)" in out
+
+
+def test_test_fn_nonzero_exit_with_failure_stays_failed(monkeypatch, tmp_path):
+    passed, out = _run_with_pytest_output(monkeypatch, tmp_path, 1, "1 failed, 5 passed in 2.00s")
+    assert passed is False and "treated as pass" not in out
+
+
+def test_test_fn_nonzero_exit_with_error_stays_failed(monkeypatch, tmp_path):
+    passed, _ = _run_with_pytest_output(monkeypatch, tmp_path, 1, "5 passed, 1 error in 2.00s")
+    assert passed is False
+
+
+def test_test_fn_nonzero_exit_without_summary_stays_failed(monkeypatch, tmp_path):
+    passed, _ = _run_with_pytest_output(monkeypatch, tmp_path, 1, "Traceback: crash")
+    assert passed is False
+
+
+def test_test_fn_zero_exit_passes_without_note(monkeypatch, tmp_path):
+    passed, out = _run_with_pytest_output(monkeypatch, tmp_path, 0, "5 passed in 1.00s")
+    assert passed is True and "treated as pass" not in out
+
+
+# ── conftest fixture: cancels a heartbeat task a test left pending ───────────
+
+async def test_conftest_fixture_cancels_pending_heartbeat_task():
+    import asyncio
+    import sys
+    import types
+
+    from cerebral.tests import conftest
+
+    fake_main = types.SimpleNamespace(_worker_heartbeat_task=asyncio.get_running_loop().create_task(asyncio.sleep(3600)))
+    task = fake_main._worker_heartbeat_task
+    sys.modules["cerebral.main"], saved = fake_main, sys.modules.get("cerebral.main")
+    try:
+        gen = conftest._cancel_worker_heartbeat_task.__wrapped__() if hasattr(
+            conftest._cancel_worker_heartbeat_task, "__wrapped__") else None
+        assert gen is not None
+        await gen.__anext__()
+        with __import__("pytest").raises(StopAsyncIteration):
+            await gen.__anext__()
+    finally:
+        if saved is not None:
+            sys.modules["cerebral.main"] = saved
+        else:
+            del sys.modules["cerebral.main"]
+    assert task.cancelled() and fake_main._worker_heartbeat_task is None
+
+
+# ── test_fn: SUP-0 (ADR-0033) -- a tray/ diff also runs the tray's jest ──────
+# suite, since GUARDRAIL_PATHS lists tray/ precisely because this gate used
+# to be pytest-only and could not validate JS.
+
+def test_changed_files_in_last_commit_returns_empty_on_git_failure(tmp_path):
+    """Not a git repo -- diff-tree fails; degrades to an empty list rather
+    than raising, so a diff-detection bug can never block the gate."""
+    assert io._changed_files_in_last_commit(tmp_path) == []
+
+
+def _fake_run_factory(pytest_rc=0, changed_files=(), jest_rc=0):
+    """subprocess.run stand-in that dispatches on argv[0]: 'python' -> pytest,
+    'git' -> the diff-tree changed-files lookup, anything else -> npm/jest."""
+    def fake_run(cmd, **kw):
+        class R:
+            pass
+        r = R()
+        if cmd[0] == "python":
+            r.returncode, r.stdout, r.stderr = pytest_rc, "pytest output", ""
+        elif cmd[0] == "git":
+            r.returncode, r.stdout, r.stderr = 0, "\n".join(changed_files), ""
+        else:
+            r.returncode, r.stdout, r.stderr = jest_rc, "jest output", ""
+        return r
+    return fake_run
+
+
+def test_test_fn_skips_jest_when_tray_not_touched(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    monkeypatch.setattr(subprocess, "run", _fake_run_factory(changed_files=["cerebral/main.py"]))
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert "jest" not in output.lower()
+
+
+def test_test_fn_skips_jest_when_node_modules_missing(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    monkeypatch.setattr(subprocess, "run", _fake_run_factory(changed_files=["tray/main.js"]))
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True  # missing node_modules skips, doesn't fail
+    assert "node_modules missing" in output
+
+
+def test_test_fn_skips_jest_when_npm_not_on_path(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    (tmp_path / "tray" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(subprocess, "run", _fake_run_factory(changed_files=["tray/main.js"]))
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert "npm not on PATH" in output
+
+
+def test_test_fn_runs_jest_when_tray_touched_and_passes(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    (tmp_path / "tray" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(shutil, "which", lambda name: "npm")
+    monkeypatch.setattr(subprocess, "run",
+                         _fake_run_factory(pytest_rc=0, changed_files=["tray/main.js"], jest_rc=0))
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert "[tray/ jest]" in output
+    assert "jest output" in output
+
+
+def test_test_fn_fails_when_jest_fails_even_if_pytest_passes(monkeypatch, tmp_path):
+    """This is the entire point of SUP-0: pytest passing must not be enough
+    to merge a tray/ change that breaks its own suite."""
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    (tmp_path / "tray" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(shutil, "which", lambda name: "npm")
+    monkeypatch.setattr(subprocess, "run",
+                         _fake_run_factory(pytest_rc=0, changed_files=["tray/main.js"], jest_rc=1))
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is False
+
+
+# ── _ensure_tray_node_modules: link, don't reinstall, and never mask a ──────
+# jest run that should have happened (PR #1113 / SUP-2b post-mortem: node_
+# modules missing meant jest silently never ran on ANY self-dev tray/ diff).
+
+def test_ensure_tray_node_modules_skips_if_already_present(monkeypatch, tmp_path):
+    tray_dir = tmp_path / "tray"
+    (tray_dir / "node_modules").mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    io._ensure_tray_node_modules(tray_dir)
+
+    assert calls == []  # already there -- no mklink attempted
+
+
+def test_ensure_tray_node_modules_skips_if_live_repo_has_none(monkeypatch, tmp_path):
+    tray_dir = tmp_path / "tray"
+    tray_dir.mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    monkeypatch.setattr(io, "_REPO_ROOT", tmp_path / "no-such-repo")
+
+    io._ensure_tray_node_modules(tray_dir)
+
+    assert calls == []  # nothing to link from
+
+
+def test_ensure_tray_node_modules_links_from_the_live_repo(monkeypatch, tmp_path):
+    tray_dir = tmp_path / "clone" / "tray"
+    tray_dir.mkdir(parents=True)
+    live_repo = tmp_path / "live"
+    (live_repo / "tray" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(io, "_REPO_ROOT", live_repo)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        class R:
+            returncode, stdout, stderr = 0, "", ""
+        return R()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    io._ensure_tray_node_modules(tray_dir)
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[:3] == ["cmd", "/c", "mklink"]
+    assert str(tray_dir / "node_modules") in cmd
+    assert str(live_repo / "tray" / "node_modules") in cmd
+
+
+# ── stdout/stderr can genuinely be None -- never crash on it ────────────────
+# A subprocess.run with capture_output=True normally never returns None for
+# either stream, but its background stderr-reader thread silently dies (and
+# leaves .stderr as None) if the child's output has a byte the platform's
+# default codepage can't decode -- observed for real: jest's own coloured
+# reporter output crashed test_fn with "can only concatenate str (not
+# 'NoneType') to str" on Windows (cp1252), turning a useful jest failure into
+# an opaque "Test runner error". encoding="utf-8", errors="replace" prevents
+# the decode crash in the first place; these tests are the second layer --
+# even if a stream comes back None for some other reason, test_fn must not
+# itself crash concatenating it.
+
+def test_test_fn_survives_none_pytest_stderr(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+
+    def fake_run(cmd, **kw):
+        class R:
+            returncode, stdout, stderr = 0, "3 passed", None
+        return R()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert "3 passed" in output
+
+
+def test_test_fn_survives_none_jest_stderr(monkeypatch, tmp_path):
+    (tmp_path / "cerebral" / "tests").mkdir(parents=True)
+    (tmp_path / "tray" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(shutil, "which", lambda name: "npm")
+
+    def fake_run(cmd, **kw):
+        class R:
+            pass
+        r = R()
+        if cmd[0] == "python":
+            r.returncode, r.stdout, r.stderr = 0, "pytest output", ""
+        elif cmd[0] == "git":
+            r.returncode, r.stdout, r.stderr = 0, "tray/main.js", ""
+        else:
+            r.returncode, r.stdout, r.stderr = 0, "jest output", None
+        return r
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    passed, output = io.test_fn(tmp_path)
+
+    assert passed is True
+    assert "jest output" in output
+
+
+def test_issue_fn_decodes_gh_output_as_utf8(monkeypatch):
+    """WATCH W3 (2026-10-11): without encoding="utf-8", subprocess decoded gh's
+    UTF-8 with the Windows codepage, an em-dash in a SEARCH block became 'â€”',
+    the block silently failed to match and was skipped."""
+    import json as _json
+    import subprocess as _sp
+    from cerebral import self_dev_io as io_mod
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        out = _json.dumps({"title": "T", "body": "planner   — Planner"})
+        return _sp.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(io_mod.subprocess, "run", fake_run)
+    text = io_mod.issue_fn(1)
+    assert seen.get("encoding") == "utf-8"
+    assert "—" in text and "â€" not in text

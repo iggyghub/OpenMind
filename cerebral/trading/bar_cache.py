@@ -1,0 +1,193 @@
+"""SQLite historical bar cache (RP3, REPLAY.md).
+
+Replaces the old per-call CSV file cache in cerebral/trading_data.py, which
+had two live bugs: it was write-only on the Alpaca path (returns before its
+own TTL read block is ever reached) and its cache key included the exact
+date range, so a sliding today-N..today window accumulated near-duplicate
+files daily instead of ever being reused (confirmed live: 1533 files for
+~20 symbols). This keys on (symbol, interval, ts) instead, so any two
+fetches for the same symbol/interval share one growing table and a range
+query is a plain `WHERE ts BETWEEN ? AND ?`.
+
+Historical bars before today never change, so there is no cache invalidation
+policy beyond "fetch whatever's missing" -- gap-fill on read.
+
+Module-level `AlpacaMarketDataClient` import (not lazy) is deliberate: it
+must be a persistent attribute on THIS module so tests can
+`unittest.mock.patch("cerebral.trading.bar_cache.AlpacaMarketDataClient")`
+the way cerebral/tests/test_bar_cache.py does -- patching the broker module's
+own attribute would not affect an already-lazily-imported reference here.
+
+`data_dir` stays a LAZY import inside `get_bars`, for the opposite reason:
+existing tests (this file's own `mock_data_dir` fixture, and
+cerebral/tests/test_trading_data.py's callers) patch
+`cerebral.paths.data_dir` itself (the source), which only take effect on a
+fresh per-call `from cerebral.paths import data_dir` -- a module-level
+import here would bind the real function once at import time and silently
+ignore the patch, writing test data into the real
+`cerebral/data/bars.db` instead of the test's tmp dir.
+"""
+import os
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+import pandas as pd
+
+from cerebral.trading.broker import AlpacaMarketDataClient
+
+_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
+_DATE_ONLY = ("1d", "1w", "1M")   # one bar per calendar date; every other interval is intraday
+_MARKET_TZ = "America/New_York"
+
+
+def _ts_key(ts, interval: str) -> str:
+    """Cache key for a bar. Date-only for date-granular intervals (unchanged, so existing rows stay
+    valid); full market-local wall-clock time for intraday. A date-only key on intraday bars made
+    every bar of a day collide on the primary key so INSERT OR REPLACE kept one bar per day."""
+    if interval in _DATE_ONLY:
+        return ts.strftime("%Y-%m-%d")
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert(_MARKET_TZ).tz_localize(None)
+    return ts.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _query_range(conn: sqlite3.Connection, symbol: str, interval: str, start: str, end: str) -> pd.DataFrame:
+    """Cached rows in [start, end], shaped to fetch_ohlcv's documented
+    contract: ascending DatetimeIndex named "Date", capitalised OHLCV
+    columns. A real `ts`-indexed read (not a bare column) -- read_sql_query
+    with no index_col returns a meaningless positional RangeIndex, which a
+    prior version of this function then mistakenly tried to read back out
+    as a "Date" *column* (KeyError, since "Date" was only ever an index
+    name, and the source "ts" column had already been dropped)."""
+    if interval not in _DATE_ONLY and len(end) == 10:
+        end += " 23:59:59"   # a bare end date means the whole day for intraday keys
+    df = pd.read_sql_query(
+        "SELECT ts, open, high, low, close, volume FROM bars "
+        "WHERE symbol = ? AND interval = ? AND ts >= ? AND ts <= ? ORDER BY ts",
+        conn, params=(symbol, interval, start, end), parse_dates=["ts"],
+    )
+    df = df.set_index("ts")
+    df.index.name = "Date"
+    df.columns = _COLUMNS
+    return df
+
+
+def get_bars(symbol: str, start: str, end: str, interval: str = "1d", refresh: bool = False) -> pd.DataFrame:
+    """Cached historical bars for `symbol`/`interval` over [start, end].
+
+    Fetches only the gap between what's cached and `end` (or the full range
+    if nothing is cached yet). `refresh=True` forces a full re-fetch of
+    [start, end] regardless of what's cached -- the escape hatch for the one
+    known ceiling this cache can't handle on its own: a split occurring
+    AFTER a fetch retroactively rewrites every earlier adjusted price (RP0
+    already fetches Adjustment.ALL, but a NEW split after the fact still
+    needs a manual refresh). Corporate actions are rare enough that a manual
+    flag beats polling a corporate-actions endpoint for this.
+    # ponytail: no automatic split-detection -- refresh=True by hand (or a
+    # future scheduled job) until a real need for the automatic version shows up.
+    """
+    from cerebral.paths import data_dir
+
+    db_path = os.path.join(data_dir(), "bars.db")
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+    # RP8: ensure the news table exists alongside bars
+    from cerebral.trading import news_cache
+    news_cache.init_news_db(db_path)
+
+    # A busy timeout: several replay workers read the same cache at once.
+    conn = sqlite3.connect(db_path, timeout=60)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bars (
+                symbol TEXT,
+                interval TEXT,
+                ts TEXT,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                fetched_at TEXT,
+                PRIMARY KEY (symbol, interval, ts)
+            )
+            """
+        )
+        # Intraday rows written before the key carried a time of day are one collapsed bar per day: corrupt.
+        # Checked with a read first: even a no-op DELETE takes the write lock, which serialises concurrent readers.
+        if conn.execute(
+            "SELECT 1 FROM bars WHERE interval NOT IN ('1d', '1w', '1M') AND length(ts) = 10 LIMIT 1"
+        ).fetchone():
+            conn.execute("DELETE FROM bars WHERE interval NOT IN ('1d', '1w', '1M') AND length(ts) = 10")
+        # Earliest start ever fetched per (symbol, interval). Gap-fill only reaches FORWARD from the newest cached
+        # bar, so without this a stray old fragment hid everything before it (AAPL 5m came back with half its bars).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS bars_cover (symbol TEXT, interval TEXT, covered_from TEXT, "
+            "PRIMARY KEY (symbol, interval))"
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT covered_from FROM bars_cover WHERE symbol = ? AND interval = ?", (symbol, interval)
+        ).fetchone()
+        if row is not None:
+            covered_from = row[0]
+        else:   # legacy cache: trust what is there, as before
+            oldest = conn.execute(
+                "SELECT MIN(ts) FROM bars WHERE symbol = ? AND interval = ?", (symbol, interval)
+            ).fetchone()[0]
+            covered_from = oldest[:10] if oldest else None
+        needs_backfill = covered_from is not None and start < covered_from
+
+        df = _query_range(conn, symbol, interval, start, end)
+        max_cached_ts = df.index.max() if not df.empty else None
+
+        needs_refresh = refresh or needs_backfill
+        if not needs_refresh:
+            needs_refresh = max_cached_ts is None or pd.isnull(max_cached_ts) or pd.to_datetime(end) > max_cached_ts
+
+        if not needs_refresh:
+            return df
+
+        # Only narrow the fetch to the gap for an actual gap-fill -- a
+        # refresh=True request means "re-fetch [start, end] in full",
+        # not "fetch from wherever the cache already reaches".
+        fetch_start = start
+        if not (refresh or needs_backfill) and max_cached_ts is not None and not pd.isnull(max_cached_ts):
+            fetch_start = max_cached_ts.strftime("%Y-%m-%d")
+
+        fetch_end = end
+        if interval not in _DATE_ONLY and len(end) == 10:
+            # Alpaca reads a bare end date as midnight, which would drop the last day's intraday bars.
+            # ...but never past now-20min: Alpaca's free plan rejects queries touching the last 15 minutes of SIP data.
+            latest = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=20)
+            fetch_end = min(datetime.fromisoformat(end) + timedelta(days=1), latest).strftime("%Y-%m-%dT%H:%M:%S")
+        new_df = AlpacaMarketDataClient("paper").get_bars(symbol, fetch_start, fetch_end, interval)
+        if not new_df.empty:
+            fetched_at = datetime.now().isoformat()
+            records = [
+                (
+                    symbol, interval, _ts_key(ts, interval),
+                    row["Open"], row["High"], row["Low"], row["Close"], row["Volume"],
+                    fetched_at,
+                )
+                for ts, row in new_df.iterrows()
+            ]
+            conn.executemany(
+                "INSERT OR REPLACE INTO bars "
+                "(symbol, interval, ts, open, high, low, close, volume, fetched_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                records,
+            )
+            conn.commit()
+
+        # An empty answer still means [start, ...) was asked for, so it is covered: no re-asking every call.
+        conn.execute(
+            "INSERT OR REPLACE INTO bars_cover (symbol, interval, covered_from) VALUES (?, ?, ?)",
+            (symbol, interval, min(start, covered_from) if covered_from else start),
+        )
+        conn.commit()
+        return _query_range(conn, symbol, interval, start, end)
+    finally:
+        conn.close()

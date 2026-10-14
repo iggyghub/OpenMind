@@ -1,0 +1,132 @@
+import sqlite3
+import uuid
+from datetime import datetime, timezone
+from sqlite3 import OperationalError
+from typing import List, Optional
+
+from cerebral.paths import data_dir
+
+DB_PATH = data_dir() / "replay_runs.db"
+
+class ReplayStore:
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or str(DB_PATH)
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        cur = self.conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS replay_runs (
+                run_id TEXT PRIMARY KEY,
+                start TEXT NOT NULL,
+                end TEXT NOT NULL,
+                interval TEXT NOT NULL,
+                n_strategies INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS replay_results (
+                run_id TEXT NOT NULL,
+                strategy_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                gross_return REAL,
+                net_return REAL,
+                n_trades INTEGER,
+                max_drawdown REAL,
+                sharpe REAL,
+                flat_reason TEXT,
+                PRIMARY KEY (run_id, strategy_id)
+            );
+        """)
+        self.conn.commit()
+        # RP8: news_event_count, added after the table above already shipped
+        # (RP4) -- migrate existing DBs the same way strategy_store.py does.
+        try:
+            self.conn.execute(
+                "ALTER TABLE replay_results ADD COLUMN news_event_count INTEGER DEFAULT 0"
+            )
+            self.conn.commit()
+        except OperationalError:
+            pass  # Column already exists
+
+    def create_run(self, start: str, end: str, interval: str, n_strategies: int) -> str:
+        run_id = uuid.uuid4().hex
+        created_at = datetime.now(timezone.utc).isoformat()
+        cur = self.conn.cursor()
+        cur.execute(
+            "INSERT INTO replay_runs (run_id, start, end, interval, n_strategies, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, start, end, interval, n_strategies, created_at),
+        )
+        self.conn.commit()
+        return run_id
+
+    def record_result(
+        self,
+        run_id: str,
+        strategy_id: str,
+        symbol: str,
+        gross_return: float,
+        net_return: float,
+        n_trades: int,
+        max_drawdown: float,
+        sharpe: float,
+        flat_reason: Optional[str],
+        news_event_count: int = 0,
+    ) -> None:
+        cur = self.conn.cursor()
+        cur.execute(
+            """INSERT INTO replay_results (
+                run_id, strategy_id, symbol, gross_return, net_return, n_trades, max_drawdown, sharpe, flat_reason, news_event_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, strategy_id) DO UPDATE SET
+                symbol=excluded.symbol,
+                gross_return=excluded.gross_return,
+                net_return=excluded.net_return,
+                n_trades=excluded.n_trades,
+                max_drawdown=excluded.max_drawdown,
+                sharpe=excluded.sharpe,
+                flat_reason=excluded.flat_reason,
+                news_event_count=excluded.news_event_count""",
+            (run_id, strategy_id, symbol, gross_return, net_return, n_trades, max_drawdown, sharpe, flat_reason, news_event_count),
+        )
+        self.conn.commit()
+
+    def get_run(self, run_id: str) -> Optional[sqlite3.Row]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM replay_runs WHERE run_id = ?", (run_id,))
+        return cur.fetchone()
+
+    def get_results(self, run_id: str) -> List[sqlite3.Row]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM replay_results WHERE run_id = ?", (run_id,))
+        return cur.fetchall()
+
+    def get_worst_drawdown_by_strategy(self) -> dict:
+        """Worst (most negative) max_drawdown per strategy_id across every
+        accumulated replay_results row -- all runs, not just the latest.
+        BATCH-REPLAY S4 (#1227): feeds this rollup into
+        StrategyStore.worst_drawdown, which StrategyLifecycle's gates read.
+        max_drawdown is stored negative (a fraction of returns), so "worst"
+        is MIN(), not MAX(). Strategies with no replay rows at all are
+        simply absent from the returned dict -- the caller must treat a
+        missing key the same as "never replayed," not zero."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT strategy_id, MIN(max_drawdown) AS worst FROM replay_results "
+            "WHERE max_drawdown IS NOT NULL GROUP BY strategy_id"
+        )
+        return {row["strategy_id"]: row["worst"] for row in cur.fetchall()}
+
+    def list_runs(self, limit: Optional[int] = None) -> List[sqlite3.Row]:
+        cur = self.conn.cursor()
+        if limit is not None:
+            cur.execute("SELECT * FROM replay_runs ORDER BY created_at DESC LIMIT ?", (limit,))
+        else:
+            cur.execute("SELECT * FROM replay_runs ORDER BY created_at DESC")
+        return cur.fetchall()
+
+    def close(self) -> None:
+        self.conn.close()

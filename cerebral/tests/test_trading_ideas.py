@@ -11,6 +11,7 @@ from cerebral.trading_ideas import (
     _compile_strategy as compile_strategy,
     _extract_code,
     _run_tally,
+    infer_interval,
 )
 
 
@@ -48,6 +49,25 @@ class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(idea.provenance, "url: http://test.com")
         self.assertIn("Author claims:", idea.author_claim_text)
         self.assertIsInstance(idea.date_accessed, str)
+        # #1272: StubFetcher's page text ("Market goes up on Mondays.") has
+        # no timeframe language -- interval must stay None, not a guessed
+        # default (infer_interval's own no-signal convention).
+        self.assertIsNone(idea.interval)
+
+    def test_extract_from_url_infers_interval_from_page_text(self):
+        class IntradayFetcher:
+            def __call__(self, url: str):
+                return {
+                    "html": "<html><body>x</body></html>",
+                    "title": "Scalping AAPL",
+                    "text": "Scalp AAPL on the 5 minute chart after the open.",
+                    "links": [],
+                }
+
+        ideas = extract_from_url(
+            "http://test.com", fetcher=IntradayFetcher(), crawler=StubCrawler()
+        )
+        self.assertEqual(ideas[0].interval, "5m")
 
     def test_from_prose(self):
         idea = from_prose("Bought AAPL because it's cheap.")
@@ -350,6 +370,57 @@ class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((success, pos, total), (False, 0, 0))
 
+    # ── SR2: repair prompt params ────────────────────────────────────────
+
+    async def test_to_strategy_repair_prompt_includes_prior_code_and_error(self):
+        """When prior_code and prior_error are both given, the sent prompt
+        must contain both -- that's what the repair caller relies on."""
+        idea = from_prose("Buy when RSI < 30")
+
+        class CapturingRouter:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(self, prompt: str, task_type: str) -> str:
+                self.calls.append(prompt)
+                return "def strategy(data):\n    return [1]"
+
+        router = CapturingRouter()
+        with patch("cerebral.trading_ideas._run_tally", return_value=(False, 0, 0)):
+            await to_strategy(
+                idea,
+                router=router,
+                prior_code="def strategy(data):\n    return data.Close.sign()",
+                prior_error="AttributeError: 'Series' object has no attribute 'sign'",
+            )
+
+        self.assertEqual(len(router.calls), 1)
+        prompt = router.calls[0]
+        self.assertIn("def strategy(data):\n    return data.Close.sign()", prompt)
+        self.assertIn("AttributeError: 'Series' object has no attribute 'sign'", prompt)
+        self.assertIn("Your previous attempt at this failed", prompt)
+
+    async def test_to_strategy_no_repair_section_when_params_absent(self):
+        """Backward compatibility: when neither prior_code nor prior_error is
+        given, the prompt must not contain the repair section at all."""
+        idea = from_prose("Buy when RSI < 30")
+
+        class CapturingRouter:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(self, prompt: str, task_type: str) -> str:
+                self.calls.append(prompt)
+                return "def strategy(data):\n    return [1]"
+
+        router = CapturingRouter()
+        with patch("cerebral.trading_ideas._run_tally", return_value=(False, 0, 0)):
+            await to_strategy(idea, router=router)
+
+        self.assertEqual(len(router.calls), 1)
+        self.assertNotIn("Your previous attempt at this failed", router.calls[0])
+        self.assertNotIn("Previous code:", router.calls[0])
+
     def test_run_tally_computes_real_positive_count_from_confidence_weight(self):
         """The real S40 (retrieval) + S38 (confidence weight) wiring, not a
         stub: 3 retrieved ids, 2 with positive weight, 1 with negative."""
@@ -373,6 +444,65 @@ class TestTradingIdeas(unittest.IsolatedAsyncioTestCase):
             success, pos, total = _run_tally("some claim")
 
         self.assertEqual((success, pos, total), (True, 2, 3))
+
+
+class TestInferInterval(unittest.TestCase):
+    def test_minutes_to_interval(self):
+        self.assertEqual(infer_interval("Hold for 45 minutes from entry"), "30m")
+        self.assertEqual(infer_interval("Scalp in 5 minute trades"), "5m")
+        self.assertEqual(infer_interval("1 minute chart is best"), "1m")
+        self.assertEqual(infer_interval("Trade in 15-minute intervals"), "15m")
+
+    def test_hours_to_interval(self):
+        self.assertEqual(infer_interval("Check the 1 hour chart"), "1h")
+        self.assertEqual(infer_interval("Rebalance every 4 hours"), "4h")
+        self.assertEqual(infer_interval("Intraday swing"), "1h")
+        self.assertEqual(infer_interval("Trade the hour market"), "1h")
+
+    def test_days_weeks_months(self):
+        self.assertEqual(infer_interval("Hold for 3 days"), "1d")
+        self.assertEqual(infer_interval("Daily review"), "1d")
+        self.assertEqual(infer_interval("Weekly portfolio rebalance"), "1d")
+        self.assertEqual(infer_interval("Monthly options expiry"), "1d")
+
+    def test_no_match_returns_none(self):
+        self.assertIsNone(infer_interval("Buy low sell high without time constraints"))
+        self.assertIsNone(infer_interval("Long term value investing"))
+
+    def test_chart_pattern_claims_default_short_term_not_none(self):
+        """Regression (#1277, 2026-09-17): an unlabeled chart-pattern claim
+        used to fall through to None -> StrategySpec's '1d' schema default,
+        silently mislabeling 306/307 stored strategies as daily/swing even
+        though NR7/gap/breakout-style claims are short-term setups."""
+        self.assertEqual(infer_interval("If an NR7 bar fails to break out"), "1h")
+        self.assertEqual(infer_interval("Fade a gap fill near support"), "1h")
+        self.assertEqual(infer_interval("Opening range breakout to the upside"), "1h")
+        self.assertEqual(infer_interval("A bullish engulfing candlestick reverses the trend"), "1h")
+
+    def test_explicit_timeframe_still_wins_over_pattern_keyword(self):
+        """A claim naming both a pattern and an explicit timeframe should
+        keep using the explicit one -- the pattern fallback only fires when
+        no timeframe keyword matched at all."""
+        self.assertEqual(infer_interval("NR7 breakout held for 3 days"), "1d")
+
+    def test_from_prose_populates_interval(self):
+        idea = from_prose("Scalp 5 minute chart.")
+        self.assertEqual(idea.interval, "5m")
+
+    def test_from_prose_no_signal_is_none(self):
+        idea = from_prose("Buy and hold forever.")
+        self.assertIsNone(idea.interval)
+
+    def test_from_book_claim_populates_interval(self):
+        idea = from_book_claim(
+            "Exit any trade that remains in a loss after holding for 45 minutes from entry",
+            "The Trading Book", "4"
+        )
+        self.assertEqual(idea.interval, "30m")
+
+    def test_from_book_claim_no_signal_is_none(self):
+        idea = from_book_claim("Trend following works over time.", "Quant Strategies", "1")
+        self.assertIsNone(idea.interval)
 
 
 class TestExtractCode(unittest.TestCase):

@@ -67,6 +67,18 @@ def test_get_bars_returns_capitalised_ohlcv_columns():
     assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
 
 
+def test_get_bars_requests_split_and_dividend_adjusted_bars():
+    """RP0 / #1187: Alpaca returns raw unadjusted prices unless the request
+    carries an Adjustment enum. Without this, AAPL's 2020-08-31 4:1 split
+    reads as a fake ~74% one-day crash, and Alpaca disagrees with the
+    yfinance fallback which is already split+dividend adjusted."""
+    from alpaca.data.enums import Adjustment
+
+    client = _client_with_fakes()
+    client.get_bars("AAPL", "2026-01-01", "2026-01-10", "1d")
+    assert client._client.last_request.kwargs["adjustment"] == Adjustment.ALL
+
+
 def test_get_bars_collapses_the_multiindex_to_a_plain_date_index():
     """Real bug, live-observed: get_stock_bars always returns a MultiIndex
     (symbol, timestamp), even for one symbol. df.index.name = "Date"
@@ -80,3 +92,52 @@ def test_get_bars_collapses_the_multiindex_to_a_plain_date_index():
     assert df.index.nlevels == 1
     assert df.index.name == "Date"
     assert df.index[0] == pd.Timestamp("2026-01-01")
+
+
+class _FakeMultiClient:
+    def __init__(self):
+        self.last_request = None
+
+    def get_stock_bars(self, req):
+        self.last_request = req
+        idx = pd.MultiIndex.from_tuples(
+            [("AAPL", pd.Timestamp("2026-01-02")), ("AAPL", pd.Timestamp("2026-01-01")),
+             ("MSFT", pd.Timestamp("2026-01-01"))],
+            names=["symbol", "timestamp"],
+        )
+        df = pd.DataFrame(
+            {"open": [2.0, 1.0, 5.0], "high": [2.0, 1.0, 5.0], "low": [2.0, 1.0, 5.0],
+             "close": [2.0, 1.0, 5.0], "volume": [100, 100, 100]},
+            index=idx,
+        )
+        return _FakeBars(df)
+
+
+def test_get_daily_bars_multi_sends_one_request_and_splits_per_symbol():
+    client = AlpacaMarketDataClient(env="paper")
+    client._client = _FakeMultiClient()
+    client._request_cls = _SpyRequest
+    client._connected = True
+
+    out = client.get_daily_bars_multi(["AAPL", "MSFT", "NOPE"], "2026-01-01", "2026-01-10")
+
+    assert client._client.last_request.kwargs["symbol_or_symbols"] == ["AAPL", "MSFT", "NOPE"]
+    assert sorted(out) == ["AAPL", "MSFT"]  # no bars -> absent, not an empty frame
+    aapl = out["AAPL"]
+    assert list(aapl.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert aapl.index.name == "Date" and aapl.index.nlevels == 1
+    assert list(aapl["Close"]) == [1.0, 2.0]  # ascending by date
+
+
+def test_get_daily_bars_multi_caps_end_before_the_last_15_minutes():
+    """Alpaca's free plan refuses SIP data from the last 15 minutes; a future end must be capped."""
+    from datetime import datetime, timedelta, timezone
+    client = AlpacaMarketDataClient(env="paper")
+    client._client = _FakeMultiClient()
+    client._request_cls = _SpyRequest
+    client._connected = True
+
+    client.get_daily_bars_multi(["AAPL"], "2026-01-01", "2099-01-01")
+
+    end = client._client.last_request.kwargs["end"]
+    assert end <= datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=15)

@@ -18,6 +18,27 @@ class TestRiskLimits:
         res = mgr.check_order(10000.0, 0, 0.0, 150.0, "AAPL", 1.5)
         assert res.allowed
 
+    def test_per_trade_risk_tolerates_a_cent_of_float_slop_at_the_cap(self):
+        """qty sized to exactly the risk budget (no headroom, 2026-09-01
+        user choice) re-prices at dispatch as qty*price, which can round a
+        fraction of a cent over the cap on float noise alone -- live-observed
+        blocking real trades. A whole cent over must still reject."""
+        mgr = RiskManager(RiskConfig(max_per_trade_risk_pct=10.0))
+        just_over = mgr.check_order(100.0, 0, 0.0, 10.0 + 1e-9, "AAPL", 1.0)
+        a_cent_over = mgr.check_order(100.0, 0, 0.0, 10.011, "AAPL", 1.0)
+        assert just_over.allowed
+        assert not a_cent_over.allowed
+
+    def test_per_trade_risk_override(self):
+        mgr = RiskManager(RiskConfig(max_per_trade_risk_pct=10.0))
+        # Global 10% cap would block 25% of account. Override 25% allows it.
+        res = mgr.check_order(10000.0, 0, 0.0, 2500.0, "AAPL", 25.0, max_per_trade_risk_pct_override=25.0)
+        assert res.allowed
+        # Without override, same trade should be blocked
+        res_no_override = mgr.check_order(10000.0, 0, 0.0, 2500.0, "AAPL", 25.0)
+        assert not res_no_override.allowed
+        assert res_no_override.blocked_by == "per_trade_risk"
+
     def test_daily_loss_halts_trades(self):
         mgr = RiskManager(RiskConfig(max_daily_loss_pct=6.0))
         # 6% of 10000 = 600. Current loss 600 -> reject
@@ -98,6 +119,26 @@ class TestFailureHandling:
         mgr = RiskManager()
         assert mgr.check_sentiment("AAPL", None).allowed
 
+    def test_bearish_stock_sentiment_blocks_new_open_even_when_market_is_not(self):
+        """A stock's own BEARISH reading blocks independently of the
+        market-wide reading -- penny stocks move on stock-specific news."""
+        mgr = RiskManager()
+        res = mgr.check_sentiment("PENNY", "NEUTRAL", stock_sentiment_label="BEARISH")
+        assert not res.allowed
+        assert res.blocked_by == "stock_sentiment"
+
+    def test_bearish_market_sentiment_still_blocks_when_stock_is_bullish(self):
+        """The market-wide check runs first -- a bullish single stock
+        doesn't override a bearish overall market."""
+        mgr = RiskManager()
+        res = mgr.check_sentiment("PENNY", "BEARISH", stock_sentiment_label="BULLISH")
+        assert not res.allowed
+        assert res.blocked_by == "market_sentiment"
+
+    def test_no_stock_sentiment_reading_passes(self):
+        mgr = RiskManager()
+        assert mgr.check_sentiment("AAPL", "NEUTRAL", stock_sentiment_label=None).allowed
+
     def test_symbol_claim_blocks_when_already_claimed(self):
         mgr = RiskManager()
         res = mgr.check_symbol_claim("AAPL", {"AAPL", "MSFT"})
@@ -129,3 +170,16 @@ class TestAlerts:
         assert len(received) == 1
         assert received[0].severity == "warning"
         assert received[0].context == {"key": "val"}
+
+    def test_alert_dispatcher_history_is_bounded_to_500(self):
+        dispatcher = AlertDispatcher()
+        first_alert = StructuredAlert(severity="info", event_type="test", message="first")
+        dispatcher.emit(first_alert)
+
+        for i in range(500):
+            dispatcher.emit(StructuredAlert(severity="info", event_type="test", message=f"alert-{i}"))
+
+        pending = dispatcher.get_pending()
+        assert len(pending) == 500
+        # Oldest alert should have been evicted
+        assert pending[0].message != "first"

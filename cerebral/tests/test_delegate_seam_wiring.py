@@ -50,7 +50,7 @@ def test_wired_factory_returns_the_four_expected_keys(monkeypatch):
     assert set(ctx) == {"router", "gate_fn", "execute_fn", "all_tools"}
     assert ctx["router"] is main._router
     assert ctx["gate_fn"] is main._gate_tool
-    assert ctx["execute_fn"] == main._orc.call_tool
+    assert ctx["execute_fn"] is main._execute_after_gate  # S6c: gate_fn already ran
     assert ctx["all_tools"] == main._orc.tools_for_llm
 
 

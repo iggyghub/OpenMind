@@ -320,3 +320,93 @@ class TestSuccessShape:
         data = json.loads(result.content)
         assert data["stdout"] == "installed!"
         assert data["exit_code"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Cycle 8 -- global flag, version pin, name/query validation (Issue #1425)
+# ---------------------------------------------------------------------------
+
+class TestGlobalAndValidation:
+    @pytest.mark.asyncio
+    async def test_npm_install_global_argv(self):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        await PackageManagerPlugin(run_fn=run_fn).call_tool(
+            "pkg_install", {"manager": "npm", "name": "rea-agents@6.4.0", "global": True}
+        )
+        assert captured["argv"] == ["npm", "install", "--global", "rea-agents@6.4.0"]
+
+    @pytest.mark.asyncio
+    async def test_npm_update_global_argv(self):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        await PackageManagerPlugin(run_fn=run_fn).call_tool(
+            "pkg_update", {"manager": "npm", "name": "rea-agents", "global": True}
+        )
+        assert captured["argv"] == ["npm", "update", "--global", "rea-agents"]
+
+    @pytest.mark.asyncio
+    async def test_default_install_argv_unchanged(self):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        await PackageManagerPlugin(run_fn=run_fn).call_tool(
+            "pkg_install", {"manager": "npm", "name": "left-pad"}
+        )
+        assert captured["argv"] == ["npm", "install", "left-pad"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("manager", ["pip", "winget"])
+    async def test_global_rejected_outside_npm(self, manager):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        result = await PackageManagerPlugin(run_fn=run_fn).call_tool(
+            "pkg_install", {"manager": manager, "name": "x", "global": True}
+        )
+        assert result.is_error
+        assert captured["calls"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name", ["--foo", "-g", "a&calc", "a b", "a|b", "$(x)", "a;b", "a%PATH%"]
+    )
+    async def test_bad_names_rejected(self, name):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        result = await PackageManagerPlugin(run_fn=run_fn).call_tool(
+            "pkg_install", {"manager": "npm", "name": name}
+        )
+        assert result.is_error
+        assert captured["calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_bad_search_query_rejected(self):
+        from plugins.package_manager import PackageManagerPlugin
+
+        run_fn, captured = _fake_run()
+        result = await PackageManagerPlugin(run_fn=run_fn).call_tool(
+            "pkg_search", {"manager": "npm", "query": "react & calc"}
+        )
+        assert result.is_error
+        assert captured["calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_default_runner_resolves_exe_via_path(self, monkeypatch):
+        import plugins.package_manager as pm
+
+        seen = {}
+
+        def fake(argv, **kw):
+            seen["argv"] = argv
+            return MagicMock(stdout="", stderr="", returncode=0)
+
+        monkeypatch.setattr(pm.shutil, "which", lambda n: "C:/x/npm.CMD")
+        monkeypatch.setattr(pm.subprocess, "run", fake)
+        await pm.PackageManagerPlugin().call_tool(
+            "pkg_search", {"manager": "npm", "query": "rea"}
+        )
+        assert seen["argv"][0] == "C:/x/npm.CMD"

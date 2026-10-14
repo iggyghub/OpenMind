@@ -69,8 +69,10 @@ class Book:
     total_chunks: int
     processed_chunks: int
     strategies_found: int
+    strategies_repaired: int
     created_at: str
     error_message: str
+    category: str = "Uncategorised"
 
 
 class BookStore:
@@ -98,13 +100,31 @@ class BookStore:
             )
         """)
         self._con.commit()
+        try:
+            self._con.execute(
+                "ALTER TABLE books ADD COLUMN strategies_repaired INTEGER NOT NULL DEFAULT 0"
+            )
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        # 2026-09-09: category, added to an already-live table -- same
+        # try/ALTER/except convention cerebral/video/store.py's own
+        # migrations use ("column already exists" is the expected steady
+        # state after the first run).
+        try:
+            self._con.execute(
+                "ALTER TABLE books ADD COLUMN category TEXT NOT NULL DEFAULT 'Uncategorised'"
+            )
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass
 
-    def add(self, title: str, filename: str, stored_path: str) -> Book:
+    def add(self, title: str, filename: str, stored_path: str, category: str = "Uncategorised") -> Book:
         now = datetime.now(timezone.utc).isoformat()
         cur = self._con.execute(
-            "INSERT INTO books (title, filename, stored_path, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (title, filename, stored_path, STATUS_QUEUED, now),
+            "INSERT INTO books (title, filename, stored_path, status, created_at, category) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (title, filename, stored_path, STATUS_QUEUED, now, category or "Uncategorised"),
         )
         self._con.commit()
         return self.get(cur.lastrowid)  # type: ignore[arg-type]
@@ -142,6 +162,13 @@ class BookStore:
         )
         self._con.commit()
 
+    def increment_repaired(self, book_id: int) -> None:
+        self._con.execute(
+            "UPDATE books SET strategies_repaired = strategies_repaired + 1 WHERE id = ?",
+            (book_id,),
+        )
+        self._con.commit()
+
     def reset(self, book_id: int) -> None:
         """Back to a fresh queued state, all progress/counters cleared --
         used by retry_book to redo a book's ingestion from scratch.
@@ -149,7 +176,7 @@ class BookStore:
         has been re-extracted and re-chunked."""
         self._con.execute(
             "UPDATE books SET status = ?, total_chunks = 0, processed_chunks = 0, "
-            "strategies_found = 0, error_message = '' WHERE id = ?",
+            "strategies_found = 0, strategies_repaired = 0, error_message = '' WHERE id = ?",
             (STATUS_QUEUED, book_id),
         )
         self._con.commit()
@@ -175,8 +202,14 @@ def _row_to_book(row: sqlite3.Row) -> Book:
         id=row["id"], title=row["title"], filename=row["filename"],
         stored_path=row["stored_path"], status=row["status"],
         total_chunks=row["total_chunks"], processed_chunks=row["processed_chunks"],
-        strategies_found=row["strategies_found"], created_at=row["created_at"],
+        strategies_found=row["strategies_found"],
+        strategies_repaired=row["strategies_repaired"],
+        created_at=row["created_at"],
         error_message=row["error_message"],
+        # keys() check: a row from a pre-migration connection within the same
+        # process (a test's raw sqlite3.connect, not through BookStore) won't
+        # have the column yet.
+        category=row["category"] if "category" in row.keys() else "Uncategorised",
     )
 
 

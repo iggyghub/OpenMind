@@ -11,11 +11,12 @@ own SAFETY section documents hasn't been applied) rather than failing.
 from pathlib import Path
 
 import cerebral
+import numpy as np
 import pandas as pd
 import pytest
 
 from cerebral.sandbox._windows import WindowsSandbox
-from cerebral.trading.sandboxed_eval import evaluate_signals
+from cerebral.trading.sandboxed_eval import evaluate_signals, evaluate_signals_verbose
 
 pytestmark = pytest.mark.skipif(
     not WindowsSandbox.available(), reason="ADR-0010 sandbox not available on this machine"
@@ -130,11 +131,123 @@ def test_a_full_years_daily_bars_still_produce_real_signals_not_flat():
     )
 
 
-def test_workdir_is_cleaned_up_after_a_run():
-    from cerebral.trading.sandboxed_eval import _WORKDIR_ROOT
+def test_workdir_is_cleaned_up_after_a_run(monkeypatch):
+    # _WORKDIR_ROOT is machine-global (live Felix / concurrent suites create
+    # dirs there), so diffing it is racy. Pin our own workdir name instead.
+    import types
+    import uuid
 
-    before = set(_WORKDIR_ROOT.glob("*")) if _WORKDIR_ROOT.exists() else set()
-    evaluate_signals(MA_CROSS_CODE, _bars())
-    after = set(_WORKDIR_ROOT.glob("*")) if _WORKDIR_ROOT.exists() else set()
+    from cerebral.trading import sandboxed_eval
 
-    assert after == before
+    marker = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    monkeypatch.setattr(sandboxed_eval, "uuid", types.SimpleNamespace(uuid4=lambda: marker))
+
+    signals = evaluate_signals(MA_CROSS_CODE, _bars())
+
+    assert len(signals) > 0
+    assert not (sandboxed_eval._WORKDIR_ROOT / str(marker)).exists()
+
+
+def test_numpy_int64_signal_roundtrips():
+    """Strategies returning numpy int64 arrays must round-trip, not degrade to flat."""
+    code = (
+        "import numpy as np\n"
+        "def strategy(data):\n"
+        "    return np.array([1, 0, -1], dtype=np.int64)\n"
+    )
+    bars = _bars(3)
+    result = evaluate_signals(code, bars)
+    assert result == [1, 0, -1]
+
+
+def test_pandas_series_signal_roundtrips():
+    """Strategies returning a pandas Series of ints must round-trip, not degrade to flat.
+
+    Deliberately does NOT self-import pandas -- a real LLM-generated
+    `def strategy(data): ...` body is prompted for the function only, so
+    `pd`/`np` must already be available in the exec namespace rather than
+    relying on the strategy importing them itself."""
+    code = (
+        "def strategy(data):\n"
+        "    return pd.Series([1, 0, -1], dtype='int64')\n"
+    )
+    bars = _bars(3)
+    result = evaluate_signals(code, bars)
+    assert result == [1, 0, -1]
+
+
+def test_numpy_signal_without_self_import_roundtrips():
+    """Same as test_numpy_int64_signal_roundtrips, but without the strategy
+    self-importing numpy -- proves np is seeded into the exec namespace,
+    not just working by coincidence because the other test imports it."""
+    code = (
+        "def strategy(data):\n"
+        "    return np.array([1, 0, -1], dtype=np.int64)\n"
+    )
+    bars = _bars(3)
+    result = evaluate_signals(code, bars)
+    assert result == [1, 0, -1]
+
+
+def test_plain_python_list_still_works():
+    """Existing behavior with plain Python lists of ints must remain unchanged."""
+    code = (
+        "def strategy(data):\n"
+        "    return [1, -1, 0]\n"
+    )
+    bars = _bars(3)
+    result = evaluate_signals(code, bars)
+    assert result == [1, -1, 0]
+
+
+def test_evaluate_signals_verbose_returns_reason_when_strategy_raises():
+    bars = _bars()
+    raising_code = (
+        "def strategy(data):\n"
+        "    raise ValueError('boom')\n"
+    )
+    signals, reason = evaluate_signals_verbose(raising_code, bars)
+    assert all(s == 0 for s in signals)
+    assert reason is not None
+    assert "strategy evaluation failed" in reason or "evaluation raised" in reason
+
+
+def test_evaluate_signals_verbose_returns_reason_for_malformed_signals():
+    # Values outside {-1, 0, 1} write valid JSON but fail evaluate_signals_verbose's validator
+    bars = _bars(3)
+    bad_code = (
+        "def strategy(data):\n"
+        "    return [2, 3, 4]\n"
+    )
+    signals, reason = evaluate_signals_verbose(bad_code, bars)
+    assert all(s == 0 for s in signals)
+    assert reason is not None
+    assert "malformed" in reason
+
+
+def test_evaluate_signals_verbose_success_returns_none_reason():
+    bars = _bars()
+    signals, reason = evaluate_signals_verbose(MA_CROSS_CODE, bars)
+    expected = _expected_ma_cross_signals(bars)
+    assert signals == expected
+    assert reason is None
+
+
+def test_lookahead_shift_negative_is_rejected_without_running():
+    """Regression (2026-09-17): an NR7-breakout strategy used
+    data['Close'].shift(-1) (tomorrow's close) to decide today's signal,
+    producing a fake 314,000% backtest return -- a real edge can't exist
+    if the strategy is reading the future. The guard itself runs before
+    the sandbox is ever touched (see evaluate_signals_verbose), so this
+    only needs the module's WindowsSandbox skip for consistency with its
+    neighbors, not because the check depends on it."""
+    bars = _bars(10)
+    lookahead_code = (
+        "def strategy(data):\n"
+        "    future = data['Close'].shift(-1)\n"
+        "    return (future > data['Close']).astype(int).tolist()\n"
+    )
+    signals, reason = evaluate_signals_verbose(lookahead_code, bars)
+    assert all(s == 0 for s in signals)
+    assert reason is not None
+    assert "lookahead" in reason

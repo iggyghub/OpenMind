@@ -46,3 +46,22 @@ def test_backtest_result_reports_gross_and_net():
     # Net should be lower due to cost deduction
     assert result.cumulative_net_return < result.cumulative_gross_return
     assert isinstance(result.net_returns, list)
+
+
+def test_the_same_trade_costs_the_same_at_any_share_price():
+    """#1329: the charge used to scale with the price of one share ($5 stock ~free, $1,500 stock 300x dearer)."""
+    from cerebral.trading.replay import derive_trades
+    import pandas as pd
+    pos = pd.Series([0.0, 1.0, 1.0, 0.0])
+    costs = []
+    for price in (5.0, 200.0, 1500.0):
+        trades = derive_trades(pos, pd.Series([price] * 4))
+        net = apply_costs_to_returns([0.0] * 4, trades, {})
+        costs.append(-sum(net))
+    assert costs[0] == pytest.approx(costs[1]) == pytest.approx(costs[2])
+    assert costs[0] == pytest.approx(2 * 0.0002)          # two trades x the 2 bps default per side
+
+
+def test_default_cost_is_two_basis_points_of_notional():
+    net = apply_costs_to_returns([0.0], [make_trade(0, 10_000.0)], {})
+    assert net[0] == pytest.approx(-0.0002)

@@ -22,6 +22,31 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(python -c 'import sys,json;d=json.load(sys.stdin);print(d.get(\"tool_input\",{}).get(\"file_path\",\"\"))' 2>/dev/null); case \"$f\" in *scripts/*.ps1) pat=$(printf '[^ -~\\t\\r]'); grep -qE \"$pat\" \"$f\" 2>/dev/null && echo \"WARNING: non-ASCII byte(s) in $f -- PowerShell 5.1 reads .ps1 as ANSI without a BOM; UTF-8 em-dashes/smart quotes will mojibake and break the parser (CLAUDE.md: ASCII-only script bodies).\" ;; esac; true",
+            "description": "Warn on non-ASCII bytes in edited .ps1 scripts (CLAUDE.md ASCII-only gotcha)",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "if": "Bash(git commit*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f scripts/check_doc_drift.py && { out=$(python scripts/check_doc_drift.py docs/adr/*.md CONTEXT.md 2>/dev/null); [ -n \"$out\" ] && printf 'DOC DRIFT WARNING (non-blocking):\\n%s\\n' \"$out\"; }; true",
+            "description": "Warn (non-blocking) on stale doc/ADR file citations before commit; now live via scripts/check_doc_drift.py (issue #1142, merged in PR #1144)",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }

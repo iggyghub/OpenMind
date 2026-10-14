@@ -1,0 +1,25 @@
+{
+  "implements": {
+    "F-bridge-api-1": {
+      "symbol": "plugins/felix_dialogs.py::FelixDialogsPlugin.list_tools",
+      "test": "cerebral/tests/test_plugin_felix_dialogs.py::test_bridge_lists_both_tools"
+    },
+    "F-ipc-channel-6": {
+      "symbol": "plugins/felix_dialogs.py::felix_dialog_open_path",
+      "test": "cerebral/tests/test_plugin_felix_dialogs.py::test_open_returns_relative_path"
+    },
+    "F-ipc-handler-6": {
+      "symbol": "plugins/felix_dialogs.py::felix_dialog_open_path",
+      "test": "cerebral/tests/test_plugin_felix_dialogs.py::test_open_returns_relative_path"
+    },
+    "F-ipc-channel-7": {
+      "symbol": "plugins/felix_dialogs.py::felix_dialog_save_path",
+      "test": "cerebral/tests/test_plugin_felix_dialogs.py::test_save_returns_relative_path"
+    },
+    "F-ipc-handler-7": {
+      "symbol": "plugins/felix_dialogs.py::felix_dialog_save_path",
+      "test": "cerebral/tests/test_plugin_felix_dialogs.py::test_save_returns_relative_path"
+    }
+  },
+  "waived": {}
+}

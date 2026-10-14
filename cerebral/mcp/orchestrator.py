@@ -52,6 +52,15 @@ logger = logging.getLogger(__name__)
 _MISSING = object()
 
 
+class _GateExempt:
+    """Explicit marker: this call site deliberately skips the capability gate."""
+    def __repr__(self) -> str:
+        return "GATE_EXEMPT"
+
+
+GATE_EXEMPT = _GateExempt()
+
+
 # Decision strictness order for the AND-across-capabilities check (#52).
 # A higher rank means "more restrictive" — DENY trumps ASK trumps SILENT.
 _DECISION_RANK: dict[Decision, int] = {
@@ -75,6 +84,7 @@ REASON_INVALID_TYPE = "invalid_required_capabilities"
 REASON_UNKNOWN_CAPABILITY = "unknown_capability"
 REASON_CREATE_FAILED = "create_failed"
 REASON_LOAD_FAILED = "load_failed"
+REASON_NO_TEST_FILE = "no_test_file"
 
 
 class PluginRegistrationError(Exception):
@@ -167,7 +177,15 @@ class MCPOrchestrator:
         acl: ProfileACL | None = None,
         consent: ConsentSurface | None = None,
         modal: ModalSurface | None = None,
+        verify_test_files: bool = False,
     ) -> None:
+        # ADR-0034: refuse a plugin with no cerebral/tests/test_plugin_<name>.py
+        # at registration. Defaults off -- the many unit tests across this
+        # suite that discover synthetic throwaway plugins (no matching real
+        # test file by design, that being the point of a throwaway fixture)
+        # would otherwise all need to opt out individually. The one real
+        # production construction (cerebral/main.py) opts in explicitly.
+        self._verify_test_files = verify_test_files
         self._plugins: dict[str, Plugin] = {}
         # tool_name → plugin_name for fast routing
         self._tool_index: dict[str, str] = {}
@@ -204,6 +222,7 @@ class MCPOrchestrator:
         # Persistent grant would otherwise cover the class. When None,
         # irreversible fails closed to DENY regardless of any grant.
         self._modal: ModalSurface | None = modal
+        self._watch = None  # runtime watch -- set_watch (ADR-0005 amendment 2026-10-11)
         # Module-level REQUIRED_CAPABILITIES per registered plugin (Issue #44).
         # Used by the tray UI and (later) by #47 to decide per-tool gates.
         self._plugin_capabilities: dict[str, frozenset[str]] = {}
@@ -264,6 +283,13 @@ class MCPOrchestrator:
         self._consent = consent
         if consent is not None:
             consent.set_acl(self._acl)
+
+    def set_watch(self, watch: "object | None") -> None:
+        """Runtime watch (cerebral/security/watch.py, ADR-0005 amendment
+        2026-10-11). It can only make a call stricter: a normally-SILENT call
+        it flags (untrusted-content taint, anomaly) routes to the consent
+        surface with a reason. None = no watch (tests, bare process)."""
+        self._watch = watch
 
     def set_modal_surface(self, modal: ModalSurface | None) -> None:
         """Wire (or unwire) the tray irreversible-modal surface (Issue #49).
@@ -560,9 +586,19 @@ class MCPOrchestrator:
         # routes to the modal regardless of grant (unless already DENY);
         # otherwise ASK routes to the consent surface.
         assert worst_cap is not None  # unreachable: capabilities non-empty
+        reason = self._watch_reason(tool_name, capabilities, worst, flags)
         if flags is not None and flags.irreversible and worst is not Decision.DENY:
             if self._modal is not None:
                 worst = await self._modal.request(worst_cap, tool_name, args or {}, flags)
+            else:
+                worst = Decision.DENY
+        elif reason is not None:
+            # Watch escalation: a normally-silent call must ask (fails closed
+            # with no consent surface, like any ASK).
+            if self._consent is not None:
+                worst = await self._consent.request(
+                    worst_cap, tool_name, args or {}, flags, reason=reason,
+                )
             else:
                 worst = Decision.DENY
         elif worst is Decision.ASK:
@@ -643,7 +679,7 @@ class MCPOrchestrator:
         self,
         name: str,
         args: dict,
-        capability: Capability | None = None,
+        capability: Capability | _GateExempt | None = None,
         flags: CallFlags | None = None,
     ) -> ToolResult:
         if name not in self._tool_index:
@@ -654,7 +690,22 @@ class MCPOrchestrator:
         # via ``Tool(irreversible=True)`` route through the modal even when
         # the caller passed ``flags=None``.
         flags = self._merge_irreversible(flags, name)
-        if capability is not None:
+        if capability is None:
+            # Plugin-level REQUIRED_CAPABILITIES live in _plugin_capabilities; a
+            # per-tool declaration (Tool.required_capabilities) overrides inside
+            # check_capabilities. Unknown/undeclared -> empty -> SILENT (as before).
+            caps = self._plugin_capabilities.get(self._tool_index[name]) or frozenset()
+            decision = await self.check_capabilities(name, caps, flags, args)
+            if decision is not Decision.SILENT:
+                logger.info(
+                    "[mcp] Gate denied '%s' (capability=None, decision=%s)",
+                    name, decision.value,
+                )
+                return ToolResult(
+                    content=f"Denied: '{name}' requires its declared capabilities (policy: {decision.value})",
+                    is_error=True,
+                )
+        elif capability is not GATE_EXEMPT:
             # Issue #45 — the per-profile ACL resolver (when set) layers
             # per-tool overrides + once/session grants on top of the gate's
             # default-policy lookup. Without an ACL we fall back to the
@@ -706,7 +757,32 @@ class MCPOrchestrator:
         except Exception as exc:
             logger.error("[mcp] Tool '%s' raised: %s", name, exc)
             return ToolResult(content=f"Tool '{name}' error: {exc}", is_error=True)
+        if self._watch is not None:
+            self._watch.after_call(name, self._effective_caps(name))
         return result
+
+    def _effective_caps(self, tool_name: str) -> "frozenset[str]":
+        """A tool's declared capabilities (per-tool override, else its plugin's)."""
+        tool = self._tool_lookup.get(tool_name)
+        if tool is not None and tool.required_capabilities is not None:
+            return frozenset(tool.required_capabilities)
+        plugin = self._tool_index.get(tool_name)
+        return frozenset(self._plugin_capabilities.get(plugin) or ())
+
+    def _watch_reason(
+        self, tool_name: str, capabilities: "frozenset[str]", worst: Decision,
+        flags: CallFlags | None,
+    ) -> "str | None":
+        """Why the runtime watch wants a normally-SILENT call to ask, or None.
+        Only SILENT is escalated: ASK/DENY/irreversible already stop the call."""
+        if self._watch is None or worst is not Decision.SILENT:
+            return None
+        if flags is not None and flags.irreversible:
+            return None
+        reason = self._watch.escalation_reason(tool_name, frozenset(capabilities))
+        if reason:
+            logger.info("[watch] escalating '%s' to ask: %s", tool_name, reason)
+        return reason
 
     @property
     def tools_for_llm(self) -> list[dict]:
@@ -871,6 +947,18 @@ class MCPOrchestrator:
         if err is not None:
             self._record_registration_error(err.plugin_name, err.reason, err.detail, path)
             return
+
+        # ADR-0034 (verification contract): a plugin with no test file is
+        # refused the same way one with no REQUIRED_CAPABILITIES is -- this
+        # plugin alone is skipped, not the whole boot.
+        if self._verify_test_files:
+            from cerebral.verification import verify_plugin_test_file
+            verify_result = verify_plugin_test_file(plugin_name)
+            if not verify_result.passed:
+                self._record_registration_error(
+                    plugin_name, REASON_NO_TEST_FILE, verify_result.evidence, path,
+                )
+                return
 
         # S2 #470 — if the user has disabled this plugin, record its metadata
         # for the Harness UI card but skip registration so no tools are active.

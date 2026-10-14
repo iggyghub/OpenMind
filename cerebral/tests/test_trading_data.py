@@ -19,13 +19,19 @@ from cerebral import trading_data
 
 @pytest.fixture(autouse=True)
 def isolated_cache_dir(tmp_path, monkeypatch):
-    """Redirect the module's cache dir to a per-test tmp dir.
+    """Redirect both cache mechanisms to a per-test tmp dir.
 
     Without this, tests sharing a symbol/date-range key (several use AAPL /
     2023-01-01 / 2023-01-10) silently read each other's cached CSV instead of
-    exercising their own mocked scenario.
+    exercising their own mocked scenario. Since RP3, fetch_ohlcv's Alpaca
+    path routes through cerebral/trading/bar_cache.py's SQLite store instead
+    of a CSV file -- its `data_dir()` call must be redirected too (patching
+    `cerebral.paths.data_dir` itself, since bar_cache imports it lazily
+    per-call), or these tests would create/use the real
+    cerebral/data/bars.db on whatever machine runs them.
     """
     monkeypatch.setattr(trading_data, "_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr("cerebral.paths.data_dir", lambda: tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -36,11 +42,21 @@ def no_alpaca_market_data(monkeypatch):
     credentials exist in keyring, every test here silently started making
     a real network call to Alpaca instead of ever touching the mock. Force
     the Alpaca branch to fail so it falls through, restoring the "no real
-    network requests" contract in this file's own module docstring."""
+    network requests" contract in this file's own module docstring.
+
+    Patched in BOTH places (RP3): cerebral.trading.bar_cache imports
+    AlpacaMarketDataClient at module level (a persistent binding, needed so
+    cerebral/tests/test_bar_cache.py can itself patch
+    cerebral.trading.bar_cache.AlpacaMarketDataClient) -- patching only
+    cerebral.trading.broker's own attribute would not reach that
+    already-bound reference, since fetch_ohlcv's cache=True path now goes
+    through bar_cache, not a direct broker.AlpacaMarketDataClient() call.
+    """
     class _AlwaysFails:
         def __init__(self, *a, **kw):
             raise RuntimeError("Alpaca disabled in trading_data tests")
     monkeypatch.setattr("cerebral.trading.broker.AlpacaMarketDataClient", _AlwaysFails)
+    monkeypatch.setattr("cerebral.trading.bar_cache.AlpacaMarketDataClient", _AlwaysFails)
 
 
 @pytest.fixture
@@ -87,6 +103,42 @@ def test_fetch_ohlcv_strips_non_ohlvc_columns(mock_ohlcv_df):
         result = trading_data.fetch_ohlcv("TSLA", "2023-01-01", "2023-01-10")
 
         assert set(result.columns) == {"Open", "High", "Low", "Close", "Volume"}
+
+
+def test_fetch_ohlcv_routes_through_bar_cache_when_alpaca_available():
+    """RP3: cache=True routes the Alpaca path through
+    cerebral.trading.bar_cache.get_bars, not this module's own CSV cache
+    or yfinance -- the original RP3 PR added bar_cache.py but never wired
+    fetch_ohlcv to actually use it, so nothing exercised this integration."""
+    cached_df = pd.DataFrame({
+        "Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0], "Volume": [1.0],
+    }, index=pd.to_datetime(["2023-01-01"]))
+    cached_df.index.name = "Date"
+
+    with patch("cerebral.trading.bar_cache.get_bars", return_value=cached_df) as mock_get_bars, \
+         patch("cerebral.trading_data.yf.Ticker") as MockTicker:
+        result = trading_data.fetch_ohlcv("AAPL", "2023-01-01", "2023-01-01")
+
+        mock_get_bars.assert_called_once_with("AAPL", "2023-01-01", "2023-01-01", "1d")
+        MockTicker.assert_not_called()
+        pd.testing.assert_frame_equal(result, cached_df)
+
+
+def test_fetch_ohlcv_cache_false_bypasses_bar_cache():
+    """cache=False keeps the pre-RP3 behavior: a direct AlpacaMarketDataClient
+    call, no SQLite cache involved at all."""
+    direct_df = pd.DataFrame({
+        "Open": [2.0], "High": [2.0], "Low": [2.0], "Close": [2.0], "Volume": [2.0],
+    }, index=pd.to_datetime(["2023-01-01"]))
+
+    mock_client = MagicMock()
+    mock_client.get_bars.return_value = direct_df
+    with patch("cerebral.trading.broker.AlpacaMarketDataClient", return_value=mock_client), \
+         patch("cerebral.trading.bar_cache.get_bars") as mock_cached_get_bars:
+        result = trading_data.fetch_ohlcv("AAPL", "2023-01-01", "2023-01-01", cache=False)
+
+        mock_cached_get_bars.assert_not_called()
+        pd.testing.assert_frame_equal(result, direct_df)
 
 
 # ── Caching tests ─────────────────────────────────────────────────

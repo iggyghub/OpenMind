@@ -106,6 +106,28 @@ def _claw_conn_error_detail(exc: Exception) -> str:
     return str(exc) or f"{type(exc).__name__} (timeout={_claw_timeout_s()}s)"
 
 
+def _nonchat_grace_s() -> float:
+    """Non-chat grace period in seconds when a chat waiter queues (FELIX-AUDIT S4). Override via NONCHAT_GRACE_S."""
+    raw = os.environ.get("NONCHAT_GRACE_S")
+    if raw is None:
+        return 30.0
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "[router] NONCHAT_GRACE_S=%r is not a number; using default 30.0s",
+            raw,
+        )
+        return 30.0
+    if value <= 0:
+        logger.warning(
+            "[router] NONCHAT_GRACE_S=%r must be > 0; using default 30.0s",
+            raw,
+        )
+        return 30.0
+    return value
+
+
 class ModelUnavailableError(Exception):
     """Raised when the active backend cannot be reached. Never silently falls back."""
 
@@ -153,9 +175,8 @@ QUALITY_PREFERRED = ("ollama/qwen3:8b", "claude/sonnet")
 VIDEO_TASK = "video"
 VIDEO_PREFERRED = ("ollama/qwen3:8b", "ollama/qwen2.5:7b")
 
-# Idea extraction + validity verdict route to Budd first, then local LLMs.
+# Idea extraction + validity verdict follow the active model (seed_extraction_default).
 EXTRACTION_TASK = "extraction"
-EXTRACTION_PREFERRED = ("custom/budd", "ollama/qwen3:8b", "ollama/qwen2.5:7b")
 
 # Cloud entries are constants; local entries are discovered at runtime.
 CLOUD_MODELS = {
@@ -174,12 +195,75 @@ CLOUD_MODELS = {
 _DEFAULT_CONTEXT_WINDOW = 8192
 
 
+class _DomainSemaphore:
+    """Per-Failure-domain admission cap (ADR-0036).
+
+    Like ``asyncio.Semaphore(cap)``, except a waiter tagged
+    ``task_type == "chat"`` is served ahead of any other waiting
+    ``task_type``, regardless of arrival order (R5: priority is
+    queue-order among *waiters*, never preemption -- a call already
+    holding the slot always runs to completion untouched).
+
+    A freed slot is handed directly to the next waiter under the same
+    lock that released it (no decrement in between) -- otherwise a
+    brand-new ``acquire()`` could race in and steal the slot out from
+    under an already-queued, possibly chat-priority, waiter.
+    """
+
+    __slots__ = ("cap", "active", "waiters", "_lock", "chat_queued")
+
+    def __init__(self, cap: int = 1) -> None:
+        self.cap = cap
+        self.active = 0
+        self.waiters: list[tuple[str, "asyncio.Future[None]"]] = []
+        self._lock = asyncio.Lock()
+        self.chat_queued = asyncio.Event()
+
+    async def acquire(self, task_type: str) -> None:
+        async with self._lock:
+            if self.active < self.cap:
+                self.active += 1
+                return
+            fut: "asyncio.Future[None]" = asyncio.get_running_loop().create_future()
+            self.waiters.append((task_type, fut))
+            if task_type == "chat":
+                self.chat_queued.set()
+            # Stable sort: chat waiters move to the front; FIFO order is
+            # preserved within each priority band.
+            self.waiters.sort(key=lambda w: w[0] != "chat")
+        await fut
+
+    async def release(self) -> None:
+        async with self._lock:
+            if self.waiters:
+                _, fut = self.waiters.pop(0)
+                fut.set_result(None)  # hand the slot off directly
+            else:
+                self.active -= 1
+            if not any(w[0] == "chat" for w in self.waiters):
+                self.chat_queued.clear()
+
+    async def set_cap(self, new_cap: int) -> None:
+        """Live-update the cap (ADR-0036 M). A raised cap admits
+        already-queued waiters immediately; a lowered cap never preempts
+        an active call (R5) -- it just tightens future admission."""
+        async with self._lock:
+            self.cap = new_cap
+            while self.active < self.cap and self.waiters:
+                self.active += 1
+                _, fut = self.waiters.pop(0)
+                fut.set_result(None)
+            if not any(w[0] == "chat" for w in self.waiters):
+                self.chat_queued.clear()
+
+
 class ModelRouter:
     def __init__(
         self,
         backends: dict[str, Backend] | None = None,
         models: dict[str, dict] | None = None,
         default_model: str | None = None,
+        admission_cap: int = 1,
     ):
         if backends is None:
             backends = _real_backends()
@@ -210,6 +294,14 @@ class ModelRouter:
         self._enabled: dict[str, bool] = {mid: True for mid in backends}
         self._fallback_enabled: bool = False
         self._usage_log: list[dict] = []
+        # ADR-0036: per-Failure-domain admission cap, keyed by backend host
+        # (see _domain_key), not by model_id -- two model_ids on the same
+        # host share one cap. admission_cap is the cap new domains are
+        # created with; set_admission_cap (M) also live-updates existing
+        # ones.
+        self._domain_semaphores: dict[str, _DomainSemaphore] = {}
+        self._sem_lock = asyncio.Lock()
+        self._admission_cap = admission_cap
 
     @property
     def active_model(self) -> str:
@@ -457,9 +549,16 @@ class ModelRouter:
         """
         return self._seed_task_default(VIDEO_TASK, VIDEO_PREFERRED)
 
-    def seed_extraction_default(self) -> str | None:
-        """Seed the "extraction" task to Budd first, then local fallbacks."""
-        return self._seed_task_default(EXTRACTION_TASK, EXTRACTION_PREFERRED)
+    def seed_extraction_default(self) -> None:
+        """Unpin "extraction" so it follows the active (main) model.
+
+        2026-10-11: the old Budd-first list named "custom/budd", which no longer
+        exists, so every extraction silently pinned to local qwen and burned a
+        ~3 min timeout per call while the desktop owned the GPU. A user pin saved
+        in Settings is restored after this and still wins.
+        """
+        self.set_task_model(EXTRACTION_TASK, None)
+        return None
 
     def set_local_only(self, enabled: bool) -> None:
         """Cloud kill-switch (privacy). When on, cloud backends are hidden from
@@ -528,6 +627,69 @@ class ModelRouter:
             out.append(mid)
         return out
 
+    def _domain_key(self, model_id: str) -> str | None:
+        """The Failure domain a model_id belongs to (ADR-0036): its
+        backend's shared host (``.url``), so two model_ids on the same
+        server share one cap. None for a backend with no shared network
+        endpoint to cap -- AnthropicBackend's SDK client has no ``.url``,
+        and cloud is explicitly out of this ADR's scope ("Budd is remote,
+        not cloud", ADR-0028 R5)."""
+        backend = self._backends.get(model_id)
+        return getattr(backend, "url", None) if backend is not None else None
+
+    async def _get_sem(self, domain: str) -> _DomainSemaphore:
+        async with self._sem_lock:
+            sem = self._domain_semaphores.get(domain)
+            if sem is None:
+                sem = _DomainSemaphore(cap=self._admission_cap)
+                self._domain_semaphores[domain] = sem
+            return sem
+
+    async def set_admission_cap(self, cap: int) -> None:
+        """Live-update the per-Failure-domain admission cap (ADR-0036 M).
+
+        Applies to every existing domain immediately (a raised cap admits
+        already-queued waiters right away) and to domains created after
+        this call. Persistence to felix-settings.json is the caller's
+        job (settings_control's apply callback)."""
+        if cap < 1:
+            raise ValueError(f"admission_cap must be >= 1, got {cap}")
+        self._admission_cap = cap
+        async with self._sem_lock:
+            sems = list(self._domain_semaphores.values())
+        for sem in sems:
+            await sem.set_cap(cap)
+
+    async def _admit(self, model_id: str, task_type: str, call):
+        """Run the zero-arg async ``call`` under model_id's Failure-domain
+        admission cap (ADR-0036). A backend with no shared endpoint to cap
+        (cloud) runs uncapped. Non-chat calls bound by grace period when
+        a chat waiter queues (FELIX-AUDIT S4)."""
+        domain = self._domain_key(model_id)
+        if domain is None:
+            return await call()
+        sem = await self._get_sem(domain)
+        await sem.acquire(task_type)
+        if task_type == "chat":
+            try:
+                return await call()
+            finally:
+                await sem.release()
+        # Non-chat: unbounded until a chat waiter queues behind us, then at most
+        # the grace period more. The call observes its own bounded wait -- no
+        # external preemption (R5).
+        task = asyncio.ensure_future(call())
+        queued = asyncio.ensure_future(sem.chat_queued.wait())
+        try:
+            await asyncio.wait({task, queued}, return_when=asyncio.FIRST_COMPLETED)
+            if not task.done():
+                await asyncio.wait_for(task, _nonchat_grace_s())  # cancels task, raises TimeoutError
+            return task.result()
+        finally:
+            queued.cancel()
+            task.cancel()  # no-op when done; covers cancellation of the caller
+            await sem.release()
+
     async def complete(self, prompt: str, task_type: str = "chat") -> str:
         top = self.active_model
         model_id = self._task_models.get(task_type, top)
@@ -549,7 +711,9 @@ class ModelRouter:
             last_exc: Exception | None = None
             for mid in attempts:
                 try:
-                    response = await self._backends[mid].complete(prompt, task_type)
+                    response = await self._admit(
+                        mid, task_type, lambda mid=mid: self._backends[mid].complete(prompt, task_type)
+                    )
                 except (OSError, ConnectionError) as exc:
                     last_exc = exc
                     logger.warning(
@@ -573,7 +737,9 @@ class ModelRouter:
             ) from last_exc
 
         try:
-            response = await self._backends[model_id].complete(prompt, task_type)
+            response = await self._admit(
+                model_id, task_type, lambda: self._backends[model_id].complete(prompt, task_type)
+            )
         except (OSError, ConnectionError) as exc:
             if model_id == top:
                 raise ModelUnavailableError(
@@ -585,7 +751,9 @@ class ModelRouter:
             )
             model_id = top
             try:
-                response = await self._backends[model_id].complete(prompt, task_type)
+                response = await self._admit(
+                    model_id, task_type, lambda: self._backends[model_id].complete(prompt, task_type)
+                )
             except (OSError, ConnectionError) as exc2:
                 raise ModelUnavailableError(
                     f"model '{model_id}' unavailable: {exc2}"
@@ -630,8 +798,9 @@ class ModelRouter:
         last_exc: Exception | None = None
         for mid in chain:
             try:
-                response = await self._backends[mid].complete_with_images(
-                    prompt, images, task_type
+                response = await self._admit(
+                    mid, task_type,
+                    lambda mid=mid: self._backends[mid].complete_with_images(prompt, images, task_type),
                 )
             except (OSError, ConnectionError) as exc:
                 last_exc = exc
@@ -669,7 +838,9 @@ class ModelRouter:
             last_exc: Exception | None = None
             for mid in attempts:
                 try:
-                    result = await self._backends[mid].complete_with_tools(prompt, tools)
+                    result = await self._admit(
+                        mid, task_type, lambda mid=mid: self._backends[mid].complete_with_tools(prompt, tools)
+                    )
                 except (OSError, ConnectionError) as exc:
                     last_exc = exc
                     logger.warning(
@@ -686,7 +857,9 @@ class ModelRouter:
 
         backend = self._backends[model_id]
         try:
-            result = await backend.complete_with_tools(prompt, tools)
+            result = await self._admit(
+                model_id, task_type, lambda: backend.complete_with_tools(prompt, tools)
+            )
         except (OSError, ConnectionError) as exc:
             raise ModelUnavailableError(
                 f"model '{model_id}' unavailable: {exc}"
@@ -1044,6 +1217,27 @@ def _normalize_openai_base(url: str) -> str:
     return trimmed
 
 
+# OpenAI-compat gateways default max_tokens to as little as 512 when it is
+# omitted (measured on bonsai 2026-09-28). A reasoning model (hermes-agent)
+# spends that on reasoning_content and returns finish_reason "length" with null
+# content and no tool call -- Felix then spoke "". 16k fits a multi-file
+# create_file turn; the retry doubles it once.
+_CLAW_MAX_TOKENS = 16384
+_CLAW_LENGTH_MSG = (
+    "I ran out of room to answer -- the model hit its output limit before "
+    "replying. Try asking for less at once."
+)
+
+
+def _claw_truncated_empty(choice: dict) -> bool:
+    msg = choice.get("message") or {}
+    return (
+        choice.get("finish_reason") == "length"
+        and not msg.get("content")
+        and not msg.get("tool_calls")
+    )
+
+
 class ClawBackend:
     """Routes cloud LLM calls through OpenClaw's inference layer.
 
@@ -1071,12 +1265,8 @@ class ClawBackend:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
-    async def complete(self, prompt: str, task_type: str = "chat") -> str:
+    async def _post(self, payload: dict) -> dict:
         import httpx
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-        }
         async with httpx.AsyncClient(timeout=_claw_timeout_s()) as client:
             try:
                 resp = await client.post(
@@ -1098,7 +1288,31 @@ class ClawBackend:
         data = resp.json()
         usage = data.get("usage", {}) or {}
         self._last_usage = {"prompt_tokens": int(usage.get("prompt_tokens", 0)), "completion_tokens": int(usage.get("completion_tokens", 0))}
-        return data["choices"][0]["message"]["content"]
+        return data
+
+    async def _chat(self, payload: dict) -> dict:
+        """POST a chat completion and return choices[0]; set max_tokens and
+        retry once with double the budget when the reply was cut off empty."""
+        payload["max_tokens"] = _CLAW_MAX_TOKENS
+        choice = (await self._post(payload))["choices"][0]
+        if _claw_truncated_empty(choice):
+            logger.warning(
+                "[router] %s hit max_tokens=%d with no reply -- retrying at %d",
+                self.model, _CLAW_MAX_TOKENS, _CLAW_MAX_TOKENS * 2,
+            )
+            payload["max_tokens"] = _CLAW_MAX_TOKENS * 2
+            choice = (await self._post(payload))["choices"][0]
+        return choice
+
+    async def complete(self, prompt: str, task_type: str = "chat") -> str:
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        choice = await self._chat(payload)
+        if _claw_truncated_empty(choice):
+            return _CLAW_LENGTH_MSG
+        return choice["message"].get("content") or ""
 
     async def complete_with_tools(
         self, prompt: str, tools: list[dict]
@@ -1108,7 +1322,6 @@ class ClawBackend:
         Fail-soft: if the response has no tool_calls (some OpenClaw builds drop
         them), return the plain text content rather than raising.
         """
-        import httpx
         import json as _json
 
         oai_tools = [
@@ -1127,26 +1340,10 @@ class ClawBackend:
             "messages": [{"role": "user", "content": prompt}],
             "tools": oai_tools,
         }
-        async with httpx.AsyncClient(timeout=_claw_timeout_s()) as client:
-            try:
-                resp = await client.post(
-                    f"{self.url}/v1/chat/completions",
-                    json=payload,
-                    headers=self._headers(),
-                )
-                resp.raise_for_status()
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                raise ConnectionError(_claw_conn_error_detail(exc)) from exc
-            except httpx.HTTPStatusError as exc:
-                # Include the server's response body — a bare status hides the
-                # real reason (e.g. LiteLLM "key not allowed to access model X").
-                body = (getattr(exc.response, "text", "") or "").strip()
-                detail = f": {body[:200]}" if body else ""
-                raise ConnectionError(
-                    f"HTTP {exc.response.status_code} from {exc.request.url}{detail}"
-                ) from exc
-
-        message = resp.json()["choices"][0]["message"]
+        choice = await self._chat(payload)
+        if _claw_truncated_empty(choice):
+            return _CLAW_LENGTH_MSG
+        message = choice["message"]
         tool_calls = message.get("tool_calls") or []
         if tool_calls:
             fn = tool_calls[0]["function"]
@@ -1170,7 +1367,6 @@ class ClawBackend:
         Gate via supports_vision so the router doesn't send images to a
         text-only endpoint."""
         import base64
-        import httpx
         content = [{"type": "text", "text": prompt}]
         for img in images:
             b64 = base64.b64encode(img).decode("ascii")
@@ -1182,25 +1378,10 @@ class ClawBackend:
             "model": self.model,
             "messages": [{"role": "user", "content": content}],
         }
-        async with httpx.AsyncClient(timeout=_claw_timeout_s()) as client:
-            try:
-                resp = await client.post(
-                    f"{self.url}/v1/chat/completions",
-                    json=payload,
-                    headers=self._headers(),
-                )
-                resp.raise_for_status()
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                raise ConnectionError(_claw_conn_error_detail(exc)) from exc
-            except httpx.HTTPStatusError as exc:
-                # Include the server's response body — a bare status hides the
-                # real reason (e.g. LiteLLM "key not allowed to access model X").
-                body = (getattr(exc.response, "text", "") or "").strip()
-                detail = f": {body[:200]}" if body else ""
-                raise ConnectionError(
-                    f"HTTP {exc.response.status_code} from {exc.request.url}{detail}"
-                ) from exc
-        return resp.json()["choices"][0]["message"]["content"]
+        choice = await self._chat(payload)
+        if _claw_truncated_empty(choice):
+            return _CLAW_LENGTH_MSG
+        return choice["message"].get("content") or ""
 
 
 class AnthropicBackend:

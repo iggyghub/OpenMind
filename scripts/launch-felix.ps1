@@ -47,6 +47,23 @@ function Test-CerebralPort {
         -ErrorAction SilentlyContinue)
 }
 
+# 2026-09-16 -- companion to Remove-OrphanedCerebral below, added after that
+# function caused a real outage the same day it landed. Test-CerebralPort
+# only answers "is ANYONE listening," which is exactly the gap that made
+# the reap dangerous: when the tray's reconnect-watchdog fires a second
+# launcher invocation, the LOSER's own spawn can crash on OSError (the
+# port the winner already bound) while its wait loop still sees the
+# WINNER's process satisfying Test-CerebralPort -- so the loser declares
+# itself "ready" and then reaps everyone except its own (already-dead)
+# PID, killing the actual winner. Get-CerebralListenerPid answers "WHO is
+# listening," so the wait loop and the reap can both check identity, not
+# just presence.
+function Get-CerebralListenerPid {
+    $conn = Get-NetTCPConnection -LocalPort $CEREBRAL_PORT -State Listen `
+        -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($conn) { $conn.OwningProcess } else { $null }
+}
+
 # #521 -- "port listening" is not "Felix running": the tray can die while
 # Cerebral keeps heartbeating (and vice versa). Match electron.exe main
 # processes launched from THIS repo's tray dir.
@@ -55,6 +72,37 @@ function Test-TrayRunning {
     [bool](Get-CimInstance Win32_Process -Filter "Name='electron.exe'" `
         -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like $trayPattern })
+}
+
+# 2026-09-16 -- found live: the -Restart port-free wait above is not proof
+# the OLD Cerebral actually exited, only that it stopped listening. Its
+# shutdown path can close the WebSocket listener before the process itself
+# finishes tearing down, so "port free" fires while the old PID keeps
+# running (observed: it survived as an orphan for 30+ minutes, still
+# ticking its own paper-trade scheduler loop in parallel with the new one --
+# two live Cerebrals is worse than the double-launch this script otherwise
+# guards against). A launcher racing itself compounds this: launcher.log
+# showed two "-Restart" invocations firing ~12s apart for one restart
+# request, each independently seeing the port free and spawning its own
+# cerebral.main, so relying on the pre-spawn port check alone cannot be
+# made race-proof against a second, uninvited invocation of this same
+# script.
+#
+# Fix applied once we DO have unambiguous information: right after THIS
+# invocation confirms its own spawn is the one actually listening on
+# :$CEREBRAL_PORT, reap every OTHER python.exe process running
+# cerebral.main by PID (not by port state) -- whether it's an old instance
+# that failed to fully exit, or the loser of a racing double-invocation
+# that crashed on bind but didn't fully unwind. $keepId is the PID this
+# invocation itself spawned (from Start-Process -PassThru), so the winner
+# is never at risk of killing itself.
+function Remove-OrphanedCerebral($keepId) {
+    $stray = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match 'cerebral\.main' -and $_.ProcessId -ne $keepId }
+    foreach ($p in $stray) {
+        Log ("Reaping orphaned Cerebral: pid={0} (not the process this launch spawned)" -f $p.ProcessId)
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # ---- 0. precheck: prerequisites + first-run install state ---------------------
@@ -161,22 +209,74 @@ $cerebralLog = Join-Path $repoRoot "cerebral.log"
 # reply still returns immediately.
 if (-not $env:CLAW_TIMEOUT_S) { $env:CLAW_TIMEOUT_S = "1200" }
 Log ("  CLAW_TIMEOUT_S = {0}s" -f $env:CLAW_TIMEOUT_S)
+$cerebralErr = ($cerebralLog -replace '\.log$', '.err.log')
+
+# Rotate existing logs before overwriting (S2: ADR-0032 / FELIX-AUDIT S2)
+function Rotate-Log($logPath) {
+    if (Test-Path $logPath -ErrorAction SilentlyContinue) {
+        $size = (Get-Item $logPath).Length
+        if ($size -gt 0) {
+            $timestamp = Get-Date -Format "yyyyMMddTHHmmss"
+            # No regex backreference here on purpose. "_${timestamp}$$1" looks
+            # like it appends $1, but PowerShell expands $$ inside a
+            # double-quoted string before -replace ever sees it, so the result
+            # was 'cerebral_20260917T223909' + a literal '1' -- the .log
+            # extension silently destroyed. That also made the retention sweep
+            # below (-Filter "cerebral_*.log") match nothing, so rotated logs
+            # would have accumulated forever. Substituting the literal
+            # extension needs no backreference at all.
+            $leaf = Split-Path $logPath -Leaf
+            $dest = $leaf -replace '\.log$', "_$timestamp.log"
+            Rename-Item -LiteralPath $logPath -NewName $dest -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+Rotate-Log $cerebralLog
+Rotate-Log $cerebralErr
+
+# Keep only the 5 newest rotated logs per kind
+$logsDir = Split-Path $cerebralLog
+Get-ChildItem -Path $logsDir -Filter "cerebral_*.log" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -Skip 5 |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $logsDir -Filter "cerebral.err_*.log" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -Skip 5 |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
 $cerebral = Start-Process `
     -FilePath "python" `
     -ArgumentList "-m","cerebral.main" `
     -WorkingDirectory $repoRoot `
     -WindowStyle Hidden `
     -RedirectStandardOutput $cerebralLog `
-    -RedirectStandardError  ($cerebralLog -replace '\.log$', '.err.log') `
+    -RedirectStandardError $cerebralErr `
     -PassThru
 
 # ---- 3. wait for Cerebral to bind ws://localhost:7766 -------------------------
 Log "Waiting for Cerebral to bind :$CEREBRAL_PORT (up to ${WAIT_SECONDS}s)..."
 $deadline = (Get-Date).AddSeconds($WAIT_SECONDS)
 $ready = $false
+$stoodDown = $false
 $lastTick = 0
 while ((Get-Date) -lt $deadline) {
-    if (Test-CerebralPort) { $ready = $true; break }
+    $listenerPid = Get-CerebralListenerPid
+    if ($listenerPid -eq $cerebral.Id) { $ready = $true; break }
+    if ($listenerPid) {
+        # Someone else already bound the port -- not this invocation's own
+        # spawn. Almost certainly a sibling launcher invocation (the tray's
+        # reconnect-watchdog can fire this script twice for one restart,
+        # observed live) that won the race. That other process is the real
+        # Cerebral, not an orphan -- stand down instead of reaping it.
+        Log "Another Cerebral (pid=$listenerPid) already bound :$CEREBRAL_PORT -- standing down (this looks like a duplicate launcher invocation)."
+        if (-not $cerebral.HasExited) {
+            Log "Terminating this invocation's own redundant spawn (pid=$($cerebral.Id))."
+            Stop-Process -Id $cerebral.Id -Force -ErrorAction SilentlyContinue
+        }
+        $stoodDown = $true
+        break
+    }
     if ($cerebral.HasExited) {
         Log "Cerebral exited (code=$($cerebral.ExitCode)) before binding -- check the Python console."
         exit 1
@@ -187,12 +287,17 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds $POLL_MS
 }
 
+if ($stoodDown) {
+    Log "=== launcher done (stood down for another instance) ==="
+    exit 0
+}
 if (-not $ready) {
     Log "Cerebral did not bind :$CEREBRAL_PORT within ${WAIT_SECONDS}s -- aborting tray launch."
     Log "Check cerebral.log / cerebral.err.log for errors (tray menu -> Show Logs)."
     exit 1
 }
 Log "Cerebral is listening on :$CEREBRAL_PORT."
+Remove-OrphanedCerebral $cerebral.Id
 
 if ($CerebralOnly) {
     Log "CerebralOnly: tray already running -- skipping tray launch."

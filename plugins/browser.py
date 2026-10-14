@@ -23,6 +23,7 @@ All CLI side-effects are injectable via run_cli_fn for testing.
 import asyncio
 import json
 import logging
+import re
 from typing import Callable, Awaitable
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
@@ -30,6 +31,25 @@ from cerebral.mcp.orchestrator import Tool, ToolResult
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "browser"
+
+# OpenClaw's own CLI wraps fetched web content in this marker as a
+# prompt-injection defense before it reaches an LLM prompt. Fine for that
+# purpose, but web_search's title/snippet fields feed *other* code too (the
+# trading-discovery pipeline stores them verbatim as strategy_id/claim_text
+# -- confirmed 2026-09-17: 53/307 stored strategies had the raw wrapper as
+# their strategy_id). Strip it here, the one choke point every web_search
+# caller shares, rather than in each downstream consumer.
+_UNTRUSTED_WRAPPER_RE = re.compile(
+    r'<<<EXTERNAL_UNTRUSTED_CONTENT[^>]*>>>\s*(?:Source:.*?\n)?-{3,}\s*\n?(.*?)\n?<<<END_EXTERNAL_UNTRUSTED_CONTENT[^>]*>>>',
+    re.DOTALL,
+)
+
+
+def _strip_untrusted_wrapper(text: str) -> str:
+    if not text:
+        return text
+    m = _UNTRUSTED_WRAPPER_RE.search(text)
+    return m.group(1).strip() if m else text
 
 # ADR-0005 / Issue #44 — web_search / navigate / read_pdf all shell out to
 # the local `openclaw` CLI (network_egress_local), which fetches and
@@ -166,7 +186,11 @@ class BrowserPlugin:
             return ToolResult(content=f"Search failed: {exc}", is_error=True)
         return ToolResult(content=json.dumps({
             "results": [
-                {"title": h.get("title", ""), "url": h.get("url", ""), "snippet": h.get("snippet", "")}
+                {
+                    "title": _strip_untrusted_wrapper(h.get("title", "")),
+                    "url": h.get("url", ""),
+                    "snippet": _strip_untrusted_wrapper(h.get("snippet", "")),
+                }
                 for h in hits
             ],
         }))

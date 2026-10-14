@@ -2,7 +2,7 @@ const { app, Tray, Menu, BrowserWindow, Notification, nativeImage, ipcMain, scre
 const WebSocket = require('ws');
 const path = require('path');
 const { VisualiserState }      = require('./lib/visualiser-state');
-const { PositionStore }        = require('./lib/position-store');
+const { PositionStore, isPointOnAnyDisplay } = require('./lib/position-store');
 const { NotificationManager }  = require('./lib/notification-manager');
 const { ModalManager }         = require('./lib/modal-manager');
 // PermissionsStore is no longer instantiated in main.js (Issue #202).
@@ -14,8 +14,11 @@ const CEREBRAL_URL    = 'ws://localhost:7766';
 const ICON_PATH       = path.join(__dirname, 'assets', 'icon.png');
 const ICO_PATH        = path.join(__dirname, 'assets', 'icon.ico');
 const VIS_POS_PATH    = path.join(__dirname, '..', 'cerebral', 'data', 'visualiser-pos.json');
+// #820 -- Main window had no bounds persistence at all; it reset to the
+// hardcoded 1200x800 default on every restart, unlike the Visualiser orb.
+const MAIN_WIN_POS_PATH = path.join(__dirname, '..', 'cerebral', 'data', 'main-window-pos.json');
 const LAUNCHER_LOG    = path.join(__dirname, '..', 'launcher.log');
-const CEREBRAL_LOG    = path.join(__dirname, '..', 'cerebral.log');
+const CEREBRAL_LOG    = path.join(__dirname, '..', 'cerebral.err.log');  // logging goes to stderr; cerebral.log is always empty
 const RECONNECT_DELAY_MS = 3000;
 // SD-3 (#556) -- boot self-check state
 const DATA_DIR = path.join(__dirname, '..', 'cerebral', 'data');
@@ -38,7 +41,28 @@ let _restartInProgress = false;
 let _bootSha = null;
 let _pendingUpdateRestart = false;
 const AUTO_UPDATE_POLL_MS = 5 * 60 * 1000;
+// #1424 -- pause toggle: while true, _checkForMasterUpdate still fetches and
+// fast-forwards but never restarts; the tray menu shows "update waiting".
+// Persisted as {paused:boolean} so a manual restart keeps the choice.
+const AUTO_UPDATE_PAUSE_PATH = path.join(__dirname, '..', 'cerebral', 'data', 'auto-update-pause.json');
+let _autoUpdatePaused = false;
+let _updateWaiting = false;
 let reconnectTimer = null;
+// SUP-3 -- respawn a dead Cerebral once, bounded.
+let _consecutiveFailures = 0;
+let _respawnWatchdog = null;
+let _reconnectHalted = false;
+const RECONNECT_FAILURE_THRESHOLD = 5;
+const RESPAWN_WATCHDOG_MS = 15_000;
+// True while a launch-felix.ps1 process spawned by respawnCerebral() is
+// still running. The boot-time respawn (--felix-restart in argv, below) and
+// the SUP-3b watchdog respawn are independent call sites with no shared
+// state; a cold Cerebral boot (port-release wait + Python startup) routinely
+// takes longer than RESPAWN_WATCHDOG_MS, so without this guard the watchdog
+// fires a second launch-felix.ps1 -Restart while the first is still waiting
+// to bind :7766 -- two Cerebral processes then fight over the port and
+// interleave writes into the same cerebral.err.log.
+let _launcherInFlight = false;
 // SD-3 (#556) -- set true when --felix-self-dev-boot is in argv; cleared once
 // health_check is sent on the first Cerebral connection after that boot.
 let _selfDevBootPending  = false;
@@ -46,6 +70,7 @@ let _selfDevBootPending  = false;
 let _healthCheckResolve = null;
 let _healthCheckTimer   = null;
 let felixState  = 'idle';      // 'idle' | 'active'
+let selfDevCampaignRunning = false;
 let activeProfile = null;
 let allProfiles   = [];
 let mainWindow        = null;
@@ -55,6 +80,9 @@ const modalWindows = new Map();
 
 const visState   = new VisualiserState();
 const posStore   = new PositionStore(VIS_POS_PATH);
+const mainPosStore = new PositionStore(MAIN_WIN_POS_PATH); // #820
+const autoUpdatePauseStore = new PositionStore(AUTO_UPDATE_PAUSE_PATH); // #1424
+_autoUpdatePaused = !!((autoUpdatePauseStore.load() || {}).paused);
 
 // In-memory cache of the settings_updated snapshot from Cerebral.
 // Starts from defaults; overwritten on first broadcast (sent on every connect).
@@ -94,6 +122,13 @@ function connectToCerebral() {
 
   ws.on('open', () => {
     isConnected = true;
+    // SUP-3b (ADR-0033 decision 4): a real reconnect clears the failure
+    // count and un-halts the respawn watchdog, so a later, separate crash
+    // episode can trigger the bounded respawn again fresh.
+    _consecutiveFailures = 0;
+    _reconnectHalted = false;
+    _launcherInFlight = false;
+    if (_respawnWatchdog) { clearTimeout(_respawnWatchdog); _respawnWatchdog = null; }
     console.log('[tray] Connected to Cerebral');
     refreshMenu();
     // SD-3 (#556): first connection after a self-dev boot -- run the self-check.
@@ -123,6 +158,25 @@ function connectToCerebral() {
       console.log(`[tray] Disconnected — retrying in ${RECONNECT_DELAY_MS}ms`);
       refreshMenu();
       reconnectTimer = setTimeout(connectToCerebral, RECONNECT_DELAY_MS);
+      // SUP-3b (ADR-0033 decision 4): after ~5 consecutive failed reconnects
+      // (~15s), respawn Cerebral once. _reconnectHalted stops a SECOND
+      // respawn from firing while the first is still in flight -- the base
+      // reconnect loop above keeps retrying every 3s regardless, so without
+      // this guard the threshold would re-trip ~15s later and respawn again,
+      // exactly the "respawn in a loop" the issue says never to do.
+      _consecutiveFailures++;
+      if (_consecutiveFailures >= RECONNECT_FAILURE_THRESHOLD && !_reconnectHalted && !_launcherInFlight) {
+        trayLog(`respawn: ${_consecutiveFailures} consecutive failed reconnects -- respawning Cerebral once`);
+        respawnCerebral();
+        _consecutiveFailures = 0;
+        _respawnWatchdog = setTimeout(() => {
+          if (!isConnected) {
+            _reconnectHalted = true;
+            trayLog('respawn: still not connected after the watchdog window -- not respawning again until a successful reconnect');
+            electronNotify('Felix', 'Cerebral did not come back after an automatic restart. Try Restart Felix from the tray menu, or check cerebral.err.log.');
+          }
+        }, RESPAWN_WATCHDOG_MS);
+      }
     }
   });
 
@@ -197,6 +251,10 @@ function sendToCerebral(event) {
 
 function handleCerebralEvent(event) {
   switch (event.type) {
+    case 'snapshot':  // connect-time bundle of state events (main.py _snapshot_events)
+      ((event.data && event.data.events) || []).forEach(handleCerebralEvent);
+      break;
+
     case 'first_run':
       // Profile-setup popup retired in Issue #204 — open the Main
       // window's Profiles pane; the renderer flips into first-run
@@ -225,13 +283,17 @@ function handleCerebralEvent(event) {
       routeToVisualiser(event);
       break;
 
+    case 'self_dev_campaign_status':
+      selfDevCampaignRunning = !!(event.data && event.data.running);
+      break;
+
     case 'passive':
       felixState = 'idle';
       refreshMenu();
       routeToVisualiser(event);
       // #817 -- an auto-update was waiting for Felix to go idle before
       // restarting so it didn't cut off an in-progress response.
-      if (_pendingUpdateRestart) {
+      if (_pendingUpdateRestart && !_autoUpdatePaused) {
         _pendingUpdateRestart = false;
         restartFelixSelfDev();
       }
@@ -379,11 +441,16 @@ function handleCerebralEvent(event) {
       break;
     }
 
-    case 'restart_felix':
-      // SD-2 (#555): self_dev_load broadcasts this after pulling a merged PR.
-      // SD-3 (#556): pin SHA + snapshot state before relaunching.
-      restartFelixSelfDev();
+    case 'restart_felix': {
+      const { isCodeLoad } = require('./lib/boot-check');
+      const d = event.data || {};
+      if (isCodeLoad(d.reason)) {
+        restartFelixSelfDev();
+      } else {
+        restartFelix();
+      }
       break;
+    }
 
     case 'self_dev_manual_rollback':
       // #813 -- Cerebral broadcasts this when the self_dev_rollback tool is
@@ -484,11 +551,17 @@ function openMainWindow(hash) {
     return;
   }
 
+  // #820 -- restore the last position/size if it's still on a connected
+  // display (e.g. not left stranded on a monitor that's since been
+  // unplugged); otherwise fall back to the hardcoded default like before.
+  const { maximized: savedMaximized, ...savedBounds } = _sanitizedMainWindowBounds();
+
   mainWindow = new BrowserWindow({
     width:           1200,
     height:          800,
     minWidth:        720,
     minHeight:       480,
+    ...savedBounds,
     title:           'Felix',
     icon:            ICO_PATH,
     backgroundColor: '#12101e',
@@ -504,30 +577,57 @@ function openMainWindow(hash) {
   // UI2 A5 (#485) -- detached panels open via window.open('detached-panel.html')
   // from the renderer. Whitelist that one file, deny everything else, and
   // force the same webPreferences posture as the Main window (ADR-0007).
+  //
+  // UI Editor nav button (tools/ui-editor) additionally whitelists exactly
+  // http://localhost:4545/ -- the tool's own dev server, started separately
+  // (`node tools/ui-editor/server.js`), never bundled into or spawned by
+  // Felix itself. Hardcoded origin, not a general localhost/http allowance.
+  const UI_EDITOR_ORIGIN = 'http://localhost:4545';
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    let ok = false;
-    try {
-      const parsed = new URL(url);
-      ok = parsed.protocol === 'file:'
-        && parsed.pathname.replace(/\\/g, '/').endsWith('/tray/windows/detached-panel.html');
-    } catch (_) { ok = false; }
-    if (!ok) return { action: 'deny' };
-    return {
-      action: 'allow',
-      overrideBrowserWindowOptions: {
-        width:           720,
-        height:          560,
-        minWidth:        320,
-        minHeight:       240,
-        title:           'Felix — Panel',
-        icon:            ICO_PATH,
-        backgroundColor: '#12101e',
-        webPreferences: {
-          nodeIntegration:  false,
-          contextIsolation: true,
+    let parsed;
+    try { parsed = new URL(url); } catch (_) { return { action: 'deny' }; }
+
+    if (parsed.protocol === 'file:'
+        && parsed.pathname.replace(/\\/g, '/').endsWith('/tray/windows/detached-panel.html')) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width:           720,
+          height:          560,
+          minWidth:        320,
+          minHeight:       240,
+          title:           'Felix — Panel',
+          icon:            ICO_PATH,
+          backgroundColor: '#12101e',
+          webPreferences: {
+            nodeIntegration:  false,
+            contextIsolation: true,
+          },
         },
-      },
-    };
+      };
+    }
+
+    if (parsed.origin === UI_EDITOR_ORIGIN) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width:           1100,
+          height:          760,
+          minWidth:        480,
+          minHeight:       360,
+          title:           'Felix — UI Editor',
+          icon:            ICO_PATH,
+          backgroundColor: '#111111',
+          webPreferences: {
+            nodeIntegration:  false,
+            contextIsolation: true,
+            preload:          path.join(__dirname, 'preload', 'ui-editor-preload.js'),
+          },
+        },
+      };
+    }
+
+    return { action: 'deny' };
   });
 
   // Issue #188 — close button hides to tray; quit is tray-only.
@@ -538,6 +638,42 @@ function openMainWindow(hash) {
     }
   });
   mainWindow.on('closed', () => { mainWindow = null; });
+
+  // #820 -- persist position/size live so a later restart reopens where the
+  // user left it. Mirrors the Visualiser's saveVisualiserPosition pattern
+  // (no debounce there either -- these are tiny sync JSON writes).
+  mainWindow.on('moved', _saveMainWindowBounds);
+  mainWindow.on('resize', _saveMainWindowBounds);
+  // 'moved'/'resize' don't fire for maximize/unmaximize on every platform,
+  // so track that transition explicitly too.
+  mainWindow.on('maximize', _saveMainWindowBounds);
+  mainWindow.on('unmaximize', _saveMainWindowBounds);
+  if (savedMaximized) mainWindow.maximize();
+}
+
+function _saveMainWindowBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const maximized = mainWindow.isMaximized();
+  // getBounds() while maximized reports the maximized size, not the
+  // restored one -- getNormalBounds() keeps the pre-maximize bounds so
+  // un-maximizing next time lands back at a sane size.
+  const bounds = maximized ? mainWindow.getNormalBounds() : mainWindow.getBounds();
+  mainPosStore.save({ ...bounds, maximized });
+}
+
+// #820 -- only trust a saved position if its center point still falls on
+// some connected display; otherwise the window could reopen stranded
+// off-screen (e.g. a monitor it was on got unplugged). Falls back to
+// Electron's own centered-on-primary-display placement (no x/y) when
+// there's no saved bounds or it's no longer valid.
+function _sanitizedMainWindowBounds() {
+  const saved = mainPosStore.load();
+  if (!saved || typeof saved.x !== 'number' || typeof saved.y !== 'number') return {};
+
+  const centerX = saved.x + (saved.width || 0) / 2;
+  const centerY = saved.y + (saved.height || 0) / 2;
+  const onScreen = isPointOnAnyDisplay(centerX, centerY, screen.getAllDisplays());
+  return onScreen ? saved : {};
 }
 
 // Queue popup retired in Issue #194 — the Queue lives in the Main window's
@@ -655,6 +791,44 @@ ipcMain.on('irreversible-modal:ready', (event) => {
       return;
     }
   }
+});
+
+// Native Save/Open dialogs for the UI Editor's "New page" and "Local file"
+// fields (see setWindowOpenHandler's UI_EDITOR_ORIGIN override, which is the
+// only window carrying preload/ui-editor-preload.js — a plain webpage has no
+// way to get a real filesystem path back from a save dialog, so this only
+// exists for the tool opened inside Felix's own Electron shell; standalone
+// browser usage per the tool's own README keeps the plain text-input path).
+// tools/ui-editor/server.js only ever serves/writes files under the repo
+// root anyway (checkLocalPath), so a pick outside it is rejected here with
+// the same constraint the server would enforce a step later, rather than
+// let the user pick something that 403s after the fact.
+const { relativeToRoot } = require('./lib/repo-path');
+const UI_EDITOR_ROOT = path.join(__dirname, '..');
+
+ipcMain.handle('ui-editor:save-dialog', async () => {
+  const result = await dialog.showSaveDialog({
+    title: 'New page',
+    defaultPath: UI_EDITOR_ROOT,
+    filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
+  });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  const rel = relativeToRoot(UI_EDITOR_ROOT, result.filePath);
+  if (!rel) return { canceled: false, error: 'Must be inside the OpenMind folder.' };
+  return { canceled: false, path: rel };
+});
+
+ipcMain.handle('ui-editor:open-dialog', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Open local file',
+    defaultPath: UI_EDITOR_ROOT,
+    properties: ['openFile'],
+    filters: [{ name: 'HTML', extensions: ['html', 'htm'] }, { name: 'All files', extensions: ['*'] }],
+  });
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  const rel = relativeToRoot(UI_EDITOR_ROOT, result.filePaths[0]);
+  if (!rel) return { canceled: false, error: 'Must be inside the OpenMind folder.' };
+  return { canceled: false, path: rel };
 });
 
 // ── Visualiser window ─────────────────────────────────────────────────────────
@@ -785,6 +959,16 @@ function buildMenu() {
     ],
   });
   template.push({ label: 'Restart Felix', click: restartFelix });  // #439
+  // #1424 -- hold the automatic restart that follows a merge to master.
+  template.push({
+    label: 'Pause auto-restart on updates',
+    type: 'checkbox',
+    checked: _autoUpdatePaused,
+    click: toggleAutoUpdatePause,
+  });
+  if (_updateWaiting) {
+    template.push({ label: 'Update waiting -- use Restart Felix to apply', enabled: false });
+  }
   // #813 -- manual companion to the automatic SD-3 boot-check rollback.
   // Confirm first: git reset --hard discards anything since last_known_good.
   template.push({
@@ -921,6 +1105,8 @@ function runSelfDevCheck() {
     copyFileFn:  (src, dest) => fs.copyFileSync(src, dest),
     gitResetFn:  (sha) => execFileSync(gitExe, ['reset', '--hard', sha],
       { cwd: repoRoot, stdio: 'ignore' }),
+    gitStashFn: (msg) => execFileSync(gitExe, ['stash', 'push', '--include-untracked', '-m', msg],
+      { cwd: repoRoot, stdio: 'ignore' }),
     notifyFn: (msg) => {
       trayLog(`SD-3: ${msg}`);
       electronNotify('Felix — boot check', msg);
@@ -962,6 +1148,9 @@ function manualSelfDevRollback(source) {
     copyFileFn: (src, dest) => fs.copyFileSync(src, dest),
     gitResetFn: (sha) => execFileSync(gitExe, ['reset', '--hard', sha],
       { cwd: repoRoot, stdio: 'ignore' }),
+    gitStashFn: (msg) => execFileSync(gitExe, ['stash', 'push', '--include-untracked', '-m', msg],
+      { cwd: repoRoot, stdio: 'ignore' }),
+    writeFileFn: (p, d) => fs.writeFileSync(p, d, 'utf8'),
     notifyFn: (msg) => {
       trayLog(`manual rollback (${source}): ${msg}`);
       electronNotify('Felix — manual rollback', msg);
@@ -978,7 +1167,18 @@ function manualSelfDevRollback(source) {
 // Runs in the relaunched instance: reboot Cerebral. -Restart makes the
 // launcher wait for :7766 to free (old Cerebral tearing down); -CerebralOnly
 // keeps it from starting a second tray — this instance IS the tray.
+//
+// Single choke point for every launch-felix.ps1 spawn (mirrors _relaunch()'s
+// _restartInProgress guard above): refuses to spawn a second launcher while
+// one from a prior call is still running. _launcherInFlight is cleared when
+// the spawned process exits (successfully bound, or gave up after its own
+// 120s window) or when Cerebral actually reconnects, whichever comes first.
 function respawnCerebral() {
+  if (_launcherInFlight) {
+    trayLog('respawn: a launcher is already in flight -- not spawning a second one');
+    return;
+  }
+  _launcherInFlight = true;
   try {
     const { spawn } = require('child_process');
     const launcher = path.join(__dirname, '..', 'scripts', 'launch-felix.ps1');
@@ -994,10 +1194,12 @@ function respawnCerebral() {
       // relaunched tray, so nothing needs detaching anyway.
       { stdio: 'ignore', windowsHide: true },
     );
-    child.on('error', (err) => trayLog(`cerebral respawn error: ${err}`));
+    child.on('error', (err) => { trayLog(`cerebral respawn error: ${err}`); _launcherInFlight = false; });
+    child.on('exit', () => { _launcherInFlight = false; });
     child.unref();
     trayLog(`restart: relaunched tray up, spawned launcher for Cerebral (pid ${child.pid})`);
   } catch (e) {
+    _launcherInFlight = false;
     trayLog(`cerebral respawn threw: ${e}`);
   }
 }
@@ -1010,9 +1212,22 @@ function respawnCerebral() {
 // self_dev-triggered one gets, not a bare unsafe restart.
 function _gitOut(args, opts) {
   const { execFileSync } = require('child_process');
-  return execFileSync('git', args, {
+  const out = execFileSync('git', args, {
     cwd: path.join(__dirname, '..'), encoding: 'utf8', timeout: 30_000, ...opts,
-  }).trim();
+  });
+  return out ? out.trim() : '';
+}
+
+function toggleAutoUpdatePause() {
+  _autoUpdatePaused = !_autoUpdatePaused;
+  autoUpdatePauseStore.save({ paused: _autoUpdatePaused });
+  trayLog(`auto-update: auto-restart ${_autoUpdatePaused ? 'paused' : 'resumed'}`);
+  _pendingUpdateRestart = false; // re-detected by the next poll
+  if (!_autoUpdatePaused) {
+    _updateWaiting = false;
+    _checkForMasterUpdate(); // apply anything that arrived while paused
+  }
+  refreshMenu();
 }
 
 function _checkForMasterUpdate() {
@@ -1020,11 +1235,16 @@ function _checkForMasterUpdate() {
 
   const { checkForUpdate } = require('./lib/boot-check');
   const decision = checkForUpdate({
-    gitFetchFn:      () => _gitOut(['fetch', '--quiet'], { stdio: 'ignore' }),
+    gitFetchFn:      () => _gitOut(['fetch', '--quiet'], { stdio: ['ignore', 'ignore', 'pipe'] }),  // keep stderr: execFileSync puts it in the error message
     gitRevParseFn:   (ref) => _gitOut(['rev-parse', ref]),
     gitMergeFfOnlyFn: (sha) => _gitOut(['merge', '--ff-only', sha], { stdio: 'ignore' }),
+    gitMergeBaseFn:  (a, b) => {
+      try { _gitOut(['merge-base', '--is-ancestor', a, b]); return true; }
+      catch (_) { return false; }
+    },
     bootSha: _bootSha,
-    isIdle:  felixState === 'idle',
+    isIdle:  felixState === 'idle' && !selfDevCampaignRunning,
+    paused:  _autoUpdatePaused,
   });
 
   if (decision.action === 'skip') {
@@ -1032,6 +1252,15 @@ function _checkForMasterUpdate() {
     return;
   }
   if (decision.action === 'none') return;
+
+  if (decision.action === 'paused') {
+    if (!_updateWaiting) {
+      _updateWaiting = true;
+      trayLog('auto-update: new commits since boot, restart held (auto-restart is paused)');
+      refreshMenu();
+    }
+    return;
+  }
 
   if (decision.action === 'restart') {
     trayLog('auto-update: new commits since boot, Felix idle -- restarting now');
@@ -1045,7 +1274,37 @@ function _checkForMasterUpdate() {
   trayLog('auto-update: new commits since boot, Felix is active -- restart deferred until idle');
 }
 
+// Without this, Felix has no way to tell "the user clicked the pinned
+// taskbar icon while I'm already running (hidden, per #188's close-to-tray)"
+// apart from "launch a brand new second process" -- which Windows does by
+// default for any un-locked app. requestSingleInstanceLock() makes THIS
+// process the sole owner; a second launch attempt (pinned icon, desktop
+// shortcut, anything) fires 'second-instance' here instead of ever getting
+// its own app.whenReady(), and the second process quits immediately.
+const _gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!_gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => openMainWindow());
+}
+
 app.whenReady().then(() => {
+  if (!_gotSingleInstanceLock) return;
+
+  // Without an explicit AppUserModelID, Windows derives one from the launching
+  // process, so the desktop/taskbar shortcut (which runs through powershell.exe
+  // -> launch-felix.ps1) and this Electron window end up with different
+  // identities -- two separate taskbar icons instead of one. Set here (before
+  // any window exists) AND on the shortcut files themselves (System.AppUserModel.ID
+  // property, set via scripts/set-shortcut-appid.ps1) so both sides match and
+  // Windows merges them into a single icon.
+  // NOTE: the real method name is setAppUserModelId (lowercase "d") despite
+  // Electron's own docs showing it as setAppUserModelID -- the uppercase
+  // spelling is `undefined` on this app object and crashed the whole tray
+  // process on every launch (confirmed via an isolated test app, not just
+  // this file: Object.keys(app) lists 'setAppUserModelId').
+  if (process.platform === 'win32') app.setAppUserModelId('OpenMind.Felix');
+
   if (app.dock) app.dock.hide();
   app.setName('Felix');
 
@@ -1058,7 +1317,14 @@ app.whenReady().then(() => {
 
   // Second half of "Restart Felix" (#443 rework): this instance was
   // relaunched by restartFelix(); Cerebral is down — bring it back.
-  if (process.argv.includes('--felix-restart')) respawnCerebral();
+  if (process.argv.includes('--felix-restart')) {
+    respawnCerebral();
+    // The window was open (or at least reachable) before the restart, so
+    // reopening it here — instead of leaving the user back at "click the
+    // tray icon to find it" — is what makes the restart feel like a
+    // restart of the app they were looking at, not a silent respawn.
+    openMainWindow();
+  }
   // SD-3 (#556): self-dev boot -- arm the health-check before connectToCerebral().
   if (process.argv.includes('--felix-self-dev-boot')) _selfDevBootPending = true;
 

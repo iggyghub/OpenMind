@@ -1,0 +1,62 @@
+# UI Editor
+
+A local click-to-edit overlay tool. Proxies a local file (rooted at this repo) or a remote URL into an iframe and injects a drag/resize/color/text editing overlay. Edits persist as a JSON overrides layer and are replayed on next load; source files are never touched until you explicitly bake.
+
+## Running
+
+```
+node tools/ui-editor/server.js
+```
+
+Open `http://localhost:4545`. Choose a target type, enter a path or URL, and click **Open**. Toggle **Edit mode** (top-right inside the loaded page) to start editing.
+
+## Controls
+
+| Control | How |
+|---|---|
+| **Select** | Click any element in Edit mode |
+| **Multi-select** | Shift-click additional elements; Escape or plain click to clear |
+| **Drag** | Mouse-down inside the highlight box and drag (single selection only) |
+| **Resize** | Drag the four corner handles (single selection only) |
+| **Background color** | BG color picker in toolbar (applies to all selected elements) |
+| **Text color** | Text color picker in toolbar (applies to all selected elements) |
+| **Font size** | Font size number input in toolbar (applies to all selected elements) |
+| **Edit text** | "Edit text" button — makes the element contenteditable (single selection only) |
+| **Undo / Redo** | Undo/Redo buttons or Ctrl+Z / Ctrl+Y (up to 50 steps; a burst of edits closer together than 500ms coalesces into one step) |
+| **Insert block/section** | Pick a block or section template, then hover the page — a live blue line previews exactly where it'll land (before/after/inside), following the cursor; hovering near a small element's own edge retargets to its parent |
+| **Color swatches** | A small preset palette under each color picker (BG/text/border) — click a swatch instead of the native picker |
+| **Keyboard shortcuts help** | "?" button next to Undo/Redo |
+| **Bake** | "Commit to file" button — writes all overrides inline into the source HTML file (local targets only) |
+| **Code** | "Code" button — opens a read-only panel showing the baked HTML; Copy and Download .html buttons (local targets only) |
+| **Reset** | "Reset this page" button — clears all overrides and reloads |
+| **Element tree** | Expandable "Elements" panel in the toolbar for tree-based selection |
+| **Upload image** | Expandable "Images" panel — pick a file to replace the selected `<img>` src, or insert a new image block if nothing (or a non-img element) is selected |
+
+## Target types
+
+- **Local file** — a path relative to the repo root, e.g. `tray/windows/main.html`
+- **New page** — seeds a blank `.html` file at the given path, then opens it as a local file
+- **URL** — any reachable `https://` page (optional HTTP Basic Auth)
+- **Git repo** — clones/pulls the repo and serves a file from the checkout
+- **FTP** — fetches one file over plain FTP (passive mode; no STOR/upload yet)
+
+## Uploaded assets
+
+Image uploads are stored under `tools/ui-editor/overrides/assets/<target-key>/<sha256-16>.ext`. Files are deduplicated by content hash — uploading the same image twice writes only one file. The `/assets/<key>/<file>` route serves them with path-containment enforcement (no traversal outside the assets directory).
+
+**TODO:** `Commit to file` (bake) does not yet copy referenced asset files alongside the baked HTML. If you move a baked page, copy the matching `overrides/assets/<key>/` directory alongside it.
+
+## What this can't do
+
+- **Remote sites can't be baked.** The "Commit to file" button is only available for local targets. Remote pages (URL, Git, FTP) get a live-preview overlay only — the edits persist as a local JSON layer and are re-applied on each proxy load, but the remote source is never modified.
+- **Element identity drifts on dynamic pages.** Elements are identified by a DOM-index path (tag name + child index per ancestor). If the page reorders, inserts, or conditionally renders elements before load, the path may point to the wrong element and overrides will misfire or silently no-op.
+- **Tag names ending in a digit are ambiguous in that same path encoding.** `H1` at child index `0` encodes as `H10`, decoded back as tag `H` index `10` (the digit-stripping regex can't tell where the tag name ends and the index begins) — so edits to `H1`-`H6` (and any other digit-suffixed tag) at certain indices can silently fail to persist or undo correctly. `S2`'s `html-bake.js` has the identical ambiguity server-side. No workaround short of a different id scheme (e.g. a content hash) for those tags.
+- **Responsive preview is width-only.** The Mobile/Tablet/Desktop preset buttons resize the iframe to 375 px / 768 px / full width respectively and visually center it against the editor chrome. There is no user-agent spoofing, no touch-event emulation, and no media-query injection — it is a viewport-width preview only.
+
+## Tests
+
+```
+node --test "tools/ui-editor/tests/*.test.js"
+```
+
+Tests cover `sanitizeKey`, `injectIntoHtml` (base-href insertion, CSP stripping, script tag placement), save/load/reset round-trip, bake/findByPath/mergeStyleAttr, undo/redo stack logic (including throttled-coalescing), drop-target geometry (border-offset escape, before/after/append), element-tree helpers, path-traversal containment + input validation, asset upload validation (magic-byte sniffing, size cap, dedup hash, asset path containment), and `renderHtml` (bake-to-string without disk write). No test framework, no fixtures — plain `node:test` + `node:assert`.

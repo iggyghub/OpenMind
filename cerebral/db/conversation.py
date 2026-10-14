@@ -142,7 +142,8 @@ class ConversationStore:
 
     def __init__(self, db_path: Path = DB_PATH) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._con = sqlite3.connect(str(db_path), check_same_thread=False)
+        from cerebral.db._sqlite import connect
+        self._con = connect(db_path)
         self._con.row_factory = sqlite3.Row
         self._init_schema()
 
@@ -207,6 +208,20 @@ class ConversationStore:
         self._con.execute(
             "CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread_ts "
             "ON conversation_turns (thread_id, ts)"
+        )
+        # The "last N turns" readers (list_recent / list_recent_for_thread)
+        # filter by profile/thread and ORDER BY id DESC LIMIT N. Without an
+        # (owner, id) index SQLite pulls EVERY row of the thread -- content_json
+        # included -- into a temp b-tree to sort it: ~9s on a 36k-turn thread,
+        # blocking Cerebral's event loop on every client connect (measured
+        # 2026-09-19). With these it walks the index and stops after N rows.
+        self._con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread_id "
+            "ON conversation_turns (thread_id, id)"
+        )
+        self._con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversation_turns_profile_id "
+            "ON conversation_turns (profile_id, id)"
         )
         self._con.commit()
         # S11 migration: pre-#294 DBs lack the project_id column on threads.

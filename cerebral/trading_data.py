@@ -75,20 +75,26 @@ def fetch_ohlcv(
     except ValueError as e:
         raise ValueError(f"Invalid date format: {e}") from e
 
-    # Try Alpaca Market Data first (preferred per decision #39)
-    try:
-        from cerebral.trading.broker import AlpacaMarketDataClient
-        client = AlpacaMarketDataClient("paper")
-        df = client.get_bars(symbol, start, end, interval)
-        if cache:
-            cache_file = _cache_path(symbol, start, end, interval)
-            try:
-                df.to_csv(cache_file)
-            except Exception:
-                pass
-        return df
-    except Exception:
-        pass  # Falls through to yfinance
+    # Try Alpaca Market Data first (preferred per decision #39), routed
+    # through the SQLite bar cache (RP3, cerebral/trading/bar_cache.py)
+    # instead of this module's own per-call CSV file -- that cache was
+    # write-only on this path (returned before the TTL read block below was
+    # ever reached) and its date-range-keyed filename accumulated a fresh
+    # near-duplicate file on every sliding-window call instead of ever being
+    # reused. cache=False bypasses caching entirely, same as before.
+    if cache:
+        try:
+            from cerebral.trading.bar_cache import get_bars as _cached_get_bars
+            return _cached_get_bars(symbol, start, end, interval)
+        except Exception:
+            pass  # Falls through to yfinance
+    else:
+        try:
+            from cerebral.trading.broker import AlpacaMarketDataClient
+            client = AlpacaMarketDataClient("paper")
+            return client.get_bars(symbol, start, end, interval)
+        except Exception:
+            pass  # Falls through to yfinance
 
     # Cache TTL: daily is fine for a day, intraday stalifies in ~1 hour.
     ttl_seconds = 86400 if interval == "1d" else 3600

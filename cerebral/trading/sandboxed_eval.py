@@ -15,17 +15,32 @@ ticker's own payload gets in.
 """
 import json
 import logging
+import re
 import shutil
 import sys
 import uuid
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
 from cerebral.sandbox._windows import WindowsSandbox
 
 logger = logging.getLogger(__name__)
+
+# strategy(data) gets the WHOLE bars dataframe at once (see _RUNNER below) --
+# nothing stops a generated strategy from reading rows past "now" via a
+# negative shift/iloc offset. Found 2026-09-17: an NR7-breakout strategy
+# used `data['Close'].shift(-1)` (tomorrow's close) to decide today's
+# signal, producing a fake 314,000% backtest return. A real walk-forward
+# evaluator (feed bars up to t only) would make this structurally
+# impossible; this regex guard is the lazy version -- reject the obvious
+# cheat before it ever reaches the sandbox.
+_LOOKAHEAD_RE = re.compile(r'\.shift\(\s*-')
+
+
+def _has_lookahead(code: str) -> bool:
+    return bool(_LOOKAHEAD_RE.search(code))
 
 # Not data_dir() -- that's under the repo, which isn't AppContainer-traversable
 # (the existing AppContainer test fixture's own rationale: the full parent
@@ -45,26 +60,36 @@ _WORKDIR_ROOT = Path(r"C:\Users\Public\OpenMind-sbx\trading")
 _RUNNER = (
     "import sys, io, json\n"
     "import pandas as pd\n"
+    "import numpy as np\n"
     "payload = json.load(sys.stdin)\n"
     "code = payload['code']\n"
     "bars_csv = payload['bars_csv']\n"
     "signals_path = sys.argv[1]\n"
     "bars = pd.read_csv(io.StringIO(bars_csv), index_col=0, parse_dates=True)\n"
-    "ns = {}\n"
+    # `pd`/`np` seeded into the exec namespace: strategy code isn't guaranteed
+    # to self-import them (a real LLM-generated `def strategy(data): ...` body
+    # is prompted for the function only, not a full module), and this is the
+    # same numpy/pandas signal-type mismatch AF7/#1001 exists to fix -- a
+    # strategy using pd.Series/np.where internally without importing either
+    # would otherwise NameError and silently degrade to all-flat, same as
+    # the return-type bug itself.
+    "ns = {'pd': pd, 'np': np}\n"
     "exec(code, ns)\n"
     "signals = ns['strategy'](bars)\n"
     "with open(signals_path, 'w') as f:\n"
-    "    json.dump(signals, f)\n"
+    "    json.dump([int(s) for s in list(signals)], f)\n"
     "print('OK')\n"
 )
 
 
-def evaluate_signals(code: str, bars: pd.DataFrame) -> List[int]:
-    """Runs strategy `code` against `bars` in a real out-of-process sandbox
-    (ADR-0010) -- never exec()s untrusted source in Felix's own address
-    space. Any failure (sandbox unavailable, timeout, killed, malformed or
-    missing output) degrades to an all-flat signal -- never a crash, and
-    never treated as a real trading signal."""
+def evaluate_signals_verbose(code: str, bars: pd.DataFrame) -> "tuple[List[int], Optional[str]]":
+    """Same as evaluate_signals, but also returns the failure reason (None on
+    success or a clean explicit flat-signal result)."""
+    if _has_lookahead(code):
+        reason = "strategy code reads a future bar via shift(-N) -- lookahead, degrading to flat"
+        logger.warning("[sandboxed_eval] %s", reason)
+        return [0] * len(bars), reason
+
     workdir = _WORKDIR_ROOT / str(uuid.uuid4())
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -84,27 +109,45 @@ def evaluate_signals(code: str, bars: pd.DataFrame) -> List[int]:
         )
 
         if result.exit_code != 0 or result.killed_reason:
-            logger.warning(
-                "[sandboxed_eval] strategy evaluation failed (exit=%s, killed=%s): %s",
-                result.exit_code, result.killed_reason, (result.stderr or "").strip()[:500],
+            reason = (
+                f"strategy evaluation failed (exit={result.exit_code},"
+                f" killed={result.killed_reason}):"
+                f" {(result.stderr or '').strip()[:500]}"
             )
-            return [0] * len(bars)
+            logger.warning("[sandboxed_eval] %s", reason)
+            return [0] * len(bars), reason
 
         if not signals_path.exists():
-            logger.warning("[sandboxed_eval] no signals.json produced -- degrading to flat")
-            return [0] * len(bars)
+            reason = "no signals.json produced -- degrading to flat"
+            logger.warning("[sandboxed_eval] %s", reason)
+            return [0] * len(bars), reason
 
         signals = json.loads(signals_path.read_text())
+        if len(signals) == 0:
+            reason = "empty signal list -- degrading to flat"
+            logger.warning("[sandboxed_eval] %s", reason)
+            return [0] * len(bars), reason
         if not isinstance(signals, list) or not all(
-            isinstance(s, int) and s in (1, 0, -1) for s in signals
+            isinstance(s, (int, float)) and int(s) in (1, 0, -1) for s in signals
         ):
-            logger.warning("[sandboxed_eval] malformed signal output %r -- degrading to flat", signals)
-            return [0] * len(bars)
+            reason = f"malformed signal output {signals!r} -- degrading to flat"
+            logger.warning("[sandboxed_eval] %s", reason)
+            return [0] * len(bars), reason
 
-        return signals
+        return signals, None
     except Exception as exc:
-        logger.warning("[sandboxed_eval] evaluation raised %s -- degrading to flat", exc, exc_info=True)
-        return [0] * len(bars)
+        reason = f"evaluation raised {exc} -- degrading to flat"
+        logger.warning("[sandboxed_eval] %s", reason, exc_info=True)
+        return [0] * len(bars), reason
     finally:
         if workdir.exists():
             shutil.rmtree(workdir)
+
+
+def evaluate_signals(code: str, bars: pd.DataFrame) -> List[int]:
+    """Runs strategy `code` against `bars` in a real out-of-process sandbox
+    (ADR-0010) -- never exec()s untrusted source in Felix's own address
+    space. Any failure (sandbox unavailable, timeout, killed, malformed or
+    missing output) degrades to an all-flat signal -- never a crash, and
+    never treated as a real trading signal."""
+    return evaluate_signals_verbose(code, bars)[0]

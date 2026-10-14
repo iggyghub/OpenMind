@@ -115,10 +115,31 @@
       '</div>';
   }
 
-  /* Build HTML for the full document list. Returns '' when docs is empty. */
-  function renderList(docs) {
+  /* Build HTML for the full document list. Returns '' when docs is empty.
+   * Docs with a folder ("Reddit/r/AI_Agents") are grouped into collapsible
+   * <details>, folders A-Z after the top-level docs; the caller's sort order
+   * is kept inside each folder. openFolders: folder names to render open. */
+  function renderList(docs, openFolders) {
     if (!Array.isArray(docs) || docs.length === 0) return '';
-    return docs.map(makeRow).join('');
+    var open = openFolders || {};
+    var top = [];
+    var byFolder = {};
+    docs.forEach(function (d) {
+      var f = (d && d.folder) || '';
+      if (!f) { top.push(d); return; }
+      (byFolder[f] = byFolder[f] || []).push(d);
+    });
+    var folders = Object.keys(byFolder).sort(function (a, b) {
+      return a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0;
+    });
+    return top.map(makeRow).join('') + folders.map(function (f) {
+      var items = byFolder[f];
+      return '<details class="docs-folder" data-folder="' + escHtml(f) + '"' + (open[f] ? ' open' : '') + '>' +
+        '<summary class="docs-folder-summary">' + escHtml(f.replace('/', ' › ')) +  // first '/' only: "Reddit › r/AI_Agents"
+        ' <span class="docs-folder-count">(' + items.length + ')</span></summary>' +
+        items.map(makeRow).join('') +
+        '</details>';
+    }).join('');
   }
 
   return {

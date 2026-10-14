@@ -5,6 +5,7 @@
 
 const {
   pinAndSnapshot, runSelfCheck, manualRollback, cleanFelixArgv, checkForUpdate,
+  isCodeLoad,
   BACKUP_KEEP, CHECK_TIMEOUT_MS, FELIX_RELAUNCH_FLAGS,
 } = require('../lib/boot-check');
 
@@ -139,6 +140,7 @@ describe('runSelfCheck', () => {
         pending_backup:  '2026-07-29T12-00-00-000Z',
       })),
       writeFileFn: jest.fn(),
+      gitStashFn:  jest.fn(),
       copyFileFn:  jest.fn(),
       gitResetFn:  jest.fn(),
       notifyFn:    jest.fn(),
@@ -296,6 +298,36 @@ describe('runSelfCheck', () => {
     expect(opts.notifyFn).toHaveBeenCalled();
     expect(opts.relauncher).toHaveBeenCalled();
   });
+
+  test('rollback: calls gitStashFn before gitResetFn with correct message', async () => {
+    const opts = makeOpts({
+      checkFn: jest.fn().mockRejectedValue(new Error('timeout')),
+    });
+    await runSelfCheck(opts);
+    expect(opts.gitStashFn).toHaveBeenCalledWith('felix-rollback 2026-07-29T12-00-00-000Z');
+    expect(opts.gitStashFn.mock.invocationCallOrder[0])
+      .toBeLessThan(opts.gitResetFn.mock.invocationCallOrder[0]);
+  });
+
+  test('rollback: clears pending_backup in state file', async () => {
+    const opts = makeOpts({
+      checkFn: jest.fn().mockRejectedValue(new Error('timeout')),
+    });
+    await runSelfCheck(opts);
+    const written = JSON.parse(opts.writeFileFn.mock.calls[0][1]);
+    expect(written.pending_backup).toBeNull();
+  });
+
+  test('rollback: continues even if gitStashFn throws', async () => {
+    const opts = makeOpts({
+      checkFn:    jest.fn().mockRejectedValue(new Error('timeout')),
+      gitStashFn: jest.fn().mockImplementation(() => { throw new Error('stash error'); }),
+    });
+    const result = await runSelfCheck(opts);
+    expect(result).toEqual({ pending: true, result: 'rollback' });
+    expect(opts.gitResetFn).toHaveBeenCalled();
+    expect(opts.relauncher).toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -315,6 +347,8 @@ describe('manualRollback', () => {
         last_backup:     '2026-08-21T10-00-00-000Z',
       })),
       copyFileFn: jest.fn(),
+      gitStashFn: jest.fn(),
+      writeFileFn: jest.fn(),
       gitResetFn: jest.fn(),
       notifyFn:   jest.fn(),
       relauncher: jest.fn(),
@@ -381,6 +415,31 @@ describe('manualRollback', () => {
     const result = await manualRollback(opts);
     expect(result.ok).toBe(true);
     expect(opts.notifyFn).toHaveBeenCalled();
+    expect(opts.relauncher).toHaveBeenCalled();
+  });
+
+  test('manual rollback: calls gitStashFn before gitResetFn with correct message', async () => {
+    const opts = makeOpts();
+    await manualRollback(opts);
+    expect(opts.gitStashFn).toHaveBeenCalledWith('felix-rollback 2026-08-21T10-00-00-000Z');
+    expect(opts.gitStashFn.mock.invocationCallOrder[0])
+      .toBeLessThan(opts.gitResetFn.mock.invocationCallOrder[0]);
+  });
+
+  test('manual rollback: clears pending_backup in state file', async () => {
+    const opts = makeOpts();
+    await manualRollback(opts);
+    const written = JSON.parse(opts.writeFileFn.mock.calls[0][1]);
+    expect(written.pending_backup).toBeNull();
+  });
+
+  test('manual rollback: continues even if gitStashFn throws', async () => {
+    const opts = makeOpts({
+      gitStashFn: jest.fn().mockImplementation(() => { throw new Error('stash error'); }),
+    });
+    const result = await manualRollback(opts);
+    expect(result.ok).toBe(true);
+    expect(opts.gitResetFn).toHaveBeenCalled();
     expect(opts.relauncher).toHaveBeenCalled();
   });
 });
@@ -516,5 +575,27 @@ describe('checkForUpdate', () => {
     const opts = makeOpts({ gitRevParseFn: jest.fn().mockReturnValue('sha-boot') });
     checkForUpdate(opts);
     expect(opts.gitMergeFfOnlyFn).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isCodeLoad -- #SUP-1b, reason-based restart routing (SUP-1 follow-up)
+// ---------------------------------------------------------------------------
+
+describe('isCodeLoad', () => {
+  test('self_dev_load is true', () => {
+    expect(isCodeLoad('self_dev_load')).toBe(true);
+  });
+
+  test('user is false', () => {
+    expect(isCodeLoad('user')).toBe(false);
+  });
+
+  test('undefined is false', () => {
+    expect(isCodeLoad(undefined)).toBe(false);
+  });
+
+  test('empty string is false', () => {
+    expect(isCodeLoad('')).toBe(false);
   });
 });

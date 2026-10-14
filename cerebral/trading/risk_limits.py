@@ -40,7 +40,6 @@ class RiskManager:
         self._settings = settings_store
         self._alert_dispatcher = alert_dispatcher
         self._config = self._load_config()
-        self._daily_loss_accrued: float = 0.0
 
     def _load_config(self) -> RiskConfig:
         if self._explicit_config is not None:
@@ -53,6 +52,22 @@ class RiskManager:
             )
         return RiskConfig()
 
+    def trim_to_cap(
+        self, account_equity: float, price: float, qty: float,
+        max_per_trade_risk_pct_override: Optional[float] = None,
+    ) -> float:
+        """Trim qty down to the per-trade cap when it's only slightly over (<= 10%).
+        qty is sized to exactly the cap at the PRIOR close, so any uptick since
+        would otherwise block the trade outright (2026-09-23: at a $100 account
+        with zero headroom, most momentum-basket opens). A bigger overshoot is a
+        sizing bug, not price drift -- left alone so check_order still blocks it."""
+        pct = (max_per_trade_risk_pct_override if max_per_trade_risk_pct_override is not None
+               else self._load_config().max_per_trade_risk_pct)
+        cap = account_equity * (pct / 100.0)
+        if price > 0 and cap < qty * price <= cap * 1.10:
+            return cap / price
+        return qty
+
     def check_order(
         self,
         account_equity: float,
@@ -61,6 +76,7 @@ class RiskManager:
         trade_value: float,
         symbol: str,
         qty: float,
+        max_per_trade_risk_pct_override: Optional[float] = None,
     ) -> RiskEvaluation:
         # Refresh config in case settings changed
         self._config = self._load_config()
@@ -73,9 +89,20 @@ class RiskManager:
             return RiskEvaluation(allowed=False, reason=reason, blocked_by="max_concurrent_positions")
 
         # 2. Per-trade risk (max loss = % of account)
-        max_per_trade_loss = account_equity * (self._config.max_per_trade_risk_pct / 100.0)
-        if trade_value > max_per_trade_loss:
-            reason = f"Per-trade risk {trade_value:.2f} exceeds {self._config.max_per_trade_risk_pct}% of account ({max_per_trade_loss:.2f})"
+        effective_pct = (
+            max_per_trade_risk_pct_override
+            if max_per_trade_risk_pct_override is not None
+            else self._config.max_per_trade_risk_pct
+        )
+        max_per_trade_loss = account_equity * (effective_pct / 100.0)
+        # A cent of float slop, not a safety margin: qty is registered as
+        # budget/price and re-priced at dispatch as qty*price, so a trade
+        # sized to exactly the cap (2026-09-01, no headroom by user choice)
+        # can round a fraction of a cent over it on floating-point noise
+        # alone -- live-observed blocking real trades within seconds of the
+        # 0.8-headroom removal landing.
+        if trade_value > max_per_trade_loss + 0.01:
+            reason = f"Per-trade risk {trade_value:.2f} exceeds {effective_pct}% of account ({max_per_trade_loss:.2f})"
             logger.warning(f"[risk] Blocked order for {symbol}: {reason}")
             self._emit_alert("warning", "order_blocked", reason, {"blocked_by": "per_trade_risk"})
             return RiskEvaluation(allowed=False, reason=reason, blocked_by="per_trade_risk")
@@ -107,16 +134,25 @@ class RiskManager:
                 return RiskEvaluation(allowed=False, reason=reason, blocked_by="correlation")
         return RiskEvaluation(allowed=True)
 
-    def check_sentiment(self, symbol: str, sentiment_label: Optional[str]) -> RiskEvaluation:
-        """Blocks a new open only on a market-wide BEARISH reading.
-        `None` (gate off / no reading yet) and NEUTRAL/BULLISH all pass --
-        this is deliberately a coarse market-wide gate (decision: general
-        market feeds, not per-symbol), not a per-symbol veto."""
+    def check_sentiment(
+        self, symbol: str, sentiment_label: Optional[str],
+        stock_sentiment_label: Optional[str] = None,
+    ) -> RiskEvaluation:
+        """Blocks a new open on either a market-wide BEARISH reading or
+        this specific symbol's own BEARISH reading (2026-09-01 follow-up
+        -- penny stocks move on stock-specific news more than broad market
+        mood). `None` for either (gate off / no reading yet) and
+        NEUTRAL/BULLISH all pass through that check."""
         if sentiment_label == "BEARISH":
             reason = f"Market sentiment is BEARISH -- blocking new open for {symbol}"
             logger.warning(f"[risk] Blocked {symbol}: {reason}")
             self._emit_alert("warning", "sentiment_block", reason, {"blocked_by": "market_sentiment", "symbol": symbol})
             return RiskEvaluation(allowed=False, reason=reason, blocked_by="market_sentiment")
+        if stock_sentiment_label == "BEARISH":
+            reason = f"{symbol}'s own sentiment is BEARISH -- blocking new open"
+            logger.warning(f"[risk] Blocked {symbol}: {reason}")
+            self._emit_alert("warning", "sentiment_block", reason, {"blocked_by": "stock_sentiment", "symbol": symbol})
+            return RiskEvaluation(allowed=False, reason=reason, blocked_by="stock_sentiment")
         return RiskEvaluation(allowed=True)
 
     def check_symbol_claim(self, symbol: str, claimed_this_tick: set) -> RiskEvaluation:
@@ -135,10 +171,6 @@ class RiskManager:
             self._emit_alert("warning", "symbol_claim_block", reason, {"blocked_by": "symbol_claimed", "symbol": symbol})
             return RiskEvaluation(allowed=False, reason=reason, blocked_by="symbol_claimed")
         return RiskEvaluation(allowed=True)
-
-    def record_daily_loss(self, loss: float) -> None:
-        if loss > 0:
-            self._daily_loss_accrued += loss
 
     def _emit_alert(self, severity: str, event_type: str, message: str, context: Optional[dict] = None) -> None:
         if self._alert_dispatcher:

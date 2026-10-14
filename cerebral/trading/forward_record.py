@@ -144,11 +144,11 @@ class ForwardRecord:
         return self._con.execute("SELECT COUNT(*) FROM forward_fills WHERE phase = 'live' AND strategy_id = ?", (strategy_id,)).fetchone()[0]
 
     def get_live_pnls(self, strategy_id: str = "global") -> list[float]:
-        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE phase = 'live' AND strategy_id = ? ORDER BY timestamp ASC", (strategy_id,)).fetchall()
+        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE phase = 'live' AND strategy_id = ? AND pnl != 0.0 ORDER BY timestamp ASC", (strategy_id,)).fetchall()
         return [r["pnl"] for r in rows]
 
     def get_paper_pnls(self, strategy_id: str = "global") -> list[float]:
-        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE phase = 'paper' AND strategy_id = ? ORDER BY timestamp ASC", (strategy_id,)).fetchall()
+        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE phase = 'paper' AND strategy_id = ? AND pnl != 0.0 ORDER BY timestamp ASC", (strategy_id,)).fetchall()
         return [r["pnl"] for r in rows]
 
     def compute_live_expectancy_ci(
@@ -165,7 +165,7 @@ class ForwardRecord:
         lower = mean - 1.96 * se
         upper = mean + 1.96 * se
 
-        distinct_days = self.get_distinct_days(strategy_id)
+        distinct_days = self.get_distinct_days(strategy_id, phase="live")
         if floor is None:
             floor = self._distinct_days_floor()
 
@@ -186,7 +186,7 @@ class ForwardRecord:
         lower = mean - 1.96 * se
         upper = mean + 1.96 * se
 
-        distinct_days = self.get_distinct_days(strategy_id)
+        distinct_days = self.get_distinct_days(strategy_id, phase="paper")
         if floor is None:
             floor = self._distinct_days_floor()
 
@@ -208,12 +208,18 @@ class ForwardRecord:
         except Exception:
             return 30
 
-    def get_distinct_days(self, strategy_id: str = "global") -> int:
+    def get_distinct_days(self, strategy_id: str = "global", phase: Optional[str] = None) -> int:
         """Count distinct trading days (UTC calendar dates) for a strategy."""
-        row = self._con.execute(
-            "SELECT COUNT(DISTINCT substr(timestamp, 1, 10)) FROM forward_fills WHERE strategy_id = ?",
-            (strategy_id,)
-        ).fetchone()
+        if phase is not None:
+            row = self._con.execute(
+                "SELECT COUNT(DISTINCT substr(timestamp, 1, 10)) FROM forward_fills WHERE strategy_id = ? AND phase = ?",
+                (strategy_id, phase)
+            ).fetchone()
+        else:
+            row = self._con.execute(
+                "SELECT COUNT(DISTINCT substr(timestamp, 1, 10)) FROM forward_fills WHERE strategy_id = ?",
+                (strategy_id,)
+            ).fetchone()
         return int(row[0])
 
     def get_fills(self, limit: Optional[int] = None, strategy_id: str = "global") -> List[sqlite3.Row]:
@@ -243,12 +249,12 @@ class ForwardRecord:
         """Returns (mean, lower_ci, upper_ci, is_sufficient, trade_count, distinct_days) for realized PnL.
         Uses mean +/- 1.96 * SE. Marks insufficient if < 30 trades OR < configured distinct trading days.
         """
-        n = self.trade_count(strategy_id)
         distinct_days = self.get_distinct_days(strategy_id)
+        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE strategy_id = ? AND pnl != 0.0", (strategy_id,)).fetchall()
+        n = len(rows)
         if n == 0:
             return 0.0, 0.0, 0.0, False, 0, 0
 
-        rows = self._con.execute("SELECT pnl FROM forward_fills WHERE strategy_id = ?", (strategy_id,)).fetchall()
         pnls = np.array([r["pnl"] for r in rows])
 
         mean = float(np.mean(pnls))

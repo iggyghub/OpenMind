@@ -7,6 +7,18 @@ _dispatch_tray_call_tool / issue #238), so there's no dependency on a model
 noticing or correctly invoking the tool. Applies the same ACL/consent gate
 tray calls always go through.
 
+NOTE (2026-09-08): trigger()'s result-matching below filters incoming
+tool_result messages by tool NAME only ("self_dev_campaign"), not by a
+per-request id -- the tray IPC broadcasts tool_result to every connected
+client, not just the requester. Two concurrent trigger_campaign.py runs
+used to each pick up whichever campaign's result arrived first, sometimes
+the WRONG one (confirmed live: both scripts printed the same, first-to-
+finish campaign's output). This is now safe because SelfDevPlugin._campaign
+(plugins/self_dev.py) refuses a second concurrent campaign outright -- there
+can never be two self_dev_campaign tool_results in flight to confuse. Don't
+run two of these in parallel expecting them to queue; the second call
+returns is_error=True immediately instead.
+
 Usage:
     python scripts/trigger_campaign.py <driver_file> [max_slices]
 

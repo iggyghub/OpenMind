@@ -64,6 +64,7 @@ from cerebral import self_dev_io as _io
 from cerebral.llm.step_ledger import StepLedger
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.paths import data_dir
+from cerebral.verification import VerifyResult
 
 logger = logging.getLogger(__name__)
 
@@ -382,6 +383,10 @@ _rollback_fn = None
 # activity" thread instead, for the Activity Log -- a different destination
 # for the same event, not a replacement.
 _record_activity_fn = None
+# 2026-09-08 -- tells the tray a campaign started/finished, so its
+# auto-update idle check doesn't restart Cerebral mid-slice. Same lazy
+# module-global convention as the seams above.
+_campaign_status_fn = None
 
 
 def set_edit_fn(fn) -> None:
@@ -407,6 +412,11 @@ def set_rollback_fn(fn) -> None:
 def set_record_activity_fn(fn) -> None:
     global _record_activity_fn
     _record_activity_fn = fn
+
+
+def set_campaign_status_fn(fn) -> None:
+    global _campaign_status_fn
+    _campaign_status_fn = fn
 
 
 async def _default_record_turn_fn(kind: str, content: dict) -> None:
@@ -503,6 +513,20 @@ class SelfDevPlugin:
         self._repo_url = repo_url or str(_REPO_ROOT)
         self._sandbox_root = sandbox_root or (data_dir() / "sandbox" / "self_dev")
         self._live_root = live_root or _REPO_ROOT
+        # ADR-0034: last sandbox test-suite outcome, exposed via verify().
+        self._last_verify: VerifyResult | None = None
+        # ADR-0028 rule 5 (singular scheduler): _campaign() has no other
+        # concurrency guard -- two overlapping self_dev_campaign calls (e.g.
+        # two trigger_campaign.py invocations) would run two independent
+        # clone/edit/test/PR pipelines at once, and the tray IPC's
+        # broadcast-not-per-request tool_result delivery means a caller can
+        # even receive the WRONG campaign's result (found live 2026-09-08:
+        # both scripts printed the same, first-to-finish campaign's output).
+        # A plain bool is race-safe here without needing asyncio.Lock: this
+        # flag is only ever read+set at _campaign's very top, with no
+        # `await` between the check and the set, so no other coroutine can
+        # interleave in that gap under asyncio's cooperative scheduling.
+        self._campaign_running = False
 
     def _resolve_edit(self) -> EditFn:
         return self._edit_override or _edit_fn or _default_edit_fn
@@ -519,6 +543,18 @@ class SelfDevPlugin:
     def _resolve_record_activity(self) -> RecordTurnFn:
         return self._record_activity_override or _record_activity_fn or _default_record_activity_fn
 
+    def verify(self) -> VerifyResult:
+        """ADR-0034: thin adapter over the existing sandbox test gate.
+
+        Exposes the most recent self_dev run's test-suite outcome as a
+        VerifyResult -- no new test-running logic, this only introspects
+        what `_run` already recorded. Before any run, there is nothing to
+        report yet.
+        """
+        if self._last_verify is None:
+            return VerifyResult(passed=False, evidence="No self_dev run recorded yet.")
+        return self._last_verify
+
     def pr_state(self, pr_url: str) -> str:
         """Live PR state (OPEN/MERGED/CLOSED) via the injected pr_state_fn
         seam (#810). Deliberately NOT a Tool and NOT wired into list_tools /
@@ -532,14 +568,15 @@ class SelfDevPlugin:
             Tool(
                 name="self_dev",
                 description=(
-                    "Modify Felix's own core: clone the repo, branch, have the "
-                    "model make a scoped edit (task_type='self_dev'), run the "
-                    "test suite inside the ADR-0010 sandbox, and open a PR. "
-                    "The PR is the final output -- nothing is merged or loaded "
-                    "automatically (that requires a human review or the SD-2..4 "
-                    "slices). Deny-by-default per ADR-0005 (shell_exec). "
-                    "Unavailable without a sandbox backend. Re-calling with the "
-                    "same run_id after an interrupted run resumes from the last "
+                    "Modify a git repo: clone it, branch, have the model make a "
+                    "scoped edit (task_type='self_dev'), run the test suite inside "
+                    "the ADR-0010 sandbox, and open a PR. Omit target_dir to modify "
+                    "Felix's own core; pass an absolute local repo path to work in an "
+                    "external project using the same pipeline. The PR is the final "
+                    "output -- nothing is merged or loaded automatically (that requires "
+                    "a human review or the SD-2..4 slices). Deny-by-default per ADR-0005 "
+                    "(shell_exec). Unavailable without a sandbox backend. Re-calling with "
+                    "the same run_id after an interrupted run resumes from the last "
                     "completed phase (clone/edit/test/pr) instead of refusing."
                 ),
                 plugin=PLUGIN_NAME,
@@ -549,6 +586,14 @@ class SelfDevPlugin:
                         "change_description": {
                             "type": "string",
                             "description": "Plain-English description of the change to make.",
+                        },
+                        "target_dir": {
+                            "type": "string",
+                            "description": (
+                                "Absolute path to an external git repo to work in instead of "
+                                "Felix's own repo. Must be a local git repo (with a GitHub "
+                                "remote for the PR push). Omit to edit Felix's own repo, as before."
+                            ),
                         },
                         "run_id": {
                             "type": "string",
@@ -614,9 +659,10 @@ class SelfDevPlugin:
                     "issue (injectable issue_fn seam), calls self_dev per slice, "
                     "and rewrites the driver file after each auto-merge (tick "
                     "queue entry, advance Active + Model, append to Landed PRs). "
-                    "Every slice auto-merges regardless of guardrail/test status "
-                    "(2026-08-21 full-auto-merge amendment); stops only on error, "
-                    "setting Status: blocked. Deny-by-default per ADR-0005. "
+                    "Only guardrail hits are informational/non-blocking (2026-08-21 amendment); "
+                    "a real test failure (tests_failed) still sets Status: blocked and leaves "
+                    "the PR open. Every successful slice auto-merges. "
+                    "Stops only on error, setting Status: blocked. Deny-by-default per ADR-0005. "
                     "Requires sandbox."
                 ),
                 plugin=PLUGIN_NAME,
@@ -668,6 +714,12 @@ class SelfDevPlugin:
             )
 
         run_id = str((args or {}).get("run_id") or uuid.uuid4()).strip()
+        target_dir = str((args or {}).get("target_dir") or "").strip()
+        if target_dir and not Path(target_dir).is_dir():
+            return ToolResult(
+                content=f"target_dir not found: {target_dir}", is_error=True,
+            )
+        repo_for_run = target_dir or self._repo_url
         clone_dir = self._sandbox_root / run_id
 
         # #780 -- the ledger, not clone-dir existence, is the resume signal.
@@ -704,12 +756,12 @@ class SelfDevPlugin:
             logger.info("[self_dev] run %r: resuming -- clone already recorded", run_id)
         else:
             try:
-                self._clone(self._repo_url, clone_dir)
+                self._clone(repo_for_run, clone_dir)
             except Exception as exc:
                 return ToolResult(content=f"Clone failed: {exc}", is_error=True)
             self._ledger.record(run_id, "clone", {
                 "name": "clone",
-                "args": {"repo_url": self._repo_url},
+                "args": {"repo_url": repo_for_run},
                 "result": {"clone_dir": str(clone_dir)},
                 "is_error": False,
             })
@@ -772,6 +824,10 @@ class SelfDevPlugin:
                 "result": {"passed": test_passed, "summary": test_output},
                 "is_error": False,
             })
+
+        # ADR-0034: expose this run's test outcome via verify() -- no new
+        # test-running logic, just introspecting the gate above.
+        self._last_verify = VerifyResult(passed=test_passed, evidence=test_output)
 
         # 4. Open PR (regardless of test colour; mergeability is decided below).
         if "pr" in resumed:
@@ -848,7 +904,7 @@ class SelfDevPlugin:
                 "clone_dir": str(clone_dir),
                 "branch": branch,
                 "test_passed": test_passed,
-                "test_summary": test_output[:500],
+                "test_summary": test_output[-2000:],
                 "pr_url": pr_url,
                 "merge_decision": "tests_failed",
                 "guardrail_hit": guardrail_hit,
@@ -865,19 +921,25 @@ class SelfDevPlugin:
             )
 
         # 7. Trigger load (git pull + restart) -- S3 boot self-check runs on restart.
-        load_result = await self._load({"pr_url": pr_url})
-        load_data = (
-            json.loads(load_result.content)
-            if not load_result.is_error
-            else {"error": load_result.content}
-        )
+        if target_dir:
+            load_data = {
+                "status": "skipped",
+                "reason": "target_dir set -- not Felix's own repo, no restart needed",
+            }
+        else:
+            load_result = await self._load({"pr_url": pr_url})
+            load_data = (
+                json.loads(load_result.content)
+                if not load_result.is_error
+                else {"error": load_result.content}
+            )
         return ToolResult(
             content=json.dumps({
                 "run_id": run_id,
                 "clone_dir": str(clone_dir),
                 "branch": branch,
                 "test_passed": test_passed,
-                "test_summary": test_output[:500],
+                "test_summary": test_output[-2000:],
                 "pr_url": pr_url,
                 "merge_decision": "auto_merge",
                 "guardrail_hit": guardrail_hit,
@@ -957,6 +1019,40 @@ class SelfDevPlugin:
         }))
 
     async def _campaign(self, args: dict) -> ToolResult:
+        """Concurrency guard (2026-09-08) wrapping the real _campaign_inner.
+
+        ADR-0028 rule 5 (singular scheduler): refuses a second campaign
+        outright rather than queueing it -- a silent multi-minute wait with
+        no feedback is worse than an immediate, clear refusal the caller
+        can retry. See self._campaign_running's own comment in __init__
+        for why a plain bool is race-safe here without asyncio.Lock.
+        """
+        if self._campaign_running:
+            return ToolResult(
+                content=(
+                    "Refused: a self_dev_campaign is already running. "
+                    "ADR-0028 rule 5 -- the scheduler is singular; only one "
+                    "campaign runs at a time. Wait for it to finish and retry."
+                ),
+                is_error=True,
+            )
+        self._campaign_running = True
+        if _campaign_status_fn is not None:
+            try:
+                await _campaign_status_fn({"running": True})
+            except Exception:
+                logger.warning("[self_dev] campaign_status_fn(running=True) failed", exc_info=True)
+        try:
+            return await self._campaign_inner(args)
+        finally:
+            self._campaign_running = False
+            if _campaign_status_fn is not None:
+                try:
+                    await _campaign_status_fn({"running": False})
+                except Exception:
+                    logger.warning("[self_dev] campaign_status_fn(running=False) failed", exc_info=True)
+
+    async def _campaign_inner(self, args: dict) -> ToolResult:
         """Drive a multi-slice campaign from a driver .md file (SD-5/#807).
 
         Loops around the existing _run() engine. Each iteration:

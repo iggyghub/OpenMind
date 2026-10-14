@@ -64,13 +64,31 @@ class TestSettingsStore:
             # S34: paper trading settings
             "trading_paper_enabled",
             "trading_paper_starting_capital",
+            "trading_only_prefix",
+            "trend_basket_gate_state",
             "distinct_days_floor",
             "discovery_enabled",
             "discovery_stop_at",
             "discovery_queries",
             "discovery_interval",
             "discovery_candidate_limit",
+            "ipo_tracked",
             "scheduler_heartbeat",
+            "trading_sentiment_gate_enabled",
+            "trading_bear_case_gate_enabled",
+            "trading_stock_sentiment_gate_enabled",
+            "admission_cap",
+            "design_system_autofix_enabled",
+            "batch_replay_running",
+            "batch_replay_cursor",
+            "batch_replay_start",
+            "batch_replay_graduation_dd_cap",
+            "cross_stock_running",
+            "cross_stock_cursor_strategy_id",
+            "cross_stock_cursor_symbol",
+            "cross_stock_night_started_at",
+            "cross_stock_last_run_processed",
+            "cross_stock_last_run_rate_per_hour",
         }
 
     def test_browser_pause_on_verification_defaults_on(self, tmp_path):
@@ -96,6 +114,25 @@ class TestSettingsStore:
         s1.set("reminder_interval_minutes", 30)
         s2 = SettingsStore(p)
         assert s2.get("reminder_interval_minutes") == 30
+
+    def test_two_instances_do_not_clobber_each_others_writes(self, tmp_path):
+        """Regression for the 2026-09-15/16 cross-stock throughput-stats bug:
+        two SettingsStore instances constructed at different times (so each
+        cached a different snapshot of _data) must not silently overwrite
+        each other's key when they both write, even without either one
+        being reconstructed in between. Before the fix, s2's write of
+        camera_enabled used its OWN stale in-memory copy of
+        reminder_interval_minutes (30, from before s1's write) and clobbered
+        s1's fresher value (45) back to the pre-s1 default (30)."""
+        p = tmp_path / "s.json"
+        s1 = SettingsStore(p)
+        s2 = SettingsStore(p)  # constructed at the same time, same stale snapshot
+        s1.set("reminder_interval_minutes", 30)
+        s1.set("reminder_interval_minutes", 45)  # s1's own snapshot is fresh
+        s2.set("camera_enabled", True)  # s2's snapshot predates BOTH s1 writes
+        assert s1.get("reminder_interval_minutes") == 45
+        assert s2.get("reminder_interval_minutes") == 45
+        assert SettingsStore(p).get("camera_enabled") is True
 
     def test_corrupt_file_falls_back_to_defaults(self, tmp_path):
         p = tmp_path / "s.json"
@@ -312,6 +349,15 @@ class TestSettingsStore:
     def test_scheduler_heartbeat_defaults_empty(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")
         assert store.get("scheduler_heartbeat") == ""
+
+    def test_admission_cap_defaults_1(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        assert store.get("admission_cap") == 1
+
+    def test_admission_cap_floors_at_1(self, tmp_path):
+        store = SettingsStore(tmp_path / "s.json")
+        store.set("admission_cap", 0)
+        assert store.get("admission_cap") == 1
 
     def test_discovery_queries_rejects_non_str_items(self, tmp_path):
         store = SettingsStore(tmp_path / "s.json")

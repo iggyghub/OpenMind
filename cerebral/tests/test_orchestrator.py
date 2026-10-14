@@ -10,10 +10,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from cerebral.mcp.orchestrator import (
+    GATE_EXEMPT,
     MCPOrchestrator,
     PluginRegistrationError,
     REASON_INVALID_TYPE,
     REASON_MISSING,
+    REASON_NO_TEST_FILE,
     REASON_UNKNOWN_CAPABILITY,
     Tool,
     ToolResult,
@@ -321,6 +323,69 @@ def test_discover_plugins_loads_valid_plugin(tmp_path):
 
     names = [t.name for t in orc.list_tools()]
     assert "tick" in names
+
+
+def test_discover_plugins_verify_test_files_off_by_default(tmp_path):
+    # ADR-0034: default is off so the many synthetic-plugin discovery tests
+    # in this suite (no matching real test file, by design) don't all need
+    # to opt out individually.
+    plugin_code = textwrap.dedent("""
+        PLUGIN_NAME = "no_test_file_plugin"
+        REQUIRED_CAPABILITIES = frozenset()
+        def create():
+            class _P:
+                name = "no_test_file_plugin"
+                def list_tools(self): return []
+                async def call_tool(self, n, a): return None
+            return _P()
+    """)
+    (tmp_path / "no_test_file_plugin.py").write_text(plugin_code)
+
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+    assert "no_test_file_plugin" in orc._plugins
+    assert orc.registration_errors == []
+
+
+def test_discover_plugins_verify_test_files_on_refuses_missing(tmp_path):
+    # ADR-0034: opted in (as cerebral/main.py's real construction does),
+    # a plugin with no cerebral/tests/test_plugin_<name>.py is refused.
+    plugin_code = textwrap.dedent("""
+        PLUGIN_NAME = "no_test_file_plugin"
+        REQUIRED_CAPABILITIES = frozenset()
+        def create():
+            class _P:
+                name = "no_test_file_plugin"
+                def list_tools(self): return []
+                async def call_tool(self, n, a): return None
+            return _P()
+    """)
+    (tmp_path / "no_test_file_plugin.py").write_text(plugin_code)
+
+    orc = MCPOrchestrator(verify_test_files=True)
+    orc.discover_plugins(tmp_path)
+    assert "no_test_file_plugin" not in orc._plugins
+    assert orc.registration_errors[0]["reason"] == REASON_NO_TEST_FILE
+
+
+def test_discover_plugins_verify_test_files_on_accepts_covered_plugin(tmp_path):
+    # "clock" has a real cerebral/tests/test_plugin_clock.py -- registers fine.
+    plugin_code = textwrap.dedent("""
+        PLUGIN_NAME = "clock"
+        REQUIRED_CAPABILITIES = frozenset({"device_control"})
+        def create():
+            class _P:
+                name = "clock"
+                def list_tools(self): return []
+                async def call_tool(self, n, a): return None
+            return _P()
+    """)
+    (tmp_path / "clock.py").write_text(plugin_code)
+
+    orc = MCPOrchestrator(verify_test_files=True)
+    orc.discover_plugins(tmp_path)
+    assert "clock" in orc._plugins
+    assert orc.registration_errors == []
 
 
 def test_discover_plugins_skips_files_without_create(tmp_path):
@@ -1559,3 +1624,81 @@ def test_irreversible_marking_is_allowlisted(plugin_path):
             "not on the irreversible allowlist. Add it deliberately to "
             "_IRREVERSIBLE_PLUGINS above when marking another tool."
         )
+
+
+# ---------------------------------------------------------------------------
+# Slice 6a — GATE_EXEMPT sentinel (Issue #1288, ADR-0005)
+# ---------------------------------------------------------------------------
+
+
+async def test_call_tool_gate_exempt_dispatches_denied_tool():
+    """S6a: GATE_EXEMPT bypasses the gate, even for a capability that DENIES."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("shell", ["run"])
+    orc.register(plugin)
+
+    result = await orc.call_tool(
+        "run", {"cmd": "ls"}, capability=GATE_EXEMPT,
+    )
+
+    assert not result.is_error
+    plugin.call_tool.assert_called_once_with("run", {"cmd": "ls"})
+
+
+async def test_call_tool_real_capability_denies():
+    """S6a: A real Capability still gates correctly (SANITY: gates aren't broken by GATE_EXEMPT support)."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("shell", ["run"])
+    orc.register(plugin)
+
+    result = await orc.call_tool(
+        "run", {"cmd": "ls"}, capability=Capability.SHELL_EXEC,
+    )
+
+    assert result.is_error
+    plugin.call_tool.assert_not_called()
+
+
+async def test_call_tool_none_gates_on_declared_capabilities():
+    """S6c: capability=None resolves from the tool's declared capabilities.
+    Replaces S6a's "None still dispatches" test."""
+    orc = MCPOrchestrator()
+    # shell_exec DENYs by default in the bare gate.
+    plugin = _make_plugin("shell", ["run"])
+    orc.register(plugin, required_capabilities=frozenset({"shell_exec"}))
+
+    result = await orc.call_tool("run", {"cmd": "ls"}, capability=None)
+
+    assert result.is_error
+    assert "declared capabilities" in result.content
+    plugin.call_tool.assert_not_called()
+
+
+async def test_call_tool_none_silent_capability_dispatches():
+    """S6c: capability=None dispatches when the tool's declared caps resolve SILENT."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("files", ["read_file"])
+    orc.register(plugin, required_capabilities=frozenset({"fs_read"}))
+
+    result = await orc.call_tool("read_file", {"path": "x"}, capability=None)
+
+    assert not result.is_error
+    plugin.call_tool.assert_called_once_with("read_file", {"path": "x"})
+
+
+async def test_call_tool_none_no_declared_capabilities_dispatches():
+    """S6c: capability=None dispatches when the tool declares no capabilities."""
+    orc = MCPOrchestrator()
+    plugin = _make_plugin("net", ["ping"])
+    orc.register(plugin, required_capabilities=frozenset())
+
+    result = await orc.call_tool("ping", {}, capability=None)
+
+    assert not result.is_error
+    plugin.call_tool.assert_called_once_with("ping", {})
+
+
+def test_gate_exempt_importable():
+    """S6a: GATE_EXEMPT is importable from cerebral.mcp.orchestrator."""
+    from cerebral.mcp.orchestrator import GATE_EXEMPT
+    assert repr(GATE_EXEMPT) == "GATE_EXEMPT"

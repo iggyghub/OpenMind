@@ -3,7 +3,7 @@
 const os   = require('os');
 const fs   = require('fs');
 const path = require('path');
-const { PositionStore } = require('../lib/position-store');
+const { PositionStore, isPointOnAnyDisplay } = require('../lib/position-store');
 
 function tmpPath() {
   return path.join(os.tmpdir(), `openmind-pos-test-${Date.now()}-${Math.random()}.json`);
@@ -51,4 +51,37 @@ test('overwrites previous position on repeated saves', () => {
   store.save({ x: 99, y: 88 });
   expect(store.load()).toEqual({ x: 99, y: 88 });
   fs.unlinkSync(file);
+});
+
+// ── isPointOnAnyDisplay -- #820 ─────────────────────────────────────────────
+
+const _DISPLAY = { bounds: { x: 0, y: 0, width: 1920, height: 1080 } };
+const _SECOND_DISPLAY = { bounds: { x: 1920, y: 0, width: 1280, height: 1024 } };
+
+test('true for a point inside the only display', () => {
+  expect(isPointOnAnyDisplay(500, 500, [_DISPLAY])).toBe(true);
+});
+
+test('false for a point past every display (e.g. monitor unplugged)', () => {
+  expect(isPointOnAnyDisplay(3000, 3000, [_DISPLAY])).toBe(false);
+});
+
+test('true for a point on a second, non-primary display', () => {
+  expect(isPointOnAnyDisplay(2500, 500, [_DISPLAY, _SECOND_DISPLAY])).toBe(true);
+});
+
+test('false for a negative-offset point when no display covers negative space', () => {
+  expect(isPointOnAnyDisplay(-100, -100, [_DISPLAY])).toBe(false);
+});
+
+test('true for a point on the display\'s top-left corner (inclusive)', () => {
+  expect(isPointOnAnyDisplay(0, 0, [_DISPLAY])).toBe(true);
+});
+
+test('false for a point exactly on the display\'s far edge (exclusive)', () => {
+  expect(isPointOnAnyDisplay(1920, 1080, [_DISPLAY])).toBe(false);
+});
+
+test('false when displays list is empty', () => {
+  expect(isPointOnAnyDisplay(500, 500, [])).toBe(false);
 });

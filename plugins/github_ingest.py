@@ -12,6 +12,7 @@ the video plugin's -- reused, not forked.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -30,6 +31,24 @@ PLUGIN_NAME = "github_ingest"
 
 # Same posture as the video plugin: clone is external_data_read + fs_write.
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"external_data_read", "fs_write"})
+
+# Cooperative cancellation + progress for an in-progress github_ingest run
+# (#1143). _INGEST_CANCEL is checked once per doc in _ingest_repo's loop; the
+# github_ingest_stop/github_ingest_reset tools below are the only production
+# callers of .set()/.clear(). Module-level (not per-call) because only one
+# ingest run is ever in flight at a time -- matches the single-scheduler
+# reality (ADR-0028 rule 5), not a design choice that needs per-run scoping.
+_INGEST_CANCEL = asyncio.Event()
+_INGEST_RUNNING = False
+_INGEST_PROGRESS = {"processed": 0, "total": 0}
+
+
+async def _check_ingest_cancel() -> None:
+    """Cooperative cancellation check -- yields to the event loop so a stop
+    signal (or a real task.cancel()) can interrupt between documents."""
+    if _INGEST_CANCEL.is_set():
+        raise asyncio.CancelledError("GitHub ingest stopped by user")
+    await asyncio.sleep(0)
 
 # ADR-0019 S3: after this many Budd requeues, a repo drains to a local model.
 DRAIN_AT_REQUEUES = 3
@@ -134,8 +153,16 @@ async def _ingest_repo(store, repo_url: str, category: str) -> dict:
         _route_extraction_local(True)
     results = []
     skipped = 0
+    global _INGEST_RUNNING
+    _INGEST_RUNNING = True
+    _INGEST_PROGRESS["total"] = len(docs)
+    _INGEST_PROGRESS["processed"] = 0
     try:
         for d in docs:
+            # Cooperative cancellation (#1143): stops between docs, not after
+            # the whole list drains.
+            await _check_ingest_cancel()
+            _INGEST_PROGRESS["processed"] += 1
             doc_url = repo_url + "#" + d["relpath"]
             existing = store.get_by_url(doc_url)
             if (
@@ -181,6 +208,7 @@ async def _ingest_repo(store, repo_url: str, category: str) -> dict:
                 }
             results.append({"doc": d["relpath"], "stage": final})
     finally:
+        _INGEST_RUNNING = False
         if draining:
             _route_extraction_local(False)
 
@@ -263,6 +291,21 @@ class GithubIngestPlugin:
                 required_capabilities=frozenset({"external_data_read"}),
                 schema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="github_ingest_stop",
+                description=(
+                    "Stop an in-progress github_ingest/github_reingest run. Takes "
+                    "effect between documents, not mid-document (#1143)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="github_ingest_reset",
+                description="Clear a prior stop signal so the next ingest run isn't pre-cancelled.",
+                plugin=PLUGIN_NAME,
+                schema={"type": "object", "properties": {}},
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -272,6 +315,12 @@ class GithubIngestPlugin:
             return await self._github_reingest(args)
         if tool_name == "github_check_updates":
             return self._github_check_updates(args)
+        if tool_name == "github_ingest_stop":
+            _INGEST_CANCEL.set()
+            return ToolResult(content=json.dumps({"status": "stop_requested"}))
+        if tool_name == "github_ingest_reset":
+            _INGEST_CANCEL.clear()
+            return ToolResult(content=json.dumps({"status": "reset"}))
         return ToolResult(content=f"Unknown tool: {tool_name}", is_error=True)
 
     def panel_spec(self, profile_id: "int | None" = None) -> dict:  # noqa: ARG002
@@ -283,7 +332,35 @@ class GithubIngestPlugin:
         clusters that contain >=1 github-sourced idea.
         """
         store = _video._get_store()
-        widgets: list[dict] = [{
+        widgets: list[dict] = []
+        if _INGEST_RUNNING or _INGEST_CANCEL.is_set():
+            # Progress + stop/reset control (#1143) -- only shown while a run
+            # is in flight or was just stopped, so the idle panel stays plain.
+            widgets.append({
+                "type": "detail",
+                "id": "github-ingest-progress",
+                "fields": [
+                    {"label": "Status", "value": "Stopping" if _INGEST_CANCEL.is_set() else "Running"},
+                    {"label": "Progress", "value": f"{_INGEST_PROGRESS['processed']} / {_INGEST_PROGRESS['total']} docs"},
+                ],
+            })
+            if _INGEST_CANCEL.is_set():
+                widgets.append({
+                    "type": "action",
+                    "id": "github-ingest-reset",
+                    "label": "Reset stop signal",
+                    "tool": "github_ingest_reset",
+                    "tool_args": {},
+                })
+            else:
+                widgets.append({
+                    "type": "action",
+                    "id": "github-ingest-stop",
+                    "label": "Stop ingest",
+                    "tool": "github_ingest_stop",
+                    "tool_args": {},
+                })
+        widgets.append({
             "type": "action",
             "id": "github-ingest",
             "label": "Ingest repo",
@@ -293,7 +370,7 @@ class GithubIngestPlugin:
             "input_placeholder": "repo URL(s), space or comma separated",
             "input_arg2": "category",
             "input_placeholder2": "collection (blank = Uncategorised)",
-        }]
+        })
 
         repos = store.list_github_repos()
         if repos:

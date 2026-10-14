@@ -40,6 +40,7 @@ skill-name/
 ---
 name: skill-name
 description: Brief description of capability. Use when [specific triggers].
+verified_evidence: <!-- Optional: Provide evidence if this skill has been witnessed-run against a real task -->
 ---
 
 # Skill Name
@@ -115,3 +116,4 @@ After drafting, verify:
 - [ ] Consistent terminology
 - [ ] Concrete examples included
 - [ ] References one level deep
+- [ ] `verified_evidence` field populated if applicable (witnessed-run)

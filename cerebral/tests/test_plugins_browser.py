@@ -94,6 +94,32 @@ class TestWebSearch:
         assert data["results"][0]["url"] == "https://python.org"
 
     @pytest.mark.asyncio
+    async def test_web_search_strips_untrusted_content_wrapper_from_snippet(self):
+        """Regression (#1277, 2026-09-17): OpenClaw wraps fetched web text in
+        <<<EXTERNAL_UNTRUSTED_CONTENT id="...">>> markers as a prompt-injection
+        defense. Fine for an LLM prompt, but 53/307 trading strategies ended
+        up with the raw wrapper stored verbatim as their strategy_id because
+        the trading-discovery pipeline treats this snippet field as plain
+        data, not an LLM prompt. web_search must hand back clean text."""
+        from plugins.browser import BrowserPlugin
+        wrapped = (
+            '<<<EXTERNAL_UNTRUSTED_CONTENT id="a6780e0366106893">>>\n'
+            'Source: Web Search\n'
+            '---\n'
+            'Multi-day breakout swing trading identifies prolonged consolidation.\n'
+            '<<<END_EXTERNAL_UNTRUSTED_CONTENT id="a6780e0366106893">>>'
+        )
+        fake_response = _search_response(
+            [{"title": "Breakout trading", "url": "https://example.com", "snippet": wrapped}]
+        )
+        plugin = BrowserPlugin(run_cli_fn=_make_run_cli(fake_response))
+        result = await plugin.call_tool("web_search", {"query": "breakout trading"})
+        data = json.loads(result.content)
+        assert data["results"][0]["snippet"] == (
+            "Multi-day breakout swing trading identifies prolonged consolidation."
+        )
+
+    @pytest.mark.asyncio
     async def test_web_search_passes_query_as_a_real_cli_arg(self):
         """run_cli_fn must receive the query as its own argv element (not
         shell-interpolated -- no injection surface even with quotes)."""
@@ -332,9 +358,12 @@ class TestDefaultRunCli:
         actually be able to run `openclaw infer web search` on this host
         (Windows: openclaw is an npm .cmd shim -- create_subprocess_exec
         can't resolve it directly, confirmed empirically, hence cmd /c)."""
+        import os
         import shutil
         if shutil.which("openclaw") is None:
             pytest.skip("openclaw CLI not installed on this host")
+        if os.environ.get("OPENMIND_LIVE_TESTS") != "1":
+            pytest.skip("live network test -- set OPENMIND_LIVE_TESTS=1 to run it")
         from plugins.browser import _default_run_cli
         data = await _default_run_cli(["infer", "web", "search", "--query", "python", "--limit", "1", "--json"])
         assert data.get("ok") is True

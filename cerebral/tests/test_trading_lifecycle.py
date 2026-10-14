@@ -88,6 +88,22 @@ def test_halted_strategies_ignore_fills(lifecycle):
     assert state.live_trade_count == 0
 
 
+def test_record_live_price_persists_and_is_ignored_when_halted(lifecycle):
+    """BATCH-REPLAY S4 follow-up: last_live_price is the dollar-notional
+    reference _apply_lifecycle needs to convert replay's fractional
+    worst_drawdown into check_retirement's dollar-based comparison --
+    tracked separately from update_live_fill's pnl/equity-curve bookkeeping
+    since it must update on opens too, which carry no pnl."""
+    state = lifecycle.get_state("price_test")
+    state.status = "live"
+    lifecycle.record_live_price("price_test", 123.45)
+    assert state.last_live_price == 123.45
+
+    state.status = "halted"
+    lifecycle.record_live_price("price_test", 999.0)
+    assert state.last_live_price == 123.45  # unchanged once halted
+
+
 # ── halt_strategy / resume_strategy (S32/#898, 2026-08-27) ──────────────
 # Manual counterpart to the automatic CI/drawdown halt in check_retirement
 # -- user-triggered instead of computed, same effect.
@@ -364,3 +380,68 @@ def test_gate_does_not_run_when_ci_test_itself_fails(lifecycle):
 
     assert graduated is False
     assert scan_calls == []
+
+
+# ── BATCH-REPLAY S4 (#1227): accumulated-replay drawdown refusal gate ────
+
+def test_bad_accumulated_drawdown_refuses_graduation_with_a_critical_alert(dispatcher, lifecycle):
+    """Even a clean live paper CI must not override a strategy whose
+    accumulated replay history shows a worse drawdown than the cap."""
+    record = _ci_mock()
+
+    graduated = lifecycle.check_graduation(
+        "strat1", record, worst_backtest_dd=-0.45, dd_cap=0.30,
+    )
+
+    assert graduated is False
+    assert lifecycle.get_state("strat1").status == "paper"
+    alerts = dispatcher.get_pending()
+    dd_alerts = [a for a in alerts if a.event_type == "graduation_refused_drawdown"]
+    assert len(dd_alerts) == 1
+    assert dd_alerts[0].severity == "critical"
+    assert "45" in dd_alerts[0].message  # the -45% drawdown, formatted as a percent
+
+
+def test_accumulated_drawdown_within_cap_graduates_normally(lifecycle):
+    record = _ci_mock()
+
+    graduated = lifecycle.check_graduation(
+        "strat1", record, worst_backtest_dd=-0.10, dd_cap=0.30,
+    )
+
+    assert graduated is True
+    assert lifecycle.get_state("strat1").status == "live"
+
+
+def test_missing_worst_backtest_dd_never_refuses_conservative_default(lifecycle):
+    """A strategy that has never been replayed (worst_backtest_dd=None)
+    must graduate on its live paper CI alone -- missing evidence is never
+    treated as a refusal signal (mirrors the fundamentals gate's own
+    no-filing-found convention)."""
+    record = _ci_mock()
+
+    graduated = lifecycle.check_graduation(
+        "strat1", record, worst_backtest_dd=None, dd_cap=0.30,
+    )
+
+    assert graduated is True
+
+
+def test_missing_dd_cap_never_refuses_even_with_bad_worst_backtest_dd(lifecycle):
+    """No configured cap (dd_cap=None) skips the check entirely, even if a
+    real (bad) worst_backtest_dd is supplied."""
+    record = _ci_mock()
+
+    graduated = lifecycle.check_graduation(
+        "strat1", record, worst_backtest_dd=-0.90, dd_cap=None,
+    )
+
+    assert graduated is True
+
+
+def test_drawdown_gate_is_backward_compatible_when_neither_arg_is_passed(lifecycle):
+    """Every pre-S4 caller/test that doesn't pass worst_backtest_dd/dd_cap
+    at all is unaffected."""
+    record = _ci_mock()
+    graduated = lifecycle.check_graduation("strat1", record)
+    assert graduated is True

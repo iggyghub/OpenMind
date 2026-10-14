@@ -9,14 +9,37 @@
 
 (function () {
   var PREFIX = 'sec-collapse:';
+  // A global override (Settings > General > Appearance > "Keep sections
+  // expanded"): once on, every section everywhere ignores its own remembered
+  // collapsed state and just stays open. Persisted separately from any
+  // per-section key so flipping it off later restores whatever each section
+  // was individually set to before.
+  var FORCE_EXPAND_KEY = PREFIX + 'force-expand';
 
   // Returns the localStorage key for a given pane + section label.
   function storageKey(paneKey, label) {
     return PREFIX + paneKey + ':' + label.trim().toLowerCase().replace(/\s+/g, '-');
   }
 
-  // Returns true when the section is persisted as collapsed.
+  function isForceExpand() {
+    try {
+      return localStorage.getItem(FORCE_EXPAND_KEY) === '1';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function setForceExpand(on) {
+    try {
+      if (on) localStorage.setItem(FORCE_EXPAND_KEY, '1');
+      else localStorage.removeItem(FORCE_EXPAND_KEY);
+    } catch (e) {}
+  }
+
+  // Returns true when the section is persisted as collapsed. The global
+  // force-expand override, when on, always wins.
   function isCollapsed(paneKey, label) {
+    if (isForceExpand()) return false;
     try {
       return localStorage.getItem(storageKey(paneKey, label)) === '1';
     } catch (e) {
@@ -110,7 +133,27 @@
     });
   }
 
-  var _exports = { init: init, isCollapsed: isCollapsed, setCollapsed: setCollapsed, storageKey: storageKey };
+  // Forces every already-initialised section header within containerEl (or
+  // the whole document if omitted) visibly open right now -- for when the
+  // force-expand setting is switched on and sections rendered before that
+  // moment need to react immediately, not just the next ones to init().
+  function forceExpandAll(containerEl) {
+    var root = containerEl || document;
+    var hdrs = root.querySelectorAll('.sec-hdr.sec-collapsed');
+    for (var i = 0; i < hdrs.length; i++) {
+      _applyState(hdrs[i], _bodyEls(hdrs[i]), false);
+    }
+  }
+
+  var _exports = {
+    init: init,
+    isCollapsed: isCollapsed,
+    setCollapsed: setCollapsed,
+    storageKey: storageKey,
+    isForceExpand: isForceExpand,
+    setForceExpand: setForceExpand,
+    forceExpandAll: forceExpandAll,
+  };
 
   if (typeof module === 'object' && module && module.exports) {
     module.exports = _exports;

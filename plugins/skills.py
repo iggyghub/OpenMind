@@ -30,6 +30,12 @@ Lifecycle tools: `skill_enable`, `skill_disable`, `skill_uninstall`, plus
 Install-from-GitHub (S3 #541): `skill_install(repo[, subpath, ref, name])` fetches
 a public GitHub repo tarball into the installed root (disabled on arrival) and
 records provenance (repo + sha) in a `.provenance.json` sidecar.
+
+Update (ADR-0035 slice K): `skill_update(name)` diffs the installed copy
+against the ORIGINAL content fetched at the provenance sha -- any difference
+means a local edit, and the update is refused rather than guessing which
+version wins. Unmodified skills are overwritten with the latest content and
+the provenance sha is bumped.
 """
 # NOTE: deliberately NO `from __future__ import annotations`. This module is
 # loaded by the orchestrator via spec_from_file_location, which does NOT place
@@ -49,6 +55,8 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from cerebral.verification import verify_skill
 
 import httpx
 import yaml
@@ -135,6 +143,7 @@ class Skill:
     tools: tuple[str, ...]
     source: str  # "seed" | "installed"
     path: Path   # the skill's directory
+    verified_evidence: str | None = None
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str]:
@@ -184,6 +193,9 @@ def _load_skill_dir(dir_path: Path, source: str) -> Skill | None:
         raw_tools = []
     tools = tuple(str(t) for t in raw_tools)
 
+    raw_evidence = meta.get("verified_evidence")
+    verified_evidence = str(raw_evidence).strip() if raw_evidence else None
+
     return Skill(
         name=str(name),
         description=str(description),
@@ -191,6 +203,7 @@ def _load_skill_dir(dir_path: Path, source: str) -> Skill | None:
         tools=tools,
         source=source,
         path=dir_path,
+        verified_evidence=verified_evidence or None,
     )
 
 
@@ -384,6 +397,17 @@ class SkillsPlugin:
                 },
                 required_capabilities=frozenset({'fs_read','fs_write','network_egress_cloud'}),
             ),
+            Tool(
+                name="skill_update",
+                description=(
+                    "Update an installed skill to the latest version from its source "
+                    "repo. Refuses if the skill has local edits since install -- never "
+                    "guesses which version wins; update manually in that case."
+                ),
+                plugin=PLUGIN_NAME,
+                schema=_name_schema,
+                required_capabilities=frozenset({'fs_read','fs_write','network_egress_cloud'}),
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -416,6 +440,11 @@ class SkillsPlugin:
             return result
         if tool_name == "skill_install":
             result = self._skill_install(args)
+            if not result.is_error:
+                await self._maybe_broadcast()
+            return result
+        if tool_name == "skill_update":
+            result = self._skill_update(args)
             if not result.is_error:
                 await self._maybe_broadcast()
             return result
@@ -613,6 +642,156 @@ class SkillsPlugin:
             )
         )
 
+    # ------------------------------------------------------------------
+    # skill_update (ADR-0035 slice K) -- refuse-on-local-edit update
+    # ------------------------------------------------------------------
+
+    def _current_skill_files(self, skill: "Skill") -> dict[str, bytes]:
+        """Snapshot of an installed skill's files, keyed by relative path.
+
+        Excludes dotfiles (the ``.provenance.json`` sidecar) -- same
+        exclusion _resource_manifest uses. Used to diff against the
+        original fetched content on update.
+        """
+        return {
+            f.relative_to(skill.path).as_posix(): f.read_bytes()
+            for f in sorted(skill.path.rglob("*"))
+            if f.is_file() and not f.name.startswith(".")
+        }
+
+    def _fetch_skill_snapshot(
+        self, repo: str, ref: str | None, name: str
+    ) -> tuple[dict[str, bytes], str] | None:
+        """Fetch repo@ref, locate the named skill dir, return its files as
+        {relative_path: content} plus the resolved commit sha.
+
+        None if the named skill isn't found in the fetched tree. Mirrors
+        _skill_install's extraction/candidate-search shape.
+        """
+        tarball = self._fetch(repo, ref)
+        with tempfile.TemporaryDirectory(prefix="skill_update_") as td:
+            tmp = Path(td)
+            with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tf:
+                names = tf.getnames()
+                tf.extractall(tmp, filter="data")
+            tops = {n.split("/", 1)[0] for n in names if n}
+            if len(tops) != 1:
+                return None
+            top = next(iter(tops))
+            reponame = repo.split("/", 1)[1]
+            sha = top[len(reponame) + 1:] if top.startswith(reponame + "-") else top
+            base = tmp / top
+
+            candidates: dict[str, Path] = {}
+            if (base / _SKILL_FILE).is_file():
+                sk = _load_skill_dir(base, "installed")
+                if sk is not None:
+                    candidates[sk.name] = base
+            for sub in sorted(p for p in base.iterdir() if p.is_dir()):
+                sk = _load_skill_dir(sub, "installed")
+                if sk is not None:
+                    candidates[sk.name] = sub
+
+            skill_dir = candidates.get(name)
+            if skill_dir is None:
+                return None
+            files = {
+                f.relative_to(skill_dir).as_posix(): f.read_bytes()
+                for f in sorted(skill_dir.rglob("*"))
+                if f.is_file() and not f.name.startswith(".")
+            }
+            return files, sha
+
+    def _skill_update(self, args: dict) -> ToolResult:
+        name = str(args.get("name", "")).strip()
+        if not name:
+            return ToolResult(content="name is required", is_error=True)
+        skill = self._discover().get(name)
+        if skill is None:
+            return ToolResult(content=f"No skill named {name!r}", is_error=True)
+        if skill.source != "installed":
+            return ToolResult(
+                content=(
+                    f"Skill {name!r} is a built-in seed skill and cannot be "
+                    "updated."
+                ),
+                is_error=True,
+            )
+
+        sidecar = skill.path / ".provenance.json"
+        if not sidecar.is_file():
+            return ToolResult(
+                content=f"Skill {name!r} has no install provenance -- cannot check for updates.",
+                is_error=True,
+            )
+        try:
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            return ToolResult(content=f"Could not read provenance for {name!r}: {exc}", is_error=True)
+        repo = str(meta.get("repo") or "")
+        old_sha = str(meta.get("sha") or "")
+        if not repo or not old_sha:
+            return ToolResult(
+                content=f"Skill {name!r}'s provenance is incomplete -- cannot check for updates.",
+                is_error=True,
+            )
+
+        # Diff the installed copy against the ORIGINAL fetched content at
+        # old_sha -- any difference means a local edit, and we never guess
+        # which version wins (mirrors the boot self-check's "never
+        # destructive" stance on uncommitted work).
+        try:
+            original = self._fetch_skill_snapshot(repo, old_sha, name)
+        except Exception as exc:
+            return ToolResult(
+                content=f"Could not re-fetch original content for {name!r}: {exc}", is_error=True,
+            )
+        if original is None:
+            return ToolResult(
+                content=f"Could not locate {name!r} in {repo!r}@{old_sha[:7]} to compare.",
+                is_error=True,
+            )
+        original_files, _ = original
+        if self._current_skill_files(skill) != original_files:
+            return ToolResult(
+                content=f"Skill {name!r} has local edits -- update manually.",
+                is_error=True,
+            )
+
+        try:
+            latest = self._fetch_skill_snapshot(repo, None, name)
+        except Exception as exc:
+            return ToolResult(content=f"Fetch failed for {repo!r}: {exc}", is_error=True)
+        if latest is None:
+            return ToolResult(content=f"Could not locate {name!r} in {repo!r} to update.", is_error=True)
+        new_files, new_sha = latest
+        if new_sha == old_sha:
+            return ToolResult(
+                content=json.dumps({"name": name, "updated": False, "message": "Already up to date."})
+            )
+
+        for f in skill.path.iterdir():
+            if f.name == ".provenance.json":
+                continue
+            shutil.rmtree(f) if f.is_dir() else f.unlink()
+        for rel, content in new_files.items():
+            target = skill.path / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        (skill.path / ".provenance.json").write_text(
+            json.dumps(
+                {
+                    "repo": repo,
+                    "ref": meta.get("ref"),
+                    "sha": new_sha,
+                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return ToolResult(content=json.dumps({"name": name, "updated": True, "sha": new_sha}))
+
     def _skill_use(self, args: dict) -> ToolResult:
         name = str(args.get("name", "")).strip()
         if not name:
@@ -701,10 +880,12 @@ class SkillsPlugin:
 
     def panel_spec(self, profile_id: "int | None") -> "dict | None":
         """Declarative panel spec for the Skills panel (Harness nav, sibling
-        to Plugins). Widgets: an install action, then per skill a detail
-        block (name/source/provenance/tools/enabled/instructions) plus an
-        enable-or-disable action and, for installed (non-seed) skills, an
-        uninstall action.
+        to Plugins). Widgets: an install action, then one registry row per
+        skill (ADR-0035) showing name/status/verify badge/actions -- enable
+        or disable (a single relabeled action, not a toggle control: the
+        registry row shape carries a static action list, so the tool+label
+        are picked per skill's current state) and, for installed
+        (non-seed) skills, uninstall.
         """
         enabled = self._enabled_names()
         skills = sorted(self._discover().values(), key=lambda s: s.name)
@@ -724,35 +905,47 @@ class SkillsPlugin:
             },
         ]
 
+        items: list = []
         for s in skills:
             is_enabled = s.name in enabled
-            # One scannable line per skill: the name, with the description on a
-            # 1s hover tooltip (renderer maps ``hint`` -> title=). The full body
-            # is no longer dumped inline (it made the tab unreadable across many
-            # skills); enabled state is conveyed by the toggle's Enable/Disable
-            # label, and the full text stays available via the skill_preview
-            # tool (ADR-0014 review-before-enable).
-            hint = f"{s.description}\nSource: {self._provenance_str(s)}"
-            widgets.append({"type": "detail", "id": f"skill-{s.name}", "fields": [
-                {"label": "", "value": s.name, "hint": hint},
-            ]})
-            widgets.append({
-                "type": "toggle",
+            verify = verify_skill({"verified_evidence": s.verified_evidence})
+            actions = [{
                 "id": f"skill-{s.name}-toggle",
-                "label": "Enabled" if is_enabled else "Disabled",
-                "checked": is_enabled,
-                "enable_tool": "skill_enable",
-                "disable_tool": "skill_disable",
+                "label": "Disable" if is_enabled else "Enable",
+                "tool": "skill_disable" if is_enabled else "skill_enable",
                 "tool_args": {"name": s.name},
-            })
+            }]
             if s.source == "installed":
-                widgets.append({
-                    "type": "action",
+                # ponytail: the issue asks for "Update" to show only when a
+                # newer commit exists upstream, which would mean one live
+                # GitHub API call per installed skill on every panel render
+                # (blocking -- skill_install's own fetch is already
+                # synchronous httpx, unsuited to N-per-render). Shown
+                # unconditionally instead; skill_update itself is a cheap,
+                # side-effect-free no-op ({"updated": false}) when already
+                # current. Add the upstream pre-check if per-render latency
+                # or GitHub rate limits become a real complaint.
+                actions.append({
+                    "id": f"skill-{s.name}-update",
+                    "label": "Update",
+                    "tool": "skill_update",
+                    "tool_args": {"name": s.name},
+                })
+                actions.append({
                     "id": f"skill-{s.name}-uninstall",
                     "label": "Uninstall",
                     "tool": "skill_uninstall",
                     "tool_args": {"name": s.name},
                 })
+            items.append({
+                "name": s.name,
+                "status": "enabled" if is_enabled else "disabled",
+                "hint": f"{s.description}\nSource: {self._provenance_str(s)}",
+                "verify": {"passed": verify.passed, "evidence": verify.evidence},
+                "actions": actions,
+            })
+
+        widgets.append({"type": "registry", "id": "skills-registry", "items": items})
 
         return {"title": "Skills", "widgets": widgets}
 

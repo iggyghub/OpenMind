@@ -375,3 +375,104 @@ async def test_skill_preview_unknown_errors(tmp_path):
     plugin = _plugin(tmp_path)
     result = await plugin.call_tool("skill_preview", {"name": "nope"})
     assert result.is_error and "nope" in result.content
+
+
+# ---------------------------------------------------------------------------
+# skill_update (ADR-0035 slice K) -- refuse-on-local-edit update
+# ---------------------------------------------------------------------------
+
+def _update_plugin(tmp_path, at_sha, install_and_original, latest):
+    """Simulates a repo whose HEAD has moved since install.
+
+    ``install_and_original`` is returned both for the initial
+    ``skill_install`` fetch (ref=None, "default branch at install time")
+    and for ``skill_update``'s diff-check fetch (ref=at_sha) -- a fixed
+    commit's content never changes. ``latest`` is returned for
+    ``skill_update``'s own "fetch latest" call (the *second* ref=None
+    call), standing in for the repo having moved on.
+    """
+    settings = SettingsStore(path=tmp_path / "felix-settings.json")
+    calls = {"none_count": 0}
+
+    def fetch_fn(repo, ref):
+        if ref == at_sha:
+            return install_and_original
+        calls["none_count"] += 1
+        return install_and_original if calls["none_count"] == 1 else latest
+
+    return SkillsPlugin(
+        seed_dir=tmp_path / "seed",
+        installed_dir=tmp_path / "installed",
+        settings=settings,
+        fetch_fn=fetch_fn,
+    )
+
+
+async def test_skill_update_unmodified_bumps_sha_and_content(tmp_path):
+    v1 = _tarball("myrepo-sha1", {"alpha": _skill_md("alpha", body="v1 body.")})
+    v2 = _tarball("myrepo-sha2", {"alpha": _skill_md("alpha", body="v2 body.")})
+    plugin = _update_plugin(tmp_path, "sha1", v1, v2)
+
+    installed = await plugin.call_tool("skill_install", {"repo": "owner/myrepo"})
+    assert not installed.is_error, installed.content
+
+    result = await plugin.call_tool("skill_update", {"name": "alpha"})
+    assert not result.is_error, result.content
+    assert json.loads(result.content) == {"name": "alpha", "updated": True, "sha": "sha2"}
+
+    md = (tmp_path / "installed" / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+    assert "v2 body." in md
+    prov = json.loads((tmp_path / "installed" / "alpha" / ".provenance.json").read_text(encoding="utf-8"))
+    assert prov["sha"] == "sha2"
+
+
+async def test_skill_update_local_edit_refused_no_data_loss(tmp_path):
+    v1 = _tarball("myrepo-sha1", {"alpha": _skill_md("alpha", body="v1 body.")})
+    v2 = _tarball("myrepo-sha2", {"alpha": _skill_md("alpha", body="v2 body.")})
+    plugin = _update_plugin(tmp_path, "sha1", v1, v2)
+    await plugin.call_tool("skill_install", {"repo": "owner/myrepo"})
+
+    md_path = tmp_path / "installed" / "alpha" / "SKILL.md"
+    edited = md_path.read_text(encoding="utf-8") + "\nLocal note.\n"
+    md_path.write_text(edited, encoding="utf-8")
+
+    result = await plugin.call_tool("skill_update", {"name": "alpha"})
+    assert result.is_error
+    assert "local edits" in result.content
+
+    # No data loss -- the local edit is still there, untouched.
+    assert md_path.read_text(encoding="utf-8") == edited
+
+
+async def test_skill_update_already_current_is_a_noop(tmp_path):
+    v1 = _tarball("myrepo-sha1", {"alpha": _skill_md("alpha", body="v1 body.")})
+    plugin = _update_plugin(tmp_path, "sha1", v1, v1)
+    await plugin.call_tool("skill_install", {"repo": "owner/myrepo"})
+
+    result = await plugin.call_tool("skill_update", {"name": "alpha"})
+    assert not result.is_error, result.content
+    assert json.loads(result.content) == {
+        "name": "alpha", "updated": False, "message": "Already up to date.",
+    }
+
+
+async def test_skill_update_on_seed_skill_refused(tmp_path):
+    _write_skill(tmp_path / "seed", "alpha")
+    plugin = _plugin(tmp_path, enabled=["alpha"])
+    result = await plugin.call_tool("skill_update", {"name": "alpha"})
+    assert result.is_error
+    assert "seed" in result.content.lower()
+
+
+async def test_skill_update_missing_provenance_refused(tmp_path):
+    _write_skill(tmp_path / "installed", "alpha")  # installed, but no .provenance.json
+    plugin = _plugin(tmp_path, enabled=["alpha"])
+    result = await plugin.call_tool("skill_update", {"name": "alpha"})
+    assert result.is_error
+    assert "provenance" in result.content.lower()
+
+
+async def test_skill_update_unknown_name_errors(tmp_path):
+    plugin = _plugin(tmp_path)
+    result = await plugin.call_tool("skill_update", {"name": "nope"})
+    assert result.is_error

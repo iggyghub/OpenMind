@@ -74,7 +74,7 @@ async def test_memory_update_payload_shape(memory_rig):
     await memory_rig.mgr.remember("My birthday is in June")
     await memory_rig.handle({"type": "list_memories"})
     mem = memory_rig.memory_updates()[0]["data"]["memories"][0]
-    assert set(mem.keys()) == {"id", "fact", "created_at", "category"}
+    assert set(mem.keys()) == {"id", "fact", "created_at", "category", "order"}
     assert mem["fact"] == "My birthday is in June"
     assert mem["category"] == ""
     assert mem["created_at"] != ""
@@ -160,4 +160,93 @@ async def test_delete_memory_unknown_id_no_broadcast(memory_rig):
 async def test_delete_memory_no_profile_no_broadcast(memory_rig):
     memory_rig.no_profile()
     await memory_rig.handle({"type": "delete_memory", "data": {"memory_id": "any"}})
+    assert memory_rig.memory_updates() == []
+
+
+# ── move_memory_category (drag into a folder) ────────────────────────────────
+
+async def test_move_memory_category_updates_and_rebroadcasts(memory_rig):
+    mid = await memory_rig.mgr.remember("uncategorised")
+    await memory_rig.handle(
+        {"type": "move_memory_category", "data": {"memory_id": mid, "category": "New Folder"}}
+    )
+    updates = memory_rig.memory_updates()
+    assert len(updates) == 1
+    assert updates[0]["data"]["memories"][0]["category"] == "New Folder"
+
+
+async def test_move_memory_category_unknown_id_no_broadcast(memory_rig):
+    await memory_rig.mgr.remember("untouched")
+    await memory_rig.handle(
+        {"type": "move_memory_category", "data": {"memory_id": "ghost", "category": "x"}}
+    )
+    assert memory_rig.memory_updates() == []
+
+
+async def test_move_memory_category_no_profile_no_broadcast(memory_rig):
+    memory_rig.no_profile()
+    await memory_rig.handle(
+        {"type": "move_memory_category", "data": {"memory_id": "any", "category": "x"}}
+    )
+    assert memory_rig.memory_updates() == []
+
+
+# ── reorder_memory (manual drag-to-reorder) ───────────────────────────────────
+
+async def test_reorder_memory_updates_and_rebroadcasts(memory_rig):
+    old_id = await memory_rig.mgr.remember("older")
+    new_id = await memory_rig.mgr.remember("newer")
+    await memory_rig.handle(
+        {"type": "reorder_memory", "data": {"memory_id": old_id, "order": 9_999_999_999}}
+    )
+    updates = memory_rig.memory_updates()
+    assert len(updates) == 1
+    assert [m["id"] for m in updates[0]["data"]["memories"]] == [old_id, new_id]
+
+
+async def test_reorder_memory_unknown_id_no_broadcast(memory_rig):
+    await memory_rig.mgr.remember("untouched")
+    await memory_rig.handle(
+        {"type": "reorder_memory", "data": {"memory_id": "ghost", "order": 1}}
+    )
+    assert memory_rig.memory_updates() == []
+
+
+async def test_reorder_memory_no_profile_no_broadcast(memory_rig):
+    memory_rig.no_profile()
+    await memory_rig.handle(
+        {"type": "reorder_memory", "data": {"memory_id": "any", "order": 1}}
+    )
+    assert memory_rig.memory_updates() == []
+
+
+# ── duplicate_memory (in-app clipboard paste) ─────────────────────────────────
+
+async def test_duplicate_memory_creates_copy_and_rebroadcasts(memory_rig):
+    mid = await memory_rig.mgr.remember("copy me", category="folder-a")
+    await memory_rig.handle({"type": "duplicate_memory", "data": {"memory_id": mid}})
+    updates = memory_rig.memory_updates()
+    assert len(updates) == 1
+    facts = [m["fact"] for m in updates[0]["data"]["memories"]]
+    assert facts == ["copy me", "copy me"]
+
+
+async def test_duplicate_memory_can_target_a_different_category(memory_rig):
+    mid = await memory_rig.mgr.remember("copy me", category="folder-a")
+    await memory_rig.handle(
+        {"type": "duplicate_memory", "data": {"memory_id": mid, "category": "folder-b"}}
+    )
+    cats = sorted(m["category"] for m in memory_rig.memory_updates()[0]["data"]["memories"])
+    assert cats == ["folder-a", "folder-b"]
+
+
+async def test_duplicate_memory_unknown_id_no_broadcast(memory_rig):
+    await memory_rig.mgr.remember("untouched")
+    await memory_rig.handle({"type": "duplicate_memory", "data": {"memory_id": "ghost"}})
+    assert memory_rig.memory_updates() == []
+
+
+async def test_duplicate_memory_no_profile_no_broadcast(memory_rig):
+    memory_rig.no_profile()
+    await memory_rig.handle({"type": "duplicate_memory", "data": {"memory_id": "any"}})
     assert memory_rig.memory_updates() == []

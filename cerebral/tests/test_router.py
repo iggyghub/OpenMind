@@ -364,23 +364,15 @@ def test_seed_video_default_is_local_only_no_cloud():
     assert router.get_task_model("video") == "custom/budd"  # active fallback
 
 
-def test_seed_extraction_default_prefers_budd():
+def test_seed_extraction_default_follows_active_model():
     router = ModelRouter(backends={
-        "ollama/qwen2.5:7b": AsyncMock(),
-        "ollama/qwen3:8b": AsyncMock(),
-        "custom/budd": AsyncMock(),
-    })
-    assert router.seed_extraction_default() == "custom/budd"
-    assert router.get_task_model("extraction") == "custom/budd"
-
-
-def test_seed_extraction_default_falls_back_to_local_ollama():
-    router = ModelRouter(backends={
-        "ollama/qwen2.5:7b": AsyncMock(),
+        "custom/budd-quick": AsyncMock(),
         "ollama/qwen3:8b": AsyncMock(),
     })
-    assert router.seed_extraction_default() == "ollama/qwen3:8b"
-    assert router.get_task_model("extraction") == "ollama/qwen3:8b"
+    router.set_task_model("extraction", "ollama/qwen3:8b")  # e.g. a drain pin
+    assert router.seed_extraction_default() is None
+    assert "extraction" not in router.task_models()
+    assert router.get_task_model("extraction") == router.active_model
 
 
 # ---------------------------------------------------------------------------
@@ -1124,6 +1116,71 @@ async def test_claw_backend_tool_call_sends_bearer(monkeypatch):
     backend = ClawBackend(url="http://srv", model="gpt", api_key="sk-dummy")
     await backend.complete_with_tools("hi", [])
     assert captured["headers"].get("Authorization") == "Bearer sk-dummy"
+
+
+# --- max_tokens + empty-at-length retry (reasoning models, 2026-09-28) -----
+
+_LENGTH_EMPTY = {"choices": [{"finish_reason": "length", "message": {"content": None}}]}
+_TOOL_REPLY = {"choices": [{"finish_reason": "tool_calls", "message": {
+    "content": None,
+    "tool_calls": [{"function": {"name": "create_file", "arguments": '{"path": "a"}'}}],
+}}]}
+
+
+def _install_fake_post_seq(monkeypatch, bodies, sent):
+    """Each post returns the next body; the sent payloads land in `sent`."""
+    import copy
+    import httpx
+
+    async def fake_post(self, url, json=None, headers=None):
+        sent.append(copy.deepcopy(json))
+        return _FakeHttpxResponse(200, bodies[len(sent) - 1])
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+
+async def test_claw_sends_max_tokens_and_no_retry_on_stop(monkeypatch):
+    from cerebral.llm.router import ClawBackend
+
+    sent = []
+    _install_fake_post_seq(monkeypatch, [
+        {"choices": [{"finish_reason": "stop", "message": {"content": "hi"}}]},
+    ], sent)
+    assert await ClawBackend(url="http://srv").complete("hello") == "hi"
+    assert [p["max_tokens"] for p in sent] == [16384]
+
+
+async def test_claw_tools_retries_once_with_double_budget(monkeypatch):
+    from cerebral.llm.router import ClawBackend, ToolCall
+
+    sent = []
+    _install_fake_post_seq(monkeypatch, [_LENGTH_EMPTY, _TOOL_REPLY], sent)
+    result = await ClawBackend(url="http://srv").complete_with_tools("hi", [])
+    assert isinstance(result, ToolCall) and result.name == "create_file"
+    assert [p["max_tokens"] for p in sent] == [16384, 32768]
+
+
+async def test_claw_tools_still_empty_after_retry_speaks_error(monkeypatch):
+    from cerebral.llm.router import _CLAW_LENGTH_MSG, ClawBackend
+
+    sent = []
+    _install_fake_post_seq(monkeypatch, [_LENGTH_EMPTY, _LENGTH_EMPTY], sent)
+    assert await ClawBackend(url="http://srv").complete_with_tools("hi", []) == _CLAW_LENGTH_MSG
+    assert len(sent) == 2
+
+
+async def test_claw_complete_never_returns_none(monkeypatch):
+    from cerebral.llm.router import _CLAW_LENGTH_MSG, ClawBackend
+
+    sent = []
+    _install_fake_post_seq(monkeypatch, [_LENGTH_EMPTY, _LENGTH_EMPTY], sent)
+    assert await ClawBackend(url="http://srv").complete("hi") == _CLAW_LENGTH_MSG
+
+    sent.clear()
+    _install_fake_post_seq(monkeypatch, [
+        {"choices": [{"finish_reason": "stop", "message": {"content": None}}]},
+    ], sent)
+    assert await ClawBackend(url="http://srv").complete("hi") == ""
 
 
 def test_claw_backend_strips_trailing_v1():
@@ -2034,3 +2091,253 @@ async def test_dynamic_backend_complete_with_images_delegates(monkeypatch):
     assert parts[1]["image_url"]["url"] == (
         f"data:image/png;base64,{base64.b64encode(b'i').decode('ascii')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Admission control (ADR-0036, slice L) — per-Failure-domain semaphore
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+
+class _SlowBackend:
+    """A backend whose complete() blocks on a shared asyncio.Event, so a
+    test can observe how many calls are concurrently past admission."""
+
+    def __init__(self, url: str = "http://shared-host"):
+        self.url = url
+        self.active = 0
+        self.max_active = 0
+        self._release = asyncio.Event()
+
+    async def complete(self, prompt: str, task_type: str) -> str:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await self._release.wait()
+        finally:
+            self.active -= 1
+        return f"{prompt}:{task_type}"
+
+    def release_all(self) -> None:
+        self._release.set()
+
+
+async def test_admission_cap_limits_concurrent_calls_to_one_domain():
+    """A single Failure domain (one backend .url) admits only `cap` (1)
+    call at a time -- the rest queue at the semaphore, never entering
+    complete() concurrently."""
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend})
+
+    tasks = [
+        asyncio.create_task(router.complete(f"p{i}", task_type="background"))
+        for i in range(3)
+    ]
+    await asyncio.sleep(0.02)  # let every task attempt admission
+    assert backend.active == 1  # only one made it past the cap
+
+    backend.release_all()
+    results = await asyncio.gather(*tasks)
+
+    assert backend.max_active == 1  # never more than `cap` concurrently
+    assert sorted(results) == [
+        "p0:background", "p1:background", "p2:background",
+    ]
+
+
+async def test_admission_chat_call_admitted_before_queued_background_calls():
+    """R5/ADR-0036: priority is queue-order among *waiters*, never
+    preemption. A call already holding the slot runs to completion
+    untouched; among waiters, chat jumps ahead of background regardless of
+    arrival order."""
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend})
+    order: list[str] = []
+
+    async def call(tag: str, task_type: str) -> None:
+        await router.complete(tag, task_type=task_type)
+        order.append(tag)
+
+    # `first` takes the only slot and blocks inside complete() -- it runs to
+    # completion untouched no matter what queues up behind it.
+    first = asyncio.create_task(call("first", "background"))
+    await asyncio.sleep(0.02)
+    assert backend.active == 1
+
+    # Two background waiters queue first, then a chat waiter arrives last --
+    # it must still be admitted ahead of both.
+    bg1 = asyncio.create_task(call("bg1", "background"))
+    await asyncio.sleep(0.01)
+    bg2 = asyncio.create_task(call("bg2", "background"))
+    await asyncio.sleep(0.01)
+    chat = asyncio.create_task(call("chat", "chat"))
+    await asyncio.sleep(0.02)
+
+    backend.release_all()
+    await asyncio.gather(first, bg1, bg2, chat)
+
+    assert order[0] == "first"  # already-holding call is never preempted
+    assert order.index("chat") < order.index("bg1")
+    assert order.index("chat") < order.index("bg2")
+
+
+async def test_admission_two_model_ids_on_same_host_share_one_domain():
+    """Two model_ids whose backends share a host (Failure domain, per
+    CONTEXT.md) share ONE cap, not one each."""
+    shared = _SlowBackend(url="http://shared-host")
+    router = ModelRouter(backends={"custom/a": shared, "custom/b": shared})
+
+    async def call(model_id: str, tag: str) -> str:
+        router.switch_model(model_id)
+        return await router.complete(tag, task_type="background")
+
+    t1 = asyncio.create_task(call("custom/a", "via-a"))
+    await asyncio.sleep(0.02)
+    t2 = asyncio.create_task(call("custom/b", "via-b"))
+    await asyncio.sleep(0.02)
+
+    assert shared.active == 1  # the second model_id's call queued, not ran
+
+    shared.release_all()
+    await asyncio.gather(t1, t2)
+    assert shared.max_active == 1
+
+
+async def test_admission_cloud_backend_with_no_url_is_uncapped():
+    """A backend with no shared endpoint (e.g. AnthropicBackend's SDK
+    client) has no Failure domain to cap -- ADR-0036 scopes this to
+    remote/Budd, not cloud."""
+    backend = AsyncMock()
+    del backend.url  # AsyncMock auto-creates attrs; this backend has none
+    backend.complete.return_value = "ok"
+    router = ModelRouter(backends={"claude/haiku": backend})
+
+    results = await asyncio.gather(*[router.complete("p") for _ in range(3)])
+    assert results == ["ok", "ok", "ok"]
+
+
+# ---------------------------------------------------------------------------
+# set_admission_cap (ADR-0036, slice M) -- live cap change
+# ---------------------------------------------------------------------------
+
+async def test_set_admission_cap_raises_cap_and_admits_queued_waiters():
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend})
+
+    tasks = [
+        asyncio.create_task(router.complete(f"p{i}", task_type="background"))
+        for i in range(3)
+    ]
+    await asyncio.sleep(0.02)
+    assert backend.active == 1  # cap=1 default -- only one admitted so far
+
+    await router.set_admission_cap(3)
+    await asyncio.sleep(0.02)  # newly-admitted waiters enter complete()
+    assert backend.active == 3  # raising the cap admitted the other two
+
+    backend.release_all()
+    results = await asyncio.gather(*tasks)
+    assert sorted(results) == [
+        "p0:background", "p1:background", "p2:background",
+    ]
+
+
+async def test_set_admission_cap_lower_never_preempts_active_call():
+    """R5: a call already holding a slot runs to completion untouched,
+    even when the cap drops below the current active count."""
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=2)
+
+    t1 = asyncio.create_task(router.complete("a", task_type="background"))
+    t2 = asyncio.create_task(router.complete("b", task_type="background"))
+    await asyncio.sleep(0.02)
+    assert backend.active == 2
+
+    await router.set_admission_cap(1)  # lower than the 2 already active
+    await asyncio.sleep(0.01)
+    assert backend.active == 2  # neither existing call was preempted
+
+    backend.release_all()
+    results = await asyncio.gather(t1, t2)
+    assert sorted(results) == ["a:background", "b:background"]
+
+
+async def test_set_admission_cap_rejects_below_one():
+    router = ModelRouter(backends={"custom/a": _SlowBackend()})
+    with pytest.raises(ValueError):
+        await router.set_admission_cap(0)
+
+
+async def test_admission_cap_constructor_param_seeds_new_domains():
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=2)
+
+    tasks = [
+        asyncio.create_task(router.complete(f"p{i}", task_type="background"))
+        for i in range(2)
+    ]
+    await asyncio.sleep(0.02)
+    assert backend.active == 2  # both admitted under the constructor cap
+
+    backend.release_all()
+    await asyncio.gather(*tasks)
+
+
+# ---------------------------------------------------------------------------
+# FELIX-AUDIT S4 -- non-chat bound when a chat waiter is queued behind it
+# ---------------------------------------------------------------------------
+
+async def test_nonchat_cut_after_grace_when_chat_queued(monkeypatch):
+    """A non-chat call holding the slot is cut after the grace period once a
+    chat waiter queues; the chat call is then admitted and the slot frees."""
+    monkeypatch.setenv("NONCHAT_GRACE_S", "0.05")
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
+
+    first = asyncio.create_task(router.complete("bg", task_type="background"))
+    await asyncio.sleep(0.02)
+    assert backend.active == 1
+    chat = asyncio.create_task(router.complete("hi", task_type="chat"))
+
+    # complete() maps the OSError-family TimeoutError to ModelUnavailableError
+    # (the caller's existing retry/fallback path), keeping it as __cause__.
+    with pytest.raises(ModelUnavailableError) as ei:
+        await asyncio.wait_for(first, 1.0)
+    assert isinstance(ei.value.__cause__, TimeoutError)
+    await asyncio.sleep(0.02)
+    assert backend.active == 1  # chat is now inside complete()
+    backend.release_all()
+    assert await asyncio.wait_for(chat, 1.0) == "hi:chat"
+    assert backend.active == 0
+    sem = next(iter(router._domain_semaphores.values()))
+    assert sem.active == 0 and not sem.chat_queued.is_set()
+
+
+async def test_nonchat_not_cut_without_chat_waiter(monkeypatch):
+    """No chat waiter queued: a non-chat call may outlive the grace period."""
+    monkeypatch.setenv("NONCHAT_GRACE_S", "0.05")
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
+
+    task = asyncio.create_task(router.complete("bg", task_type="background"))
+    await asyncio.sleep(0.2)
+    assert not task.done()
+    backend.release_all()
+    assert await asyncio.wait_for(task, 1.0) == "bg:background"
+
+
+async def test_chat_call_never_cut_by_grace(monkeypatch):
+    """A chat call holding the slot is unbounded even with another chat queued."""
+    monkeypatch.setenv("NONCHAT_GRACE_S", "0.05")
+    backend = _SlowBackend()
+    router = ModelRouter(backends={"custom/a": backend}, admission_cap=1)
+
+    first = asyncio.create_task(router.complete("a", task_type="chat"))
+    await asyncio.sleep(0.02)
+    second = asyncio.create_task(router.complete("b", task_type="chat"))
+    await asyncio.sleep(0.2)
+    assert not first.done()
+    backend.release_all()
+    assert await asyncio.wait_for(first, 1.0) == "a:chat"
+    assert await asyncio.wait_for(second, 1.0) == "b:chat"

@@ -27,6 +27,7 @@ from pathlib import Path
 
 from cerebral.mcp.orchestrator import Tool, ToolResult
 from cerebral.paths import data_dir
+from cerebral.plugin_shared import state as _shared
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,39 @@ class DocumentStore:
                 updated_at  TEXT    NOT NULL
             )
         """)
+        # Folder ("Reddit/r/AI_Agents", "Webpages/example.com"; '' = top level)
+        # groups the Documents tab. Added 2026-10-11 for saved source reads.
+        cols = {r[1] for r in self._con.execute("PRAGMA table_info(documents)")}
+        if "folder" not in cols:
+            self._con.execute("ALTER TABLE documents ADD COLUMN folder TEXT NOT NULL DEFAULT ''")
         self._con.commit()
+
+    def save_text(self, profile_id: int, folder: str, name: str, text: str) -> dict:
+        """Write ``text`` as a .md document in ``folder``; same folder+name overwrites."""
+        now = datetime.now(timezone.utc).isoformat()
+        row = self._con.execute(
+            "SELECT id, path FROM documents WHERE profile_id = ? AND folder = ? AND name = ?",
+            (profile_id, folder, name),
+        ).fetchone()
+        if row and row["path"]:
+            Path(row["path"]).write_text(text, encoding="utf-8")
+            self._con.execute("UPDATE documents SET updated_at = ? WHERE id = ?", (now, row["id"]))
+            self._con.commit()
+            return self.get_doc(row["id"])
+        cur = self._con.execute(
+            "INSERT INTO documents (profile_id, name, path, kind, folder, created_at, updated_at) "
+            "VALUES (?, ?, '', 'md', ?, ?, ?)",
+            (profile_id, name, folder, now, now),
+        )
+        doc_id = cur.lastrowid
+        doc_dir = self._doc_dir(profile_id, doc_id)
+        doc_dir.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in name).strip()[:80] or "document"
+        dest = doc_dir / f"{safe}.md"
+        dest.write_text(text, encoding="utf-8")
+        self._con.execute("UPDATE documents SET path = ? WHERE id = ?", (str(dest), doc_id))
+        self._con.commit()
+        return self.get_doc(doc_id)
 
     def _doc_dir(self, profile_id: int, doc_id: int) -> Path:
         return self._store_root / str(profile_id) / "documents" / str(doc_id)
@@ -251,11 +284,31 @@ _broadcast_fn = None
 def set_store(store: DocumentStore) -> None:
     global _store
     _store = store
+    _shared["documents.store"] = store
 
 
 def set_active_profile_id(pid: "int | None") -> None:
     global _active_profile_id
     _active_profile_id = pid
+    _shared["documents.profile_id"] = pid
+
+
+async def save_source_doc(folder: str, name: str, text: str) -> "dict | None":
+    """Save a source read (Reddit thread, webpage) into the Documents library.
+
+    Callers reach this via ``import plugins.documents`` -- a different module
+    copy than the one main.py wires (#153) -- so it reads the seams from
+    cerebral.plugin_shared. No-op (None) until wired (tests, bare process).
+    """
+    store = _shared.get("documents.store")
+    pid = _shared.get("documents.profile_id")
+    if store is None or pid is None:
+        return None
+    doc = store.save_text(pid, folder, name, text)
+    broadcast = _shared.get("documents.broadcast_fn")
+    if broadcast:
+        await broadcast()
+    return doc
 
 
 def set_converter_fn(fn) -> None:
@@ -266,6 +319,7 @@ def set_converter_fn(fn) -> None:
 def set_broadcast_fn(fn) -> None:
     global _broadcast_fn
     _broadcast_fn = fn
+    _shared["documents.broadcast_fn"] = fn
 
 
 # ── S5: Felix editing via headless UNO ───────────────────────────────────────

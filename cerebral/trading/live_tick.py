@@ -50,6 +50,18 @@ SIGNAL_LONG = 1
 SIGNAL_FLAT = 0
 SIGNAL_SHORT = -1
 
+# 30% take-profit / 5% stop-loss backstop (2026-09-01, user policy decision):
+# a ceiling on how much any single position can gain or lose before it's
+# force-closed, independent of the strategy's own exit logic. Deliberately a
+# BACKSTOP, not a universal override that fires early on every strategy: a
+# strategy whose own signal already exits tighter than 5% simply never
+# reaches this threshold, so applying the same check unconditionally on
+# every tick gives backstop semantics for free, with no per-strategy
+# inspection needed. Fixed global constants per that same decision -- add
+# per-strategy overrides only if a real need for different thresholds shows up.
+TAKE_PROFIT_PCT = 0.30
+STOP_LOSS_PCT = 0.05
+
 # ponytail: one fixed window rather than asking the strategy how much history
 # it wants. 180 calendar days is ~124 trading bars for daily data.
 # For intraday intervals, 180 days is excessive and lookup is replaced by
@@ -120,6 +132,24 @@ def find_position(positions: List[Position], symbol: str) -> Optional[Position]:
     return None
 
 
+def check_tp_sl_breach(position: Optional[Position], last_close: float) -> Optional[int]:
+    """SIGNAL_FLAT if `position` has crossed the TP/SL backstop, else None.
+
+    `None` means "no opinion" -- the caller falls through to the strategy's
+    own signal, exactly like evaluate_signal's own convention for garbage
+    output. Uses the broker's own avg_entry_price, not a fabricated one.
+    """
+    if position is None or not position.avg_entry_price or last_close <= 0:
+        return None
+    direction = position_direction(position)
+    if direction == 0:
+        return None
+    pnl_pct = direction * (last_close - float(position.avg_entry_price)) / float(position.avg_entry_price)
+    if pnl_pct >= TAKE_PROFIT_PCT or pnl_pct <= -STOP_LOSS_PCT:
+        return SIGNAL_FLAT
+    return None
+
+
 def decide_action(
     signal: int, position: Optional[Position], open_qty: float
 ) -> Optional[tuple[str, float, bool]]:
@@ -186,7 +216,7 @@ def _build_correlation_matrix(symbols: List[str], fetch: Callable, days: int = 6
     if df.empty:
         return pd.DataFrame(0.0, index=symbols, columns=symbols)
 
-    corr = df.corr()
+    corr = df.pct_change().dropna().corr()
     corr = corr.fillna(0.0)
         
     for sym in symbols:
@@ -211,8 +241,10 @@ def run_strategy_tick(
     size_pct: float = 1.0,
     position_key: Optional[str] = None,
     sentiment_label: Optional[str] = None,
+    stock_sentiment_labels: Optional[dict] = None,
     claimed_symbols: Optional[set] = None,
     bear_case_fn: Optional[Callable[[str, str, int], "tuple[bool, str]"]] = None,
+    correlation_matrix: Optional[pd.DataFrame] = None,
 ) -> dict:
     """Evaluate one strategy against fresh data and act on the result.
 
@@ -245,24 +277,61 @@ def run_strategy_tick(
     start = end - timedelta(days=_lookback_days(spec.interval))
     data = fetch(spec.symbol, start.isoformat(), end.isoformat(), interval=spec.interval)
 
-    # Re-evaluated per tick rather than cached: a sandbox spawn is cheap
-    # next to a data fetch, and it means a re-registered spec takes effect
-    # immediately. evaluate_signal's existing None/empty/garbage handling
-    # is reused via a lambda rather than duplicated inline.
-    signals = evaluate_signals(spec.code, data)
-    signal = evaluate_signal(lambda d: signals, data)
-
     # StrategySpec is frozen -- ramp the local open-qty, not spec.qty itself.
     # Only the OPEN side reads this; decide_action closes at the position's
     # own qty regardless, so a ramped strategy still exits its full size.
     open_qty = spec.qty * size_pct
 
     position = find_position(broker.list_positions(strategy_id=position_key), spec.symbol)
+
+    # TP/SL backstop, checked BEFORE the strategy's own signal: a breach
+    # forces SIGNAL_FLAT (decide_action then closes at the position's real
+    # qty, same as any other flat signal) and skips evaluating the
+    # strategy's code entirely this tick -- the position is leaving
+    # regardless of what it would have said.
+    last_close = float(data["Close"].iloc[-1]) if "Close" in data.columns and len(data) else 0.0
+    # Trend basket exempt (2026-09-24, user choice): its own 12% trail + 20-day cap is the designed
+    # exit (ADR-0038); the 5% stop would close it first and cut backtested return ~3.5%/yr.
+    exempt = spec.strategy_id.startswith("Trend basket:")
+    signal = None if exempt else check_tp_sl_breach(position, float(position.current_price) if position is not None else 0.0)
+    if signal is None:
+        # Re-evaluated per tick rather than cached: a sandbox spawn is cheap
+        # next to a data fetch, and it means a re-registered spec takes
+        # effect immediately. evaluate_signal's existing None/empty/garbage
+        # handling is reused via a lambda rather than duplicated inline.
+        signals = evaluate_signals(spec.code, data)
+        signal = evaluate_signal(lambda d: signals, data)
+
     action = decide_action(signal, position, open_qty)
     if action is None:
         return {"status": "hold", "signal": signal, "symbol": spec.symbol}
 
     side, qty, is_close = action
+
+    # Stale-data guard, opens only (AF11/#1005): block a fresh open when the
+    # last fetched bar is stale -- never trap a losing position open by
+    # refusing its exit on the same stale data (matches every other
+    # opens-only gate's reasoning in this function, e.g. the risk-limit
+    # checks below). Checked here, after decide_action, so a close/hold
+    # never pays for or is affected by this check.
+    #
+    # Business-day count, not a flat calendar-day count: a plain weekend
+    # (Fri bar -> Mon "today") is exactly 3 calendar days, so the original
+    # ">3" threshold survived weekends by only 1 day of margin -- add any
+    # single market holiday (e.g. the Tue after Labor Day, Fri bar -> Tue
+    # "today" = 4 calendar days) and it tripped, silently blocking every
+    # open for the whole day. numpy.busday_count doesn't know NYSE holidays
+    # specifically (no calendar dependency, same disclosed tradeoff as
+    # market_hours.py), but it does skip weekends, which is what actually
+    # made the old threshold this fragile.
+    if not is_close and len(data) > 0:
+        last_bar_date = data.index[-1].date() if hasattr(data.index[-1], "date") else None
+        if last_bar_date is not None:
+            import numpy as np
+            if np.busday_count(last_bar_date, end) > 2:
+                return {"status": "hold", "signal": signal, "symbol": spec.symbol,
+                        "reason": "stale_market_data"}
+
     # Captured BEFORE the order: placing it mutates the broker's position.
     entry_price = float(position.avg_entry_price) if is_close else 0.0
     direction = position_direction(position) if is_close else 0
@@ -285,24 +354,44 @@ def run_strategy_tick(
         size_multiplier = max(0.5, min(1.5, 1.0 + confidence * 5.0))
         qty = qty * size_multiplier
 
+    # Fractional shares can't be shorted -- a structural broker/regulatory
+    # limitation (no locate/borrow mechanism exists for fractional
+    # inventory under Reg SHO), confirmed 2026-09-01 across every broker
+    # researched, not an Alpaca-specific restriction or fixable by
+    # switching brokers. Checked HERE (AF13/#1007), after the confidence
+    # multiplier above, not before decide_action: the multiplier can turn
+    # an integer open_qty into a fractional final qty, and a check on the
+    # pre-multiplier value would miss exactly that case -- the broker sees
+    # the multiplied qty, not open_qty. `side == "sell"` combined with
+    # `not is_close` (the enclosing block's condition) uniquely identifies
+    # a fresh short open per decide_action's own contract; a normal sell
+    # closing an existing long is a different branch (is_close=True) and
+    # must reach the broker unchanged.
+    if side == "sell" and not is_close and not float(qty).is_integer():
+        return {"status": "hold", "signal": signal, "symbol": spec.symbol}
+
     # Risk limits gate NEW exposure, never an exit -- a per-trade-risk cap
     # or daily-loss halt blocking a close would trap a losing position open
     # exactly when it needs to get out. Correlation is opens-only for the
     # same reason (see the check below).
     if risk is not None and not is_close:
         last_close = float(data["Close"].iloc[-1]) if "Close" in data.columns else 0.0
+        account_equity = broker.get_account().equity
+        if side == "buy":  # shorts excluded: trimming could make an integer short qty fractional
+            qty = risk.trim_to_cap(account_equity, last_close, float(qty), spec.risk_override_pct)
         trade_value = float(qty) * last_close
         # Real accrued loss, not a fabricated 0.0 -- forward_record already
         # has every fill's realized pnl with a real timestamp, so today's
         # loss is one query away rather than an invented number.
         current_daily_loss = max(0.0, -forward_record.get_daily_pnl())
         res = risk.check_order(
-            account_equity=broker.get_account().equity,
+            account_equity=account_equity,
             current_positions_count=len(broker.list_positions()),
             current_daily_loss=current_daily_loss,
             trade_value=trade_value,
             symbol=spec.symbol,
             qty=float(qty),
+            max_per_trade_risk_pct_override=spec.risk_override_pct,
         )
         if not res.allowed:
             return {"status": "blocked", "blocked_by": res.blocked_by}
@@ -310,7 +399,10 @@ def run_strategy_tick(
     if risk is not None and not is_close:
         existing = [p.symbol for p in broker.list_positions() if p.symbol != spec.symbol]
         if existing:
-            matrix = _build_correlation_matrix([spec.symbol] + existing, fetch)
+            if correlation_matrix is None:
+                matrix = _build_correlation_matrix([spec.symbol] + existing, fetch)
+            else:
+                matrix = correlation_matrix.loc[[spec.symbol] + existing, [spec.symbol] + existing]
             corr_res = risk.check_correlation_limit(spec.symbol, existing, matrix)
             if not corr_res.allowed:
                 return {"status": "blocked", "blocked_by": corr_res.blocked_by}
@@ -327,14 +419,20 @@ def run_strategy_tick(
         if not claim_res.allowed:
             return {"status": "blocked", "blocked_by": claim_res.blocked_by}
 
-    # Market-wide sentiment gate (opens only, same reasoning as the two
-    # checks above: never trap a losing position open by blocking its
-    # exit). sentiment_label is None when the gate is off or no reading
-    # exists yet -- check_sentiment already passes None/NEUTRAL/BULLISH
-    # through, this just skips the call entirely when there's no risk
-    # manager to route it through.
-    if risk is not None and not is_close and sentiment_label is not None:
-        sent_res = risk.check_sentiment(spec.symbol, sentiment_label)
+    # Market-wide + per-symbol sentiment gates (opens only, same reasoning
+    # as the two checks above: never trap a losing position open by
+    # blocking its exit). stock_sentiment_labels is a {symbol: label} dict
+    # (2026-09-01 follow-up) -- looked up here, not passed pre-resolved,
+    # since spec.symbol is only known once this far into the function.
+    # Either label is None when its gate is off or no reading exists yet
+    # -- check_sentiment already passes None/NEUTRAL/BULLISH through both
+    # checks; this just skips the call entirely when there's no risk
+    # manager to route it through, or neither label is set.
+    stock_sentiment_label = (stock_sentiment_labels or {}).get(spec.symbol)
+    # Trend basket exempt (2026-10-06, same reasoning as the backstop exemption above): it was
+    # backtested with no news filter, and it buys as breadth recovers -- when headlines are bearish.
+    if risk is not None and not is_close and not exempt and (sentiment_label is not None or stock_sentiment_label is not None):
+        sent_res = risk.check_sentiment(spec.symbol, sentiment_label, stock_sentiment_label)
         if not sent_res.allowed:
             return {"status": "blocked", "blocked_by": sent_res.blocked_by}
 
@@ -397,9 +495,17 @@ def dispatch_due_events(
     fundamentals_scan_fn: Optional[Callable] = None,
     vetted_tickers: Optional[Any] = None,
     sentiment_label: Optional[str] = None,
+    stock_sentiment_labels: Optional[dict] = None,
     bear_case_fn: Optional[Callable[[str, str, int], "tuple[bool, str]"]] = None,
+    correlation_matrix: Optional[pd.DataFrame] = None,
+    dd_cap: Optional[float] = None,
+    only_prefix: str = "",
 ) -> List[dict]:
     """One pass of the recurring dispatcher: run every due strategy.
+
+    ``only_prefix`` (2026-09-23): when non-empty, only strategies whose name
+    starts with it are dispatched -- one switch to park every other strategy
+    (e.g. "Trend basket:") without halting ~300 of them one by one.
 
     Lives here rather than inline in cerebral/main.py's ``_scheduler_loop``
     so the whole chain is testable without importing main. ``scheduler`` is
@@ -413,6 +519,11 @@ def dispatch_due_events(
     (not yet graduated, or graduated but disarmed) keeps trading against
     the ``broker`` passed in (paper), exactly as before this parameter
     existed.
+
+    ``dd_cap`` (BATCH-REPLAY S4/#1227): a positive fraction (e.g. 0.30)
+    threaded through to check_graduation's accumulated-replay drawdown
+    refusal gate. ``None`` (the default) skips that check entirely --
+    same conservative-default shape as every other optional gate here.
     """
     results: List[dict] = []
     # Scoped-down portfolio-manager arbitration: one claim set per dispatch
@@ -420,7 +531,20 @@ def dispatch_due_events(
     # being evaluated together right now, see check_symbol_claim's own
     # docstring for why.
     claimed_symbols: set = set()
-    for evt in scheduler.list_due_events():
+    due_events = [e for e in scheduler.list_due_events() if e["title"].startswith(only_prefix)]
+    if correlation_matrix is None:
+        all_symbols: list[str] = [p.symbol for p in broker.list_positions()]
+        for evt in due_events:
+            spec = store.get(evt["title"]) if store is not None else None
+            if spec:
+                all_symbols.append(spec.symbol)
+        if all_symbols:
+            # Dedup -- a due event's own symbol often already appears in the
+            # broker's current positions (that's what makes it correlation-
+            # relevant), and _build_correlation_matrix's own fetch loop has
+            # no dedup of its own.
+            correlation_matrix = _build_correlation_matrix(sorted(set(all_symbols)), fetch)
+    for evt in due_events:
         name = evt["title"]
         # S17 (#862): the versioned identity used for forward-record/lifecycle
         # state, so an edited strategy's paper/live record restarts clean
@@ -470,14 +594,21 @@ def dispatch_due_events(
             phase="live" if is_live else "paper", dispatch_id=dispatch_id,
             risk=risk, size_pct=size_pct * ramp_pct,  # S20
             sentiment_label=sentiment_label,
+            stock_sentiment_labels=stock_sentiment_labels,
             claimed_symbols=claimed_symbols,
             bear_case_fn=bear_case_fn,
+            correlation_matrix=correlation_matrix,
         )
         # Marked regardless of outcome: a persistently failing strategy should
         # retry at its own interval, not spam every tick.
         scheduler.mark_event_run(evt["id"])
         result["strategy"] = name
         results.append(result)
+
+        if lifecycle is not None and is_live and result.get("status") in ("opened", "closed"):
+            lifecycle.record_live_price(dispatch_id, result.get("price", 0.0))
+        if lifecycle is not None and is_live and result.get("status") == "closed":
+            lifecycle.update_live_fill(dispatch_id, result.get("pnl", 0.0))
 
         if lifecycle is not None:
             _apply_lifecycle(
@@ -486,7 +617,9 @@ def dispatch_due_events(
                 latest_accession_fn=latest_accession_fn,
                 fundamentals_scan_fn=fundamentals_scan_fn,
                 vetted_tickers=vetted_tickers,
-            )  # S17 / S28 (#881)
+                store=store, dd_cap=dd_cap,
+                strategy_spec_id=name,
+            )  # S17 / S28 (#881) / BATCH-REPLAY S4 (#1227)
     return results
 
 
@@ -496,6 +629,9 @@ def _apply_lifecycle(
     latest_accession_fn: Optional[Callable] = None,
     fundamentals_scan_fn: Optional[Callable] = None,
     vetted_tickers: Optional[Any] = None,
+    store: Optional[StrategyStore] = None,
+    dd_cap: Optional[float] = None,
+    strategy_spec_id: Optional[str] = None,
 ) -> None:
     """Graduation / ramp / retirement checks after a dispatch.
 
@@ -509,26 +645,62 @@ def _apply_lifecycle(
     vetted_tickers are threaded straight through to check_graduation's own
     same-named params -- entirely optional, backward compatible when
     unset.
+
+    BATCH-REPLAY S4 (#1227): worst_backtest_dd/dd_cap are both fractions
+    (returns-based, e.g. -0.24 / 0.30). store is the SAME injectable seam
+    dispatch_due_events already threads to _run_paper_strategy (test-only
+    injection, defaults to the real StrategyStore) -- reused here rather
+    than a second, uninjectable bare construction. A strategy never
+    replayed has worst_drawdown=None, which check_graduation treats as
+    "skip this check", not a refusal.
+
+    ``strategy_spec_id`` matters and is NOT the same as ``name``: ``name``
+    here is really ``dispatch_id`` (S17's versioned identity, e.g.
+    "claim@v2", used for lifecycle/forward-record state) but
+    ``StrategyStore.strategy_specs`` is keyed by the bare, unversioned
+    strategy_id -- looking worst_drawdown up by ``name`` directly would
+    silently miss every strategy that has ever gone through save() (i.e.
+    virtually all of them), making this whole gate permanently inert
+    without ever raising an error. Falls back to ``name`` only if the
+    caller genuinely has no bare id to give (defensive, not the expected
+    path from dispatch_due_events).
     """
+    _store = store if store is not None else StrategyStore()
+    _spec = _store.get(strategy_spec_id if strategy_spec_id is not None else name)
+    # getattr, not a direct attribute access: several tests in
+    # test_trading_live_tick.py inject a minimal fake spec/store via this
+    # same store= seam that predates worst_drawdown and doesn't carry it.
+    _worst_dd = getattr(_spec, "worst_drawdown", None) if _spec is not None else None
     if lifecycle.check_graduation(
         name, forward_record, symbol=symbol,
         latest_accession_fn=latest_accession_fn,
         fundamentals_scan_fn=fundamentals_scan_fn,
         vetted_tickers=vetted_tickers,
+        worst_backtest_dd=_worst_dd,
+        dd_cap=dd_cap,
     ):
         size_pct = lifecycle.apply_position_ramp(name)
         logger.warning(
-            "[trading] Strategy '%s' met the paper graduation bar (ramp %.0f%%). "
-            "No live orders placed -- live execution is not wired.",
+            "[trading] Strategy '%s' met the paper graduation bar -- lifecycle "
+            "status flipped to live at %.0f%% size. Still requires the manual "
+            "arm toggle to actually place live orders.",
             name, size_pct * 100,
         )
         result["graduated"] = True
 
-    # Wired, but inert until live fills exist: check_retirement returns early
-    # unless status == "live" AND a live equity curve has been recorded, and
-    # the drawdown branch is skipped entirely at worst_backtest_dd=0.0.
-    # 0.0 is honest -- nothing stores the gauntlet's worst backtest drawdown
-    # yet (StrategyCard carries an equity curve but no drawdown metric), and
-    # inventing one would fabricate the very threshold that halts a strategy.
-    if lifecycle.check_retirement(name, worst_backtest_dd=0.0):
+    # BATCH-REPLAY S4 follow-up: check_retirement's current_live_dd is raw
+    # dollars (peak_live_equity - live_equity_curve[-1]), but replay's own
+    # worst_drawdown is a FRACTION of returns (e.g. -0.24) -- converted to
+    # dollars here (qty x last live fill price), not inside check_retirement,
+    # so its existing dollar-based comparison/tests stay untouched. abs()
+    # handles replay's negative-drawdown storage convention. Falls back to
+    # 0.0 (check_retirement's own "skip this branch" value) whenever any
+    # input is missing -- never replayed, no qty, or no live fill yet --
+    # same conservative-refuse convention as check_graduation's gate above.
+    _last_price = lifecycle.get_state(name).last_live_price
+    if _worst_dd is not None and _spec is not None and _last_price > 0:
+        _dollar_worst_dd = abs(_worst_dd) * _spec.qty * _last_price
+    else:
+        _dollar_worst_dd = 0.0
+    if lifecycle.check_retirement(name, worst_backtest_dd=_dollar_worst_dd):
         result["retired"] = True

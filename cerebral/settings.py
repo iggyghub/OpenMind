@@ -8,7 +8,7 @@ Keys: notifications_enabled, reminder_interval_minutes, camera_enabled,
       visualiser_visible, mic_mode, tts_muted, tts_volume,
       mic_input_device, browser_pause_on_verification,
       disabled_plugins, enabled_skills, background_actuation,
-      setvalue_roles, user_idle_ms, trading_live_arm
+      setvalue_roles, user_idle_ms, trading_live_arm, admission_cap
 """
 from __future__ import annotations
 
@@ -79,6 +79,11 @@ _DEFAULTS: dict[str, Any] = {
     # StubBrokerClient (currently hardcoded to $10,000 in broker.py).
     "trading_paper_enabled":            True,
     "trading_paper_starting_capital":   10000.0,
+    # 2026-09-23: non-empty = only strategies whose name starts with this trade
+    # (e.g. "Trend basket:"); every other strategy is parked. "" = all trade.
+    "trading_only_prefix":              "",
+    # 2026-09-23: RisingEdgeGate's last reading {date, breadth, edge}, so a restart remembers yesterday.
+    "trend_basket_gate_state":          {},
     # 2026-08-31: market-wide sentiment gate on new paper opens, sourced
     # from general market-news RSS feeds (cerebral/trading/sentiment.py).
     # Default True (unlike trading_live_arm) -- this only ever gates paper
@@ -90,6 +95,12 @@ _DEFAULTS: dict[str, Any] = {
     # attempt per strategy, not market-wide-and-cached, so it's real
     # per-trade LLM latency the user should opt into after seeing the cost.
     "trading_bear_case_gate_enabled":   False,
+    # 2026-09-01: per-symbol sentiment gate (cerebral/trading/sentiment.py
+    # StockSentimentGate), sourced from a symbol-scoped web search rather
+    # than general market news. Default False -- like the bear-case gate,
+    # this is real per-symbol web_search + LLM cost (cached with a TTL,
+    # not free like the RSS-backed market-wide gate), opt in explicitly.
+    "trading_stock_sentiment_gate_enabled": False,
     # S23: Minimum distinct trading days required for graduation/graduation math.
     "distinct_days_floor":       30,
     # S31: manual discovery start/stop + duration. discovery_enabled defaults
@@ -101,6 +112,10 @@ _DEFAULTS: dict[str, Any] = {
     "discovery_stop_at":         "",
     "discovery_queries":         [],
     "discovery_interval":        "15m",
+    # IPO6 (#1043): {"ticker","company","ipo_date","dispatched"} dicts, populated
+    # weekly by check_ipo_calendar, consumed (dispatched flipped True) by the
+    # per-tick dispatch_due_ipos check.
+    "ipo_tracked":               [],
     # How many candidate tickers a single accepted pattern-general idea is
     # tested against per discovery pass (see rank_for_day_trading).
     "discovery_candidate_limit": 10,
@@ -112,6 +127,56 @@ _DEFAULTS: dict[str, Any] = {
     # with nothing to distinguish "task died" from "nothing was due" short
     # of a live forced-due hand trace. This closes that gap for next time.
     "scheduler_heartbeat":       "",
+    # ADR-0036 M: per-Failure-domain admission cap (default matches L's
+    # hardcoded default -- R5 "the scarce resource is always singular").
+    "admission_cap":             1,
+    # 2026-09-08: base design system scan (BASE-DESIGN-SYSTEM.md). Mirrors
+    # discovery_enabled's own precedent -- the daily scan always runs and
+    # logs; this only gates its side effects (filing a GitHub issue + queuing
+    # a self_dev_campaign slice for each new gap found). Default OFF.
+    "design_system_autofix_enabled": False,
+    # BATCH-REPLAY S1 (#1224): standing 1-month-batch historical replay
+    # sweep. batch_replay_cursor/batch_replay_start are ISO dates ("" means
+    # unset, same "empty string = unset ISO timestamp" convention as
+    # discovery_stop_at above -- not None, since _DEFAULTS.get() is the
+    # fallback for an unset key and must match the declared type.
+    "batch_replay_running":      False,
+    "batch_replay_cursor":       "",
+    "batch_replay_start":        "",
+    # BATCH-REPLAY S4 (#1227): check_graduation refuses paper->live
+    # promotion outright when a strategy's accumulated historical-replay
+    # drawdown is worse than this fraction (0.30 = 30%), even if its own
+    # live paper CI just passed. Default picked from this campaign's own
+    # RP9 live-verify sample (286 real strategies, worst observed -21.17%)
+    # -- conservative enough not to block ordinary variance, tight enough
+    # to catch a genuinely bad multi-period history.
+    "batch_replay_graduation_dd_cap": 0.30,
+    # CROSS-STOCK-VALIDATION S2 (#1235): resumable pair-cursor sweep.
+    # cursor_strategy_id/cursor_symbol name the LAST COMPLETED pair, not a
+    # raw index -- the pair list is rebuilt fresh each run from
+    # StrategyStore.list_all(), and a newly-classified strategy landing
+    # between nights would shift any integer index, silently skipping or
+    # re-running pairs. Naming the pair directly is immune to that: resume
+    # finds this pair in the freshly-built list and continues right after
+    # it. "" is the unset sentinel, same convention as batch_replay_cursor.
+    "cross_stock_running":       False,
+    "cross_stock_cursor_strategy_id": "",
+    "cross_stock_cursor_symbol": "",
+    # CROSS-STOCK-VALIDATION S3 (#1236): UTC ISO timestamp of when
+    # tonight's nightly sweep started, "" when not currently in a nightly
+    # run. Distinct from cross_stock_running (which a manual start/stop
+    # can also flip) -- this is what the 8-real-clock-hour soft cap
+    # measures elapsed time against, and what stops _scheduler_loop's
+    # per-tick check from re-starting the sweep every 5 minutes for the
+    # rest of the midnight-8am window once it's already running tonight.
+    "cross_stock_night_started_at": "",
+    # S5 (#1238): measured throughput from the most recently finished run
+    # -- the UI's completion estimate reads this instead of guessing, per
+    # this campaign's own "throughput is unknown, on purpose" stance
+    # (BATCH-REPLAY's own timing data didn't transfer to this campaign's
+    # very different per-pair cost). 0 until at least one run finishes.
+    "cross_stock_last_run_processed": 0,
+    "cross_stock_last_run_rate_per_hour": 0.0,
 }
 
 _VALID_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -139,15 +204,31 @@ _TYPES: dict[str, type] = {
     "max_concurrent_positions":  int,
     "trading_paper_enabled":            bool,
     "trading_paper_starting_capital":   float,
+    "trading_only_prefix":              str,
+    "trend_basket_gate_state":          dict,
     "trading_sentiment_gate_enabled":   bool,
     "trading_bear_case_gate_enabled":   bool,
+    "trading_stock_sentiment_gate_enabled": bool,
     "distinct_days_floor":       int,
     "discovery_enabled":         bool,
     "discovery_stop_at":         str,
     "discovery_queries":         list,
     "discovery_interval":        str,
+    "ipo_tracked":               list,
     "discovery_candidate_limit": int,
     "scheduler_heartbeat":       str,
+    "admission_cap":             int,
+    "design_system_autofix_enabled": bool,
+    "batch_replay_running":      bool,
+    "batch_replay_cursor":       str,
+    "batch_replay_start":        str,
+    "batch_replay_graduation_dd_cap": float,
+    "cross_stock_running":       bool,
+    "cross_stock_cursor_strategy_id": str,
+    "cross_stock_cursor_symbol": str,
+    "cross_stock_night_started_at": str,
+    "cross_stock_last_run_processed": int,
+    "cross_stock_last_run_rate_per_hour": float,
 }
 
 _MIC_MODE_VALUES: frozenset[str] = frozenset({"passive", "ptt", "disabled"})
@@ -160,8 +241,24 @@ _SETTINGS_PATH = data_dir() / "felix-settings.json"
 class SettingsStore:
     """Thin JSON-backed store for system settings.
 
-    Designed as a process-wide singleton in main.py.  Thread-safe enough
-    for the single asyncio event loop — all reads/writes happen there.
+    Documented as a process-wide singleton in main.py, but not actually
+    enforced anywhere -- several plugins construct their own short-lived
+    SettingsStore() (e.g. plugins/trading_replay.py's cross-stock sweep).
+    Each instance used to cache _data at construction and never refresh it,
+    so two instances whose lifetimes overlapped could silently clobber each
+    other's writes with a stale full-dict snapshot: a 2026-09-15/16
+    overnight cross-stock run wrote real throughput stats
+    (cross_stock_last_run_processed=19805) that were then immediately
+    stomped back to 0 by check_cross_stock_night_window's own stop-path
+    write, made through the scheduler's long-lived singleton whose
+    in-memory copy predated the run. get()/set() now always reload from
+    disk first, so every call reflects the latest state on disk regardless
+    of which instance last wrote it or when this instance was constructed
+    -- the in-memory cache is now only a same-call convenience, not
+    something callers should rely on staying valid between calls. Settings
+    changes are human/scheduler-cadence (never a per-bar/per-pair hot
+    loop -- checked before making this change), so the extra reads are free
+    in practice.
     """
 
     def __init__(self, path: Path = _SETTINGS_PATH) -> None:
@@ -171,6 +268,7 @@ class SettingsStore:
     # ── public ─────────────────────────────────────────────────────────────────
 
     def get(self, key: str) -> Any:
+        self._data = self._load()
         return self._data.get(key, _DEFAULTS.get(key))
 
     def set(self, key: str, value: Any) -> None:
@@ -195,6 +293,8 @@ class SettingsStore:
             value = max(0, value)
         if key == "discovery_candidate_limit":
             value = max(1, value)
+        if key == "admission_cap":
+            value = max(1, value)
         if key == "mic_mode" and value not in _MIC_MODE_VALUES:
             raise ValueError(
                 f"mic_mode must be one of {sorted(_MIC_MODE_VALUES)}, got {value!r}"
@@ -207,11 +307,18 @@ class SettingsStore:
             raise ValueError("setvalue_roles must be a list of str")
         if key == "discovery_queries" and not all(isinstance(i, str) for i in value):
             raise ValueError("discovery_queries must be a list of str")
+        # Reload immediately before applying the change (not just at
+        # construction) -- see the class docstring. Without this, a
+        # different SettingsStore instance's write between this instance's
+        # construction and this .set() call would get silently overwritten
+        # by this instance's now-stale in-memory copy of every OTHER key.
+        self._data = self._load()
         self._data[key] = value
         self._save()
 
     def all(self) -> dict[str, Any]:
-        """Return a snapshot of all settings."""
+        """Return a snapshot of all settings, freshly loaded (see get())."""
+        self._data = self._load()
         return {k: self._data.get(k, v) for k, v in _DEFAULTS.items()}
 
     def is_default(self, key: str) -> bool:

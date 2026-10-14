@@ -30,6 +30,32 @@ def _bars_per_year(interval: str) -> float:
     return 252.0
 
 
+def compute_max_holding_days(position: Sequence[float], interval: str) -> float:
+    """Longest single simulated trade's duration, in calendar-ish days.
+
+    ``position`` is a per-bar target-position series (0 = flat, nonzero =
+    held) -- the same shape `backtest_func` closures already build via
+    `signals.shift(1)`. A "trade" is one maximal run of consecutive nonzero
+    bars, direction changes included (a long-to-short flip without passing
+    through flat is still one continuous holding run, since the position is
+    never actually closed at the broker between them). Bars-per-day uses
+    `_bars_per_year`'s own interval mapping / 252 for consistency with how
+    this module already treats "252 trading days" as "a year" everywhere
+    else (Sharpe annualisation) -- not a calendar-precise conversion, and
+    doesn't need to be for a policy threshold like "a month".
+    """
+    bars_per_day = _bars_per_year(interval) / 252.0
+    max_run = 0
+    run = 0
+    for v in position:
+        if v != 0:
+            run += 1
+            max_run = max(max_run, run)
+        else:
+            run = 0
+    return max_run / bars_per_day if bars_per_day > 0 else float(max_run)
+
+
 @dataclass
 class GateResult:
     """Result of a single S2 gate (oos_test / walk_forward)."""
@@ -208,6 +234,7 @@ def run_gauntlet(
     param_sensitivity_pct: float = 0.2,
     adv_threshold_pct: float = 0.075,
     holding_period: int = 1,
+    max_holding_days: float = 30.0,
     seed: int = 42,
     scheduler: Any = None,
     # BrokerClient for auto-promote's paper trade (see the auto-promote
@@ -234,7 +261,7 @@ def run_gauntlet(
     equity_curve, metrics = backtest_func(prices, params)
     daily_returns = np.diff(equity_curve) / equity_curve[:-1] if len(equity_curve) > 1 else np.array([0.0])
     ann_factor = _bars_per_year(interval)
-    sharpe = metrics.get("sharpe", float(np.mean(daily_returns) / np.std(daily_returns) * ann_factor)) if np.std(daily_returns) > 0 else 0.0
+    sharpe = metrics.get("sharpe", float(np.mean(daily_returns) / np.std(daily_returns) * np.sqrt(ann_factor))) if np.std(daily_returns) > 0 else 0.0
     total_return = (equity_curve[-1] / equity_curve[0]) - 1 if equity_curve[0] != 0 else 0.0
 
     gates: List[GauntletGateResult] = []
@@ -262,8 +289,8 @@ def run_gauntlet(
         entries = rng.integers(0, len(prices) - holding_period - 1, size=20)
         port_rets = []
         for e in entries:
-            end = min(e + holding_period, len(prices))
-            pr = prices["Close"].iloc[end - 1] / prices["Close"].iloc[e] - 1
+            end = min(e + holding_period, len(prices) - 1)
+            pr = prices["Close"].iloc[end] / prices["Close"].iloc[e] - 1
             port_rets.append(pr)
         random_port_returns.append(np.mean(port_rets) if port_rets else 0.0)
     p95_random = np.percentile(random_port_returns, 95)
@@ -285,7 +312,11 @@ def run_gauntlet(
     gates.append(vs_bench_gate)
 
     # 4. Noise test
-    noisy_prices = prices * (1 + rng.normal(0, noise_pct, size=prices.shape))
+    noise = 1 + rng.normal(0, noise_pct, size=len(prices))  # one draw per bar, not per column
+    noisy_prices = prices.copy()
+    for col in ("Open", "High", "Low", "Close"):
+        if col in noisy_prices.columns:
+            noisy_prices[col] = noisy_prices[col] * noise
     _, noisy_metrics = backtest_func(noisy_prices, params)
     noisy_sharpe = noisy_metrics.get("sharpe", sharpe)
     max_allowed_drop = 0.5 * sharpe if sharpe >= 0 else 0.0
@@ -321,6 +352,23 @@ def run_gauntlet(
     if not cap_gate.passed:
         verdict = "UNVALIDATED"
     gates.append(cap_gate)
+
+    # 7. Max holding period -- "most trades daily, nothing held past a
+    # month" (user policy decision, not a data-derived threshold). Opt-in
+    # via `metrics["max_holding_days"]`: skipped when a backtest_func
+    # doesn't supply it (e.g. an abstract/test-double one with no real
+    # signal series to measure), so this stays backward compatible rather
+    # than failing closed for every caller that predates this gate.
+    if "max_holding_days" in metrics:
+        observed_holding_days = float(metrics["max_holding_days"])
+        holding_gate = GauntletGateResult(
+            "max_holding_period", bool(observed_holding_days <= max_holding_days),
+            observed_holding_days, float(max_holding_days),
+            f"longest simulated trade held {observed_holding_days:.1f} days (limit {max_holding_days:.0f})",
+        )
+        if not holding_gate.passed:
+            verdict = "UNVALIDATED"
+        gates.append(holding_gate)
 
     sharpe_ci = _bootstrap_ci(daily_returns, rng=rng)
     total_return_ci = _bootstrap_ci(np.cumprod(1 + daily_returns) - 1, rng=rng)
@@ -361,9 +409,16 @@ def run_gauntlet(
         if symbol and strategy_code:
             from cerebral.trading.strategy_store import StrategySpec, StrategyStore
             store = strategy_store if strategy_store is not None else StrategyStore()
+            # interval=interval -- this function's own parameter (used correctly
+            # above for ann_factor/backtest sizing) was never threaded into the
+            # SAVED spec, so every strategy silently persisted as StrategySpec's
+            # "1d" default regardless of what it was actually validated at.
+            # Found 2026-09-16: 306/306 live strategies were "1d", including ones
+            # discovery.py explicitly validates at "15m" -- the value was correct
+            # throughout the gauntlet run and only lost at this save call.
             store.save(StrategySpec(
                 strategy_id=strategy_name, symbol=symbol,
-                code=strategy_code, qty=position_qty,
+                code=strategy_code, qty=position_qty, interval=interval,
             ), origin=origin, provenance_json={"source": provenance}, hypothesis=hypothesis,
                parent_version=parent_version, components_json=components_json)
         scheduler._create_event({

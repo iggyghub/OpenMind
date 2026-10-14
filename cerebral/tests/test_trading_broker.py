@@ -34,28 +34,42 @@ class _FakeAlpacaClient:
     """Stands in for alpaca.trading.client.TradingClient: submit_order
     returns the just-submitted (unfilled) snapshot; get_order_by_id replays
     a scripted status sequence, one call each -- the real fill's async
-    delay compressed to "next call sees the next state"."""
+    delay compressed to "next call sees the next state".
+
+    Each submitted order gets its own id and remembers its own requested
+    qty (previously every fake fill hardcoded "10" regardless of what was
+    actually ordered -- harmless while every test only ever ordered 10
+    shares, but wrong the moment a test submits two different quantities,
+    e.g. one strategy buying 10 and another selling 5 in the same test)."""
     def __init__(self, statuses_after_submit):
         self._statuses = list(statuses_after_submit)
         self.get_order_by_id_calls = 0
+        self._order_qtys: dict = {}
+        self._next_id = 0
 
     def submit_order(self, req):
-        return _FakeAlpacaOrder(status="new")
+        self._next_id += 1
+        order_id = f"o{self._next_id}"
+        self._order_qtys[order_id] = str(req.qty)
+        return _FakeAlpacaOrder(id=order_id, qty=str(req.qty), status="new")
 
     def get_order_by_id(self, order_id):
         self.get_order_by_id_calls += 1
         status = self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
+        qty = self._order_qtys.get(order_id, "10")
         return _FakeAlpacaOrder(
-            id=order_id, status=status,
-            filled_qty="10" if status in ("filled", "partially_filled") else "0",
+            id=order_id, status=status, qty=qty,
+            filled_qty=qty if status in ("filled", "partially_filled") else "0",
             filled_avg_price="101.5" if status in ("filled", "partially_filled") else None,
         )
 
 
-def _connected_alpaca_client(statuses_after_submit):
+def _connected_alpaca_client(statuses_after_submit, screener=None):
     broker = AlpacaBrokerClient(env="paper")
     broker._connected = True
     broker._client = _FakeAlpacaClient(statuses_after_submit)
+    if screener is not None:
+        broker._screener = screener
     return broker
 
 
@@ -88,6 +102,40 @@ def test_alpaca_place_order_polls_until_filled(monkeypatch):
     order = broker.place_order("AAPL", 10, "buy", "market")
     assert order.status == "FILLED"
     assert broker._client.get_order_by_id_calls == 3
+
+
+def test_alpaca_position_ledger_survives_a_restart(tmp_path, monkeypatch):
+    """2026-09-24: the per-strategy ledger was in memory only, so after a Felix restart an open
+    multi-day position looked unowned -- its strategy would re-buy and never sell the original."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    path = tmp_path / "ledger.json"
+    broker = _connected_alpaca_client(["filled"])
+    broker._ledger_path = path
+    broker.place_order("AAPL", 10, "buy", "market", strategy_id="Trend basket: x @AAPL")
+
+    restarted = AlpacaBrokerClient(env="paper", ledger_path=path)
+    restarted._connected = True
+    (pos,) = restarted._positions.values()
+    assert list(restarted._positions) == [("Trend basket: x @AAPL", "AAPL")]
+    assert pos.qty == 10.0 and pos.avg_entry_price == 101.5
+
+
+def test_alpaca_ledger_drops_rows_the_account_no_longer_holds(tmp_path, monkeypatch):
+    """E.g. after an Alpaca paper account reset: a stale row would make its strategy try to sell
+    shares that aren't there, every tick."""
+    path = tmp_path / "ledger.json"
+    path.write_text(
+        '[{"strategy_id": "s1", "symbol": "AAPL", "qty": 1.0, "avg_entry_price": 1.0, "side": "buy",'
+        ' "market_value": 1.0, "unrealized_pl": 0.0, "current_price": 1.0},'
+        ' {"strategy_id": "s2", "symbol": "MSFT", "qty": 1.0, "avg_entry_price": 1.0, "side": "buy",'
+        ' "market_value": 1.0, "unrealized_pl": 0.0, "current_price": 1.0}]', encoding="utf-8")
+    broker = AlpacaBrokerClient(env="paper", ledger_path=path)
+    fake_client = type("C", (), {"get_all_positions": lambda self: [type("P", (), {"symbol": "MSFT"})()]})
+    monkeypatch.setattr("cerebral.trading.broker._get_alpaca_credentials", lambda env: ("k", "s"))
+    monkeypatch.setattr("alpaca.trading.client.TradingClient", lambda *a, **k: fake_client())
+    broker._connect()
+    assert list(broker._positions) == [("s2", "MSFT")]
+    assert "AAPL" not in path.read_text(encoding="utf-8")
 
 
 class _FakeAlpacaAccount:
@@ -259,6 +307,32 @@ def test_stub_commission_free():
     assert order.fees == 0.0
 
 
+def test_alpaca_positions_isolated_by_strategy_id(monkeypatch):
+    """Two strategies trading the same symbol should not clobber each other's positions."""
+    broker = _connected_alpaca_client(["filled"])
+    # Mock get_all_positions to avoid real API calls or data leakage from the fake client.
+    broker._client.get_all_positions = lambda: []
+
+    # Strategy A opens long 10 AAPL
+    broker.place_order("AAPL", 10, "buy", "market", strategy_id="strat_a")
+    # Strategy B opens short 5 AAPL
+    broker.place_order("AAPL", 5, "sell", "market", strategy_id="strat_b")
+
+    # Each strategy should see only its own position
+    pos_a = find_position(broker.list_positions(strategy_id="strat_a"), "AAPL")
+    pos_b = find_position(broker.list_positions(strategy_id="strat_b"), "AAPL")
+    
+    assert pos_a is not None and pos_a.qty == 10.0
+    assert pos_b is not None and pos_b.qty == -5.0
+    
+    # Closing B's position should not affect A's
+    broker.place_order("AAPL", 5, "buy", "market", strategy_id="strat_b")
+    pos_a_after = find_position(broker.list_positions(strategy_id="strat_a"), "AAPL")
+    pos_b_after = find_position(broker.list_positions(strategy_id="strat_b"), "AAPL")
+    assert pos_a_after is not None and pos_a_after.qty == 10.0
+    assert pos_b_after is None  # B is flat
+
+
 def test_stub_reset():
     """reset() clears positions/orders and restores starting cash/equity/
     buying_power to the configured starting value (#929 fixed place_order
@@ -300,3 +374,123 @@ def test_stub_place_order_updates_cash_equity():
     assert acc.cash == pytest.approx(10000.0)
     assert acc.equity == pytest.approx(10000.0)
     assert stub.list_positions() == []
+
+
+def test_alpaca_positions_isolated_by_strategy_id():
+    """Two strategies trading the same symbol should not clobber each other's positions."""
+    broker = _connected_alpaca_client(["filled"])
+    
+    # Strategy A opens long 10 AAPL
+    broker.place_order("AAPL", 10, "buy", "market", strategy_id="strat_a")
+    # Strategy B opens short 5 AAPL
+    broker.place_order("AAPL", 5, "sell", "market", strategy_id="strat_b")
+
+    # Each strategy should see only its own position
+    pos_a = find_position(broker.list_positions(strategy_id="strat_a"), "AAPL")
+    pos_b = find_position(broker.list_positions(strategy_id="strat_b"), "AAPL")
+    
+    assert pos_a is not None and pos_a.qty == 10.0
+    assert pos_b is not None and pos_b.qty == -5.0
+    
+    # Closing B's position should not affect A's
+    broker.place_order("AAPL", 5, "buy", "market", strategy_id="strat_b")
+    pos_a_after = find_position(broker.list_positions(strategy_id="strat_a"), "AAPL")
+    pos_b_after = find_position(broker.list_positions(strategy_id="strat_b"), "AAPL")
+    assert pos_a_after is not None and pos_a_after.qty == 10.0
+    assert pos_b_after is None  # B is flat
+
+
+class _FakeAsset:
+    __slots__ = ("symbol", "tradable")
+
+    def __init__(self, symbol, tradable=True):
+        self.symbol = symbol
+        self.tradable = tradable
+
+
+class _FakeAllAssetsClient:
+    """Stands in for TradingClient for get_all_assets only."""
+    def __init__(self, assets):
+        self._assets = assets
+
+    def get_all_assets(self, request):
+        return self._assets
+
+
+class _FakeMoverEntry:
+    __slots__ = ("symbol", "percent_change")
+
+    def __init__(self, symbol, percent_change):
+        self.symbol = symbol
+        self.percent_change = percent_change
+
+
+class _FakeMovers:
+    def __init__(self, gainers, losers):
+        self.gainers = gainers
+        self.losers = losers
+
+
+class _FakeActiveEntry:
+    __slots__ = ("symbol", "volume")
+
+    def __init__(self, symbol, volume):
+        self.symbol = symbol
+        self.volume = volume
+
+
+class _FakeMostActives:
+    """Mimics alpaca-py's MostActives response model, which wraps the
+    entries in a .most_actives field rather than being iterable itself."""
+    def __init__(self, most_actives):
+        self.most_actives = most_actives
+
+
+class _FakeScreenerClient:
+    """Stands in for alpaca.data.historical.screener.ScreenerClient."""
+    def __init__(self, movers=None, actives=None):
+        self._movers = movers
+        self._actives = _FakeMostActives(actives or [])
+
+    def get_market_movers(self, request):
+        return self._movers
+
+    def get_most_actives(self, request):
+        return self._actives
+
+
+def test_alpaca_get_all_assets_returns_tradable_symbols_only():
+    broker = _connected_alpaca_client(["filled"])
+    broker._client = _FakeAllAssetsClient([
+        _FakeAsset("AAPL", tradable=True),
+        _FakeAsset("ZZZZ", tradable=False),
+        _FakeAsset("MSFT", tradable=True),
+    ])
+    assets = broker.get_all_assets()
+    assert assets == ["AAPL", "MSFT"]
+
+
+def test_alpaca_get_market_movers_returns_gainers_and_losers():
+    movers = _FakeMovers(
+        gainers=[_FakeMoverEntry("NVDA", 12.5), _FakeMoverEntry("AMD", 8.1)],
+        losers=[_FakeMoverEntry("INTC", -6.3)],
+    )
+    broker = _connected_alpaca_client(["filled"], screener=_FakeScreenerClient(movers=movers))
+    result = broker.get_market_movers(top=2)
+    assert result == {
+        "gainers": [
+            {"symbol": "NVDA", "percent_change": 12.5},
+            {"symbol": "AMD", "percent_change": 8.1},
+        ],
+        "losers": [{"symbol": "INTC", "percent_change": -6.3}],
+    }
+
+
+def test_alpaca_get_most_actives_returns_symbol_and_volume():
+    actives = [_FakeActiveEntry("TSLA", 5_000_000), _FakeActiveEntry("SPY", 3_000_000)]
+    broker = _connected_alpaca_client(["filled"], screener=_FakeScreenerClient(actives=actives))
+    result = broker.get_most_actives(top=2)
+    assert result == [
+        {"symbol": "TSLA", "volume": 5_000_000},
+        {"symbol": "SPY", "volume": 3_000_000},
+    ]

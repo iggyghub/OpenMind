@@ -90,7 +90,7 @@ def test_gate_result_structure():
 import numpy as np
 import pandas as pd
 
-from cerebral.trading.gauntlet import run_gauntlet, StrategyCard
+from cerebral.trading.gauntlet import run_gauntlet, StrategyCard, compute_max_holding_days
 
 
 def make_prices(n=200, seed=42):
@@ -172,6 +172,23 @@ class TestFailsEachGate:
         assert card.gates[0].passed is False
         assert card.verdict == "UNVALIDATED"
 
+    def test_vs_random_benchmark_is_not_always_exactly_zero(self):
+        """#997: the random-entry benchmark used to be an off-by-one that
+        compared each simulated entry bar's price to itself
+        (iloc[end-1]/iloc[e] where end==e+1 at the default holding_period=1),
+        so p95_random was always exactly 0.0 regardless of the real price
+        series -- the vs_random gate silently degenerated to "don't lose
+        money" instead of "beat a random entry at p95". On a genuinely
+        trending price series, the real p95 must be a real (here, positive)
+        number, not exactly 0.0."""
+        card = run_gauntlet(
+            lambda p, pr: ([100.0] * len(p), {"sharpe": 0, "total_return": 0}),
+            make_prices(), make_params(), make_benchmark_prices(), make_positions(), seed=42,
+        )
+        vs_random_gate = card.gates[1]
+        assert vs_random_gate.name == "vs_random"
+        assert vs_random_gate.threshold != 0.0
+
     def test_fails_vs_random(self):
         card = run_gauntlet(
             make_failing_backtest, make_prices(), make_params(), make_benchmark_prices(), make_positions(), seed=42
@@ -227,9 +244,22 @@ class TestFailsEachGate:
 
 class TestConfigurableThresholds:
     def test_all_thresholds_configurable(self):
-        # With loose threshold, constant returns should pass MC
+        # With a loose p_value_threshold, a genuinely growing equity curve
+        # should pass MC. A perfectly FLAT curve (the original fixture here)
+        # can no longer validate post-#997 -- vs_random's p95 benchmark is a
+        # real number now (make_prices' own positive drift), not the
+        # pre-fix bug's always-0.0, and 0% return can never beat a real
+        # positive benchmark. Real growth clearly ahead of make_prices'
+        # ~0.0005/day drift keeps this test about threshold configurability,
+        # not accidentally re-testing vs_random itself.
+        # parameter_sensitivity compares this real curve's profitability
+        # (True) against each perturbed call's declared metrics -- this
+        # lambda ignores its params argument entirely (deliberately, it's a
+        # fixed backtest for testing threshold plumbing, not parameter
+        # response), so its metrics must say "profitable" too or every
+        # perturbation reads as a false "flipped to losing".
         card = run_gauntlet(
-            lambda p, pr: ([100.0] * len(p), {"sharpe": 0, "total_return": 0}),
+            lambda p, pr: ([100.0 * (1.002 ** i) for i in range(len(p))], {"sharpe": 0, "total_return": 0.5}),
             make_prices(),
             make_params(),
             make_benchmark_prices(),
@@ -318,12 +348,21 @@ class TestAutoPromote:
             make_positions(), hypothesis="MA cross test", provenance="internal",
             scheduler=FakeScheduler(), paper_broker=object(), seed=42,
             symbol="AAPL", strategy_code=code, strategy_store=store, position_qty=3.0,
+            interval="15m",
         )
 
         assert card.verdict == "VALIDATED"
         spec = store.get("MA cross test")
         assert spec is not None
         assert (spec.symbol, spec.code, spec.qty) == ("AAPL", code, 3.0)
+        # Found 2026-09-16: run_gauntlet's own interval param was used
+        # correctly for backtest sizing/annualization but never threaded
+        # into the saved spec, so every strategy silently persisted as
+        # "1d" regardless of what it was actually validated at (306/306
+        # live strategies affected, including ones discovery.py explicitly
+        # validates at "15m"). Non-default interval here catches a
+        # regression back to the dataclass default masking the bug.
+        assert spec.interval == "15m"
         assert calls[0]["title"] == "MA cross test"  # still scheduled
 
         # S16/#861: a VALIDATED pass must also record real lineage, not
@@ -386,3 +425,144 @@ class TestBarsPerYear:
 
     def test_unknown_interval_falls_back_to_daily(self):
         assert _bars_per_year("bogus") == 252.0
+
+
+class TestMaxHoldingDays:
+    """"Most trades daily, nothing held past a month" -- a user policy
+    decision, not a data-derived threshold. See TRADING.md's #961
+    follow-up entry."""
+
+    def test_flat_series_holds_zero_days(self):
+        assert compute_max_holding_days([0, 0, 0, 0], "1d") == 0.0
+
+    def test_one_continuous_run_on_daily_bars(self):
+        # 10 consecutive held bars on daily data == 10 days (1 bar/day).
+        position = [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]
+        assert compute_max_holding_days(position, "1d") == pytest.approx(10.0)
+
+    def test_direction_flip_without_flat_is_one_continuous_hold(self):
+        # Long then short with no flat bar between them is still one
+        # unbroken holding run at the broker -- the position is never
+        # actually closed in between.
+        position = [1, 1, 1, -1, -1, -1]
+        assert compute_max_holding_days(position, "1d") == pytest.approx(6.0)
+
+    def test_takes_the_longest_run_not_the_total(self):
+        position = [1, 1, 0, 1, 1, 1, 1, 1, 0, 1]
+        assert compute_max_holding_days(position, "1d") == pytest.approx(5.0)
+
+    def test_intraday_bars_compress_to_fewer_days(self):
+        # 78 consecutive 5-minute bars is one full 6.5h trading day, not
+        # 78 days -- must scale by the interval's own bars-per-day.
+        position = [1] * 78
+        assert compute_max_holding_days(position, "5m") == pytest.approx(1.0, rel=0.05)
+
+
+class TestMaxHoldingPeriodGate:
+    def test_skipped_when_backtest_func_reports_no_holding_metric(self):
+        # make_backtest (this file's default fixture) never sets
+        # metrics["max_holding_days"] -- the gate must not appear at all,
+        # not silently pass. Matches TestPassesAllGates' existing
+        # len(card.gates) == 6 assertion.
+        card = run_gauntlet(
+            make_backtest, make_prices(), make_params(), make_benchmark_prices(),
+            make_positions(), seed=42,
+        )
+        assert "max_holding_period" not in [g.name for g in card.gates]
+
+    def test_fails_when_longest_trade_exceeds_the_limit(self):
+        def long_hold_backtest(prices, params):
+            eq, metrics = make_backtest(prices, params)
+            metrics["max_holding_days"] = 45.0
+            return eq, metrics
+
+        card = run_gauntlet(
+            long_hold_backtest, make_prices(), make_params(), make_benchmark_prices(),
+            make_positions(), seed=42, max_holding_days=30.0,
+        )
+        gate = next(g for g in card.gates if g.name == "max_holding_period")
+        assert gate.passed is False
+        assert card.verdict == "UNVALIDATED"
+
+    def test_passes_when_longest_trade_is_within_the_limit(self):
+        def short_hold_backtest(prices, params):
+            eq, metrics = make_backtest(prices, params)
+            metrics["max_holding_days"] = 5.0
+            return eq, metrics
+
+        card = run_gauntlet(
+            short_hold_backtest, make_prices(), make_params(), make_benchmark_prices(),
+            make_positions(), seed=42, max_holding_days=30.0,
+        )
+        gate = next(g for g in card.gates if g.name == "max_holding_period")
+        assert gate.passed is True
+
+
+def test_random_entry_returns_nonzero_on_uptrend():
+    """vs_random gate must compute non-zero random-entry returns instead of
+    degenerating to 0.0 (off-by-one bug where start/end were the same bar)."""
+    n = 200
+    close = np.arange(1, n + 1, dtype=float)
+    prices = pd.DataFrame({
+        "Open": close, "High": close + 0.1, "Low": close - 0.1,
+        "Close": close, "Volume": np.ones(n) * 1000,
+    })
+
+    card = run_gauntlet(
+        lambda p, pr: ([100.0] * len(p), {"sharpe": 0.0, "total_return": 0.0}),
+        prices,
+        make_params(),
+        benchmark_prices=None,
+        seed=42,
+    )
+    vs_rand_gate = card.gates[1]
+    assert vs_rand_gate.threshold > 0.0, "p95_random should be > 0.0 on an uptrend"
+
+
+def test_sharpe_annualization_uses_sqrt():
+    """Regression test for Sharpe annualisation: should multiply by sqrt(ann_factor), not ann_factor."""
+    n = 100
+    rng = np.random.default_rng(42)
+    # Create equity curve with known returns
+    daily_ret = rng.normal(0.001, 0.01, n - 1)
+    eq = 100 * np.cumprod(1 + daily_ret)
+    # Return metrics without "sharpe" so the fallback formula is used
+    def dummy_backtest(prices, params):
+        return list(eq), {}
+
+    card = run_gauntlet(
+        dummy_backtest,
+        make_prices(n=n),
+        make_params(),
+        make_benchmark_prices(n=n),
+        make_positions(n=n),
+        seed=42,
+    )
+    # Expected Sharpe from fallback: mean / std * sqrt(252), computed from
+    # the SAME returns run_gauntlet itself recovers (np.diff(eq)/eq[:-1]),
+    # not the original daily_ret array -- diff-based reconstruction drops
+    # the first return (eq's first value already embeds daily_ret[0]), so
+    # recomputing from daily_ret directly compares against a different,
+    # off-by-one sample and was failing even with the correct sqrt fix.
+    recovered_returns = np.diff(eq) / eq[:-1]
+    expected_sharpe = float(np.mean(recovered_returns) / np.std(recovered_returns) * np.sqrt(252))
+    assert card.sharpe == pytest.approx(expected_sharpe)
+
+
+def test_noise_perturbation_preserves_ohlc_invariants():
+    """Noise must be applied per-bar to preserve OHLC invariants and leave Volume untouched."""
+    prices = make_prices(n=1000)
+    noise_pct = 0.015
+    for seed in range(5):
+        rng = np.random.default_rng(seed)
+        noise = 1 + rng.normal(0, noise_pct, size=len(prices))
+        noisy_prices = prices.copy()
+        for col in ("Open", "High", "Low", "Close"):
+            if col in noisy_prices.columns:
+                noisy_prices[col] = noisy_prices[col] * noise
+
+        assert (noisy_prices["Low"] <= noisy_prices["Open"]).all()
+        assert (noisy_prices["Low"] <= noisy_prices["Close"]).all()
+        assert (noisy_prices["High"] >= noisy_prices["Open"]).all()
+        assert (noisy_prices["High"] >= noisy_prices["Close"]).all()
+        assert (noisy_prices["Volume"] == prices["Volume"]).all()

@@ -290,3 +290,116 @@ def test_migration_is_idempotent_across_restarts(tmp_path):
         "SELECT sql FROM sqlite_master WHERE name='strategy_versions'"
     ).fetchone()[0]
     assert "CHECK" not in ddl
+
+
+def test_risk_override_pct_round_trip(tmp_path):
+    """IPO1: `risk_override_pct` should round-trip through save/get correctly.
+    A non-None value should be preserved, and a None value should remain None."""
+    store = _store(tmp_path)
+    
+    # Save with explicit 25.0
+    spec_override = StrategySpec("s_override", "AAPL", "def strategy(data): return [0]", risk_override_pct=25.0)
+    store.save(spec_override)
+    fetched_override = store.get("s_override")
+    assert fetched_override is not None
+    assert fetched_override.risk_override_pct == 25.0
+    
+    # Save with default None
+    spec_default = StrategySpec("s_default", "TSLA", "def strategy(data): return [1]")
+    store.save(spec_default)
+    fetched_default = store.get("s_default")
+    assert fetched_default is not None
+    assert fetched_default.risk_override_pct is None
+
+
+# BATCH-REPLAY S4 (#1227): worst_drawdown -- the accumulated-replay rollup
+# StrategyLifecycle's gates read. Derived, not part of save()'s versioning.
+def test_worst_drawdown_defaults_to_none(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]"))
+    fetched = store.get("s1")
+    assert fetched is not None
+    assert fetched.worst_drawdown is None
+
+
+def test_update_worst_drawdown_persists_and_is_readable_via_get_and_list_all(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]"))
+
+    store.update_worst_drawdown("s1", -0.24)
+
+    fetched = store.get("s1")
+    assert fetched is not None
+    assert fetched.worst_drawdown == -0.24
+
+    all_specs = store.list_all()
+    s1 = next(s for s in all_specs if s.strategy_id == "s1")
+    assert s1.worst_drawdown == -0.24
+
+
+def test_update_worst_drawdown_does_not_touch_other_fields(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]", qty=5.0))
+
+    store.update_worst_drawdown("s1", -0.10)
+
+    fetched = store.get("s1")
+    assert fetched.symbol == "AAPL"
+    assert fetched.qty == 5.0
+
+
+def test_update_worst_drawdown_on_unknown_strategy_id_does_not_raise(tmp_path):
+    store = _store(tmp_path)
+    store.update_worst_drawdown("does-not-exist", -0.10)  # no-op, not an error
+    assert store.get("does-not-exist") is None
+
+
+# CROSS-STOCK-VALIDATION S1: cross_test_eligible migration & persistence
+def test_cross_test_eligible_defaults_to_none(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]"))
+    fetched = store.get("s1")
+    assert fetched is not None
+    assert fetched.cross_test_eligible is None
+
+
+def test_cross_test_eligible_persists_and_is_readable_via_get_and_list_all(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]", cross_test_eligible=True))
+
+    fetched = store.get("s1")
+    assert fetched is not None
+    assert fetched.cross_test_eligible is True
+
+    all_specs = store.list_all()
+    s1 = next(s for s in all_specs if s.strategy_id == "s1")
+    assert s1.cross_test_eligible is True
+
+
+def test_cross_test_eligible_false_persists_correctly(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]", cross_test_eligible=False))
+
+    fetched = store.get("s1")
+    assert fetched is not None
+    assert fetched.cross_test_eligible is False
+
+
+def test_update_cross_test_eligible_persists_and_is_readable_via_get_and_list_all(tmp_path):
+    store = _store(tmp_path)
+    store.save(StrategySpec("s1", "AAPL", "def strategy(data): return [0]"))
+    store.update_cross_test_eligible("s1", True)
+
+    fetched = store.get("s1")
+    assert fetched is not None
+    assert fetched.cross_test_eligible is True
+
+    all_specs = store.list_all()
+    s1 = next(s for s in all_specs if s.strategy_id == "s1")
+    assert s1.cross_test_eligible is True
+
+
+def test_update_cross_test_eligible_on_unknown_strategy_id_does_not_raise(tmp_path):
+    store = _store(tmp_path)
+    store.update_cross_test_eligible("does-not-exist", True)  # no-op, not an error
+    assert store.get("does-not-exist") is None

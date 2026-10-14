@@ -14,12 +14,17 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from plugins.scheduler import SchedulerPlugin
+from plugins.trading_strategies import TradingStrategiesPlugin
+from cerebral.settings import SettingsStore
 from cerebral.trading.strategy_store import StrategyStore, mint_expansion_strategy_id
 
 
 def _plugin(tmp_path):
-    return SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
+    # Explicit settings= -- TradingStrategiesPlugin's own default falls back to
+    # the REAL cerebral/data/felix-settings.json (no db_path-derived isolation
+    # like its sibling plugins), so an isolated store must be passed here or
+    # this test's discovery_candidate_limit=1 would touch production config.
+    return TradingStrategiesPlugin(settings=SettingsStore(path=tmp_path / "felix-settings.json"))
 
 
 def _good_bars():

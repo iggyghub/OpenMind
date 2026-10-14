@@ -31,6 +31,24 @@
     return { type: 'call_tool', data: { name: tool || '', args: args } };
   }
 
+  // Buttons that were clicked and are waiting for their tool's result, keyed
+  // by tool name. settle() clears them: without it a button stays on
+  // "Working..." whenever the tool does not cause a panel_spec re-broadcast
+  // (a cancelled file picker, an error, or a plain no-change result).
+  var _pending = {};
+
+  // Call from the host's tool_result handler. Returns true when a clicked
+  // action button was waiting on this tool (the host may then re-request
+  // the panel spec so lists refresh).
+  function settle(toolName) {
+    var p = _pending[toolName];
+    if (!p) return false;
+    delete _pending[toolName];
+    p.btn.disabled = false;
+    if (p.status) p.status.textContent = '';
+    return true;
+  }
+
   // Attach click handlers to every .ps-action in container.
   // sendFn is called with the WS message object (caller does JSON.stringify + ws.send).
   function initActionWidgets(container, sendFn) {
@@ -53,6 +71,7 @@
         btn.addEventListener('click', function () {
           if (status) { status.textContent = 'Working…'; }
           btn.disabled = true;
+          _pending[tool] = { btn: btn, status: status };
           sendFn(buildActionMessage(
             tool, toolArgs,
             inputArg, input ? input.value : '',
@@ -177,6 +196,7 @@
     initActionWidgets:  initActionWidgets,
     initToggleWidgets:  initToggleWidgets,
     initMoveWidgets:    initMoveWidgets,
+    settle:             settle,
   };
 
   if (typeof module === 'object' && module && module.exports) {

@@ -312,15 +312,22 @@ class TestListTools:
         for tool in plugin.list_tools():
             assert tool.plugin == "n8n"
 
-    def test_unknown_tool_returns_error(self):
-        """call_tool with an unknown tool name returns a ToolResult with is_error=True."""
-        import asyncio
+    async def test_unknown_tool_returns_error(self):
+        """call_tool with an unknown tool name returns a ToolResult with is_error=True.
+
+        async def, not a sync body driving the loop by hand. This suite runs
+        pytest-asyncio in asyncio_mode=auto, and ~28 other tests call
+        asyncio.run() in sync bodies, each of which closes the loop
+        pytest-asyncio shares across tests. This test used to call
+        asyncio.get_event_loop().run_until_complete(...), which passed alone
+        and failed in the full suite the moment any of those ran first
+        (issue #1274). Awaiting on the loop pytest-asyncio provides has no
+        such ordering dependency.
+        """
         from plugins.n8n import N8nPlugin
 
         plugin = N8nPlugin()
-        result = asyncio.get_event_loop().run_until_complete(
-            plugin.call_tool("does_not_exist", {})
-        )
+        result = await plugin.call_tool("does_not_exist", {})
         assert result.is_error
 
 

@@ -7,6 +7,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from plugins.scheduler import SchedulerPlugin
+from plugins.trading_control import TradingControlPlugin
+from plugins.trading_strategies import TradingStrategiesPlugin
+from plugins.ipo_calendar import IpoCalendarPlugin
+from plugins.book_library import BookLibraryPlugin
+from plugins.design_system_autofix import DesignSystemAutofixPlugin
+from plugins.discovery import DiscoveryPlugin
 from cerebral.mcp.orchestrator import ToolResult
 from cerebral.trading.broker import StubBrokerClient
 from cerebral.trading.forward_record import ForwardRecord
@@ -21,6 +27,50 @@ def _plugin(tmp_path):
     return SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
 
 
+def _tc_plugin(tmp_path):
+    """TradingControlPlugin wrapping a fresh SchedulerPlugin -- for _run_paper_strategy tests."""
+    return TradingControlPlugin(scheduler_plugin=_plugin(tmp_path))
+
+
+def _ds_plugin(tmp_path):
+    scheduler = _plugin(tmp_path)
+    return DesignSystemAutofixPlugin(scheduler=scheduler)
+
+
+def _disc_plugin(tmp_path, **kwargs):
+    """Returns (scheduler, discovery) pair sharing the same db."""
+    db = str(tmp_path / "sched.db")
+    scheduler_kw = {k: v for k, v in kwargs.items() if k == "router"}
+    disc_kw = {k: v for k, v in kwargs.items() if k in (
+        "router", "web_search_fn", "record_activity_fn",
+        "discovery_watchlist", "discovery_attempts", "settings",
+    )}
+    scheduler = SchedulerPlugin(db_path=db, **scheduler_kw)
+    ts = TradingStrategiesPlugin(scheduler=scheduler, **scheduler_kw)
+    disc = DiscoveryPlugin(db_path=db, scheduler=scheduler, **disc_kw)
+    disc._gauntlet = ts
+    return scheduler, disc
+
+
+def _ts_plugin(tmp_path, **kwargs):
+    """TradingStrategiesPlugin with embedded SchedulerPlugin sharing the same db."""
+    scheduler = SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
+    return TradingStrategiesPlugin(scheduler=scheduler, **kwargs)
+
+
+def _ipo_plugin(tmp_path, **kwargs):
+    scheduler = SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
+    return IpoCalendarPlugin(db_path=str(tmp_path / "sched.db"), scheduler=scheduler, **kwargs)
+
+
+def _book_plugin(tmp_path, router=None):
+    scheduler = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    ts = TradingStrategiesPlugin(scheduler=scheduler, router=router)
+    book = BookLibraryPlugin(db_path=str(tmp_path / "sched.db"), router=router, scheduler=scheduler)
+    book._gauntlet = ts
+    return book
+
+
 def _record(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "cerebral.trading.forward_record._DB_PATH", tmp_path / "forward_fills.db"
@@ -30,10 +80,13 @@ def _record(tmp_path, monkeypatch):
 
 def _bars():
     import pandas as pd
+    # Anchored to end at today, not a hardcoded past date -- AF11/#1005's
+    # stale-data guard rejects a fresh open when the last bar is >3 days
+    # old, and a fixed past anchor drifts out of that window over time.
     return pd.DataFrame(
         {"Open": [10.0] * 3, "High": [11.0] * 3, "Low": [9.0] * 3,
          "Close": [10.0, 11.0, 12.0], "Volume": [100] * 3},
-        index=pd.date_range("2026-01-01", periods=3, freq="D"),
+        index=pd.date_range(end=pd.Timestamp.today().normalize(), periods=3, freq="D"),
     )
 
 
@@ -43,7 +96,7 @@ def _fetch(symbol, start, end, interval="1d"):
 
 
 def test_run_paper_strategy_evaluates_the_strategy_and_records_the_fill(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     broker = StubBrokerClient()
     record = _record(tmp_path, monkeypatch)
 
@@ -61,7 +114,7 @@ def test_run_paper_strategy_evaluates_the_strategy_and_records_the_fill(tmp_path
 
 
 def test_run_paper_strategy_looks_the_spec_up_in_the_store(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("stored strat", "MSFT", ALWAYS_LONG, qty=4.0))
     record = _record(tmp_path, monkeypatch)
@@ -77,7 +130,7 @@ def test_run_paper_strategy_looks_the_spec_up_in_the_store(tmp_path, monkeypatch
 def test_run_paper_strategy_without_a_spec_places_no_trade(tmp_path, monkeypatch):
     """Regression: with no config it used to buy 1 share of a ticker literally
     named "SYMBOL", forever, with no strategy consulted at all."""
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     record = _record(tmp_path, monkeypatch)
     broker = StubBrokerClient()
     store = StrategyStore(db_path=tmp_path / "specs.db")
@@ -91,7 +144,7 @@ def test_run_paper_strategy_without_a_spec_places_no_trade(tmp_path, monkeypatch
 
 
 def test_run_paper_strategy_no_broker_skips(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     record = _record(tmp_path, monkeypatch)
 
     result = plugin._run_paper_strategy("no broker", None, record)
@@ -106,7 +159,7 @@ def test_run_paper_strategy_degrades_a_bad_strategy_to_hold_instead_of_raising(t
     A strategy missing its `def strategy(data)` entirely is exactly this
     case: no exception, no error status, just a hold -- but it must still
     be observable via a WARNING log, not silent."""
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     record = _record(tmp_path, monkeypatch)
 
     with caplog.at_level("WARNING", logger="cerebral.trading.sandboxed_eval"):
@@ -168,12 +221,22 @@ def test_ensure_discovery_event_is_actually_due_immediately(tmp_path):
     """Integration-level regression for the same bug: the real production
     call path (ensure_discovery_event -> list_due_events), not just a
     hand-built tz-aware start_iso."""
-    plugin = _plugin(tmp_path)
-    plugin.ensure_discovery_event()
+    scheduler, disc = _disc_plugin(tmp_path)
+    disc.ensure_discovery_event()
 
-    due = plugin.list_due_events()
+    due = scheduler.list_due_events()
 
-    assert any(e["title"] == plugin.DISCOVERY_EVENT_TITLE for e in due)
+    assert any(e["title"] == disc.DISCOVERY_EVENT_TITLE for e in due)
+
+
+def test_ensure_design_system_event_is_actually_due_immediately(tmp_path):
+    scheduler = _plugin(tmp_path)
+    ds = _ds_plugin(tmp_path)
+    ds.ensure_design_system_event()
+
+    due = scheduler.list_due_events()
+
+    assert any(e["title"] == ds.DESIGN_SYSTEM_EVENT_TITLE for e in due)
 
 
 def test_schema_migrates_an_events_table_missing_last_run_iso(tmp_path):
@@ -264,22 +327,23 @@ def test_end_to_end_due_event_dispatches_a_real_paper_trade(tmp_path, monkeypatc
     restarts-clean-on-edit scoping)."""
     from cerebral.trading.live_tick import dispatch_due_events
 
-    plugin = _plugin(tmp_path)
+    scheduler = _plugin(tmp_path)
+    tc = TradingControlPlugin(scheduler_plugin=scheduler)
     broker = StubBrokerClient()
     record = _record(tmp_path, monkeypatch)
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("MA cross test", "AAPL", ALWAYS_LONG, qty=2.0))
     past = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
-    plugin._create_event({"title": "MA cross test", "start_iso": past, "recurrence": "5m"})
+    scheduler._create_event({"title": "MA cross test", "start_iso": past, "recurrence": "5m"})
 
-    results = dispatch_due_events(plugin, broker, record, store=store, fetch=_fetch)
+    results = dispatch_due_events(tc, broker, record, store=store, fetch=_fetch)
 
     assert [r["status"] for r in results] == ["opened"]
     fills = record.get_fills(strategy_id="MA cross test@v1")
     assert len(fills) == 1
     assert fills[0]["price"] > 0  # StubBrokerClient's real simulated price (S8), not a placeholder
     assert fills[0]["symbol"] == "AAPL"  # the spec's real ticker, not "SYMBOL"
-    assert plugin.list_due_events() == []  # idempotent -- won't re-fire immediately
+    assert scheduler.list_due_events() == []  # idempotent -- won't re-fire immediately
 
 
 def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, monkeypatch):
@@ -306,14 +370,15 @@ def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, m
         def _simulated_price(self, symbol):
             return self._scripted.pop(0) if self._scripted else super()._simulated_price(symbol)
 
-    plugin = _plugin(tmp_path)
+    scheduler = _plugin(tmp_path)
+    plugin = TradingControlPlugin(scheduler_plugin=scheduler)
     broker = ScriptedPriceBroker([50.0, 55.0])  # buy at 50, sell at 55
     record = _record(tmp_path, monkeypatch)
     lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("penny breakout", "PENNY", ALWAYS_LONG, qty=4.0))
     past = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
-    plugin._create_event({"title": "penny breakout", "start_iso": past, "recurrence": "5m"})
+    scheduler._create_event({"title": "penny breakout", "start_iso": past, "recurrence": "5m"})
 
     opened = dispatch_due_events(plugin, broker, record, lifecycle, store, fetch=_fetch)
     assert opened[0]["status"] == "opened"
@@ -324,8 +389,8 @@ def test_end_to_end_scheduled_strategy_buys_then_sells_with_real_pnl(tmp_path, m
     # and 6 minutes pass, so the recurring event is due again.
     store.save(StrategySpec("penny breakout", "PENNY", ALWAYS_FLAT, qty=4.0))
     stale = (datetime.now(timezone.utc) - timedelta(minutes=6)).strftime("%Y-%m-%dT%H:%M:%S")
-    plugin._con.execute("UPDATE events SET last_run_iso=?", (stale,))
-    plugin._con.commit()
+    scheduler._con.execute("UPDATE events SET last_run_iso=?", (stale,))
+    scheduler._con.commit()
 
     closed = dispatch_due_events(plugin, broker, record, lifecycle, store, fetch=_fetch)
 
@@ -358,11 +423,16 @@ def _trend_prices(n=200, seed=42):
     """A clean regime change (strong uptrend, then strong downtrend) -- a
     trend-following strategy should catch the reversal and keep its gains,
     clearly beating naive buy-and-hold of the same series through the whole
-    round trip. Deterministic and reliably VALIDATED with MA_CROSS_CODE."""
+    round trip. Deterministic and reliably VALIDATED with MA_CROSS_CODE.
+
+    noise=0.012 (was 0.008): #961's max_holding_period gate needs
+    MA_CROSS_CODE's crossovers to fire often enough that no single held
+    run exceeds 30 days -- the original lower-noise series let a single
+    ~90-day uptrend produce one continuous ~90-day hold."""
     import numpy as np
     rng = np.random.default_rng(seed)
-    up = rng.normal(0.004, 0.008, n // 2)
-    down = rng.normal(-0.004, 0.008, n - n // 2)
+    up = rng.normal(0.004, 0.012, n // 2)
+    down = rng.normal(-0.004, 0.012, n - n // 2)
     close = 100 * np.cumprod(1 + np.concatenate([up, down]))
     return pd.DataFrame({
         "Open": close, "High": close * 1.005, "Low": close * 0.995,
@@ -370,16 +440,22 @@ def _trend_prices(n=200, seed=42):
     })
 
 
+# fast=2/slow=5 (was 10/30): a slow crossover pair naturally holds one
+# trending run for its whole duration, which #961's max_holding_period
+# gate now rejects past 30 days. This faster pair, against the
+# higher-noise _trend_prices above, empirically validates with its
+# longest simulated trade at 26 days -- confirmed against the real
+# run_gauntlet pipeline, not just the vectorized approximation here.
 MA_CROSS_CODE = (
     "def strategy(data):\n"
-    "    fast = data['Close'].rolling(10).mean()\n"
-    "    slow = data['Close'].rolling(30).mean()\n"
+    "    fast = data['Close'].rolling(2).mean()\n"
+    "    slow = data['Close'].rolling(5).mean()\n"
     "    return (fast > slow).astype(int).tolist()\n"
 )
 
 
 async def test_run_gauntlet_requires_symbol_and_hypothesis(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     r = await plugin._run_gauntlet({"code": MA_CROSS_CODE})
     assert r.is_error
     assert "symbol" in r.content and "hypothesis" in r.content
@@ -388,14 +464,14 @@ async def test_run_gauntlet_requires_symbol_and_hypothesis(tmp_path):
 async def test_run_gauntlet_requires_code_or_an_idea_source(tmp_path):
     """S15b/#860: code is no longer the only way in -- but at least one
     of code/claim/book+chapter/url must be given."""
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     r = await plugin._run_gauntlet({"symbol": "AAPL", "hypothesis": "x"})
     assert r.is_error
     assert "code" in r.content
 
 
 async def test_run_gauntlet_validated_registers_spec_and_schedules_event(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
@@ -416,7 +492,7 @@ async def test_run_gauntlet_validated_registers_spec_and_schedules_event(tmp_pat
     assert spec is not None
     assert spec.symbol == "AAPL"
 
-    due = plugin.list_due_events()
+    due = plugin._scheduler.list_due_events()
     assert len(due) == 1
     assert due[0]["title"] == "MA cross trend test"
 
@@ -427,7 +503,9 @@ async def test_run_gauntlet_validated_event_actually_dispatches(tmp_path, monkey
     spec, the same chain S9/S10 already built."""
     from cerebral.trading.live_tick import dispatch_due_events
 
-    plugin = _plugin(tmp_path)
+    scheduler = SchedulerPlugin(db_path=str(tmp_path / "sched.db"))
+    ts = TradingStrategiesPlugin(scheduler=scheduler)
+    tc = TradingControlPlugin(scheduler_plugin=scheduler)
     store = StrategyStore(db_path=tmp_path / "specs.db")
     broker = StubBrokerClient()
     record = _record(tmp_path, monkeypatch)
@@ -435,13 +513,13 @@ async def test_run_gauntlet_validated_event_actually_dispatches(tmp_path, monkey
     def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
-    result = await plugin._run_gauntlet(
+    result = await ts._run_gauntlet(
         {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "MA cross trend test"},
         strategy_store=store, fetch=fetch,
     )
     assert json.loads(result.content)["verdict"] == "VALIDATED"
 
-    results = dispatch_due_events(plugin, broker, record, store=store, fetch=fetch)
+    results = dispatch_due_events(tc, broker, record, store=store, fetch=fetch)
 
     assert len(results) == 1
     assert results[0]["status"] in ("opened", "hold")  # depends on the signal at the last bar
@@ -449,7 +527,7 @@ async def test_run_gauntlet_validated_event_actually_dispatches(tmp_path, monkey
 
 
 async def test_run_gauntlet_unvalidated_schedules_nothing(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def flat_fetch(symbol, start, end, interval="1d"):
@@ -463,7 +541,7 @@ async def test_run_gauntlet_unvalidated_schedules_nothing(tmp_path):
 
     assert not result.is_error
     assert json.loads(result.content)["verdict"] == "UNVALIDATED"
-    assert plugin.list_due_events() == []
+    assert plugin._scheduler.list_due_events() == []
 
 
 async def test_run_gauntlet_generates_code_from_a_claim_via_the_router(tmp_path):
@@ -475,7 +553,7 @@ async def test_run_gauntlet_generates_code_from_a_claim_via_the_router(tmp_path)
             assert task_type == "coding"
             return MA_CROSS_CODE
 
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     plugin._router = FakeRouter()
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
@@ -491,13 +569,13 @@ async def test_run_gauntlet_generates_code_from_a_claim_via_the_router(tmp_path)
     assert json.loads(result.content)["verdict"] == "VALIDATED"
     spec = store.get("MA cross trend test")
     assert spec is not None
-    assert "rolling(10)" in spec.code  # the router's real output, not the stub
+    assert "rolling(2)" in spec.code  # the router's real output, not the stub
 
 
 async def test_run_gauntlet_claim_without_a_router_uses_the_stub(tmp_path):
     """No router configured (self._router is None, the default) must not
     crash -- to_strategy's own stub fallback handles it."""
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
@@ -510,6 +588,47 @@ async def test_run_gauntlet_claim_without_a_router_uses_the_stub(tmp_path):
 
     assert not result.is_error, result.content  # degrades to the stub, never crashes
     assert store.get("always flat") is None
+
+
+async def test_run_gauntlet_uses_computed_position_qty_instead_of_hardcoded_1_0(tmp_path, monkeypatch):
+    """S11b regression: capacity_liquidity gate previously received position_sizes=pd.Series([1.0]),
+    testing a notional wildly larger than the actual fractional order size. It must use the real
+    position_qty computed from max_per_trade_risk_pct / starting_capital / price."""
+    from unittest.mock import patch
+
+    plugin = _ts_plugin(tmp_path)
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    def fetch(symbol, start, end, interval="1d"):
+        return _trend_prices()
+
+    # Patch where it's USED (plugins.trading_strategies already did `from
+    # cerebral.trading.gauntlet import run_gauntlet` at module load, binding
+    # its own name in its own namespace), not where it's defined -- patching
+    # the origin module leaves trading_strategies.py's already-bound reference
+    # untouched, so the mock is never actually called.
+    with patch("plugins.trading_strategies.run_gauntlet") as mock_gauntlet:
+        mock_gauntlet.return_value = type("Card", (), {"verdict": "VALIDATED", "sharpe": 0.5, "total_return": 1.0, "gates": []})()
+
+        await plugin._run_gauntlet(
+            {"code": MA_CROSS_CODE, "symbol": "AAPL", "hypothesis": "Test position qty"},
+            strategy_store=store, fetch=fetch,
+        )
+
+        mock_gauntlet.assert_called_once()
+        position_sizes = mock_gauntlet.call_args.kwargs["position_sizes"]
+        
+        # Should be the computed fractional qty, not 1.0
+        expected_qty = position_sizes.iloc[0]
+        assert expected_qty != 1.0, f"position_sizes should be fractional, got {expected_qty}"
+        
+        # Verify it matches the exact computation in _run_gauntlet:
+        # (starting_capital * (risk_pct / 100.0)) / last_price
+        last_price = float(_trend_prices()["Close"].iloc[-1])
+        risk_pct = 2.0
+        starting_capital = 10000.0
+        expected = (starting_capital * (risk_pct / 100.0)) / last_price
+        assert expected == pytest.approx(expected_qty)
 
 
 # ── S17 (#862): edit_strategy / get_strategy_code ────────────────────────────
@@ -532,14 +651,22 @@ async def _register_ma_cross(plugin, store, fetch):
 
 
 async def test_edit_strategy_validated_records_a_new_version_and_moves_the_pointer(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     await _register_ma_cross(plugin, store, fetch)
-    edited_code = MA_CROSS_CODE.replace("rolling(10)", "rolling(9)")
+    # A real code edit, but behaviorally identical (a comment, not a window
+    # change) -- perturbing MA_CROSS_CODE's windows lands outside the
+    # narrow band that validates against _trend_prices under #961's new
+    # max_holding_period gate (confirmed empirically), so this test only
+    # needs to prove an edit's *different code* re-validates and moves the
+    # dispatch pointer, not that a different parameter also happens to.
+    edited_code = MA_CROSS_CODE.replace(
+        "return (fast > slow)", "# edited\n    return (fast > slow)"
+    )
 
     result = await plugin._edit_strategy(
         {"strategy_id": "MA cross trend test", "code": edited_code},
@@ -559,7 +686,7 @@ async def test_edit_strategy_validated_records_a_new_version_and_moves_the_point
 
 
 async def test_edit_strategy_unvalidated_does_not_move_the_dispatch_pointer(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
@@ -583,7 +710,7 @@ async def test_edit_strategy_unvalidated_does_not_move_the_dispatch_pointer(tmp_
 
 
 async def test_edit_strategy_requires_an_existing_strategy(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     result = await plugin._edit_strategy(
@@ -596,7 +723,7 @@ async def test_edit_strategy_requires_an_existing_strategy(tmp_path):
 
 
 async def test_get_strategy_code_returns_real_source_and_provenance(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
@@ -613,7 +740,7 @@ async def test_get_strategy_code_returns_real_source_and_provenance(tmp_path):
 
 
 def test_get_strategy_code_unknown_strategy_is_an_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     result = plugin._get_strategy_code({"strategy_id": "never registered"}, strategy_store=store)
@@ -664,15 +791,54 @@ def _web_search_hits(*hits):
 
 
 async def test_ensure_discovery_event_is_idempotent(tmp_path):
-    plugin = _plugin(tmp_path)
+    scheduler, disc = _disc_plugin(tmp_path)
 
-    plugin.ensure_discovery_event()
-    plugin.ensure_discovery_event()
+    disc.ensure_discovery_event()
+    disc.ensure_discovery_event()
 
-    events = plugin._con.execute(
-        "SELECT COUNT(*) FROM events WHERE title = ?", (plugin.DISCOVERY_EVENT_TITLE,)
+    events = scheduler._con.execute(
+        "SELECT COUNT(*) FROM events WHERE title = ?", (disc.DISCOVERY_EVENT_TITLE,)
     ).fetchone()[0]
     assert events == 1
+
+
+def test_ensure_design_system_event_is_idempotent(tmp_path):
+    scheduler = _plugin(tmp_path)
+    ds = _ds_plugin(tmp_path)
+
+    ds.ensure_design_system_event()
+    ds.ensure_design_system_event()
+
+    events = scheduler._con.execute(
+        "SELECT COUNT(*) FROM events WHERE title = ?", (ds.DESIGN_SYSTEM_EVENT_TITLE,)
+    ).fetchone()[0]
+    assert events == 1
+
+
+# ── 2026-09-08: base design system scan ─────────────────────────────────────
+
+async def test_scan_design_system_reports_a_real_violation(tmp_path):
+    plugin = _ds_plugin(tmp_path)
+    windows_dir = Path(__file__).resolve().parent.parent.parent / "tray" / "windows"
+    assert windows_dir.exists()  # sanity: this test reads the real tray/, not a fixture
+
+    result = await plugin.call_tool("scan_design_system", {})
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["violations"] == []  # the real codebase is clean as of this change
+
+
+async def test_design_system_autofix_toggle_defaults_off_and_persists(tmp_path):
+    plugin = _ds_plugin(tmp_path)
+    assert not plugin._settings.get("design_system_autofix_enabled")
+
+    r1 = await plugin.call_tool("start_design_system_autofix", {})
+    assert json.loads(r1.content) == {"enabled": True}
+    assert plugin._settings.get("design_system_autofix_enabled") is True
+
+    r2 = await plugin.call_tool("stop_design_system_autofix", {})
+    assert json.loads(r2.content) == {"enabled": False}
+    assert plugin._settings.get("design_system_autofix_enabled") is False
 
 
 async def test_ticker_specific_idea_reaches_run_gauntlet_with_origin_discovered(tmp_path):
@@ -685,16 +851,13 @@ async def test_ticker_specific_idea_reaches_run_gauntlet_with_origin_discovered(
         return _trend_prices()
 
     router = FakeRouterReturningCode()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/aapl-earnings",
-            "title": "AAPL beats on strong earnings",
-            "snippet": "AAPL tends to rally after a strong earnings beat.",
-        }),
-    )
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/aapl-earnings",
+        "title": "AAPL beats on strong earnings",
+        "snippet": "AAPL tends to rally after a strong earnings beat.",
+    }))
 
-    result = await plugin._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
+    result = await disc._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
@@ -716,26 +879,23 @@ async def test_ticker_specific_idea_reaches_run_gauntlet_with_origin_discovered(
 
 async def test_run_discovery_persists_the_attempt_outcome(tmp_path):
     """S30/#894: the real gauntlet outcome must land in
-    plugin._discovery_attempts, not just get counted and discarded."""
+    disc._discovery_attempts, not just get counted and discarded."""
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
         return _trend_prices()
 
     router = FakeRouterReturningCode()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/aapl-earnings",
-            "title": "AAPL beats on strong earnings",
-            "snippet": "AAPL tends to rally after a strong earnings beat.",
-        }),
-    )
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/aapl-earnings",
+        "title": "AAPL beats on strong earnings",
+        "snippet": "AAPL tends to rally after a strong earnings beat.",
+    }))
 
-    result = await plugin._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
+    result = await disc._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
-    latest = plugin._discovery_attempts.get_latest("AAPL")
+    latest = disc._discovery_attempts.get_latest("AAPL")
     assert latest is not None
     assert latest["verdict"] == "VALIDATED"
 
@@ -747,21 +907,18 @@ async def test_pattern_general_idea_is_screened_and_accepted_reaches_gauntlet(tm
         return _trend_prices()
 
     router = AcceptingRouter()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/mean-reversion",
-            "title": "A mean-reversion pattern in equities",
-            "snippet": "Stocks that fall 3 days in a row tend to bounce.",
-        }),
-    )
-    plugin._discovery_watchlist.upsert("MSFT")
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/mean-reversion",
+        "title": "A mean-reversion pattern in equities",
+        "snippet": "Stocks that fall 3 days in a row tend to bounce.",
+    }))
+    disc._discovery_watchlist.upsert("MSFT")
     # Isolate from the known-liquid overflow (2026-08-26 fix, see
     # discovery.py's prefilter_candidates) -- this test only cares that
     # MSFT specifically reaches the gauntlet, not how wide the pool is.
-    plugin._settings.set("discovery_candidate_limit", 1)
+    disc._settings.set("discovery_candidate_limit", 1)
 
-    result = await plugin._run_discovery({"queries": ["mean reversion pattern"]}, strategy_store=store, fetch=fetch)
+    result = await disc._run_discovery({"queries": ["mean reversion pattern"]}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
@@ -777,24 +934,21 @@ async def test_pattern_general_idea_is_screened_and_accepted_reaches_gauntlet(tm
 
 async def test_rejected_pattern_idea_never_reaches_run_gauntlet(tmp_path):
     """The acceptance test #880 names explicitly, exercised at the real
-    SchedulerPlugin level (not just discovery.py's own unit test)."""
+    DiscoveryPlugin level (not just discovery.py's own unit test)."""
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
         raise AssertionError("fetch must never be called -- the idea was rejected")
 
     router = RejectingRouter()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/vague",
-            "title": "Markets go up sometimes",
-            "snippet": "Good companies tend to do well over time.",
-        }),
-    )
-    plugin._discovery_watchlist.upsert("MSFT")
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/vague",
+        "title": "Markets go up sometimes",
+        "snippet": "Good companies tend to do well over time.",
+    }))
+    disc._discovery_watchlist.upsert("MSFT")
 
-    result = await plugin._run_discovery({}, strategy_store=store, fetch=fetch)
+    result = await disc._run_discovery({}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
     data = json.loads(result.content)
@@ -814,17 +968,15 @@ async def test_both_accepted_and_rejected_ideas_log_to_the_activity_log(tmp_path
         logged.append((kind, content))
 
     router = RejectingRouter()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        record_activity_fn=record_activity,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/vague",
-            "title": "Markets go up sometimes",
-            "snippet": "Good companies tend to do well over time.",
-        }),
-    )
+    _, disc = _disc_plugin(tmp_path, router=router,
+                           record_activity_fn=record_activity,
+                           web_search_fn=_web_search_hits({
+                               "url": "https://example.com/vague",
+                               "title": "Markets go up sometimes",
+                               "snippet": "Good companies tend to do well over time.",
+                           }))
 
-    await plugin._run_discovery({"queries": ["vague claim"]}, strategy_store=store, fetch=fetch)
+    await disc._run_discovery({"queries": ["vague claim"]}, strategy_store=store, fetch=fetch)
 
     assert len(logged) == 1
     kind, content = logged[0]
@@ -839,9 +991,9 @@ async def test_run_discovery_uses_default_queries_when_none_given(tmp_path):
         calls.append(query)
         return []
 
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), web_search_fn=web_search)
+    _, disc = _disc_plugin(tmp_path, web_search_fn=web_search)
 
-    result = await plugin._run_discovery({})
+    result = await disc._run_discovery({})
 
     assert not result.is_error
     assert len(calls) >= 1  # a real default query list was used, not empty
@@ -854,9 +1006,9 @@ async def test_run_discovery_accepts_explicit_queries(tmp_path):
         calls.append(query)
         return []
 
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), web_search_fn=web_search)
+    _, disc = _disc_plugin(tmp_path, web_search_fn=web_search)
 
-    await plugin._run_discovery({"queries": ["my custom query"]})
+    await disc._run_discovery({"queries": ["my custom query"]})
 
     assert calls == ["my custom query"]
 
@@ -871,23 +1023,25 @@ async def test_run_discovery_defaults_to_a_day_trading_interval(tmp_path):
     seen_intervals = []
 
     def fetch(symbol, start, end, interval="1d"):
-        seen_intervals.append(interval)
+        seen_intervals.append((symbol, interval))
         return _trend_prices()
 
     router = FakeRouterReturningCode()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/aapl-earnings",
-            "title": "AAPL beats on strong earnings",
-            "snippet": "AAPL tends to rally after a strong earnings beat.",
-        }),
-    )
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/aapl-earnings",
+        "title": "AAPL beats on strong earnings",
+        "snippet": "AAPL tends to rally after a strong earnings beat.",
+    }))
 
-    result = await plugin._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
+    result = await disc._run_discovery({"queries": ["aapl earnings"]}, strategy_store=store, fetch=fetch)
 
     assert not result.is_error, result.content
-    assert seen_intervals == ["15m"]
+    # DD3/DD5 (ticker discovery) added a dynamic-universe/liquidity-ranking
+    # pass ahead of the per-idea gauntlet dispatch, which legitimately fetches
+    # many symbols at the default "1d" via this same injected `fetch` --
+    # unrelated to the discovered idea's own interval. Check the actual
+    # gauntlet-dispatched AAPL fetch specifically, not the full call list.
+    assert ("AAPL", "15m") in seen_intervals
 
 
 async def test_run_discovery_accepts_an_explicit_interval_override(tmp_path):
@@ -895,25 +1049,54 @@ async def test_run_discovery_accepts_an_explicit_interval_override(tmp_path):
     seen_intervals = []
 
     def fetch(symbol, start, end, interval="1d"):
-        seen_intervals.append(interval)
+        seen_intervals.append((symbol, interval))
         return _trend_prices()
 
     router = FakeRouterReturningCode()
-    plugin = SchedulerPlugin(
-        db_path=str(tmp_path / "sched.db"), router=router,
-        web_search_fn=_web_search_hits({
-            "url": "https://example.com/aapl-earnings",
-            "title": "AAPL beats on strong earnings",
-            "snippet": "AAPL tends to rally after a strong earnings beat.",
-        }),
-    )
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/aapl-earnings",
+        "title": "AAPL beats on strong earnings",
+        "snippet": "AAPL tends to rally after a strong earnings beat.",
+    }))
 
-    result = await plugin._run_discovery(
+    result = await disc._run_discovery(
         {"queries": ["aapl earnings"], "interval": "5m"}, strategy_store=store, fetch=fetch,
     )
 
     assert not result.is_error, result.content
-    assert seen_intervals == ["5m"]
+    # See the sibling default-interval test above for why this checks
+    # membership rather than the full call list.
+    assert ("AAPL", "5m") in seen_intervals
+
+
+async def test_run_discovery_prefers_the_claims_own_detected_interval(tmp_path):
+    """#1272: _source_ideas (the REAL Idea-construction site _run_discovery
+    uses -- extract_from_url is a separate crawler utility not actually
+    called from this path) must set Idea.interval from the search hit's
+    own snippet, and run_gauntlet_fn must prefer that per-claim value over
+    the run-level default. Snippet says "1 hour chart" -- must win over
+    the run-level "15m" default, proving per-claim inference takes
+    priority rather than always falling back."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+    seen_intervals = []
+
+    def fetch(symbol, start, end, interval="1d"):
+        seen_intervals.append((symbol, interval))
+        return _trend_prices()
+
+    router = FakeRouterReturningCode()
+    _, disc = _disc_plugin(tmp_path, router=router, web_search_fn=_web_search_hits({
+        "url": "https://example.com/aapl-breakout",
+        "title": "AAPL breakout",
+        "snippet": "AAPL breaks out on the 1 hour chart after consolidation.",
+    }))
+
+    result = await disc._run_discovery(
+        {"queries": ["aapl breakout"]}, strategy_store=store, fetch=fetch,
+    )
+
+    assert not result.is_error, result.content
+    assert ("AAPL", "1h") in seen_intervals
 
 
 # ── S31 (#896): manual discovery start/stop + duration ────────────────────
@@ -922,24 +1105,24 @@ def test_discovery_defaults_to_disabled(tmp_path):
     """discovery_enabled defaults False -- discovery does NOT run on its
     own until explicitly started (the intended behavior change from
     "always on once the underlying scheduler-loop bug is fixed")."""
-    plugin = _plugin(tmp_path)
-    status = json.loads(plugin._get_discovery_status({}).content)
+    _, disc = _disc_plugin(tmp_path)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["enabled"] is False
 
 
 def test_start_discovery_with_no_args_enables_indefinitely(tmp_path):
-    plugin = _plugin(tmp_path)
-    result = plugin._start_discovery({})
+    _, disc = _disc_plugin(tmp_path)
+    result = disc._start_discovery({})
     status = json.loads(result.content)
     assert status["enabled"] is True
     assert status["stop_at"] == ""
 
 
 def test_start_discovery_with_duration_sets_a_real_stop_at(tmp_path):
-    plugin = _plugin(tmp_path)
+    _, disc = _disc_plugin(tmp_path)
     before = datetime.now(timezone.utc)
 
-    result = plugin._start_discovery({"duration_hours": 2})
+    result = disc._start_discovery({"duration_hours": 2})
 
     status = json.loads(result.content)
     assert status["enabled"] is True
@@ -950,10 +1133,10 @@ def test_start_discovery_with_duration_sets_a_real_stop_at(tmp_path):
 
 
 def test_start_discovery_stores_custom_queries_and_interval(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin._start_discovery({"queries": ["5 minute ORB strategy"], "interval": "5m"})
+    _, disc = _disc_plugin(tmp_path)
+    disc._start_discovery({"queries": ["5 minute ORB strategy"], "interval": "5m"})
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["queries"] == ["5 minute ORB strategy"]
     assert status["interval"] == "5m"
 
@@ -961,38 +1144,38 @@ def test_start_discovery_stores_custom_queries_and_interval(tmp_path):
 def test_start_discovery_with_empty_queries_leaves_existing_value_alone(tmp_path):
     """Empty queries/interval on start_discovery must not reset an already-
     customized value back to the built-in default -- #896's own scope note."""
-    plugin = _plugin(tmp_path)
-    plugin._start_discovery({"queries": ["day trading momentum"], "interval": "5m"})
+    _, disc = _disc_plugin(tmp_path)
+    disc._start_discovery({"queries": ["day trading momentum"], "interval": "5m"})
 
-    plugin._start_discovery({})  # re-enable with no overrides
+    disc._start_discovery({})  # re-enable with no overrides
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["queries"] == ["day trading momentum"]
     assert status["interval"] == "5m"
 
 
 def test_start_discovery_defaults_candidate_limit_to_10(tmp_path):
-    plugin = _plugin(tmp_path)
-    result = plugin._start_discovery({})
+    _, disc = _disc_plugin(tmp_path)
+    result = disc._start_discovery({})
     status = json.loads(result.content)
     assert status["candidate_limit"] == 10
 
 
 def test_start_discovery_stores_custom_candidate_limit(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin._start_discovery({"candidate_limit": 25})
+    _, disc = _disc_plugin(tmp_path)
+    disc._start_discovery({"candidate_limit": 25})
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["candidate_limit"] == 25
 
 
 def test_start_discovery_with_no_candidate_limit_leaves_existing_value_alone(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin._start_discovery({"candidate_limit": 25})
+    _, disc = _disc_plugin(tmp_path)
+    disc._start_discovery({"candidate_limit": 25})
 
-    plugin._start_discovery({})  # re-enable with no overrides
+    disc._start_discovery({})  # re-enable with no overrides
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["candidate_limit"] == 25
 
 
@@ -1001,19 +1184,35 @@ def test_get_discovery_status_reports_scheduler_heartbeat(tmp_path):
     itself has found anything due -- see scheduler_heartbeat's comment in
     settings.py for why this was added (found live 2026-08-26: the loop
     silently stopped ticking overnight with no visible error anywhere)."""
-    plugin = _plugin(tmp_path)
-    plugin._settings.set("scheduler_heartbeat", "2026-08-26T02:14:56+00:00")
+    _, disc = _disc_plugin(tmp_path)
+    disc._settings.set("scheduler_heartbeat", "2026-08-26T02:14:56+00:00")
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
 
     assert status["scheduler_heartbeat"] == "2026-08-26T02:14:56+00:00"
 
 
-def test_stop_discovery_disables_and_clears_stop_at(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin._start_discovery({"duration_hours": 4})
+async def test_get_discovery_source_performance_tool_works(tmp_path):
+    from cerebral.trading.discovery import DiscoveryAttempts
+    a = DiscoveryAttempts(db_path=tmp_path / "attempts.db")
+    a.record("TICKER1", "VALIDATED", idea_url="https://fool.com/pick1")
+    a.record("TICKER2", "UNVALIDATED", idea_url="https://fool.com/pick2")
 
-    result = plugin._stop_discovery({})
+    _, disc = _disc_plugin(tmp_path, discovery_attempts=a)
+
+    result = await disc.call_tool("get_discovery_source_performance", {})
+    assert not result.is_error
+    data = json.loads(result.content)
+    assert data["fool.com"]["validated"] == 1
+    assert data["fool.com"]["unvalidated"] == 1
+    assert data["fool.com"]["total"] == 2
+
+
+def test_stop_discovery_disables_and_clears_stop_at(tmp_path):
+    _, disc = _disc_plugin(tmp_path)
+    disc._start_discovery({"duration_hours": 4})
+
+    result = disc._stop_discovery({})
 
     status = json.loads(result.content)
     assert status["enabled"] is False
@@ -1021,11 +1220,11 @@ def test_stop_discovery_disables_and_clears_stop_at(tmp_path):
 
 
 def test_get_discovery_status_reflects_real_settings_store_state(tmp_path):
-    plugin = _plugin(tmp_path)
-    plugin._settings.set("discovery_enabled", True)
-    plugin._settings.set("discovery_interval", "1m")
+    _, disc = _disc_plugin(tmp_path)
+    disc._settings.set("discovery_enabled", True)
+    disc._settings.set("discovery_interval", "1m")
 
-    status = json.loads(plugin._get_discovery_status({}).content)
+    status = json.loads(disc._get_discovery_status({}).content)
     assert status["enabled"] is True
     assert status["interval"] == "1m"
 
@@ -1039,21 +1238,21 @@ def test_settings_injection_isolates_from_the_real_production_file(tmp_path):
     make a content-based assertion flaky for reasons having nothing to do
     with this isolation)."""
     from cerebral.settings import _SETTINGS_PATH
-    plugin = _plugin(tmp_path)
+    _, disc = _disc_plugin(tmp_path)
 
-    assert plugin._settings._path != _SETTINGS_PATH
-    assert plugin._settings._path == tmp_path / "felix-settings.json"
+    assert disc._settings._path != _SETTINGS_PATH
+    assert disc._settings._path == tmp_path / "felix-settings.json"
 
 
 def test_start_stop_trading_tools_exist_in_list_tools(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     tool_names = [t.name for t in plugin.list_tools()]
     assert "start_trading" in tool_names
     assert "stop_trading" in tool_names
 
 
 def test_start_trading_enables_paper_trading(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     result = plugin._start_trading({})
     assert not result.is_error
     assert json.loads(result.content) == {"enabled": True}
@@ -1061,7 +1260,7 @@ def test_start_trading_enables_paper_trading(tmp_path):
 
 
 def test_stop_trading_disables_paper_trading(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     result = plugin._stop_trading({})
     assert not result.is_error
     assert json.loads(result.content) == {"enabled": False}
@@ -1069,20 +1268,20 @@ def test_stop_trading_disables_paper_trading(tmp_path):
 
 
 def test_reset_paper_trading_tool_exists_in_list_tools(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     tool_names = [t.name for t in plugin.list_tools()]
     assert "reset_paper_trading" in tool_names
 
 
 async def test_reset_paper_trading_unwired_returns_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     assert plugin._reset_paper_fn is None
     result = await plugin.call_tool("reset_paper_trading", {})
     assert result.is_error
 
 
 async def test_reset_paper_trading_invokes_a_sync_seam(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     calls = []
     plugin._reset_paper_fn = lambda: calls.append(1) or {"archived": True, "fills": 3}
     result = await plugin.call_tool("reset_paper_trading", {})
@@ -1092,7 +1291,7 @@ async def test_reset_paper_trading_invokes_a_sync_seam(tmp_path):
 
 
 async def test_reset_paper_trading_invokes_an_async_seam(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     calls = []
 
     async def fake_reset():
@@ -1107,27 +1306,27 @@ async def test_reset_paper_trading_invokes_an_async_seam(tmp_path):
 
 
 def test_get_paper_archive_fills_tool_exists_in_list_tools(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     tool_names = [t.name for t in plugin.list_tools()]
     assert "get_paper_archive_fills" in tool_names
 
 
 async def test_get_paper_archive_fills_unwired_returns_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     assert plugin._get_paper_archive_fills_fn is None
     result = await plugin.call_tool("get_paper_archive_fills", {"archive_id": 1})
     assert result.is_error
 
 
 async def test_get_paper_archive_fills_requires_archive_id(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     plugin._get_paper_archive_fills_fn = lambda archive_id: []
     result = await plugin.call_tool("get_paper_archive_fills", {})
     assert result.is_error
 
 
 async def test_get_paper_archive_fills_invokes_seam_with_archive_id(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _tc_plugin(tmp_path)
     calls = []
     fake_fills = [{"symbol": "AAPL", "qty": 1}]
     plugin._get_paper_archive_fills_fn = lambda archive_id: calls.append(archive_id) or fake_fills
@@ -1172,7 +1371,7 @@ async def test_upload_book_extracts_and_dispatches_a_claim(tmp_path):
         return _trend_prices()
 
     router = BookRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book(
         {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
@@ -1202,8 +1401,35 @@ async def test_upload_book_extracts_and_dispatches_a_claim(tmp_path):
     assert version["origin"] == "discovered"
 
 
+async def test_upload_book_stores_and_lists_the_given_category(tmp_path):
+    router = BookRouter([])  # NONE every chunk -- category storage doesn't need real claims
+    plugin = _book_plugin(tmp_path, router=router)
+    result = await plugin._upload_book({
+        "filename": "wizards.txt", "data_base64": _b64("Some book content."),
+        "category": "trading psychology",
+    })
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+
+    books = json.loads(plugin._list_books({}).content)
+    book = next(b for b in books if b["id"] == book_id)
+    assert book["category"] == "trading psychology"
+
+
+async def test_upload_book_with_no_category_defaults_to_uncategorised(tmp_path):
+    router = BookRouter([])
+    plugin = _book_plugin(tmp_path, router=router)
+    result = await plugin._upload_book({"filename": "wizards.txt", "data_base64": _b64("content")})
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+
+    books = json.loads(plugin._list_books({}).content)
+    book = next(b for b in books if b["id"] == book_id)
+    assert book["category"] == "Uncategorised"
+
+
 async def test_upload_book_requires_filename_and_data(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = await plugin._upload_book({})
 
@@ -1211,7 +1437,7 @@ async def test_upload_book_requires_filename_and_data(tmp_path):
 
 
 async def test_upload_book_rejects_invalid_base64(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = await plugin._upload_book({"filename": "a.txt", "data_base64": "not-valid-base64!!"})
 
@@ -1219,7 +1445,7 @@ async def test_upload_book_rejects_invalid_base64(tmp_path):
 
 
 async def test_upload_book_rejects_a_file_with_no_extractable_text(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = await plugin._upload_book({"filename": "book.epub", "data_base64": _b64("whatever")})
 
@@ -1230,7 +1456,7 @@ async def test_upload_book_rejects_a_file_with_no_extractable_text(tmp_path):
 async def test_upload_book_with_no_claims_still_completes(tmp_path):
     store = StrategyStore(db_path=tmp_path / "specs.db")
     router = BookRouter([])  # NONE every chunk
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book(
         {"filename": "empty.txt", "data_base64": _b64("Dry narrative, no claims here.")},
@@ -1249,7 +1475,7 @@ async def test_upload_book_with_no_claims_still_completes(tmp_path):
 
 async def test_list_books_orders_newest_first(tmp_path):
     store = StrategyStore(db_path=tmp_path / "specs.db")
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=BookRouter([]))
+    plugin = _book_plugin(tmp_path, router=BookRouter([]))
 
     r1 = await plugin._upload_book({"filename": "first.txt", "data_base64": _b64("first book text")}, strategy_store=store)
     await plugin._book_tasks[json.loads(r1.content)["book_id"]]
@@ -1282,7 +1508,7 @@ class BlockingRouter(BookRouter):
 
 async def test_stop_book_cancels_the_running_task(tmp_path):
     router = BlockingRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
     book_id = json.loads(result.content)["book_id"]
@@ -1296,10 +1522,61 @@ async def test_stop_book_cancels_the_running_task(tmp_path):
     assert plugin._book_store.get(book_id).status == "stopped"
 
 
+class ConcurrencyTrackingRouter(BookRouter):
+    """Tracks how many .complete() calls are concurrently in flight, each
+    blocked on a shared gate until the test releases it -- proves at most
+    one book's chunk is ever being sent to the LLM at a time (ADR-0028 rule
+    5: the endpoint is singular, background book ingestion must not pile up
+    concurrent requests against it)."""
+    def __init__(self, claims):
+        super().__init__(claims)
+        self.gate = asyncio.Event()
+        self.concurrent = 0
+        self.max_concurrent = 0
+
+    async def complete(self, prompt: str, task_type: str) -> str:
+        self.concurrent += 1
+        self.max_concurrent = max(self.max_concurrent, self.concurrent)
+        try:
+            await self.gate.wait()
+            return await super().complete(prompt, task_type)
+        finally:
+            self.concurrent -= 1
+
+
+async def test_only_one_book_ingests_at_a_time(tmp_path):
+    router = ConcurrencyTrackingRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = _book_plugin(tmp_path, router=router)
+
+    r1 = await plugin._upload_book({"filename": "a.txt", "data_base64": _b64("Book A content.")})
+    id1 = json.loads(r1.content)["book_id"]
+    task1 = plugin._book_tasks[id1]
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert router.concurrent == 1  # book A's chunk is inside .complete(), blocked on the gate
+
+    r2 = await plugin._upload_book({"filename": "b.txt", "data_base64": _b64("Book B content.")})
+    id2 = json.loads(r2.content)["book_id"]
+    task2 = plugin._book_tasks[id2]
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # Book B's task exists (queued in _book_tasks) but is stuck waiting on
+    # the ingest semaphore -- it must NOT have reached .complete() yet.
+    assert router.concurrent == 1
+
+    router.gate.set()  # release both -- A finishes, then B gets its turn
+    await task1
+    await task2
+
+    assert router.max_concurrent == 1
+    assert plugin._book_store.get(id1).status == "done"
+    assert plugin._book_store.get(id2).status == "done"
+
+
 async def test_stop_book_marks_an_orphaned_processing_book_as_stopped(tmp_path):
     """No entry in _book_tasks -- simulates a book left stuck at
     'processing' by a Cerebral restart that lost the in-memory task."""
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Orphaned", "o.txt", "/tmp/o.txt")
     plugin._book_store.set_total_chunks(book.id, 5)
     plugin._book_store.update_progress(book.id, 2, 0)
@@ -1311,7 +1588,7 @@ async def test_stop_book_marks_an_orphaned_processing_book_as_stopped(tmp_path):
 
 
 async def test_stop_book_unknown_id_is_an_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = plugin._stop_book({"book_id": 9999})
 
@@ -1325,7 +1602,7 @@ async def test_retry_book_reprocesses_from_scratch(tmp_path):
         return _trend_prices()
 
     router = BookRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book(
         {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
@@ -1346,7 +1623,7 @@ async def test_retry_book_reprocesses_from_scratch(tmp_path):
 
 
 async def test_retry_book_errors_when_the_stored_file_is_gone(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Missing File", "m.txt", str(tmp_path / "does_not_exist.txt"))
 
     result = await plugin._retry_book({"book_id": book.id})
@@ -1356,7 +1633,7 @@ async def test_retry_book_errors_when_the_stored_file_is_gone(tmp_path):
 
 
 async def test_retry_book_unknown_id_is_an_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = await plugin._retry_book({"book_id": 9999})
 
@@ -1370,7 +1647,7 @@ async def test_retry_book_is_not_clobbered_by_the_superseded_tasks_late_completi
     'current' and skip writing terminal state, or its late cancellation
     settling could clobber the new run's fresh status."""
     router = BlockingRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
     book_id = json.loads(result.content)["book_id"]
@@ -1410,7 +1687,7 @@ async def test_resume_book_continues_from_processed_chunks_not_zero(tmp_path):
         return _trend_prices()
 
     router = BookRouter(["AAPL tends to rally after strong earnings beats."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book(
         {"filename": "book.txt", "data_base64": _b64(_multi_chunk_text(3))},
@@ -1440,7 +1717,7 @@ async def test_resume_book_continues_from_processed_chunks_not_zero(tmp_path):
 
 
 async def test_resume_book_rejects_a_book_that_is_not_stopped(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Active Book", "a.txt", "/a.txt")
     plugin._book_store.set_total_chunks(book.id, 5)  # leaves status "processing"
 
@@ -1451,7 +1728,7 @@ async def test_resume_book_rejects_a_book_that_is_not_stopped(tmp_path):
 
 
 async def test_resume_book_unknown_id_is_an_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = await plugin._resume_book({"book_id": 9999})
 
@@ -1459,7 +1736,7 @@ async def test_resume_book_unknown_id_is_an_error(tmp_path):
 
 
 async def test_resume_book_errors_when_the_stored_file_is_gone(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Missing File", "m.txt", str(tmp_path / "does_not_exist.txt"))
     plugin._book_store.set_total_chunks(book.id, 3)
     plugin._book_store.set_stopped(book.id)
@@ -1474,7 +1751,7 @@ async def test_resume_book_refuses_on_a_chunk_count_mismatch(tmp_path):
     """If re-chunking the stored file today doesn't reproduce the same
     total_chunks recorded when the book was first processed, resuming by
     index would silently misalign -- must refuse, not guess."""
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     stored = tmp_path / "book.txt"
     stored.write_bytes(_multi_chunk_text(3).encode("utf-8"))
     book = plugin._book_store.add("Drifted Book", "book.txt", str(stored))
@@ -1491,7 +1768,7 @@ async def test_resume_book_with_nothing_remaining_marks_it_done(tmp_path):
     """processed_chunks already >= total_chunks (shouldn't normally
     happen, but a stray Stop click could land here) -- resume should just
     settle the book as done, not launch a no-op ingestion task."""
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     stored = tmp_path / "book.txt"
     stored.write_bytes(_multi_chunk_text(3).encode("utf-8"))
     book = plugin._book_store.add("Fully Processed", "book.txt", str(stored))
@@ -1511,7 +1788,7 @@ async def test_stop_book_on_an_already_done_book_is_an_error_and_does_not_change
     """Regression: this used to silently overwrite a finished book's
     status to 'stopped' -- found live 2026-08-27/28, hand-corrected via
     direct DB calls both times it happened."""
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Finished Book", "f.txt", "/f.txt")
     plugin._book_store.set_total_chunks(book.id, 5)
     plugin._book_store.update_progress(book.id, 5, 3)
@@ -1525,7 +1802,7 @@ async def test_stop_book_on_an_already_done_book_is_an_error_and_does_not_change
 
 
 async def test_stop_book_on_an_already_errored_book_is_an_error_and_does_not_change_status(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
     book = plugin._book_store.add("Errored Book", "e.txt", "/e.txt")
     plugin._book_store.set_error(book.id, "some failure")
 
@@ -1537,7 +1814,7 @@ async def test_stop_book_on_an_already_errored_book_is_an_error_and_does_not_cha
 
 async def test_delete_book_removes_the_record_and_the_stored_file(tmp_path):
     router = BookRouter([])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
     book_id = json.loads(result.content)["book_id"]
@@ -1554,7 +1831,7 @@ async def test_delete_book_removes_the_record_and_the_stored_file(tmp_path):
 
 async def test_delete_book_cancels_an_in_progress_task(tmp_path):
     router = BlockingRouter(["Some claim about AAPL."])
-    plugin = SchedulerPlugin(db_path=str(tmp_path / "sched.db"), router=router)
+    plugin = _book_plugin(tmp_path, router=router)
 
     result = await plugin._upload_book({"filename": "book.txt", "data_base64": _b64("Some content.")})
     book_id = json.loads(result.content)["book_id"]
@@ -1569,7 +1846,7 @@ async def test_delete_book_cancels_an_in_progress_task(tmp_path):
 
 
 async def test_delete_book_unknown_id_is_an_error(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _book_plugin(tmp_path)
 
     result = plugin._delete_book({"book_id": 9999})
 
@@ -1583,7 +1860,7 @@ async def test_delete_book_unknown_id_is_an_error(tmp_path):
 # one the same way.
 
 def test_halt_strategy_requires_strategy_id(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     plugin._lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
 
     result = plugin._halt_strategy({})
@@ -1592,7 +1869,7 @@ def test_halt_strategy_requires_strategy_id(tmp_path):
 
 
 def test_halt_strategy_without_a_wired_lifecycle_is_an_error(tmp_path):
-    plugin = _plugin(tmp_path)  # _lifecycle left at its None default
+    plugin = _ts_plugin(tmp_path)  # _lifecycle left at its None default
 
     result = plugin._halt_strategy({"strategy_id": "s1"})
 
@@ -1600,7 +1877,7 @@ def test_halt_strategy_without_a_wired_lifecycle_is_an_error(tmp_path):
 
 
 def test_halt_strategy_sets_status_to_halted(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     plugin._lifecycle = lifecycle
     lifecycle.get_state("s1")  # create it, default "paper"
@@ -1612,7 +1889,7 @@ def test_halt_strategy_sets_status_to_halted(tmp_path):
 
 
 def test_halt_strategy_triggers_on_trading_change(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     plugin._lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     calls = []
     plugin._on_trading_change = lambda: calls.append(1)
@@ -1623,7 +1900,7 @@ def test_halt_strategy_triggers_on_trading_change(tmp_path):
 
 
 def test_resume_strategy_requires_strategy_id(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     plugin._lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
 
     result = plugin._resume_strategy({})
@@ -1632,7 +1909,7 @@ def test_resume_strategy_requires_strategy_id(tmp_path):
 
 
 def test_resume_strategy_rejects_a_strategy_that_is_not_halted(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     plugin._lifecycle = lifecycle
     lifecycle.get_state("s1")  # default "paper", never halted
@@ -1644,7 +1921,7 @@ def test_resume_strategy_rejects_a_strategy_that_is_not_halted(tmp_path):
 
 
 def test_resume_strategy_goes_back_to_paper(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     plugin._lifecycle = lifecycle
     lifecycle.halt_strategy("s1")
@@ -1658,7 +1935,7 @@ def test_resume_strategy_goes_back_to_paper(tmp_path):
 # ── S43 (#932 blocked): auto_combine_strategies ──────────────────────────────
 
 async def test_auto_combine_strategies_fewer_than_2_eligible(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
     store.save(StrategySpec("S2", "AAPL", ALWAYS_LONG, qty=1.0))
@@ -1675,7 +1952,7 @@ async def test_auto_combine_strategies_fewer_than_2_eligible(tmp_path, monkeypat
 
 
 async def test_auto_combine_strategies_selects_top_3_by_weight(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("S_low", "AAPL", ALWAYS_LONG, qty=1.0))
     store.save(StrategySpec("S_mid", "AAPL", ALWAYS_LONG, qty=1.0))
@@ -1708,7 +1985,7 @@ async def test_auto_combine_strategies_selects_top_3_by_weight(tmp_path, monkeyp
 
 
 async def test_auto_combine_strategies_keeps_better_mode(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
     store.save(StrategySpec("S2", "AAPL", ALWAYS_LONG, qty=1.0))
@@ -1736,7 +2013,7 @@ async def test_auto_combine_strategies_keeps_better_mode(tmp_path, monkeypatch):
 
 
 async def test_auto_combine_strategies_prefers_validated_over_return(tmp_path, monkeypatch):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
     store.save(StrategySpec("S2", "AAPL", ALWAYS_LONG, qty=1.0))
@@ -1772,7 +2049,7 @@ async def test_auto_combine_strategies_deletes_the_losing_composite(tmp_path, mo
     the loser was never actually removed; only the acceptance criterion this
     covers. Now real: _run_mix_strategies surfaces its own strategy_id, and
     StrategyStore.delete really removes the row."""
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
     store.save(StrategySpec("S2", "AAPL", ALWAYS_LONG, qty=1.0))
@@ -1818,7 +2095,7 @@ async def test_run_gauntlet_returns_explicit_strategy_id(tmp_path, monkeypatch):
     args, which _run_gauntlet never reads, so it silently exercised the
     derived-from-hypothesis path instead of the explicit one it claimed to
     test. Fixed to match the function's real calling convention."""
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
@@ -1835,7 +2112,7 @@ async def test_run_gauntlet_returns_explicit_strategy_id(tmp_path, monkeypatch):
 
 async def test_run_gauntlet_returns_derived_strategy_id(tmp_path, monkeypatch):
     """S48: _run_gauntlet derives strategy_id from hypothesis when none is passed."""
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     store = StrategyStore(db_path=tmp_path / "specs.db")
 
     def fetch(symbol, start, end, interval="1d"):
@@ -1853,8 +2130,9 @@ async def test_run_gauntlet_returns_derived_strategy_id(tmp_path, monkeypatch):
 # ── S44: Activity Log entries for expand_strategy_ticker / auto_combine_strategies ──
 
 async def test_expand_strategy_ticker_logs_one_activity_entry_on_dispatch(tmp_path, monkeypatch):
-    """S44: _expand_strategy_ticker records one activity entry per invocation
-    (not per candidate) with strategy_id, attempted tickers, and their verdicts."""
+    """S44/Slice X: _expand_strategy_ticker records one activity entry per invocation
+    (not per candidate) with strategy_id, attempted tickers, and their verdicts.
+    Uses dynamic universe from injected broker instead of static _KNOWN_TICKERS."""
     store = StrategyStore(db_path=tmp_path / "specs.db")
     store.save(StrategySpec("S1", "AAPL", ALWAYS_LONG, qty=1.0))
     
@@ -1867,22 +2145,58 @@ async def test_expand_strategy_ticker_logs_one_activity_entry_on_dispatch(tmp_pa
         lambda self, strategy_id: 0.5
     )
 
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     plugin._record_activity_fn = record_activity
-    
+
     # Mock _run_gauntlet to avoid real network/backtest time
     async def fake_gauntlet(*args, **kwargs):
         return ToolResult(content=json.dumps({"verdict": "VALIDATED"}))
     plugin._run_gauntlet = fake_gauntlet
 
-    result = await plugin._expand_strategy_ticker({"strategy_id": "S1"}, strategy_store=store)
+    # Inject a fake broker returning a known dynamic universe -- method
+    # names/shapes match AlpacaBrokerClient's real interface (DD1/#1157:
+    # get_market_movers/get_most_actives/get_all_assets), not a made-up one.
+    fake_universe = ["MSFT", "GOOGL", "TSLA", "AMZN"]
+    class FakeBroker:
+        def get_market_movers(self, top=15):
+            return {
+                "gainers": [{"symbol": "MSFT", "percent_change": 2.0}],
+                "losers": [{"symbol": "GOOGL", "percent_change": -1.5}],
+            }
+        def get_most_actives(self, top=10):
+            return [{"symbol": "TSLA", "volume": 1_000_000}]
+        def get_all_assets(self):
+            return fake_universe
+    fake_broker = FakeBroker()
+
+    # A liquid-enough fetch so rank_for_day_trading's default $5M
+    # dollar-volume floor doesn't filter every candidate out (falling
+    # back to _KNOWN_TICKERS, which would break this test's own
+    # assertions below).
+    def fake_fetch(symbol, start, end, interval="1d"):
+        import numpy as np
+        close = np.full(200, 100.0)
+        return pd.DataFrame({
+            "Open": close, "High": close * 1.01, "Low": close * 0.99,
+            "Close": close, "Volume": np.full(200, 100_000),
+        })
+
+    result = await plugin._expand_strategy_ticker(
+        {"strategy_id": "S1"},
+        strategy_store=store,
+        broker=fake_broker,
+        fetch=fake_fetch,
+    )
     
     assert not result.is_error, result.content
     assert len(logged) == 1
     entry = logged[0]
     assert entry["source"] == "expand_strategy_ticker"
     assert entry["strategy_id"] == "S1"
+    # Assert candidates come from the fake broker, exclude current_symbol "AAPL"
     assert len(entry["tickers"]) > 0
+    assert "AAPL" not in entry["tickers"]
+    assert all(t in fake_universe for t in entry["tickers"])
     assert all(v in entry["verdicts"].values() for v in ["VALIDATED"])
 
 
@@ -1900,7 +2214,7 @@ async def test_expand_strategy_ticker_logs_no_entry_on_zero_confidence(tmp_path,
         lambda self, strategy_id: 0.0
     )
 
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     plugin._record_activity_fn = record_activity
 
     result = await plugin._expand_strategy_ticker({"strategy_id": "S1"}, strategy_store=store)
@@ -1925,9 +2239,9 @@ async def test_auto_combine_strategies_logs_one_activity_entry_on_dispatch(tmp_p
         lambda self, strategy_id: 0.5
     )
 
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     plugin._record_activity_fn = record_activity
-    
+
     mix_calls = []
     async def fake_mix(args, **kwargs):
         mix_calls.append(args)
@@ -1960,17 +2274,17 @@ async def test_auto_combine_strategies_logs_no_entry_on_insufficient_strategies(
         lambda self, strategy_id: 0.5
     )
 
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     plugin._record_activity_fn = record_activity
 
     result = await plugin._run_auto_combine_strategies({"symbol": "AAPL"}, strategy_store=store)
-    
+
     assert "not_enough_strategies" in result.content
     assert len(logged) == 0
 
 
 async def test_halt_and_resume_strategy_are_reachable_via_call_tool(tmp_path):
-    plugin = _plugin(tmp_path)
+    plugin = _ts_plugin(tmp_path)
     lifecycle = StrategyLifecycle(db_path=tmp_path / "lifecycle.sqlite")
     plugin._lifecycle = lifecycle
     lifecycle.get_state("s1")
@@ -1982,3 +2296,286 @@ async def test_halt_and_resume_strategy_are_reachable_via_call_tool(tmp_path):
     resume_result = await plugin.call_tool("resume_strategy", {"strategy_id": "s1"})
     assert not resume_result.is_error, resume_result.content
     assert lifecycle.get_state("s1").status == "paper"
+
+
+# ── IPO6 (#1043): calendar refresh + per-tick dispatch ─────────────────────
+
+def test_check_ipo_calendar_and_dispatch_due_ipos_tools_exist_in_list_tools(tmp_path):
+    plugin = _ipo_plugin(tmp_path)
+    tool_names = [t.name for t in plugin.list_tools()]
+    assert "check_ipo_calendar" in tool_names
+    assert "dispatch_due_ipos" in tool_names
+
+
+def _fake_upcoming_ipos(entries):
+    def fetch_upcoming_ipos(fetch_html_fn=None):
+        return list(entries)
+    return fetch_upcoming_ipos
+
+
+async def test_check_ipo_calendar_adds_new_tickers_and_logs_one_activity_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "cerebral.trading.ipo_calendar.fetch_upcoming_ipos",
+        _fake_upcoming_ipos([{"ticker": "ABCD", "company": "Abcd Inc.", "ipo_date": "2026-09-10"}]),
+    )
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    plugin = _ipo_plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+
+    result = await plugin.call_tool("check_ipo_calendar", {})
+
+    assert not result.is_error, result.content
+    body = json.loads(result.content)
+    assert body["tracked_total"] == 1
+    assert body["added"][0]["ticker"] == "ABCD"
+    assert plugin._settings.get("ipo_tracked")[0]["ticker"] == "ABCD"
+    assert plugin._settings.get("ipo_tracked")[0]["dispatched"] is False
+    assert len(logged) == 1
+    assert "ABCD" in logged[0]["summary"]
+
+
+async def test_check_ipo_calendar_does_not_re_add_or_re_log_a_known_ticker(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "cerebral.trading.ipo_calendar.fetch_upcoming_ipos",
+        _fake_upcoming_ipos([{"ticker": "ABCD", "company": "Abcd Inc.", "ipo_date": "2026-09-10"}]),
+    )
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    plugin = _ipo_plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+    plugin._settings.set("ipo_tracked", [{"ticker": "ABCD", "company": "Abcd Inc.",
+                                           "ipo_date": "2026-09-10", "dispatched": False}])
+
+    result = await plugin.call_tool("check_ipo_calendar", {})
+
+    body = json.loads(result.content)
+    assert body["tracked_total"] == 1
+    assert body["added"] == []
+    assert len(logged) == 0  # nothing new -- no activity entry
+
+
+async def test_dispatch_due_ipos_registers_a_strategy_for_a_today_or_past_due_ticker(tmp_path, monkeypatch):
+    monkeypatch.setattr("cerebral.trading.strategy_store._DB_PATH", tmp_path / "specs.db")
+    from datetime import date
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    plugin = _ipo_plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+    plugin._settings.set("ipo_tracked", [
+        {"ticker": "ABCD", "company": "Abcd Inc.", "ipo_date": date.today().isoformat(), "dispatched": False},
+    ])
+
+    result = await plugin.call_tool("dispatch_due_ipos", {})
+
+    assert not result.is_error, result.content
+    body = json.loads(result.content)
+    assert body["dispatched"] == ["ABCD"]
+    assert plugin._settings.get("ipo_tracked")[0]["dispatched"] is True
+    spec = StrategyStore(db_path=tmp_path / "specs.db").get("IPO play: ABCD (Abcd Inc.)")
+    assert spec is not None
+    assert spec.symbol == "ABCD"
+    assert spec.interval == "5m"
+    assert spec.risk_override_pct == 25.0
+    assert len(logged) == 1
+
+
+async def test_dispatch_due_ipos_skips_future_and_already_dispatched_entries(tmp_path, monkeypatch):
+    monkeypatch.setattr("cerebral.trading.strategy_store._DB_PATH", tmp_path / "specs.db")
+    logged = []
+    async def record_activity(kind, content):
+        logged.append(content)
+
+    plugin = _ipo_plugin(tmp_path)
+    plugin._record_activity_fn = record_activity
+    plugin._settings.set("ipo_tracked", [
+        {"ticker": "FUTR", "company": "Future Inc.", "ipo_date": "2099-01-01", "dispatched": False},
+        {"ticker": "DONE", "company": "Done Inc.", "ipo_date": "2020-01-01", "dispatched": True},
+    ])
+
+    result = await plugin.call_tool("dispatch_due_ipos", {})
+
+    body = json.loads(result.content)
+    assert body["dispatched"] == []
+    assert len(logged) == 0
+    assert StrategyStore(db_path=tmp_path / "specs.db").get("IPO play: FUTR (Future Inc.)") is None
+
+
+# ── SR3: one bounded repair retry in _run_gauntlet ───────────────────────────
+
+_BROKEN_CODE = "def strategy(data):\n    return data['Close'].sign()\n"
+
+
+async def test_run_gauntlet_repair_retries_once_on_code_failure(tmp_path):
+    """SR3: when generated code fails the pre-check, to_strategy is called
+    exactly once more with the error; the repaired code is what run_gauntlet
+    receives, and '(repaired after 1 retry)' appears in the provenance."""
+    from unittest.mock import patch, MagicMock
+
+    ts_calls = []
+
+    async def fake_to_strategy(idea, *, llm=None, router=None, prior_code=None, prior_error=None):
+        ts_calls.append({"prior_code": prior_code, "prior_error": prior_error})
+        return _BROKEN_CODE if len(ts_calls) == 1 else MA_CROSS_CODE
+
+    def fake_evv(code, bars):
+        return [0] * len(bars), "AttributeError: 'Series' object has no attribute 'sign'"
+
+    card = MagicMock(verdict="VALIDATED", sharpe=1.5, total_return=0.2, gates=[])
+
+    plugin = _ts_plugin(tmp_path)
+
+    with patch("cerebral.trading_ideas.to_strategy", new=fake_to_strategy), \
+         patch("cerebral.trading.sandboxed_eval.evaluate_signals_verbose", new=fake_evv), \
+         patch("plugins.trading_strategies.run_gauntlet", return_value=card) as mock_gauntlet:
+        result = await plugin._run_gauntlet(
+            {"claim": "trend", "symbol": "AAPL", "hypothesis": "trend following"},
+            fetch=_fetch,
+        )
+
+    assert not result.is_error, result.content
+    assert len(ts_calls) == 2, f"to_strategy called {len(ts_calls)} times, expected 2"
+    assert ts_calls[1]["prior_error"] is not None  # repair call received the error
+    kw = mock_gauntlet.call_args.kwargs
+    assert kw["strategy_code"] == MA_CROSS_CODE  # repaired code was backtested
+    assert "(repaired after 1 retry)" in kw["provenance"]
+
+
+async def test_run_gauntlet_repair_both_fail_falls_through_normally(tmp_path):
+    """SR3: if both the initial and repaired code fail, _run_gauntlet makes
+    exactly two to_strategy calls then proceeds to the normal reject path --
+    no infinite retry, no crash."""
+    from unittest.mock import patch, MagicMock
+
+    ts_calls = []
+
+    async def fake_to_strategy(idea, *, llm=None, router=None, prior_code=None, prior_error=None):
+        ts_calls.append(True)
+        return _BROKEN_CODE  # both calls return broken code
+
+    def fake_evv(code, bars):
+        return [0] * len(bars), "AttributeError: 'Series' object has no attribute 'sign'"
+
+    card = MagicMock(verdict="REJECTED", sharpe=0.0, total_return=0.0, gates=[])
+
+    plugin = _ts_plugin(tmp_path)
+
+    with patch("cerebral.trading_ideas.to_strategy", new=fake_to_strategy), \
+         patch("cerebral.trading.sandboxed_eval.evaluate_signals_verbose", new=fake_evv), \
+         patch("plugins.trading_strategies.run_gauntlet", return_value=card):
+        result = await plugin._run_gauntlet(
+            {"claim": "trend", "symbol": "AAPL", "hypothesis": "trend following"},
+            fetch=_fetch,
+        )
+
+    assert len(ts_calls) == 2  # initial + exactly one repair, never more
+    assert not result.is_error  # no crash -- normal reject path
+
+
+async def test_run_gauntlet_no_repair_when_code_succeeds_first_try(tmp_path):
+    """SR3: when the generated code passes the pre-check, to_strategy is called
+    exactly once -- no wasted repair attempt."""
+    from unittest.mock import patch, MagicMock
+
+    ts_calls = []
+
+    async def fake_to_strategy(idea, *, llm=None, router=None, prior_code=None, prior_error=None):
+        ts_calls.append(True)
+        return MA_CROSS_CODE
+
+    def fake_evv(code, bars):
+        return [1] * len(bars), None  # no error
+
+    card = MagicMock(verdict="VALIDATED", sharpe=1.5, total_return=0.2, gates=[])
+
+    plugin = _ts_plugin(tmp_path)
+
+    with patch("cerebral.trading_ideas.to_strategy", new=fake_to_strategy), \
+         patch("cerebral.trading.sandboxed_eval.evaluate_signals_verbose", new=fake_evv), \
+         patch("plugins.trading_strategies.run_gauntlet", return_value=card):
+        result = await plugin._run_gauntlet(
+            {"claim": "trend", "symbol": "AAPL", "hypothesis": "trend following"},
+            fetch=_fetch,
+        )
+
+    assert len(ts_calls) == 1  # only the initial generation, no repair
+    assert not result.is_error
+
+
+# ── SR4: strategies_repaired counter ─────────────────────────────────────
+
+async def test_book_ingestion_increments_strategies_repaired_on_repair(tmp_path):
+    """SR4: a book-sourced strategy that hits the SR3 repair path should
+    increment the book's strategies_repaired counter by exactly 1."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    router = BookRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = _book_plugin(tmp_path, router=router)
+
+    repaired_sid = "repaired-strategy-1"
+
+    async def fake_run_gauntlet(args, *, strategy_store=None, fetch=None, origin="generated", **kwargs):
+        # Simulate _run_gauntlet saving the strategy with a repaired provenance, then returning VALIDATED
+        if strategy_store is not None:
+            strategy_store.save(
+                StrategySpec(strategy_id=repaired_sid, symbol=args.get("symbol", "AAPL"), code=MA_CROSS_CODE),
+                origin=origin,
+                provenance_json={"source": args.get("provenance", "") + " (repaired after 1 retry)"},
+            )
+        return ToolResult(content=json.dumps({
+            "verdict": "VALIDATED", "sharpe": 1.5, "total_return": 0.2,
+            "strategy_id": repaired_sid, "gates": [],
+        }))
+
+    plugin._gauntlet._run_gauntlet = fake_run_gauntlet
+
+    result = await plugin._upload_book(
+        {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
+        strategy_store=store, fetch=_fetch,
+    )
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+
+    book = plugin._book_store.get(book_id)
+    assert book.strategies_repaired == 1
+
+
+async def test_book_ingestion_does_not_increment_repaired_on_first_try_success(tmp_path):
+    """SR4: a book-sourced strategy that succeeds on the first try must NOT
+    increment strategies_repaired."""
+    store = StrategyStore(db_path=tmp_path / "specs.db")
+
+    router = BookRouter(["AAPL tends to rally after strong earnings beats."])
+    plugin = _book_plugin(tmp_path, router=router)
+
+    clean_sid = "clean-strategy-1"
+
+    async def fake_run_gauntlet(args, *, strategy_store=None, fetch=None, origin="generated", **kwargs):
+        if strategy_store is not None:
+            strategy_store.save(
+                StrategySpec(strategy_id=clean_sid, symbol=args.get("symbol", "AAPL"), code=MA_CROSS_CODE),
+                origin=origin,
+                provenance_json={"source": args.get("provenance", "")},
+            )
+        return ToolResult(content=json.dumps({
+            "verdict": "VALIDATED", "sharpe": 1.5, "total_return": 0.2,
+            "strategy_id": clean_sid, "gates": [],
+        }))
+
+    plugin._gauntlet._run_gauntlet = fake_run_gauntlet
+
+    result = await plugin._upload_book(
+        {"filename": "wizards.txt", "data_base64": _b64("Some book content about earnings.")},
+        strategy_store=store, fetch=_fetch,
+    )
+    book_id = json.loads(result.content)["book_id"]
+    await plugin._book_tasks[book_id]
+
+    book = plugin._book_store.get(book_id)
+    assert book.strategies_repaired == 0

@@ -181,6 +181,156 @@ function _renderSentimentBadge(sentiment) {
 }
 
 /**
+ * Read-only daily market-trend badge -- purely informational (unlike the
+ * sentiment badge above, this gates nothing), sourced from
+ * cerebral/trading/market_trend.py's MarketTrendGate via
+ * _trading_broadcast's "market_trend" key. Always renders when a reading
+ * exists (no enabled/disabled setting -- there's no gate here to toggle).
+ * @param {Object} [marketTrend] - {label, pct_change, symbol, updated_at}
+ */
+function _renderMarketTrendBadge(marketTrend) {
+  if (!marketTrend) {
+    return '';
+  }
+  const label = marketTrend.label || 'FLAT';
+  const cls = label === 'UP' ? 'positive' : label === 'DOWN' ? 'negative' : 'neutral';
+  const pct = typeof marketTrend.pct_change === 'number' ? marketTrend.pct_change : 0;
+  const sign = pct > 0 ? '+' : '';
+  const symbol = marketTrend.symbol || 'SPY';
+  return `
+    <div class="paper-control market-trend-badge">
+      <h3>Market Trend</h3>
+      <div class="paper-control-row">
+        <span class="trend-label ${cls}">${label}</span>
+        <span class="trend-detail">${symbol} ${sign}${pct.toFixed(2)}% today</span>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Trend Basket watch badge (ADR-0038, 2026-09-23) -- purely informational, same
+ * always-renders/no-toggle posture as the Market Trend badge above. Sourced from
+ * cerebral/trading/trend_basket_selection.py's RisingEdgeGate via _trading_broadcast's
+ * "trend_basket" key: {breadth, threshold, is_rising_edge, last_checked}. Exists so there's
+ * SOMETHING to see while the strategy is watching and waiting -- before this, a user with no
+ * trend-basket position yet had no way to tell "quietly working correctly" from "broken" (real
+ * question asked live 2026-09-23: "I don't see anything running, is this working?").
+ * `breadth` only updates once per calendar day by design (RisingEdgeGate.refresh's own
+ * once-per-day cache) -- labeled "today's reading," not implied to be live-every-tick.
+ * @param {Object} [trendBasket] - {breadth, threshold, is_rising_edge, last_checked}
+ */
+// Per-bet reference from research/trend-basket/sp500_backtest.py (live rule, S&P 500 as it was,
+// 2005-2026, 2,526 closed bets). Update if that backtest is re-run with different rules.
+const _BASKET_REF = { avg: 0.0071, positive: 0.49, lo: -0.129, hi: 0.139, luck10: [-0.0415, 0.0628], luck30: [-0.0219, 0.0404] };
+
+/**
+ * Turns the raw fill list into trend-basket bets (2026-09-27; user reviews these daily). A bet is
+ * one basket position: buys add to it, sells take from it, closed when the quantity is back to 0.
+ * Keyed by strategy_id -- each basket slot has its own "Trend basket: ... @SYMBOL" id.
+ * @param {Array} fills - broadcast all_fills rows, oldest first
+ * @returns {{open: Array, closed: Array}}
+ */
+function trendBasketBets(fills) {
+  const live = {};
+  const closed = [];
+  for (const f of fills || []) {
+    if (!f || typeof f.strategy_id !== 'string' || !f.strategy_id.startsWith('Trend basket:')) continue;
+    const qty = Number(f.qty) || 0;
+    const price = Number(f.price) || 0;
+    const b = live[f.strategy_id] || (live[f.strategy_id] = { symbol: f.symbol, opened: f.timestamp, qty: 0, cost: 0, proceeds: 0 });
+    if (String(f.side).toLowerCase().startsWith('b')) {
+      b.qty += qty;
+      b.cost += qty * price + (Number(f.fees) || 0);
+    } else {
+      b.qty -= qty;
+      b.proceeds += qty * price - (Number(f.fees) || 0);
+    }
+    if (b.qty <= 1e-9 && b.cost > 0) {
+      closed.push({ symbol: b.symbol, opened: b.opened, closed: f.timestamp, ret: b.proceeds / b.cost - 1 });
+      delete live[f.strategy_id];
+    }
+  }
+  const open = Object.values(live).filter(b => b.qty > 1e-9).map(b => ({ symbol: b.symbol, opened: b.opened, entry: b.cost / b.qty }));
+  return { open, closed };
+}
+
+function _renderBasketBets(fills) {
+  const { open, closed } = trendBasketBets(fills);
+  const pct = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%';
+  const day = ts => (ts ? new Date(ts).toLocaleDateString() : '');
+  const daysSince = ts => Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 86400000));
+  const ref = `history: avg ${pct(_BASKET_REF.avg)} per bet, ${(_BASKET_REF.positive * 100).toFixed(0)}% winners, most bets between ${pct(_BASKET_REF.lo)} and ${pct(_BASKET_REF.hi)}`;
+  let tally = `No closed bets yet. ${ref}.`;
+  if (closed.length) {
+    const avg = closed.reduce((s, b) => s + b.ret, 0) / closed.length;
+    const wins = closed.filter(b => b.ret > 0).length;
+    const band = closed.length >= 30 ? _BASKET_REF.luck30 : closed.length >= 10 ? _BASKET_REF.luck10 : null;
+    const verdict = !band
+      ? 'too few bets to judge yet (10+ needed)'
+      : avg < band[0] ? 'BELOW the normal range -- worth a look'
+        : avg > band[1] ? 'above the normal range' : 'within the normal range';
+    tally = `${closed.length} closed: avg ${pct(avg)} per bet, ${wins}/${closed.length} winners -- ${verdict}. ${ref}.`;
+  }
+  // ponytail: open bets show entry price + days held, not a live mark; add current price if wanted
+  const openRows = open.map(b => `<div class="trend-detail">OPEN ${b.symbol} since ${day(b.opened)} (${daysSince(b.opened)}d of 20) @ $${b.entry.toFixed(2)}</div>`).join('');
+  const closedRows = closed.slice(-10).reverse().map(b =>
+    `<div class="trend-detail">${b.ret >= 0 ? '▲' : '▼'} ${b.symbol} ${pct(b.ret)} (${day(b.opened)} → ${day(b.closed)})</div>`).join('');
+  return `
+      <div class="paper-control-row trend-basket-bets"><span class="trend-detail"><b>Bets:</b> ${open.length} open of 10 slots. ${tally}</span></div>
+      ${openRows}${closedRows}`;
+}
+
+function _renderTrendBasketBadge(trendBasket, fills) {
+  if (!trendBasket) {
+    return '';
+  }
+  const breadth = typeof trendBasket.breadth === 'number' ? trendBasket.breadth : null;
+  const threshold = typeof trendBasket.threshold === 'number' ? trendBasket.threshold : 0.6;
+  const thresholdPct = (threshold * 100).toFixed(0) + '%';
+  const isEdge = !!trendBasket.is_rising_edge;
+  // Trigger/sustain (2026-09-24): active = crossed above threshold and still above sustain.
+  const isActive = !!trendBasket.active;
+  const sustainPct = typeof trendBasket.sustain === 'number' ? (trendBasket.sustain * 100).toFixed(0) + '%' : null;
+
+  let breadthPct, cls, statusLabel;
+  if (breadth === null) {
+    breadthPct = '—';
+    cls = 'neutral';
+    statusLabel = 'not checked yet';
+  } else {
+    breadthPct = (breadth * 100).toFixed(1) + '%';
+    const above = breadth > threshold;
+    cls = above || isActive ? 'positive' : 'neutral';
+    statusLabel = isEdge
+      ? 'rising edge today — basket dispatched'
+      : isActive && sustainPct
+        ? `active — refilling open slots while above ${sustainPct}`
+        : above
+          ? 'above threshold (not a new edge today)'
+          : 'below threshold — waiting';
+  }
+  const lastChecked = trendBasket.last_checked
+    // Date-only ISO strings parse as UTC midnight -- shows yesterday west of UTC. 'T00:00' parses local.
+    ? new Date(trendBasket.last_checked + 'T00:00').toLocaleDateString()
+    : 'never';
+
+  return `
+    <div class="paper-control trend-basket-badge">
+      <h3>Trend Basket</h3>
+      <div class="paper-control-row">
+        <span class="trend-label ${cls}">${breadthPct}</span>
+        <span class="trend-detail">market breadth vs. ${thresholdPct} threshold — ${statusLabel}</span>
+      </div>
+      <div class="paper-control-row trend-basket-detail-row">
+        <span class="trend-detail">today's reading (updates once/day): ${lastChecked}</span>
+      </div>
+      ${_renderBasketBets(fills)}
+    </div>
+  `;
+}
+
+/**
  * Wires the paper-trading control's Start/Stop buttons (call_tool, same
  * pattern as _wireDiscoveryControl) and the capital input's Save button
  * (set_setting -- a plain numeric setting, not voice/chat-reachable the
@@ -255,6 +405,7 @@ function _renderBookRow(b, expanded) {
       <div class="book-row-title">${b.title}</div>
       <div class="book-row-meta">
         <span class="book-status book-status-${b.status}">${statusLabel}</span>
+        ${b.category && b.category !== 'Uncategorised' ? `<span class="book-category">${b.category}</span>` : ''}
         ${b.status === 'processing' ? `<span class="book-progress-text">${b.processed_chunks}/${b.total_chunks} chunks</span>` : ''}
         <span class="book-dispatch-count">${b.strategies_found} dispatch${b.strategies_found === 1 ? '' : 'es'}</span>
         <button class="book-valid-toggle" type="button" data-book-id="${b.id}" ${validList.length ? '' : 'disabled'}>
@@ -293,10 +444,12 @@ function _renderBooksSection(books, booksModel, expandedIds) {
 
   return `
     <div class="books-section">
-      <h3>Books ${booksModel ? `<span class="books-reading-model">reading with ${booksModel}</span>` : ''}</h3>
+      <h3>Stock Market ${booksModel ? `<span class="books-reading-model">reading with ${booksModel}</span>` : ''}</h3>
       <div class="books-upload-row">
         <input type="file" class="books-file-input" multiple accept=".pdf,.epub,.mobi,.azw,.azw3,.docx,.doc,.odt,.rtf,.txt,.md">
-        <span class="books-upload-hint">Upload several at once -- each reads in full and processes in the background.</span>
+        <input type="text" class="books-category-input" placeholder="Category (e.g. value investing)" hidden>
+        <button class="books-upload-submit-btn" type="button" hidden>Upload</button>
+        <span class="books-upload-hint">Choose file(s), set a category, then Upload -- each reads in full and processes in the background.</span>
       </div>
       ${all.length === 0 ? '<div class="books-empty">No books uploaded yet.</div>' : ''}
       <div class="books-list">${activeHtml}</div>
@@ -312,10 +465,12 @@ function _renderBooksSection(books, booksModel, expandedIds) {
  * @param {string} filename
  * @param {string} dataBase64 - base64-encoded file bytes
  * @param {string} [title] - defaults (server-side) to filename without extension
+ * @param {string} [category] - defaults (server-side) to 'Uncategorised'
  */
-function buildUploadBookEvent(filename, dataBase64, title) {
+function buildUploadBookEvent(filename, dataBase64, title, category) {
   const args = { filename: filename, data_base64: dataBase64 };
   if (title) args.title = title;
+  if (category) args.category = category;
   return { type: 'call_tool', data: { name: 'upload_book', args: args } };
 }
 
@@ -350,29 +505,47 @@ function buildResumeStrategyEvent(strategyId) {
 }
 
 /**
- * Wires the multi-file input (reads each selected file as base64 and fires
- * one upload_book call per file, then polls once so the new queued row
- * appears without waiting for the first background progress tick) and the
- * per-row Stop/Redo/Delete buttons (event-delegated off .books-section,
- * not just .books-list -- finished books live in a second .books-list
- * nested inside the <details> collapsible, a sibling of the active one,
- * so delegating off a single .books-list would miss clicks in there).
+ * Wires the multi-file input as a two-step flow: choosing file(s) stages
+ * them and reveals the category field + Upload button (rather than
+ * uploading immediately on selection) so every file in the batch gets
+ * filed under the category typed for it. Clicking Upload reads each staged
+ * file as base64 and fires one upload_book call per file (then polls once
+ * so the new queued row appears without waiting for the first background
+ * progress tick), and resets the row for the next batch. Also wires the
+ * per-row Stop/Redo/Delete buttons (event-delegated off .books-section, not
+ * just .books-list -- finished books live in a second .books-list nested
+ * inside the <details> collapsible, a sibling of the active one, so
+ * delegating off a single .books-list would miss clicks in there).
  */
 function _wireBooksSection(mount, sendEventFn) {
   const input = mount.querySelector('.books-file-input');
-  if (input && sendEventFn) {
+  const categoryInput = mount.querySelector('.books-category-input');
+  const uploadBtn = mount.querySelector('.books-upload-submit-btn');
+  if (input && categoryInput && uploadBtn && sendEventFn) {
+    let pendingFiles = [];
     input.addEventListener('change', () => {
-      const files = Array.from(input.files || []);
-      files.forEach((file) => {
+      pendingFiles = Array.from(input.files || []);
+      const hasFiles = pendingFiles.length > 0;
+      categoryInput.hidden = !hasFiles;
+      uploadBtn.hidden = !hasFiles;
+      if (hasFiles) categoryInput.focus();
+    });
+    uploadBtn.addEventListener('click', () => {
+      const category = categoryInput.value.trim();
+      pendingFiles.forEach((file) => {
         const reader = new FileReader();
         reader.onload = () => {
           const base64 = String(reader.result).split(',').pop(); // strip data: URL prefix
-          sendEventFn(buildUploadBookEvent(file.name, base64));
+          sendEventFn(buildUploadBookEvent(file.name, base64, null, category));
           sendEventFn({ type: 'trading_poll' });
         };
         reader.readAsDataURL(file);
       });
+      pendingFiles = [];
       input.value = ''; // allow re-selecting the same file(s) later
+      categoryInput.value = '';
+      categoryInput.hidden = true;
+      uploadBtn.hidden = true;
     });
   }
 
@@ -420,8 +593,9 @@ function _wireBooksSection(mount, sendEventFn) {
 }
 
 /**
- * Renders the Books sub-tab (own tab since 2026-08-27, previously embedded
- * atop the Strategies sub-tab) from the same `trading_update` payload
+ * Renders the Stock Market book-ingestion section (moved from its own
+ * Trading sub-tab into the Library > Books tab, 2026-09-08 -- same mount id,
+ * just reparented in the DOM) from the same `trading_update` payload
  * renderTradingUpdate already receives -- no separate broadcast/poll.
  * @param {Object} data - { books, books_model } from _trading_broadcast()
  * @param {HTMLElement} [container] - defaults to #books-panel-mount
@@ -460,10 +634,12 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const discoveryHtml = _renderDiscoveryControl(data && data.discovery);
   const paperControlHtml = _renderPaperControl(data && data.paper_control);
   const sentimentHtml = _renderSentimentBadge(data && data.sentiment);
+  const marketTrendHtml = _renderMarketTrendBadge(data && data.market_trend);
+  const trendBasketHtml = _renderTrendBasketBadge(data && data.trend_basket, data && data.all_fills);
   _injectTradingPanelStyles();
 
   if (!data || !data.positions || data.positions.length === 0) {
-    mount.innerHTML = paperControlHtml + sentimentHtml + discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
+    mount.innerHTML = paperControlHtml + marketTrendHtml + trendBasketHtml + sentimentHtml + discoveryHtml + '<div style="padding:16px; color:var(--text-muted); text-align:center;">No active strategies. Create one via the Scheduler or Strategy Gauntlet.</div>';
     _wireDiscoveryControl(mount, sendEventFn);
     _wirePaperControl(mount, sendEventFn);
     return;
@@ -479,7 +655,7 @@ function renderTradingUpdate(data, container, sendEventFn) {
   const state = mount._strategyState;
   const strategy = state.strategies[state.selectedIdx];
 
-  mount.innerHTML = paperControlHtml + sentimentHtml + discoveryHtml + `
+  mount.innerHTML = paperControlHtml + marketTrendHtml + trendBasketHtml + sentimentHtml + discoveryHtml + `
     <div class="trading-panel-layout">
       <div class="strategy-list">
         <h3>Strategies</h3>
@@ -597,6 +773,11 @@ function _injectTradingPanelStyles() {
     .confidence-badge.positive { background: #e8f5e9; color: #2e7d32; }
     .confidence-badge.negative { background: #ffebee; color: #c62828; }
     .confidence-badge.neutral { background: #eee; color: #666; }
+    .trend-label { font-weight: bold; padding: 2px 8px; border-radius: 3px; }
+    .trend-label.positive { background: #e8f5e9; color: #2e7d32; }
+    .trend-label.negative { background: #ffebee; color: #c62828; }
+    .trend-label.neutral { background: #eee; color: #666; }
+    .trend-detail { font-size: 0.85em; color: var(--text-muted, #777); margin-left: 4px; }
     .expansion-badge { font-size: 0.7em; padding: 2px 5px; border-radius: 3px; background: #ede7f6; color: #5e35b1; }
     .fill-list, .alerts-box { margin-top: 16px; }
     .fills-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
@@ -635,6 +816,8 @@ function _injectTradingPanelStyles() {
     .books-reading-model { font-size: 0.75em; font-weight: normal; color: var(--text-muted, #777); margin-left: 6px; }
     .books-upload-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
     .books-upload-hint { font-size: 0.85em; color: var(--text-muted, #777); }
+    .books-category-input { flex: 0 1 220px; padding: 4px 8px; }
+    .book-category { font-size: 0.85em; color: var(--text-muted, #777); padding: 1px 6px; border: 1px solid var(--border, #ddd); border-radius: 3px; }
     .books-list { display: flex; flex-direction: column; gap: 8px; }
     .books-empty { color: var(--text-muted, #888); font-size: 0.9em; padding: 4px 0; }
     .books-done-section { margin-top: 10px; }
@@ -1730,36 +1913,70 @@ function _renderTradeLogRows(section, fills) {
   const tbody = section.querySelector('.trd-log-tbody');
   const emptyEl = section.querySelector('.trd-log-empty');
   if (!tbody) return;
+  
+  // Initialize sort state if not present
+  if (!section._sortKey) {
+    section._sortKey = 'time';
+    section._sortDir = 'desc';
+  }
+
   const searchVal = section.querySelector('.trd-log-search').value;
   const strategyVal = section.querySelector('.trd-log-strategy-filter').value;
   const symbolVal = section.querySelector('.trd-log-symbol-filter').value;
-  // Newest first for a log -- all_fills itself is chronological oldest-first
-  // (S35c's own doc comment: needed that order to build a running curve).
-  const rows = _tradeLogFilterRows(fills, searchVal, strategyVal, symbolVal).slice().reverse();
+  
+  const filtered = _tradeLogFilterRows(fills, searchVal, strategyVal, symbolVal);
+  
+  // Sort by active key/direction
+  const sortKey = section._sortKey;
+  const sortDir = section._sortDir;
+  filtered.sort((a, b) => {
+    let va = a[sortKey], vb = b[sortKey];
+    if (sortKey === 'time') { va = a.timestamp || 0; vb = b.timestamp || 0; }
+    if (va < vb) return sortDir === 'asc' ? -1 : 1;
+    if (va > vb) return sortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
 
-  if (rows.length === 0) {
+  if (filtered.length === 0) {
     tbody.innerHTML = '';
     if (emptyEl) emptyEl.hidden = false;
     return;
   }
   if (emptyEl) emptyEl.hidden = true;
-  tbody.innerHTML = rows.map((f) => `
-    <tr>
-      <td>${new Date(f.timestamp).toLocaleString()}</td>
-      <td>${f.symbol}</td>
-      <td class="trd-log-side-${f.side}">${f.side.toUpperCase()}</td>
-      <td>${f.qty}</td>
-      <td>$${f.price.toFixed(2)}</td>
-      <td>$${f.fees.toFixed(2)}</td>
-      <td class="${f.pnl >= 0 ? 'positive' : 'negative'}">$${f.pnl.toFixed(2)}</td>
-      <td class="trd-log-strategy-cell" title="${f.strategy_id}">${f.strategy_id.length > 40 ? f.strategy_id.slice(0, 40) + '…' : f.strategy_id}</td>
-    </tr>
-  `).join('');
+  
+  tbody.innerHTML = filtered.map((f) => {
+    const pnlPct = (f.price * f.qty === 0)
+      ? '—'
+      : ((f.pnl / (f.price * f.qty)) * 100).toFixed(2);
+    const pnlSign = f.pnl >= 0 ? '+' : '';
+    return `
+      <tr>
+        <td>${new Date(f.timestamp).toLocaleString()}</td>
+        <td>${f.symbol}</td>
+        <td class="trd-log-side-${f.side}">${f.side.toUpperCase()}</td>
+        <td>${f.qty}</td>
+        <td>$${f.price.toFixed(2)}</td>
+        <td>$${f.fees.toFixed(2)}</td>
+        <td class="${f.pnl >= 0 ? 'positive' : 'negative'}">$${f.pnl.toFixed(2)}</td>
+        <td class="${f.pnl >= 0 ? 'positive' : 'negative'}">${pnlSign}${pnlPct}%</td>
+        <td class="trd-log-strategy-cell" title="${f.strategy_id}">${f.strategy_id.length > 40 ? f.strategy_id.slice(0, 40) + '…' : f.strategy_id}</td>
+      </tr>
+    `;
+  }).join('');
+  
+  // Update sort indicators on headers
+  section.querySelectorAll('th[data-sort-key]').forEach(th => {
+    th.classList.remove('is-sorted-asc', 'is-sorted-desc');
+    if (th.dataset.sortKey === section._sortKey) {
+      th.classList.add(sortDir === 'asc' ? 'is-sorted-asc' : 'is-sorted-desc');
+    }
+  });
 }
 
-function _buildTradeLogSection(sectionId, title) {
+function _buildTradeLogSection(sectionId, title, isActive) {
+  const hidden = isActive ? '' : ' hidden';
   return `
-    <div class="trd-log-section" data-log-section="${sectionId}">
+    <div class="trd-log-section" data-log-section="${sectionId}"${hidden}>
       <h3 class="trd-overview-section-title">${title}</h3>
       <div class="trd-log-filters">
         <input type="text" class="trd-log-search" placeholder="Search symbol or strategy…">
@@ -1768,7 +1985,7 @@ function _buildTradeLogSection(sectionId, title) {
       </div>
       <div class="trd-log-table-wrap">
         <table class="trd-log-table">
-          <thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Fees</th><th>PnL</th><th>Strategy</th></tr></thead>
+          <thead><tr><th data-sort-key="time">Time</th><th data-sort-key="symbol">Symbol</th><th data-sort-key="side">Side</th><th data-sort-key="qty">Qty</th><th data-sort-key="price">Price</th><th data-sort-key="fees">Fees</th><th data-sort-key="pnl">PnL</th><th data-sort-key="pnl_pct">PnL %</th><th data-sort-key="strategy_id">Strategy</th></tr></thead>
           <tbody class="trd-log-tbody"></tbody>
         </table>
       </div>
@@ -1784,6 +2001,21 @@ function _wireTradeLogSection(mount, sectionId, getFills) {
   section.querySelector('.trd-log-search').addEventListener('input', rerender);
   section.querySelector('.trd-log-strategy-filter').addEventListener('change', rerender);
   section.querySelector('.trd-log-symbol-filter').addEventListener('change', rerender);
+  
+  // Header sort clicks
+  section.querySelectorAll('th[data-sort-key]').forEach(th => {
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', () => {
+      const key = th.dataset.sortKey;
+      if (section._sortKey === key) {
+        section._sortDir = section._sortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        section._sortKey = key;
+        section._sortDir = 'desc'; // default to newest-first
+      }
+      rerender();
+    });
+  });
 }
 
 function _injectTradeLogStyles() {
@@ -1793,6 +2025,9 @@ function _injectTradeLogStyles() {
   style.id = styleId;
   style.textContent = `
     .trd-log { padding: 12px; }
+    .trd-log-subtabs { display: flex; gap: 8px; margin-bottom: 12px; }
+    .trd-log-subtabs button { padding: 4px 12px; border: 1px solid var(--border, #ccc); border-radius: 4px; background: var(--bg, #fff); color: var(--text, #333); cursor: pointer; }
+    .trd-log-subtabs button.is-active { background: #e3f2fd; border-color: #2196f3; color: #0d47a1; font-weight: 500; }
     .trd-log-section { margin-bottom: 24px; }
     .trd-log-filters { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
     .trd-log-search { flex: 1; min-width: 160px; padding: 4px 8px; border: 1px solid var(--border, #ccc); border-radius: 4px; background: var(--bg, #fff); color: var(--text, #333); }
@@ -1800,6 +2035,8 @@ function _injectTradeLogStyles() {
     .trd-log-table-wrap { overflow-x: auto; }
     .trd-log-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
     .trd-log-table th, .trd-log-table td { padding: 5px 8px; border-bottom: 1px solid var(--border, #eee); text-align: left; white-space: nowrap; }
+    .trd-log-table th.is-sorted-asc::after { content: ' ▲'; font-size: 0.8em; }
+    .trd-log-table th.is-sorted-desc::after { content: ' ▼'; font-size: 0.8em; }
     .trd-log-side-buy { color: #2ecc71; }
     .trd-log-side-sell { color: #e74c3c; }
     .trd-log-strategy-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1837,11 +2074,32 @@ function renderTradeLog(data, container) {
 
   const alreadyBuilt = typeof mount.querySelector === 'function' && mount.querySelector('.trd-log');
   if (!alreadyBuilt) {
+    if (!mount._logActiveTab) mount._logActiveTab = 'paper';
     mount.innerHTML = `<div class="trd-log">
-      ${_buildTradeLogSection('paper', 'Paper Trades')}
-      ${_buildTradeLogSection('live', 'Live Trades')}
+      <div class="trd-log-subtabs">
+        <button data-log-tab="paper" class="is-active">Paper Trades</button>
+        <button data-log-tab="live">Live Trades</button>
+      </div>
+      ${_buildTradeLogSection('paper', 'Paper Trades', mount._logActiveTab === 'paper')}
+      ${_buildTradeLogSection('live', 'Live Trades', mount._logActiveTab === 'live')}
     </div>`;
     if (typeof mount.querySelector === 'function') {
+      // Wire sub-tab switching
+      const subtabsEl = mount.querySelector('.trd-log-subtabs');
+      if (subtabsEl) {
+        subtabsEl.addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-log-tab]');
+          if (!btn) return;
+          const tabId = btn.dataset.logTab;
+          mount._logActiveTab = tabId;
+          mount.querySelectorAll('.trd-log-subtabs button').forEach(b => {
+            b.classList.toggle('is-active', b.dataset.logTab === tabId);
+          });
+          mount.querySelectorAll('.trd-log-section').forEach(s => {
+            s.hidden = s.dataset.logSection !== tabId;
+          });
+        });
+      }
       _wireTradeLogSection(mount, 'paper', () => mount._logPaperFills || []);
       _wireTradeLogSection(mount, 'live', () => mount._logLiveFills || []);
     }
@@ -1863,6 +2121,340 @@ function renderTradeLog(data, container) {
     _refreshTradeLogSelect(liveSection.querySelector('.trd-log-symbol-filter'),
       Array.from(new Set(liveFills.map((f) => f.symbol))).sort(), 'All symbols');
     _renderTradeLogRows(liveSection, liveFills);
+  }
+}
+
+/**
+ * Batch Replay sub-tab helpers (S2/#848). Pure string builder for the
+ * control UI, matching the file's own convention for sub-tab renderers.
+ * Delegates to S1's start/stop_batch_replay tools via sendEventFn.
+ * Shows a clear "Not available" state when S1 hasn't landed yet, never
+ * throws on missing data.
+ */
+function _renderReplayControl(status) {
+  if (!status) {
+    return `
+      <div class="replay-control">
+        <h3>Batch Replay</h3>
+        <div class="replay-control-row">
+          <button class="replay-toggle-btn" disabled>Start</button>
+          <span class="replay-status">Not available</span>
+        </div>
+        <div class="replay-control-row">
+          <span class="replay-info">Requires S1 tools: start_batch_replay / stop_batch_replay</span>
+        </div>
+      </div>
+    `;
+  }
+  const running = !!status.running;
+  // get_batch_replay_status's real field names (plugins/trading_replay.py
+  // S1) are cursor_date/months_total, not current_month/total_months --
+  // fixed here, S2 shipped reading the wrong keys so this line always
+  // rendered its placeholder dash regardless of real progress.
+  const month = status.cursor_date && status.cursor_date !== 'N/A' ? status.cursor_date : '—';
+  const done = status.months_done ?? 0;
+  const total = status.months_total ?? 0;
+  const progress = total > 0 ? `${done} / ${total} months` : '';
+  const label = running ? 'Stop' : 'Start';
+
+  return `
+    <div class="replay-control">
+      <h3>Batch Replay</h3>
+      <div class="replay-control-row">
+        <button class="replay-toggle-btn">${label}</button>
+        <span class="replay-status">${running ? 'Running' : 'Stopped'}</span>
+      </div>
+      <div class="replay-control-row">
+        <span class="replay-info">Processing: ${month} &nbsp; ${progress}</span>
+      </div>
+      ${_renderReplayTimeline(status)}
+    </div>
+  `;
+}
+
+/**
+ * Batch Replay timeline bar (S3/#1226). Horizontal progress bar spanning
+ * the full available range (batch_replay_start -> today), filled up to
+ * the current cursor position. Purely presentational -- reads
+ * get_batch_replay_status's start_date/cursor_date/end_date, writes
+ * nothing. Renders a 0%-filled bar (not a crash) when no sweep has ever
+ * started (start_date/cursor_date are the "N/A" sentinel S1 returns for
+ * an unset ISO-date setting).
+ */
+function _renderReplayTimeline(status) {
+  const start = status.start_date;
+  const cursor = status.cursor_date;
+  const end = status.end_date;
+
+  let pct = 0;
+  if (start && cursor && end && start !== 'N/A' && cursor !== 'N/A') {
+    const startMs = Date.parse(start);
+    const cursorMs = Date.parse(cursor);
+    const endMs = Date.parse(end);
+    if (!Number.isNaN(startMs) && !Number.isNaN(cursorMs) && !Number.isNaN(endMs) && endMs > startMs) {
+      pct = ((cursorMs - startMs) / (endMs - startMs)) * 100;
+      pct = Math.max(0, Math.min(100, pct));
+    }
+  }
+
+  const startLabel = start && start !== 'N/A' ? start : '—';
+  const endLabel = end && end !== 'N/A' ? end : '—';
+
+  return `
+    <div class="replay-timeline-row">
+      <span class="replay-timeline-label">${startLabel}</span>
+      <div class="replay-timeline-track">
+        <div class="replay-timeline-fill" style="width: ${pct}%;"></div>
+      </div>
+      <span class="replay-timeline-label">${endLabel}</span>
+    </div>
+  `;
+}
+
+function _wireReplayControl(mount, sendEventFn) {
+  const btn = mount.querySelector('.replay-toggle-btn');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      if (!sendEventFn) return;
+      const isRunning = btn.textContent.trim() === 'Stop';
+      const name = isRunning ? 'stop_batch_replay' : 'start_batch_replay';
+      sendEventFn({ type: 'call_tool', data: { name: name, args: {} } });
+      // Immediate poll to update UI quickly after user action
+      sendEventFn({ type: 'call_tool', data: { name: 'get_batch_replay_status', args: {} } });
+    });
+  }
+}
+
+/**
+ * Renders the Batch Replay sub-tab (S2/#848). Start/Stop toggle + status
+ * display, polling `get_batch_replay_status` every 2s while mounted.
+ * @param {Object} data - trading_update payload (expects `replay` or `batch_replay` key)
+ * @param {HTMLElement} [container] - defaults to #trading-replay-mount
+ * @param {Function} [sendEventFn] - IPC transport for call_tool events
+ */
+function renderReplayPanel(data, container, sendEventFn) {
+  const mount = container || document.getElementById('trading-replay-mount');
+  if (!mount) return;
+
+  if (mount._replayPollInterval) {
+    clearInterval(mount._replayPollInterval);
+    delete mount._replayPollInterval;
+  }
+
+  if (!document.getElementById('replay-control-styles')) {
+    const style = document.createElement('style');
+    style.id = 'replay-control-styles';
+    style.textContent = `
+      .replay-control { margin-bottom: 16px; padding: 12px; background: var(--bg-elev, #f8f9fa); border-radius: 6px; border: 1px solid var(--border, #eee); font-family: sans-serif; }
+      .replay-control h3 { margin: 0 0 8px; font-size: 14px; color: var(--text, #333); }
+      .replay-control-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+      .replay-toggle-btn { padding: 4px 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; color: #fff; background: #2ecc71; }
+      .replay-toggle-btn:disabled { background: var(--border, #ccc); color: var(--text-muted, #888); cursor: default; }
+      .replay-status { font-size: 12px; color: var(--text-muted, #555); }
+      .replay-info { font-size: 12px; color: var(--text-muted, #555); }
+      .replay-timeline-row { display: flex; align-items: center; gap: 8px; }
+      .replay-timeline-label { font-size: 11px; color: var(--text-muted, #888); white-space: nowrap; }
+      .replay-timeline-track { flex: 1; height: 6px; border-radius: 3px; background: var(--border, #e0e0e0); overflow: hidden; }
+      .replay-timeline-fill { height: 100%; background: #2ecc71; border-radius: 3px; transition: width 0.3s ease; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const status = (data && data.replay) || (data && data.batch_replay) || null;
+
+  mount.innerHTML = _renderReplayControl(status);
+  _wireReplayControl(mount, sendEventFn);
+
+  if (sendEventFn) {
+    mount._replayPollInterval = setInterval(() => {
+      // record: false -- a background display refresh, not something Felix
+      // decided to do; must not spam the tool-activity feed every 2s.
+      sendEventFn({ type: 'call_tool', data: { name: 'get_batch_replay_status', args: {}, record: false } });
+    }, 2000);
+  }
+}
+
+/**
+ * Cross-stock sweep section (CROSS-STOCK-VALIDATION S5/#1238). Same
+ * sub-tab-renderer shape as _renderReplayControl above, but a distinct
+ * feature answering a different question -- batch replay tracks one
+ * strategy against its own registered stock over calendar time; this
+ * tracks whether a strategy's rule holds up across a 100-stock basket at
+ * all, so a strategy name here truncates hard (these are full natural-
+ * language descriptions, not short tickers -- see StrategyStore.list_all()).
+ */
+function _truncateStrategyId(id, max) {
+  if (!id || id.length <= max) return id || '';
+  return id.slice(0, max - 1) + '…';
+}
+
+function _renderCrossStockControl(status) {
+  if (!status) {
+    return `
+      <div class="replay-control">
+        <h3>Cross-Stock Validation</h3>
+        <div class="replay-control-row">
+          <button class="cross-stock-toggle-btn" disabled>Start</button>
+          <span class="replay-status">Not available</span>
+        </div>
+      </div>
+    `;
+  }
+  const running = !!status.running;
+  const label = running ? 'Stop' : 'Start';
+  const pairsDone = status.pairs_done ?? 0;
+  const pairsTotal = status.pairs_total ?? 0;
+  const rate = status.last_run_rate_per_hour || 0;
+
+  let etaLine = '<span class="replay-info">No throughput measured yet -- runs the first night to calibrate.</span>';
+  if (rate > 0 && pairsTotal > pairsDone) {
+    const hoursLeft = (pairsTotal - pairsDone) / rate;
+    const nightsLeft = Math.ceil(hoursLeft / 8); // 8h nightly window
+    etaLine = `<span class="replay-info">~${Math.round(rate)} pairs/hour — est. ${nightsLeft} more night${nightsLeft === 1 ? '' : 's'}</span>`;
+  } else if (rate > 0) {
+    etaLine = `<span class="replay-info">~${Math.round(rate)} pairs/hour (last run)</span>`;
+  }
+
+  // #1250 (2026-09-19): rank by beat-buy-and-hold share + median excess (look-ahead screened, BH-adjusted
+  // significance across all ranked strategies). Older payloads without it fall back to the legacy list.
+  const vsb = Array.isArray(status.top_vs_benchmark) ? status.top_vs_benchmark : null;
+  let topLabel = 'Most consistent across stocks';
+  let topTable;
+  if (vsb) {
+    topLabel = 'Best vs buy-and-hold';
+    const rows = vsb.map((row) => `
+      <tr>
+        <td class="cross-stock-strat" title="${_escapeHtml(row.strategy_id)}">${_escapeHtml(_truncateStrategyId(row.strategy_id, 60))}</td>
+        <td>${Math.round(row.beat_share * 100)}%</td>
+        <td>${row.median_excess >= 0 ? '+' : ''}${(row.median_excess * 100).toFixed(1)}%</td>
+        <td>${row.stocks_tested}</td>
+        <td>${row.significant ? 'yes' : 'no'}</td>
+      </tr>
+    `).join('');
+    const nSig = status.vs_benchmark_significant ?? 0;
+    const nRanked = status.vs_benchmark_ranked ?? vsb.length;
+    topTable = vsb.length
+      ? `
+        <table class="cross-stock-top-table">
+          <thead><tr><th>Strategy</th><th>Beat B&amp;H</th><th>Median excess</th><th>Tested</th><th>Signif.</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <span class="replay-info">${nSig} of ${nRanked} strategies significant after multiple-comparisons adjustment.</span>
+        <span class="replay-info">${_escapeHtml(status.vs_benchmark_caveat || '')}</span>
+        ${status.perm_ranked ? `<span class="replay-info">Random-timing test: ${status.perm_significant ?? 0} of ${status.perm_ranked} strategies beat random timing after adjustment. ${_escapeHtml(status.perm_caveat || '')}</span>` : ''}
+        ${(status.needs_review || []).length ? `<span class="replay-info">${status.needs_review.length} strategies held for review (kept out of every ranking): ${_escapeHtml([...new Set(status.needs_review.map((r) => r.category))].join(', '))}.</span>` : ''}
+        ${status.intraday && status.intraday.rules ? `<span class="replay-info">Day-trading rules: ${status.intraday.profitable ?? 0} of ${status.intraday.rules} profitable after costs in every regime. ${_escapeHtml(status.intraday.caveat || '')}</span>` : ''}
+        ${status.stress && status.stress.strategies ? `<span class="replay-info">Stress windows: ${status.stress.robust ?? 0} of ${status.stress.strategies} strategies beat buy-and-hold in every regime; ${status.stress.defensive ?? 0} defensive. ${_escapeHtml(status.stress.caveat || '')}</span>` : ''}
+      `
+      : '<span class="replay-info">No strategy has enough tested stocks to rank yet.</span>';
+  } else {
+    const topRows = (status.top_consistent || []).map((row) => `
+      <tr>
+        <td class="cross-stock-strat" title="${_escapeHtml(row.strategy_id)}">${_escapeHtml(_truncateStrategyId(row.strategy_id, 60))}</td>
+        <td>${Math.round(row.consistency * 100)}%</td>
+        <td>${row.stocks_tested}</td>
+      </tr>
+    `).join('');
+    topTable = (status.top_consistent && status.top_consistent.length)
+      ? `
+        <table class="cross-stock-top-table">
+          <thead><tr><th>Strategy</th><th>Consistent</th><th>Tested</th></tr></thead>
+          <tbody>${topRows}</tbody>
+        </table>
+      `
+      : '<span class="replay-info">No strategies have a rollup yet.</span>';
+  }
+
+  return `
+    <div class="replay-control">
+      <h3>Cross-Stock Validation</h3>
+      <div class="replay-control-row">
+        <button class="cross-stock-toggle-btn">${label}</button>
+        <span class="replay-status">${running ? 'Running' : 'Stopped'}</span>
+      </div>
+      <div class="replay-control-row">
+        <span class="replay-info">Pairs: ${pairsDone} / ${pairsTotal}</span>
+      </div>
+      <div class="replay-control-row">${etaLine}</div>
+      <div class="cross-stock-top-section">
+        <div class="cross-stock-top-label">${topLabel}</div>
+        ${topTable}
+      </div>
+    </div>
+  `;
+}
+
+function _escapeHtml(s) {
+  // Plain string replace, not a document.createElement('div') round-trip
+  // -- this file's own Jest harness (fakeInteractiveMount) doesn't
+  // implement a real DOM, so that pattern silently returns undefined
+  // under test even though it works in the real Electron renderer.
+  return (s == null ? '' : String(s))
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function _wireCrossStockControl(mount, sendEventFn) {
+  const btn = mount.querySelector('.cross-stock-toggle-btn');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      if (!sendEventFn) return;
+      const isRunning = btn.textContent.trim() === 'Stop';
+      const name = isRunning ? 'stop_cross_stock_replay' : 'start_cross_stock_replay';
+      sendEventFn({ type: 'call_tool', data: { name: name, args: {} } });
+      sendEventFn({ type: 'call_tool', data: { name: 'get_cross_stock_replay_status', args: {} } });
+    });
+  }
+}
+
+/**
+ * Renders the Cross-Stock Validation section (S5/#1238), inside the same
+ * History tab as renderReplayPanel -- a second independent control, not a
+ * replacement, since the two sweeps run concurrently and answer different
+ * questions.
+ * @param {Object} data - expects a `cross_stock` key holding
+ *   get_cross_stock_replay_status's parsed JSON, or null/undefined.
+ * @param {HTMLElement} [container] - defaults to #trading-cross-stock-mount
+ * @param {Function} [sendEventFn] - IPC transport for call_tool events
+ */
+function renderCrossStockPanel(data, container, sendEventFn) {
+  const mount = container || document.getElementById('trading-cross-stock-mount');
+  if (!mount) return;
+
+  if (mount._crossStockPollInterval) {
+    clearInterval(mount._crossStockPollInterval);
+    delete mount._crossStockPollInterval;
+  }
+
+  if (!document.getElementById('cross-stock-control-styles')) {
+    const style = document.createElement('style');
+    style.id = 'cross-stock-control-styles';
+    style.textContent = `
+      .cross-stock-top-section { margin-top: 10px; }
+      .cross-stock-top-label { font-size: 11px; color: var(--text-muted, #888); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.02em; }
+      .cross-stock-top-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .cross-stock-top-table th { text-align: left; color: var(--text-muted, #888); font-weight: 500; padding: 2px 6px 2px 0; border-bottom: 1px solid var(--border, #eee); }
+      .cross-stock-top-table td { padding: 3px 6px 3px 0; color: var(--text, #333); }
+      .cross-stock-strat { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .cross-stock-toggle-btn { padding: 4px 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; color: #fff; background: #2ecc71; }
+      .cross-stock-toggle-btn:disabled { background: var(--border, #ccc); color: var(--text-muted, #888); cursor: default; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const status = (data && data.cross_stock) || null;
+
+  mount.innerHTML = _renderCrossStockControl(status);
+  _wireCrossStockControl(mount, sendEventFn);
+
+  if (sendEventFn) {
+    mount._crossStockPollInterval = setInterval(() => {
+      // record: false -- see the matching comment on the Batch Replay poll above.
+      sendEventFn({ type: 'call_tool', data: { name: 'get_cross_stock_replay_status', args: {}, record: false } });
+    }, 2000);
   }
 }
 
@@ -1888,6 +2480,9 @@ return {
   buildDeleteBookEvent: buildDeleteBookEvent,
   buildHaltStrategyEvent: buildHaltStrategyEvent,
   buildResumeStrategyEvent: buildResumeStrategyEvent,
+  renderReplayPanel: renderReplayPanel,
+  renderCrossStockPanel: renderCrossStockPanel,
+  trendBasketBets: trendBasketBets,
 };
 
 }));

@@ -485,7 +485,7 @@ describe('renderBooksPanel (2026-08-27, was "renderTradingUpdate books section")
     withFakeDocument(() => {
       const mount = fakeInteractiveMount();
       TradingPanel.renderBooksPanel({ positions: [], alerts: [] }, mount);
-      expect(mount.innerHTML).toContain('Books');
+      expect(mount.innerHTML).toContain('Stock Market');
       expect(mount.innerHTML).toContain('books-file-input');
       expect(mount.innerHTML).toContain('No books uploaded yet.');
     });
@@ -770,6 +770,13 @@ describe('buildUploadBookEvent (2026-08-26)', () => {
     expect(TradingPanel.buildUploadBookEvent('wizards.pdf', 'YWJj', 'Market Wizards')).toEqual({
       type: 'call_tool',
       data: { name: 'upload_book', args: { filename: 'wizards.pdf', data_base64: 'YWJj', title: 'Market Wizards' } },
+    });
+  });
+
+  test('an explicit category is included; omitted defaults server-side to Uncategorised', () => {
+    expect(TradingPanel.buildUploadBookEvent('wizards.pdf', 'YWJj', null, 'value investing')).toEqual({
+      type: 'call_tool',
+      data: { name: 'upload_book', args: { filename: 'wizards.pdf', data_base64: 'YWJj', category: 'value investing' } },
     });
   });
 });
@@ -1220,5 +1227,564 @@ describe('renderTradeLog', () => {
     const bySymbol = paper.filter((f) => f.symbol === 'TSLA');
     expect(bySymbol.length).toBe(1);
     expect(bySymbol[0].strategy_id).toBe('strat-b');
+  });
+
+  // Paper/Live sub-tabs (2026-09-08): Paper starts active, Live starts
+  // hidden -- checkable via the initial skeleton's own innerHTML string,
+  // no querySelector/click-simulation needed (this suite's fake mount
+  // can't support that -- see the confirm()-guarded-button precedent
+  // above; real click-driven switching is verified by hand in the app).
+  test('Paper section starts visible, Live section starts hidden', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradeLog({ all_fills: SAMPLE_FILLS }, mount);
+      const paperIdx = mount.innerHTML.indexOf('data-log-section="paper"');
+      const liveIdx = mount.innerHTML.indexOf('data-log-section="live"');
+      const paperTag = mount.innerHTML.slice(paperIdx, paperIdx + 60);
+      const liveTag = mount.innerHTML.slice(liveIdx, liveIdx + 60);
+      expect(paperTag).not.toContain('hidden');
+      expect(liveTag).toContain('hidden');
+    });
+  });
+
+  test('sortable column headers carry data-sort-key, including the new PnL % column', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradeLog({ all_fills: SAMPLE_FILLS }, mount);
+      ['time', 'symbol', 'side', 'qty', 'price', 'fees', 'pnl', 'pnl_pct', 'strategy_id'].forEach((key) => {
+        expect(mount.innerHTML).toContain(`data-sort-key="${key}"`);
+      });
+      expect(mount.innerHTML).toContain('>PnL %<');
+    });
+  });
+
+  // Doesn't crash wiring the new sub-tab click listener against this
+  // suite's weak fake (querySelector always returns null) -- this is the
+  // regression the 2026-09-08 self_dev PR actually introduced: an
+  // unguarded mount.querySelector('.trd-log-subtabs').addEventListener(...)
+  // threw here before the null-check fix.
+  test('renders without throwing against a mount whose querySelector returns null', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      expect(() => TradingPanel.renderTradeLog({ all_fills: SAMPLE_FILLS }, mount)).not.toThrow();
+    });
+  });
+});
+
+// S2/#848: Batch Replay sub-tab -- Start/Stop toggle + status display,
+// delegating to S1's start_batch_replay/stop_batch_replay/get_batch_replay_status.
+// Gracefully handles missing S1 data/tools by showing a "Not available" state.
+describe('renderReplayPanel (S2/#848)', () => {
+  test('renders "Not available" placeholder when replay status is missing', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderReplayPanel({ positions: [], alerts: [] }, mount);
+      expect(mount.innerHTML).toContain('Not available');
+      expect(mount.innerHTML).toContain('replay-toggle-btn');
+      expect(mount.innerHTML).not.toContain('Running');
+      expect(mount.innerHTML).not.toContain('Stopped');
+    });
+  });
+
+  test('renders stopped state with Start button when replay data is present but stopped', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        positions: [],
+        alerts: [],
+        // cursor_date/months_total are get_batch_replay_status's real field
+        // names (plugins/trading_replay.py S1) -- the fixture originally
+        // used current_month/total_months, matching a real bug in the S2
+        // code that read those same wrong keys (fixed alongside S3).
+        replay: { running: false, cursor_date: '2026-08-01', months_done: 0, months_total: 12 }
+      };
+      TradingPanel.renderReplayPanel(data, mount);
+      expect(mount.innerHTML).toContain('Stopped');
+      expect(mount.innerHTML).toContain('>Start<');
+      expect(mount.innerHTML).toContain('Processing: 2026-08-01');
+      expect(mount.innerHTML).toContain('0 / 12 months');
+    });
+  });
+
+  test('renders running state with Stop button and progress when replay is active', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        positions: [],
+        alerts: [],
+        replay: { running: true, cursor_date: '2026-09-01', months_done: 5, months_total: 12 }
+      };
+      TradingPanel.renderReplayPanel(data, mount);
+      expect(mount.innerHTML).toContain('Running');
+      expect(mount.innerHTML).toContain('>Stop<');
+      expect(mount.innerHTML).toContain('Processing: 2026-09-01');
+      expect(mount.innerHTML).toContain('5 / 12 months');
+    });
+  });
+
+  test('handles missing optional fields (months_done/total_months) gracefully', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        positions: [],
+        alerts: [],
+        replay: { running: true }
+      };
+      TradingPanel.renderReplayPanel(data, mount);
+      expect(mount.innerHTML).toContain('Running');
+      expect(mount.innerHTML).not.toContain('undefined');
+      expect(mount.innerHTML).not.toContain('NaN');
+    });
+  });
+
+  test('polls get_batch_replay_status on an interval when sendEventFn is provided', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const calls = [];
+      const mockSendEventFn = (ev) => {
+        calls.push(ev);
+      };
+      // Stub setInterval to avoid a real, never-cleared timer leaking past
+      // this test (a genuine 2000ms recurring interval here would keep the
+      // whole jest process alive -- "Jest did not exit one second after the
+      // test run has completed" is exactly that symptom, hit for real
+      // authoring this test). Call fn() once to prove the poll fires, and
+      // return a fake handle -- no real timer needed for that assertion.
+      const origSetInterval = global.setInterval;
+      global.setInterval = (fn, delay) => {
+        fn();
+        return 1;
+      };
+
+      TradingPanel.renderReplayPanel({ replay: { running: false } }, mount, mockSendEventFn);
+
+      // First call is from the poll interval trigger in our stub
+      const pollCall = calls.find(c => c.type === 'call_tool' && c.data.name === 'get_batch_replay_status');
+      expect(pollCall).toBeTruthy();
+      // record: false -- a background display refresh must not flood the
+      // tool-activity feed with a tool_call/tool_result pair every 2s
+      // (found 2026-09-16: the feed showed almost nothing else).
+      expect(pollCall.data.record).toBe(false);
+
+      // Restore
+      global.setInterval = origSetInterval;
+    });
+  });
+
+  // S3/#1226: timeline bar -- progress across the full available replay
+  // range. Purely presentational, reads get_batch_replay_status only.
+  describe('replay timeline (S3/#1226)', () => {
+    test('renders an empty (0%) bar when nothing has been processed yet', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        const data = {
+          replay: {
+            running: false, months_done: 0, months_total: 12,
+            start_date: '2016-01-01', cursor_date: '2016-01-01', end_date: '2026-09-14',
+          },
+        };
+        TradingPanel.renderReplayPanel(data, mount);
+        expect(mount.innerHTML).toContain('replay-timeline-fill');
+        expect(mount.innerHTML).toMatch(/replay-timeline-fill" style="width: 0(\.\d+)?%;"/);
+        expect(mount.innerHTML).toContain('2016-01-01');
+        expect(mount.innerHTML).toContain('2026-09-14');
+      });
+    });
+
+    test('renders a full (100%) bar when the sweep has reached today', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        const data = {
+          replay: {
+            running: false, months_done: 12, months_total: 12,
+            start_date: '2016-01-01', cursor_date: '2026-09-14', end_date: '2026-09-14',
+          },
+        };
+        TradingPanel.renderReplayPanel(data, mount);
+        expect(mount.innerHTML).toMatch(/replay-timeline-fill" style="width: 100%;"/);
+      });
+    });
+
+    test('renders a partial bar proportional to elapsed range, not month count', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        const data = {
+          replay: {
+            running: true, months_done: 5, months_total: 12,
+            start_date: '2016-01-01', cursor_date: '2021-01-01', end_date: '2026-01-01',
+          },
+        };
+        TradingPanel.renderReplayPanel(data, mount);
+        // 2016-01-01 -> 2026-01-01 is 10 years; 2016-01-01 -> 2021-01-01 is
+        // 5 years -- ~50%, not 5/12 (~42%), since this bar tracks calendar
+        // position, not months-done count.
+        const match = mount.innerHTML.match(/replay-timeline-fill" style="width: ([\d.]+)%;"/);
+        expect(match).not.toBeNull();
+        const pct = parseFloat(match[1]);
+        expect(pct).toBeGreaterThan(45);
+        expect(pct).toBeLessThan(55);
+      });
+    });
+
+    test('renders a 0% bar without crashing when no sweep has ever started (N/A dates)', () => {
+      withFakeDocument(() => {
+        const mount = fakeInteractiveMount();
+        const data = {
+          replay: { running: false, months_done: 0, months_total: 0, start_date: 'N/A', cursor_date: 'N/A', end_date: '2026-09-14' },
+        };
+        TradingPanel.renderReplayPanel(data, mount);
+        expect(mount.innerHTML).toContain('replay-timeline-fill');
+        expect(mount.innerHTML).toMatch(/replay-timeline-fill" style="width: 0(\.\d+)?%;"/);
+        expect(mount.innerHTML).not.toContain('NaN');
+        expect(mount.innerHTML).not.toContain('undefined');
+      });
+    });
+  });
+});
+
+// CROSS-STOCK-VALIDATION S5 (#1238): a second, independent sweep section
+// within the same History tab as renderReplayPanel above -- deliberately
+// not repeating that slice's own gap (built + unit-tested, never wired
+// into main.html's tab strip at all).
+describe('renderCrossStockPanel (S5/#1238)', () => {
+  test('renders "Not available" placeholder when cross_stock status is missing', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderCrossStockPanel({}, mount);
+      expect(mount.innerHTML).toContain('Not available');
+      expect(mount.innerHTML).toContain('cross-stock-toggle-btn');
+      expect(mount.innerHTML).not.toContain('Running');
+    });
+  });
+
+  test('renders stopped state with pairs progress', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        cross_stock: {
+          running: false, cursor_strategy_id: 'N/A', cursor_symbol: 'N/A',
+          pairs_done: 0, pairs_total: 28300, last_run_processed: 0,
+          last_run_rate_per_hour: 0, top_consistent: [],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain('Stopped');
+      expect(mount.innerHTML).toContain('>Start<');
+      expect(mount.innerHTML).toContain('Pairs: 0 / 28300');
+      expect(mount.innerHTML).toContain('No throughput measured yet');
+    });
+  });
+
+  test('renders running state with Stop button', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        cross_stock: {
+          running: true, cursor_strategy_id: 'foo', cursor_symbol: 'AAPL',
+          pairs_done: 100, pairs_total: 28300, last_run_processed: 0,
+          last_run_rate_per_hour: 0, top_consistent: [],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain('Running');
+      expect(mount.innerHTML).toContain('>Stop<');
+      expect(mount.innerHTML).toContain('Pairs: 100 / 28300');
+    });
+  });
+
+  test('shows a completion estimate once real throughput is measured', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        cross_stock: {
+          running: false, pairs_done: 700, pairs_total: 28300,
+          last_run_processed: 700, last_run_rate_per_hour: 700,
+          top_consistent: [],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain('700 pairs/hour');
+      expect(mount.innerHTML).toMatch(/est\. \d+ more nights?/);
+      expect(mount.innerHTML).not.toContain('NaN');
+    });
+  });
+
+  test('renders the most-consistent list with strategy id, consistency %, and sample size', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        cross_stock: {
+          running: false, pairs_done: 10, pairs_total: 28300,
+          last_run_processed: 10, last_run_rate_per_hour: 100,
+          top_consistent: [
+            { strategy_id: 'buy when RSI crosses 30', consistency: 0.9, stocks_tested: 80 },
+            { strategy_id: 'sell on death cross', consistency: 0.5, stocks_tested: 2 },
+          ],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain('buy when RSI crosses 30');
+      expect(mount.innerHTML).toContain('90%');
+      expect(mount.innerHTML).toContain('80');
+      expect(mount.innerHTML).toContain('sell on death cross');
+      expect(mount.innerHTML).toContain('50%');
+    });
+  });
+
+  test('shows a placeholder when nothing has a rollup yet', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const data = {
+        cross_stock: {
+          running: false, pairs_done: 0, pairs_total: 28300,
+          last_run_processed: 0, last_run_rate_per_hour: 0, top_consistent: [],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain('No strategies have a rollup yet');
+    });
+  });
+
+  test('handles missing optional fields gracefully', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderCrossStockPanel({ cross_stock: { running: true } }, mount);
+      expect(mount.innerHTML).toContain('Running');
+      expect(mount.innerHTML).not.toContain('undefined');
+      expect(mount.innerHTML).not.toContain('NaN');
+    });
+  });
+
+  test('polls get_cross_stock_replay_status on an interval when sendEventFn is provided', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const calls = [];
+      const mockSendEventFn = (ev) => { calls.push(ev); };
+      const origSetInterval = global.setInterval;
+      global.setInterval = (fn, delay) => { fn(); return 1; };
+
+      TradingPanel.renderCrossStockPanel({ cross_stock: { running: false } }, mount, mockSendEventFn);
+
+      const pollCall = calls.find(c => c.type === 'call_tool' && c.data.name === 'get_cross_stock_replay_status');
+      expect(pollCall).toBeTruthy();
+      expect(pollCall.data.record).toBe(false);
+
+      global.setInterval = origSetInterval;
+    });
+  });
+
+  test('a long strategy-description strategy_id is truncated with a title attribute for the full text', () => {
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      const longId = 'A'.repeat(120);
+      const data = {
+        cross_stock: {
+          running: false, pairs_done: 1, pairs_total: 1,
+          last_run_processed: 1, last_run_rate_per_hour: 1,
+          top_consistent: [{ strategy_id: longId, consistency: 1.0, stocks_tested: 1 }],
+        },
+      };
+      TradingPanel.renderCrossStockPanel(data, mount);
+      expect(mount.innerHTML).toContain(`title="${longId}"`);
+      // The visible cell text is truncated with an ellipsis -- the raw
+      // 120-char run only appears once, inside the title attribute
+      // (for a tooltip), not repeated as the displayed content too.
+      expect(mount.innerHTML).toContain('…');
+      expect(mount.innerHTML.split(longId).length - 1).toBe(1);
+    });
+  });
+});
+
+describe('cross-stock panel: benchmark-relative table (#1250)', () => {
+  const base = { running: false, pairs_done: 1, pairs_total: 1, last_run_processed: 0, last_run_rate_per_hour: 0 };
+  const html = (cross_stock) => {
+    let out;
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderCrossStockPanel({ cross_stock }, mount);
+      out = mount.innerHTML;
+    });
+    return out;
+  };
+
+  test('renders beat share, median excess, significance and the caveat', () => {
+    const h = html({
+      ...base,
+      top_consistent: [{ strategy_id: 'legacy', consistency: 1, stocks_tested: 9 }],
+      top_vs_benchmark: [{ strategy_id: 'edge<script>', beat_share: 0.62, median_excess: 0.054, stocks_tested: 92, significant: false }],
+      vs_benchmark_ranked: 232, vs_benchmark_significant: 0, vs_benchmark_caveat: 'Informational only.',
+    });
+    expect(h).toContain('Best vs buy-and-hold');
+    expect(h).toContain('62%');
+    expect(h).toContain('+5.4%');
+    expect(h).toContain('0 of 232 strategies significant');
+    expect(h).toContain('Informational only.');
+    expect(h).not.toContain('<script>');
+    expect(h).not.toContain('legacy');
+  });
+
+  test('older payloads without the new view still render the legacy list', () => {
+    const h = html({ ...base, top_consistent: [{ strategy_id: 'legacy', consistency: 0.8, stocks_tested: 9 }] });
+    expect(h).toContain('Most consistent across stocks');
+    expect(h).toContain('legacy');
+  });
+});
+
+describe('cross-stock panel: random-timing (permutation) line (#1251 axis 2)', () => {
+  const base = { running: false, pairs_done: 1, pairs_total: 1, last_run_processed: 0, last_run_rate_per_hour: 0 };
+  const html = (cross_stock) => {
+    let out;
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderCrossStockPanel({ cross_stock }, mount);
+      out = mount.innerHTML;
+    });
+    return out;
+  };
+  const vsb = [{ strategy_id: 's', beat_share: 0.5, median_excess: 0, stocks_tested: 30, significant: false }];
+
+  test('shows how many strategies beat random timing', () => {
+    const h = html({ ...base, top_consistent: [], top_vs_benchmark: vsb, perm_ranked: 200, perm_significant: 0, perm_caveat: 'Random-timing null.' });
+    expect(h).toContain('0 of 200 strategies beat random timing');
+    expect(h).toContain('Random-timing null.');
+  });
+
+  test('is absent until the baseline has run', () => {
+    expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb })).not.toContain('Random-timing test');
+  });
+
+  test('shows the regime stress-window line', () => {
+    const h = html({ ...base, top_consistent: [], top_vs_benchmark: vsb, stress: { strategies: 150, robust: 0, defensive: 3, caveat: 'Stress caveat.' } });
+    expect(h).toContain('Stress windows: 0 of 150 strategies beat buy-and-hold in every regime; 3 defensive.');
+    expect(h).toContain('Stress caveat.');
+  });
+
+  test('shows the day-trading rules line', () => {
+    const h = html({ ...base, top_consistent: [], top_vs_benchmark: vsb, intraday: { rules: 8, profitable: 0, caveat: 'Intraday caveat.' } });
+    expect(h).toContain('Day-trading rules: 0 of 8 profitable after costs in every regime.');
+    expect(h).toContain('Intraday caveat.');
+  });
+
+  test('day-trading line is absent until the intraday run has results', () => {
+    expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb, intraday: { rules: 0 } })).not.toContain('Day-trading rules');
+  });
+
+  test('lists strategies held for review by category', () => {
+    const h = html({ ...base, top_consistent: [], top_vs_benchmark: vsb, needs_review: [{ category: 'untrusted_text' }, { category: 'untrusted_text' }] });
+    expect(h).toContain('2 strategies held for review');
+    expect(h).toContain('untrusted_text');
+  });
+
+  test('review line is absent when nothing is held', () => {
+    expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb, needs_review: [] })).not.toContain('held for review');
+  });
+
+  test('stress line is absent until the stress run has results', () => {
+    expect(html({ ...base, top_consistent: [], top_vs_benchmark: vsb, stress: { strategies: 0 } })).not.toContain('Stress windows');
+  });
+});
+
+describe('trend basket watch badge (ADR-0038, 2026-09-23)', () => {
+  // Real question this was built to answer: "I don't see anything running under the trading
+  // tab, is this working?" -- rendered via the public renderTradingUpdate entry point (the
+  // badge-building helper itself isn't individually exported), same as every other badge here.
+  const html = (data) => {
+    let out;
+    withFakeDocument(() => {
+      const mount = fakeInteractiveMount();
+      TradingPanel.renderTradingUpdate(data, mount);
+      out = mount.innerHTML;
+    });
+    return out;
+  };
+
+  test('renders alongside the empty-state message, not swallowed by it', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.375, threshold: 0.6, is_rising_edge: false, last_checked: '2026-09-23' } });
+    expect(h).toContain('Trend Basket');
+    expect(h).toContain('37.5%');
+    expect(h).toContain('No active strategies'); // both show -- the badge doesn't replace this message
+  });
+
+  test('below-threshold reading shows a waiting status, not an error', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.375, threshold: 0.6, is_rising_edge: false, last_checked: '2026-09-23' } });
+    expect(h).toContain('below threshold');
+    expect(h).toContain('waiting');
+  });
+
+  test('a real rising edge is labeled distinctly from merely being above threshold', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.625, threshold: 0.6, is_rising_edge: true, last_checked: '2026-09-23' } });
+    expect(h).toContain('rising edge today');
+  });
+
+  test('above threshold but not a new edge is labeled distinctly from a fresh rising edge', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.625, threshold: 0.6, is_rising_edge: false, last_checked: '2026-09-23' } });
+    expect(h).toContain('above threshold');
+    expect(h).not.toContain('rising edge today');
+  });
+
+  test('never-checked state (breadth still null) does not crash or show NaN', () => {
+    const h = html({ positions: [], trend_basket: { breadth: null, threshold: 0.6, is_rising_edge: false, last_checked: null } });
+    expect(h).toContain('Trend Basket');
+    expect(h).not.toContain('NaN');
+    expect(h).toContain('not checked yet');
+  });
+
+  test('last_checked date-only string shows that calendar day, not the day before (UTC parse)', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.5, threshold: 0.6, is_rising_edge: false, last_checked: '2026-09-23' } });
+    expect(h).toContain(new Date(2026, 8, 23).toLocaleDateString());
+  });
+
+  test('an active (sustained) regime says it is refilling, not waiting', () => {
+    const h = html({ positions: [], trend_basket: { breadth: 0.52, threshold: 0.55, sustain: 0.5, is_rising_edge: false, active: true, last_checked: '2026-09-25' } });
+    expect(h).toContain('active — refilling open slots while above 50%');
+    expect(h).not.toContain('waiting');
+  });
+
+  test('absent entirely when the broadcast carries no trend_basket key (older payload)', () => {
+    expect(html({ positions: [] })).not.toContain('Trend Basket');
+  });
+
+  test('still renders alongside a populated strategy list, not just the empty state', () => {
+    const h = html({
+      positions: [{ name: 'some strategy', status: 'paper', live_trades: 0, equity_curve: [1], alerts: [] }],
+      alerts: [],
+      trend_basket: { breadth: 0.45, threshold: 0.6, is_rising_edge: false, last_checked: '2026-09-23' },
+    });
+    expect(h).toContain('Trend Basket');
+    expect(h).toContain('45.0%');
+  });
+
+  describe('bets (2026-09-27)', () => {
+    const TB = 'Trend basket: breadth-gated momentum x volatility basket (ADR-0038)';
+    const fill = (sym, side, qty, price, ts, sid = `${TB} @${sym}`) =>
+      ({ strategy_id: sid, symbol: sym, side, qty, price, fees: 0, timestamp: ts });
+    const fills = [
+      fill('AAA', 'buy', 2, 5, '2026-09-25T15:00:00Z'),
+      fill('AAA', 'sell', 2, 5.5, '2026-10-10T15:00:00Z'),
+      fill('BBB', 'buy', 1, 10, '2026-09-26T15:00:00Z'),
+      fill('BBB', 'sell', 1, 9, '2026-10-01T15:00:00Z'),
+      fill('CCC', 'buy', 0.5, 20, '2026-09-27T15:00:00Z'),
+      fill('ZZZ', 'buy', 1, 1, '2026-09-27T15:00:00Z', 'some other strategy @ZZZ'),
+    ];
+
+    test('pairs buys and sells per slot; ignores other strategies', () => {
+      const { open, closed } = TradingPanel.trendBasketBets(fills);
+      expect(closed.map(b => [b.symbol, +b.ret.toFixed(4)])).toEqual([['AAA', 0.1], ['BBB', -0.1]]);
+      expect(open.map(b => [b.symbol, b.entry])).toEqual([['CCC', 20]]);
+    });
+
+    test('card shows the tally, open slot, and the historical reference', () => {
+      const h = html({ positions: [], all_fills: fills, trend_basket: { breadth: 0.6, threshold: 0.55, last_checked: '2026-09-27' } });
+      expect(h).toContain('1 open of 10 slots');
+      expect(h).toContain('2 closed: avg +0.00% per bet, 1/2 winners');
+      expect(h).toContain('too few bets to judge');
+      expect(h).toContain('OPEN CCC');
+      expect(h).toContain('history: avg +0.71% per bet');
+    });
+
+    test('no fills yet says so instead of crashing', () => {
+      const h = html({ positions: [], trend_basket: { breadth: 0.45, threshold: 0.55, last_checked: '2026-09-27' } });
+      expect(h).toContain('0 open of 10 slots. No closed bets yet.');
+    });
   });
 });

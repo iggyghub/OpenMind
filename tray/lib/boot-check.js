@@ -101,6 +101,7 @@ function runSelfCheck({
   writeFileFn,  // (path, string) => void
   copyFileFn,   // (src, dest) => void
   gitResetFn,   // (sha) => void
+  gitStashFn,   // (msg) => void
   notifyFn,     // (msg) => void
   relauncher,   // () => void
   checkFn,      // () => Promise<{ ok, gate_present }>
@@ -128,15 +129,15 @@ function runSelfCheck({
         return { pending: true, result: 'pass' };
       }
       return _doRollback({
-        dataDir, sha: state.last_known_good, backupTs: state.pending_backup,
-        copyFileFn, gitResetFn, notifyFn, relauncher,
+        dataDir, sha: state.last_known_good, backupTs: state.pending_backup, last_backup: state.last_backup,
+        copyFileFn, gitResetFn, gitStashFn, notifyFn, relauncher, writeFileFn,
         message: 'Felix self-dev boot check failed -- reverted to the previous version and relaunching.',
       });
     })
     .catch(() =>
       _doRollback({
-        dataDir, sha: state.last_known_good, backupTs: state.pending_backup,
-        copyFileFn, gitResetFn, notifyFn, relauncher,
+        dataDir, sha: state.last_known_good, backupTs: state.pending_backup, last_backup: state.last_backup,
+        copyFileFn, gitResetFn, gitStashFn, notifyFn, relauncher, writeFileFn,
         message: 'Felix self-dev boot check failed -- reverted to the previous version and relaunching.',
       }),
     );
@@ -160,8 +161,10 @@ function manualRollback({
   readFileFn,   // (path) => string|null
   copyFileFn,   // (src, dest) => void
   gitResetFn,   // (sha) => void
+  gitStashFn,   // (msg) => void
   notifyFn,     // (msg) => void
   relauncher,   // () => void
+  writeFileFn,  // (path, string) => void
 }) {
   const raw = readFileFn(`${dataDir}/${STATE_FILE}`);
   if (!raw) return Promise.resolve({ ok: false, reason: 'no self-dev state recorded yet' });
@@ -175,16 +178,20 @@ function manualRollback({
   }
 
   _doRollback({
-    dataDir, sha: state.last_known_good, backupTs: state.last_backup,
-    copyFileFn, gitResetFn, notifyFn, relauncher,
+    dataDir, sha: state.last_known_good, backupTs: state.last_backup, last_backup: state.last_backup,
+    copyFileFn, gitResetFn, gitStashFn, notifyFn, relauncher, writeFileFn,
     message: 'Felix manual rollback -- reverting to the previous version and relaunching.',
   });
 
   return Promise.resolve({ ok: true, sha: state.last_known_good, backupTs: state.last_backup });
 }
 
-function _doRollback({ dataDir, sha, backupTs, copyFileFn, gitResetFn, notifyFn, relauncher, message }) {
+function _doRollback({ dataDir, sha, backupTs, last_backup, copyFileFn, gitResetFn, gitStashFn, notifyFn, relauncher, writeFileFn, message }) {
   const backupDir = `${dataDir}/backups/self_dev/${backupTs}`;
+  const stashMsg = `felix-rollback ${backupTs}`;
+
+  // Stash uncommitted work before resetting, so it survives the rollback
+  try { gitStashFn(stashMsg); } catch (_) { /* best effort -- notify regardless */ }
 
   // Restore structured state from the snapshot
   for (const name of SNAPSHOT_FILES) {
@@ -196,7 +203,16 @@ function _doRollback({ dataDir, sha, backupTs, copyFileFn, gitResetFn, notifyFn,
   try { gitResetFn(sha); }
   catch (_) { /* best effort -- notify regardless */ }
 
-  notifyFn(message);
+  // Clear pending_backup since the rollback is complete
+  try {
+    writeFileFn(`${dataDir}/${STATE_FILE}`, JSON.stringify({
+      last_known_good: sha,
+      pending_backup:  null,
+      last_backup:     last_backup,
+    }));
+  } catch (_) { /* best effort */ }
+
+  notifyFn(`${message} (stash: ${stashMsg})`);
 
   relauncher();
 
@@ -214,14 +230,17 @@ function _doRollback({ dataDir, sha, backupTs, copyFileFn, gitResetFn, notifyFn,
  *   gitMergeFfOnlyFn(sha) -- (sha: string) => void, throws if not ff-able
  *   bootSha               -- sha this process booted with
  *   isIdle                -- true when Felix isn't mid-response/mid-chain
+ *   paused                -- (optional, default false) user paused auto-restart
  *
  * Returns one of:
  *   { action: 'none' }                 -- nothing new
  *   { action: 'restart' }              -- new commits, Felix idle -> restart now
  *   { action: 'defer' }                -- new commits, Felix active -> wait for idle
+ *   { action: 'paused' }               -- new commits, but auto-restart is paused:
+ *                                         fast-forward already happened, do not restart
  *   { action: 'skip', reason: string } -- fetch/rev-parse/merge failed; try again later
  */
-function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, bootSha, isIdle }) {
+function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, gitMergeBaseFn, bootSha, isIdle, paused = false }) {
   try {
     gitFetchFn();
   } catch (e) {
@@ -255,10 +274,23 @@ function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, bootSha, 
 
   if (currentSha === bootSha) return { action: 'none' };
 
+  // ADR-0033 decision 6: only treat it as an update if HEAD is an ancestor
+  // of @{u}. Local-only commits (developer working state) should not trigger
+  // a restart.
+  if (gitMergeBaseFn && !gitMergeBaseFn('HEAD', '@{u}')) {
+    return { action: 'none' };
+  }
+
+  if (paused) return { action: 'paused' };
   return { action: isIdle ? 'restart' : 'defer' };
+}
+
+function isCodeLoad(reason) {
+  return reason === 'self_dev_load';
 }
 
 module.exports = {
   pinAndSnapshot, runSelfCheck, manualRollback, cleanFelixArgv, checkForUpdate,
+  isCodeLoad,
   BACKUP_KEEP, CHECK_TIMEOUT_MS, FELIX_RELAUNCH_FLAGS,
 };
