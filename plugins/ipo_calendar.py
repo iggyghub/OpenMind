@@ -116,7 +116,7 @@ class IpoCalendarPlugin:
 
     async def _dispatch_due_ipos(self, args: dict) -> ToolResult:
         from datetime import date
-        from cerebral.trading.ipo_strategy import IPO_POP_FADE_STRATEGY_CODE
+        from cerebral.trading.ipo_strategy import ipo_play_code
         from cerebral.trading.strategy_store import StrategyStore, StrategySpec
 
         tracked = self._settings.get("ipo_tracked") or []
@@ -129,11 +129,18 @@ class IpoCalendarPlugin:
             strategy_id = f"IPO play: {entry['ticker']} ({entry['company']})"
             spec = StrategySpec(
                 strategy_id=strategy_id, symbol=entry["ticker"],
-                code=IPO_POP_FADE_STRATEGY_CODE, qty=1.0, interval="5m",
+                code=ipo_play_code(entry["ipo_date"]), qty=1.0, interval="5m",
                 risk_override_pct=25.0,
             )
             store.save(spec, origin="discovered", hypothesis=f"IPO pop-then-fade play on {entry['ticker']}",
                        provenance_json={"source": f"ipo_calendar: {entry['ticker']} IPO {entry['ipo_date']}"})
+            # No Gauntlet pass means no Gauntlet-created event -- and live_tick only runs a
+            # strategy with a due event titled by its id (#1351). Same as the trend basket.
+            sched = self._scheduler
+            if sched is not None and sched._con.execute(
+                    "SELECT id FROM events WHERE title = ?", (strategy_id,)).fetchone() is None:
+                sched._create_event({"title": strategy_id, "recurrence": "5m",
+                                     "start_iso": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")})
             entry["dispatched"] = True
             dispatched.append(entry["ticker"])
         if dispatched:

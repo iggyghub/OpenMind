@@ -16,13 +16,28 @@ tight_armed only update AFTER that bar's own check) -- a bar's own high can no l
 retroactively trip its own low's stop-check.
 """
 
-IPO_POP_FADE_STRATEGY_CODE = '''def strategy(data) -> list:
-    signals = []
-    entry_price = data["Open"].iloc[0]
+# 2026-09-24 (#1351): entry is anchored to the IPO date, not data's first bar. live_tick hands a 5m
+# strategy a sliding 30-day window; once it slid past IPO day the old code re-anchored to an
+# arbitrary bar, reset stopped_out and re-entered. The window no longer holding the IPO day means
+# the play is over: flat.
+_TEMPLATE = '''ENTRY = "__ENTRY__"
+
+def strategy(data) -> list:
+    if len(data) == 0 or str(data.index[0])[:10] > ENTRY:
+        return [0] * len(data)
+    start = None
+    for i in range(len(data)):
+        if str(data.index[i])[:10] >= ENTRY:
+            start = i
+            break
+    if start is None:
+        return [0] * len(data)
+    signals = [0] * start
+    entry_price = data["Open"].iloc[start]
     peak = entry_price
     tight_armed = False
     stopped_out = False
-    for i in range(len(data)):
+    for i in range(start, len(data)):
         if stopped_out:
             signals.append(0)
             continue
@@ -44,3 +59,8 @@ IPO_POP_FADE_STRATEGY_CODE = '''def strategy(data) -> list:
             tight_armed = True
     return signals
 '''
+
+
+def ipo_play_code(ipo_date: str) -> str:
+    """Strategy source for one IPO play whose first trading day is `ipo_date` (YYYY-MM-DD)."""
+    return _TEMPLATE.replace("__ENTRY__", ipo_date)
