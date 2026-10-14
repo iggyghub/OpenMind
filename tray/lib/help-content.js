@@ -190,6 +190,7 @@
           '- The result is a short summary with file counts, findings and limitations. The full result can be tens of megabytes, so it is saved under cerebral/data/rea_runs and only the summary is shown or sent to a model.',
           '- Recent runs are listed in the panel, newest first.',
           '- REA needs a recent Node (22.19, 24.11 or 26 and later). Felix uses the version of REA it was tested against and tells you if a different one is installed.',
+          '- You can also just ask Felix, for example "put Signal through REA". Felix looks up installed Electron apps by name, then analyses the one you named.',
           '- Native binaries, websites and .NET programs are not covered yet.'
         ],
         see_also: ['tools-and-plugins', 'permissions-and-consent']
