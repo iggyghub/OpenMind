@@ -162,6 +162,7 @@
     .hub-prefs-search { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
     .hub-prefs-list { max-height: 240px; overflow-y: auto; }
     .hub-pref-row { display: flex; align-items: center; gap: 8px; padding: 6px 2px; cursor: pointer; }
+    .hub-tile[draggable="true"] { cursor: grab; }
     .nav-item.active {
       background: var(--bg-elev);
       color: var(--text);
@@ -6838,6 +6839,10 @@
        Dual-mode: window.PanelPrefs. -->
   <script src="../lib/panel-prefs.js"></script>
 
+  <!-- Pinned Hub tiles (#1423) -- drag a tile onto the sidebar to pin.
+       Dual-mode: window.NavPins. -->
+  <script src="../lib/nav-pins.js"></script>
+
   <!-- Federated search registry (S4 -- #287) -- providers + ranking.
        Dual-mode: feeds Node test suite via require() and this renderer via
        window.SearchRegistry. -->
@@ -13252,7 +13257,7 @@
     const _sidebarEl = document.getElementById('sidebar');
     window.SidebarCollapse.init(_sidebarEl);
     // #1422: user-reorderable sidebar buttons
-    window.NavOrder.init(document.getElementById('nav'));
+    window._navOrderApi = window.NavOrder.init(document.getElementById('nav'));
     document.addEventListener('keydown', function (e) {
       if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key === 'b') {
         e.preventDefault();
@@ -13355,6 +13360,12 @@
         tile.type = 'button';
         tile.className = 'hub-tile';
         tile.dataset.hubPlugin = p.plugin_name;
+        tile.draggable = true;
+        tile.addEventListener('dragstart', function (e) {
+          if (!e.dataTransfer) return;
+          e.dataTransfer.effectAllowed = 'move';
+          try { e.dataTransfer.setData('application/x-felix-panel', p.plugin_name); } catch (err) {}
+        });
         tile.textContent = p.title || p.plugin_name;
         tile.addEventListener('click', function () {
           if (!_openPanel(p.plugin_name)) location.hash = '#conversation';
@@ -13422,6 +13433,73 @@
         if (!box.hidden) _renderHubPrefs();
       });
       if (search) search.addEventListener('input', _renderHubPrefs);
+    })();
+
+    // #1423 (ADR-0039): pinned Hub tiles become sidebar buttons. Drag a tile
+    // onto the sidebar to pin it; drag a pinned button onto Hub to unpin it.
+    function _renderPins() {
+      const nav = document.getElementById('nav');
+      if (!nav || !window.NavPins) return;
+      nav.querySelectorAll('.nav-pinned').forEach(function (el) { el.remove(); });
+      window.NavPins.visible(window.localStorage, _wsPanels).forEach(function (p) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'nav-item nav-pinned';
+        btn.id = window.NavPins.elId(p.plugin_name);
+        btn.title = p.title || p.plugin_name;
+        btn.innerHTML = '<span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24">'
+          + '<rect x="4" y="4" width="16" height="16" rx="2"/><line x1="4" y1="9" x2="20" y2="9"/>'
+          + '</svg></span><span class="nav-label"></span>';
+        btn.querySelector('.nav-label').textContent = p.title || p.plugin_name;
+        btn.addEventListener('click', function () {
+          if (!_openPanel(p.plugin_name)) location.hash = '#conversation';
+        });
+        nav.appendChild(btn);
+      });
+      if (window._navOrderApi) window._navOrderApi.refresh();
+    }
+
+    (function () {
+      const sidebar = document.getElementById('sidebar');
+      const hubBtn = document.querySelector('.nav-item[data-route="hub"]');
+      const MIME = 'application/x-felix-panel';
+      function isTileDrag(e) {
+        return !!(e.dataTransfer
+          && Array.prototype.indexOf.call(e.dataTransfer.types || [], MIME) !== -1);
+      }
+      if (sidebar) {
+        sidebar.addEventListener('dragover', function (e) {
+          if (isTileDrag(e)) e.preventDefault();
+        });
+        sidebar.addEventListener('drop', function (e) {
+          if (!isTileDrag(e)) return;
+          e.preventDefault();
+          const id = e.dataTransfer.getData(MIME);
+          if (!id) return;
+          window.NavPins.pin(window.localStorage, id);
+          _renderPins();
+        });
+      }
+      function pinnedDragPlugin() {
+        const api = window._navOrderApi;
+        return api && window.NavPins ? window.NavPins.pluginFromElId(api.draggingId()) : null;
+      }
+      if (hubBtn) {
+        hubBtn.addEventListener('dragover', function (e) {
+          if (!pinnedDragPlugin()) return;
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        hubBtn.addEventListener('drop', function (e) {
+          const id = pinnedDragPlugin();
+          if (!id) return;
+          e.preventDefault();
+          e.stopPropagation();
+          window._navOrderApi.endDrag();
+          window.NavPins.unpin(window.localStorage, id);
+          _renderPins();
+        });
+      }
     })();
 
     function _requestPanelSpec(pluginName) {
@@ -13593,6 +13671,7 @@
       _updateWsOpener();
       _renderHub();
       _renderHubPrefs();
+      _renderPins();
       _renderWorkspace();
     }
     function _onPluginPanelSpec(pluginName, spec) {
