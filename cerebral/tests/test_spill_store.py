@@ -142,12 +142,13 @@ async def test_chain_engine_does_not_spill_small_or_error(tmp_path):
                 captured.append(prior_steps[-1]["result"])
             return await super().plan(transcript, tools, all_tools=all_tools, prior_steps=prior_steps, error=error)
 
-    # small success passes through; big error stops the chain (never spilled).
-    planner = _CapturingPlanner([ToolCall(name="small", args={}), ToolCall(name="boom", args={})])
-    out = await _chain(planner, execute, spill_store=store).run("t", [])
+    # small success passes through; a big error is fed back to the planner
+    # (#987/#989: an error no longer ends the chain) -- raw, never spilled.
+    planner = _CapturingPlanner([ToolCall(name="small", args={}), ToolCall(name="boom", args={}), "done"])
+    await _chain(planner, execute, spill_store=store).run("t", [])
 
-    assert captured == ["ok"]          # small result untouched
-    assert "E" * 200 in out            # error text surfaced raw, not a locator
+    assert captured[0] == "ok"         # small result untouched
+    assert captured[1] == "E" * 200    # error text reached the planner raw, not a locator
 
 
 # -- retrieve_spilled plugin --------------------------------------------------
