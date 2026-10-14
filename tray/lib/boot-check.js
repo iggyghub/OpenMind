@@ -282,7 +282,7 @@ function checkForUpdate({ gitFetchFn, gitRevParseFn, gitMergeFfOnlyFn, gitMergeB
   }
 
   if (paused) return { action: 'paused' };
-return { action: isIdle ? 'restart' : 'defer' };
+  return { action: isIdle ? 'restart' : 'defer' };
 }
 
 function isCodeLoad(reason) {
