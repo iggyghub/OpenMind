@@ -343,3 +343,38 @@ def test_scope_matches_source_file(tmp_path):
     labels = sorted((f["kind"], f["label"]) for f in spec["facts"])
     assert ("bridge-api", "Signal") in labels and ("ipc-channel", "shutdown") in labels
     assert ("ipc-channel", "about:get") in labels   # its files list includes preload/about.js
+
+
+# ---------------------------------------------------------------------------
+# rebuild_new by app name (uses the newest saved analysis of that app)
+# ---------------------------------------------------------------------------
+
+def _summary(runs, run_id, target, mtime):
+    import os
+    p = runs / f"{run_id}.summary.json"
+    p.write_text(json.dumps({"run_id": run_id, "target": target}), encoding="utf-8")
+    os.utime(p, (mtime, mtime))
+
+
+def test_new_by_app_uses_newest_matching_run(tmp_path):
+    runs = _make_run(tmp_path, _graph(), run_id="0123456789ab")
+    (runs / "aaaaaaaaaaaa.json").write_text((runs / "0123456789ab.json").read_text(encoding="utf-8"), encoding="utf-8")
+    _summary(runs, "0123456789ab", "C:/Programs/signal-desktop/resources/app.asar", 1000)
+    _summary(runs, "aaaaaaaaaaaa", "C:/Programs/signal-desktop/resources/app.asar", 2000)
+    _summary(runs, "bbbbbbbbbbbb", "C:/Discord/app.asar", 3000)
+    res = _call(RebuildPlugin(run_dir=runs, rebuild_dir=tmp_path / "rb"), {"name": "sig", "app": "Signal"})
+    assert not res.is_error
+    spec = json.loads(Path(json.loads(res.content)["spec_path"]).read_text(encoding="utf-8"))
+    assert spec["source"]["run_id"] == "aaaaaaaaaaaa"
+
+
+def test_new_by_unknown_app_says_analyse_first(tmp_path):
+    runs = _make_run(tmp_path, _graph())
+    res = _call(RebuildPlugin(run_dir=runs, rebuild_dir=tmp_path / "rb"), {"name": "x", "app": "zoom"})
+    assert res.is_error and "Analyse it first" in res.content
+
+
+def test_new_without_app_or_run_id_is_an_error(tmp_path):
+    res = _call(RebuildPlugin(run_dir=tmp_path, rebuild_dir=tmp_path / "rb"), {"name": "x"})
+    assert res.is_error
+
