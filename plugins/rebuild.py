@@ -100,6 +100,85 @@ def _detail(kind: str, observations: list) -> dict:
     return {}
 
 
+_HANDLER_OPS = {"on", "once", "handle", "handleOnce"}
+
+
+def _embedded_facts(graph: dict) -> list[dict]:
+    """Facts REA embeds per bundle file instead of as graph nodes.
+
+    For large bundled apps (Signal Desktop) the compact graph has no
+    browser-window / ipc-channel / context-bridge-api nodes; the same facts sit
+    in each asset node's observations under properties.static_analysis.electron.
+    IPC channels are merged across files (one fact per channel, files listed).
+    """
+    channels: dict[str, dict] = {}
+    windows, bridges = [], []
+    for node in (graph or {}).get("nodes") or []:
+        for obs in node.get("observations") or []:
+            electron = ((obs.get("properties") or {}).get("static_analysis") or {}).get("electron")
+            if not isinstance(electron, dict):
+                continue
+            file = _clip(obs.get("label"))
+            node_id = _clip(node.get("node_id"))
+            for item in (electron.get("ipc") or [])[:2000]:
+                name = item.get("channel")
+                if not isinstance(name, str) or not name:
+                    continue  # dynamic channel name: REA could not resolve it
+                line = ((item.get("location") or {}).get("start") or {}).get("line")
+                ch = channels.setdefault(name, {
+                    "sides": set(), "operations": set(), "files": set(),
+                    "handled": False, "source": _clip(f"{file}:{line}"), "node_id": node_id,
+                })
+                # first-seen depends on node order; keep the smallest for determinism
+                ch["source"] = min(ch["source"], _clip(f"{file}:{line}"))
+                ch["node_id"] = min(ch["node_id"], node_id)
+                ch["sides"].add(_clip(item.get("side")))
+                ch["operations"].add(_clip(item.get("operation")))
+                ch["files"].add(file)
+                if item.get("side") == "main" and item.get("operation") in _HANDLER_OPS:
+                    ch["handled"] = True
+            for item in (electron.get("browser_windows") or [])[:200]:
+                start = (item.get("location") or {}).get("start") or {}
+                line = f"{start.get('line')}:{start.get('column')}"  # minified bundles: one line, many windows
+                prefs = {}
+                for p in (item.get("web_preferences") or [])[:_MAX_LIST]:
+                    val = (p.get("value") or {}).get("value")
+                    prefs[_clip(p.get("name"))] = val if isinstance(val, (bool, int, float)) else _clip(val)
+                windows.append({
+                    "kind": "window", "label": _clip(f"BrowserWindow@{file}:{line}"),
+                    "node_id": _clip(f"{node_id}#window:{line}"),
+                    "confidence": "exact" if item.get("options_status") == "object-literal" else "derived",
+                    "source": _clip(f"{file}:{line}"),
+                    "detail": {"web_preferences": prefs, "preload_path": _clip(item.get("preload_path")) or None},
+                })
+            for item in (electron.get("context_bridge_apis") or [])[:200]:
+                line = ((item.get("location") or {}).get("start") or {}).get("line")
+                key = item.get("api_key") or "<dynamic>"
+                bridges.append({
+                    "kind": "bridge-api", "label": _clip(key),
+                    "node_id": _clip(f"{node_id}#bridge:{key}:{line}"),
+                    "confidence": "exact" if item.get("api_status") == "object-literal" else "derived",
+                    "source": _clip(f"{file}:{line}"),
+                    "detail": {"members": [_clip(m) for m in (item.get("members") or [])[:_MAX_LIST]],
+                               "unknown_members": int(item.get("unknown_members") or 0)},
+                })
+    facts = windows + bridges
+    for name, ch in channels.items():
+        files = sorted(ch["files"])[:20]
+        facts.append({
+            "kind": "ipc-channel", "label": _clip(name), "node_id": _clip(f"{ch['node_id']}#ipc:{name}"),
+            "confidence": "exact", "source": ch["source"],
+            "detail": {"sides": sorted(ch["sides"]), "operations": sorted(ch["operations"]), "files": files},
+        })
+        if ch["handled"]:
+            facts.append({
+                "kind": "ipc-handler", "label": _clip(name), "node_id": _clip(f"{ch['node_id']}#handler:{name}"),
+                "confidence": "exact", "source": ch["source"],
+                "detail": {"handler_kind": None, "files": files},
+            })
+    return facts
+
+
 def facts_from_graph(graph: dict) -> list[dict]:
     """Deterministic fact list from REA's compact application graph."""
     raw = []
@@ -117,6 +196,12 @@ def facts_from_graph(graph: dict) -> list[dict]:
             "source": _source(first),
             "detail": _detail(kind, observations),
         })
+    # Embedded per-file facts only add what the graph's own nodes did not
+    # already describe, so ids for apps REA graphs fully stay unchanged.
+    from_nodes = {(f["kind"], f["label"]) for f in raw}
+    for fact in _embedded_facts(graph):
+        if (fact["kind"], fact["label"]) not in from_nodes:
+            raw.append(fact)
     raw.sort(key=lambda f: (f["kind"], f["label"], f["node_id"]))
     counters: dict[str, int] = {}
     for fact in raw:
@@ -239,7 +324,8 @@ class RebuildPlugin:
             # Ids were assigned over the whole run, so they stay stable under any scope.
             facts = [
                 f for f in facts
-                if any(t in (f["label"] + " " + json.dumps(f["detail"])).lower() for t in terms)
+                if any(t in (f["label"] + " " + (f["source"] or "") + " " + json.dumps(f["detail"])).lower()
+                       for t in terms)
             ]
         counts: dict[str, int] = {}
         for fact in facts:
