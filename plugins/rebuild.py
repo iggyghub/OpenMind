@@ -242,9 +242,16 @@ class RebuildPlugin:
                             "type": "string",
                             "description": "Short id for this rebuild: lowercase letters, digits, dashes.",
                         },
+                        "app": {
+                            "type": "string",
+                            "description": (
+                                "Name of the analysed program, e.g. 'signal'. Uses its most recent REA "
+                                "analysis. Give this OR run_id."
+                            ),
+                        },
                         "run_id": {
                             "type": "string",
-                            "description": "run_id of a saved REA analysis (12 hex characters).",
+                            "description": "run_id of a saved REA analysis (12 hex characters). Give this OR app.",
                         },
                         "feature": {
                             "type": "string",
@@ -260,7 +267,7 @@ class RebuildPlugin:
                             ),
                         },
                     },
-                    "required": ["name", "run_id"],
+                    "required": ["name"],
                 },
             ),
             Tool(
@@ -285,10 +292,37 @@ class RebuildPlugin:
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
         args = args or {}
         if tool_name == "rebuild_new":
-            return self._new(args.get("name"), args.get("run_id"), args.get("feature"), args.get("scope"))
+            run_id = args.get("run_id")
+            if not run_id and args.get("app"):
+                run_id = self._latest_run_for(args.get("app"))
+                if run_id is None:
+                    return ToolResult(
+                        content=f"No saved REA analysis of '{_clip(args.get('app'))}'. Analyse it first.",
+                        is_error=True,
+                    )
+            return self._new(args.get("name"), run_id, args.get("feature"), args.get("scope"))
         if tool_name == "rebuild_score":
             return self._score(args.get("name"))
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
+
+    def _latest_run_for(self, app) -> "str | None":
+        """run_id of the newest saved REA run whose target path mentions app."""
+        if not isinstance(app, str) or not app.strip():
+            return None
+        needle = app.strip().lower()
+        best = None
+        for f in self._run_dir.glob("*.summary.json"):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                mtime = f.stat().st_mtime
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or needle not in str(data.get("target", "")).lower():
+                continue
+            rid = data.get("run_id")
+            if isinstance(rid, str) and _RUN_RE.match(rid) and (best is None or mtime > best[0]):
+                best = (mtime, rid)
+        return best[1] if best else None
 
     def _new(self, name, run_id, feature, scope=None) -> ToolResult:
         if not isinstance(name, str) or not _NAME_RE.match(name):
@@ -297,7 +331,7 @@ class RebuildPlugin:
                 is_error=True,
             )
         if not isinstance(run_id, str) or not _RUN_RE.match(run_id):
-            return ToolResult(content="'run_id' must be 12 hex characters", is_error=True)
+            return ToolResult(content="give 'app' (an analysed program) or 'run_id' (12 hex characters)", is_error=True)
         run_file = self._run_dir / f"{run_id}.json"
         if not run_file.is_file():
             return ToolResult(content=f"no saved REA run '{run_id}'", is_error=True)
