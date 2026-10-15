@@ -1,0 +1,57 @@
+{
+  "implements": {
+    "F-ipc-channel-41": {
+      "symbol": "plugins/debuglog.py::fetch_log_entries",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_fetch_reads_tail_of_each_log"
+    },
+    "F-ipc-handler-40": {
+      "symbol": "plugins/debuglog.py::fetch_log_entries",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_fetch_skips_missing_logs"
+    },
+    "F-ipc-channel-1": {
+      "symbol": "plugins/debuglog.py::build_report",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_report_has_environment_header"
+    },
+    "F-ipc-handler-1": {
+      "symbol": "plugins/debuglog.py::build_report",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_report_has_environment_header"
+    },
+    "F-ipc-channel-80": {
+      "symbol": "plugins/debuglog.py::DebuglogPlugin (tool debuglog_save)",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_save_writes_chosen_path"
+    },
+    "F-ipc-handler-78": {
+      "symbol": "plugins/debuglog.py::DebuglogPlugin (tool debuglog_save)",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_save_cancel"
+    },
+    "F-bridge-api-6": {
+      "symbol": "plugins/debuglog.py::DebuglogPlugin.panel_spec",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_panel_has_refresh_and_report"
+    }
+  },
+  "waived": {
+    "F-ipc-channel-3": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-channel-25": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-channel-40": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-channel-44": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-channel-47": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-channel-48": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-channel-51": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-channel-52": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-channel-59": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-channel-65": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-handler-3": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-handler-24": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-handler-39": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-handler-43": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-handler-46": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-handler-47": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-handler-50": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-handler-51": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-handler-57": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-handler-63": "shared Signal app plumbing (config, locale, menu, restart) used by every Signal window; Felix has its own equivalents",
+    "F-ipc-channel-2": "uploading logs to a remote service: Felix has no log server, and sending logs off the machine is out of scope (privacy)",
+    "F-ipc-handler-2": "uploading logs to a remote service: Felix has no log server, and sending logs off the machine is out of scope (privacy)",
+    "F-bridge-api-12": "SignalContext is Signal's shared window context (theme, OS info), not part of the debug-log feature"
+  }
+}
