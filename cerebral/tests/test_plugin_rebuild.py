@@ -271,3 +271,75 @@ def test_missing_manifest_and_missing_spec(tmp_path):
 def test_score_rejects_bad_name(tmp_path):
     res = asyncio.run(RebuildPlugin(rebuild_dir=tmp_path).call_tool("rebuild_score", {"name": "../x"}))
     assert res.is_error
+
+
+# ---------------------------------------------------------------------------
+# RB1c -- facts REA embeds per bundle file (large bundled apps)
+# ---------------------------------------------------------------------------
+
+def _embedded_graph():
+    def asset(file, electron, node_id):
+        return {"node_id": node_id, "kind": "javascript-asset", "observations": [
+            {"label": file, "properties": {"static_analysis": {"electron": electron}}}]}
+    loc = lambda line: {"start": {"line": line}}
+    return {"nodes": [
+        asset("bundles/main.js", {
+            "browser_windows": [{"location": loc(89), "options_status": "dynamic",
+                                 "web_preferences": [], "preload_path": None}],
+            "ipc": [{"location": loc(12), "side": "main", "operation": "handle", "channel": "about:get"},
+                    {"location": loc(13), "side": "main", "operation": "on", "channel": None}],
+            "context_bridge_apis": []}, "n-main"),
+        asset("bundles/preload/about.js", {
+            "browser_windows": [],
+            "ipc": [{"location": loc(2), "side": "renderer", "operation": "invoke", "channel": "about:get"},
+                    {"location": loc(3), "side": "renderer", "operation": "send", "channel": "shutdown"}],
+            "context_bridge_apis": [{"location": loc(46), "api_key": "Signal", "api_status": "dynamic",
+                                     "members": [], "unknown_members": 1}]}, "n-about"),
+        asset("bundles/preload/pdf.js", {
+            "browser_windows": [], "ipc": [
+                {"location": loc(2), "side": "renderer", "operation": "invoke", "channel": "about:get"}],
+            "context_bridge_apis": [{"location": loc(46), "api_key": "Signal", "api_status": "dynamic",
+                                     "members": [], "unknown_members": 1}]}, "n-pdf"),
+    ]}
+
+
+def test_embedded_electron_facts_are_extracted_and_merged():
+    facts = facts_from_graph(_embedded_graph())
+    kinds = sorted((f["kind"], f["label"]) for f in facts)
+    assert ("window", "BrowserWindow@bundles/main.js:89:None") in kinds
+    assert ("ipc-channel", "about:get") in kinds and ("ipc-channel", "shutdown") in kinds
+    assert ("ipc-handler", "about:get") in kinds          # main side handles it
+    assert ("ipc-handler", "shutdown") not in kinds       # only sent, never handled
+    assert all(label is not None for _, label in kinds)   # the dynamic channel was skipped
+    about = [f for f in facts if f["kind"] == "ipc-channel" and f["label"] == "about:get"][0]
+    assert about["detail"]["files"] == ["bundles/main.js", "bundles/preload/about.js", "bundles/preload/pdf.js"]
+    assert about["detail"]["sides"] == ["main", "renderer"]
+    bridges = [f for f in facts if f["kind"] == "bridge-api"]
+    assert sorted(b["source"] for b in bridges) == ["bundles/preload/about.js:46", "bundles/preload/pdf.js:46"]
+    assert all(b["confidence"] == "derived" for b in bridges)   # one per preload, dynamic api
+
+
+def test_embedded_facts_are_deterministic():
+    g = _embedded_graph()
+    assert facts_from_graph(g) == facts_from_graph({"nodes": list(reversed(g["nodes"]))})
+
+
+def test_graph_node_facts_win_over_embedded_duplicates():
+    g = _graph()
+    g["nodes"].append({"node_id": "n-asset", "kind": "javascript-asset", "observations": [
+        {"label": "main.js", "properties": {"static_analysis": {"electron": {
+            "ipc": [{"location": {"start": {"line": 1}}, "side": "main", "operation": "handle",
+                     "channel": "app:save"}],
+            "browser_windows": [], "context_bridge_apis": []}}}}]})
+    ids = sorted(f["id"] for f in facts_from_graph(g))
+    assert ids == sorted(f["id"] for f in facts_from_graph(_graph()))   # nothing added, ids stable
+
+
+def test_scope_matches_source_file(tmp_path):
+    runs = _make_run(tmp_path, _embedded_graph())
+    res = _call(RebuildPlugin(run_dir=runs, rebuild_dir=tmp_path / "rb"),
+                {"name": "about", "run_id": "0123456789ab", "scope": ["preload/about"]})
+    spec = json.loads(Path(json.loads(res.content)["spec_path"]).read_text(encoding="utf-8"))
+    labels = sorted((f["kind"], f["label"]) for f in spec["facts"])
+    assert ("bridge-api", "Signal") in labels and ("ipc-channel", "shutdown") in labels
+    assert ("ipc-channel", "about:get") in labels   # its files list includes preload/about.js
