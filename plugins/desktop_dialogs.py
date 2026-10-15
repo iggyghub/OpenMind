@@ -194,21 +194,23 @@ class DesktopDialogs:
                 if hwnd == 0:
                     return ToolResult(content=json.dumps({"window_found": False, "flashing": False}))
                 
+                # HWND is pointer-sized: on 64-bit Windows a c_uint field makes the
+                # struct the wrong size and FlashWindowEx silently does nothing.
                 class FLASHWINFO(ctypes.Structure):
                     _fields_ = [
                         ("cbSize", ctypes.c_uint),
-                        ("hwnd", ctypes.c_uint),
-                        ("dwFlags", ctypes.c_uint),
+                        ("hwnd", ctypes.c_void_p),
+                        ("dwFlags", ctypes.c_ulong),
                         ("uCount", ctypes.c_uint),
-                        ("dwTimeout", ctypes.c_uint),
+                        ("dwTimeout", ctypes.c_ulong),
                     ]
-                
+
                 fwi = FLASHWINFO()
                 fwi.cbSize = ctypes.sizeof(FLASHWINFO)
                 fwi.hwnd = hwnd
-                fwi.dwFlags = 15 if start else 0
-                fwi.uCount = ctypes.c_uint(0)
-                fwi.dwTimeout = ctypes.c_uint(0)
+                fwi.dwFlags = 15 if start else 0  # FLASHW_ALL | FLASHW_TIMERNOFG, or FLASHW_STOP
+                fwi.uCount = 0
+                fwi.dwTimeout = 0
                 
                 self.user32.FlashWindowEx(ctypes.byref(fwi))
                 return ToolResult(content=json.dumps({"window_found": True, "flashing": start}))
