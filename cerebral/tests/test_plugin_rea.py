@@ -308,3 +308,49 @@ def test_analyze_needs_app_or_path(tmp_path):
     res = _call(ReaPlugin(run_dir=tmp_path), "rea_analyze_javascript", {})
     assert res.is_error and "'app' or 'path'" in res.content
 
+
+_INTEGRITY_ERR = json.dumps({"error": "JavaScript application analysis failed",
+                             "code": "artifact_integrity_mismatch",
+                             "message": "Declared ASAR integrity for unpacked entry x.node contradicts its companion file"})
+
+
+def test_integrity_mismatch_retries_with_record_and_continue(tmp_path):
+    target = tmp_path / "app.asar"
+    target.write_bytes(b"x")
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[1:2] == ["--version"]:
+            return MagicMock(stdout=REA_PINNED_VERSION, stderr="", returncode=0)
+        if "--integrity-policy" in argv:
+            return MagicMock(stdout=json.dumps(_app_doc(target)), stderr="", returncode=0)
+        return MagicMock(stdout=_INTEGRITY_ERR, stderr='{"rea_progress": {}}', returncode=1)
+
+    res = _call(ReaPlugin(run_fn=run, run_dir=tmp_path / "runs"), "rea_analyze_javascript", {"path": str(target)})
+    assert not res.is_error
+    out = json.loads(res.content)
+    assert out["integrity"].startswith("mismatch recorded")
+    analyses = [a for a in calls if "analyze-javascript-application" in a]
+    assert len(analyses) == 2 and analyses[1][-2:] == ["--integrity-policy", "record-and-continue"]
+
+
+def test_other_rea_errors_report_reas_message_not_progress(tmp_path):
+    target = tmp_path / "app"
+    target.mkdir()
+    err = json.dumps({"code": "parse_failed", "message": "could not parse bundle"})
+
+    def run(argv, **kw):
+        return MagicMock(stdout=err, stderr='{"rea_progress": {}}', returncode=1)
+
+    res = _call(ReaPlugin(run_fn=run, run_dir=tmp_path), "rea_analyze_javascript", {"path": str(target)})
+    assert res.is_error and "could not parse bundle" in res.content and "rea_progress" not in res.content
+
+
+def test_clean_run_reports_integrity_ok(tmp_path):
+    target = tmp_path / "app"
+    target.mkdir()
+    res = _call(ReaPlugin(run_fn=_app_runner(target), run_dir=tmp_path / "runs"),
+                "rea_analyze_javascript", {"path": str(target)})
+    assert json.loads(res.content)["integrity"] == "ok"
+

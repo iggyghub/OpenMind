@@ -420,18 +420,35 @@ class ReaPlugin:
         if not os.path.exists(path):
             return ToolResult(content=f"path does not exist: {path}", is_error=True)
 
-        try:
-            proc = self._exec(
-                ["rea", "analyze-javascript-application", path, "--json"],
-                timeout=_ANALYSIS_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired:
-            return ToolResult(content="rea analysis timed out", is_error=True)
-        except Exception as exc:
-            return ToolResult(content=f"rea failed to start: {exc}", is_error=True)
-        if proc.returncode != 0:
-            tail = (proc.stderr or "")[-500:]
-            return ToolResult(content=f"rea exited {proc.returncode}: {tail}", is_error=True)
+        argv = ["rea", "analyze-javascript-application", path, "--json"]
+        integrity_note = None
+        for attempt in range(2):
+            try:
+                proc = self._exec(argv, timeout=_ANALYSIS_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                return ToolResult(content="rea analysis timed out", is_error=True)
+            except Exception as exc:
+                return ToolResult(content=f"rea failed to start: {exc}", is_error=True)
+            if proc.returncode == 0:
+                break
+            # rea reports a failed analysis as a JSON error document on stdout;
+            # stderr only carries progress lines.
+            err = {}
+            try:
+                parsed = json.loads(proc.stdout or "")
+                err = parsed if isinstance(parsed, dict) else {}
+            except ValueError:
+                pass
+            if attempt == 0 and err.get("code") == "artifact_integrity_mismatch":
+                # Installers often re-sign unpacked native binaries after writing
+                # the archive, so the declared hash no longer matches. Static
+                # analysis of the user's own installed copy is still meaningful;
+                # rea keeps the observed bytes marked untrusted.
+                argv = argv + ["--integrity-policy", "record-and-continue"]
+                integrity_note = str(err.get("message") or "declared ASAR integrity did not match")[:300]
+                continue
+            reason = err.get("message") or (proc.stderr or "")[-500:]
+            return ToolResult(content=f"rea exited {proc.returncode}: {str(reason)[:600]}", is_error=True)
 
         try:
             doc = json.loads(proc.stdout)
@@ -459,6 +476,7 @@ class ReaPlugin:
             "statistics": normalized.get("statistics"),
             "limitations": doc.get("limitations") or [],
             "full_result_path": str(full_path),
+            "integrity": "mismatch recorded (analysed with record-and-continue)" if integrity_note else "ok",
         }
         (self._run_dir / f"{run_id}.summary.json").write_text(
             json.dumps(summary), encoding="utf-8"
