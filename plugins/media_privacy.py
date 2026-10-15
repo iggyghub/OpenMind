@@ -39,7 +39,7 @@ class MediaPrivacyPlugin:
                 with winreg.OpenKey(hkey, reg_key) as subkey:
                     value, _ = winreg.QueryValueEx(subkey, "Value")
                     return str(value)
-        except FileNotFoundError:
+        except OSError:  # missing key, access denied, or not on Windows
             return None
 
     def list_tools(self) -> list[Tool]:
@@ -84,6 +84,7 @@ class MediaPrivacyPlugin:
             "widgets": [
                 {
                     "type": "detail",
+                    "id": "media-status",
                     "fields": [
                         {"label": "Camera", "value": camera_status},
                         {"label": "Microphone", "value": mic_status}
@@ -92,12 +93,14 @@ class MediaPrivacyPlugin:
                 {
                     "type": "action",
                     "id": "media-open-camera",
+                    "label": "Open camera privacy settings",
                     "tool": "open_media_privacy_settings",
                     "tool_args": {"kind": "camera"}
                 },
                 {
                     "type": "action",
                     "id": "media-open-microphone",
+                    "label": "Open microphone privacy settings",
                     "tool": "open_media_privacy_settings",
                     "tool_args": {"kind": "microphone"}
                 }
