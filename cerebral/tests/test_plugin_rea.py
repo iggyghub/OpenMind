@@ -266,3 +266,45 @@ def test_browse_analyze_rejects_bad_kind(tmp_path):
     run, calls = _fake_cli()
     res = _call(ReaPlugin(run_fn=run, run_dir=tmp_path), "rea_browse_analyze", {"kind": "../x"})
     assert res.is_error and calls == []
+
+
+def _app_doc(target):
+    return {"operation": "x", "subject": {"name": str(target)},
+            "normalized_result": {"summary": {"ok": 1}, "statistics": {}}, "limitations": []}
+
+
+def _app_runner(target):
+    def run(argv, **kw):
+        if argv[1:2] == ["--version"]:
+            return MagicMock(stdout=REA_PINNED_VERSION, stderr="", returncode=0)
+        return MagicMock(stdout=json.dumps(_app_doc(target)), stderr="", returncode=0)
+    return run
+
+
+def test_analyze_by_app_name_resolves_and_analyses(tmp_path):
+    asar = _make_app(tmp_path / "apps", "signal-desktop")
+    plugin = ReaPlugin(run_fn=_app_runner(asar), run_dir=tmp_path / "runs", app_roots=[tmp_path / "apps"])
+    res = _call(plugin, "rea_analyze_javascript", {"app": "Signal"})
+    assert not res.is_error
+    assert json.loads(res.content)["summary"] == {"ok": 1}
+
+
+def test_analyze_by_app_name_unknown_lists_installed(tmp_path):
+    _make_app(tmp_path / "apps", "Discord")
+    plugin = ReaPlugin(run_fn=_app_runner("x"), run_dir=tmp_path / "runs", app_roots=[tmp_path / "apps"])
+    res = _call(plugin, "rea_analyze_javascript", {"app": "signal"})
+    assert res.is_error and "Discord" in res.content
+
+
+def test_analyze_by_app_name_ambiguous_asks_which(tmp_path):
+    _make_app(tmp_path / "apps", "signal-desktop")
+    _make_app(tmp_path / "apps", "signal-beta")
+    plugin = ReaPlugin(run_fn=_app_runner("x"), run_dir=tmp_path / "runs", app_roots=[tmp_path / "apps"])
+    res = _call(plugin, "rea_analyze_javascript", {"app": "signal"})
+    assert res.is_error and "several" in res.content
+
+
+def test_analyze_needs_app_or_path(tmp_path):
+    res = _call(ReaPlugin(run_dir=tmp_path), "rea_analyze_javascript", {})
+    assert res.is_error and "'app' or 'path'" in res.content
+

@@ -125,21 +125,25 @@ class ReaPlugin:
             Tool(
                 name="rea_analyze_javascript",
                 description=(
-                    "Statically analyse a local JavaScript/Electron application "
-                    "(extracted directory or .asar) with REA. Returns a compact "
-                    "summary, statistics and limitations; the full result is saved "
-                    "to disk and its path is returned."
+                    "Statically analyse a JavaScript/Electron application with REA. Give "
+                    "EITHER app (the name of an installed program, e.g. 'signal', 'discord' "
+                    "-- resolved to its app.asar automatically) OR path (an extracted app "
+                    "directory or .asar). Returns a compact summary, statistics and "
+                    "limitations; the full result is saved to disk and its path is returned."
                 ),
                 plugin=PLUGIN_NAME,
                 schema={
                     "type": "object",
                     "properties": {
+                        "app": {
+                            "type": "string",
+                            "description": "Name of an installed Electron app, e.g. 'signal'. Use this when the user names a program.",
+                        },
                         "path": {
                             "type": "string",
                             "description": "Absolute path to an app directory or .asar file.",
                         },
                     },
-                    "required": ["path"],
                 },
             ),
             Tool(
@@ -185,6 +189,8 @@ class ReaPlugin:
         if tool_name == "rea_status":
             return self._status()
         if tool_name == "rea_analyze_javascript":
+            if args.get("app") and not args.get("path"):
+                return self._analyze_app(args.get("app"))
             return self._analyze_javascript(args.get("path"))
         if tool_name == "rea_find_apps":
             return self._find_apps(args.get("query"))
@@ -387,9 +393,27 @@ class ReaPlugin:
             return ToolResult(content="No path chosen; nothing analysed.")
         return self._analyze_javascript(os.path.normpath(chosen))
 
+    def _analyze_app(self, app) -> ToolResult:
+        """Resolve an installed app's name to its app.asar, then analyse it."""
+        if not isinstance(app, str) or not app.strip():
+            return ToolResult(content="'app' or 'path' is required", is_error=True)
+        found = json.loads(self._find_apps(app).content)["apps"]
+        if len(found) == 1:
+            return self._analyze_javascript(found[0]["path"])
+        names = [a["name"] for a in json.loads(self._find_apps(None).content)["apps"]]
+        if not found:
+            return ToolResult(
+                content=f"No installed Electron app matches '{app}'. Installed: {', '.join(names) or 'none found'}.",
+                is_error=True,
+            )
+        return ToolResult(
+            content=f"'{app}' matches several apps: {', '.join(a['name'] for a in found)}. Which one?",
+            is_error=True,
+        )
+
     def _analyze_javascript(self, path) -> ToolResult:
         if not isinstance(path, str) or not path.strip():
-            return ToolResult(content="'path' is required", is_error=True)
+            return ToolResult(content="'app' or 'path' is required", is_error=True)
         path = path.strip()
         if path.startswith("-") or _BAD_PATH_CHARS.search(path):
             return ToolResult(content=f"invalid path: {path!r}", is_error=True)
