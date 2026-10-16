@@ -46,7 +46,7 @@ class ImageConvertPlugin:
         if to not in ("jpeg", "png", "webp"):
             return ToolResult(content=json.dumps({"error": f"Invalid format: {to}. Choose 'jpeg', 'png', or 'webp'."}), is_error=True)
 
-        if not isinstance(quality, int) or quality < 1 or quality > 100:
+        if not isinstance(quality, int) or isinstance(quality, bool) or quality < 1 or quality > 100:
             return ToolResult(content=json.dumps({"error": "Quality must be an integer between 1 and 100."}), is_error=True)
 
         try:
@@ -55,15 +55,21 @@ class ImageConvertPlugin:
             return ToolResult(content=json.dumps({"error": "Pillow is not installed. Please install it with `pip install Pillow`. For HEIC support, install `pillow-heif`."}), is_error=True)
 
         try:
-            img = Image.open(path)
+            # Load fully and close the file at once: an open handle keeps the
+            # source locked on Windows.
+            with Image.open(path) as src:
+                src.load()
+                img = src.copy()
         except Exception as e:
             return ToolResult(content=json.dumps({"error": f"Cannot open image: {e}. Note: HEIC files require the optional `pillow-heif` package."}), is_error=True)
 
         # Flatten transparency for JPEG
         if to == "jpeg":
             if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-                bg = Image.new("RGB", img.size, (255, 255, 255))
-                bg.paste(img, mask=img.split()[3])
+                # Normalise to RGBA first: only RGBA has an alpha band at index 3.
+                rgba = img.convert("RGBA")
+                bg = Image.new("RGB", rgba.size, (255, 255, 255))
+                bg.paste(rgba, mask=rgba.split()[3])
                 img = bg
             elif img.mode != "RGB":
                 img = img.convert("RGB")
@@ -81,12 +87,15 @@ class ImageConvertPlugin:
             counter += 1
 
         # Save
-        if to == "jpeg":
-            img.save(output_path, "JPEG", quality=quality)
-        elif to == "png":
-            img.save(output_path, "PNG", optimize=True)
-        else:
-            img.save(output_path, "WEBP", quality=quality)
+        try:
+            if to == "jpeg":
+                img.save(output_path, "JPEG", quality=quality)
+            elif to == "png":
+                img.save(output_path, "PNG", optimize=True)
+            else:
+                img.save(output_path, "WEBP", quality=quality)
+        except Exception as e:
+            return ToolResult(content=json.dumps({"error": f"Could not save {to}: {e}"}), is_error=True)
 
         width, height = img.size
         return ToolResult(content=json.dumps({"output": output_path, "width": width, "height": height}))

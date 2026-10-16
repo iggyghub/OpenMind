@@ -26,7 +26,9 @@ def test_rgba_flattened_for_jpeg():
         result = asyncio.run(plugin.call_tool("convert_image", {"path": src, "to": "jpeg"}))
         assert not result.is_error
         data = json.loads(result.content)
-        out_img = Image.open(data["output"])
+        with Image.open(data["output"]) as out_img:
+            out_img.load()
+            out_img = out_img.copy()
         assert out_img.mode == "RGB"
         assert data["width"] == 50
         assert data["height"] == 50
@@ -57,3 +59,30 @@ def test_not_an_image_is_error():
         assert result.is_error
         data = json.loads(result.content)
         assert "cannot open" in data["error"].lower()
+
+
+def test_la_and_palette_transparency_flatten_for_jpeg(tmp_path):
+    """Regression: only RGBA has an alpha band at index 3."""
+    from PIL import Image
+    la = tmp_path / "la.png"
+    Image.new("LA", (4, 4), (128, 0)).save(la)
+    pal = tmp_path / "pal.png"
+    p_img = Image.new("P", (4, 4), 0)
+    p_img.info["transparency"] = 0
+    p_img.save(pal, transparency=0)
+    plugin = create()
+    for src in (la, pal):
+        res = asyncio.run(plugin.call_tool("convert_image", {"path": str(src), "to": "jpeg"}))
+        assert not res.is_error, res.content
+        with Image.open(json.loads(res.content)["output"]) as out:
+            assert out.mode == "RGB"
+
+
+def test_source_file_is_not_left_locked(tmp_path):
+    from PIL import Image
+    src = tmp_path / "a.png"
+    Image.new("RGB", (2, 2)).save(src)
+    res = asyncio.run(create().call_tool("convert_image", {"path": str(src), "to": "webp"}))
+    assert not res.is_error
+    src.unlink()   # raises PermissionError on Windows if the plugin kept it open
+
