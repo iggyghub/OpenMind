@@ -354,3 +354,27 @@ def test_clean_run_reports_integrity_ok(tmp_path):
                 "rea_analyze_javascript", {"path": str(target)})
     assert json.loads(res.content)["integrity"] == "ok"
 
+
+def test_call_tool_does_not_block_the_event_loop(tmp_path):
+    """A slow tool must not freeze Cerebral's event loop (it froze for minutes before)."""
+    import time
+
+    def slow_run(argv, **kw):
+        time.sleep(0.5)
+        return MagicMock(stdout="v26.8.1", stderr="", returncode=0)
+
+    async def scenario():
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            for _ in range(20):
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        plugin = ReaPlugin(run_fn=slow_run, run_dir=tmp_path)
+        await asyncio.gather(plugin.call_tool("rea_status", {}), ticker())
+        return ticks
+
+    assert asyncio.run(scenario()) >= 15   # the ticker kept running during the 1 s of blocking work
+

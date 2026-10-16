@@ -13,6 +13,7 @@ instructions.
 
 Tool: rebuild_new.
 """
+import asyncio
 import json
 import re
 import subprocess
@@ -290,6 +291,12 @@ class RebuildPlugin:
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
+        # The work below blocks (subprocesses that run for minutes, tens of MB
+        # of JSON): run it in a worker thread so Cerebral's event loop -- chat,
+        # the tray connection, other tools -- keeps running meanwhile.
+        return await asyncio.to_thread(self._call_tool_sync, tool_name, args)
+
+    def _call_tool_sync(self, tool_name: str, args: dict) -> ToolResult:
         args = args or {}
         if tool_name == "rebuild_new":
             run_id = args.get("run_id")
