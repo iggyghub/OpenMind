@@ -82,6 +82,7 @@
         summary: 'What each section in the sidebar is for.',
         body: [
           'Conversation: talk to Felix and see each turn, including the tools it called.',
+          'Status pill (top of the window): Passive, Active, Thinking or Speaking during a conversation, and "Working: <tool>" while a tool runs outside a conversation turn, for example a panel button, a Hub tile or a scheduled job. Felix holds automatic updates until it is back to idle. Click the pill to open the Thinking feed.',
           'Harness: the plugins that give Felix its tools (with their status and switches) and the installed Skills.',
           'Hub: one tile for every plugin that has its own panel (REA today). Click a tile to open that panel beside the conversation. The cog next to the title lists the plugins with a search box; tick one to make it open in its own window instead. A plugin panel also opens in its own window automatically when the Felix window is narrow. Drag a tile onto the sidebar to pin it as its own button there, and drag a pinned button back onto Hub to unpin it. Drag any sidebar button to reorder them.',
           'Library: what Felix keeps for you. Sub-tabs cover Memory, Documents, Job search, Videos, Books, GitHub, Reddit and Webpage, plus Thinking, which shows what Felix has been doing behind the scenes.',

@@ -673,6 +673,7 @@
     .state-pill[data-state="thinking"] { color: var(--color-warning); border-color: var(--color-warning); }
     .state-pill[data-state="speaking"] { color: var(--state-speaking); border-color: var(--state-speaking); }
     .state-pill[data-state="active"]   { color: var(--color-success); border-color: var(--color-success);   }
+    .state-pill[data-state="working"]  { color: var(--accent); border-color: var(--accent); }
 
     /* ── health dot + panel ─────────────────────────────────── */
     .health {
@@ -6880,6 +6881,8 @@
        toggled by the THINKING pill. Dual-mode: window.ThinkingPanelMod
        here, module.exports for Node tests. -->
   <script src="../lib/thinking-panel.js"></script>
+  <!-- Status pill view (Working: <tool>) -- dual-mode: window.StatusPillMod. -->
+  <script src="../lib/status-pill.js"></script>
 
   <!-- Trading panel helpers (issue #848, S6-S9) -- strategy gauntlet cards +
        live lifecycle/fills/alerts. Dual-mode: window.TradingPanelMod here,
@@ -7274,6 +7277,7 @@
         },
         onClose: () => {
           wsConnected = false;
+          setWorking(null);
           latestHb = null;
           lastHeartbeatAt = 0;
           refreshHealth();
@@ -7303,6 +7307,9 @@
       if (next !== undefined) setState(next);
 
       switch (event.type) {
+        case 'working':
+          setWorking(event.data);
+          break;
         case 'profile_loaded':
           activeProfileId = event.data && event.data.id;
           // S8 -- sync voice picker to this profile's persisted voice.
@@ -7969,9 +7976,37 @@
     // update per second when the panel is closed (dot color only).
     setInterval(refreshHealth, 1000);
 
+    // Status pill: base state from STATE_MAP events + tools running outside a
+    // turn (Cerebral's `working` broadcast). Thinking/Speaking win.
+    let _pillBase = 'passive';
+    let _pillWorking = { count: 0, tool: null };
+    let _pillWorkingTimer = null;
+    function renderPill() {
+      const v = window.StatusPillMod.pillView(
+        _pillBase, _pillWorking, STATE_LABEL, window.ThinkingPanelMod.humanizeToolName);
+      statePill.dataset.state = v.state;
+      statePill.textContent = v.label;
+    }
+    function setWorking(data) {
+      const count = (data && typeof data.count === 'number') ? data.count : 0;
+      const tool = (data && data.tool) || null;
+      if (_pillWorkingTimer) { clearTimeout(_pillWorkingTimer); _pillWorkingTimer = null; }
+      if (count <= 0) {
+        _pillWorking = { count: 0, tool: null };
+        renderPill();
+        return;
+      }
+      // ponytail: 400ms show-delay so 2s panel polls never flash the pill.
+      _pillWorkingTimer = setTimeout(() => {
+        _pillWorkingTimer = null;
+        _pillWorking = { count, tool };
+        renderPill();
+      }, 400);
+    }
+
     function setState(state) {
-      statePill.dataset.state = state;
-      statePill.textContent = STATE_LABEL[state] || state;
+      _pillBase = state;
+      renderPill();
       // S20 (#303) -- show Stop only while a turn is in-flight.
       if (stopTurnBtn) stopTurnBtn.hidden = (state !== 'thinking' && state !== 'speaking');
     }
