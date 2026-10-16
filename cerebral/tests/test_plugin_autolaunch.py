@@ -49,3 +49,21 @@ def test_requires_boolean(plugin):
     assert result.is_error is True
     result2 = asyncio.run(plugin.call_tool("autolaunch_set", {"enabled": 1}))
     assert result2.is_error is True
+
+
+def test_default_startup_dir_is_expanded(monkeypatch, tmp_path):
+    """Regression: the default must be the real Startup folder, not a literal %APPDATA%."""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from plugins.autolaunch import create as _create
+    plugin = _create()
+    assert "%" not in str(plugin.startup_dir)
+    assert plugin.startup_dir == tmp_path / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
+
+def test_launcher_uses_crlf(tmp_path):
+    import asyncio
+    from plugins.autolaunch import create as _create
+    plugin = _create(startup_dir=tmp_path)
+    asyncio.run(plugin.call_tool("autolaunch_set", {"enabled": True}))
+    assert (tmp_path / "Felix.cmd").read_bytes().count(b"\r\n") >= 1
+
