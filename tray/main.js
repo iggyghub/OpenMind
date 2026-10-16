@@ -71,6 +71,7 @@ let _healthCheckResolve = null;
 let _healthCheckTimer   = null;
 let felixState  = 'idle';      // 'idle' | 'active'
 let selfDevCampaignRunning = false;
+let toolsWorking = 0;           // Cerebral `working` broadcast: tools running right now
 let activeProfile = null;
 let allProfiles   = [];
 let mainWindow        = null;
@@ -149,6 +150,7 @@ function connectToCerebral() {
 
   ws.on('close', () => {
     isConnected = false;
+    toolsWorking = 0;
     // Cerebral disconnected — close any open irreversible modals so the
     // user isn't left clicking buttons that go nowhere (the request will
     // time out on the Cerebral side and DENY). Inline consent cards in
@@ -287,13 +289,23 @@ function handleCerebralEvent(event) {
       selfDevCampaignRunning = !!(event.data && event.data.running);
       break;
 
+    case 'working':
+      toolsWorking = (event.data && typeof event.data.count === 'number') ? event.data.count : 0;
+      // A deferred auto-update waits for idle; a tool finishing outside a
+      // chat turn is an idle transition too (no 'passive' follows it).
+      if (toolsWorking === 0 && felixState === 'idle' && _pendingUpdateRestart && !_autoUpdatePaused) {
+        _pendingUpdateRestart = false;
+        restartFelixSelfDev();
+      }
+      break;
+
     case 'passive':
       felixState = 'idle';
       refreshMenu();
       routeToVisualiser(event);
       // #817 -- an auto-update was waiting for Felix to go idle before
       // restarting so it didn't cut off an in-progress response.
-      if (_pendingUpdateRestart && !_autoUpdatePaused) {
+      if (_pendingUpdateRestart && !_autoUpdatePaused && toolsWorking === 0) {
         _pendingUpdateRestart = false;
         restartFelixSelfDev();
       }
@@ -1243,7 +1255,7 @@ function _checkForMasterUpdate() {
       catch (_) { return false; }
     },
     bootSha: _bootSha,
-    isIdle:  felixState === 'idle' && !selfDevCampaignRunning,
+    isIdle:  felixState === 'idle' && !selfDevCampaignRunning && toolsWorking === 0,
     paused:  _autoUpdatePaused,
   });
 
