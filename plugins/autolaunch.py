@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from cerebral.mcp.orchestrator import Tool, ToolResult
 
@@ -10,7 +11,10 @@ class AutolaunchPlugin:
     name = PLUGIN_NAME
 
     def __init__(self, startup_dir=None, root=None):
-        self.startup_dir = Path(startup_dir or r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup")
+        # A literal "%APPDATA%" is never expanded by pathlib: resolve the real folder.
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        default_dir = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+        self.startup_dir = Path(startup_dir) if startup_dir else default_dir
         self.root = root or Path(__file__).resolve().parent.parent
         self.launcher_file = self.startup_dir / "Felix.cmd"
 
@@ -43,7 +47,8 @@ class AutolaunchPlugin:
             if enabled:
                 self.startup_dir.mkdir(parents=True, exist_ok=True)
                 content = f"@echo off\nstart \"\" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{self.root}\\scripts\\launch-felix.ps1\""
-                self.launcher_file.write_text(content)
+                # .cmd files are read by cmd.exe: write Windows line endings.
+                self.launcher_file.write_text(content, encoding="ascii", newline="\r\n")
             else:
                 if self.launcher_file.exists():
                     self.launcher_file.unlink()

@@ -1,0 +1,410 @@
+{
+  "implements": {
+    "F-bridge-api-1": {
+      "symbol": "plugins/media_privacy.py::MediaPrivacyPlugin.panel_spec",
+      "test": "cerebral/tests/test_plugin_media_privacy.py::test_panel_shows_both_and_open_actions"
+    },
+    "F-bridge-api-4": {
+      "symbol": "plugins/app_info.py::app_config",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_app_config_fields"
+    },
+    "F-bridge-api-6": {
+      "symbol": "plugins/debuglog.py::DebuglogPlugin.panel_spec",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_panel_has_refresh_and_report"
+    },
+    "F-ipc-channel-1": {
+      "symbol": "plugins/debuglog.py::build_report",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_report_has_environment_header"
+    },
+    "F-ipc-channel-3": {
+      "symbol": "plugins/app_info.py::app_config",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_app_config_fields"
+    },
+    "F-ipc-channel-5": {
+      "symbol": "plugins/secure_clipboard.py::clipboard_clear",
+      "test": "cerebral/tests/test_plugin_secure_clipboard.py::test_clear_empties_clipboard"
+    },
+    "F-ipc-channel-6": {
+      "symbol": "plugins/secure_clipboard.py::clipboard_clear_if_needed",
+      "test": "cerebral/tests/test_plugin_secure_clipboard.py::test_clear_if_needed_only_when_armed"
+    },
+    "F-ipc-channel-7": {
+      "symbol": "plugins/secure_clipboard.py::clipboard_copy_temporarily",
+      "test": "cerebral/tests/test_plugin_secure_clipboard.py::test_copy_temporarily_writes_and_schedules_clear"
+    },
+    "F-ipc-channel-13": {
+      "symbol": "plugins/desktop_dialogs.py::flash_attention",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_flash_attention_start_and_stop"
+    },
+    "F-ipc-channel-14": {
+      "symbol": "plugins/desktop_dialogs.py::flash_attention",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_flash_attention_start_and_stop"
+    },
+    "F-ipc-channel-24": {
+      "symbol": "plugins/image_convert.py::convert_image",
+      "test": "cerebral/tests/test_plugin_image_convert.py::test_png_to_jpeg"
+    },
+    "F-ipc-channel-32": {
+      "symbol": "plugins/desktop_dialogs.py::flash_attention",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_flash_attention_start_and_stop"
+    },
+    "F-ipc-channel-41": {
+      "symbol": "plugins/debuglog.py::fetch_log_entries",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_fetch_reads_tail_of_each_log"
+    },
+    "F-ipc-channel-42": {
+      "symbol": "plugins/autolaunch.py::autolaunch_status",
+      "test": "cerebral/tests/test_plugin_autolaunch.py::test_status_disabled_by_default"
+    },
+    "F-ipc-channel-44": {
+      "symbol": "plugins/app_info.py::app_config",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_app_config_fields"
+    },
+    "F-ipc-channel-45": {
+      "symbol": "plugins/media_privacy.py::media_access_status",
+      "test": "cerebral/tests/test_plugin_media_privacy.py::test_status_maps_registry_values"
+    },
+    "F-ipc-channel-46": {
+      "symbol": "plugins/app_info.py::user_data_path",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_user_data_path_under_root"
+    },
+    "F-ipc-channel-53": {
+      "symbol": "plugins/app_info.py::os_theme",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_os_theme_dark_and_light"
+    },
+    "F-ipc-channel-54": {
+      "symbol": "plugins/app_info.py::resolve_host",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_resolve_host_returns_unique_sorted"
+    },
+    "F-ipc-channel-56": {
+      "symbol": "plugins/media_privacy.py::open_media_privacy_settings",
+      "test": "cerebral/tests/test_plugin_media_privacy.py::test_open_settings_uses_ms_settings_uri"
+    },
+    "F-ipc-channel-69": {
+      "symbol": "plugins/autolaunch.py::autolaunch_set",
+      "test": "cerebral/tests/test_plugin_autolaunch.py::test_enable_writes_launcher_cmd"
+    },
+    "F-ipc-channel-79": {
+      "symbol": "plugins/debuglog.py::DebuglogPlugin.panel_spec",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_panel_has_refresh_and_report"
+    },
+    "F-ipc-channel-80": {
+      "symbol": "plugins/debuglog.py::debuglog_save",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_save_writes_chosen_path"
+    },
+    "F-ipc-channel-81": {
+      "symbol": "plugins/desktop_dialogs.py::show_in_folder",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_show_in_folder_runs_explorer_select"
+    },
+    "F-ipc-channel-82": {
+      "symbol": "plugins/desktop_dialogs.py::message_box",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_message_box_spawns_and_validates_kind"
+    },
+    "F-ipc-channel-83": {
+      "symbol": "plugins/desktop_dialogs.py::pick_folder",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_pick_folder_returns_path"
+    },
+    "F-ipc-channel-84": {
+      "symbol": "plugins/media_privacy.py::MediaPrivacyPlugin.panel_spec",
+      "test": "cerebral/tests/test_plugin_media_privacy.py::test_panel_shows_both_and_open_actions"
+    },
+    "F-ipc-channel-85": {
+      "symbol": "plugins/desktop_dialogs.py::pick_save_path",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_pick_save_path_default_name_passed"
+    },
+    "F-ipc-handler-1": {
+      "symbol": "plugins/debuglog.py::build_report",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_report_has_environment_header"
+    },
+    "F-ipc-handler-3": {
+      "symbol": "plugins/app_info.py::app_config",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_app_config_fields"
+    },
+    "F-ipc-handler-5": {
+      "symbol": "plugins/secure_clipboard.py::clipboard_clear",
+      "test": "cerebral/tests/test_plugin_secure_clipboard.py::test_clear_empties_clipboard"
+    },
+    "F-ipc-handler-6": {
+      "symbol": "plugins/secure_clipboard.py::clipboard_clear_if_needed",
+      "test": "cerebral/tests/test_plugin_secure_clipboard.py::test_clear_if_needed_only_when_armed"
+    },
+    "F-ipc-handler-7": {
+      "symbol": "plugins/secure_clipboard.py::clipboard_copy_temporarily",
+      "test": "cerebral/tests/test_plugin_secure_clipboard.py::test_copy_temporarily_writes_and_schedules_clear"
+    },
+    "F-ipc-handler-13": {
+      "symbol": "plugins/desktop_dialogs.py::flash_attention",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_flash_attention_start_and_stop"
+    },
+    "F-ipc-handler-14": {
+      "symbol": "plugins/desktop_dialogs.py::flash_attention",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_flash_attention_start_and_stop"
+    },
+    "F-ipc-handler-23": {
+      "symbol": "plugins/image_convert.py::convert_image",
+      "test": "cerebral/tests/test_plugin_image_convert.py::test_png_to_jpeg"
+    },
+    "F-ipc-handler-31": {
+      "symbol": "plugins/desktop_dialogs.py::flash_attention",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_flash_attention_start_and_stop"
+    },
+    "F-ipc-handler-40": {
+      "symbol": "plugins/debuglog.py::fetch_log_entries",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_fetch_reads_tail_of_each_log"
+    },
+    "F-ipc-handler-41": {
+      "symbol": "plugins/autolaunch.py::autolaunch_status",
+      "test": "cerebral/tests/test_plugin_autolaunch.py::test_status_disabled_by_default"
+    },
+    "F-ipc-handler-43": {
+      "symbol": "plugins/app_info.py::app_config",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_app_config_fields"
+    },
+    "F-ipc-handler-44": {
+      "symbol": "plugins/media_privacy.py::media_access_status",
+      "test": "cerebral/tests/test_plugin_media_privacy.py::test_status_maps_registry_values"
+    },
+    "F-ipc-handler-45": {
+      "symbol": "plugins/app_info.py::user_data_path",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_user_data_path_under_root"
+    },
+    "F-ipc-handler-52": {
+      "symbol": "plugins/app_info.py::os_theme",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_os_theme_dark_and_light"
+    },
+    "F-ipc-handler-53": {
+      "symbol": "plugins/app_info.py::resolve_host",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_resolve_host_returns_unique_sorted"
+    },
+    "F-ipc-handler-55": {
+      "symbol": "plugins/media_privacy.py::open_media_privacy_settings",
+      "test": "cerebral/tests/test_plugin_media_privacy.py::test_open_settings_uses_ms_settings_uri"
+    },
+    "F-ipc-handler-67": {
+      "symbol": "plugins/autolaunch.py::autolaunch_set",
+      "test": "cerebral/tests/test_plugin_autolaunch.py::test_enable_writes_launcher_cmd"
+    },
+    "F-ipc-handler-77": {
+      "symbol": "plugins/debuglog.py::DebuglogPlugin.panel_spec",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_panel_has_refresh_and_report"
+    },
+    "F-ipc-handler-78": {
+      "symbol": "plugins/debuglog.py::debuglog_save",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_save_writes_chosen_path"
+    },
+    "F-ipc-handler-79": {
+      "symbol": "plugins/desktop_dialogs.py::show_in_folder",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_show_in_folder_runs_explorer_select"
+    },
+    "F-ipc-handler-80": {
+      "symbol": "plugins/desktop_dialogs.py::message_box",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_message_box_spawns_and_validates_kind"
+    },
+    "F-ipc-handler-81": {
+      "symbol": "plugins/desktop_dialogs.py::pick_folder",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_pick_folder_returns_path"
+    },
+    "F-ipc-handler-82": {
+      "symbol": "plugins/media_privacy.py::MediaPrivacyPlugin.panel_spec",
+      "test": "cerebral/tests/test_plugin_media_privacy.py::test_panel_shows_both_and_open_actions"
+    },
+    "F-ipc-handler-83": {
+      "symbol": "plugins/desktop_dialogs.py::pick_save_path",
+      "test": "cerebral/tests/test_plugin_desktop_dialogs.py::test_pick_save_path_default_name_passed"
+    },
+    "F-window-4": {
+      "symbol": "plugins/app_info.py::app_config",
+      "test": "cerebral/tests/test_plugin_app_info.py::test_app_config_fields"
+    },
+    "F-window-5": {
+      "symbol": "plugins/debuglog.py::DebuglogPlugin.panel_spec",
+      "test": "cerebral/tests/test_plugin_debuglog.py::test_panel_has_refresh_and_report"
+    },
+    "F-window-7": {
+      "symbol": "plugins/media_privacy.py::MediaPrivacyPlugin.panel_spec",
+      "test": "cerebral/tests/test_plugin_media_privacy.py::test_panel_shows_both_and_open_actions"
+    }
+  },
+  "waived": {
+    "F-bridge-api-2": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-bridge-api-3": "Signal call screen sharing (needs Signal's call infrastructure)",
+    "F-bridge-api-5": "already in Felix: PDF export through the Documents plugin",
+    "F-bridge-api-7": "SignalContext is Signal's shared window context (theme, OS, i18n), not a feature",
+    "F-bridge-api-8": "SignalContext is Signal's shared window context (theme, OS, i18n), not a feature",
+    "F-bridge-api-9": "SignalContext is Signal's shared window context (theme, OS, i18n), not a feature",
+    "F-bridge-api-10": "SignalContext is Signal's shared window context (theme, OS, i18n), not a feature",
+    "F-bridge-api-11": "SignalContext is Signal's shared window context (theme, OS, i18n), not a feature",
+    "F-bridge-api-12": "SignalContext is Signal's shared window context (theme, OS, i18n), not a feature",
+    "F-bridge-api-13": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-bridge-api-14": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-bridge-api-15": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-endpoint-1": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-2": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-3": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-4": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-5": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-6": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-7": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-8": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-9": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-10": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-11": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-12": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-endpoint-13": "a field name inside Signal's service payloads (notifications, stickers, payments), not a feature",
+    "F-ipc-channel-2": "uploads logs to Signal's servers; Felix has no log server and sending logs off the machine is a privacy change",
+    "F-ipc-channel-4": "talks to Signal's own service (servers, CDN, captcha); Felix has no Signal account",
+    "F-ipc-channel-8": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-9": "talks to Signal's own service (servers, CDN, captcha); Felix has no Signal account",
+    "F-ipc-channel-10": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-ipc-channel-11": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-ipc-channel-12": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-ipc-channel-15": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-channel-16": "talks to Signal's own service (servers, CDN, captcha); Felix has no Signal account",
+    "F-ipc-channel-17": "Signal's CI test hooks; no user-facing behaviour",
+    "F-ipc-channel-18": "Signal's CI test hooks; no user-facing behaviour",
+    "F-ipc-channel-19": "Signal's CI test hooks; no user-facing behaviour",
+    "F-ipc-channel-20": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-21": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-22": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-channel-23": "closing a Felix panel is the workspace tab's close button",
+    "F-ipc-channel-25": "Signal's translation catalogue; Felix is single-language and has no locale data to serve",
+    "F-ipc-channel-26": "Signal's crash-dump store; Felix's tracebacks are in cerebral.err.log, shown by the Debug log rebuild",
+    "F-ipc-channel-27": "Signal's crash-dump store; Felix's tracebacks are in cerebral.err.log, shown by the Debug log rebuild",
+    "F-ipc-channel-28": "Signal's crash-dump store; Felix's tracebacks are in cerebral.err.log, shown by the Debug log rebuild",
+    "F-ipc-channel-29": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-30": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-31": "Felix's logs are rewritten on every launch (launcher redirect), so there is nothing to purge",
+    "F-ipc-channel-33": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-34": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-35": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-36": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-37": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-38": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-39": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-40": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-43": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-channel-47": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-48": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-49": "already in Felix: the ui_scale setting (Settings > Appearance)",
+    "F-ipc-channel-50": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-ipc-channel-51": "Signal's translation catalogue; Felix is single-language and has no locale data to serve",
+    "F-ipc-channel-52": "Signal's translation catalogue; Felix is single-language and has no locale data to serve",
+    "F-ipc-channel-55": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-channel-57": "already in Felix: the Documents plugin exports PDF through LibreOffice (ADR-0011)",
+    "F-ipc-channel-58": "already in Felix: the Documents plugin exports PDF through LibreOffice (ADR-0011)",
+    "F-ipc-channel-59": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-channel-60": "Windows Hello prompt; Felix confirms risky actions with its own consent gate (ADR-0005)",
+    "F-ipc-channel-61": "Signal's updater; Felix updates from git via the tray auto-update (ADR-0015 #817)",
+    "F-ipc-channel-62": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-channel-63": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-64": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-channel-65": "already in Felix: the restart_felix command",
+    "F-ipc-channel-66": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-67": "Signal call screen sharing (needs Signal's call infrastructure)",
+    "F-ipc-channel-68": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-70": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-71": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-channel-72": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-73": "already in Felix: the ui_scale setting (Settings > Appearance)",
+    "F-ipc-channel-74": "already in Felix: the camera_enabled / mic_mode settings",
+    "F-ipc-channel-75": "already in Felix: the camera_enabled / mic_mode settings",
+    "F-ipc-channel-76": "already in Felix: the camera_enabled / mic_mode settings",
+    "F-ipc-channel-77": "already in Felix: the camera_enabled / mic_mode settings",
+    "F-ipc-channel-78": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-channel-86": "Signal call screen sharing (needs Signal's call infrastructure)",
+    "F-ipc-channel-87": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-88": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-channel-89": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-channel-90": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-91": "Signal's updater; Felix updates from git via the tray auto-update (ADR-0015 #817)",
+    "F-ipc-channel-92": "Signal call screen sharing (needs Signal's call infrastructure)",
+    "F-ipc-channel-93": "Signal call screen sharing (needs Signal's call infrastructure)",
+    "F-ipc-channel-94": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-channel-95": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-96": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-channel-97": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-channel-98": "Signal's updater; Felix updates from git via the tray auto-update (ADR-0015 #817)",
+    "F-ipc-channel-99": "already in Felix: the tray's NotificationManager",
+    "F-ipc-channel-100": "already in Felix: the tray's NotificationManager",
+    "F-ipc-handler-2": "uploads logs to Signal's servers; Felix has no log server and sending logs off the machine is a privacy change",
+    "F-ipc-handler-4": "talks to Signal's own service (servers, CDN, captcha); Felix has no Signal account",
+    "F-ipc-handler-8": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-9": "talks to Signal's own service (servers, CDN, captcha); Felix has no Signal account",
+    "F-ipc-handler-10": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-ipc-handler-11": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-ipc-handler-12": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-ipc-handler-15": "talks to Signal's own service (servers, CDN, captcha); Felix has no Signal account",
+    "F-ipc-handler-16": "Signal's CI test hooks; no user-facing behaviour",
+    "F-ipc-handler-17": "Signal's CI test hooks; no user-facing behaviour",
+    "F-ipc-handler-18": "Signal's CI test hooks; no user-facing behaviour",
+    "F-ipc-handler-19": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-20": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-21": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-handler-22": "closing a Felix panel is the workspace tab's close button",
+    "F-ipc-handler-24": "Signal's translation catalogue; Felix is single-language and has no locale data to serve",
+    "F-ipc-handler-25": "Signal's crash-dump store; Felix's tracebacks are in cerebral.err.log, shown by the Debug log rebuild",
+    "F-ipc-handler-26": "Signal's crash-dump store; Felix's tracebacks are in cerebral.err.log, shown by the Debug log rebuild",
+    "F-ipc-handler-27": "Signal's crash-dump store; Felix's tracebacks are in cerebral.err.log, shown by the Debug log rebuild",
+    "F-ipc-handler-28": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-29": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-30": "Felix's logs are rewritten on every launch (launcher redirect), so there is nothing to purge",
+    "F-ipc-handler-32": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-33": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-34": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-35": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-36": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-37": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-38": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-39": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-42": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-handler-46": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-47": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-48": "already in Felix: the ui_scale setting (Settings > Appearance)",
+    "F-ipc-handler-49": "Signal sticker packs are uploaded to and installed from Signal's servers",
+    "F-ipc-handler-50": "Signal's translation catalogue; Felix is single-language and has no locale data to serve",
+    "F-ipc-handler-51": "Signal's translation catalogue; Felix is single-language and has no locale data to serve",
+    "F-ipc-handler-54": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-handler-56": "already in Felix: the Documents plugin exports PDF through LibreOffice (ADR-0011)",
+    "F-ipc-handler-57": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-handler-58": "Windows Hello prompt; Felix confirms risky actions with its own consent gate (ADR-0005)",
+    "F-ipc-handler-59": "Signal's updater; Felix updates from git via the tray auto-update (ADR-0015 #817)",
+    "F-ipc-handler-60": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-handler-61": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-62": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-handler-63": "already in Felix: the restart_felix command",
+    "F-ipc-handler-64": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-65": "Signal call screen sharing (needs Signal's call infrastructure)",
+    "F-ipc-handler-66": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-68": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-69": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-handler-70": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-71": "already in Felix: the ui_scale setting (Settings > Appearance)",
+    "F-ipc-handler-72": "already in Felix: the camera_enabled / mic_mode settings",
+    "F-ipc-handler-73": "already in Felix: the camera_enabled / mic_mode settings",
+    "F-ipc-handler-74": "already in Felix: the camera_enabled / mic_mode settings",
+    "F-ipc-handler-75": "already in Felix: the camera_enabled / mic_mode settings",
+    "F-ipc-handler-76": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-handler-84": "Signal call screen sharing (needs Signal's call infrastructure)",
+    "F-ipc-handler-85": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-86": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-handler-87": "Signal process lifecycle handshakes; Felix's launcher/tray handle start, restart and quit",
+    "F-ipc-handler-88": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-89": "Signal's updater; Felix updates from git via the tray auto-update (ADR-0015 #817)",
+    "F-ipc-handler-90": "Signal call screen sharing (needs Signal's call infrastructure)",
+    "F-ipc-handler-91": "internal to Signal's encrypted message database and attachment store; Felix keeps no Signal data",
+    "F-ipc-handler-92": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-93": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-ipc-handler-94": "Signal's own window chrome/menu/tray; Felix's tray and menus are Electron UI already covered by Felix itself",
+    "F-ipc-handler-95": "Signal's updater; Felix updates from git via the tray auto-update (ADR-0015 #817)",
+    "F-ipc-handler-96": "already in Felix: the tray's NotificationManager",
+    "F-ipc-handler-97": "already in Felix: the tray's NotificationManager",
+    "F-storage-1": "Signal's 'debug' logging flag in localStorage, not a feature",
+    "F-storage-2": "Signal's 'debug' logging flag in localStorage, not a feature",
+    "F-window-1": "Signal's main messaging window: needs a Signal account, its servers and the Signal protocol",
+    "F-window-2": "hidden window Signal uses to render PDFs; Felix exports PDF via LibreOffice",
+    "F-window-3": "Signal call screen sharing (needs Signal's call infrastructure)",
+    "F-window-6": "Signal calling (needs a Signal account and Signal's call servers); not a local feature",
+    "F-window-8": "Signal's loading splash; Felix shows startup state in its tray",
+    "F-window-9": "Signal sticker packs are uploaded to and installed from Signal's servers"
+  }
+}
