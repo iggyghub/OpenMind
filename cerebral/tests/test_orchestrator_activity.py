@@ -40,6 +40,7 @@ async def test_activity_reports_start_and_end():
 async def test_activity_reports_count_while_running():
     orc = MCPOrchestrator()
     plugin = _make_plugin("p1", "t")
+    orc.register(plugin)
     events = []
     def cb(count, tool):
         events.append((count, tool))
@@ -52,7 +53,7 @@ async def test_activity_reports_count_while_running():
     plugin.call_tool.side_effect = side_effect
     
     await orc.call_tool("t", {}, capability=GATE_EXEMPT)
-    assert events[-1] == (1, "t")
+    assert events == [(1, "t"), (0, None)]
 
 
 @pytest.mark.asyncio
@@ -60,6 +61,7 @@ async def test_activity_ends_when_tool_raises():
     orc = MCPOrchestrator()
     plugin = _make_plugin("p1", "t")
     plugin.call_tool.side_effect = RuntimeError("boom")
+    orc.register(plugin)
     
     events = []
     def cb(count, tool):
@@ -110,6 +112,7 @@ async def test_activity_not_reported_when_gate_denies():
 async def test_callback_error_does_not_break_call():
     orc = MCPOrchestrator()
     plugin = _make_plugin("p1", "t")
+    orc.register(plugin)
     
     def bad_cb(count, tool):
         raise ValueError("callback broke")
