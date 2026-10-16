@@ -223,6 +223,11 @@ class MCPOrchestrator:
         # irreversible fails closed to DENY regardless of any grant.
         self._modal: ModalSurface | None = modal
         self._watch = None  # runtime watch -- set_watch (ADR-0005 amendment 2026-10-11)
+        # Tools currently running (dispatched past the gate), oldest first, and
+        # a callback(count, newest_tool_or_None) fired on every change. Feeds
+        # the tray's "Working: <tool>" status pill -- set_on_activity.
+        self._active_tools: list[str] = []
+        self._on_activity = None
         # Module-level REQUIRED_CAPABILITIES per registered plugin (Issue #44).
         # Used by the tray UI and (later) by #47 to decide per-tool gates.
         self._plugin_capabilities: dict[str, frozenset[str]] = {}
@@ -290,6 +295,21 @@ class MCPOrchestrator:
         it flags (untrusted-content taint, anomaly) routes to the consent
         surface with a reason. None = no watch (tests, bare process)."""
         self._watch = watch
+
+    def set_on_activity(self, callback: "object | None") -> None:
+        """callback(count: int, tool: str | None), called synchronously each
+        time a tool starts or finishes running. tool is the newest still-running
+        tool, None when count is 0. None = no callback."""
+        self._on_activity = callback
+
+    def _notify_activity(self) -> None:
+        if self._on_activity is None:
+            return
+        tool = self._active_tools[-1] if self._active_tools else None
+        try:
+            self._on_activity(len(self._active_tools), tool)
+        except Exception:
+            logger.exception("[mcp] on_activity callback failed")
 
     def set_modal_surface(self, modal: ModalSurface | None) -> None:
         """Wire (or unwire) the tray irreversible-modal surface (Issue #49).
@@ -752,11 +772,16 @@ class MCPOrchestrator:
                 )
         plugin_name = self._tool_index[name]
         plugin = self._plugins[plugin_name]
+        self._active_tools.append(name)
+        self._notify_activity()
         try:
             result = await plugin.call_tool(name, args)
         except Exception as exc:
             logger.error("[mcp] Tool '%s' raised: %s", name, exc)
             return ToolResult(content=f"Tool '{name}' error: {exc}", is_error=True)
+        finally:
+            self._active_tools.remove(name)
+            self._notify_activity()
         if self._watch is not None:
             self._watch.after_call(name, self._effective_caps(name))
         return result

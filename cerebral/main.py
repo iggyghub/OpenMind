@@ -1655,6 +1655,24 @@ from cerebral.security.watch import Watch as _Watch  # noqa: E402
 _watch = _Watch()
 _orc.set_watch(_watch)
 
+# Status pill (tray): every tool that actually runs -- chat turn, panel, Hub,
+# tray IPC, scheduler -- is counted in the orchestrator; broadcast the count so
+# the pill can show "Working: <tool>" and the auto-updater waits for 0.
+_working_tasks: set = set()
+
+
+def _on_tool_activity(count: int, tool: "str | None") -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # no running loop (import time, sync tests)
+    task = loop.create_task(_broadcast({"type": "working", "data": {"count": count, "tool": tool}}))
+    _working_tasks.add(task)
+    task.add_done_callback(_working_tasks.discard)
+
+
+_orc.set_on_activity(_on_tool_activity)
+
 
 def _seed_watch_baseline(profile_id: int) -> None:
     from datetime import datetime, timedelta, timezone  # ts column is UTC CURRENT_TIMESTAMP
