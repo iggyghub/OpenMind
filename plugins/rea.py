@@ -15,6 +15,7 @@ compact summary (+ the saved path) goes back to the model and the panel.
 Tools: rea_status, rea_analyze_javascript. Also exposes panel_spec() (ADR-0012),
 so the workspace "+ Panel" opener lists it as the "REA" panel.
 """
+import asyncio
 import json
 import os
 import re
@@ -185,6 +186,12 @@ class ReaPlugin:
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
+        # The work below blocks (subprocesses that run for minutes, tens of MB
+        # of JSON): run it in a worker thread so Cerebral's event loop -- chat,
+        # the tray connection, other tools -- keeps running meanwhile.
+        return await asyncio.to_thread(self._call_tool_sync, tool_name, args)
+
+    def _call_tool_sync(self, tool_name: str, args: dict) -> ToolResult:
         args = args or {}
         if tool_name == "rea_status":
             return self._status()
