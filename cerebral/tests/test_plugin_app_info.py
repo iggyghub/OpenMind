@@ -18,14 +18,14 @@ def test_app_config_fields():
     assert isinstance(data["platform"], str)
     assert isinstance(data["os_class"], str)
     assert isinstance(data["python"], str)
-    assert data["user_data_path"].endswith("cerebral/data")
+    assert Path(data["user_data_path"]) == Path("/tmp/fake_root") / "cerebral" / "data"
 
 
 def test_user_data_path_under_root():
     plugin = create(root=Path("/custom/root"))
     result = asyncio.run(plugin.call_tool("user_data_path", {}))
     data = json.loads(result.content)
-    assert data["path"] == "/custom/root/cerebral/data"
+    assert Path(data["path"]) == Path("/custom/root") / "cerebral" / "data"
 
 
 def test_os_theme_dark_and_light():
@@ -54,6 +54,7 @@ def test_resolve_host_returns_unique_sorted():
 def test_resolve_host_rejects_bad_names():
     plugin = create()
     result = asyncio.run(plugin.call_tool("resolve_host", {"host": "-invalid.com"}))
+    assert result.is_error is True
     data = json.loads(result.content)
     assert data.get("is_error") is True
 
@@ -62,6 +63,7 @@ def test_resolve_host_error_is_reported():
     mock_resolver = MagicMock(side_effect=socket.gaierror("Host not found"))
     plugin = create(resolver=mock_resolver)
     result = asyncio.run(plugin.call_tool("resolve_host", {"host": "test.local", "family": "any"}))
+    assert result.is_error is True
     data = json.loads(result.content)
     assert data.get("is_error") is True
     assert "error" in data

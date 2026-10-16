@@ -24,8 +24,7 @@ class AppInfoPlugin:
         self._theme_cache = None
 
     def _get_theme(self):
-        if self._theme_cache is not None:
-            return self._theme_cache
+        # Read every time: the user can switch light/dark while Felix runs.
         try:
             import winreg
             with winreg.OpenKey(
@@ -33,10 +32,9 @@ class AppInfoPlugin:
                 r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
             ) as key:
                 val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-                self._theme_cache = int(val)
+                return int(val)
         except Exception:
-            self._theme_cache = None
-        return self._theme_cache
+            return None
 
     def _resolve_theme(self):
         if self._theme_read_fn is not None:
@@ -87,7 +85,9 @@ class AppInfoPlugin:
             elif tool_name == "os_theme":
                 return ToolResult(content=json.dumps(self.os_theme()))
             elif tool_name == "resolve_host":
-                return ToolResult(content=json.dumps(self.resolve_host(args.get("host", ""), args.get("family", "any"))))
+                result = self.resolve_host(args.get("host", ""), args.get("family", "any"))
+                # Flag failures on the ToolResult too, or the planner reads them as success.
+                return ToolResult(content=json.dumps(result), is_error=bool(result.get("is_error")))
             else:
                 return ToolResult(content=f"Unknown tool: {tool_name}", is_error=True)
         except Exception as e:
