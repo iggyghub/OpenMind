@@ -472,6 +472,18 @@ def test_subdir_with_no_server_py_records_non_conforming_path(tmp_path):
     assert err["reason"] == REASON_NOT_INSPECTABLE_PATH
 
 
+def test_subdir_with_no_python_is_data_not_a_plugin(tmp_path):
+    """plugins/rebuild_manifests/ holds JSON only: not a plugin, no refusal."""
+    sub = tmp_path / "rebuild_manifests"
+    sub.mkdir()
+    (sub / "felix-dialogs.json").write_text("{}")
+    orc = MCPOrchestrator()
+    orc.discover_plugins(tmp_path)
+
+    assert orc.list_tools() == []
+    assert orc.registration_errors == []
+
+
 def test_underscored_dirs_other_than_trusted_are_silently_ignored(tmp_path):
     """`__pycache__/`, `_drafts/`, `_archive/` etc. are private scaffolding
     and must not pollute the registration_errors list."""
@@ -505,6 +517,7 @@ def test_partial_refusal_leaves_good_plugins_intact(tmp_path):
     )
     bare = tmp_path / "bare"
     bare.mkdir()
+    (bare / "main.py").write_text("# code without server.py")
 
     orc = MCPOrchestrator()
     orc.discover_plugins(tmp_path)

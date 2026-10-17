@@ -866,7 +866,9 @@ class MCPOrchestrator:
             server_py = sub / "server.py"
             if server_py.is_file():
                 self._load_plugin_file(server_py, inspectability=INSPECTED, disabled=_disabled)
-            else:
+            elif any(sub.glob("*.py")):
+                # Code without server.py is a broken plugin layout -- surface it.
+                # A folder with no Python at all is data (rebuild_manifests/), not a plugin.
                 self._record_registration_error(
                     sub.name,
                     REASON_NOT_INSPECTABLE_PATH,
