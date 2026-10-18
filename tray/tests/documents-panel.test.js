@@ -237,9 +237,7 @@ describe('renderList folders', () => {
     expect(html).toContain('(2)');
   });
 
-  test('folders are collapsed unless listed open', () => {
-    expect(DocumentsPanel.renderList(docs)).not.toContain(' open>');
-    expect(DocumentsPanel.renderList(docs, { 'Reddit/r/AI_Agents': true }))
-      .toContain('data-folder="Reddit/r/AI_Agents" open>');
+  test('folders render collapsed (watchDetails restores remembered state)', () => {
+    expect(DocumentsPanel.renderList(docs)).not.toContain(' open');
   });
 });
