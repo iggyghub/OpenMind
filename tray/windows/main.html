@@ -7251,6 +7251,13 @@
           refreshHealth();
           // No pull list here: Cerebral sends one `snapshot` message on connect
           // (main.py _SNAPSHOT_BUILDERS), unpacked by handleEvent below.
+          // But each pane's own on-open fetch (activity_poll, list_memories...)
+          // runs in activateRoute, which at boot fires BEFORE connect() and on
+          // a Cerebral restart fires never -- sendEvent just returns false and
+          // the pane sits on "Loading..." / stale data until re-clicked. Re-run
+          // it for whatever is showing now, plus the open workspace panel.
+          activateRoute(routeFromHash());
+          if (window._wsRefreshActivePanel) window._wsRefreshActivePanel();
         },
         onClose: () => {
           wsConnected = false;
