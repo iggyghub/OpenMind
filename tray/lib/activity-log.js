@@ -45,7 +45,11 @@ function initActivityLog(mountId) {
 function renderActivityLog(data, container) {
   const mount = container || document.getElementById('activity-log-mount');
   if (!mount) return;
-  const turns = (data && data.turns) || [];
+  // activity_turn_emitted arrives as {turn} normalized to a one-item `turns`
+  // with `append: true`: add it to what's shown instead of replacing it all.
+  const incoming = (data && data.turns) || [];
+  const turns = data && data.append ? (mount._turns || []).concat(incoming) : incoming;
+  mount._turns = turns;
   if (turns.length === 0) {
     mount.innerHTML = '<p class="activity-log-empty">No activity recorded yet.</p>';
     return;
@@ -53,23 +57,89 @@ function renderActivityLog(data, container) {
   mount.innerHTML = '';
   const ul = document.createElement('ul');
   ul.className = 'activity-log-list';
-  for (const turn of turns) {
+  for (const run of groupRuns(turns.slice().reverse())) {  // newest first
+    if (run.length < 3) { run.forEach((t) => ul.appendChild(itemEl(t))); continue; }
+    // 3+ identical entries in a row (mostly "Strategy idea rejected") fold
+    // into one expandable line instead of a wall of repeats.
     const li = document.createElement('li');
-    li.className = 'activity-log-item';
-    const meta = document.createElement('span');
-    meta.className = 'activity-log-meta';
-    meta.textContent = turn.ts ? new Date(turn.ts).toLocaleString() : '';
-    li.appendChild(meta);
-    const content = document.createElement('div');
-    content.className = 'activity-log-content';
-    const c = turn.content || {};
-    content.textContent = c.summary || c.text || JSON.stringify(c);
-    li.appendChild(content);
+    li.className = 'activity-log-group';
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    const d = describeTurn(run[0].content);
+    summary.textContent = formatTs(run[0].ts) + '  ·  ' + run.length + ' × ' + d.title;
+    details.appendChild(summary);
+    const inner = document.createElement('ul');
+    inner.className = 'activity-log-list';
+    run.forEach((t) => inner.appendChild(itemEl(t)));
+    details.appendChild(inner);
+    li.appendChild(details);
     ul.appendChild(li);
   }
   mount.appendChild(ul);
 }
 
-return { initActivityLog, renderActivityLog };
+// `ts` is SQLite CURRENT_TIMESTAMP: UTC with no zone marker, which Date
+// would otherwise read as local time.
+function formatTs(ts) {
+  if (!ts) return '';
+  const iso = /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(ts) ? ts.replace(' ', 'T') + 'Z' : ts;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? ts : d.toLocaleString();
+}
+
+function host(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return ''; }
+}
+
+// One readable line per known entry shape; never raw JSON.
+function describeTurn(c) {
+  c = c || {};
+  if (c.source === 'discovery') {
+    return { title: 'Strategy idea ' + (c.status || 'checked'), tag: host(c.idea_url),
+      detail: c.reason === 'accepted by judge' ? '' : (c.reason || '') };
+  }
+  if (c.pr_url) {
+    const num = (c.pr_url.match(/\/pull\/(\d+)/) || [])[1];
+    return { title: (c.summary || 'Self-dev PR').replace(c.pr_url, num ? '#' + num : 'PR'), tag: '', detail: '' };
+  }
+  if (c.summary || c.text) return { title: c.summary || c.text, tag: '', detail: '' };
+  const rest = Object.keys(c).filter((k) => k !== 'source')
+    .map((k) => k + ': ' + (typeof c[k] === 'object' ? JSON.stringify(c[k]) : c[k]));
+  return { title: rest.join('  ·  ') || '(empty entry)', tag: '', detail: '' };
+}
+
+function groupRuns(turns) {
+  const runs = [];
+  for (const t of turns) {
+    const last = runs[runs.length - 1];
+    if (last && describeTurn(last[0].content).title === describeTurn(t.content).title) last.push(t);
+    else runs.push([t]);
+  }
+  return runs;
+}
+
+function itemEl(turn) {
+  const c = turn.content || {};
+  const d = describeTurn(c);
+  const li = document.createElement('li');
+  li.className = 'activity-log-item';
+  const meta = document.createElement('span');
+  meta.className = 'activity-log-meta';
+  meta.textContent = formatTs(turn.ts) + (c.source ? '  ·  ' + c.source : '');
+  li.appendChild(meta);
+  const content = document.createElement('div');
+  content.className = 'activity-log-content';
+  content.textContent = d.title + (d.tag ? '  —  ' + d.tag : '');
+  li.appendChild(content);
+  if (d.detail) {
+    const detail = document.createElement('div');
+    detail.className = 'activity-log-detail';
+    detail.textContent = d.detail;
+    li.appendChild(detail);
+  }
+  return li;
+}
+
+return { initActivityLog, renderActivityLog, describeTurn, formatTs };
 
 }));
