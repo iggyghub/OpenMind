@@ -6910,6 +6910,11 @@
   <!-- WebSocket bridge (UI2 A5 -- #485) -- shared with detached-panel.html.
        Dual-mode: window.WsBridge here, module.exports for Node tests. -->
   <script src="../lib/ws-bridge.js"></script>
+  <!-- Mark mode (Ctrl+Shift+M) -- point at UI elements and leave notes for
+       a UI cleanup pass; "Copy all" puts them on the clipboard. Dev tooling:
+       reads the page + writes the clipboard, no tool calls. -->
+  <script src="../lib/ui-marks.js"></script>
+  <script>window.UiMarks.init(document);</script>
 
   <script>
     'use strict';

@@ -89,7 +89,8 @@
           'Trading: paper trading only. Overview, Strategies, Tickers, Trades and Replay show the strategies, their trades and their backtests.',
           'Log: a running activity record of what Felix did and when.',
           'Help: this guide, and a live list of every tool Felix currently has.',
-          'Settings: General preferences, AI models (which models answer and in what order), Sign-in (connected accounts) and Permissions.'
+          'Settings: General preferences, AI models (which models answer and in what order), Sign-in (connected accounts) and Permissions.',
+          'Mark mode (Ctrl+Shift+M): for cleaning up this window. Click anything, type what should change and press Enter. Copy all puts every mark, with exactly which element it points at, on the clipboard to paste into a coding session. Marks are kept until you press Clear; Esc or Done leaves mark mode.'
         ],
         see_also: ['talking-to-felix', 'models-and-routing']
       },
