@@ -51,6 +51,22 @@
       overflow: hidden;
     }
 
+    /* Delete / remove is a red x everywhere (UI cleanup 2026-10-22). The
+       button. prefix out-ranks each pane's own button base class. */
+    button.btn-x {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 24px; height: 24px; padding: 0; flex-shrink: 0;
+      background: transparent; border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      color: var(--color-danger);
+      font-family: inherit; font-size: 18px; line-height: 1;
+      cursor: pointer;
+    }
+    button.btn-x:hover {
+      background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+      border-color: var(--color-danger);
+    }
+
     /* ── sidebar ────────────────────────────────────────────── */
     .sidebar {
       width: 180px;
@@ -882,8 +898,6 @@
     }
     .conv-thread-open-btn { color: var(--text-muted); }
     .conv-thread-open-btn:hover { color: var(--text); border-color: var(--accent); }
-    .conv-thread-del-btn { color: var(--text-muted); }
-    .conv-thread-del-btn:hover { color: #c44b4b; border-color: #c44b4b; }
     .conv-list-empty {
       padding: 24px 18px;
       font-size: 13px;
@@ -954,17 +968,6 @@
       gap: 4px;
       flex-shrink: 0;
     }
-    .conv-project-del-btn {
-      background: transparent;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 2px 8px;
-      font-size: 11px;
-      color: var(--text-muted);
-      cursor: pointer;
-      font-family: inherit;
-    }
-    .conv-project-del-btn:hover { color: #c44b4b; border-color: #c44b4b; }
     .conv-project-body { padding: 0; }
     .conv-project-body.is-collapsed { display: none; }
     .conv-project-empty {
@@ -2054,13 +2057,7 @@
     }
     .ins-btn-save:hover { background: #7ac8fc; }
 
-    .ins-btn-delete {
-      background: var(--bg-elev);
-      color: var(--text-muted);
-      border: 1px solid var(--border);
-      margin-left: auto;
-    }
-    .ins-btn-delete:hover { color: #e05555; border-color: #e05555; }
+    .ins-btn-delete { margin-left: auto; }
 
     /* ── memory pane ────────────────────────────────────────── */
     /* Lifted from the retired tray/windows/memory.html; class names are
@@ -2127,6 +2124,7 @@
     .mem-group.collapsed .mem-group-caret { transform: rotate(-90deg); }
     .mem-group-name { font-size: 12px; font-weight: 600; color: #4bd49a; letter-spacing: 0.02em; }
     .mem-group-count { font-size: 11px; color: var(--text-muted); }
+    .mem-group-del { margin-left: auto; }
     .mem-group.collapsed .mem-item { display: none; }
 
     @keyframes mem-fadeIn {
@@ -2206,13 +2204,7 @@
     }
     .mem-btn-save:hover { background: #6ce0b0; }
 
-    .mem-btn-delete {
-      background: var(--bg-elev);
-      color: var(--text-muted);
-      border: 1px solid var(--border);
-      margin-left: auto;
-    }
-    .mem-btn-delete:hover { color: #e05555; border-color: #e05555; }
+    .mem-btn-delete { margin-left: auto; }
 
     /* ── recipes pane ──────────────────────────────────────── */
     /* ── shared sort bar (Library pane: Memory/Insights/Recipes/Documents) ── */
@@ -3294,19 +3286,6 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .dsc-remove-btn {
-      background: none;
-      border: 1px solid var(--border);
-      color: var(--text-muted);
-      font-family: inherit;
-      font-size: 11px;
-      padding: 3px 8px;
-      border-radius: var(--radius-sm);
-      cursor: pointer;
-      flex-shrink: 0;
-      transition: color 0.1s, border-color 0.1s;
-    }
-    .dsc-remove-btn:hover { color: #e05555; border-color: #e05555; }
     .dsc-empty {
       padding: 12px 18px;
       font-size: 12px;
@@ -4346,17 +4325,6 @@
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }
-    .jobs-board-remove {
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      font-size: 14px;
-      padding: 0 4px;
-      line-height: 1;
-    }
-    .jobs-board-remove:hover { color: var(--danger, #e05); }
     .jobs-boards-add {
       display: flex;
       gap: 6px;
@@ -4540,19 +4508,6 @@
       color: var(--text-muted);
       letter-spacing: 0.04em;
     }
-    .set-row-remove {
-      flex-shrink: 0;
-      width: 20px;
-      height: 20px;
-      line-height: 18px;
-      border: none;
-      border-radius: var(--radius-sm);
-      background: transparent;
-      color: var(--text-muted);
-      font-size: 16px;
-      cursor: pointer;
-    }
-    .set-row-remove:hover { background: rgba(255, 90, 90, 0.15); color: #ff7a7a; }
     .set-row-edit {
       flex-shrink: 0;
       height: 20px;
@@ -8241,7 +8196,7 @@
         moveOpts +
         '</select>' +
         '<button class="conv-thread-open-btn" data-tid="' + safeId + '">Open</button>' +
-        '<button class="conv-thread-del-btn"  data-tid="' + safeId + '">Delete</button>' +
+        '<button class="conv-thread-del-btn btn-x" data-tid="' + safeId + '" title="Delete" aria-label="Delete">&times;</button>' +
         '</div>' +
         '</div>';
     }
@@ -8329,7 +8284,7 @@
           '</span>' +
           '<span class="conv-project-meta">' + escHtml(meta) + '</span>' +
           '<span class="conv-project-actions">' +
-          '<button class="conv-project-del-btn" data-pid="' + escHtml(key) + '" type="button">Delete</button>' +
+          '<button class="conv-project-del-btn btn-x" data-pid="' + escHtml(key) + '" type="button" title="Delete" aria-label="Delete">&times;</button>' +
           '</span>' +
           '</div>' +
           '<div class="conv-project-body' + bodyCls + '" data-pid="' + escHtml(key) + '">' +
@@ -9034,7 +8989,7 @@
             <button class="ins-btn ins-btn-pin"    data-id="${escHtml(ins.id)}">${ins.pinned ? '📌 Pinned' : '📌 Pin'}</button>
             <button class="ins-btn ins-btn-edit"   data-id="${escHtml(ins.id)}">Edit</button>
             <button class="ins-btn ins-btn-save"   data-id="${escHtml(ins.id)}" style="display:none">Save</button>
-            <button class="ins-btn ins-btn-delete" data-id="${escHtml(ins.id)}">Delete</button>
+            <button class="ins-btn ins-btn-delete btn-x" data-id="${escHtml(ins.id)}" title="Delete" aria-label="Delete">&times;</button>
           </div>
         `;
         insightsListEl.insertBefore(el, insightsEmptyEl);
@@ -9344,7 +9299,7 @@
           '</label>' +
           '<span class="jobs-board-url-hint">' + (board.label ? escHtml(board.url) : '') + '</span>' +
           '<span class="jobs-board-provider">' + escHtml(provider) + '</span>' +
-          '<button class="jobs-board-remove" data-url="' + escHtml(board.url) + '" type="button" title="Remove">x</button>';
+          '<button class="jobs-board-remove btn-x" data-url="' + escHtml(board.url) + '" type="button" title="Remove" aria-label="Remove">&times;</button>';
         jobsBoardsListEl.appendChild(row);
       });
     }
@@ -9823,7 +9778,7 @@
         <div class="mem-item-actions">
           <button class="mem-btn mem-btn-edit"   data-id="${escHtml(mem.id)}">Edit</button>
           <button class="mem-btn mem-btn-save"   data-id="${escHtml(mem.id)}" style="display:none">Save</button>
-          <button class="mem-btn mem-btn-delete" data-id="${escHtml(mem.id)}">Delete</button>
+          <button class="mem-btn mem-btn-delete btn-x" data-id="${escHtml(mem.id)}" title="Delete" aria-label="Delete">&times;</button>
         </div>`;
     }
 
@@ -9869,6 +9824,8 @@
              <span class="mem-group-caret">▾</span>
              <span class="mem-group-name">${escHtml(name)}</span>
              <span class="mem-group-count">${items.length}</span>
+             <button class="mem-group-del btn-x" type="button" title="Delete category"
+                     aria-label="Delete category ${escHtml(name)}">&times;</button>
            </div>` +
           items.map((mem) =>
             `<div class="mem-item" data-id="${escHtml(mem.id)}">${memItemHtml(mem)}</div>`).join('');
@@ -9880,6 +9837,18 @@
       const header = e.target.closest('.mem-group-header');
       if (!header) return;
       const name = header.dataset.group;
+      if (e.target.closest('.mem-group-del')) {
+        // Same grouping key as renderMemory: blank category lands in General.
+        const inGroup = memoryItems.filter((m) => ((m.category || '').trim() || 'General') === name);
+        if (!window.confirm('Delete the "' + name + '" category and its ' + inGroup.length +
+            ' memories? This cannot be undone.')) return;
+        inGroup.forEach((m) => sendEvent({ type: 'delete_memory', data: { memory_id: m.id } }));
+        // Optimistic prune, as for single deletes; memory_update is authoritative.
+        const gone = new Set(inGroup.map((m) => m.id));
+        memoryItems = memoryItems.filter((m) => !gone.has(m.id));
+        renderMemory();
+        return;
+      }
       if (memoryCollapsed.has(name)) memoryCollapsed.delete(name);
       else memoryCollapsed.add(name);
       header.closest('.mem-group').classList.toggle('collapsed');
@@ -11895,8 +11864,8 @@
             <div class="dsc-row">
               <span class="dsc-sender-id">${escHtml(entry.sender_id || '')}</span>
               <span class="dsc-note">${escHtml(entry.note || '')}</span>
-              <button class="dsc-remove-btn" data-sender="${escHtml(entry.sender_id || '')}"
-                      type="button">Remove</button>
+              <button class="dsc-remove-btn btn-x" data-sender="${escHtml(entry.sender_id || '')}"
+                      type="button" title="Remove" aria-label="Remove">&times;</button>
             </div>
           `).join('');
 
@@ -12016,7 +11985,7 @@
                      title="${locked ? 'Locked: local-only mode' : (m.enabled ? 'Disable' : 'Enable')}">
               ${m.is_custom ? `<button class="set-row-edit" type="button"
                  data-edit-model="${escHtml(m.id)}" title="Edit connection">Edit</button>
-              <button class="set-row-remove" type="button"
+              <button class="set-row-remove btn-x" type="button"
                  data-remove-model="${escHtml(m.id)}" title="Remove">&times;</button>` : ''}
             </div>`;
         }).join('');

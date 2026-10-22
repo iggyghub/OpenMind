@@ -121,7 +121,7 @@
           '- Environmental: the current session\'s context, such as location, also in RAM only.',
           '- Long-term: memories stored by meaning (a vector database), so Felix can recall them later by topic. One set per profile.',
           '- Structured: profiles, preferences, the proposal queue and learned patterns, in a local database.',
-          'Felix does not save memories silently. When you state something durable, it raises a memory proposal; the memory is written only when you approve it. Saved memories are in Library > Memory.'
+          'Felix does not save memories silently. When you state something durable, it raises a memory proposal; the memory is written only when you approve it. Saved memories are in Library > Memory, grouped by category. The red x on a memory deletes it; the red x on a category header deletes the whole category after you confirm.'
         ],
         see_also: ['recipes-and-insights', 'conversation-and-compaction']
       },
