@@ -89,8 +89,8 @@
           'Trading: paper trading only. Overview, Strategies, Tickers, Trades and Replay show the strategies, their trades and their backtests.',
           'Log: a running activity record of what Felix did and when.',
           'Help: this guide, and a live list of every tool Felix currently has.',
-          'Settings: General preferences, AI models (which models answer and in what order), Sign-in (connected accounts) and Permissions.',
-          'Anything that folds open and shut remembers how you left it: section headers, the sidebar, conversation project groups, memory categories, document folders, library groups, finished trading books and Sign-in channel rows stay open or closed when the panel refreshes, when you switch tabs and after Felix restarts. Settings > General > "Keep sections expanded" overrides this and shows everything open.',
+          'Settings: General preferences, AI models (which models answer and in what order), Sign-in (connected accounts) and Permissions. On Sign-in each account (Google, API keys, Alpaca, browser logins and so on) is one line with its status; click it to open it as a tile, and click outside or press Done to close it. Anything typed there is kept until you save it, but nothing is saved for you. The Connect button next to a service opens the matching tile.',
+          'Anything that folds open and shut remembers how you left it: section headers, the sidebar, conversation project groups, memory categories, document folders, library groups, finished trading books, the OpenClaw row, Sign-in channel rows and service categories stay open or closed when the panel refreshes, when you switch tabs and after Felix restarts. Settings > General > "Keep sections expanded" overrides this and shows everything open.',
           'Mark mode (Ctrl+Shift+M): for cleaning up this window. Click anything, type what should change and press Enter. Copy all puts every mark, with exactly which element it points at, on the clipboard to paste into a coding session. Marks are kept until you press Clear; Esc or Done leaves mark mode.'
         ],
         see_also: ['talking-to-felix', 'models-and-routing']

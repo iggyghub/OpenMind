@@ -87,6 +87,13 @@
     return els;
   }
 
+  var CONTROL_SEL = 'button, a, input, select, textarea, label';
+
+  function _isControl(target, hdr) {
+    var c = target && target.closest ? target.closest(CONTROL_SEL) : null;
+    return !!c && c !== hdr && hdr.contains(c);
+  }
+
   function _applyState(hdr, bodyEls, collapsed) {
     if (collapsed) {
       hdr.classList.add('sec-collapsed');
@@ -124,13 +131,17 @@
 
       _applyState(hdr, bodyEls, isCollapsed(paneKey, label));
 
-      hdr.addEventListener('click', function () {
+      hdr.addEventListener('click', function (e) {
+        // A control inside the header (e.g. Model priority's Recheck) does its
+        // own job; it must not also fold the section shut.
+        if (_isControl(e && e.target, hdr)) return;
         var nowCollapsed = hdr.classList.contains('sec-collapsed');
         _applyState(hdr, bodyEls, !nowCollapsed);
         setCollapsed(paneKey, label, !nowCollapsed);
       });
 
       hdr.addEventListener('keydown', function (e) {
+        if (e.target !== hdr) return;  // Enter/Space on an inner button is that button's
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           hdr.click();

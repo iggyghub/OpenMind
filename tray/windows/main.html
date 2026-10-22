@@ -1580,6 +1580,13 @@
       transition: transform 0.15s;
     }
     .int-channel-row.is-expanded .int-chevron { transform: rotate(90deg); }
+    /* <details> rows/groups in Sign-in (OpenClaw, service categories). */
+    .int-fold { border-bottom: 1px solid #1e1c30; }
+    .int-fold > summary { list-style: none; cursor: pointer; }
+    .int-fold > summary::-webkit-details-marker { display: none; }
+    .int-fold[open] > summary .int-chevron { transform: rotate(90deg); }
+    .int-fold > summary.int-svc-cat-header { display: flex; align-items: center; gap: 8px; }
+    .int-daemon-actions { flex-direction: row; }
 
     .int-channel-body {
       display: flex;
@@ -2314,6 +2321,38 @@
       padding: 14px;
     }
     .cred-card + .cred-card { margin-top: 12px; }
+
+    /* Tile dialog (tray/lib/tile-dialog.js): each card is one line until
+       clicked; the line morphs into a centred tile over a blurred backdrop. */
+    .tile-line {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 12px 14px; margin-top: 8px;
+      background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text); font: inherit; font-size: 13px; font-weight: 600;
+      text-align: left; cursor: pointer;
+    }
+    .tile-line:hover { border-color: var(--accent); }
+    .tile-line .cred-status { margin: 0 0 0 auto; font-weight: 400; }
+    .tile-line-chevron { color: var(--text-muted); font-size: 18px; line-height: 1; }
+    .tile-line .cred-status + .tile-line-chevron { margin-left: 0; }
+    .tile-line > .tile-line-name + .tile-line-chevron { margin-left: auto; }
+    dialog.tile-dialog {
+      width: min(560px, 90vw); max-height: 85vh; overflow: auto; padding: 0;
+      margin: auto;  /* the global reset zeroes the UA centring margin */
+      background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-floating);
+    }
+    dialog.tile-dialog::backdrop { background: rgba(0, 0, 0, 0.45); backdrop-filter: blur(4px); }
+    dialog.tile-dialog .cred-card { border: none; }
+    .tile-dialog-foot { display: flex; justify-content: flex-end; padding: 0 14px 14px; }
+    .tile-dialog-done {
+      padding: 6px 16px; border-radius: var(--radius-md);
+      border: 1px solid var(--accent); background: var(--accent); color: #fff;
+      font: inherit; font-size: 13px; cursor: pointer;
+    }
+    ::view-transition-group(tile-dialog-morph) { animation-duration: 220ms; }
 
     .cred-card-title {
       font-size: 13px;
@@ -5864,16 +5903,21 @@
         <div class="set-body">
           <div class="int-body" id="int-body">
             <div class="int-section" id="int-harness-section">Harness</div>
-            <div class="int-row" id="int-daemon-row">
-              <span class="int-row-name">OpenClaw</span>
-              <span class="int-row-right">
+            <!-- Folds like the channel rows below it; open/closed remembered
+                 by SectionCollapse.watchDetails. -->
+            <details class="int-fold" id="int-daemon-row" data-collapse-key="openclaw">
+              <summary class="int-channel-head">
+                <span class="int-chevron" aria-hidden="true"></span>
+                <span class="int-row-name">OpenClaw</span>
                 <span class="int-status-dot" id="int-daemon-dot"></span>
                 <span class="int-status-text" id="int-daemon-text">&#8212;</span>
+              </summary>
+              <div class="int-channel-body int-daemon-actions">
                 <button class="int-btn is-primary" id="int-daemon-start"  type="button">Start</button>
                 <button class="int-btn is-danger"  id="int-daemon-stop"   type="button">Stop</button>
                 <button class="int-btn"            id="int-daemon-restart" type="button">Restart</button>
-              </span>
-            </div>
+              </div>
+            </details>
             <div id="int-channels-list"></div>
 
             <!-- S17 (#300) -- service directory -->
@@ -6803,6 +6847,9 @@
        Dual-mode: feeds Node test suite via require() and this renderer via
        window.SectionCollapse. -->
   <script src="../lib/section-collapse.js"></script>
+  <!-- Tile dialog: a card shown as one line that morphs into a centred tile
+       (Settings > Sign-in cards). Dual-mode: window.TileDialog. -->
+  <script src="../lib/tile-dialog.js"></script>
 
   <!-- Sidebar nav order (#1422) -- drag / Alt+Arrow reordering of the
        sidebar buttons, persisted in localStorage. Dual-mode: window.NavOrder. -->
@@ -10402,7 +10449,11 @@
       const grouped = _svcReg.byCategory();
       var html = '';
       grouped.forEach(function (services, category) {
-        html += '<div class="int-svc-cat-header">' + escHtml(category) + '</div>';
+        // Each category folds; state survives this innerHTML rebuild via
+        // SectionCollapse.watchDetails (key = category name).
+        html += '<details class="int-fold" open data-collapse-key="svc-' + escHtml(category) + '">' +
+          '<summary class="int-svc-cat-header"><span class="int-chevron" aria-hidden="true"></span>' +
+          escHtml(category) + '</summary>';
         for (var i = 0; i < services.length; i++) {
           var svc = services[i];
           var isGoogle = svc.credAnchor === 'cred-card-google';
@@ -10428,6 +10479,7 @@
             connectHtml +
           '</div>';
         }
+        html += '</details>';
       });
       intSvcBodyEl.innerHTML = html;
     }
@@ -10439,10 +10491,9 @@
     intSvcBodyEl.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-svc-connect]');
       if (!btn) return;
-      // S5 #473: credentials absorbed into harness; navigate there.
-      location.hash = '#harness';
-      // ponytail: anchor scroll deferred until credentials sub-pane is built
-      // into harness drawer (phase 2 of harness integration)
+      // The sign-in cards are on this same Settings > Sign-in tab, so open
+      // the matching card's tile in place (was: a dead jump to #harness).
+      window.TileDialog.openById(document, btn.dataset.svcConnect);
     });
 
     // ── permissions pane (Issue #202) ────────────────────────────────────
@@ -13204,6 +13255,9 @@
     // Every <details data-collapse-key> (library groups, doc folders, finished
     // books...) remembers open/closed, re-applied after each IPC re-render.
     _sc.watchDetails();
+    // Sign-in cards are one line each; a click morphs the line into a tile.
+    window.TileDialog.enhance(document.querySelectorAll('.cred-body > .cred-card'),
+      { statusSel: '.cred-status' });
     _sc.init(document.getElementById('perm-panel-capabilities'), 'permissions');
     _sc.init(document.getElementById('plug-main-view'), 'harness');
     _sc.init(document.querySelector('.prof-body'), 'profiles');
