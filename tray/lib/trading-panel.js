@@ -436,7 +436,7 @@ function _renderBooksSection(books, booksModel, expandedIds) {
 
   const activeHtml = activeBooks.map((b) => _renderBookRow(b, expanded)).join('');
   const doneSection = doneBooks.length ? `
-    <details class="books-done-section">
+    <details class="books-done-section" data-collapse-key="books-done">
       <summary>${doneBooks.length} finished book${doneBooks.length === 1 ? '' : 's'}</summary>
       <div class="books-list">${doneBooks.map((b) => _renderBookRow(b, expanded)).join('')}</div>
     </details>

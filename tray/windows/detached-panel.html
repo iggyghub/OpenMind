@@ -101,6 +101,7 @@
   <script src="../lib/text-widget.js"></script>
   <script src="../lib/action-widget.js"></script>
   <script src="../lib/ws-bridge.js"></script>
+  <script src="../lib/section-collapse.js"></script>
 
   <script>
     'use strict';
@@ -123,6 +124,7 @@
     const dpTitle  = document.getElementById('dp-title');
     const dpStatus = document.getElementById('dp-status');
     const dpBody   = document.getElementById('dp-body');
+    window.SectionCollapse.watchDetails(dpBody);  // group open/closed survives re-renders + restarts
 
     dpTitle.textContent  = titleHint;
     document.title       = 'Felix — ' + titleHint;

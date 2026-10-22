@@ -6578,7 +6578,7 @@
            <details> is purely a visual wrapper, no JS involved. -->
       <div class="lib-sub" data-lib="books">
         <div id="books-panel-mount"></div>
-        <details class="ps-group">
+        <details class="ps-group" data-collapse-key="book-ingestion">
           <summary class="ps-group-summary">General book ingestion (path-based, separate from Stock Market)</summary>
           <div class="vid-body" id="books-lib-panel-body">
             <div class="ps-empty">Loading Books panel...</div>
@@ -7200,17 +7200,12 @@
     // IPC search returns results it holds the matching subset instead.
     let convListQuery  = '';
     let convSearchHits = null;
-    // S11 (#294) -- project folders snapshot + per-group collapse state.
-    // The collapse state is RAM-only: groups default to expanded on reload,
-    // which matches the spec's "groups by project (collapsible per S3)" --
-    // S3-style persistence is per-section header in localStorage; project
-    // groups are content rows, not section headers, so they reset per session.
+    // S11 (#294) -- project folders snapshot. Per-group collapse is
+    // remembered via SectionCollapse (pane 'conv-project', key = project id).
     let projectsList = [];
-    const projectCollapsed = new Map();  // key: project id (or 'unfiled'), value: bool
     // F5 (#328) -- backlog panel state. Panel collapse is persisted to
     // localStorage; per-group collapse is also persisted so groups stay
-    // closed across reloads (unlike projectCollapsed in the Conversations
-    // pane which resets per session per the S11 comment above).
+    // closed across reloads.
     let backlogPanelCollapsed = false;
     try { backlogPanelCollapsed = localStorage.getItem('backlog-panel-collapsed') === '1'; } catch (_e) {}
     const backlogGroupCollapsed = new Map();
@@ -8264,7 +8259,7 @@
       // an empty container).
       const unfiledThreads = threadsByProject.get('unfiled') || [];
       if (unfiledThreads.length > 0 || projectsList.length === 0) {
-        const collapsed = projectCollapsed.get('unfiled') === true;
+        const collapsed = window.SectionCollapse.isCollapsed('conv-project', 'unfiled');
         const chev = collapsed ? '▸' : '▾';
         const bodyCls = collapsed ? ' is-collapsed' : '';
         const meta = unfiledThreads.length
@@ -8290,7 +8285,7 @@
       projectsList.forEach(function (p) {
         const key = String(p.id);
         const rows = threadsByProject.get(key) || [];
-        const collapsed = projectCollapsed.get(key) === true;
+        const collapsed = window.SectionCollapse.isCollapsed('conv-project', key);
         const chev = collapsed ? '▸' : '▾';
         const bodyCls = collapsed ? ' is-collapsed' : '';
         const name = (p.name || '').trim();
@@ -8416,8 +8411,8 @@
           if (e.target.closest('.conv-project-actions')) return;
           const key = projHeader.dataset.pid;
           if (!key) return;
-          const cur = projectCollapsed.get(key) === true;
-          projectCollapsed.set(key, !cur);
+          window.SectionCollapse.setCollapsed('conv-project', key,
+            !window.SectionCollapse.isCollapsed('conv-project', key));
           renderConversationsList();
           return;
         }
@@ -9164,10 +9159,8 @@
         if (docsSortBar) docsSortBar.style.display = 'none';
         return;
       }
-      // Keep folders the user opened open across live re-renders.
-      const openFolders = {};
-      docsListEl.querySelectorAll('details.docs-folder[open]').forEach(function (d) { openFolders[d.dataset.folder] = true; });
-      docsListEl.innerHTML = _docsPanel.renderList(sortedDocuments(), openFolders);
+      // Folder open/closed survives this rebuild via SectionCollapse.watchDetails.
+      docsListEl.innerHTML = _docsPanel.renderList(sortedDocuments());
       if (docsSortBar) docsSortBar.style.display = 'flex';
     }
 
@@ -9789,8 +9782,7 @@
     // the cached card.dataset.original so a partial edit survives a
     // memory_update reconciliation cleanly.
 
-    // Category groups the user has collapsed; persists across re-renders.
-    const memoryCollapsed = new Set();
+    // Category group collapse is remembered via SectionCollapse (pane 'mem-group').
 
     function memItemHtml(mem) {
       return `
@@ -9841,7 +9833,7 @@
       names.forEach((name) => {
         const items = sortedMemoryGroup(groups.get(name));
         const group = document.createElement('div');
-        group.className = 'mem-group' + (memoryCollapsed.has(name) ? ' collapsed' : '');
+        group.className = 'mem-group' + (window.SectionCollapse.isCollapsed('mem-group', name) ? ' collapsed' : '');
         group.dataset.group = name;
         group.innerHTML =
           `<div class="mem-group-header" data-group="${escHtml(name)}">
@@ -9873,9 +9865,9 @@
         renderMemory();
         return;
       }
-      if (memoryCollapsed.has(name)) memoryCollapsed.delete(name);
-      else memoryCollapsed.add(name);
-      header.closest('.mem-group').classList.toggle('collapsed');
+      const groupEl = header.closest('.mem-group');
+      groupEl.classList.toggle('collapsed');
+      window.SectionCollapse.setCollapsed('mem-group', name, groupEl.classList.contains('collapsed'));
     });
 
     function commitMemoryEdit(card) {
@@ -11276,27 +11268,8 @@
       const json = JSON.stringify(spec);
       if (json === _lastVideosSpecJson) return;
       _lastVideosSpecJson = json;
-      // Collapse state lives in the DOM's native <details>, but re-render rebuilds
-      // it from the server default ("open": gi==0) -- wiping the user's manual
-      // toggle every poll. Capture open/closed per collection, reapply after.
-      // Key on the summary's label text node only (firstChild), NOT its full text:
-      // the trailing count span ("3 clusters") changes when a cluster lands, so
-      // keying on textContent would drop the state on that exact tick.
-      const _groupKey = function (d) {
-        const s = d.querySelector('.ps-group-summary');
-        const t = s && s.firstChild && s.firstChild.textContent;
-        return t ? t.trim() : '';
-      };
-      const openState = {};
-      videosPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k) openState[k] = d.open;
-      });
+      // Group open/closed survives this rebuild via SectionCollapse.watchDetails.
       videosPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
-      videosPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k && (k in openState)) d.open = openState[k];
-      });
       if (window.ActionWidget) {
         window.ActionWidget.initActionWidgets(videosPanelBodyEl, sendEvent);
         window.ActionWidget.initMoveWidgets(videosPanelBodyEl, sendEvent);
@@ -11330,21 +11303,7 @@
       const json = JSON.stringify(spec);
       if (json === _lastGithubSpecJson) return;
       _lastGithubSpecJson = json;
-      const _groupKey = function (d) {
-        const s = d.querySelector('.ps-group-summary');
-        const t = s && s.firstChild && s.firstChild.textContent;
-        return t ? t.trim() : '';
-      };
-      const openState = {};
-      githubPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k) openState[k] = d.open;
-      });
-      githubPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
-      githubPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k && (k in openState)) d.open = openState[k];
-      });
+      githubPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);  // group state: SectionCollapse.watchDetails
       if (window.ActionWidget) {
         window.ActionWidget.initActionWidgets(githubPanelBodyEl, sendEvent);
         window.ActionWidget.initMoveWidgets(githubPanelBodyEl, sendEvent);
@@ -11378,14 +11337,7 @@
       const json = JSON.stringify(spec);
       if (json === tab.lastJson) return;
       tab.lastJson = json;
-      const key = function (d) {
-        const s = d.querySelector('.ps-group-summary');
-        return ((s && s.firstChild && s.firstChild.textContent) || '').trim();
-      };
-      const openState = {};
-      el.querySelectorAll('.ps-group').forEach(function (d) { const k = key(d); if (k) openState[k] = d.open; });
-      el.innerHTML = window.PanelSpec.renderPanel(spec);
-      el.querySelectorAll('.ps-group').forEach(function (d) { const k = key(d); if (k && (k in openState)) d.open = openState[k]; });
+      el.innerHTML = window.PanelSpec.renderPanel(spec);  // group state: SectionCollapse.watchDetails
       if (window.ActionWidget) {
         window.ActionWidget.initActionWidgets(el, sendEvent);
         window.ActionWidget.initMoveWidgets(el, sendEvent);
@@ -11418,21 +11370,7 @@
       const json = JSON.stringify(spec);
       if (json === _lastBooksSpecJson) return;
       _lastBooksSpecJson = json;
-      const _groupKey = function (d) {
-        const s = d.querySelector('.ps-group-summary');
-        const t = s && s.firstChild && s.firstChild.textContent;
-        return t ? t.trim() : '';
-      };
-      const openState = {};
-      booksPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k) openState[k] = d.open;
-      });
-      booksPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
-      booksPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k && (k in openState)) d.open = openState[k];
-      });
+      booksPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);  // group state: SectionCollapse.watchDetails
       if (window.ActionWidget) {
         window.ActionWidget.initActionWidgets(booksPanelBodyEl, sendEvent);
         window.ActionWidget.initMoveWidgets(booksPanelBodyEl, sendEvent);
@@ -11564,9 +11502,10 @@
 
     const _INT_CHANNELS = ['WhatsApp', 'Telegram', 'Discord', 'Slack', 'Teams'];
 
-    // Which channel rows are expanded. Persisted across the ~5s harness_status
-    // re-renders so an open row (and any secret being typed) survives.
-    const _intExpanded = new Set();
+    // Channel rows start collapsed; an opened row is remembered via
+    // SectionCollapse (pane 'int-channel') across the ~5s harness_status
+    // re-renders and restarts, so an open row (and any secret being typed) survives.
+    const _intExpanded = (n) => window.SectionCollapse.getState('int-channel', n) === false;
 
     function renderIntegrations() {
       const d = integrationsData;
@@ -11609,7 +11548,7 @@
         const dotCls     = connected ? 'is-connected' : 'is-down';
         const enabled    = !!ch.enabled;
         const secretSet  = !!ch.secret_set;
-        const expanded   = _intExpanded.has(ch.name);
+        const expanded   = _intExpanded(ch.name);
 
         const body = expanded
           ? ('<div class="int-channel-body">' +
@@ -11684,8 +11623,7 @@
       const expandBtn = target.closest('[data-int-expand]');
       if (expandBtn) {
         const name = expandBtn.getAttribute('data-int-expand');
-        if (_intExpanded.has(name)) _intExpanded.delete(name);
-        else _intExpanded.add(name);
+        window.SectionCollapse.setCollapsed('int-channel', name, _intExpanded(name));
         renderIntegrations();
         return;
       }
@@ -13263,6 +13201,9 @@
 
     // S3 -- collapsible section headers (#286). Key changed plugins→harness (S5 #473).
     const _sc = window.SectionCollapse;
+    // Every <details data-collapse-key> (library groups, doc folders, finished
+    // books...) remembers open/closed, re-applied after each IPC re-render.
+    _sc.watchDetails();
     _sc.init(document.getElementById('perm-panel-capabilities'), 'permissions');
     _sc.init(document.getElementById('plug-main-view'), 'harness');
     _sc.init(document.querySelector('.prof-body'), 'profiles');

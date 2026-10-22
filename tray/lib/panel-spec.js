@@ -156,9 +156,12 @@
     // data-collection marks this group as a drop target for cluster rows dragged
     // from another collection (manual move). Empty for non-collection groups.
     var coll  = w.collection ? ' data-collection="' + escHtml(w.collection) + '"' : '';
+    // Remembered open/closed (SectionCollapse.watchDetails): keyed on the
+    // collection or bare label, never the count, so a new cluster keeps state.
+    var key   = ' data-collapse-key="' + escHtml(w.collection || w.label || '') + '"';
     var children = Array.isArray(w.widgets) ? w.widgets.map(renderWidget).join('') : '';
     return (
-      '<details class="ps-group"' + open + coll + '>' +
+      '<details class="ps-group"' + open + coll + key + '>' +
         '<summary class="ps-group-summary">' + label + count + '</summary>' +
         '<div class="ps-group-body">' + children + '</div>' +
       '</details>'
