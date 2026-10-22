@@ -101,18 +101,23 @@
       input.hidden = !el; input.value = '';
       if (el) { el.classList.add('uim-marked'); input.focus(); }
     }
-    input.addEventListener('keydown', function (e) {
-      e.stopPropagation();
-      if (e.key === 'Escape') { setPending(null); return; }
-      if (e.key !== 'Enter' || !pending) return;
+    // Saves a typed-but-unsubmitted note too, so Done / Copy all / clicking the
+    // next element never silently drops it (the first live mark was lost that way).
+    function commit() {
       var note = input.value.trim();
-      if (!note) return;
+      if (!pending || !note) return;
       marks.push(describe(pending, doc.defaultView.getComputedStyle(pending), note));
       save(marks); refresh();
       pending = null; input.hidden = true;  // keep the solid outline on the marked element
+    }
+    input.addEventListener('keydown', function (e) {
+      e.stopPropagation();
+      if (e.key === 'Escape') setPending(null);
+      else if (e.key === 'Enter') commit();
     });
 
     function setOn(v) {
+      if (!v) commit();
       on = v; bar.hidden = !v;
       if (!v) setPending(null);
       if (!v && hovered) { hovered.classList.remove('uim-hover'); hovered = null; }
@@ -135,10 +140,12 @@
         e.preventDefault(); e.stopPropagation();
         if (type !== 'click') return;
         e.target.classList.remove('uim-hover');
+        commit();
         setPending(e.target);
       }, true);
     });
     bar.querySelector('#uim-copy').addEventListener('click', function () {
+      commit();
       var text = format(marks);
       var btn = bar.querySelector('#uim-copy');
       function fallback() {  // execCommand path if the async clipboard API is refused
