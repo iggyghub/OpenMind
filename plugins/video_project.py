@@ -21,9 +21,12 @@ PLUGIN_NAME = "video_project"
 # ADR-0005: video_status is pure local introspection (fs_read).
 REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"fs_read"})
 
+# winget's default scope is per-user (%LOCALAPPDATA%/Programs); melt runs unsandboxed
+# (ADR-0041 decision 3), so a per-user install works as well as a machine-wide one.
 _SHOTCUT_DEFAULT_DIRS: tuple[Path, ...] = (
     Path("C:/Program Files/Shotcut"),
     Path("C:/Program Files (x86)/Shotcut"),
+    Path.home() / "AppData/Local/Programs/Shotcut",
 )
 
 # Injectable seam: tests replace this to avoid real filesystem/process calls.

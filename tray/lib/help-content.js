@@ -241,7 +241,7 @@
         title: 'Video projects',
         summary: 'Being built: Felix cuts your game clips into a reel you can fine-tune in Shotcut.',
         body: [
-          '- Being built (October 2026). Today Felix can only check whether Shotcut is installed. Run scripts/setup-shotcut.ps1 to install it for all users. It brings both the editor and melt, the engine Felix renders with.',
+          '- Being built (October 2026). Today Felix can only check whether Shotcut is installed. Ask Felix to install Shotcut, or run scripts/setup-shotcut.ps1. It brings both the editor and melt, the engine Felix renders with.',
           '- The plan: you point Felix at your clips (for example, today\'s Game Bar captures). Felix trims each one to its moment and joins them into a reel. The reel is a Shotcut timeline (.mlt) plus the video rendered from it.',
           '- The timeline is the source. You fix cuts or add transitions, titles and music in Shotcut, then ask Felix to render again. Your original clips are never copied or changed.',
           '- Reels are saved in Library > Documents under Videos, by the date the clips were captured.'

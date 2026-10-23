@@ -5,7 +5,7 @@
 #
 # What it does:
 #   1. Checks standard install dirs + PATH for shotcut.exe.
-#   2. If absent, installs via winget (Meltytech.Shotcut), machine-wide.
+#   2. If absent, installs via winget (Meltytech.Shotcut), per-user (no admin prompt).
 #   3. Verifies shotcut.exe plus melt.exe (the render engine Felix uses) and
 #      prints the melt version.
 #
@@ -17,7 +17,8 @@ $ErrorActionPreference = "Stop"
 
 $STANDARD_DIRS = @(
     "C:\Program Files\Shotcut",
-    "C:\Program Files (x86)\Shotcut"
+    "C:\Program Files (x86)\Shotcut",
+    (Join-Path $env:LOCALAPPDATA "Programs\Shotcut")
 )
 
 function Find-Shotcut {
@@ -53,10 +54,10 @@ try {
         # Step 2: install via winget
         # ----------------------------------------------------------------
         Write-Host "--- Installing Shotcut via winget ---"
-        Write-Host "(About 200 MB. Windows may ask for administrator approval.)"
+        Write-Host "(About 200 MB.)"
         Write-Host ""
 
-        winget install --id Meltytech.Shotcut -e --scope machine --silent --accept-package-agreements --accept-source-agreements
+        winget install --id Meltytech.Shotcut -e --silent --accept-package-agreements --accept-source-agreements
 
         Write-Host ""
         Write-Host "winget install completed. Re-checking for shotcut.exe..."
