@@ -68,7 +68,7 @@ describe('setCollapsed', () => {
     expect(SectionCollapse.isCollapsed('settings', 'Active model')).toBe(true);
   });
 
-  test('removes the key when collapsed=false', () => {
+  test('collapsed=false reads back as expanded', () => {
     SectionCollapse.setCollapsed('settings', 'Notifications', true);
     SectionCollapse.setCollapsed('settings', 'Notifications', false);
     expect(SectionCollapse.isCollapsed('settings', 'Notifications')).toBe(false);
@@ -82,6 +82,51 @@ describe('setCollapsed', () => {
   test('different labels within the same pane are independent', () => {
     SectionCollapse.setCollapsed('settings', 'Notifications', true);
     expect(SectionCollapse.isCollapsed('settings', 'System')).toBe(false);
+  });
+});
+
+// ── getState: tri-state, so default-collapsed things remember being opened ──
+
+describe('getState', () => {
+  test('null when never toggled', () => {
+    expect(SectionCollapse.getState('int-channel', 'Slack')).toBeNull();
+  });
+
+  test('false once explicitly expanded, true once collapsed', () => {
+    SectionCollapse.setCollapsed('int-channel', 'Slack', false);
+    expect(SectionCollapse.getState('int-channel', 'Slack')).toBe(false);
+    SectionCollapse.setCollapsed('int-channel', 'Slack', true);
+    expect(SectionCollapse.getState('int-channel', 'Slack')).toBe(true);
+  });
+
+  test('ignores force-expand (raw remembered state)', () => {
+    SectionCollapse.setCollapsed('mem-group', 'Work', true);
+    SectionCollapse.setForceExpand(true);
+    expect(SectionCollapse.getState('mem-group', 'Work')).toBe(true);
+  });
+
+  test('survives a module reload (restart) -- state lives in storage only', () => {
+    SectionCollapse.setCollapsed('conv-project', '7', true);
+    jest.resetModules();
+    const fresh = require('../lib/section-collapse');
+    expect(fresh.isCollapsed('conv-project', '7')).toBe(true);
+  });
+});
+
+// ── <details> emitters carry a stable data-collapse-key for watchDetails ─────
+
+describe('data-collapse-key on rendered <details>', () => {
+  test('panel-spec group keys on collection, else bare label (never count)', () => {
+    const PanelSpec = require('../lib/panel-spec');
+    const g = (w) => PanelSpec.renderWidget(Object.assign({ type: 'group', widgets: [] }, w));
+    expect(g({ label: 'Money', collection: 'money', count: '3' })).toContain('data-collapse-key="money"');
+    expect(g({ label: 'Recent videos', count: '9' })).toContain('data-collapse-key="Recent videos"');
+  });
+
+  test('document folders key on folder name', () => {
+    const Docs = require('../lib/documents-panel');
+    const html = Docs.renderList([{ id: 1, title: 't', folder: 'Reddit/r/AI' }]);
+    expect(html).toContain('data-collapse-key="folder:Reddit/r/AI"');
   });
 });
 

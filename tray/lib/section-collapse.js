@@ -47,14 +47,20 @@
     }
   }
 
-  // Persists the collapsed state for a pane+section pair.
+  // Remembered state ignoring force-expand: true (collapsed), false (expanded)
+  // or null (never toggled -- caller uses its own default). Lets collapsibles
+  // that default CLOSED (details, integration rows) remember being opened.
+  function getState(paneKey, label) {
+    var v = null;
+    try { v = localStorage.getItem(storageKey(paneKey, label)); } catch (e) {}
+    return v === '1' ? true : v === '0' ? false : null;
+  }
+
+  // Persists the collapsed state for a pane+section pair. Expanded is stored
+  // explicitly ('0') so default-collapsed sections remember being opened.
   function setCollapsed(paneKey, label, collapsed) {
     try {
-      if (collapsed) {
-        localStorage.setItem(storageKey(paneKey, label), '1');
-      } else {
-        localStorage.removeItem(storageKey(paneKey, label));
-      }
+      localStorage.setItem(storageKey(paneKey, label), collapsed ? '1' : '0');
     } catch (e) {}
   }
 
@@ -143,12 +149,56 @@
     for (var i = 0; i < hdrs.length; i++) {
       _applyState(hdrs[i], _bodyEls(hdrs[i]), false);
     }
+    var dets = root.querySelectorAll(DETAILS_SEL);
+    for (var j = 0; j < dets.length; j++) dets[j].open = true;
+  }
+
+  // Native <details data-collapse-key="..."> anywhere in the window: the
+  // remembered state is re-applied every time one lands in the DOM (first
+  // load AND every IPC re-render that rebuilds it via innerHTML), and every
+  // toggle is saved. Scope = id of the nearest id'd ancestor, so the same
+  // key in two panels doesn't collide. Call once per window.
+  var DETAILS_SEL = 'details[data-collapse-key]';
+
+  function _detailsScope(d) {
+    var s = d.parentElement && d.parentElement.closest('[id]');
+    return s ? s.id : 'doc';
+  }
+
+  function _applyDetails(d) {
+    if (isForceExpand()) { d.open = true; return; }
+    var st = getState(_detailsScope(d), d.getAttribute('data-collapse-key'));
+    if (st !== null) d.open = !st;
+  }
+
+  function watchDetails(root) {
+    root = root || document.body;
+    Array.prototype.forEach.call(root.querySelectorAll(DETAILS_SEL), _applyDetails);
+    new MutationObserver(function (muts) {
+      muts.forEach(function (m) {
+        m.addedNodes.forEach(function (n) {
+          if (n.nodeType !== 1) return;
+          if (n.matches(DETAILS_SEL)) _applyDetails(n);
+          Array.prototype.forEach.call(n.querySelectorAll(DETAILS_SEL), _applyDetails);
+        });
+      });
+    }).observe(root, { childList: true, subtree: true });
+    // toggle doesn't bubble -- capture. Reads d.open at fire time (not the
+    // event's state), so a stored-collapsed re-apply that races the parser's
+    // own open-attribute toggle still saves the right value.
+    document.addEventListener('toggle', function (e) {
+      var d = e.target;
+      if (!d.matches || !d.matches(DETAILS_SEL) || !d.isConnected || isForceExpand()) return;
+      setCollapsed(_detailsScope(d), d.getAttribute('data-collapse-key'), !d.open);
+    }, true);
   }
 
   var _exports = {
     init: init,
     isCollapsed: isCollapsed,
     setCollapsed: setCollapsed,
+    getState: getState,
+    watchDetails: watchDetails,
     storageKey: storageKey,
     isForceExpand: isForceExpand,
     setForceExpand: setForceExpand,

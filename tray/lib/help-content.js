@@ -89,7 +89,8 @@
           'Trading: paper trading only. Overview, Strategies, Tickers, Trades and Replay show the strategies, their trades and their backtests.',
           'Log: a running activity record of what Felix did and when.',
           'Help: this guide, and a live list of every tool Felix currently has.',
-          'Settings: General preferences, AI models (which models answer and in what order), Sign-in (connected accounts) and Permissions.'
+          'Settings: General preferences, AI models (which models answer and in what order), Sign-in (connected accounts) and Permissions.',
+          'Anything that folds open and shut remembers how you left it: section headers, the sidebar, conversation project groups, memory categories, document folders, library groups, finished trading books and Sign-in channel rows stay open or closed when the panel refreshes, when you switch tabs and after Felix restarts. Settings > General > "Keep sections expanded" overrides this and shows everything open.'
         ],
         see_also: ['talking-to-felix', 'models-and-routing']
       },
