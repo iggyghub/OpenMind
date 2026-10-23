@@ -9,11 +9,11 @@ Each slice is one GitHub issue whose body is the complete instruction self_dev r
 exact files, exact contents or SEARCH/REPLACE text, acceptance checks. Built by Felix through
 `self_dev_campaign`; Claude Code writes the specs and verifies each landed PR.
 
-## Status: ready
+## Status: blocked -- V2 spec not written yet (needs a grill-free spec pass against master)
 
 ## Next slice -- start here
 
-- **Active:** V1 -- #1521
+- **Active:** V2 -- #0
 - **Model:** self_dev-default
 
 ## Queue
@@ -21,7 +21,7 @@ exact files, exact contents or SEARCH/REPLACE text, acceptance checks. Built by 
 Order matters: each slice needs the previous one merged. Only the Active slice has an issue;
 the next one is specced after the previous lands (its exact SEARCH text depends on it).
 
-- [ ] V1 -- #1521 -- Shotcut setup: `scripts/setup-shotcut.ps1` (winget, machine-wide) + `plugins/video_project.py` with `find_shotcut`/`find_melt` + `video_status` + gate test + Help topic
+- [x] V1 -- #1521 -- Shotcut setup: `scripts/setup-shotcut.ps1` (winget, machine-wide) + `plugins/video_project.py` with `find_shotcut`/`find_melt` + `video_status` + gate test + Help topic
 - [ ] V2 -- edit list -> `.mlt` serialiser (trusted code, never model-written XML) + filing in the Document library under `Videos/<YYYY>/<MM-DD>/` by capture date + fingerprint on write
 - [ ] V3 -- render with `melt` in the background (progress, out-of-date marking on `.mlt` change, render on request, export renders first)
 - [ ] V4 -- Quick trim: loudest audio stretch per clip, join in capture order, one-call "reel from these clips"
@@ -30,3 +30,6 @@ the next one is specced after the previous lands (its exact SEARCH text depends 
 - [ ] V7 -- Vision trim: escalation for clips with no clear audio peak (capped per reel) and the explicit all-clips mode
 
 ## Landed PRs
+
+- PR #1523 -- V1 (built by a Claude Haiku agent from the #1521 spec while Budd was down; diff verified byte-identical to the dry-run spec, full pytest 6,278 passed)
+- PR #1524 -- V1 follow-up: Felix installed Shotcut itself via `pkg_install` at winget's per-user scope; detection now finds `%LOCALAPPDATA%\Programs\Shotcut`. Live-verified: `video_status` available, melt 7.41.0
