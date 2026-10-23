@@ -57,8 +57,10 @@ bring in an editor.
 9. **v1 is cuts and joins.** Trimmed clips in order, a short audio fade at each cut,
    rendered at the clips' own resolution/frame rate. Transitions, titles and music are
    the user's to add in Shotcut; Felix learns one on the third hand-made repeat (R2).
-10. **Shotcut is a declared, detected dependency** -- installed machine-wide by
-    `scripts/setup-shotcut.ps1` (winget `Meltytech.Shotcut`), discovered at runtime;
+10. **Shotcut is a declared, detected dependency** -- installed by
+    `scripts/setup-shotcut.ps1` or Felix's `pkg_install` (winget `Meltytech.Shotcut`,
+    either scope: `melt` runs unsandboxed, so a per-user install under AppData works),
+    discovered at runtime;
     absent, video projects say so with the install hint instead of failing silently.
 
 ## Considered and rejected
