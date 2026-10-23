@@ -68,7 +68,7 @@ describe('setCollapsed', () => {
     expect(SectionCollapse.isCollapsed('settings', 'Active model')).toBe(true);
   });
 
-  test('removes the key when collapsed=false', () => {
+  test('collapsed=false reads back as expanded', () => {
     SectionCollapse.setCollapsed('settings', 'Notifications', true);
     SectionCollapse.setCollapsed('settings', 'Notifications', false);
     expect(SectionCollapse.isCollapsed('settings', 'Notifications')).toBe(false);
@@ -85,36 +85,41 @@ describe('setCollapsed', () => {
   });
 });
 
-// ── force-expand override (Settings > General > "Keep sections expanded") ────
+// ── getState: tri-state, so default-collapsed things remember being opened ──
 
-describe('isForceExpand / setForceExpand', () => {
-  test('defaults to false', () => {
-    expect(SectionCollapse.isForceExpand()).toBe(false);
+describe('getState', () => {
+  test('null when never toggled', () => {
+    expect(SectionCollapse.getState('int-channel', 'Slack')).toBeNull();
   });
 
-  test('persists true', () => {
-    SectionCollapse.setForceExpand(true);
-    expect(SectionCollapse.isForceExpand()).toBe(true);
+  test('false once explicitly expanded, true once collapsed', () => {
+    SectionCollapse.setCollapsed('int-channel', 'Slack', false);
+    expect(SectionCollapse.getState('int-channel', 'Slack')).toBe(false);
+    SectionCollapse.setCollapsed('int-channel', 'Slack', true);
+    expect(SectionCollapse.getState('int-channel', 'Slack')).toBe(true);
   });
 
-  test('setForceExpand(false) removes the key', () => {
-    SectionCollapse.setForceExpand(true);
-    SectionCollapse.setForceExpand(false);
-    expect(SectionCollapse.isForceExpand()).toBe(false);
+  test('survives a module reload (restart) -- state lives in storage only', () => {
+    SectionCollapse.setCollapsed('conv-project', '7', true);
+    jest.resetModules();
+    const fresh = require('../lib/section-collapse');
+    expect(fresh.isCollapsed('conv-project', '7')).toBe(true);
   });
 });
 
-describe('isCollapsed with force-expand on', () => {
-  test('overrides an explicitly collapsed section to false', () => {
-    SectionCollapse.setCollapsed('settings', 'Active model', true);
-    SectionCollapse.setForceExpand(true);
-    expect(SectionCollapse.isCollapsed('settings', 'Active model')).toBe(false);
+// ── <details> emitters carry a stable data-collapse-key for watchDetails ─────
+
+describe('data-collapse-key on rendered <details>', () => {
+  test('panel-spec group keys on collection, else bare label (never count)', () => {
+    const PanelSpec = require('../lib/panel-spec');
+    const g = (w) => PanelSpec.renderWidget(Object.assign({ type: 'group', widgets: [] }, w));
+    expect(g({ label: 'Money', collection: 'money', count: '3' })).toContain('data-collapse-key="money"');
+    expect(g({ label: 'Recent videos', count: '9' })).toContain('data-collapse-key="Recent videos"');
   });
 
-  test('turning it back off restores the section\'s own remembered state', () => {
-    SectionCollapse.setCollapsed('settings', 'Active model', true);
-    SectionCollapse.setForceExpand(true);
-    SectionCollapse.setForceExpand(false);
-    expect(SectionCollapse.isCollapsed('settings', 'Active model')).toBe(true);
+  test('document folders key on folder name', () => {
+    const Docs = require('../lib/documents-panel');
+    const html = Docs.renderList([{ id: 1, title: 't', folder: 'Reddit/r/AI' }]);
+    expect(html).toContain('data-collapse-key="folder:Reddit/r/AI"');
   });
 });

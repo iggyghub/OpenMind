@@ -120,3 +120,45 @@ describe('renderActivityLog', () => {
     expect(defaultMount.innerHTML).not.toContain('trading entry');
   });
 });
+
+describe('readable entries (UI cleanup mark: "a bunch of nonsense")', () => {
+  const rejected = (n) => ({ ts: '2026-09-23 03:31:1' + n, content: {
+    source: 'discovery', status: 'rejected', reason: 'No falsifiable rule.', idea_url: 'https://www.investopedia.com/x' } });
+
+  test('describeTurn never falls back to raw JSON', () => {
+    expect(ActivityLog.describeTurn(rejected(0).content))
+      .toEqual({ title: 'Strategy idea rejected', tag: 'investopedia.com', detail: 'No falsifiable rule.' });
+    expect(ActivityLog.describeTurn({ source: 'self_dev', pr_url: 'https://github.com/o/r/pull/1376',
+      summary: 'Self-dev PR https://github.com/o/r/pull/1376 needs human review' }).title)
+      .toBe('Self-dev PR #1376 needs human review');
+    expect(ActivityLog.describeTurn({ source: 'x', a: 1, b: 'two' }).title).toBe('a: 1  ·  b: two');
+  });
+
+  test('formatTs reads the SQLite timestamp as UTC', () => {
+    expect(ActivityLog.formatTs('2026-09-23 03:31:15'))
+      .toBe(new Date(Date.UTC(2026, 8, 23, 3, 31, 15)).toLocaleString());
+  });
+
+  test('newest first, 3+ identical entries fold into one group', () => {
+    const mount = fakeElement();
+    withFakeDocument(mount, () => {
+      ActivityLog.renderActivityLog({ turns: [rejected(1), rejected(2), rejected(3),
+        { ts: '2026-09-24 00:00:00', content: { source: 'trading', summary: 'Scheduler dispatch' } }] }, mount);
+    });
+    const top = mount.children[0].children;
+    expect(top.length).toBe(2);
+    expect(top[0].className).toBe('activity-log-item');      // the newer trading entry first
+    expect(top[1].className).toBe('activity-log-group');
+    expect(mount.innerHTML).toContain('3 × Strategy idea rejected');
+  });
+
+  test('a live turn (append) adds to the list instead of replacing it', () => {
+    const mount = fakeElement();
+    withFakeDocument(mount, () => {
+      ActivityLog.renderActivityLog({ turns: [{ content: { summary: 'old' } }] }, mount);
+      ActivityLog.renderActivityLog({ turns: [{ content: { summary: 'new' } }], append: true }, mount);
+    });
+    expect(mount.innerHTML).toContain('old');
+    expect(mount.innerHTML).toContain('new');
+  });
+});

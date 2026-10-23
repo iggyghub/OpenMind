@@ -51,6 +51,39 @@
       overflow: hidden;
     }
 
+    /* Delete / remove is a red x everywhere (UI cleanup 2026-10-22). The
+       button. prefix out-ranks each pane's own button base class. */
+    button.btn-x {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 24px; height: 24px; padding: 0; flex-shrink: 0;
+      background: transparent; border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      color: var(--color-danger);
+      font-family: inherit; font-size: 18px; line-height: 1;
+      cursor: pointer;
+    }
+    button.btn-x:hover {
+      background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+      border-color: var(--color-danger);
+    }
+
+    /* ── activity log (Log pane + Trading > Activity) ─────────── */
+    .activity-log-list { list-style: none; margin: 0; padding: 0; }
+    #activity-log-mount { padding: 8px 18px; overflow-y: auto; height: 100%; box-sizing: border-box; }
+    .activity-log-item { padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .activity-log-meta { display: block; font-size: 11px; color: var(--text-muted); }
+    .activity-log-content { font-size: 13px; color: var(--text); margin-top: 2px; }
+    .activity-log-detail {
+      font-size: 12px; color: var(--text-dim); margin-top: 2px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .activity-log-group summary {
+      padding: 8px 0; border-bottom: 1px solid var(--border);
+      font-size: 13px; color: var(--text-dim); cursor: pointer;
+    }
+    .activity-log-group .activity-log-list { padding-left: 16px; }
+    .activity-log-empty, .activity-log-loading { color: var(--text-muted); font-size: 13px; }
+
     /* ── sidebar ────────────────────────────────────────────── */
     .sidebar {
       width: 180px;
@@ -882,8 +915,6 @@
     }
     .conv-thread-open-btn { color: var(--text-muted); }
     .conv-thread-open-btn:hover { color: var(--text); border-color: var(--accent); }
-    .conv-thread-del-btn { color: var(--text-muted); }
-    .conv-thread-del-btn:hover { color: #c44b4b; border-color: #c44b4b; }
     .conv-list-empty {
       padding: 24px 18px;
       font-size: 13px;
@@ -954,17 +985,6 @@
       gap: 4px;
       flex-shrink: 0;
     }
-    .conv-project-del-btn {
-      background: transparent;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 2px 8px;
-      font-size: 11px;
-      color: var(--text-muted);
-      cursor: pointer;
-      font-family: inherit;
-    }
-    .conv-project-del-btn:hover { color: #c44b4b; border-color: #c44b4b; }
     .conv-project-body { padding: 0; }
     .conv-project-body.is-collapsed { display: none; }
     .conv-project-empty {
@@ -1560,6 +1580,13 @@
       transition: transform 0.15s;
     }
     .int-channel-row.is-expanded .int-chevron { transform: rotate(90deg); }
+    /* <details> rows/groups in Sign-in (OpenClaw, service categories). */
+    .int-fold { border-bottom: 1px solid #1e1c30; }
+    .int-fold > summary { list-style: none; cursor: pointer; }
+    .int-fold > summary::-webkit-details-marker { display: none; }
+    .int-fold[open] > summary .int-chevron { transform: rotate(90deg); }
+    .int-fold > summary.int-svc-cat-header { display: flex; align-items: center; gap: 8px; }
+    .int-daemon-actions { flex-direction: row; }
 
     .int-channel-body {
       display: flex;
@@ -2054,13 +2081,7 @@
     }
     .ins-btn-save:hover { background: #7ac8fc; }
 
-    .ins-btn-delete {
-      background: var(--bg-elev);
-      color: var(--text-muted);
-      border: 1px solid var(--border);
-      margin-left: auto;
-    }
-    .ins-btn-delete:hover { color: #e05555; border-color: #e05555; }
+    .ins-btn-delete { margin-left: auto; }
 
     /* ── memory pane ────────────────────────────────────────── */
     /* Lifted from the retired tray/windows/memory.html; class names are
@@ -2127,6 +2148,7 @@
     .mem-group.collapsed .mem-group-caret { transform: rotate(-90deg); }
     .mem-group-name { font-size: 12px; font-weight: 600; color: #4bd49a; letter-spacing: 0.02em; }
     .mem-group-count { font-size: 11px; color: var(--text-muted); }
+    .mem-group-del { margin-left: auto; }
     .mem-group.collapsed .mem-item { display: none; }
 
     @keyframes mem-fadeIn {
@@ -2206,13 +2228,7 @@
     }
     .mem-btn-save:hover { background: #6ce0b0; }
 
-    .mem-btn-delete {
-      background: var(--bg-elev);
-      color: var(--text-muted);
-      border: 1px solid var(--border);
-      margin-left: auto;
-    }
-    .mem-btn-delete:hover { color: #e05555; border-color: #e05555; }
+    .mem-btn-delete { margin-left: auto; }
 
     /* ── recipes pane ──────────────────────────────────────── */
     /* ── shared sort bar (Library pane: Memory/Insights/Recipes/Documents) ── */
@@ -2305,6 +2321,38 @@
       padding: 14px;
     }
     .cred-card + .cred-card { margin-top: 12px; }
+
+    /* Tile dialog (tray/lib/tile-dialog.js): each card is one line until
+       clicked; the line morphs into a centred tile over a blurred backdrop. */
+    .tile-line {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 12px 14px; margin-top: 8px;
+      background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text); font: inherit; font-size: 13px; font-weight: 600;
+      text-align: left; cursor: pointer;
+    }
+    .tile-line:hover { border-color: var(--accent); }
+    .tile-line .cred-status { margin: 0 0 0 auto; font-weight: 400; }
+    .tile-line-chevron { color: var(--text-muted); font-size: 18px; line-height: 1; }
+    .tile-line .cred-status + .tile-line-chevron { margin-left: 0; }
+    .tile-line > .tile-line-name + .tile-line-chevron { margin-left: auto; }
+    dialog.tile-dialog {
+      width: min(560px, 90vw); max-height: 85vh; overflow: auto; padding: 0;
+      margin: auto;  /* the global reset zeroes the UA centring margin */
+      background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-floating);
+    }
+    dialog.tile-dialog::backdrop { background: rgba(0, 0, 0, 0.45); backdrop-filter: blur(4px); }
+    dialog.tile-dialog .cred-card { border: none; }
+    .tile-dialog-foot { display: flex; justify-content: flex-end; padding: 0 14px 14px; }
+    .tile-dialog-done {
+      padding: 6px 16px; border-radius: var(--radius-md);
+      border: 1px solid var(--accent); background: var(--accent); color: #fff;
+      font: inherit; font-size: 13px; cursor: pointer;
+    }
+    ::view-transition-group(tile-dialog-morph) { animation-duration: 220ms; }
 
     .cred-card-title {
       font-size: 13px;
@@ -3294,19 +3342,6 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .dsc-remove-btn {
-      background: none;
-      border: 1px solid var(--border);
-      color: var(--text-muted);
-      font-family: inherit;
-      font-size: 11px;
-      padding: 3px 8px;
-      border-radius: var(--radius-sm);
-      cursor: pointer;
-      flex-shrink: 0;
-      transition: color 0.1s, border-color 0.1s;
-    }
-    .dsc-remove-btn:hover { color: #e05555; border-color: #e05555; }
     .dsc-empty {
       padding: 12px 18px;
       font-size: 12px;
@@ -4346,17 +4381,6 @@
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }
-    .jobs-board-remove {
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      font-size: 14px;
-      padding: 0 4px;
-      line-height: 1;
-    }
-    .jobs-board-remove:hover { color: var(--danger, #e05); }
     .jobs-boards-add {
       display: flex;
       gap: 6px;
@@ -4540,19 +4564,6 @@
       color: var(--text-muted);
       letter-spacing: 0.04em;
     }
-    .set-row-remove {
-      flex-shrink: 0;
-      width: 20px;
-      height: 20px;
-      line-height: 18px;
-      border: none;
-      border-radius: var(--radius-sm);
-      background: transparent;
-      color: var(--text-muted);
-      font-size: 16px;
-      cursor: pointer;
-    }
-    .set-row-remove:hover { background: rgba(255, 90, 90, 0.15); color: #ff7a7a; }
     .set-row-edit {
       flex-shrink: 0;
       height: 20px;
@@ -5892,16 +5903,21 @@
         <div class="set-body">
           <div class="int-body" id="int-body">
             <div class="int-section" id="int-harness-section">Harness</div>
-            <div class="int-row" id="int-daemon-row">
-              <span class="int-row-name">OpenClaw</span>
-              <span class="int-row-right">
+            <!-- Folds like the channel rows below it; open/closed remembered
+                 by SectionCollapse.watchDetails. -->
+            <details class="int-fold" id="int-daemon-row" data-collapse-key="openclaw">
+              <summary class="int-channel-head">
+                <span class="int-chevron" aria-hidden="true"></span>
+                <span class="int-row-name">OpenClaw</span>
                 <span class="int-status-dot" id="int-daemon-dot"></span>
                 <span class="int-status-text" id="int-daemon-text">&#8212;</span>
+              </summary>
+              <div class="int-channel-body int-daemon-actions">
                 <button class="int-btn is-primary" id="int-daemon-start"  type="button">Start</button>
                 <button class="int-btn is-danger"  id="int-daemon-stop"   type="button">Stop</button>
                 <button class="int-btn"            id="int-daemon-restart" type="button">Restart</button>
-              </span>
-            </div>
+              </div>
+            </details>
             <div id="int-channels-list"></div>
 
             <!-- S17 (#300) -- service directory -->
@@ -6221,16 +6237,6 @@
             <div class="set-toggle-sub">Highlight colour for active items</div>
           </div>
           <input type="color" id="set-accent-picker" class="set-accent-picker">
-        </div>
-        <div class="set-toggle-row">
-          <div>
-            <div class="set-toggle-label">Keep sections expanded</div>
-            <div class="set-toggle-sub">Ignore each section's remembered collapse state and always show them open</div>
-          </div>
-          <label class="set-toggle">
-            <input type="checkbox" id="set-sections-force-expand">
-            <span class="set-toggle-track"><span class="set-toggle-thumb"></span></span>
-          </label>
         </div>
 
         <div class="set-section">Voice input</div>
@@ -6606,7 +6612,7 @@
            <details> is purely a visual wrapper, no JS involved. -->
       <div class="lib-sub" data-lib="books">
         <div id="books-panel-mount"></div>
-        <details class="ps-group">
+        <details class="ps-group" data-collapse-key="book-ingestion">
           <summary class="ps-group-summary">General book ingestion (path-based, separate from Stock Market)</summary>
           <div class="vid-body" id="books-lib-panel-body">
             <div class="ps-empty">Loading Books panel...</div>
@@ -6831,6 +6837,9 @@
        Dual-mode: feeds Node test suite via require() and this renderer via
        window.SectionCollapse. -->
   <script src="../lib/section-collapse.js"></script>
+  <!-- Tile dialog: a card shown as one line that morphs into a centred tile
+       (Settings > Sign-in cards). Dual-mode: window.TileDialog. -->
+  <script src="../lib/tile-dialog.js"></script>
 
   <!-- Sidebar nav order (#1422) -- drag / Alt+Arrow reordering of the
        sidebar buttons, persisted in localStorage. Dual-mode: window.NavOrder. -->
@@ -6910,6 +6919,11 @@
   <!-- WebSocket bridge (UI2 A5 -- #485) -- shared with detached-panel.html.
        Dual-mode: window.WsBridge here, module.exports for Node tests. -->
   <script src="../lib/ws-bridge.js"></script>
+  <!-- Mark mode (Ctrl+Shift+M) -- point at UI elements and leave notes for
+       a UI cleanup pass; "Copy all" puts them on the clipboard. Dev tooling:
+       reads the page + writes the clipboard, no tool calls. -->
+  <script src="../lib/ui-marks.js"></script>
+  <script>window.UiMarks.init(document);</script>
 
   <script>
     'use strict';
@@ -7223,17 +7237,12 @@
     // IPC search returns results it holds the matching subset instead.
     let convListQuery  = '';
     let convSearchHits = null;
-    // S11 (#294) -- project folders snapshot + per-group collapse state.
-    // The collapse state is RAM-only: groups default to expanded on reload,
-    // which matches the spec's "groups by project (collapsible per S3)" --
-    // S3-style persistence is per-section header in localStorage; project
-    // groups are content rows, not section headers, so they reset per session.
+    // S11 (#294) -- project folders snapshot. Per-group collapse is
+    // remembered via SectionCollapse (pane 'conv-project', key = project id).
     let projectsList = [];
-    const projectCollapsed = new Map();  // key: project id (or 'unfiled'), value: bool
     // F5 (#328) -- backlog panel state. Panel collapse is persisted to
     // localStorage; per-group collapse is also persisted so groups stay
-    // closed across reloads (unlike projectCollapsed in the Conversations
-    // pane which resets per session per the S11 comment above).
+    // closed across reloads.
     let backlogPanelCollapsed = false;
     try { backlogPanelCollapsed = localStorage.getItem('backlog-panel-collapsed') === '1'; } catch (_e) {}
     const backlogGroupCollapsed = new Map();
@@ -7274,6 +7283,13 @@
           refreshHealth();
           // No pull list here: Cerebral sends one `snapshot` message on connect
           // (main.py _SNAPSHOT_BUILDERS), unpacked by handleEvent below.
+          // But each pane's own on-open fetch (activity_poll, list_memories...)
+          // runs in activateRoute, which at boot fires BEFORE connect() and on
+          // a Cerebral restart fires never -- sendEvent just returns false and
+          // the pane sits on "Loading..." / stale data until re-clicked. Re-run
+          // it for whatever is showing now, plus the open workspace panel.
+          activateRoute(routeFromHash());
+          if (window._wsRefreshActivePanel) window._wsRefreshActivePanel();
         },
         onClose: () => {
           wsConnected = false;
@@ -7589,7 +7605,7 @@
           if (window.ActivityLogMod) {
             var actData = event.data && event.data.turns
               ? event.data
-              : { turns: event.data && event.data.turn ? [event.data.turn] : [], source: null };
+              : { turns: event.data && event.data.turn ? [event.data.turn] : [], source: null, append: true };
             var actContainer = actData.source === 'trading'
               ? document.getElementById('trading-activity-mount')
               : document.getElementById('activity-log-mount');
@@ -8236,7 +8252,7 @@
         moveOpts +
         '</select>' +
         '<button class="conv-thread-open-btn" data-tid="' + safeId + '">Open</button>' +
-        '<button class="conv-thread-del-btn"  data-tid="' + safeId + '">Delete</button>' +
+        '<button class="conv-thread-del-btn btn-x" data-tid="' + safeId + '" title="Delete" aria-label="Delete">&times;</button>' +
         '</div>' +
         '</div>';
     }
@@ -8280,7 +8296,7 @@
       // an empty container).
       const unfiledThreads = threadsByProject.get('unfiled') || [];
       if (unfiledThreads.length > 0 || projectsList.length === 0) {
-        const collapsed = projectCollapsed.get('unfiled') === true;
+        const collapsed = window.SectionCollapse.isCollapsed('conv-project', 'unfiled');
         const chev = collapsed ? '▸' : '▾';
         const bodyCls = collapsed ? ' is-collapsed' : '';
         const meta = unfiledThreads.length
@@ -8306,7 +8322,7 @@
       projectsList.forEach(function (p) {
         const key = String(p.id);
         const rows = threadsByProject.get(key) || [];
-        const collapsed = projectCollapsed.get(key) === true;
+        const collapsed = window.SectionCollapse.isCollapsed('conv-project', key);
         const chev = collapsed ? '▸' : '▾';
         const bodyCls = collapsed ? ' is-collapsed' : '';
         const name = (p.name || '').trim();
@@ -8324,7 +8340,7 @@
           '</span>' +
           '<span class="conv-project-meta">' + escHtml(meta) + '</span>' +
           '<span class="conv-project-actions">' +
-          '<button class="conv-project-del-btn" data-pid="' + escHtml(key) + '" type="button">Delete</button>' +
+          '<button class="conv-project-del-btn btn-x" data-pid="' + escHtml(key) + '" type="button" title="Delete" aria-label="Delete">&times;</button>' +
           '</span>' +
           '</div>' +
           '<div class="conv-project-body' + bodyCls + '" data-pid="' + escHtml(key) + '">' +
@@ -8432,8 +8448,8 @@
           if (e.target.closest('.conv-project-actions')) return;
           const key = projHeader.dataset.pid;
           if (!key) return;
-          const cur = projectCollapsed.get(key) === true;
-          projectCollapsed.set(key, !cur);
+          window.SectionCollapse.setCollapsed('conv-project', key,
+            !window.SectionCollapse.isCollapsed('conv-project', key));
           renderConversationsList();
           return;
         }
@@ -9029,7 +9045,7 @@
             <button class="ins-btn ins-btn-pin"    data-id="${escHtml(ins.id)}">${ins.pinned ? '📌 Pinned' : '📌 Pin'}</button>
             <button class="ins-btn ins-btn-edit"   data-id="${escHtml(ins.id)}">Edit</button>
             <button class="ins-btn ins-btn-save"   data-id="${escHtml(ins.id)}" style="display:none">Save</button>
-            <button class="ins-btn ins-btn-delete" data-id="${escHtml(ins.id)}">Delete</button>
+            <button class="ins-btn ins-btn-delete btn-x" data-id="${escHtml(ins.id)}" title="Delete" aria-label="Delete">&times;</button>
           </div>
         `;
         insightsListEl.insertBefore(el, insightsEmptyEl);
@@ -9180,10 +9196,8 @@
         if (docsSortBar) docsSortBar.style.display = 'none';
         return;
       }
-      // Keep folders the user opened open across live re-renders.
-      const openFolders = {};
-      docsListEl.querySelectorAll('details.docs-folder[open]').forEach(function (d) { openFolders[d.dataset.folder] = true; });
-      docsListEl.innerHTML = _docsPanel.renderList(sortedDocuments(), openFolders);
+      // Folder open/closed survives this rebuild via SectionCollapse.watchDetails.
+      docsListEl.innerHTML = _docsPanel.renderList(sortedDocuments());
       if (docsSortBar) docsSortBar.style.display = 'flex';
     }
 
@@ -9339,7 +9353,7 @@
           '</label>' +
           '<span class="jobs-board-url-hint">' + (board.label ? escHtml(board.url) : '') + '</span>' +
           '<span class="jobs-board-provider">' + escHtml(provider) + '</span>' +
-          '<button class="jobs-board-remove" data-url="' + escHtml(board.url) + '" type="button" title="Remove">x</button>';
+          '<button class="jobs-board-remove btn-x" data-url="' + escHtml(board.url) + '" type="button" title="Remove" aria-label="Remove">&times;</button>';
         jobsBoardsListEl.appendChild(row);
       });
     }
@@ -9805,8 +9819,7 @@
     // the cached card.dataset.original so a partial edit survives a
     // memory_update reconciliation cleanly.
 
-    // Category groups the user has collapsed; persists across re-renders.
-    const memoryCollapsed = new Set();
+    // Category group collapse is remembered via SectionCollapse (pane 'mem-group').
 
     function memItemHtml(mem) {
       return `
@@ -9818,7 +9831,7 @@
         <div class="mem-item-actions">
           <button class="mem-btn mem-btn-edit"   data-id="${escHtml(mem.id)}">Edit</button>
           <button class="mem-btn mem-btn-save"   data-id="${escHtml(mem.id)}" style="display:none">Save</button>
-          <button class="mem-btn mem-btn-delete" data-id="${escHtml(mem.id)}">Delete</button>
+          <button class="mem-btn mem-btn-delete btn-x" data-id="${escHtml(mem.id)}" title="Delete" aria-label="Delete">&times;</button>
         </div>`;
     }
 
@@ -9857,13 +9870,15 @@
       names.forEach((name) => {
         const items = sortedMemoryGroup(groups.get(name));
         const group = document.createElement('div');
-        group.className = 'mem-group' + (memoryCollapsed.has(name) ? ' collapsed' : '');
+        group.className = 'mem-group' + (window.SectionCollapse.isCollapsed('mem-group', name) ? ' collapsed' : '');
         group.dataset.group = name;
         group.innerHTML =
           `<div class="mem-group-header" data-group="${escHtml(name)}">
              <span class="mem-group-caret">▾</span>
              <span class="mem-group-name">${escHtml(name)}</span>
              <span class="mem-group-count">${items.length}</span>
+             <button class="mem-group-del btn-x" type="button" title="Delete category"
+                     aria-label="Delete category ${escHtml(name)}">&times;</button>
            </div>` +
           items.map((mem) =>
             `<div class="mem-item" data-id="${escHtml(mem.id)}">${memItemHtml(mem)}</div>`).join('');
@@ -9875,9 +9890,21 @@
       const header = e.target.closest('.mem-group-header');
       if (!header) return;
       const name = header.dataset.group;
-      if (memoryCollapsed.has(name)) memoryCollapsed.delete(name);
-      else memoryCollapsed.add(name);
-      header.closest('.mem-group').classList.toggle('collapsed');
+      if (e.target.closest('.mem-group-del')) {
+        // Same grouping key as renderMemory: blank category lands in General.
+        const inGroup = memoryItems.filter((m) => ((m.category || '').trim() || 'General') === name);
+        if (!window.confirm('Delete the "' + name + '" category and its ' + inGroup.length +
+            ' memories? This cannot be undone.')) return;
+        inGroup.forEach((m) => sendEvent({ type: 'delete_memory', data: { memory_id: m.id } }));
+        // Optimistic prune, as for single deletes; memory_update is authoritative.
+        const gone = new Set(inGroup.map((m) => m.id));
+        memoryItems = memoryItems.filter((m) => !gone.has(m.id));
+        renderMemory();
+        return;
+      }
+      const groupEl = header.closest('.mem-group');
+      groupEl.classList.toggle('collapsed');
+      window.SectionCollapse.setCollapsed('mem-group', name, groupEl.classList.contains('collapsed'));
     });
 
     function commitMemoryEdit(card) {
@@ -10412,7 +10439,11 @@
       const grouped = _svcReg.byCategory();
       var html = '';
       grouped.forEach(function (services, category) {
-        html += '<div class="int-svc-cat-header">' + escHtml(category) + '</div>';
+        // Each category folds; state survives this innerHTML rebuild via
+        // SectionCollapse.watchDetails (key = category name).
+        html += '<details class="int-fold" open data-collapse-key="svc-' + escHtml(category) + '">' +
+          '<summary class="int-svc-cat-header"><span class="int-chevron" aria-hidden="true"></span>' +
+          escHtml(category) + '</summary>';
         for (var i = 0; i < services.length; i++) {
           var svc = services[i];
           var isGoogle = svc.credAnchor === 'cred-card-google';
@@ -10438,6 +10469,7 @@
             connectHtml +
           '</div>';
         }
+        html += '</details>';
       });
       intSvcBodyEl.innerHTML = html;
     }
@@ -10449,10 +10481,9 @@
     intSvcBodyEl.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-svc-connect]');
       if (!btn) return;
-      // S5 #473: credentials absorbed into harness; navigate there.
-      location.hash = '#harness';
-      // ponytail: anchor scroll deferred until credentials sub-pane is built
-      // into harness drawer (phase 2 of harness integration)
+      // The sign-in cards are on this same Settings > Sign-in tab, so open
+      // the matching card's tile in place (was: a dead jump to #harness).
+      window.TileDialog.openById(document, btn.dataset.svcConnect);
     });
 
     // ── permissions pane (Issue #202) ────────────────────────────────────
@@ -11278,27 +11309,8 @@
       const json = JSON.stringify(spec);
       if (json === _lastVideosSpecJson) return;
       _lastVideosSpecJson = json;
-      // Collapse state lives in the DOM's native <details>, but re-render rebuilds
-      // it from the server default ("open": gi==0) -- wiping the user's manual
-      // toggle every poll. Capture open/closed per collection, reapply after.
-      // Key on the summary's label text node only (firstChild), NOT its full text:
-      // the trailing count span ("3 clusters") changes when a cluster lands, so
-      // keying on textContent would drop the state on that exact tick.
-      const _groupKey = function (d) {
-        const s = d.querySelector('.ps-group-summary');
-        const t = s && s.firstChild && s.firstChild.textContent;
-        return t ? t.trim() : '';
-      };
-      const openState = {};
-      videosPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k) openState[k] = d.open;
-      });
+      // Group open/closed survives this rebuild via SectionCollapse.watchDetails.
       videosPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
-      videosPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k && (k in openState)) d.open = openState[k];
-      });
       if (window.ActionWidget) {
         window.ActionWidget.initActionWidgets(videosPanelBodyEl, sendEvent);
         window.ActionWidget.initMoveWidgets(videosPanelBodyEl, sendEvent);
@@ -11332,21 +11344,7 @@
       const json = JSON.stringify(spec);
       if (json === _lastGithubSpecJson) return;
       _lastGithubSpecJson = json;
-      const _groupKey = function (d) {
-        const s = d.querySelector('.ps-group-summary');
-        const t = s && s.firstChild && s.firstChild.textContent;
-        return t ? t.trim() : '';
-      };
-      const openState = {};
-      githubPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k) openState[k] = d.open;
-      });
-      githubPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
-      githubPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k && (k in openState)) d.open = openState[k];
-      });
+      githubPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);  // group state: SectionCollapse.watchDetails
       if (window.ActionWidget) {
         window.ActionWidget.initActionWidgets(githubPanelBodyEl, sendEvent);
         window.ActionWidget.initMoveWidgets(githubPanelBodyEl, sendEvent);
@@ -11380,14 +11378,7 @@
       const json = JSON.stringify(spec);
       if (json === tab.lastJson) return;
       tab.lastJson = json;
-      const key = function (d) {
-        const s = d.querySelector('.ps-group-summary');
-        return ((s && s.firstChild && s.firstChild.textContent) || '').trim();
-      };
-      const openState = {};
-      el.querySelectorAll('.ps-group').forEach(function (d) { const k = key(d); if (k) openState[k] = d.open; });
-      el.innerHTML = window.PanelSpec.renderPanel(spec);
-      el.querySelectorAll('.ps-group').forEach(function (d) { const k = key(d); if (k && (k in openState)) d.open = openState[k]; });
+      el.innerHTML = window.PanelSpec.renderPanel(spec);  // group state: SectionCollapse.watchDetails
       if (window.ActionWidget) {
         window.ActionWidget.initActionWidgets(el, sendEvent);
         window.ActionWidget.initMoveWidgets(el, sendEvent);
@@ -11420,21 +11411,7 @@
       const json = JSON.stringify(spec);
       if (json === _lastBooksSpecJson) return;
       _lastBooksSpecJson = json;
-      const _groupKey = function (d) {
-        const s = d.querySelector('.ps-group-summary');
-        const t = s && s.firstChild && s.firstChild.textContent;
-        return t ? t.trim() : '';
-      };
-      const openState = {};
-      booksPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k) openState[k] = d.open;
-      });
-      booksPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);
-      booksPanelBodyEl.querySelectorAll('.ps-group').forEach(function (d) {
-        const k = _groupKey(d);
-        if (k && (k in openState)) d.open = openState[k];
-      });
+      booksPanelBodyEl.innerHTML = window.PanelSpec.renderPanel(spec);  // group state: SectionCollapse.watchDetails
       if (window.ActionWidget) {
         window.ActionWidget.initActionWidgets(booksPanelBodyEl, sendEvent);
         window.ActionWidget.initMoveWidgets(booksPanelBodyEl, sendEvent);
@@ -11566,9 +11543,10 @@
 
     const _INT_CHANNELS = ['WhatsApp', 'Telegram', 'Discord', 'Slack', 'Teams'];
 
-    // Which channel rows are expanded. Persisted across the ~5s harness_status
-    // re-renders so an open row (and any secret being typed) survives.
-    const _intExpanded = new Set();
+    // Channel rows start collapsed; an opened row is remembered via
+    // SectionCollapse (pane 'int-channel') across the ~5s harness_status
+    // re-renders and restarts, so an open row (and any secret being typed) survives.
+    const _intExpanded = (n) => window.SectionCollapse.getState('int-channel', n) === false;
 
     function renderIntegrations() {
       const d = integrationsData;
@@ -11611,7 +11589,7 @@
         const dotCls     = connected ? 'is-connected' : 'is-down';
         const enabled    = !!ch.enabled;
         const secretSet  = !!ch.secret_set;
-        const expanded   = _intExpanded.has(ch.name);
+        const expanded   = _intExpanded(ch.name);
 
         const body = expanded
           ? ('<div class="int-channel-body">' +
@@ -11686,8 +11664,7 @@
       const expandBtn = target.closest('[data-int-expand]');
       if (expandBtn) {
         const name = expandBtn.getAttribute('data-int-expand');
-        if (_intExpanded.has(name)) _intExpanded.delete(name);
-        else _intExpanded.add(name);
+        window.SectionCollapse.setCollapsed('int-channel', name, _intExpanded(name));
         renderIntegrations();
         return;
       }
@@ -11890,8 +11867,8 @@
             <div class="dsc-row">
               <span class="dsc-sender-id">${escHtml(entry.sender_id || '')}</span>
               <span class="dsc-note">${escHtml(entry.note || '')}</span>
-              <button class="dsc-remove-btn" data-sender="${escHtml(entry.sender_id || '')}"
-                      type="button">Remove</button>
+              <button class="dsc-remove-btn btn-x" data-sender="${escHtml(entry.sender_id || '')}"
+                      type="button" title="Remove" aria-label="Remove">&times;</button>
             </div>
           `).join('');
 
@@ -12011,7 +11988,7 @@
                      title="${locked ? 'Locked: local-only mode' : (m.enabled ? 'Disable' : 'Enable')}">
               ${m.is_custom ? `<button class="set-row-edit" type="button"
                  data-edit-model="${escHtml(m.id)}" title="Edit connection">Edit</button>
-              <button class="set-row-remove" type="button"
+              <button class="set-row-remove btn-x" type="button"
                  data-remove-model="${escHtml(m.id)}" title="Remove">&times;</button>` : ''}
             </div>`;
         }).join('');
@@ -13265,6 +13242,12 @@
 
     // S3 -- collapsible section headers (#286). Key changed plugins→harness (S5 #473).
     const _sc = window.SectionCollapse;
+    // Every <details data-collapse-key> (library groups, doc folders, finished
+    // books...) remembers open/closed, re-applied after each IPC re-render.
+    _sc.watchDetails();
+    // Sign-in cards are one line each; a click morphs the line into a tile.
+    window.TileDialog.enhance(document.querySelectorAll('.cred-body > .cred-card'),
+      { statusSel: '.cred-status' });
     _sc.init(document.getElementById('perm-panel-capabilities'), 'permissions');
     _sc.init(document.getElementById('plug-main-view'), 'harness');
     _sc.init(document.querySelector('.prof-body'), 'profiles');
@@ -13281,19 +13264,6 @@
      'jobs-dossier'].forEach((id) => _sc.init(document.getElementById(id), 'job-search'));
     document.querySelectorAll('.jobs-auto-submit-section')
       .forEach((el) => _sc.init(el, 'job-search'));
-
-    // "Keep sections expanded" (Settings > General > Appearance): a global
-    // override so someone who's collapsed things out of habit over time can
-    // get back to everything-open with one toggle instead of hunting down
-    // each section individually.
-    const setSectionsForceExpandEl = document.getElementById('set-sections-force-expand');
-    if (setSectionsForceExpandEl) {
-      setSectionsForceExpandEl.checked = _sc.isForceExpand();
-      setSectionsForceExpandEl.addEventListener('change', () => {
-        _sc.setForceExpand(setSectionsForceExpandEl.checked);
-        if (setSectionsForceExpandEl.checked) _sc.forceExpandAll();
-      });
-    }
 
     // S1 -- #480: sidebar collapse + Ctrl+B hotkey
     const _sidebarEl = document.getElementById('sidebar');

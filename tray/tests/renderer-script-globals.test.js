@@ -98,6 +98,16 @@ const DUAL_MODE_LIBS = [
     check: (mod) => expect(typeof mod.create).toBe('function'),
   },
   {
+    file: 'ui-marks.js',
+    global: 'UiMarks',
+    check: (mod) => expect(typeof mod.init).toBe('function'),
+  },
+  {
+    file: 'tile-dialog.js',
+    global: 'TileDialog',
+    check: (mod) => expect(typeof mod.enhance).toBe('function'),
+  },
+  {
     file: 'self-dev-card.js',
     global: 'SelfDevCard',
     check: (mod) => expect(typeof mod.renderCardHtml).toBe('function'),

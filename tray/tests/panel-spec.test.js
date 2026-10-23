@@ -432,9 +432,9 @@ describe('renderWidget group', () => {
 
   test('open:true adds the open attribute; falsy omits it', () => {
     expect(PanelSpec.renderWidget({ type: 'group', label: 'a', open: true }))
-      .toContain('<details class="ps-group" open>');
+      .toContain('<details class="ps-group" open ');
     expect(PanelSpec.renderWidget({ type: 'group', label: 'a' }))
-      .toContain('<details class="ps-group">');
+      .not.toContain(' open');
   });
 
   test('escapes a malicious label and drops unknown child widgets', () => {

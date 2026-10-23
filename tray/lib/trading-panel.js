@@ -418,7 +418,7 @@ function _renderBookRow(b, expanded) {
         ${canStop ? `<button class="book-stop-btn" type="button" data-book-id="${b.id}">Stop</button>` : ''}
         ${b.status === 'stopped' ? `<button class="book-resume-btn" type="button" data-book-id="${b.id}">Resume</button>` : ''}
         <button class="book-retry-btn" type="button" data-book-id="${b.id}">Redo</button>
-        <button class="book-delete-btn" type="button" data-book-id="${b.id}">Delete</button>
+        <button class="book-delete-btn btn-x" type="button" data-book-id="${b.id}" title="Delete" aria-label="Delete">&times;</button>
       </div>
     </div>
   `;
@@ -436,7 +436,7 @@ function _renderBooksSection(books, booksModel, expandedIds) {
 
   const activeHtml = activeBooks.map((b) => _renderBookRow(b, expanded)).join('');
   const doneSection = doneBooks.length ? `
-    <details class="books-done-section">
+    <details class="books-done-section" data-collapse-key="books-done">
       <summary>${doneBooks.length} finished book${doneBooks.length === 1 ? '' : 's'}</summary>
       <div class="books-list">${doneBooks.map((b) => _renderBookRow(b, expanded)).join('')}</div>
     </details>

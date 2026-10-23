@@ -118,10 +118,10 @@
   /* Build HTML for the full document list. Returns '' when docs is empty.
    * Docs with a folder ("Reddit/r/AI_Agents") are grouped into collapsible
    * <details>, folders A-Z after the top-level docs; the caller's sort order
-   * is kept inside each folder. openFolders: folder names to render open. */
-  function renderList(docs, openFolders) {
+   * is kept inside each folder. Folders render closed; the renderer's
+   * SectionCollapse.watchDetails re-applies each one's remembered state. */
+  function renderList(docs) {
     if (!Array.isArray(docs) || docs.length === 0) return '';
-    var open = openFolders || {};
     var top = [];
     var byFolder = {};
     docs.forEach(function (d) {
@@ -134,7 +134,7 @@
     });
     return top.map(makeRow).join('') + folders.map(function (f) {
       var items = byFolder[f];
-      return '<details class="docs-folder" data-folder="' + escHtml(f) + '"' + (open[f] ? ' open' : '') + '>' +
+      return '<details class="docs-folder" data-folder="' + escHtml(f) + '" data-collapse-key="folder:' + escHtml(f) + '">' +
         '<summary class="docs-folder-summary">' + escHtml(f.replace('/', ' › ')) +  // first '/' only: "Reddit › r/AI_Agents"
         ' <span class="docs-folder-count">(' + items.length + ')</span></summary>' +
         items.map(makeRow).join('') +
