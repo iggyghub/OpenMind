@@ -9,37 +9,14 @@
 
 (function () {
   var PREFIX = 'sec-collapse:';
-  // A global override (Settings > General > Appearance > "Keep sections
-  // expanded"): once on, every section everywhere ignores its own remembered
-  // collapsed state and just stays open. Persisted separately from any
-  // per-section key so flipping it off later restores whatever each section
-  // was individually set to before.
-  var FORCE_EXPAND_KEY = PREFIX + 'force-expand';
 
   // Returns the localStorage key for a given pane + section label.
   function storageKey(paneKey, label) {
     return PREFIX + paneKey + ':' + label.trim().toLowerCase().replace(/\s+/g, '-');
   }
 
-  function isForceExpand() {
-    try {
-      return localStorage.getItem(FORCE_EXPAND_KEY) === '1';
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function setForceExpand(on) {
-    try {
-      if (on) localStorage.setItem(FORCE_EXPAND_KEY, '1');
-      else localStorage.removeItem(FORCE_EXPAND_KEY);
-    } catch (e) {}
-  }
-
-  // Returns true when the section is persisted as collapsed. The global
-  // force-expand override, when on, always wins.
+  // Returns true when the section is persisted as collapsed.
   function isCollapsed(paneKey, label) {
-    if (isForceExpand()) return false;
     try {
       return localStorage.getItem(storageKey(paneKey, label)) === '1';
     } catch (e) {
@@ -47,7 +24,7 @@
     }
   }
 
-  // Remembered state ignoring force-expand: true (collapsed), false (expanded)
+  // Remembered state: true (collapsed), false (expanded)
   // or null (never toggled -- caller uses its own default). Lets collapsibles
   // that default CLOSED (details, integration rows) remember being opened.
   function getState(paneKey, label) {
@@ -150,20 +127,6 @@
     });
   }
 
-  // Forces every already-initialised section header within containerEl (or
-  // the whole document if omitted) visibly open right now -- for when the
-  // force-expand setting is switched on and sections rendered before that
-  // moment need to react immediately, not just the next ones to init().
-  function forceExpandAll(containerEl) {
-    var root = containerEl || document;
-    var hdrs = root.querySelectorAll('.sec-hdr.sec-collapsed');
-    for (var i = 0; i < hdrs.length; i++) {
-      _applyState(hdrs[i], _bodyEls(hdrs[i]), false);
-    }
-    var dets = root.querySelectorAll(DETAILS_SEL);
-    for (var j = 0; j < dets.length; j++) dets[j].open = true;
-  }
-
   // Native <details data-collapse-key="..."> anywhere in the window: the
   // remembered state is re-applied every time one lands in the DOM (first
   // load AND every IPC re-render that rebuilds it via innerHTML), and every
@@ -177,7 +140,6 @@
   }
 
   function _applyDetails(d) {
-    if (isForceExpand()) { d.open = true; return; }
     var st = getState(_detailsScope(d), d.getAttribute('data-collapse-key'));
     if (st !== null) d.open = !st;
   }
@@ -199,7 +161,7 @@
     // own open-attribute toggle still saves the right value.
     document.addEventListener('toggle', function (e) {
       var d = e.target;
-      if (!d.matches || !d.matches(DETAILS_SEL) || !d.isConnected || isForceExpand()) return;
+      if (!d.matches || !d.matches(DETAILS_SEL) || !d.isConnected) return;
       setCollapsed(_detailsScope(d), d.getAttribute('data-collapse-key'), !d.open);
     }, true);
   }
@@ -211,9 +173,6 @@
     getState: getState,
     watchDetails: watchDetails,
     storageKey: storageKey,
-    isForceExpand: isForceExpand,
-    setForceExpand: setForceExpand,
-    forceExpandAll: forceExpandAll,
   };
 
   if (typeof module === 'object' && module && module.exports) {

@@ -99,12 +99,6 @@ describe('getState', () => {
     expect(SectionCollapse.getState('int-channel', 'Slack')).toBe(true);
   });
 
-  test('ignores force-expand (raw remembered state)', () => {
-    SectionCollapse.setCollapsed('mem-group', 'Work', true);
-    SectionCollapse.setForceExpand(true);
-    expect(SectionCollapse.getState('mem-group', 'Work')).toBe(true);
-  });
-
   test('survives a module reload (restart) -- state lives in storage only', () => {
     SectionCollapse.setCollapsed('conv-project', '7', true);
     jest.resetModules();
@@ -127,39 +121,5 @@ describe('data-collapse-key on rendered <details>', () => {
     const Docs = require('../lib/documents-panel');
     const html = Docs.renderList([{ id: 1, title: 't', folder: 'Reddit/r/AI' }]);
     expect(html).toContain('data-collapse-key="folder:Reddit/r/AI"');
-  });
-});
-
-// ── force-expand override (Settings > General > "Keep sections expanded") ────
-
-describe('isForceExpand / setForceExpand', () => {
-  test('defaults to false', () => {
-    expect(SectionCollapse.isForceExpand()).toBe(false);
-  });
-
-  test('persists true', () => {
-    SectionCollapse.setForceExpand(true);
-    expect(SectionCollapse.isForceExpand()).toBe(true);
-  });
-
-  test('setForceExpand(false) removes the key', () => {
-    SectionCollapse.setForceExpand(true);
-    SectionCollapse.setForceExpand(false);
-    expect(SectionCollapse.isForceExpand()).toBe(false);
-  });
-});
-
-describe('isCollapsed with force-expand on', () => {
-  test('overrides an explicitly collapsed section to false', () => {
-    SectionCollapse.setCollapsed('settings', 'Active model', true);
-    SectionCollapse.setForceExpand(true);
-    expect(SectionCollapse.isCollapsed('settings', 'Active model')).toBe(false);
-  });
-
-  test('turning it back off restores the section\'s own remembered state', () => {
-    SectionCollapse.setCollapsed('settings', 'Active model', true);
-    SectionCollapse.setForceExpand(true);
-    SectionCollapse.setForceExpand(false);
-    expect(SectionCollapse.isCollapsed('settings', 'Active model')).toBe(true);
   });
 });
