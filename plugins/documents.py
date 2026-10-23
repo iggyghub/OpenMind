@@ -110,8 +110,8 @@ class DocumentStore:
             self._con.execute("ALTER TABLE documents ADD COLUMN folder TEXT NOT NULL DEFAULT ''")
         self._con.commit()
 
-    def save_text(self, profile_id: int, folder: str, name: str, text: str) -> dict:
-        """Write ``text`` as a .md document in ``folder``; same folder+name overwrites."""
+    def save_text(self, profile_id: int, folder: str, name: str, text: str, ext: str = "md") -> dict:
+        """Write ``text`` as a .<ext> document in ``folder``; same folder+name overwrites."""
         now = datetime.now(timezone.utc).isoformat()
         row = self._con.execute(
             "SELECT id, path FROM documents WHERE profile_id = ? AND folder = ? AND name = ?",
@@ -124,14 +124,14 @@ class DocumentStore:
             return self.get_doc(row["id"])
         cur = self._con.execute(
             "INSERT INTO documents (profile_id, name, path, kind, folder, created_at, updated_at) "
-            "VALUES (?, ?, '', 'md', ?, ?, ?)",
-            (profile_id, name, folder, now, now),
+            "VALUES (?, ?, '', ?, ?, ?, ?)",
+            (profile_id, name, ext, folder, now, now),
         )
         doc_id = cur.lastrowid
         doc_dir = self._doc_dir(profile_id, doc_id)
         doc_dir.mkdir(parents=True, exist_ok=True)
         safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in name).strip()[:80] or "document"
-        dest = doc_dir / f"{safe}.md"
+        dest = doc_dir / f"{safe}.{ext}"
         dest.write_text(text, encoding="utf-8")
         self._con.execute("UPDATE documents SET path = ? WHERE id = ?", (str(dest), doc_id))
         self._con.commit()
