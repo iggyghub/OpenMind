@@ -366,11 +366,10 @@ def test_appcontainer_wall_clock_kill(ac_workdir):
 def test_appcontainer_profile_deleted_after_spawn(ac_workdir):
     """After spawn() completes, CreateAppContainerProfile with the same name returns S_OK
     (not ALREADY_EXISTS=0x800700B7), proving _run_appcontainer deleted the profile."""
-    import uuid as _uuid
     import ctypes as ct
+    from cerebral.sandbox._windows import _profile_name_for
 
-    fixed_hex   = "deadbeef12345678"
-    fixed_name  = f"openmind-sbx-{fixed_hex[:8]}"  # "openmind-sbx-deadbeef"
+    fixed_name = _profile_name_for(ac_workdir)
 
     # Ensure no leftover from a prior failed run
     _ensure_ac_libs()
@@ -378,15 +377,7 @@ def test_appcontainer_profile_deleted_after_spawn(ac_workdir):
 
     _userenv_dll.DeleteAppContainerProfile(fixed_name)
 
-    class _FakeUUID:
-        hex = fixed_hex
-
-    _uuid4_orig = _uuid.uuid4
-    _uuid.uuid4 = lambda: _FakeUUID()  # type: ignore[assignment]
-    try:
-        _sb_ac().spawn(["cmd", "/c", "echo done"], ac_workdir)
-    finally:
-        _uuid.uuid4 = _uuid4_orig
+    _sb_ac().spawn(["cmd", "/c", "echo done"], ac_workdir)
 
     # Re-create the profile: S_OK means the previous profile WAS deleted; ALREADY_EXISTS means it wasn't.
     sid2 = ct.c_void_p()
@@ -403,3 +394,42 @@ def test_appcontainer_profile_deleted_after_spawn(ac_workdir):
         f"CreateAppContainerProfile returned HRESULT={hr2 & 0xFFFFFFFF:#010x} "
         f"(expected S_OK=0 for a freshly-deleted slot)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Stable per-workdir identity: files persist across spawns
+# ---------------------------------------------------------------------------
+
+def test_spawn_reads_what_an_earlier_spawn_wrote(ac_workdir):
+    """Each spawn used to get a fresh random AppContainer SID, so a file written
+    by one call was 'Access is denied' to the next. Same workdir -> same SID."""
+    sb = _sb_ac()
+    w = sb.spawn(["cmd", "/c", "echo persisted> note.txt"], ac_workdir)
+    assert w.exit_code == 0, w.stderr
+    r = sb.spawn(["cmd", "/c", "type note.txt"], ac_workdir)
+    assert r.exit_code == 0, r.stderr
+    assert "persisted" in r.stdout
+
+
+def test_spawn_reads_files_placed_before_first_spawn(ac_workdir):
+    """Files Cerebral stages (e.g. shell input_files) before the grant exists get
+    the ACE by propagation, including inside pre-existing subfolders."""
+    sub = os.path.join(ac_workdir, "in")
+    os.makedirs(sub)
+    with open(os.path.join(sub, "staged.txt"), "w") as f:
+        f.write("staged")
+    r = _sb_ac().spawn(["cmd", "/c", r"type in\staged.txt"], ac_workdir)
+    assert r.exit_code == 0, r.stderr
+    assert "staged" in r.stdout
+
+
+def test_grant_does_not_grow_dacl_per_spawn(ac_workdir):
+    import win32security
+    sb = _sb_ac()
+    sb.spawn(["cmd", "/c", "echo 1"], ac_workdir)
+    get = lambda: win32security.GetFileSecurity(
+        ac_workdir, win32security.DACL_SECURITY_INFORMATION,
+    ).GetSecurityDescriptorDacl().GetAceCount()
+    n = get()
+    sb.spawn(["cmd", "/c", "echo 2"], ac_workdir)
+    assert get() == n
