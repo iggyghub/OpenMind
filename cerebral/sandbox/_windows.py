@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import hashlib
 import os
 import subprocess
 import sys
 import threading
-import uuid
 from typing import Optional
 
 from cerebral.sandbox._interface import Sandbox, SandboxResult
@@ -332,8 +332,25 @@ def _ac_sid_to_str(sid: ctypes.c_void_p) -> str:
     return result
 
 
+def _profile_name_for(workdir: str) -> str:
+    """One stable AppContainer name per workdir (<=64 chars, alnum + hyphens).
+
+    The SID is derived from the name, so every spawn in the same workdir runs
+    as the same identity and can read what earlier spawns -- or Cerebral, when
+    it stages input files -- left there. A per-spawn random name made each run
+    a stranger to its own workdir.
+    """
+    key = os.path.normcase(os.path.abspath(workdir)).encode("utf-8")
+    return f"openmind-sbx-{hashlib.sha1(key).hexdigest()[:16]}"
+
+
 def _ac_grant_workdir(workdir: str, sid: ctypes.c_void_p) -> None:
-    """Add read/write/execute ACE (inheritable) for the AppContainer SID on workdir."""
+    """Grant the AppContainer SID inheritable read/write/execute on workdir, once.
+
+    SetNamedSecurityInfo (unlike SetFileSecurity) propagates the inheritable
+    ACE to files and folders already inside the workdir. Skipped when the SID
+    already has an ACE there, so the DACL doesn't grow on every spawn.
+    """
     import win32security
     import ntsecuritycon as ntc
 
@@ -342,14 +359,20 @@ def _ac_grant_workdir(workdir: str, sid: ctypes.c_void_p) -> None:
     dacl = sd.GetSecurityDescriptorDacl()
     if dacl is None:
         dacl = win32security.ACL()
+    for i in range(dacl.GetAceCount()):
+        if dacl.GetAce(i)[-1] == pysid:
+            return
     dacl.AddAccessAllowedAceEx(
         win32security.ACL_REVISION,
         ntc.CONTAINER_INHERIT_ACE | ntc.OBJECT_INHERIT_ACE,
         ntc.FILE_GENERIC_READ | ntc.FILE_GENERIC_WRITE | ntc.FILE_GENERIC_EXECUTE,
         pysid,
     )
-    sd.SetSecurityDescriptorDacl(True, dacl, False)
-    win32security.SetFileSecurity(workdir, win32security.DACL_SECURITY_INFORMATION, sd)
+    win32security.SetNamedSecurityInfo(
+        workdir, win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION,
+        None, None, dacl, None,
+    )
 
 
 def _ac_build_attr_list(sec_caps: _SECURITY_CAPABILITIES):
@@ -622,8 +645,7 @@ class WindowsSandbox(Sandbox):
                            stdin_data: Optional[bytes] = None) -> SandboxResult:
         import win32api, win32job, win32con
 
-        # Unique profile name: <=64 chars, alphanumeric + hyphens
-        profile_name = f"openmind-sbx-{uuid.uuid4().hex[:8]}"
+        profile_name = _profile_name_for(workdir)
 
         _ensure_ac_libs()
         sid = _ac_create_sid(profile_name)
