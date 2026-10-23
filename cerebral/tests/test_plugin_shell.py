@@ -121,6 +121,67 @@ async def test_unknown_tool_returns_error(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# input_files / output_files -- crossing the sandbox boundary
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def io_dirs(tmp_path, monkeypatch):
+    att = tmp_path / "attachments"
+    att.mkdir()
+    exp = tmp_path / "Downloads" / "Felix"
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    monkeypatch.setattr(_shell_mod, "_ATTACHMENTS_ROOT", att)
+    monkeypatch.setattr(_shell_mod, "_EXPORT_DIR", exp)
+    _shell_mod.set_workdir_fn(lambda: str(wd))
+    return att, exp, wd
+
+
+async def test_input_files_stages_attachment_into_in(io_dirs):
+    att, _, wd = io_dirs
+    src = att / "1" / "abc" / "clip.mp4"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"video")
+    plugin = ShellPlugin(sandbox=_MockSandbox(_result()))
+    tr = await plugin.call_tool("run_command", {"command": "x", "input_files": [str(src)]})
+    assert not tr.is_error
+    assert (wd / "in" / "clip.mp4").read_bytes() == b"video"
+
+
+async def test_input_files_refuses_paths_outside_attachments(io_dirs, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope")
+    mock = _MockSandbox(_result())
+    plugin = ShellPlugin(sandbox=mock)
+    tr = await plugin.call_tool("run_command", {"command": "x", "input_files": [str(secret)]})
+    assert tr.is_error
+    assert mock.calls == []  # refused before anything ran
+
+
+async def test_output_files_exports_without_overwriting(io_dirs):
+    _, exp, wd = io_dirs
+    (wd / "out.mp4").write_bytes(b"edited")
+    plugin = ShellPlugin(sandbox=_MockSandbox(_result()))
+    args = {"command": "x", "output_files": ["out.mp4"]}
+    first = json.loads((await plugin.call_tool("run_command", args)).content)
+    second = json.loads((await plugin.call_tool("run_command", args)).content)
+    assert first["exported"] == [str(exp / "out.mp4")]
+    assert second["exported"] == [str(exp / "out (1).mp4")]
+    assert (exp / "out.mp4").read_bytes() == b"edited"
+
+
+async def test_output_files_refuses_escape_from_workdir(io_dirs, tmp_path):
+    (tmp_path / "outside.txt").write_text("x")
+    plugin = ShellPlugin(sandbox=_MockSandbox(_result()))
+    tr = await plugin.call_tool(
+        "run_command", {"command": "x", "output_files": ["../outside.txt", "missing.txt"]},
+    )
+    payload = json.loads(tr.content)
+    assert payload["exported"] == []
+    assert len(payload["export_errors"]) == 2
+
+
+# ---------------------------------------------------------------------------
 # env scrub tests -- Windows-only, real WindowsSandbox
 # ---------------------------------------------------------------------------
 

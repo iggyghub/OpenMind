@@ -291,6 +291,7 @@
           '- Felix also watches what it does while working on your request. After it reads outside content in a turn (a webpage, Reddit, an email, search results), anything that could change or send something asks you first, even if it is normally silent. The same goes for unusual behaviour: the first time Felix ever uses a tool, or using one more than 10 times its normal daily amount (learned from the last 30 days). The card says why it is asking. Background jobs are never paused this way.',
           '- Text from outside is labelled as untrusted when Felix reads it, so Felix treats it as information, not as instructions.',
           '- Shell commands always run inside a Windows sandbox. They can only touch one sandbox folder, have no network access, run in a clean environment with no API keys, and are capped at 1 GB of memory and 120 seconds.',
+          '- The sandbox folder keeps its files between commands. To work on a file you attached in the chat, Felix copies it into the folder first, and only attachments can be copied in. Finished files, such as an edited video, are copied out to Downloads\\Felix, and an existing file there is never overwritten. Programs installed only for your Windows user, under AppData, cannot run in the sandbox. Install tools such as ffmpeg for all users instead.',
           '- Change these settings in Settings > Permissions.'
         ],
         see_also: ['how-a-request-becomes-an-action', 'tools-and-plugins', 'self-dev']
