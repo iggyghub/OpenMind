@@ -9,11 +9,11 @@ Each slice is one GitHub issue whose body is the complete instruction self_dev r
 exact files, exact contents or SEARCH/REPLACE text, acceptance checks. Built by Felix through
 `self_dev_campaign`; Claude Code writes the specs and verifies each landed PR.
 
-## Status: blocked -- V3 spec not written yet
+## Status: ready
 
 ## Next slice -- start here
 
-- **Active:** V3 -- #0
+- **Active:** V3 -- #1531
 - **Model:** self_dev-default
 
 ## Queue
@@ -23,7 +23,7 @@ the next one is specced after the previous lands (its exact SEARCH text depends 
 
 - [x] V1 -- #1521 -- Shotcut setup: `scripts/setup-shotcut.ps1` (winget, machine-wide) + `plugins/video_project.py` with `find_shotcut`/`find_melt` + `video_status` + gate test + Help topic
 - [x] V2 -- #1527 -- edit list -> `.mlt` serialiser (trusted code, never model-written XML) + filing in the Document library under `Videos/<YYYY>/<MM-DD>/` by capture date + fingerprint on write
-- [ ] V3 -- render with `melt` in the background (progress, out-of-date marking on `.mlt` change, render on request, export renders first)
+- [ ] V3 -- #1531 -- render with `melt` in the background (progress, out-of-date marking on `.mlt` change, render on request, export renders first)
 - [ ] V4 -- Quick trim: loudest audio stretch per clip, join in capture order, one-call "reel from these clips"
 - [ ] V5 -- pointing + chat card: resolve "today's clips" / a folder to paths, card with Quick trim / Vision trim / Something else + comment box (skipped when the request already says what to do)
 - [ ] V6 -- open in Shotcut + the fingerprint rule (edit in place while it matches, fork a new project once the user changed it) + snapshot-before-write
