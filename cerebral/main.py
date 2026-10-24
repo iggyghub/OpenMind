@@ -880,6 +880,16 @@ async def _computer_use_vision_ground(  # S5 #578 (ADR-0016 sec 5)
     return int(match.group(1)), int(match.group(2))
 
 
+async def _video_project_vision(prompt: str, images: list) -> str:  # VIDEO-EDIT V7
+    """Vision trim: keyframes to the first VL-capable model, routed like
+    _computer_use_vision_ground. "" when none is reachable (the clip stays whole)."""
+    try:
+        return await _router.complete_with_images(prompt, images, task_type=VISION_TASK) or ""
+    except ModelUnavailableError as exc:
+        logger.warning("[video_project] vision trim unavailable: %s", exc)
+        return ""
+
+
 async def _docs_convert(source_path: str, fmt: str, out_dir: str) -> str:  # S3 #454
     """Real soffice converter wired into the documents plugin as a seam.
 
@@ -8500,6 +8510,7 @@ def _wire_plugin_seams() -> None:
         ("video", "set_verify_fn", _video_verify),                                   # S6 #644 (ADR-0017)
         ("video", "set_commit_fn", _video_commit),                                    # S7 #645 (ADR-0017)
         ("video_project", "set_record_turn_fn", _record_turn),                       # VIDEO-EDIT V5 trim card
+        ("video_project", "set_vision_fn", _video_project_vision),                   # VIDEO-EDIT V7 vision trim
         ("github_ingest", "set_route_extraction_local_fn", _route_extraction_local),  # ADR-0019 S3 drain
         ("delegate", "set_subagent_context",
          lambda: {"router": _router, "gate_fn": _gate_tool, "execute_fn": _execute_after_gate,
