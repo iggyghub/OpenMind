@@ -1,7 +1,8 @@
 """
 Video project MCP plugin -- ADR-0041, driver VIDEO-EDIT.md.
 
-Tools: video_status (V1), video_project_create (V2), video_render / video_render_status (V3).
+Tools: video_status (V1), video_project_create (V2), video_render / video_render_status (V3),
+video_quick_trim (V4).
 
 V1: find_shotcut() / find_melt() discovery + video_status. Shotcut ships melt.exe
 next to shotcut.exe, so one install is both the editor the user opens and the
@@ -21,8 +22,13 @@ The .mlt fingerprint at render start is saved next to the .mp4; the render is
 decision 7) -- computed on demand, no file watcher. The .mp4 is filed in the
 Document library in the project's folder. video_render_status reports progress.
 
+V4: video_quick_trim -- clip paths in, a created project out, in one call. Each clip
+is cut to its loudest audio stretch plus a few seconds either side (Quick trim, CPU
+only, no model), and the clips are joined in capture order (file mtime). A clip with
+no audio or no clear peak is kept whole and flagged, for V7's Vision trim to escalate.
+
 Shotcut discovery is injectable via set_find_shotcut_fn for tests; clip probing
-via set_probe_fn; the melt run via set_render_fn.
+via set_probe_fn; the melt run via set_render_fn; audio levels via set_loudness_fn.
 Never invoke a real shotcut.exe or melt.exe from within this module at import time or in tests.
 """
 import asyncio
@@ -86,6 +92,12 @@ def find_ffprobe(shotcut: Path) -> "Path | None":
     return p if p.exists() else None
 
 
+def find_ffmpeg(shotcut: Path) -> "Path | None":
+    """...and ffmpeg.exe, used by Quick trim to measure a clip's audio levels."""
+    p = shotcut.parent / "ffmpeg.exe"
+    return p if p.exists() else None
+
+
 _PROBE_TIMEOUT = 30.0  # seconds
 
 
@@ -127,6 +139,71 @@ _probe_fn = None
 def set_probe_fn(fn) -> None:
     global _probe_fn
     _probe_fn = fn
+
+
+# -- V4: Quick trim ------------------------------------------------------------
+
+_WINDOW = 0.5  # seconds per loudness sample
+_FLOOR_DB = -120.0  # digital silence (-inf) is clamped here
+_CLEAR_PEAK_DB = 6.0  # the peak must stand this far above the clip's median level
+_STRETCH_DB = 6.0  # the loud stretch: neighbouring samples within this of the peak
+_PAD = 3.0  # seconds kept either side of the loud stretch
+_LEVEL_RE = re.compile(r"pts_time:(\S+)\s+lavfi\.astats\.Overall\.RMS_level=(\S+)")
+
+
+async def clip_loudness(path: Path, ffmpeg: Path) -> "list[tuple[float, float]]":
+    """(time, RMS dB) every _WINDOW seconds of the clip's audio; [] when it has none."""
+    samples = int(8000 * _WINDOW)
+    proc = await asyncio.create_subprocess_exec(
+        str(ffmpeg), "-hide_banner", "-nostats", "-i", str(path), "-vn", "-af",
+        f"aresample=8000,asetnsamples=n={samples}:p=0,"
+        "astats=metadata=1:reset=1:measure_overall=RMS_level:measure_perchannel=none,"
+        "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
+        "-f", "null", "-",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=_PROBE_TIMEOUT * 4)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise ValueError(f"ffmpeg timed out measuring {path.name}")
+    if proc.returncode != 0:
+        if b"does not contain any stream" in err or b"matches no streams" in err:
+            return []
+        raise ValueError(f"ffmpeg could not read {path.name}: {err.decode(errors='replace').strip()[-200:]}")
+    return parse_levels(out.decode(errors="replace"))
+
+
+def parse_levels(text: str) -> "list[tuple[float, float]]":
+    """ffmpeg ametadata print lines -> (time, dB); -inf (digital silence) clamps to _FLOOR_DB."""
+    return [(float(t), max(_FLOOR_DB, float(db))) for t, db in _LEVEL_RE.findall(text)]
+
+
+def loud_stretch(levels: "list[tuple[float, float]]", duration: float) -> "tuple[float, float] | None":
+    """(start, end) of the loudest stretch plus _PAD either side, or None when there is
+    no clear peak. ponytail: one peak per clip -- Game Bar clips hold one moment each."""
+    if not levels:
+        return None
+    vals = [db for _, db in levels]
+    i = max(range(len(vals)), key=vals.__getitem__)
+    peak, median = vals[i], sorted(vals)[len(vals) // 2]
+    if peak - median < _CLEAR_PEAK_DB:
+        return None
+    lo = hi = i
+    while lo > 0 and vals[lo - 1] >= peak - _STRETCH_DB:
+        lo -= 1
+    while hi < len(vals) - 1 and vals[hi + 1] >= peak - _STRETCH_DB:
+        hi += 1
+    return max(0.0, levels[lo][0] - _PAD), min(duration, levels[hi][0] + _WINDOW + _PAD)
+
+
+# Injectable seam: async callable(path: Path) -> list[(time, dB)].
+_loudness_fn = None
+
+
+def set_loudness_fn(fn) -> None:
+    global _loudness_fn
+    _loudness_fn = fn
 
 
 def capture_date(paths: list[Path]) -> date:
@@ -305,6 +382,33 @@ class VideoProjectPlugin:
                     "required": ["clips"],
                 },
             ),
+            Tool(
+                name="video_quick_trim",
+                description=(
+                    "Make a reel from a list of video clips in one call (Quick trim): each "
+                    "clip is cut to its loudest audio stretch plus a few seconds around it, "
+                    "and the clips are joined in the order they were captured. Saves a new "
+                    "video project like video_project_create and returns it with each clip's "
+                    "trim. Clips with no audio or no clear peak are kept whole and listed "
+                    "in flagged. Does not render."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Full paths to the video clips, any order",
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Project name (default 'Reel <capture date>')",
+                        },
+                    },
+                    "required": ["paths"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -316,6 +420,8 @@ class VideoProjectPlugin:
             return await self._render(args or {})
         if tool_name == "video_render_status":
             return self._render_status(args or {})
+        if tool_name == "video_quick_trim":
+            return await self._quick_trim(args or {})
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _status(self) -> ToolResult:
@@ -353,14 +459,9 @@ class VideoProjectPlugin:
         if not cuts:
             return ToolResult(content="clips is empty", is_error=True)
 
-        probe = _probe_fn
+        probe = self._tool(_probe_fn, find_ffprobe, probe_clip)
         if probe is None:
-            finder = _find_shotcut_fn if _find_shotcut_fn is not None else find_shotcut
-            shotcut = finder()
-            ffprobe = find_ffprobe(shotcut) if shotcut else None
-            if ffprobe is None:
-                return ToolResult(content=_INSTALL_MSG, is_error=True)
-            probe = lambda p: probe_clip(p, ffprobe)  # noqa: E731
+            return ToolResult(content=_INSTALL_MSG, is_error=True)
         try:
             infos = {str(p): await probe(p) for p in dict.fromkeys(paths)}
             xml = build_mlt(cuts, infos)
@@ -383,6 +484,51 @@ class VideoProjectPlugin:
             "doc_id": doc["id"], "name": name, "folder": folder, "path": doc["path"],
             "clips": len(cuts), "duration_s": round(duration, 3), "fingerprint": fp,
         }))
+
+    def _tool(self, seam, find, run):
+        """The injected seam, else run() bound to Shotcut's bundled exe; None if not installed."""
+        if seam is not None:
+            return seam
+        finder = _find_shotcut_fn if _find_shotcut_fn is not None else find_shotcut
+        shotcut = finder()
+        exe = find(shotcut) if shotcut else None
+        return (lambda p: run(p, exe)) if exe else None
+
+    async def _quick_trim(self, args: dict) -> ToolResult:
+        raw = args.get("paths") or []
+        if not isinstance(raw, list) or not raw:
+            return ToolResult(content="paths must be a non-empty list of clip paths", is_error=True)
+        paths = []
+        for i, s in enumerate(raw):
+            path = Path(str(s)).resolve()
+            if path.suffix.lower() not in _VIDEO_EXTS or not path.is_file():
+                return ToolResult(content=f"clip {i}: not a video file: {path}", is_error=True)
+            paths.append(path)
+        paths = sorted(dict.fromkeys(paths), key=lambda p: p.stat().st_mtime)  # capture order
+
+        probe = self._tool(_probe_fn, find_ffprobe, probe_clip)
+        loudness = self._tool(_loudness_fn, find_ffmpeg, clip_loudness)
+        if probe is None or loudness is None:
+            return ToolResult(content=_INSTALL_MSG, is_error=True)
+        trims, flagged = [], []
+        try:
+            for p in paths:
+                info = await probe(p)
+                span = loud_stretch(await loudness(p), info.duration) if info.has_audio else None
+                flag = None if span else ("no_audio" if not info.has_audio else "no_clear_peak")
+                start, end = span or (0.0, info.duration)
+                trims.append({"path": str(p), "start": round(start, 3), "end": round(end, 3), "flag": flag})
+                if flag:
+                    flagged.append(str(p))
+        except (ValueError, OSError) as exc:
+            return ToolResult(content=str(exc), is_error=True)
+
+        tr = await self._create({"clips": trims, "name": args.get("name")})
+        if tr.is_error:
+            return tr
+        out = json.loads(tr.content)
+        out.update(trims=trims, flagged=flagged)
+        return ToolResult(content=json.dumps(out))
 
     def _project(self, args: dict) -> "tuple[dict | None, str | None]":
         """(doc, error) for a video project doc_id in the active profile's library."""
