@@ -176,6 +176,14 @@ describe('actionFor', () => {
     expect(action.data.args.doc_id).toBe(5);
   });
 
+  test('a video project (.mlt) opens in Shotcut via video_open (VIDEO-EDIT V6)', () => {
+    var action = DocumentsPanel.actionFor(makeDoc({ id: 9, kind: 'mlt' }), 'open');
+    expect(action.data).toEqual({ name: 'video_open', args: { doc_id: 9 } });
+    var html = DocumentsPanel.makeRow(makeDoc({ id: 9, kind: 'mlt' }));
+    expect(html).toContain('Open in Shotcut');
+    expect(html).toContain('data-kind="mlt"');
+  });
+
   test('export action targets doc_convert with format', () => {
     var action = DocumentsPanel.actionFor(doc, 'export', { format: 'pdf' });
     expect(action.type).toBe('call_tool');

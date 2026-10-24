@@ -625,6 +625,8 @@ class DocumentsPlugin:
         doc = _store.get_doc(doc_id)
         if not doc:
             return ToolResult(content=f"doc {doc_id} not found", is_error=True)
+        if (doc.get("kind") or "").lower() == "mlt":
+            return ToolResult(content="that is a video project: open it with video_open (Shotcut)", is_error=True)
         launcher = _launcher_fn
         if launcher is None:
             return ToolResult(content="launcher seam not wired", is_error=True)

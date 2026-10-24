@@ -45,7 +45,9 @@
     var id = doc && doc.id;
     switch (actionType) {
       case 'open':
-        return { type: 'call_tool', data: { name: 'doc_open', args: { doc_id: id } } };
+        // A video project (.mlt) opens in Shotcut, not LibreOffice (VIDEO-EDIT V6).
+        var opener = doc && doc.kind === 'mlt' ? 'video_open' : 'doc_open';
+        return { type: 'call_tool', data: { name: opener, args: { doc_id: id } } };
       case 'export':
         return { type: 'call_tool', data: { name: 'doc_convert', args: { doc_id: id, format: opts.format || 'pdf' } } };
       case 'revert':
@@ -105,7 +107,8 @@
       '</div>' +
       '</div>' +
       '<div class="docs-card-actions">' +
-      '<button class="docs-btn docs-open-btn" data-doc-id="' + id + '" type="button">Open</button>' +
+      '<button class="docs-btn docs-open-btn" data-doc-id="' + id + '" data-kind="' + kind + '" type="button">' +
+      (doc.kind === 'mlt' ? 'Open in Shotcut' : 'Open') + '</button>' +
       '<select class="docs-fmt-sel" data-doc-id="' + id + '">' + fmtOptions + '</select>' +
       '<button class="docs-btn docs-export-btn" data-doc-id="' + id + '" type="button">Export</button>' +
       '<button class="docs-btn docs-save-btn" data-doc-id="' + id + '" type="button">Save a copy…</button>' +
