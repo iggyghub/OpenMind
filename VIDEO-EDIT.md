@@ -9,11 +9,11 @@ Each slice is one GitHub issue whose body is the complete instruction self_dev r
 exact files, exact contents or SEARCH/REPLACE text, acceptance checks. Built by Felix through
 `self_dev_campaign`; Claude Code writes the specs and verifies each landed PR.
 
-## Status: blocked -- V7 spec not written yet
+## Status: ready -- V7 spec is #1547
 
 ## Next slice -- start here
 
-- **Active:** V7 -- #0
+- **Active:** V7 -- #1547
 - **Model:** self_dev-default
 
 ## Queue
