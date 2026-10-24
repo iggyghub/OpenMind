@@ -1,4 +1,4 @@
-"""Tests for plugins/video_project.py -- V1 (ADR-0041): Shotcut + melt discovery and video_status.
+"""Tests for plugins/video_project.py -- ADR-0041, VIDEO-EDIT V1-V4.
 
 Also the ADR-0034 gate file: the plugin is refused at boot unless this exact name exists.
 """
@@ -287,3 +287,104 @@ async def test_run_melt_reports_progress_and_failure(tmp_path):
     bad.write_text(fake.read_text(encoding="utf-8"), encoding="utf-8")
     with pytest.raises(ValueError, match="Failed to load bad.mlt"):
         await vp.run_melt(Path(sys.executable), bad, tmp_path / "x.mp4", seen.append)
+
+
+# ---------------------------------------------------------------------------
+# V4: Quick trim
+# ---------------------------------------------------------------------------
+
+def _levels(loud_at=None, n=60, quiet=-40.0, loud=-10.0):
+    """n half-second samples at `quiet` dB, `loud` dB for the sample indexes in loud_at."""
+    return [(i * 0.5, loud if loud_at and i in loud_at else quiet) for i in range(n)]
+
+
+def test_parse_levels_reads_ffmpeg_metadata_and_clamps_silence():
+    text = ("frame:0    pts:0       pts_time:0\nlavfi.astats.Overall.RMS_level=-51.5\n"
+            "frame:1    pts:4000    pts_time:0.5\nlavfi.astats.Overall.RMS_level=-inf\n")
+    assert vp.parse_levels(text) == [(0.0, -51.5), (0.5, -120.0)]
+
+
+def test_loud_stretch_keeps_the_peak_plus_padding():
+    assert vp.loud_stretch(_levels(loud_at={28, 29, 30, 31, 32, 33}), 30.0) == (11.0, 20.0)
+
+
+def test_loud_stretch_clamps_to_the_clip():
+    assert vp.loud_stretch(_levels(loud_at={0, 1}), 30.0) == (0.0, 4.0)
+    assert vp.loud_stretch(_levels(loud_at={59}), 30.0) == (26.5, 30.0)
+
+
+def test_loud_stretch_none_without_a_clear_peak():
+    assert vp.loud_stretch(_levels(), 30.0) is None  # flat
+    assert vp.loud_stretch(_levels(loud_at={10}, loud=-37.0), 30.0) is None  # only 3 dB up
+    assert vp.loud_stretch([(i * 0.5, -120.0) for i in range(20)], 10.0) is None  # silence
+    assert vp.loud_stretch([], 10.0) is None
+
+
+@pytest.fixture
+def loudness():
+    """Fake level reader keyed on the clip's file name."""
+    table = {}
+
+    async def _loud(p):
+        return table[Path(p).name]
+
+    vp.set_loudness_fn(_loud)
+    yield table
+    vp.set_loudness_fn(None)
+
+
+def _at(tmp_path, name, hour):
+    p = tmp_path / name
+    p.write_bytes(b"")
+    ts = datetime(2026, 10, 23, hour, 0).timestamp()
+    os.utime(p, (ts, ts))
+    return str(p)
+
+
+async def test_quick_trim_joins_clips_in_capture_order(tmp_path, library, loudness):
+    late = _at(tmp_path, "late.mp4", 22)
+    early = _at(tmp_path, "early.mp4", 20)
+    loudness["late.mp4"] = _levels(loud_at={28, 29, 30, 31, 32, 33})
+    loudness["early.mp4"] = _levels(loud_at={10})
+    tr = await create().call_tool("video_quick_trim", {"paths": [late, early]})
+    out = json.loads(tr.content)
+    assert not tr.is_error, tr.content
+    assert [(Path(t["path"]).name, t["start"], t["end"], t["flag"]) for t in out["trims"]] == [
+        ("early.mp4", 2.0, 8.5, None), ("late.mp4", 11.0, 20.0, None)]
+    assert out["flagged"] == [] and out["name"] == "Reel 2026-10-23" and out["duration_s"] == 15.5
+    xml = open(out["path"], encoding="utf-8").read()
+    assert xml.index("early.mp4") < xml.index("late.mp4")
+
+
+async def test_quick_trim_keeps_and_flags_clips_without_a_clear_peak(tmp_path, library, loudness):
+    flat = _at(tmp_path, "flat.mp4", 20)
+    loudness["flat.mp4"] = _levels()
+    out = json.loads((await create().call_tool("video_quick_trim", {"paths": [flat], "name": "Mine"})).content)
+    assert out["trims"][0]["flag"] == "no_clear_peak"
+    assert (out["trims"][0]["start"], out["trims"][0]["end"]) == (0.0, 30.0)
+    assert out["flagged"] == [str(Path(flat).resolve())] and out["name"] == "Mine"
+
+
+async def test_quick_trim_flags_silent_clips_without_measuring(tmp_path, library, loudness):
+    async def _mute(_p):
+        return ClipInfo(width=1280, height=720, fps=Fraction(60), duration=10.0, has_audio=False)
+
+    vp.set_probe_fn(_mute)
+    mute = _at(tmp_path, "mute.mp4", 20)  # no loudness entry: measuring it would KeyError
+    out = json.loads((await create().call_tool("video_quick_trim", {"paths": [mute]})).content)
+    assert out["trims"][0]["flag"] == "no_audio" and out["trims"][0]["end"] == 10.0
+
+
+async def test_quick_trim_rejects_bad_input_without_saving(tmp_path, library, loudness):
+    txt = tmp_path / "notes.txt"
+    txt.write_text("x")
+    for args in ({}, {"paths": []}, {"paths": "a.mp4"}, {"paths": [str(txt)]}, {"paths": [str(tmp_path / "gone.mp4")]}):
+        assert (await create().call_tool("video_quick_trim", args)).is_error
+    assert library.list_docs(1) == []
+
+
+async def test_quick_trim_without_shotcut_gives_the_install_hint(tmp_path, library):
+    vp.set_find_shotcut_fn(lambda: None)
+    clip = _at(tmp_path, "a.mp4", 20)
+    tr = await create().call_tool("video_quick_trim", {"paths": [clip]})
+    assert tr.is_error and "setup-shotcut.ps1" in tr.content

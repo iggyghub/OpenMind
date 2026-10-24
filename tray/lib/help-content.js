@@ -243,7 +243,7 @@
         title: 'Video projects',
         summary: 'Being built: Felix cuts your game clips into a reel you can fine-tune in Shotcut.',
         body: [
-          '- Being built (October 2026). Today Felix can check whether Shotcut is installed and build a reel timeline from clips and times you name, then render it to a video in the background. If you change the timeline in Shotcut, the video shows as out of date until Felix renders it again. Ask Felix to install Shotcut, or run scripts/setup-shotcut.ps1. It brings both the editor and melt, the engine Felix renders with.',
+          '- Being built (October 2026). Today Felix can check whether Shotcut is installed and build a reel timeline from clips and times you name, or from a list of clips on its own: Quick trim keeps the loudest moment of each clip plus a few seconds around it and joins the clips in the order they were captured, keeping a clip whole when its audio has no clear peak. Felix can then render it to a video in the background. If you change the timeline in Shotcut, the video shows as out of date until Felix renders it again. Ask Felix to install Shotcut, or run scripts/setup-shotcut.ps1. It brings both the editor and melt, the engine Felix renders with.',
           '- The plan: you point Felix at your clips (for example, today\'s Game Bar captures). Felix trims each one to its moment and joins them into a reel. The reel is a Shotcut timeline (.mlt) plus the video rendered from it.',
           '- The timeline is the source. You fix cuts or add transitions, titles and music in Shotcut, then ask Felix to render again. Your original clips are never copied or changed.',
           '- Reels are saved in Library > Documents under Videos, by the date the clips were captured.'
