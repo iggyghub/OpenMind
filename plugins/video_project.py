@@ -2,7 +2,8 @@
 Video project MCP plugin -- ADR-0041, driver VIDEO-EDIT.md.
 
 Tools: video_status (V1), video_project_create (V2), video_render / video_render_status (V3),
-video_quick_trim (V4), video_find_clips (V5), video_open / video_project_edit (V6).
+video_quick_trim (V4), video_find_clips (V5), video_open / video_project_edit (V6),
+video_vision_trim (V7).
 
 V1: find_shotcut() / find_melt() discovery + video_status. Shotcut ships melt.exe
 next to shotcut.exe, so one install is both the editor the user opens and the
@@ -41,10 +42,20 @@ the old .mlt is snapshotted first (DocumentStore._snapshot: the original forever
 plus the 5 most recent). Once the user has changed it in Shotcut, the edit lands
 as a new project beside it instead, never over it.
 
+V7: Vision trim. Six evenly spaced frames of a clip (Shotcut's ffmpeg, PNG) go to the
+vision model with "which frame shows the moment?"; only a frame number is read back,
+and the kept stretch is that frame's time minus 6 s to plus 3 s. Quick trim escalates
+every clip it cannot place (no audio / no clear peak) to it, with no per-reel cap, and
+video_vision_trim runs it on every clip (ADR-0041 decision 5 as amended 2026-10-23).
+When vision is needed and no vision-capable model answers, the reel fails and nothing
+is made -- there is no fallback to keeping the clip whole. The model is main.py's router (complete_with_images, the same VL routing
+computer_use grounding uses); vision shares the one model, so the live turn wins (R5).
+
 Shotcut discovery is injectable via set_find_shotcut_fn for tests; clip probing
 via set_probe_fn; the melt run via set_render_fn; audio levels via set_loudness_fn;
 the chat card via set_record_turn_fn (main.py's _record_turn); the Shotcut
-launch via set_launch_fn.
+launch via set_launch_fn; keyframes via set_keyframes_fn; the vision model via
+set_vision_fn (main.py's _video_project_vision).
 Never invoke a real shotcut.exe or melt.exe from within this module at import time or in tests.
 """
 import asyncio
@@ -283,6 +294,78 @@ def set_launch_fn(fn) -> None:
     _launch_fn = fn
 
 
+# -- V7: Vision trim -----------------------------------------------------------
+
+_VISION_FRAMES = 6  # keyframes shown to the vision model per clip
+_VISION_BEFORE = 6.0  # seconds kept before the chosen frame (the build-up)
+_VISION_AFTER = 3.0  # ...and after it
+
+
+def keyframe_times(duration: float) -> "list[float]":
+    """_VISION_FRAMES times spread evenly over the clip, each in the middle of its slice."""
+    return [round(duration * (i + 0.5) / _VISION_FRAMES, 3) for i in range(_VISION_FRAMES)]
+
+
+def vision_prompt(times: "list[float]") -> str:
+    return (
+        f"These {len(times)} images are frames from one video game clip, in order, taken at "
+        + ", ".join(f"{t:g}s" for t in times)
+        + ". The player saved this clip for one moment of action (a kill, a goal, a clutch "
+        f"play, a funny fail). Which frame shows that moment best? Reply with only the frame "
+        f"number, 1 to {len(times)}."
+    )
+
+
+def vision_stretch(reply: str, times: "list[float]", duration: float) -> "tuple[float, float] | None":
+    """Read the frame number from the model's reply -> (start, end) around it, or None.
+    Only an integer is taken from the reply; nothing else in it is used."""
+    m = re.search(r"\d+", reply or "")
+    if not m or not 1 <= int(m.group()) <= len(times):
+        return None
+    t = times[int(m.group()) - 1]
+    return max(0.0, t - _VISION_BEFORE), min(duration, t + _VISION_AFTER)
+
+
+async def clip_keyframes(path: Path, ffmpeg: Path, duration: float) -> "list[bytes]":
+    """One PNG (640 px wide) per keyframe_times(duration), read from ffmpeg's stdout."""
+    images = []
+    for t in keyframe_times(duration):
+        proc = await asyncio.create_subprocess_exec(
+            str(ffmpeg), "-v", "error", "-ss", f"{t:.3f}", "-i", str(path), "-frames:v", "1",
+            "-vf", "scale=640:-2", "-f", "image2pipe", "-vcodec", "png", "-",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=_PROBE_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise ValueError(f"ffmpeg timed out reading a frame of {path.name}")
+        if proc.returncode != 0 or not out:
+            raise ValueError(f"ffmpeg could not read a frame of {path.name}: {err.decode(errors='replace').strip()[-200:]}")
+        images.append(out)
+    return images
+
+
+# Injectable seams: async callable(path, duration) -> list[bytes];
+# async callable(prompt: str, images: list[bytes]) -> str (main.py's _video_project_vision).
+_keyframes_fn = None
+_vision_fn = None
+
+
+class NoVision(Exception):
+    """Vision trim was needed and no vision-capable model answered: the reel fails."""
+
+
+def set_keyframes_fn(fn) -> None:
+    global _keyframes_fn
+    _keyframes_fn = fn
+
+
+def set_vision_fn(fn) -> None:
+    global _vision_fn
+    _vision_fn = fn
+
+
 def capture_date(paths: list[Path]) -> date:
     """The day the clips were captured: the earliest file modification time.
     Game Bar writes each clip when the hotkey is pressed, so mtime is the moment."""
@@ -464,10 +547,36 @@ class VideoProjectPlugin:
                 description=(
                     "Make a reel from a list of video clips in one call (Quick trim): each "
                     "clip is cut to its loudest audio stretch plus a few seconds around it, "
-                    "and the clips are joined in the order they were captured. Saves a new "
-                    "video project like video_project_create and returns it with each clip's "
-                    "trim. Clips with no audio or no clear peak are kept whole and listed "
-                    "in flagged. Does not render."
+                    "and the clips are joined in the order they were captured. Clips with no "
+                    "audio or no clear peak go to the vision model instead; if it cannot be "
+                    "reached the call fails and nothing is saved. Saves a new video project "
+                    "like video_project_create and returns it with each clip's trim. Does not render."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Full paths to the video clips, any order",
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Project name (default 'Reel <capture date>')",
+                        },
+                    },
+                    "required": ["paths"],
+                },
+            ),
+            Tool(
+                name="video_vision_trim",
+                description=(
+                    "Make a reel from a list of video clips with the vision model (Vision "
+                    "trim): it looks at frames of every clip and keeps the moment of action "
+                    "in each, then joins the clips in capture order. Slower and costlier than "
+                    "video_quick_trim; use it when the user chooses Vision trim. Same result "
+                    "shape as video_quick_trim. Does not render."
                 ),
                 plugin=PLUGIN_NAME,
                 schema={
@@ -565,7 +674,9 @@ class VideoProjectPlugin:
         if tool_name == "video_render_status":
             return self._render_status(args or {})
         if tool_name == "video_quick_trim":
-            return await self._quick_trim(args or {})
+            return await self._trim(args or {}, vision_all=False)
+        if tool_name == "video_vision_trim":
+            return await self._trim(args or {}, vision_all=True)
         if tool_name == "video_find_clips":
             return await self._find_clips(args or {})
         if tool_name == "video_open":
@@ -696,9 +807,20 @@ class VideoProjectPlugin:
         finder = _find_shotcut_fn if _find_shotcut_fn is not None else find_shotcut
         shotcut = finder()
         exe = find(shotcut) if shotcut else None
-        return (lambda p: run(p, exe)) if exe else None
+        return (lambda p, *a: run(p, exe, *a)) if exe else None
 
-    async def _quick_trim(self, args: dict) -> ToolResult:
+    async def _vision_span(self, path: Path, duration: float, frames) -> "tuple[float, float] | None":
+        times = keyframe_times(duration)
+        images = await frames(path, duration)
+        try:
+            reply = await _vision_fn(vision_prompt(times), images)
+        except Exception as exc:  # any failure to get an answer fails the reel
+            raise NoVision(str(exc) or type(exc).__name__) from exc
+        if not (reply or "").strip():
+            raise NoVision("no vision-capable model answered")
+        return vision_stretch(reply, times, duration)
+
+    async def _trim(self, args: dict, vision_all: bool) -> ToolResult:
         raw = args.get("paths") or []
         if not isinstance(raw, list) or not raw:
             return ToolResult(content="paths must be a non-empty list of clip paths", is_error=True)
@@ -712,18 +834,29 @@ class VideoProjectPlugin:
 
         probe = self._tool(_probe_fn, find_ffprobe, probe_clip)
         loudness = self._tool(_loudness_fn, find_ffmpeg, clip_loudness)
-        if probe is None or loudness is None:
+        frames = self._tool(_keyframes_fn, find_ffmpeg, clip_keyframes)
+        if probe is None or loudness is None or frames is None:
             return ToolResult(content=_INSTALL_MSG, is_error=True)
         trims, flagged = [], []
         try:
             for p in paths:
                 info = await probe(p)
-                span = loud_stretch(await loudness(p), info.duration) if info.has_audio else None
-                flag = None if span else ("no_audio" if not info.has_audio else "no_clear_peak")
+                span, by, flag = None, "audio", None
+                if not vision_all and info.has_audio:
+                    span = loud_stretch(await loudness(p), info.duration)
+                if span is None:  # no clear audio peak (or Vision trim chosen): ask the vision model
+                    if _vision_fn is None:
+                        raise NoVision("the vision model is not connected")
+                    by = "vision"
+                    span = await self._vision_span(p, info.duration, frames)
+                    flag = None if span else "vision_unclear"  # it answered, but with no frame number
                 start, end = span or (0.0, info.duration)
-                trims.append({"path": str(p), "start": round(start, 3), "end": round(end, 3), "flag": flag})
+                trims.append({"path": str(p), "start": round(start, 3), "end": round(end, 3), "by": by, "flag": flag})
                 if flag:
                     flagged.append(str(p))
+        except NoVision as exc:
+            return ToolResult(content=f"Vision trim was needed for {p.name} but {exc}. Nothing was made.",
+                              is_error=True)
         except (ValueError, OSError) as exc:
             return ToolResult(content=str(exc), is_error=True)
 

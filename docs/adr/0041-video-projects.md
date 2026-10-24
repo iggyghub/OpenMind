@@ -81,3 +81,50 @@ bring in an editor.
   rests on decision 4 and must not be relaxed by letting the model emit raw XML.
 - Shorts (job 2) reuse Video project, out-of-date renders and the fingerprint rule, and
   get their own short grill for 9:16, captions and silence cutting.
+
+## Amendment (2026-10-23) -- Vision trim uncapped and never silently skipped; card and library-button mechanics
+
+**Context** -- Building VIDEO-EDIT V5-V7 surfaced four calls decision 5 and decision 6
+left open or settled differently from what the user wants. The user answered them
+before V5 shipped.
+
+**Decision**
+1. **No escalation cap** (changes decision 5's "capped per reel"). Every clip Quick trim
+   cannot place -- no audio track, or no clear audio peak -- goes to Vision trim. There
+   is no per-reel limit. R5 still holds: vision runs inside the live tool call, one
+   request at a time on the one model.
+2. **Fail the reel when vision is needed and no vision-capable model answers.** Whether
+   Vision trim was chosen or escalated, an unreachable model (no VL backend, a raised
+   error, or an empty reply) stops the call: the user is told which clip needed it and
+   no project is made. There is no fallback to keeping the clip whole. A model that
+   answers but names no frame keeps that one clip whole, flagged `vision_unclear`.
+3. **The card's buttons send a message to Felix** (decision 6's mechanics). Quick trim /
+   Vision trim send the choice, the clips and the comment-box text as an ordinary typed
+   message (`user_text_command`); "Something else" sends just the comment. The model reads
+   it and calls the tools -- a button never calls a trim tool directly. The card is a
+   `system_event` turn (`video_trim_offer`), the same structured-card mechanism as the
+   self-dev pending-review card and `recipe_offer`.
+4. **Opening a reel: by asking, and from the library.** "Felix, open today's reel" calls
+   `video_open`, and the reel's entry in Library > Documents shows **Open in Shotcut**
+   (the Documents panel's existing Open action, routed to `video_open` for `.mlt`). The
+   user asked for this button explicitly, which is what CLAUDE.md rule 7 requires before
+   a new UI action; it adds no menu item, route or hotkey. `doc_open` refuses `.mlt`
+   files so a reel never opens in LibreOffice.
+
+**Considered and rejected**
+- **A per-reel cap (3).** Bounds model time on a bad audio day, but leaves the clips
+  past the cap uncut -- the user would rather wait.
+- **Falling back to the whole clip when vision is unreachable.** Makes something, but a
+  reel of uncut 60 s clips looks like Felix did the job; failing loudly is honest.
+- **Buttons calling `video_quick_trim` directly.** Skips a model turn, but drops the
+  comment box's meaning (it would need parsing) and is a second path to the tools.
+- **A `.ps-action` panel-spec button.** Library > Documents is rendered by
+  `tray/lib/documents-panel.js`, not a panel spec; routing its existing Open button is
+  the smaller change on the surface the user actually sees.
+
+**Consequences**
+- Without Budd or another VL model, a Quick trim that meets a silent or flat clip fails
+  instead of producing a reel; clips with a clear audio peak still never touch the model.
+- Vision trim's cost now scales with the number of peakless clips, unbounded.
+- The 16-class capability vocabulary is unchanged; `video_project` still declares only
+  `fs_read` and `fs_write`.

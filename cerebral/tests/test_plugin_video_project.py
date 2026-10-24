@@ -1,4 +1,4 @@
-"""Tests for plugins/video_project.py -- ADR-0041, VIDEO-EDIT V1-V6.
+"""Tests for plugins/video_project.py -- ADR-0041, VIDEO-EDIT V1-V7.
 
 Also the ADR-0034 gate file: the plugin is refused at boot unless this exact name exists.
 """
@@ -356,13 +356,13 @@ async def test_quick_trim_joins_clips_in_capture_order(tmp_path, library, loudne
     assert xml.index("early.mp4") < xml.index("late.mp4")
 
 
-async def test_quick_trim_keeps_and_flags_clips_without_a_clear_peak(tmp_path, library, loudness):
+async def test_quick_trim_without_vision_fails_on_a_clip_without_a_clear_peak(tmp_path, library, loudness):
+    """V7 (ADR-0041 amendment 2026-10-23): no fallback to keeping the clip whole."""
     flat = _at(tmp_path, "flat.mp4", 20)
     loudness["flat.mp4"] = _levels()
-    out = json.loads((await create().call_tool("video_quick_trim", {"paths": [flat], "name": "Mine"})).content)
-    assert out["trims"][0]["flag"] == "no_clear_peak"
-    assert (out["trims"][0]["start"], out["trims"][0]["end"]) == (0.0, 30.0)
-    assert out["flagged"] == [str(Path(flat).resolve())] and out["name"] == "Mine"
+    tr = await create().call_tool("video_quick_trim", {"paths": [flat], "name": "Mine"})
+    assert tr.is_error and "flat.mp4" in tr.content and "Nothing was made" in tr.content
+    assert library.list_docs(1) == []
 
 
 async def test_quick_trim_flags_silent_clips_without_measuring(tmp_path, library, loudness):
@@ -371,8 +371,8 @@ async def test_quick_trim_flags_silent_clips_without_measuring(tmp_path, library
 
     vp.set_probe_fn(_mute)
     mute = _at(tmp_path, "mute.mp4", 20)  # no loudness entry: measuring it would KeyError
-    out = json.loads((await create().call_tool("video_quick_trim", {"paths": [mute]})).content)
-    assert out["trims"][0]["flag"] == "no_audio" and out["trims"][0]["end"] == 10.0
+    tr = await create().call_tool("video_quick_trim", {"paths": [mute]})
+    assert tr.is_error and "not connected" in tr.content  # silent clips need vision (V7)
 
 
 async def test_quick_trim_rejects_bad_input_without_saving(tmp_path, library, loudness):
@@ -556,3 +556,104 @@ async def test_doc_open_sends_video_projects_to_video_open(tmp_path, library, mo
     proj = await _make_project(tmp_path)
     tr = await docs.create().call_tool("doc_open", {"doc_id": proj["doc_id"]})
     assert tr.is_error and "video_open" in tr.content
+
+
+# ---------------------------------------------------------------------------
+# V7: Vision trim
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def vision():
+    """Fake keyframes + vision model. replies maps clip name -> reply (or an exception); calls logs names."""
+    state = {"replies": {}, "calls": []}
+
+    async def _frames(p, duration):
+        return [Path(p).name.encode()] * vp._VISION_FRAMES
+
+    async def _vision(prompt, images):
+        name = images[0].decode()
+        state["calls"].append(name)
+        reply = state["replies"].get(name, "")
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    vp.set_keyframes_fn(_frames)
+    vp.set_vision_fn(_vision)
+    yield state
+    vp.set_keyframes_fn(None)
+    vp.set_vision_fn(None)
+
+
+def test_keyframe_times_and_prompt():
+    assert vp.keyframe_times(30.0) == [2.5, 7.5, 12.5, 17.5, 22.5, 27.5]
+    prompt = vp.vision_prompt([2.5, 7.5])
+    assert "2.5s, 7.5s" in prompt and "1 to 2" in prompt
+
+
+def test_vision_stretch_reads_only_a_frame_number():
+    times = vp.keyframe_times(30.0)
+    assert vp.vision_stretch("4", times, 30.0) == (11.5, 20.5)
+    assert vp.vision_stretch("Frame 1 shows the kill.", times, 30.0) == (0.0, 5.5)
+    assert vp.vision_stretch("6", times, 29.0) == (21.5, 29.0)
+    for bad in ("", "none of them", "0", "7", None):
+        assert vp.vision_stretch(bad, times, 30.0) is None
+
+
+async def test_quick_trim_escalates_clips_without_a_peak_to_vision(tmp_path, library, loudness, vision):
+    loud, flat = _at(tmp_path, "loud.mp4", 20), _at(tmp_path, "flat.mp4", 21)
+    loudness["loud.mp4"] = _levels(loud_at={28, 29, 30, 31, 32, 33})
+    loudness["flat.mp4"] = _levels()
+    vision["replies"]["flat.mp4"] = "2"
+    out = json.loads((await create().call_tool("video_quick_trim", {"paths": [loud, flat]})).content)
+    assert [(t["by"], t["start"], t["end"], t["flag"]) for t in out["trims"]] == [
+        ("audio", 11.0, 20.0, None), ("vision", 1.5, 10.5, None)]
+    assert out["flagged"] == [] and vision["calls"] == ["flat.mp4"]  # the clear-peak clip never went to vision
+
+
+async def test_escalation_has_no_cap(tmp_path, library, loudness, vision):
+    paths = []
+    for i in range(6):
+        paths.append(_at(tmp_path, f"c{i}.mp4", 10 + i))
+        loudness[f"c{i}.mp4"] = _levels()
+        vision["replies"][f"c{i}.mp4"] = "3"
+    out = json.loads((await create().call_tool("video_quick_trim", {"paths": paths})).content)
+    assert [t["by"] for t in out["trims"]] == ["vision"] * 6 and len(vision["calls"]) == 6
+
+
+async def test_no_vision_answer_fails_the_reel(tmp_path, library, loudness, vision):
+    loud, flat = _at(tmp_path, "loud.mp4", 20), _at(tmp_path, "flat.mp4", 21)
+    loudness["loud.mp4"] = _levels(loud_at={30})
+    loudness["flat.mp4"] = _levels()
+    for reply in ("", RuntimeError("model down")):
+        vision["replies"]["flat.mp4"] = reply
+        tr = await create().call_tool("video_quick_trim", {"paths": [loud, flat]})
+        assert tr.is_error and "flat.mp4" in tr.content and "Nothing was made" in tr.content
+    assert library.list_docs(1) == []
+
+
+async def test_an_unclear_vision_answer_keeps_the_clip_whole_and_flags_it(tmp_path, library, loudness, vision):
+    a = _at(tmp_path, "a.mp4", 20)
+    loudness["a.mp4"] = _levels()
+    vision["replies"]["a.mp4"] = "I can't tell"
+    out = json.loads((await create().call_tool("video_quick_trim", {"paths": [a]})).content)
+    assert [(t["by"], t["end"], t["flag"]) for t in out["trims"]] == [("vision", 30.0, "vision_unclear")]
+    assert out["flagged"] == [str(Path(a).resolve())]
+
+
+async def test_vision_trim_runs_on_every_clip(tmp_path, library, loudness, vision):
+    paths = []
+    for i in range(4):
+        paths.append(_at(tmp_path, f"v{i}.mp4", 10 + i))
+        vision["replies"][f"v{i}.mp4"] = "6"
+    out = json.loads((await create().call_tool("video_vision_trim", {"paths": paths})).content)
+    assert [t["by"] for t in out["trims"]] == ["vision"] * 4
+    assert (out["trims"][0]["start"], out["trims"][0]["end"]) == (21.5, 30.0)
+    assert len(vision["calls"]) == 4 and loudness == {}  # audio is never measured in vision mode
+
+
+async def test_vision_trim_without_the_vision_model_makes_nothing(tmp_path, library, loudness):
+    a = _at(tmp_path, "a.mp4", 20)
+    tr = await create().call_tool("video_vision_trim", {"paths": [a]})
+    assert tr.is_error and "not connected" in tr.content
+    assert library.list_docs(1) == []
