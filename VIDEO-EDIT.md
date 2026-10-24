@@ -9,11 +9,11 @@ Each slice is one GitHub issue whose body is the complete instruction self_dev r
 exact files, exact contents or SEARCH/REPLACE text, acceptance checks. Built by Felix through
 `self_dev_campaign`; Claude Code writes the specs and verifies each landed PR.
 
-## Status: ready -- V7 spec is #1547
+## Status: done -- V1-V7 landed
 
 ## Next slice -- start here
 
-- **Active:** V7 -- #1547
+- **Active:** none -- campaign done
 - **Model:** self_dev-default
 
 ## Queue
@@ -27,7 +27,7 @@ the next one is specced after the previous lands (its exact SEARCH text depends 
 - [x] V4 -- #1535 -- Quick trim: loudest audio stretch per clip, join in capture order, one-call "reel from these clips"
 - [x] V5 -- #1539 -- pointing + chat card: resolve "today's clips" / a folder to paths, card with Quick trim / Vision trim / Something else + comment box (skipped when the request already says what to do)
 - [x] V6 -- #1543 -- open in Shotcut + the fingerprint rule (edit in place while it matches, fork a new project once the user changed it) + snapshot-before-write
-- [ ] V7 -- Vision trim: escalation for clips with no clear audio peak (capped per reel) and the explicit all-clips mode
+- [x] V7 -- #1547 -- Vision trim: escalation for clips with no clear audio peak (capped per reel) and the explicit all-clips mode
 
 ## Landed PRs
 
@@ -38,3 +38,4 @@ the next one is specced after the previous lands (its exact SEARCH text depends 
 - PR #1537 -- V4 (built by a Claude Haiku agent from the #1535 spec while Budd was down; all 3 files verified byte-identical to the spec applied to master; spec dry-run full pytest 6,310 passed / 0 failed; real ffmpeg on generated clips: burst at 14-17s trimmed to 11-20s, flat + silent clips kept whole and flagged, melt render 39.02s)
 - PR #1541 -- V5 (built by a Claude Haiku agent from the #1539 spec; all 7 files verified byte-identical to the spec applied to master; spec dry-run full pytest 6,316 passed / 0 failed; card checked in a browser with the real CSS; real folder resolution of generated clips in mtime order)
 - PR #1545 -- V6 (built by a Claude Haiku agent from the #1543 spec; all 7 files verified byte-identical to the spec applied to master; spec dry-run full pytest 6,323 passed / 0 failed; real Shotcut launch on a temp project, edit-in-place with snapshot, then fork after a simulated Shotcut edit; Library Open in Shotcut button per the user's choice)
+- PR #1549 -- V7 (built by a Claude Haiku agent from the #1547 spec; all 6 files verified byte-identical to the spec applied to master; spec dry-run full pytest 6,331 passed / 0 failed; real ffmpeg keyframes; user's choices recorded as the ADR-0041 amendment (no cap, fail the reel without vision, card sends to Felix, library Open in Shotcut); live vision call only checkable on its unavailable path while Budd is down)
