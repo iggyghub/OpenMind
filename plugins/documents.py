@@ -180,7 +180,7 @@ class DocumentStore:
         return self.get_doc(doc_id)
 
     def register_file(
-        self, profile_id: int, name: str, file_path: "str | Path", kind: str
+        self, profile_id: int, name: str, file_path: "str | Path", kind: str, folder: str = ""
     ) -> dict:
         """Register an already-present library file as a new document entry.
 
@@ -189,9 +189,9 @@ class DocumentStore:
         """
         now = datetime.now(timezone.utc).isoformat()
         cur = self._con.execute(
-            "INSERT INTO documents (profile_id, name, path, kind, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (profile_id, name, str(file_path), kind, now, now),
+            "INSERT INTO documents (profile_id, name, path, kind, folder, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (profile_id, name, str(file_path), kind, folder, now, now),
         )
         self._con.commit()
         return self.get_doc(cur.lastrowid)
